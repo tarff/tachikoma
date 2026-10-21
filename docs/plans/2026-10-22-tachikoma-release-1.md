@@ -32,8 +32,11 @@ build made on 2026-10-22, not retyped. In that build:
 - `tsconfig.json` names Node's types (Task 0). The scratch build's checks ran on the finished code, where
   Vitest's types pulled them in; Task 1's typecheck runs before any test exists.
 - Code review added: a bus that does not throw when nobody listens for errors (Task 1), three permission
-  tests (Task 2), and an error log that turns itself off when it cannot be written (Task 10). That makes
-  76 tests in all.
+  tests (Task 2), and an error log that turns itself off when it cannot be written (Task 10).
+- Code review of the file tools (Task 4): a link that leads nowhere counts as outside the project; the
+  approval prompt says where a path through a link really leads; `edit_file` refuses files that are
+  not UTF-8 text instead of damaging them, and says when a file uses CRLF line endings.
+- That makes 81 tests in all.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
@@ -62,6 +65,10 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
 - **No budget controller yet** (release 6). An interactive session runs until you stop it.
 - **The `native` content is never removed yet.** Only shortening needs to remove it, and that comes
   in release 3.
+- **File tools check a path, then use it.** Another program that swaps a folder for a link in
+  between could redirect the write. A hard link inside the project to an outside file looks like an
+  ordinary file. Both need something already running on the machine; the sandbox (release 2) is the
+  answer.
 
 **Decided 2026-10-22:**
 - **Licence:** MIT.
@@ -700,7 +707,8 @@ git commit -m "feat: executor that cancels whole process trees, tool definition,
 `tests/tools/files.test.ts`:
 
 ```typescript
-import { mkdir, mkdtemp, readFile, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -759,6 +767,47 @@ describe("file tools", () => {
     expect(ctx.asked).toHaveLength(1);
   });
 
+  it("shows where a path through a link really leads when asking", async () => {
+    const ctx = await tempContext("project", [false]);
+    const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
+    await symlink(elsewhere, path.join(ctx.root, "linked"), "junction");
+    await expect(writeFileTool.run({ path: "linked/x.txt", content: "x" }, ctx)).rejects.toThrow("The user declined");
+    expect(ctx.asked[0]).toContain(`(really ${path.join(realpathSync(elsewhere), "x.txt")})`);
+  });
+
+  it("treats a link that leads nowhere as outside", async () => {
+    // A write through it could create its missing target, wherever that is.
+    const ctx = await tempContext("project", [false]);
+    const missing = path.join(tmpdir(), `tachi-missing-${process.pid}-${Date.now()}`);
+    await symlink(missing, path.join(ctx.root, "dangling"), "junction");
+    expect(resolveIn(ctx.root, "dangling/x.txt").outside).toBe(true);
+    await expect(writeFileTool.run({ path: "dangling/x.txt", content: "x" }, ctx)).rejects.toThrow("The user declined");
+  });
+
+  it("asks before reading or editing a file outside the project, given by absolute path", async () => {
+    const ctx = await tempContext("project", [false, false]);
+    const outside = path.join(await mkdtemp(path.join(tmpdir(), "tachi-outside-")), "a.txt");
+    await writeFile(outside, "one");
+    await expect(readFileTool.run({ path: outside }, ctx)).rejects.toThrow("The user declined");
+    await expect(editFileTool.run({ path: outside, old_text: "one", new_text: "two" }, ctx)).rejects.toThrow("The user declined");
+    expect(ctx.asked).toHaveLength(2);
+    expect(await readFile(outside, "utf8")).toBe("one");
+  });
+
+  it("refuses to edit a file that is not UTF-8 text, leaving it unchanged", async () => {
+    const ctx = await tempContext();
+    const latin1 = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x20, 0x6f, 0x6c, 0x64]); // "café old" in Latin-1
+    await writeFile(path.join(ctx.root, "a.txt"), latin1);
+    await expect(editFileTool.run({ path: "a.txt", old_text: "old", new_text: "new" }, ctx)).rejects.toThrow("not UTF-8 text");
+    expect(await readFile(path.join(ctx.root, "a.txt"))).toEqual(latin1);
+  });
+
+  it("mentions Windows line endings when an edit finds nothing", async () => {
+    const ctx = await tempContext();
+    await writeFileTool.run({ path: "a.txt", content: "one\r\ntwo" }, ctx);
+    await expect(editFileTool.run({ path: "a.txt", old_text: "one\ntwo", new_text: "x" }, ctx)).rejects.toThrow("CRLF line endings");
+  });
+
   it("treats a new file in a new folder inside the project as inside", async () => {
     const ctx = await tempContext();
     await mkdir(path.join(ctx.root, "real"));
@@ -783,28 +832,36 @@ Expected: FAIL, cannot find module `../../src/tools/files.js`
 `src/tools/files.ts`:
 
 ```typescript
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { defineTool } from "./tool.js";
 
 // Where a path really leads, following symlinks and Windows junctions. Parts that don't exist yet
-// (a new file in a new folder) are added back onto the deepest part that does.
-function realTarget(abs: string): string {
+// (a new file in a new folder) are added back onto the deepest part that does. Null for a link that
+// leads nowhere: writing through it could create its missing target, wherever that is.
+function realTarget(abs: string): string | null {
   let existing = abs;
   const rest: string[] = [];
   while (!existsSync(existing) && path.dirname(existing) !== existing) {
+    if (lstatSync(existing, { throwIfNoEntry: false })) return null;
     rest.unshift(path.basename(existing));
     existing = path.dirname(existing);
   }
   return path.join(realpathSync(existing), ...rest);
 }
 
-export function resolveIn(root: string, p: string): { abs: string; outside: boolean } {
+// `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
+// it somewhere else.
+export function resolveIn(root: string, p: string): { abs: string; outside: boolean; shown: string } {
   const abs = path.resolve(root, p);
-  const rel = path.relative(realTarget(root), realTarget(abs));
+  const base = realTarget(root);
+  const real = realTarget(abs);
+  if (base === null || real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
+  const rel = path.relative(base, real);
   // On Windows a path on another drive comes back absolute.
-  return { abs, outside: rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) };
+  const outside = rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+  return { abs, outside, shown: rel === path.relative(root, abs) ? abs : `${abs} (really ${real})` };
 }
 
 export const readFileTool = defineTool(
@@ -812,8 +869,8 @@ export const readFileTool = defineTool(
   "Read a text file. Paths are relative to the project root.",
   z.object({ path: z.string() }),
   async ({ path: p }, ctx) => {
-    const { abs, outside } = resolveIn(ctx.root, p);
-    await ctx.gate.require({ kind: "read", outside, summary: `read ${abs}` });
+    const { abs, outside, shown } = resolveIn(ctx.root, p);
+    await ctx.gate.require({ kind: "read", outside, summary: `read ${shown}` });
     return ctx.executor.readFile(abs);
   },
 );
@@ -823,8 +880,8 @@ export const writeFileTool = defineTool(
   "Create or overwrite a text file. Paths are relative to the project root.",
   z.object({ path: z.string(), content: z.string() }),
   async ({ path: p, content }, ctx) => {
-    const { abs, outside } = resolveIn(ctx.root, p);
-    await ctx.gate.require({ kind: "write", outside, summary: `write ${abs}` });
+    const { abs, outside, shown } = resolveIn(ctx.root, p);
+    await ctx.gate.require({ kind: "write", outside, summary: `write ${shown}` });
     await ctx.executor.writeFile(abs, content);
     return `Wrote ${content.length} characters to ${p}`;
   },
@@ -835,11 +892,14 @@ export const editFileTool = defineTool(
   "Replace one exact, unique piece of text in a file. Read the file first.",
   z.object({ path: z.string(), old_text: z.string().min(1), new_text: z.string() }),
   async ({ path: p, old_text, new_text }, ctx) => {
-    const { abs, outside } = resolveIn(ctx.root, p);
-    await ctx.gate.require({ kind: "write", outside, summary: `edit ${abs}` });
+    const { abs, outside, shown } = resolveIn(ctx.root, p);
+    await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}` });
     const text = await ctx.executor.readFile(abs);
+    // Bytes that are not UTF-8 read back as U+FFFD, and writing the text back would destroy them.
+    if (text.includes("�")) throw new Error(`${p} is not UTF-8 text, so edit_file would damage it`);
     const count = text.split(old_text).length - 1;
-    if (count === 0) throw new Error(`old_text was not found in ${p}`);
+    const crlf = text.includes("\r\n") ? " (the file uses CRLF line endings)" : "";
+    if (count === 0) throw new Error(`old_text was not found in ${p}${crlf}`);
     if (count > 1) throw new Error(`old_text appears ${count} times in ${p}; include more surrounding text so it is unique`);
     await ctx.executor.writeFile(abs, text.replace(old_text, () => new_text));
     return `Edited ${p}`;
@@ -854,7 +914,7 @@ The replacement in `edit_file` is passed as a function so `$&` and similar seque
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tools/files.test.ts && npm run typecheck`
-Expected: 9 tests pass, and no type errors.
+Expected: 14 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2615,7 +2675,7 @@ if (parsed.print !== undefined) {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  76 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  81 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -2690,7 +2750,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  76 passed | 1 skipped`.
+Expected: `Tests  81 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 
