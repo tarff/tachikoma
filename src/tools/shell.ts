@@ -9,7 +9,9 @@ export const shellTool = defineTool(
   async ({ command }, ctx) => {
     await ctx.gate.require({ kind: "shell", outside: false, summary: `run: ${command}` });
     const r = await ctx.executor.exec(command, ctx.root, ctx.signal);
-    const out = `exit code: ${r.code}\n--- stdout ---\n${r.stdout}\n--- stderr ---\n${r.stderr}`;
+    const status = r.signal ? `killed by ${r.signal}` : `exit code: ${r.code}`;
+    // stderr first: the session keeps only the start of a long result, and the errors matter most.
+    const out = `${status}\n--- stderr ---\n${r.stderr}\n--- stdout ---\n${r.stdout}`;
     // A failing command is an error: the model sees it flagged, and it goes in the error log.
     if (r.code !== 0) throw new Error(out);
     return out;

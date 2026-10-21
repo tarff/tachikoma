@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Action, Declined, needsApproval, PermissionGate } from "../../src/core/permissions.js";
+import { type Action, Declined, needsApproval, PermissionGate, visible } from "../../src/core/permissions.js";
 
 const act = (kind: Action["kind"], outside = false): Action => ({ kind, outside, summary: `${kind}${outside ? " outside" : ""}` });
 
@@ -40,5 +40,32 @@ describe("PermissionGate", () => {
     const gate = new PermissionGate("ask", async () => (asked = true));
     await gate.require(act("read"));
     expect(asked).toBe(false);
+  });
+});
+
+describe("visible", () => {
+  it.each([
+    ["an escape code", "echo \u001b[8mhidden", "echo \\u001b[8mhidden"],
+    ["a carriage return", "rm -rf ~\rls", "rm -rf ~\\rls"],
+    ["newlines", "ls\n\nrm -rf ~", "ls\\n\\nrm -rf ~"],
+    ["a tab", "a\tb", "a\\tb"],
+    ["a NUL", "a\u0000b", "a\\u0000b"],
+    ["a C1 control", "a\u009bb", "a\\u009bb"],
+    ["a delete", "a\u007fb", "a\\u007fb"],
+    ["a right-to-left override", "ls \u202etxt.exe", "ls \\u202etxt.exe"],
+    ["a bidi isolate", "ls \u2066x\u2069", "ls \\u2066x\\u2069"],
+  ])("shows %s literally", (_, text, shown) => {
+    expect(visible(text)).toBe(shown);
+  });
+
+  it("leaves ordinary text alone", () => {
+    expect(visible("echo café costs 5€ > out.txt")).toBe("echo café costs 5€ > out.txt");
+  });
+
+  it("is what the gate asks with", async () => {
+    const asked: string[] = [];
+    const gate = new PermissionGate("ask", async (summary) => (asked.push(summary), false));
+    await expect(gate.require({ kind: "shell", outside: false, summary: "run: ls\rrm -rf ~" })).rejects.toThrow("run: ls\\rrm -rf ~");
+    expect(asked).toEqual(["run: ls\\rrm -rf ~"]);
   });
 });

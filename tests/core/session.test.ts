@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { Declined } from "../../src/core/permissions.js";
-import { MAX_TOOL_OUTPUT, Session } from "../../src/core/session.js";
+import { Session } from "../../src/core/session.js";
+import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Bus, FakeProvider, callTool, collectErrors, reply, tempContext, usage } from "../helpers.js";
 
@@ -104,6 +105,63 @@ describe("Session", () => {
       ["refusal", "response from fake:a", "a declined"],
       ["refusal", "response from fake:b", "b declined"],
     ]);
+    expect(session.messages.map((m) => m.role)).toEqual(["user"]);
+  });
+
+  it("never stores a refused reply when there is no fallback", async () => {
+    // A refusal mid-stream can leave a half-written tool call; it must not be stored or run.
+    const refused = { ...callTool("c1", "echo", { text: "x" }), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const { session, errors } = await setup([refused]);
+    await session.send("go");
+    expect(session.messages.map((m) => m.role)).toEqual(["user"]);
+    expect(errors).toEqual([expect.objectContaining({ kind: "refusal", attempted: "response from fake:a", message: "declined" })]);
+  });
+
+  it("does not report Anthropic's fallback when its reply is still a refusal", async () => {
+    const turn = { ...reply(""), fallbacks: [{ from: "claude-opus-5-5", to: "claude-opus-4-8" }], cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const { session, errors } = await setup([turn]);
+    await session.send("go");
+    expect(errors.map((e) => e.kind)).toEqual(["refusal"]);
+  });
+
+  it("reports Anthropic's own fallback inside the fallback provider's reply", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const rescued = { ...reply("answered"), fallbacks: [{ from: "claude-opus-5-5", to: "claude-opus-4-8" }] };
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [rescued]), tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
+      ["refusal", "response from fake:a", "declined"],
+      ["fallback", "response from fake:a", "fake:a declined; fake:b answered instead"],
+      ["fallback", "response from fake:b", "claude-opus-5-5 declined; claude-opus-4-8 answered instead (Anthropic's fallback)"],
+    ]);
+  });
+
+  it("reports the rescue when the fallback provider's reply is cut off", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const cut = { ...reply("partial"), cutOff: { kind: "max_tokens" as const, detail: "limit" } };
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [cut]), tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
+      ["refusal", "response from fake:a", "declined"],
+      ["fallback", "response from fake:a", "fake:a declined; fake:b answered instead"],
+      ["max_tokens", "response from fake:b", "limit"],
+    ]);
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(session.messages[1]!.parts).toEqual([{ type: "text", text: "partial" }]);
+  });
+
+  it("refuses a second send while a turn is running", async () => {
+    const { session } = await setup([reply("first"), reply("second")]);
+    const first = session.send("one");
+    await expect(session.send("two")).rejects.toThrow("A turn is already running");
+    await first;
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    await session.send("three"); // the turn has ended, so sending works again
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
   it("reports when Anthropic's own fallback answered", async () => {

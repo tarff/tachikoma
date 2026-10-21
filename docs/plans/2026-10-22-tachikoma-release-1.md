@@ -36,7 +36,20 @@ build made on 2026-10-22, not retyped. In that build:
 - Code review of the file tools (Task 4): a link that leads nowhere counts as outside the project; the
   approval prompt says where a path through a link really leads; `edit_file` refuses files that are
   not UTF-8 text instead of damaging them, and says when a file uses CRLF line endings.
-- That makes 81 tests in all.
+- Code review of Tasks 3, 5, 6 and 7:
+  - **Commands** get no input (so one that waits for it ends instead of hanging), keep at most
+    30,000 characters of each output stream, decode UTF-8 correctly across chunks, report the signal
+    that killed them, and are stopped when Tachikoma exits. Cancel always returns, even when a program
+    the shell started still holds its output. The shell tool lists error output before normal output,
+    so a long log cannot push the errors out of the 30,000-character cut.
+  - **The approval prompt** shows control characters literally (`visible()` in Task 2), so terminal
+    codes, carriage returns or many newlines in a command cannot disguise what will run.
+  - **The agent loop** never stores a refused reply (an empty one would break every later Anthropic
+    request), reports Anthropic's fallback only when it rescued the reply, and refuses a second
+    `send()` while a turn is running.
+  - **The Anthropic provider** follows Anthropic's server-side fallback rules (Task 7 notes), leaves
+    out empty assistant messages, and retries a failed context-window lookup.
+- That makes 107 tests in all.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
@@ -69,6 +82,15 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
   between could redirect the write. A hard link inside the project to an outside file looks like an
   ordinary file. Both need something already running on the machine; the sandbox (release 2) is the
   answer.
+- **On Windows, cancelling cannot stop a program whose shell has already exited** (`taskkill /T`
+  cannot find a tree whose root is gone). Cancel still returns at once. On macOS and Linux the
+  process-group kill reaches it.
+- **Windows exit codes are 0 or 1.** PowerShell `-Command` reports only whether the last command
+  succeeded, so a program's own exit code is lost.
+- **Commands have no time limit**, so one that keeps its output open runs until you cancel it. A time
+  limit needs data first, and comes with the budget controller (release 6). If Tachikoma itself is
+  killed by a signal (the terminal closed, or Ctrl-C in headless mode), its exit cleanup does not
+  run, so on macOS and Linux a command still running keeps going.
 
 **Decided 2026-10-22:**
 - **Licence:** MIT.
@@ -347,7 +369,7 @@ Decides when to ask the user before acting. See the design, section 3.
 
 ```typescript
 import { describe, expect, it } from "vitest";
-import { type Action, Declined, needsApproval, PermissionGate } from "../../src/core/permissions.js";
+import { type Action, Declined, needsApproval, PermissionGate, visible } from "../../src/core/permissions.js";
 
 const act = (kind: Action["kind"], outside = false): Action => ({ kind, outside, summary: `${kind}${outside ? " outside" : ""}` });
 
@@ -390,6 +412,33 @@ describe("PermissionGate", () => {
     expect(asked).toBe(false);
   });
 });
+
+describe("visible", () => {
+  it.each([
+    ["an escape code", "echo \u001b[8mhidden", "echo \\u001b[8mhidden"],
+    ["a carriage return", "rm -rf ~\rls", "rm -rf ~\\rls"],
+    ["newlines", "ls\n\nrm -rf ~", "ls\\n\\nrm -rf ~"],
+    ["a tab", "a\tb", "a\\tb"],
+    ["a NUL", "a\u0000b", "a\\u0000b"],
+    ["a C1 control", "a\u009bb", "a\\u009bb"],
+    ["a delete", "a\u007fb", "a\\u007fb"],
+    ["a right-to-left override", "ls \u202etxt.exe", "ls \\u202etxt.exe"],
+    ["a bidi isolate", "ls \u2066x\u2069", "ls \\u2066x\\u2069"],
+  ])("shows %s literally", (_, text, shown) => {
+    expect(visible(text)).toBe(shown);
+  });
+
+  it("leaves ordinary text alone", () => {
+    expect(visible("echo café costs 5€ > out.txt")).toBe("echo café costs 5€ > out.txt");
+  });
+
+  it("is what the gate asks with", async () => {
+    const asked: string[] = [];
+    const gate = new PermissionGate("ask", async (summary) => (asked.push(summary), false));
+    await expect(gate.require({ kind: "shell", outside: false, summary: "run: ls\rrm -rf ~" })).rejects.toThrow("run: ls\\rrm -rf ~");
+    expect(asked).toEqual(["run: ls\\rrm -rf ~"]);
+  });
+});
 ```
 
 **Step 2: Run it and watch it fail**
@@ -421,6 +470,18 @@ export function needsApproval(mode: Mode, action: Action): boolean {
   return action.kind === "shell";
 }
 
+const NAMED: Record<string, string> = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+
+// Shows control characters as escapes, so the approval prompt shows what will run: escape codes can
+// hide or recolour text, \r and many \n can push part of a command out of sight, and bidi overrides
+// can reorder it.
+export function visible(text: string): string {
+  return text.replace(
+    /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
+    (c) => NAMED[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
 // Thrown when the user says no. The model is told; it is not logged as an error.
 export class Declined extends Error {}
 
@@ -431,9 +492,9 @@ export class PermissionGate {
   ) {}
 
   async require(action: Action): Promise<void> {
-    if (needsApproval(this.mode, action) && !(await this.ask(action.summary))) {
-      throw new Declined(`The user declined: ${action.summary}`);
-    }
+    if (!needsApproval(this.mode, action)) return;
+    const shown = visible(action.summary);
+    if (!(await this.ask(shown))) throw new Declined(`The user declined: ${shown}`);
   }
 }
 ```
@@ -441,7 +502,7 @@ export class PermissionGate {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/permissions.test.ts && npm run typecheck`
-Expected: 15 tests pass, and no type errors.
+Expected: 26 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -527,7 +588,8 @@ export { Bus };
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
+import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor } from "../../src/exec/local.js";
 import { tempContext } from "../helpers.js";
 
@@ -540,6 +602,23 @@ const alive = (pid: number) => {
   }
 };
 
+// Waits for a script to record its pid. An empty file reads as 0, which would mean our own process group.
+async function readPid(file: string): Promise<number> {
+  let pid = 0;
+  for (let i = 0; i < 100 && !(pid > 0); i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    pid = existsSync(file) ? Number(readFileSync(file, "utf8")) : 0;
+  }
+  return pid;
+}
+
+// Scripts are written to files so the same command works in sh and PowerShell.
+async function script(source: string): Promise<string> {
+  const { root } = await tempContext();
+  await writeFile(path.join(root, "script.js"), source);
+  return root;
+}
+
 describe("LocalExecutor", () => {
   it("cancelling a command also stops the programs it started", async () => {
     const { root } = await tempContext();
@@ -547,15 +626,63 @@ describe("LocalExecutor", () => {
     await writeFile(path.join(root, "child.js"), `require("fs").writeFileSync("pid", String(process.pid)); setTimeout(() => {}, 60000);`);
     const abort = new AbortController();
     const run = new LocalExecutor().exec("node child.js", root, abort.signal);
-    const pidFile = path.join(root, "pid");
-    for (let i = 0; i < 100 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
-    const pid = Number(readFileSync(pidFile, "utf8"));
+    const pid = await readPid(path.join(root, "pid"));
     expect(alive(pid)).toBe(true);
 
     abort.abort();
     await expect(run).rejects.toThrow("Cancelled");
     for (let i = 0; i < 40 && alive(pid); i++) await new Promise((r) => setTimeout(r, 50));
     expect(alive(pid)).toBe(false);
+  }, 15_000);
+
+  it("cancel returns even when a program the shell started still holds the output pipes", async () => {
+    const { root } = await tempContext();
+    await writeFile(path.join(root, "grandchild.js"), `require("fs").writeFileSync("pid", String(process.pid)); setTimeout(() => {}, 60000);`);
+    // The launcher leaves the grandchild running on its inherited pipes and exits. On POSIX it is not
+    // detached, so it stays in the shell's process group. On Windows it must be, or Node kills it when
+    // the launcher exits.
+    await writeFile(
+      path.join(root, "launcher.js"),
+      `require("child_process").spawn(process.execPath, ["grandchild.js"], { stdio: "inherit", detached: process.platform === "win32" }).unref();`,
+    );
+    const abort = new AbortController();
+    const run = new LocalExecutor().exec("node launcher.js", root, abort.signal);
+    const pid = await readPid(path.join(root, "pid"));
+    onTestFinished(() => {
+      if (pid > 0 && alive(pid)) process.kill(pid, "SIGKILL");
+    });
+    expect(pid).toBeGreaterThan(0);
+
+    abort.abort();
+    await expect(run).rejects.toThrow("Cancelled");
+    // Windows cannot find a tree whose root has exited, so the grandchild survives there.
+    if (process.platform !== "win32") {
+      for (let i = 0; i < 40 && alive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+      expect(alive(pid)).toBe(false);
+    }
+  }, 15_000);
+
+  it("gives commands no input, so ones that read to the end of input finish", async () => {
+    const root = await script(`process.stdin.resume(); process.stdin.on("end", () => console.log("eof"));`);
+    const r = await new LocalExecutor().exec("node script.js", root);
+    expect(r.stdout).toContain("eof");
+  }, 15_000);
+
+  it("keeps at most MAX_TOOL_OUTPUT characters of a stream and says how much it cut", async () => {
+    const root = await script(`process.stdout.write("x".repeat(${MAX_TOOL_OUTPUT * 3}));`);
+    const r = await new LocalExecutor().exec("node script.js", root);
+    const [kept, marker] = r.stdout.split("\n[cut: ");
+    expect(kept).toBe("x".repeat(MAX_TOOL_OUTPUT));
+    expect(marker).toMatch(/^\d+ more characters\]$/);
+  }, 15_000);
+
+  it("decodes characters split across chunks", async () => {
+    // 3 bytes each, so some are certain to straddle a chunk boundary.
+    const root = await script(`process.stdout.write("€".repeat(300000));`);
+    const r = await new LocalExecutor().exec("node script.js", root);
+    const [kept] = r.stdout.split("\n[cut: ");
+    expect(r.stdout).not.toContain("�");
+    expect(kept).toBe("€".repeat(MAX_TOOL_OUTPUT));
   }, 15_000);
 });
 ```
@@ -570,8 +697,13 @@ Expected: FAIL, cannot find module `../../src/exec/local.js`
 `src/exec/executor.ts`:
 
 ```typescript
+// Claude Code's Bash tool cuts output at 30,000 characters. We start from the same cap until our
+// own error log and transcripts show whether it should move.
+export const MAX_TOOL_OUTPUT = 30_000;
+
 export interface ExecResult {
   code: number | null;
+  signal: NodeJS.Signals | null; // set when the command was killed by a signal
   stdout: string;
   stderr: string;
 }
@@ -590,7 +722,8 @@ export interface Executor {
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ExecResult, Executor } from "./executor.js";
+import type { Readable } from "node:stream";
+import { type ExecResult, type Executor, MAX_TOOL_OUTPUT } from "./executor.js";
 
 export function shellFor(platform: NodeJS.Platform = process.platform): { name: string; argv: (command: string) => string[] } {
   if (platform === "win32") {
@@ -604,10 +737,38 @@ export function shellFor(platform: NodeJS.Platform = process.platform): { name: 
 }
 
 // Stops the shell and everything it started. Killing only the shell would leave its children running.
+// Runs even after the shell has exited: what it started may still be going.
 export function killTree(child: ChildProcess): void {
-  if (child.pid === undefined || child.exitCode !== null) return;
-  if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
-  else process.kill(-child.pid, "SIGKILL"); // the shell leads its own process group (detached below)
+  if (child.pid === undefined) return;
+  if (process.platform === "win32") {
+    // taskkill cannot find a tree whose root has exited, and Windows may already have given that pid
+    // to an unrelated program, so it is only run while the shell is alive.
+    if (child.exitCode === null && child.signalCode === null) spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+  } else {
+    try {
+      process.kill(-child.pid, "SIGKILL"); // the shell leads its own process group (detached below)
+    } catch {
+      // ESRCH: the group is gone. Throwing here would crash Node from inside an abort listener.
+    }
+  }
+}
+
+// Detached commands are cut off from the terminal and would outlive us, so we stop them on exit.
+const running = new Set<ChildProcess>();
+process.on("exit", () => running.forEach(killTree));
+
+// Keeps the first MAX_TOOL_OUTPUT characters and reads (and drops) the rest, so the command never
+// blocks on a full pipe and a flood of output cannot exhaust memory.
+function collect(stream: Readable): () => string {
+  let text = "";
+  let dropped = 0;
+  stream.setEncoding("utf8"); // decodes characters split across chunks
+  stream.on("data", (d: string) => {
+    const room = MAX_TOOL_OUTPUT - text.length;
+    text += d.slice(0, room);
+    dropped += Math.max(0, d.length - room);
+  });
+  return () => (dropped ? `${text}\n[cut: ${dropped} more characters]` : text);
 }
 
 export class LocalExecutor implements Executor {
@@ -615,19 +776,35 @@ export class LocalExecutor implements Executor {
     if (signal?.aborted) return Promise.reject(new Error("Cancelled"));
     const [file, ...args] = shellFor().argv(command);
     return new Promise((resolve, reject) => {
-      const child = spawn(file!, args, { cwd, windowsHide: true, detached: process.platform !== "win32" });
-      let stdout = "";
-      let stderr = "";
-      const onAbort = () => killTree(child);
-      signal?.addEventListener("abort", onAbort, { once: true });
-      child.stdout.on("data", (d) => (stdout += d));
-      child.stderr.on("data", (d) => (stderr += d));
-      child.on("error", reject);
-      child.on("close", (code) => {
+      // No stdin: a command waiting for input would otherwise wait forever.
+      const child = spawn(file!, args, { cwd, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+      running.add(child);
+      const stdout = collect(child.stdout);
+      const stderr = collect(child.stderr);
+      const done = () => {
+        running.delete(child);
         signal?.removeEventListener("abort", onAbort);
-        if (signal?.aborted) reject(new Error("Cancelled"));
-        else resolve({ code, stdout, stderr });
+        child.off("close", onClose);
+      };
+      // Settles at once: "close" waits for every holder of the pipes, and a program the shell
+      // started may hold them for good.
+      const onAbort = () => {
+        killTree(child);
+        done();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        reject(new Error("Cancelled"));
+      };
+      const onClose = (code: number | null, sig: NodeJS.Signals | null) => {
+        done();
+        resolve({ code, signal: sig, stdout: stdout(), stderr: stderr() });
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      child.on("error", (e) => {
+        done();
+        reject(e);
       });
+      child.on("close", onClose);
     });
   }
 
@@ -663,7 +840,8 @@ export interface Tool {
 }
 
 // A tool whose input is checked against its schema before it runs. Model output is untrusted.
-export function defineTool<S extends z.ZodType>(
+// An object schema, because both provider APIs require one for tool input.
+export function defineTool<S extends z.ZodObject>(
   name: string,
   description: string,
   schema: S,
@@ -684,7 +862,7 @@ export function defineTool<S extends z.ZodType>(
 **Step 4: Run the test and the typecheck**
 
 Run: `npx vitest run tests/exec/local.test.ts && npm run typecheck`
-Expected: 1 test passes, and no type errors. On Windows this kills the tree with `taskkill /T`. On macOS
+Expected: 5 tests pass, and no type errors. On Windows this kills the tree with `taskkill /T`. On macOS
 and Linux it kills the shell's process group; that path is first run by the release 8 install test.
 
 **Step 5: Commit**
@@ -955,6 +1133,21 @@ describe("shell tool", () => {
     await expect(shellTool.run({ command: "exit 3" }, ctx)).rejects.toThrow("exit code: 3");
   });
 
+  it("puts stderr before stdout, so a long stdout cannot push the errors out of the cut", async () => {
+    const ctx = await tempContext();
+    const out = await shellTool.run({ command: "echo hi" }, ctx);
+    expect(out.indexOf("--- stderr ---")).toBeLessThan(out.indexOf("--- stdout ---"));
+    expect(out.indexOf("exit code: 0")).toBe(0);
+  });
+
+  it("says which signal killed a command instead of a null exit code", async () => {
+    const ctx = await tempContext();
+    const executor = { ...ctx.executor, exec: async () => ({ code: null, signal: "SIGKILL" as const, stdout: "", stderr: "" }) };
+    const run = shellTool.run({ command: "sleep 100" }, { ...ctx, executor });
+    await expect(run).rejects.toThrow("killed by SIGKILL");
+    await expect(run).rejects.not.toThrow("exit code");
+  });
+
   it("always asks in project mode", async () => {
     const ctx = await tempContext("project", [true]);
     await shellTool.run({ command: "echo hi" }, ctx);
@@ -984,7 +1177,9 @@ export const shellTool = defineTool(
   async ({ command }, ctx) => {
     await ctx.gate.require({ kind: "shell", outside: false, summary: `run: ${command}` });
     const r = await ctx.executor.exec(command, ctx.root, ctx.signal);
-    const out = `exit code: ${r.code}\n--- stdout ---\n${r.stdout}\n--- stderr ---\n${r.stderr}`;
+    const status = r.signal ? `killed by ${r.signal}` : `exit code: ${r.code}`;
+    // stderr first: the session keeps only the start of a long result, and the errors matter most.
+    const out = `${status}\n--- stderr ---\n${r.stderr}\n--- stdout ---\n${r.stdout}`;
     // A failing command is an error: the model sees it flagged, and it goes in the error log.
     if (r.code !== 0) throw new Error(out);
     return out;
@@ -1005,7 +1200,7 @@ export const TOOLS: Tool[] = [readFileTool, writeFileTool, editFileTool, shellTo
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tools/shell.test.ts && npm run typecheck`
-Expected: 3 tests pass, and no type errors.
+Expected: 5 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -1047,7 +1242,8 @@ Three rules come from the Anthropic API notes:
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { Declined } from "../../src/core/permissions.js";
-import { MAX_TOOL_OUTPUT, Session } from "../../src/core/session.js";
+import { Session } from "../../src/core/session.js";
+import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Bus, FakeProvider, callTool, collectErrors, reply, tempContext, usage } from "../helpers.js";
 
@@ -1150,6 +1346,63 @@ describe("Session", () => {
       ["refusal", "response from fake:a", "a declined"],
       ["refusal", "response from fake:b", "b declined"],
     ]);
+    expect(session.messages.map((m) => m.role)).toEqual(["user"]);
+  });
+
+  it("never stores a refused reply when there is no fallback", async () => {
+    // A refusal mid-stream can leave a half-written tool call; it must not be stored or run.
+    const refused = { ...callTool("c1", "echo", { text: "x" }), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const { session, errors } = await setup([refused]);
+    await session.send("go");
+    expect(session.messages.map((m) => m.role)).toEqual(["user"]);
+    expect(errors).toEqual([expect.objectContaining({ kind: "refusal", attempted: "response from fake:a", message: "declined" })]);
+  });
+
+  it("does not report Anthropic's fallback when its reply is still a refusal", async () => {
+    const turn = { ...reply(""), fallbacks: [{ from: "claude-opus-5-5", to: "claude-opus-4-8" }], cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const { session, errors } = await setup([turn]);
+    await session.send("go");
+    expect(errors.map((e) => e.kind)).toEqual(["refusal"]);
+  });
+
+  it("reports Anthropic's own fallback inside the fallback provider's reply", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const rescued = { ...reply("answered"), fallbacks: [{ from: "claude-opus-5-5", to: "claude-opus-4-8" }] };
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [rescued]), tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
+      ["refusal", "response from fake:a", "declined"],
+      ["fallback", "response from fake:a", "fake:a declined; fake:b answered instead"],
+      ["fallback", "response from fake:b", "claude-opus-5-5 declined; claude-opus-4-8 answered instead (Anthropic's fallback)"],
+    ]);
+  });
+
+  it("reports the rescue when the fallback provider's reply is cut off", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const cut = { ...reply("partial"), cutOff: { kind: "max_tokens" as const, detail: "limit" } };
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [cut]), tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
+      ["refusal", "response from fake:a", "declined"],
+      ["fallback", "response from fake:a", "fake:a declined; fake:b answered instead"],
+      ["max_tokens", "response from fake:b", "limit"],
+    ]);
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(session.messages[1]!.parts).toEqual([{ type: "text", text: "partial" }]);
+  });
+
+  it("refuses a second send while a turn is running", async () => {
+    const { session } = await setup([reply("first"), reply("second")]);
+    const first = session.send("one");
+    await expect(session.send("two")).rejects.toThrow("A turn is already running");
+    await first;
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    await session.send("three"); // the turn has ended, so sending works again
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
   });
 
   it("reports when Anthropic's own fallback answered", async () => {
@@ -1217,14 +1470,11 @@ Expected: FAIL, cannot find module `../../src/core/session.js`
 `src/core/session.ts`:
 
 ```typescript
+import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus } from "./bus.js";
 import { Declined } from "./permissions.js";
 import { errorText, type Message, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
-
-// Claude Code's Bash tool cuts output at 30,000 characters. We start from the same cap until our
-// own error log and transcripts show whether it should move.
-export const MAX_TOOL_OUTPUT = 30_000;
 
 function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
@@ -1243,6 +1493,7 @@ export class Session {
   // Append-only. Earlier messages are never edited, for the same reason the system prompt is fixed.
   readonly messages: Message[] = [];
   #lead: Provider;
+  #running = false;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -1258,6 +1509,17 @@ export class Session {
   }
 
   async send(text: string, signal?: AbortSignal): Promise<void> {
+    // Two turns at once would interleave their messages and tool results in the history.
+    if (this.#running) throw new Error("A turn is already running");
+    this.#running = true;
+    try {
+      await this.#turn(text, signal);
+    } finally {
+      this.#running = false;
+    }
+  }
+
+  async #turn(text: string, signal?: AbortSignal): Promise<void> {
     const { bus } = this.opts;
     this.#push({ role: "user", parts: [{ type: "text", text }] });
 
@@ -1266,9 +1528,6 @@ export class Session {
       let answeredBy = lead;
       let turn = await this.#request(lead, signal);
       if (!turn) return;
-      for (const f of turn.fallbacks ?? []) {
-        bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${f.from} declined; ${f.to} answered instead (Anthropic's fallback)`, lead: lead.id });
-      }
       const rescue = this.opts.fallback;
       if (turn.cutOff?.kind === "refusal" && rescue) {
         // The refused reply is discarded, never stored, so the history stays append-only.
@@ -1276,7 +1535,17 @@ export class Session {
         answeredBy = rescue;
         turn = await this.#request(rescue, signal);
         if (!turn) return;
-        if (!turn.cutOff) bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
+        if (turn.cutOff?.kind !== "refusal") bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
+      }
+      if (turn.cutOff?.kind === "refusal") {
+        // Never stored, on any path: the output may be empty or half-written, and an empty assistant
+        // message makes every later Anthropic request fail, with no way to remove it.
+        bus.emit("error", { kind: "refusal", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
+        return;
+      }
+      // Reported only now, so a model that still refused is never shown as having answered.
+      for (const f of turn.fallbacks ?? []) {
+        bus.emit("error", { kind: "fallback", attempted: `response from ${answeredBy.id}`, message: `${f.from} declined; ${f.to} answered instead (Anthropic's fallback)`, lead: lead.id });
       }
       this.#push({ role: "assistant", parts: turn.parts, native: turn.native });
 
@@ -1342,7 +1611,7 @@ function result(call: ToolCall, output: string, isError: boolean): ToolResult {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/session.test.ts && npm run typecheck`
-Expected: 15 tests pass, and no type errors.
+Expected: 20 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -1364,7 +1633,12 @@ skill (2026-10-22):
 - **Refusal fallback.** `fallbacks: "default"` is on for Fable 5.1, Opus 5.5, Opus 5 and Sonnet 5.5. A
   refused request is re-run on Anthropic's recommended fallback model instead of failing. When that
   happens, the response carries a `fallback` block, which becomes `turn.fallbacks`. The session then
-  shows a notice and logs it (Task 6). The reply is priced as the model that answered (`servedBy`).
+  shows a notice and logs it (Task 6). For about an hour afterwards Anthropic keeps serving the
+  conversation from the fallback model with no block; the signal for that is a `fallback_message`
+  entry in `usage.iterations`, which sets `servedBy`, so the reply is priced as the model that answered.
+  Whatever the declined model wrote before the last `fallback` block (thinking, half-written tool
+  calls) is dropped when the reply arrives: it is never run, answered or sent back. Text is kept.
+  Source: claude-api skill, `shared/model-migration.md`, server-side fallback.
   You decided to keep this, with the notice (2026-10-22).
 - **Effort.** Only sent when the user passes `--effort`. With no data yet on the right level for this
   harness, the model's own default applies (`medium` on Opus 5.5).
@@ -1379,9 +1653,10 @@ skill (2026-10-22):
 
 ```typescript
 import type { BetaMessage } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import { describe, expect, it } from "vitest";
+import { Models } from "@anthropic-ai/sdk/resources/models";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../src/core/types.js";
-import { fromAnthropic, toAnthropic } from "../../src/providers/anthropic.js";
+import { AnthropicProvider, fromAnthropic, toAnthropic } from "../../src/providers/anthropic.js";
 
 // Shaped like a real response; only the fields the adapter reads are filled in.
 function message(fields: Partial<BetaMessage>): BetaMessage {
@@ -1417,6 +1692,16 @@ describe("toAnthropic", () => {
     const history: Message[] = [{ role: "assistant", parts: [{ type: "text", text: "hi" }], native: { provider: "anthropic", content: native } }];
     expect(toAnthropic(history)[0]!.content).toBe(native);
   });
+
+  it("leaves out an assistant message with nothing in it, which the API would reject", () => {
+    const history: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "hi" }] },
+      { role: "assistant", parts: [], native: { provider: "anthropic", content: [] } },
+      { role: "assistant", parts: [] },
+      { role: "user", parts: [{ type: "text", text: "again" }] },
+    ];
+    expect(toAnthropic(history).map((m) => m.role)).toEqual(["user", "user"]);
+  });
 });
 
 describe("fromAnthropic", () => {
@@ -1443,6 +1728,17 @@ describe("fromAnthropic", () => {
   it("records when Anthropic's fallback model answered", () => {
     const turn = fromAnthropic(
       message({
+        model: "claude-opus-4-8",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          iterations: [
+            { type: "message", model: "claude-opus-5-5", input_tokens: 100, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: null },
+            { type: "fallback_message", model: "claude-opus-4-8", input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: null },
+          ],
+        } as unknown as BetaMessage["usage"],
         content: [
           { type: "fallback", from: { model: "claude-opus-5-5" }, to: { model: "claude-opus-4-8" }, trigger: { type: "refusal" } },
           { type: "text", text: "hi", citations: null },
@@ -1454,11 +1750,67 @@ describe("fromAnthropic", () => {
     expect(turn.parts).toEqual([{ type: "text", text: "hi" }]);
   });
 
+  it("names the fallback model on a sticky turn, which carries no fallback block", () => {
+    const turn = fromAnthropic(
+      message({
+        model: "claude-opus-4-8",
+        content: [{ type: "text", text: "hi", citations: null }] as BetaMessage["content"],
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          iterations: [{ type: "fallback_message", model: "claude-opus-4-8", input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: null }],
+        } as unknown as BetaMessage["usage"],
+      }),
+    );
+    expect(turn.servedBy).toBe("anthropic:claude-opus-4-8");
+    expect(turn.fallbacks).toBeUndefined();
+  });
+
+  it("drops the declined model's unfinished tool calls and thinking, keeping its text", () => {
+    const turn = fromAnthropic(
+      message({
+        model: "claude-opus-4-8",
+        content: [
+          { type: "thinking", thinking: "", signature: "s" },
+          { type: "text", text: "let me look", citations: null },
+          { type: "tool_use", id: "tu_1", name: "shell", input: { command: "rm" } },
+          { type: "fallback", from: { model: "claude-opus-5-5" }, to: { model: "claude-opus-4-8" }, trigger: { type: "refusal" } },
+          { type: "tool_use", id: "tu_2", name: "read_file", input: { path: "a" } },
+        ] as unknown as BetaMessage["content"],
+        stop_reason: "tool_use",
+      }),
+    );
+    expect(turn.parts).toEqual([
+      { type: "text", text: "let me look" },
+      { type: "tool_call", id: "tu_2", name: "read_file", input: { path: "a" } },
+    ]);
+    expect((turn.native!.content as { type: string }[]).map((b) => b.type)).toEqual(["text", "fallback", "tool_use"]);
+    expect(JSON.stringify(turn.native!.content)).not.toContain("tu_1");
+  });
+
   it("reports refusals and hitting a limit", () => {
     const refused = fromAnthropic(message({ stop_reason: "refusal", stop_details: { type: "refusal", category: "cyber", explanation: null } as BetaMessage["stop_details"] }));
     expect(refused.cutOff).toEqual({ kind: "refusal", detail: "The model declined (category: cyber)" });
     expect(fromAnthropic(message({ stop_reason: "max_tokens" })).cutOff?.kind).toBe("max_tokens");
     expect(fromAnthropic(message({ stop_reason: "model_context_window_exceeded" })).cutOff?.kind).toBe("max_tokens");
+  });
+});
+
+describe("AnthropicProvider.contextWindow", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("asks again after a failed lookup, and remembers a successful one", async () => {
+    const retrieve = vi
+      .spyOn(Models.prototype, "retrieve")
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({ max_input_tokens: 1_000 } as never);
+    const provider = new AnthropicProvider("claude-opus-5-5");
+    expect(await provider.contextWindow()).toBeNull();
+    expect(await provider.contextWindow()).toBe(1_000);
+    expect(await provider.contextWindow()).toBe(1_000);
+    expect(retrieve).toHaveBeenCalledTimes(2);
   });
 });
 ```
@@ -1474,7 +1826,7 @@ Expected: FAIL, cannot find module `../../src/providers/anthropic.js`
 
 ```typescript
 import Anthropic from "@anthropic-ai/sdk";
-import type { BetaContentBlockParam, BetaMessage, BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
+import type { BetaContentBlock, BetaContentBlockParam, BetaMessage, BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import type { CompletionRequest, Message, Part, Provider, Turn } from "../core/types.js";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -1501,31 +1853,56 @@ function toBlock(p: Part): BetaContentBlockParam {
 }
 
 export function toAnthropic(messages: Message[]): BetaMessageParam[] {
-  return messages.map((m) =>
-    m.role === "assistant" && m.native?.provider === "anthropic"
-      ? { role: "assistant", content: m.native.content as BetaContentBlockParam[] }
-      : { role: m.role, content: m.parts.map(toBlock) },
+  return (
+    messages
+      .map((m): BetaMessageParam =>
+        m.role === "assistant" && m.native?.provider === "anthropic"
+          ? { role: "assistant", content: m.native.content as BetaContentBlockParam[] }
+          : { role: m.role, content: m.parts.map(toBlock) },
+      )
+      // A reply can come back empty (context full before any output), but the API rejects an empty
+      // message anywhere but last, and the history is append-only, so it would fail every later request.
+      .filter((m) => m.role === "user" || m.content.length > 0)
+  );
+}
+
+// After a mid-output fallback, the declined model's unfinished work before the last `fallback` block must
+// not be run or echoed back: keep only its text, server-tool calls that got their result, and the markers.
+function withoutDeclinedPartial(content: BetaContentBlock[]): BetaContentBlock[] {
+  const boundary = content.findLastIndex((b) => b.type === "fallback");
+  if (boundary < 0) return content;
+  const answered = new Set(content.flatMap((b) => ("tool_use_id" in b ? [b.tool_use_id] : [])));
+  return content.filter(
+    (b, i) =>
+      i >= boundary ||
+      b.type === "text" ||
+      b.type === "fallback" || // kept: the server uses it to tell thinking runs apart on replay
+      "tool_use_id" in b ||
+      ((b.type === "server_tool_use" || b.type === "mcp_tool_use") && answered.has(b.id)),
   );
 }
 
 export function fromAnthropic(msg: BetaMessage): Turn {
+  const content = withoutDeclinedPartial(msg.content);
   const parts: Part[] = [];
   const fallbacks: { from: string; to: string }[] = [];
-  for (const b of msg.content) {
+  for (const b of content) {
     if (b.type === "text") parts.push({ type: "text", text: b.text });
     else if (b.type === "tool_use") parts.push({ type: "tool_call", id: b.id, name: b.name, input: b.input });
     else if (b.type === "fallback") fallbacks.push({ from: b.from.model, to: b.to.model });
   }
+  // Covers only the attempt that produced this message: tokens a model spent before declining mid-stream
+  // are in usage.iterations alone, so they are not counted here.
   const u = msg.usage;
   const turn: Turn = {
     parts,
-    native: { provider: "anthropic", content: msg.content },
+    native: { provider: "anthropic", content },
     usage: { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0 },
   };
-  if (fallbacks.length) {
-    turn.fallbacks = fallbacks;
-    turn.servedBy = `anthropic:${fallbacks.at(-1)!.to}`;
-  }
+  // Blocks mark where this turn switched models (for the notice); sticky turns, served by the fallback
+  // model with no switch, carry none, so who answered comes from usage.iterations and `model`.
+  if (fallbacks.length) turn.fallbacks = fallbacks;
+  if (u.iterations?.some((it) => it.type === "fallback_message")) turn.servedBy = `anthropic:${msg.model}`;
   if (msg.stop_reason === "max_tokens") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit" };
   if (msg.stop_reason === "model_context_window_exceeded") turn.cutOff = { kind: "max_tokens", detail: "The conversation filled the context window" };
   if (msg.stop_reason === "refusal") turn.cutOff = { kind: "refusal", detail: `The model declined (category: ${msg.stop_details?.category ?? "none given"})` };
@@ -1535,7 +1912,7 @@ export function fromAnthropic(msg: BetaMessage): Turn {
 export class AnthropicProvider implements Provider {
   readonly id: string;
   #client = new Anthropic(); // credentials from ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile
-  #window?: Promise<number | null>;
+  #window?: number | null;
 
   constructor(
     readonly model: string,
@@ -1550,6 +1927,8 @@ export class AnthropicProvider implements Provider {
         model: this.model,
         max_tokens: MAX_TOKENS,
         system,
+        // No eager_input_streaming: only finalMessage() is read, so streaming tool input early gains
+        // nothing here, and it would move input validation from the API to us (claude-api skill, tool-use-concepts.md).
         tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema as BetaTool["input_schema"] })),
         messages: toAnthropic(messages),
         cache_control: { type: "ephemeral" },
@@ -1561,11 +1940,15 @@ export class AnthropicProvider implements Provider {
     return fromAnthropic(await stream.finalMessage());
   }
 
-  contextWindow(): Promise<number | null> {
-    this.#window ??= this.#client.models.retrieve(this.model).then(
-      (m) => m.max_input_tokens,
-      () => null,
-    );
+  // Only a successful lookup is kept; a failed one (offline, say) is tried again next time.
+  async contextWindow(): Promise<number | null> {
+    if (this.#window === undefined) {
+      try {
+        this.#window = (await this.#client.models.retrieve(this.model)).max_input_tokens;
+      } catch {
+        return null;
+      }
+    }
     return this.#window;
   }
 }
@@ -1574,7 +1957,7 @@ export class AnthropicProvider implements Provider {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/providers/anthropic.test.ts && npm run typecheck`
-Expected: 5 tests pass, and no type errors.
+Expected: 9 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2675,7 +3058,7 @@ if (parsed.print !== undefined) {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  81 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  107 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -2750,7 +3133,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  81 passed | 1 skipped`.
+Expected: `Tests  107 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 

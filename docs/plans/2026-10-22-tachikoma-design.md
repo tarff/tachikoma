@@ -136,6 +136,10 @@ set them off by mistake: security tooling, scanning, malware samples.
    not stored, so the history still only grows. The lead does not change: the next turn goes back
    to it. There is no default fallback model, because that choice is the user's.
 
+**A refused reply is never stored**, with or without a fallback. It can be empty (the filter fired
+before any output) or stop part way through a tool call, and an empty assistant message would make
+every later Anthropic request fail. The turn ends with the refusal shown and logged.
+
 **Never silent.** Each rescue is shown in the scrollback (`↪ claude-opus-5-5 declined;
 claude-opus-4-8 answered instead`) and written to the error log as a `fallback` entry, so
 `/errors` shows how often it happens. It is not counted in the status line's error count. The
