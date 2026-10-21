@@ -115,11 +115,14 @@ Task 14.
     "noUncheckedIndexedAccess": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
+    "types": ["node"],
     "noEmit": true
   },
   "include": ["src", "tests"]
 }
 ```
+
+`"types": ["node"]` is needed because TypeScript 6 and later load no `@types` packages unless they are named. The scratch build passed without it only because the finished tests import Vitest, whose type files pull in Node's types; Task 1's typecheck, which runs before any test exists, failed without it.
 
 `tsconfig.build.json` (emits `dist/` from `src/` only):
 
