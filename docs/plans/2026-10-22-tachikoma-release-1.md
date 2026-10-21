@@ -28,6 +28,13 @@ build made on 2026-10-22, not retyped. In that build:
 - 71 tests passed and the live test was skipped (3 full runs, no failures);
 - the built command gave the outputs shown in Task 13.
 
+**Changed while building** (each change is in the code below, so plan and code still match):
+- `tsconfig.json` names Node's types (Task 0). The scratch build's checks ran on the finished code, where
+  Vitest's types pulled them in; Task 1's typecheck runs before any test exists.
+- Code review added: a bus that does not throw when nobody listens for errors (Task 1), three permission
+  tests (Task 2), and an error log that turns itself off when it cannot be written (Task 10). That makes
+  76 tests in all.
+
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
 yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new major release.
@@ -180,10 +187,11 @@ git commit -m "chore: project setup"
 
 ### Task 1: Conversation format and event bus
 
-Types only, so there is nothing to test yet. The typecheck is the check.
+Mostly types. The bus has one piece of behaviour, and one test checks it.
 
 **Files:**
 - Create: `src/core/types.ts`, `src/core/bus.ts`
+- Test: `tests/core/bus.test.ts`
 
 **Step 1: Write the code**
 
@@ -272,7 +280,14 @@ export interface Events {
 }
 
 // The session emits; the interface, status line, headless output and error log listen.
-export class Bus extends EventEmitter<Events> {}
+export class Bus extends EventEmitter<Events> {
+  constructor() {
+    super();
+    // Node throws when an "error" event has no listener. Here an error event is a report, not a crash,
+    // so a session that nobody is listening to must carry on.
+    this.on("error", () => {});
+  }
+}
 ```
 
 **Step 2: Typecheck**
@@ -280,10 +295,34 @@ export class Bus extends EventEmitter<Events> {}
 Run: `npm run typecheck`
 Expected: no output, exit code 0.
 
-**Step 3: Commit**
+**Step 3: Test the bus**
+
+Node throws when an `"error"` event has no listener. On this bus an error event is a report, so the
+bus listens to its own errors and a session nobody is watching carries on. Code review of the
+build found this: without it, a tool error with no listener would stop the session half way through
+a tool call.
+
+`tests/core/bus.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { Bus } from "../../src/core/bus.js";
+
+describe("Bus", () => {
+  it("carries on when an error is reported and nobody is listening", () => {
+    const bus = new Bus();
+    expect(() => bus.emit("error", { kind: "tool", attempted: "shell", message: "exit code: 1", lead: "fake:a" })).not.toThrow();
+  });
+});
+```
+
+Run: `npx vitest run tests/core/bus.test.ts`
+Expected: 1 test passes.
+
+**Step 4: Commit**
 
 ```bash
-git add src/core/types.ts src/core/bus.ts
+git add src/core/types.ts src/core/bus.ts tests/core/bus.test.ts
 git commit -m "feat: conversation format and event bus"
 ```
 
@@ -315,8 +354,10 @@ describe("needsApproval", () => {
     ["project", act("write"), false],
     ["project", act("shell"), true],
     ["project", act("write", true), true],
+    ["project", act("read", true), true],
     ["never", act("shell"), false],
     ["never", act("write", true), false],
+    ["never", act("read", true), false],
   ] as const)("%s mode, %o -> %s", (mode, action, expected) => {
     expect(needsApproval(mode, action)).toBe(expected);
   });
@@ -326,6 +367,13 @@ describe("PermissionGate", () => {
   it("throws Declined when the user says no", async () => {
     const gate = new PermissionGate("ask", async () => false);
     await expect(gate.require(act("write"))).rejects.toBeInstanceOf(Declined);
+  });
+
+  it("asks with the action's summary, and goes ahead when the user says yes", async () => {
+    const asked: string[] = [];
+    const gate = new PermissionGate("ask", async (summary) => (asked.push(summary), true));
+    await expect(gate.require(act("shell"))).resolves.toBeUndefined();
+    expect(asked).toEqual(["shell"]);
   });
 
   it("does not ask when no approval is needed", async () => {
@@ -386,7 +434,7 @@ export class PermissionGate {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/permissions.test.ts && npm run typecheck`
-Expected: 12 tests pass, and no type errors.
+Expected: 15 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -1806,7 +1854,8 @@ git commit -m "feat: provider registry and pricing table"
 
 ### Task 10: Error log and running totals
 
-Every error event becomes one JSON line in `.tachikoma/errors.jsonl`. `Stats` keeps the totals the status line shows.
+Every error event becomes one JSON line in `.tachikoma/errors.jsonl`. The log is optional (design,
+"Safeguards"): if it cannot be written, it says so once and turns itself off, and the session carries on. `Stats` keeps the totals the status line shows.
 
 **Files:**
 - Create: `src/core/errorlog.ts`
@@ -1818,11 +1867,11 @@ Every error event becomes one JSON line in `.tachikoma/errors.jsonl`. `Stats` ke
 `tests/core/errorlog.test.ts`:
 
 ```typescript
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Bus } from "../../src/core/bus.js";
 import { attachErrorLog, summarize } from "../../src/core/errorlog.js";
 import { Stats } from "../../src/core/stats.js";
@@ -1841,6 +1890,21 @@ describe("error log", () => {
     expect(summarize(file)).toContain("2 errors logged");
     expect(summarize(file)).toContain("  tool: 1");
     expect(summarize(file)).toContain("request\n  429");
+  });
+
+  it("turns itself off, saying so once, when the log cannot be written", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    writeFileSync(path.join(dir, "blocker"), "");
+    const file = path.join(dir, "blocker", "errors.jsonl"); // its folder is a file, so writing fails
+    const bus = new Bus();
+    attachErrorLog(bus, file, "s1");
+    const said = vi.spyOn(console, "error").mockImplementation(() => {});
+    const report = { kind: "tool", attempted: "shell", message: "x", lead: "fake:a" } as const;
+    expect(() => bus.emit("error", report)).not.toThrow();
+    bus.emit("error", report);
+    expect(said).toHaveBeenCalledTimes(1);
+    expect(String(said.mock.calls[0]![0])).toContain("Error log turned off");
+    said.mockRestore();
   });
 
   it("says so when there is no log yet", () => {
@@ -1883,16 +1947,24 @@ Expected: FAIL, cannot find module `../../src/core/errorlog.js`
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Bus, ErrorEvent } from "./bus.js";
+import { errorText } from "./types.js";
 
 type Row = ErrorEvent & { at: string; session: string };
 
 // One JSON line per failure, in the project's .tachikoma folder.
+// The log is optional: if it cannot be written, it says so once and turns itself off.
 export function attachErrorLog(bus: Bus, file: string, session: string): void {
-  bus.on("error", (e) => {
-    mkdirSync(path.dirname(file), { recursive: true });
-    const row: Row = { at: new Date().toISOString(), session, ...e };
-    appendFileSync(file, `${JSON.stringify(row)}\n`, "utf8");
-  });
+  const write = (e: ErrorEvent) => {
+    try {
+      mkdirSync(path.dirname(file), { recursive: true });
+      const row: Row = { at: new Date().toISOString(), session, ...e };
+      appendFileSync(file, `${JSON.stringify(row)}\n`, "utf8");
+    } catch (err) {
+      bus.off("error", write);
+      console.error(`Error log turned off: could not write ${file} (${errorText(err)}).`);
+    }
+  };
+  bus.on("error", write);
 }
 
 export function summarize(file: string): string {
@@ -1944,7 +2016,7 @@ export class Stats {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/errorlog.test.ts && npm run typecheck`
-Expected: 4 tests pass, and no type errors.
+Expected: 5 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2543,7 +2615,7 @@ if (parsed.print !== undefined) {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  71 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  76 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -2618,7 +2690,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  71 passed | 1 skipped`.
+Expected: `Tests  76 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 
