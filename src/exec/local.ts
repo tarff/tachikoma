@@ -1,7 +1,8 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ExecResult, Executor } from "./executor.js";
+import type { Readable } from "node:stream";
+import { type ExecResult, type Executor, MAX_TOOL_OUTPUT } from "./executor.js";
 
 export function shellFor(platform: NodeJS.Platform = process.platform): { name: string; argv: (command: string) => string[] } {
   if (platform === "win32") {
@@ -15,10 +16,38 @@ export function shellFor(platform: NodeJS.Platform = process.platform): { name: 
 }
 
 // Stops the shell and everything it started. Killing only the shell would leave its children running.
+// Runs even after the shell has exited: what it started may still be going.
 export function killTree(child: ChildProcess): void {
-  if (child.pid === undefined || child.exitCode !== null) return;
-  if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
-  else process.kill(-child.pid, "SIGKILL"); // the shell leads its own process group (detached below)
+  if (child.pid === undefined) return;
+  if (process.platform === "win32") {
+    // taskkill cannot find a tree whose root has exited, and Windows may already have given that pid
+    // to an unrelated program, so it is only run while the shell is alive.
+    if (child.exitCode === null && child.signalCode === null) spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+  } else {
+    try {
+      process.kill(-child.pid, "SIGKILL"); // the shell leads its own process group (detached below)
+    } catch {
+      // ESRCH: the group is gone. Throwing here would crash Node from inside an abort listener.
+    }
+  }
+}
+
+// Detached commands are cut off from the terminal and would outlive us, so we stop them on exit.
+const running = new Set<ChildProcess>();
+process.on("exit", () => running.forEach(killTree));
+
+// Keeps the first MAX_TOOL_OUTPUT characters and reads (and drops) the rest, so the command never
+// blocks on a full pipe and a flood of output cannot exhaust memory.
+function collect(stream: Readable): () => string {
+  let text = "";
+  let dropped = 0;
+  stream.setEncoding("utf8"); // decodes characters split across chunks
+  stream.on("data", (d: string) => {
+    const room = MAX_TOOL_OUTPUT - text.length;
+    text += d.slice(0, room);
+    dropped += Math.max(0, d.length - room);
+  });
+  return () => (dropped ? `${text}\n[cut: ${dropped} more characters]` : text);
 }
 
 export class LocalExecutor implements Executor {
@@ -26,19 +55,35 @@ export class LocalExecutor implements Executor {
     if (signal?.aborted) return Promise.reject(new Error("Cancelled"));
     const [file, ...args] = shellFor().argv(command);
     return new Promise((resolve, reject) => {
-      const child = spawn(file!, args, { cwd, windowsHide: true, detached: process.platform !== "win32" });
-      let stdout = "";
-      let stderr = "";
-      const onAbort = () => killTree(child);
-      signal?.addEventListener("abort", onAbort, { once: true });
-      child.stdout.on("data", (d) => (stdout += d));
-      child.stderr.on("data", (d) => (stderr += d));
-      child.on("error", reject);
-      child.on("close", (code) => {
+      // No stdin: a command waiting for input would otherwise wait forever.
+      const child = spawn(file!, args, { cwd, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+      running.add(child);
+      const stdout = collect(child.stdout);
+      const stderr = collect(child.stderr);
+      const done = () => {
+        running.delete(child);
         signal?.removeEventListener("abort", onAbort);
-        if (signal?.aborted) reject(new Error("Cancelled"));
-        else resolve({ code, stdout, stderr });
+        child.off("close", onClose);
+      };
+      // Settles at once: "close" waits for every holder of the pipes, and a program the shell
+      // started may hold them for good.
+      const onAbort = () => {
+        killTree(child);
+        done();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        reject(new Error("Cancelled"));
+      };
+      const onClose = (code: number | null, sig: NodeJS.Signals | null) => {
+        done();
+        resolve({ code, signal: sig, stdout: stdout(), stderr: stderr() });
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      child.on("error", (e) => {
+        done();
+        reject(e);
       });
+      child.on("close", onClose);
     });
   }
 

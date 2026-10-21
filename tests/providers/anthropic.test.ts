@@ -1,7 +1,8 @@
 import type { BetaMessage } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import { describe, expect, it } from "vitest";
+import { Models } from "@anthropic-ai/sdk/resources/models";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../src/core/types.js";
-import { fromAnthropic, toAnthropic } from "../../src/providers/anthropic.js";
+import { AnthropicProvider, fromAnthropic, toAnthropic } from "../../src/providers/anthropic.js";
 
 // Shaped like a real response; only the fields the adapter reads are filled in.
 function message(fields: Partial<BetaMessage>): BetaMessage {
@@ -37,6 +38,16 @@ describe("toAnthropic", () => {
     const history: Message[] = [{ role: "assistant", parts: [{ type: "text", text: "hi" }], native: { provider: "anthropic", content: native } }];
     expect(toAnthropic(history)[0]!.content).toBe(native);
   });
+
+  it("leaves out an assistant message with nothing in it, which the API would reject", () => {
+    const history: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "hi" }] },
+      { role: "assistant", parts: [], native: { provider: "anthropic", content: [] } },
+      { role: "assistant", parts: [] },
+      { role: "user", parts: [{ type: "text", text: "again" }] },
+    ];
+    expect(toAnthropic(history).map((m) => m.role)).toEqual(["user", "user"]);
+  });
 });
 
 describe("fromAnthropic", () => {
@@ -63,6 +74,17 @@ describe("fromAnthropic", () => {
   it("records when Anthropic's fallback model answered", () => {
     const turn = fromAnthropic(
       message({
+        model: "claude-opus-4-8",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          iterations: [
+            { type: "message", model: "claude-opus-5-5", input_tokens: 100, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: null },
+            { type: "fallback_message", model: "claude-opus-4-8", input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: null },
+          ],
+        } as unknown as BetaMessage["usage"],
         content: [
           { type: "fallback", from: { model: "claude-opus-5-5" }, to: { model: "claude-opus-4-8" }, trigger: { type: "refusal" } },
           { type: "text", text: "hi", citations: null },
@@ -74,10 +96,66 @@ describe("fromAnthropic", () => {
     expect(turn.parts).toEqual([{ type: "text", text: "hi" }]);
   });
 
+  it("names the fallback model on a sticky turn, which carries no fallback block", () => {
+    const turn = fromAnthropic(
+      message({
+        model: "claude-opus-4-8",
+        content: [{ type: "text", text: "hi", citations: null }] as BetaMessage["content"],
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          iterations: [{ type: "fallback_message", model: "claude-opus-4-8", input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: null }],
+        } as unknown as BetaMessage["usage"],
+      }),
+    );
+    expect(turn.servedBy).toBe("anthropic:claude-opus-4-8");
+    expect(turn.fallbacks).toBeUndefined();
+  });
+
+  it("drops the declined model's unfinished tool calls and thinking, keeping its text", () => {
+    const turn = fromAnthropic(
+      message({
+        model: "claude-opus-4-8",
+        content: [
+          { type: "thinking", thinking: "", signature: "s" },
+          { type: "text", text: "let me look", citations: null },
+          { type: "tool_use", id: "tu_1", name: "shell", input: { command: "rm" } },
+          { type: "fallback", from: { model: "claude-opus-5-5" }, to: { model: "claude-opus-4-8" }, trigger: { type: "refusal" } },
+          { type: "tool_use", id: "tu_2", name: "read_file", input: { path: "a" } },
+        ] as unknown as BetaMessage["content"],
+        stop_reason: "tool_use",
+      }),
+    );
+    expect(turn.parts).toEqual([
+      { type: "text", text: "let me look" },
+      { type: "tool_call", id: "tu_2", name: "read_file", input: { path: "a" } },
+    ]);
+    expect((turn.native!.content as { type: string }[]).map((b) => b.type)).toEqual(["text", "fallback", "tool_use"]);
+    expect(JSON.stringify(turn.native!.content)).not.toContain("tu_1");
+  });
+
   it("reports refusals and hitting a limit", () => {
     const refused = fromAnthropic(message({ stop_reason: "refusal", stop_details: { type: "refusal", category: "cyber", explanation: null } as BetaMessage["stop_details"] }));
     expect(refused.cutOff).toEqual({ kind: "refusal", detail: "The model declined (category: cyber)" });
     expect(fromAnthropic(message({ stop_reason: "max_tokens" })).cutOff?.kind).toBe("max_tokens");
     expect(fromAnthropic(message({ stop_reason: "model_context_window_exceeded" })).cutOff?.kind).toBe("max_tokens");
+  });
+});
+
+describe("AnthropicProvider.contextWindow", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("asks again after a failed lookup, and remembers a successful one", async () => {
+    const retrieve = vi
+      .spyOn(Models.prototype, "retrieve")
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({ max_input_tokens: 1_000 } as never);
+    const provider = new AnthropicProvider("claude-opus-5-5");
+    expect(await provider.contextWindow()).toBeNull();
+    expect(await provider.contextWindow()).toBe(1_000);
+    expect(await provider.contextWindow()).toBe(1_000);
+    expect(retrieve).toHaveBeenCalledTimes(2);
   });
 });

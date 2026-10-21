@@ -16,7 +16,8 @@ export interface Tool {
 }
 
 // A tool whose input is checked against its schema before it runs. Model output is untrusted.
-export function defineTool<S extends z.ZodType>(
+// An object schema, because both provider APIs require one for tool input.
+export function defineTool<S extends z.ZodObject>(
   name: string,
   description: string,
   schema: S,

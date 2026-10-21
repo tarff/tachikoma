@@ -1,11 +1,8 @@
+import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus } from "./bus.js";
 import { Declined } from "./permissions.js";
 import { errorText, type Message, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
-
-// Claude Code's Bash tool cuts output at 30,000 characters. We start from the same cap until our
-// own error log and transcripts show whether it should move.
-export const MAX_TOOL_OUTPUT = 30_000;
 
 function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
@@ -24,6 +21,7 @@ export class Session {
   // Append-only. Earlier messages are never edited, for the same reason the system prompt is fixed.
   readonly messages: Message[] = [];
   #lead: Provider;
+  #running = false;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -39,6 +37,17 @@ export class Session {
   }
 
   async send(text: string, signal?: AbortSignal): Promise<void> {
+    // Two turns at once would interleave their messages and tool results in the history.
+    if (this.#running) throw new Error("A turn is already running");
+    this.#running = true;
+    try {
+      await this.#turn(text, signal);
+    } finally {
+      this.#running = false;
+    }
+  }
+
+  async #turn(text: string, signal?: AbortSignal): Promise<void> {
     const { bus } = this.opts;
     this.#push({ role: "user", parts: [{ type: "text", text }] });
 
@@ -47,9 +56,6 @@ export class Session {
       let answeredBy = lead;
       let turn = await this.#request(lead, signal);
       if (!turn) return;
-      for (const f of turn.fallbacks ?? []) {
-        bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${f.from} declined; ${f.to} answered instead (Anthropic's fallback)`, lead: lead.id });
-      }
       const rescue = this.opts.fallback;
       if (turn.cutOff?.kind === "refusal" && rescue) {
         // The refused reply is discarded, never stored, so the history stays append-only.
@@ -57,7 +63,17 @@ export class Session {
         answeredBy = rescue;
         turn = await this.#request(rescue, signal);
         if (!turn) return;
-        if (!turn.cutOff) bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
+        if (turn.cutOff?.kind !== "refusal") bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
+      }
+      if (turn.cutOff?.kind === "refusal") {
+        // Never stored, on any path: the output may be empty or half-written, and an empty assistant
+        // message makes every later Anthropic request fail, with no way to remove it.
+        bus.emit("error", { kind: "refusal", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
+        return;
+      }
+      // Reported only now, so a model that still refused is never shown as having answered.
+      for (const f of turn.fallbacks ?? []) {
+        bus.emit("error", { kind: "fallback", attempted: `response from ${answeredBy.id}`, message: `${f.from} declined; ${f.to} answered instead (Anthropic's fallback)`, lead: lead.id });
       }
       this.#push({ role: "assistant", parts: turn.parts, native: turn.native });
 
