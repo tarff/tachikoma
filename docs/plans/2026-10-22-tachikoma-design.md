@@ -271,6 +271,24 @@ are two: `LocalExecutor` and `DockerExecutor`. Tools cannot tell which one they 
 - Uses a default image with Node, Python, git and uv. A project can supply its own Dockerfile.
 - Has network access set per session: on, off, or a list of allowed sites.
 
+**How the network setting is enforced.** Docker has no built-in "only these sites" setting, so:
+- **Off:** the container is started with `--network none`.
+- **A list of allowed sites:**
+  - The container joins a Docker network made with `--internal`, which has no route out.
+  - The only other member of that network is a small filtering proxy, written as part of
+    Tachikoma and run in its own container. It is also attached to an ordinary network, so it is
+    the only way out.
+  - The worker container's `HTTP_PROXY` and `HTTPS_PROXY` point at it. The proxy lets a request
+    through only if its host name is on the list. It uses the same check as the MCP client (see
+    "MCP tools"), so the two can never disagree.
+  - A program that ignores the proxy settings has no route out, so its connection fails rather
+    than getting around the list.
+  - Only web traffic (HTTP and HTTPS) can pass. Anything else, such as `git` over SSH, fails when
+    the network is limited, and the error says so.
+  - Whether Docker's name lookup still answers for outside sites on an internal network is still to
+    be checked (see "Still to measure"). If it does, site names could leak out through lookups,
+    though no data connection could be made.
+
 **How the container sees the project:**
 - **Live link:** the project folder is mounted into the container, so edits land in the real
   folder at once. This is the default for interactive sessions.
@@ -354,9 +372,8 @@ does not see what they do. So:
 - **Refused** when the session's restrictions cannot hold:
   - a `host` server's tools in an unattended loop with `never` mode, unless they are marked trusted
   - a remote server that fails the network check above
-- **Limit:** a local server marked `host` runs as an ordinary program on the machine. Tachikoma
-  cannot limit its network use, so with the network off or limited, a `host` server can still
-  reach the internet.
+  - a local server marked `host` when the session's network is off or limited. It runs as an
+    ordinary program on the machine, so Tachikoma cannot limit its network use.
 - **Tachikoma's own servers** (memory and code search) are exempt. Their effects are known: memory
   writes go to the palace, and search only reads the index.
 
@@ -587,6 +604,9 @@ whose results are recorded.
 14. Whether Ollama rejects a prompt longer than its context setting, or silently cuts it short. If
     it cuts silently, Tachikoma must set the context length itself and check it before every
     request.
+15. Whether Docker's built-in name lookup answers for outside sites from a container on an
+    `--internal` network. If it does, the sandbox's limited network needs its own lookup server
+    that answers only for allowed sites.
 
 ## Release order
 
