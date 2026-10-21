@@ -25,6 +25,8 @@ learn from experience. The command is `tachi`.
 | Sandbox | Both modes: live link and copy-then-review, chosen per session | User, 2026-10-22 ("sure both") |
 | Name | Tachikoma | User, 2026-10-22 |
 | Skills | obra/superpowers built in, plus our own skills for features only Tachikoma has | User, 2026-10-22 ("go with that") |
+| Licence | MIT | User, 2026-10-22 ("portfolio only, go with MIT") |
+| Refusals | Keep Anthropic's fallback, show every rescue, and add an optional fallback to a model from another provider | User, 2026-10-22 ("keep it with the notice and maybe add an option for it to try another model from a different provider") |
 
 ## 1. Overall shape
 
@@ -68,11 +70,24 @@ Long sessions fill the context window. Switching to a lead with a smaller window
 next request impossible.
 
 **Checked before every request and every lead switch.** The size of the next request, plus room
-for the reply, is compared with the lead's context window:
-- **Anthropic:** an exact count from its token-counting endpoint.
-- **Other providers:** the last reported prompt size plus an estimate for what has been added since.
+for the reply, is compared with the lead's context window. Token counts depend on each provider's
+tokenizer and message format, so a count is only reused for the provider that produced it:
+- **Anthropic:** the whole converted request is counted exactly by its token-counting endpoint,
+  including straight after a lead switch.
+- **Other providers, same provider as the last request:** the last reported prompt size, plus what
+  has been added since. The added part is converted using that provider's own ratio of tokens to
+  characters, as reported in this session.
+- **Other providers, just switched to:** no earlier count applies, and none is borrowed from another
+  provider. The whole converted request is estimated with that provider's measured ratio (see
+  "Still to measure"). Until one has been measured, there is no advance check, and recovery below
+  is the safety net.
 
 If it will not fit, the history is shortened first.
+
+**Recovery when a provider rejects a request as too large.** The history is shortened and the
+request retried once. If it is rejected again, the turn ends with an error that gives the request
+size and the model's limit. A provider that silently cuts off over-long prompts instead of rejecting
+them would break this, which is why Ollama's behaviour is on the list to check.
 
 **Shortening the history:**
 1. **Full transcript on disk.** Every message is appended to `.tachikoma/sessions/<id>.jsonl` as the
@@ -93,6 +108,28 @@ everything, and the alternative is a session that cannot continue. The failure i
 
 **Shortening is the only exception to "the history only grows."** It resets the prompt cache.
 
+### When a model refuses
+
+Newer Anthropic models have safety filters that sometimes decline a request, and coding work can
+set them off by mistake: security tooling, scanning, malware samples.
+
+1. **Anthropic's fallback** (`fallbacks: "default"`, on by default). For the models that support it,
+   Anthropic re-runs a declined request on the model it recommends for that kind of refusal, in the
+   same call.
+2. **Tachikoma's own fallback** (`--fallback <provider:model>`, off unless set). If the reply is
+   still a refusal, Tachikoma retries that one request on a model the user chose, which can be from
+   a different provider, for example `--fallback openai:<model>`. The refused reply is thrown away,
+   not stored, so the history still only grows. The lead does not change: the next turn goes back
+   to it. There is no default fallback model, because that choice is the user's.
+
+**Never silent.** Each rescue is shown in the scrollback (`↪ claude-opus-5-5 declined;
+claude-opus-4-8 answered instead`) and written to the error log as a `fallback` entry, so
+`/errors` shows how often it happens. It is not counted in the status line's error count. The
+refused attempt's tokens are still counted, because they are billed. A rescued reply is priced at
+the model that answered; if that model has no known price, the cost shows `?`.
+
+**Budgets cover both.** The refused attempt and the retry each count as a request.
+
 **Still to measure:** how much recent history to keep after the cut point.
 
 ## 2. Orchestration and loops
@@ -107,6 +144,16 @@ runs its own copy of the agent loop with a fresh context, and only its final ans
 - **Parallel work.** Several `delegate` calls made in one turn run at the same time. The cap on
   how many run at once is a setting. Its default comes from measuring rate limits (see
   "Still to measure").
+- **Parallel workers never share a folder they can write to.**
+  - Each worker that can edit gets its **own copy** of the project, taken the same way as a
+    copy-then-review snapshot. In live-link mode the copy is taken from the live folder.
+  - Workers that only read share the project read-only.
+  - When a worker finishes, its changes are merged into the project with the same conflict-checked
+    apply as copy-then-review, in the order the workers finish.
+  - If a file was changed by an earlier worker, or by the user, since this worker's copy was taken,
+    it is a conflict. It goes back to the lead as a result that needs resolving, and is never
+    overwritten.
+  - Separate containers on one shared live mount are not allowed.
 
 ### CLI workers: where they run and what they may do
 
@@ -139,6 +186,9 @@ controls:
 - running it would need a flag that turns off the CLI's own safety (`--yolo`,
   `--dangerously-bypass-approvals-and-sandbox`) outside the container.
 - the run has a cost-only budget and the CLI cannot report or cap its spending (see Budgets).
+- the run has a rounds-only budget. No CLI can be capped at a number of requests: `claude` 2.1.307,
+  `codex` 0.163.0 and `kimi` list no turn limit in `--help`. A CLI worker runs its own agent loop, so
+  it could go past the limit inside one delegation. CLI workers need a time limit as well.
 
 **Approval.** In `ask` mode a CLI worker running in the background cannot show prompts. So the
 delegation itself needs one approval, which shows the worker, the task, the folder and exactly what
@@ -169,8 +219,11 @@ any depth, every retry, and every check command.
 
 **The three limits:**
 - **Time.** Wall-clock time from the start of the run. Always enforceable.
-- **Rounds.** Model requests across the whole run, counted before each one is sent. Always
-  enforceable.
+- **Rounds.** Model requests across the whole run, counted before each one is sent. Enforceable for
+  the lead and API workers, because Tachikoma makes every one of those requests itself. It is **not**
+  enforceable inside a CLI worker. A CLI worker can join a rounds-limited run only if the run also
+  has a time limit, which is enforced by killing the worker. Any turns it reports when it finishes
+  are added to the count.
 - **Cost.** USD. It can only be enforced when every participant reports its cost:
   - priced API models
   - `claude -p`, which also gets `--max-budget-usd` set to what is left
@@ -228,8 +281,42 @@ are two: `LocalExecutor` and `DockerExecutor`. Tools cannot tell which one they 
      user. The other choice is to skip that file.
    - A deletion is applied only if the real file still matches its snapshot.
 
+**Links (symbolic links and Windows junctions)** are never followed when copying or applying:
+- **Snapshot.** Each path's type is recorded (file, folder or link) along with its hash, and a
+  link's target is recorded too. A link is copied as a link. Whatever it points to is not copied,
+  so a link leading out of the project becomes a dead link in the copy.
+- **Applying** works only on ordinary files, and only at a real destination inside the project:
+  - Before each write, the destination's parent folders are resolved to their real location. The
+    write is refused if any part of the path is a link, or if the real location is outside the
+    project.
+  - A change that creates, retargets or deletes a link is shown in the review but never applied
+    automatically. The user handles it by hand.
+  - A path whose type changed since the snapshot (for example a file that is now a folder or a link)
+    is a conflict.
+- **Release 1's file tools apply the same rule:** a path counts as "outside the project" according
+  to where it really leads, after following links and junctions. So a junction inside the project
+  that points elsewhere cannot be used to write outside it without asking.
+
 **Permission modes** are the same for both executors: ask before every risky action, ask only for
 actions outside the project, or never ask. "Never ask" is meant to be paired with the sandbox.
+
+### MCP tools
+
+Tools from MCP servers the user adds can act on their own, as CLI workers do. Tachikoma's executor
+does not see what they do. So:
+- **Where they run.** With the sandbox on, local (stdio) MCP servers are started **inside the
+  session's container**, so their effects stay in the box. A server that cannot run in the container
+  must be marked `host` in the user's config. Its tools then follow the approval rule below, even in
+  `never` mode.
+- **Approval.** Each MCP tool call goes through the permission gate as its own kind of action,
+  `mcp`, and asks in `ask` and `project` modes. In the config, the user can mark a server or tool
+  `trusted: read-only` to skip the question. That is the user's statement, not something Tachikoma
+  can check, and the config says so.
+- **Refused** when the session's restrictions cannot hold:
+  - a `host` server's tools in an unattended loop with `never` mode, unless they are marked trusted
+  - remote (HTTP) servers when the session's network is off
+- **Tachikoma's own servers** (memory and code search) are exempt. Their effects are known: memory
+  writes go to the palace, and search only reads the index.
 
 ## 4. Memory, error log and lessons
 
@@ -452,6 +539,11 @@ whose results are recorded.
 11. Whether MemPalace's hub mode (3.9 and later) gives one writer across separate processes, with
     crash recovery. If not, Tachikoma uses its own lock-file supervisor.
 12. How much recent history to keep after the cut point when shortening.
+13. Each OpenAI-format provider's ratio of tokens to characters, measured from its reported usage.
+    It is needed for the advance size check after a lead switch.
+14. Whether Ollama rejects a prompt longer than its context setting, or silently cuts it short. If
+    it cuts silently, Tachikoma must set the context length itself and check it before every
+    request.
 
 ## Release order
 

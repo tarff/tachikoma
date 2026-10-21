@@ -25,7 +25,7 @@ own API. Tools act through an executor, so release 2 can swap in Docker without 
 **This plan's code has already been run.** Every code block below was copied by script from a scratch
 build made on 2026-10-22, not retyped. In that build:
 - it typechecked with no errors;
-- 63 tests passed and the live test was skipped (3 full runs, no failures);
+- 71 tests passed and the live test was skipped (3 full runs, no failures);
 - the built command gave the outputs shown in Task 13.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
@@ -56,11 +56,13 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
 - **The `native` content is never removed yet.** Only shortening needs to remove it, and that comes
   in release 3.
 
-**Open questions for you:**
-1. **Licence.** MIT is the usual choice for a portfolio project. Superpowers, which ships in release 4, is
-   MIT too.
-2. **Refusal fallback.** Task 7 turns on Anthropic's `fallbacks: "default"` for the models that support it.
-   Keep it, or drop it?
+**Decided 2026-10-22:**
+- **Licence:** MIT.
+- **Refusals:** keep Anthropic's fallback and show every rescue. `--fallback <provider:model>` adds an
+  optional retry on a model from another provider.
+
+**Open question for you:** the name for MIT's copyright line (`Copyright (c) 2026 <name>`), used in
+Task 14.
 
 ## Tasks
 
@@ -223,6 +225,9 @@ export interface Turn {
   usage: Usage;
   // Set when the model stopped before finishing: output limit, context limit or refusal.
   cutOff?: { kind: "max_tokens" | "refusal"; detail: string };
+  // Set when the provider itself handed the request to another model (Anthropic's fallback).
+  fallbacks?: { from: string; to: string }[];
+  servedBy?: string; // "<provider>:<model>" that actually answered, when not the one asked
 }
 
 export interface CompletionRequest {
@@ -250,7 +255,7 @@ import { EventEmitter } from "node:events";
 import type { Message, Usage } from "./types.js";
 
 export interface ErrorEvent {
-  kind: "tool" | "provider" | "refusal" | "max_tokens";
+  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback"; // "fallback": a refusal another model rescued
   attempted: string;
   message: string;
   lead: string;
@@ -644,7 +649,8 @@ git commit -m "feat: executor that cancels whole process trees, tool definition,
 `tests/tools/files.test.ts`:
 
 ```typescript
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { editFileTool, readFileTool, resolveIn, writeFileTool } from "../../src/tools/files.js";
@@ -692,6 +698,22 @@ describe("file tools", () => {
     expect(ctx.asked).toHaveLength(1);
   });
 
+  it("treats a path through a link that leads out of the project as outside", async () => {
+    const ctx = await tempContext("project", [false]);
+    const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
+    // A junction needs no special rights on Windows; on other systems this makes a directory symlink.
+    await symlink(elsewhere, path.join(ctx.root, "linked"), "junction");
+    expect(resolveIn(ctx.root, "linked/x.txt").outside).toBe(true);
+    await expect(writeFileTool.run({ path: "linked/x.txt", content: "x" }, ctx)).rejects.toThrow("The user declined");
+    expect(ctx.asked).toHaveLength(1);
+  });
+
+  it("treats a new file in a new folder inside the project as inside", async () => {
+    const ctx = await tempContext();
+    await mkdir(path.join(ctx.root, "real"));
+    expect(resolveIn(ctx.root, "real/new/deeper/x.txt").outside).toBe(false);
+  });
+
   it("writes inside the project without asking in project mode", async () => {
     const ctx = await tempContext("project");
     await writeFileTool.run({ path: "a.txt", content: "x" }, ctx);
@@ -710,13 +732,26 @@ Expected: FAIL, cannot find module `../../src/tools/files.js`
 `src/tools/files.ts`:
 
 ```typescript
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { defineTool } from "./tool.js";
 
+// Where a path really leads, following symlinks and Windows junctions. Parts that don't exist yet
+// (a new file in a new folder) are added back onto the deepest part that does.
+function realTarget(abs: string): string {
+  let existing = abs;
+  const rest: string[] = [];
+  while (!existsSync(existing) && path.dirname(existing) !== existing) {
+    rest.unshift(path.basename(existing));
+    existing = path.dirname(existing);
+  }
+  return path.join(realpathSync(existing), ...rest);
+}
+
 export function resolveIn(root: string, p: string): { abs: string; outside: boolean } {
   const abs = path.resolve(root, p);
-  const rel = path.relative(root, abs);
+  const rel = path.relative(realTarget(root), realTarget(abs));
   // On Windows a path on another drive comes back absolute.
   return { abs, outside: rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) };
 }
@@ -763,10 +798,12 @@ export const editFileTool = defineTool(
 
 The replacement in `edit_file` is passed as a function so `$&` and similar sequences in the new text are written literally (the test checks this).
 
+`resolveIn` decides inside or outside by where a path really leads, after following symlinks and Windows junctions. This came out of review: with plain `path.resolve`, a junction inside the project that pointed elsewhere let `write_file` write outside without asking. The junction test caught it.
+
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tools/files.test.ts && npm run typecheck`
-Expected: 7 tests pass, and no type errors.
+Expected: 9 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -869,7 +906,16 @@ git commit -m "feat: shell tool"
 ### Task 6: Agent loop
 
 The session sends the conversation to the lead model, runs any tool calls, and repeats until the model
-answers without calling a tool. Three rules come from the Anthropic API notes:
+answers without calling a tool.
+
+**When a model refuses** (design, "When a model refuses"):
+- If the user set `--fallback`, the refused reply is thrown away and the same request is retried on
+  that model, which can be from another provider.
+- Every rescue, whether by Anthropic's fallback or by ours, is logged as a `fallback` entry and shown
+  in the scrollback.
+- The refused attempt's usage is still reported, because it is billed.
+
+Three rules come from the Anthropic API notes:
 - **The history only grows.** Earlier messages are never edited, and the system prompt is fixed for the
   session. Editing either would break prompt caching, and on newer Anthropic accounts it makes replayed
   thinking blocks fail with a 400.
@@ -967,6 +1013,46 @@ describe("Session", () => {
     expect(errors).toEqual([]);
   });
 
+  it("retries a refused turn on the fallback provider and says so", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const seen: string[] = [];
+    bus.on("usage", (u) => seen.push(u.provider));
+    const rescue = new FakeProvider("b", [reply("answered by b")]);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: rescue, tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(session.messages[1]!.parts).toEqual([{ type: "text", text: "answered by b" }]);
+    expect(errors.map((e) => e.kind)).toEqual(["refusal", "fallback"]);
+    expect(errors[1]!.message).toBe("fake:a declined; fake:b answered instead");
+    expect(seen).toEqual(["fake:a", "fake:b"]); // the refused attempt is billed too
+  });
+
+  it("stops when the fallback provider refuses as well", async () => {
+    const refused = (p: string) => ({ ...reply(""), cutOff: { kind: "refusal" as const, detail: `${p} declined` } });
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const session = new Session({ lead: new FakeProvider("a", [refused("a")]), fallback: new FakeProvider("b", [refused("b")]), tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
+      ["refusal", "response from fake:a", "a declined"],
+      ["refusal", "response from fake:b", "b declined"],
+    ]);
+  });
+
+  it("reports when Anthropic's own fallback answered", async () => {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const seen: string[] = [];
+    bus.on("usage", (u) => seen.push(u.provider));
+    const turn = { ...reply("hi"), fallbacks: [{ from: "claude-opus-5-5", to: "claude-opus-4-8" }], servedBy: "anthropic:claude-opus-4-8" };
+    const session = new Session({ lead: new FakeProvider("a", [turn]), tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(errors).toEqual([expect.objectContaining({ kind: "fallback", message: "claude-opus-5-5 declined; claude-opus-4-8 answered instead (Anthropic's fallback)" })]);
+    expect(seen).toEqual(["anthropic:claude-opus-4-8"]); // priced as the model that answered
+  });
+
   it("logs a provider failure without throwing", async () => {
     const { session, errors } = await setup([new Error("rate limited")]);
     await session.send("go");
@@ -1023,7 +1109,7 @@ Expected: FAIL, cannot find module `../../src/core/session.js`
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus } from "./bus.js";
 import { Declined } from "./permissions.js";
-import { errorText, type Message, type Provider, type ToolCall, type ToolResult } from "./types.js";
+import { errorText, type Message, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
 
 // Claude Code's Bash tool cuts output at 30,000 characters. We start from the same cap until our
 // own error log and transcripts show whether it should move.
@@ -1035,6 +1121,7 @@ function truncate(s: string): string {
 
 export interface SessionOptions {
   lead: Provider;
+  fallback?: Provider; // retries a turn the lead refused; chosen by the user, never by default
   tools: Tool[];
   system: string; // fixed for the whole session: prompt caching and Anthropic thinking blocks need it unchanged
   ctx: Omit<ToolContext, "signal">;
@@ -1060,24 +1147,31 @@ export class Session {
   }
 
   async send(text: string, signal?: AbortSignal): Promise<void> {
-    const { bus, tools, system } = this.opts;
+    const { bus } = this.opts;
     this.#push({ role: "user", parts: [{ type: "text", text }] });
 
     for (;;) {
       const lead = this.#lead;
-      let turn;
-      try {
-        turn = await lead.complete({ system, messages: this.messages, tools: tools.map((t) => t.spec), signal });
-      } catch (err) {
-        if (!signal?.aborted) bus.emit("error", { kind: "provider", attempted: `request to ${lead.id}`, message: errorText(err), lead: lead.id });
-        return;
+      let answeredBy = lead;
+      let turn = await this.#request(lead, signal);
+      if (!turn) return;
+      for (const f of turn.fallbacks ?? []) {
+        bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${f.from} declined; ${f.to} answered instead (Anthropic's fallback)`, lead: lead.id });
+      }
+      const rescue = this.opts.fallback;
+      if (turn.cutOff?.kind === "refusal" && rescue) {
+        // The refused reply is discarded, never stored, so the history stays append-only.
+        bus.emit("error", { kind: "refusal", attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id });
+        answeredBy = rescue;
+        turn = await this.#request(rescue, signal);
+        if (!turn) return;
+        if (!turn.cutOff) bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
       }
       this.#push({ role: "assistant", parts: turn.parts, native: turn.native });
-      bus.emit("usage", { provider: lead.id, usage: turn.usage });
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
       if (turn.cutOff) {
-        bus.emit("error", { kind: turn.cutOff.kind, attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id });
+        bus.emit("error", { kind: turn.cutOff.kind, attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
         // Every tool call needs a result before the next request, even ones we refuse to run.
         if (calls.length) {
           this.#push({ role: "user", parts: calls.map((c) => result(c, `Not run: the response was cut off (${turn.cutOff!.detail}).`, true)) });
@@ -1090,6 +1184,19 @@ export class Session {
       for (const call of calls) results.push(await this.#runTool(call, signal));
       this.#push({ role: "user", parts: results });
       if (signal?.aborted) return;
+    }
+  }
+
+  // One request. Its usage is reported even if the reply is then discarded, because it is billed.
+  async #request(provider: Provider, signal?: AbortSignal): Promise<Turn | undefined> {
+    const { bus, tools, system } = this.opts;
+    try {
+      const turn = await provider.complete({ system, messages: this.messages, tools: tools.map((t) => t.spec), signal });
+      bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage });
+      return turn;
+    } catch (err) {
+      if (!signal?.aborted) bus.emit("error", { kind: "provider", attempted: `request to ${provider.id}`, message: errorText(err), lead: this.#lead.id });
+      return undefined;
     }
   }
 
@@ -1124,7 +1231,7 @@ function result(call: ToolCall, output: string, isError: boolean): ToolResult {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/session.test.ts && npm run typecheck`
-Expected: 12 tests pass, and no type errors.
+Expected: 15 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -1144,8 +1251,10 @@ skill (2026-10-22):
   the 64,000-token output limit the skill recommends for streamed requests.
 - **Caching.** Automatic prompt caching is on (`cache_control` at the top level).
 - **Refusal fallback.** `fallbacks: "default"` is on for Fable 5.1, Opus 5.5, Opus 5 and Sonnet 5.5. A
-  refused request is re-run on Anthropic's recommended fallback model instead of failing. **Say if you
-  don't want this.**
+  refused request is re-run on Anthropic's recommended fallback model instead of failing. When that
+  happens, the response carries a `fallback` block, which becomes `turn.fallbacks`. The session then
+  shows a notice and logs it (Task 6). The reply is priced as the model that answered (`servedBy`).
+  You decided to keep this, with the notice (2026-10-22).
 - **Effort.** Only sent when the user passes `--effort`. With no data yet on the right level for this
   harness, the model's own default applies (`medium` on Opus 5.5).
 
@@ -1220,6 +1329,20 @@ describe("fromAnthropic", () => {
     expect(turn.cutOff).toBeUndefined();
   });
 
+  it("records when Anthropic's fallback model answered", () => {
+    const turn = fromAnthropic(
+      message({
+        content: [
+          { type: "fallback", from: { model: "claude-opus-5-5" }, to: { model: "claude-opus-4-8" }, trigger: { type: "refusal" } },
+          { type: "text", text: "hi", citations: null },
+        ] as unknown as BetaMessage["content"],
+      }),
+    );
+    expect(turn.fallbacks).toEqual([{ from: "claude-opus-5-5", to: "claude-opus-4-8" }]);
+    expect(turn.servedBy).toBe("anthropic:claude-opus-4-8");
+    expect(turn.parts).toEqual([{ type: "text", text: "hi" }]);
+  });
+
   it("reports refusals and hitting a limit", () => {
     const refused = fromAnthropic(message({ stop_reason: "refusal", stop_details: { type: "refusal", category: "cyber", explanation: null } as BetaMessage["stop_details"] }));
     expect(refused.cutOff).toEqual({ kind: "refusal", detail: "The model declined (category: cyber)" });
@@ -1276,9 +1399,11 @@ export function toAnthropic(messages: Message[]): BetaMessageParam[] {
 
 export function fromAnthropic(msg: BetaMessage): Turn {
   const parts: Part[] = [];
+  const fallbacks: { from: string; to: string }[] = [];
   for (const b of msg.content) {
     if (b.type === "text") parts.push({ type: "text", text: b.text });
     else if (b.type === "tool_use") parts.push({ type: "tool_call", id: b.id, name: b.name, input: b.input });
+    else if (b.type === "fallback") fallbacks.push({ from: b.from.model, to: b.to.model });
   }
   const u = msg.usage;
   const turn: Turn = {
@@ -1286,6 +1411,10 @@ export function fromAnthropic(msg: BetaMessage): Turn {
     native: { provider: "anthropic", content: msg.content },
     usage: { input: u.input_tokens, output: u.output_tokens, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0 },
   };
+  if (fallbacks.length) {
+    turn.fallbacks = fallbacks;
+    turn.servedBy = `anthropic:${fallbacks.at(-1)!.to}`;
+  }
   if (msg.stop_reason === "max_tokens") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit" };
   if (msg.stop_reason === "model_context_window_exceeded") turn.cutOff = { kind: "max_tokens", detail: "The conversation filled the context window" };
   if (msg.stop_reason === "refusal") turn.cutOff = { kind: "refusal", detail: `The model declined (category: ${msg.stop_details?.category ?? "none given"})` };
@@ -1334,7 +1463,7 @@ export class AnthropicProvider implements Provider {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/providers/anthropic.test.ts && npm run typecheck`
-Expected: 4 tests pass, and no type errors.
+Expected: 5 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -1727,6 +1856,14 @@ describe("Stats", () => {
     expect(stats.input).toBe(1_000_010);
     expect(stats.context).toBe(15);
   });
+
+  it("does not count a rescued refusal as an error", () => {
+    const bus = new Bus();
+    const stats = new Stats(bus);
+    bus.emit("error", { kind: "fallback", attempted: "x", message: "a declined; b answered instead", lead: "a" });
+    expect(stats.errors).toBe(0);
+    expect(stats.fallbacks).toBe(1);
+  });
 });
 ```
 
@@ -1784,6 +1921,7 @@ export class Stats {
   costUnknown = false; // true once any call had no known price
   context = 0; // size of the most recent request plus its reply
   errors = 0;
+  fallbacks = 0; // refusals another model answered; shown, but not counted as errors
 
   constructor(bus: Bus) {
     bus.on("usage", ({ provider, usage }) => {
@@ -1795,7 +1933,7 @@ export class Stats {
       if (c === null) this.costUnknown = true;
       else this.cost += c;
     });
-    bus.on("error", () => this.errors++);
+    bus.on("error", (e) => (e.kind === "fallback" ? this.fallbacks++ : this.errors++));
   }
 }
 ```
@@ -1803,7 +1941,7 @@ export class Stats {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/errorlog.test.ts && npm run typecheck`
-Expected: 3 tests pass, and no type errors.
+Expected: 4 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2027,7 +2165,7 @@ async function mount(turns: ConstructorParameters<typeof FakeProvider>[1]) {
     />,
   );
   await tick();
-  return { app, session, ctx };
+  return { app, session, ctx, bus };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -2059,6 +2197,13 @@ describe("App", () => {
     await type(app, "/lead fake:b");
     expect(session.lead.id).toBe("fake:b");
     expect(app.lastFrame()).toContain("lead is now fake:b");
+  });
+
+  it("shows when another model answered a refused turn", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("error", { kind: "fallback", attempted: "x", message: "fake:a declined; fake:b answered instead", lead: "fake:a" });
+    await until(app, "↪ fake:a declined; fake:b answered instead");
+    expect(app.lastFrame()).toContain("0 errors");
   });
 
   it("summarises the error log with /errors", async () => {
@@ -2117,7 +2262,11 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
   useEffect(() => {
     bindAsk((text) => new Promise((resolve) => setQuestion({ text, answer: resolve })));
     const onMessage = (m: Message) => say(...describe(m));
-    const onError = (e: ErrorEvent) => (e.kind === "tool" ? rerender((n) => n + 1) : say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" }));
+    const onError = (e: ErrorEvent) => {
+      if (e.kind === "tool") rerender((n) => n + 1);
+      else if (e.kind === "fallback") say({ text: `↪ ${e.message}`, color: "magenta" });
+      else say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
+    };
     const onUsage = () => rerender((n) => n + 1);
     const onLead = (id: string) => {
       say({ text: `lead is now ${id}`, color: "magenta" });
@@ -2212,7 +2361,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tui/app.test.tsx && npm run typecheck`
-Expected: 4 tests pass, and no type errors.
+Expected: 5 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2277,6 +2426,7 @@ Options:
                     (or set TACHI_LEAD)
   --mode <mode>     when to ask before acting: ${MODES.join(" | ")} (default: ask)
   --effort <level>  Anthropic models only: ${EFFORTS.join(" | ")}
+  --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
   --status <list>   status line parts, comma-separated: ${SEGMENTS.join(",")}
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
@@ -2303,6 +2453,7 @@ try {
       lead: { type: "string" },
       mode: { type: "string" },
       effort: { type: "string" },
+      fallback: { type: "string" },
       status: { type: "string" },
       print: { type: "string", short: "p" },
       json: { type: "boolean" },
@@ -2331,8 +2482,10 @@ const stats = new Stats(bus);
 
 const makeProvider = (spec: string): Provider => createProvider(spec, { effort });
 let lead: Provider;
+let fallback: Provider | undefined;
 try {
   lead = makeProvider(leadSpec);
+  if (parsed.fallback) fallback = makeProvider(parsed.fallback);
 } catch (err) {
   fail(errorText(err));
 }
@@ -2342,12 +2495,12 @@ let ask: (summary: string) => Promise<boolean> = async (summary) => {
   return false;
 };
 const gate = new PermissionGate(mode, (summary) => ask(summary));
-const session = new Session({ lead, tools: TOOLS, system: systemPrompt(root), ctx: { root, executor: new LocalExecutor(), gate }, bus });
+const session = new Session({ lead, fallback, tools: TOOLS, system: systemPrompt(root), ctx: { root, executor: new LocalExecutor(), gate }, bus });
 
 if (parsed.print !== undefined) {
   let failed = false;
   bus.on("error", (e) => {
-    if (e.kind !== "tool") failed = true;
+    if (e.kind !== "tool" && e.kind !== "fallback") failed = true;
   });
   if (parsed.json) {
     for (const event of ["message", "usage", "error", "lead"] as const) {
@@ -2355,7 +2508,8 @@ if (parsed.print !== undefined) {
     }
   } else {
     bus.on("error", (e) => {
-      if (e.kind !== "tool") console.error(`${e.kind}: ${e.message}`);
+      if (e.kind === "fallback") console.error(`note: ${e.message}`);
+      else if (e.kind !== "tool") console.error(`${e.kind}: ${e.message}`);
     });
   }
   await session.send(parsed.print);
@@ -2386,7 +2540,7 @@ if (parsed.print !== undefined) {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  63 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  71 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -2461,7 +2615,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  63 passed | 1 skipped`.
+Expected: `Tests  71 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 
@@ -2478,8 +2632,9 @@ Expected: 1 passed. A second lead in `TACHI_LIVE_LEADS` (comma-separated) also r
 
 The README has: what Tachikoma is (first paragraph of the design), how to run release 1 from source
 (`npm install`, `npm run build`, `node dist/cli.js --lead <provider:model>`), the environment variable
-each provider needs, and what is not built yet (the release order from the design). The licence is your
-choice; see the open question at the top of this plan.
+each provider needs, and what is not built yet (the release order from the design). `LICENSE` is the standard MIT text
+(opensource.org/license/mit) with the copyright line `Copyright (c) 2026 <name>`. Add
+`"license": "MIT"` to `package.json`.
 
 **Step 5: Commit**
 
