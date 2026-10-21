@@ -94,14 +94,28 @@ them would break this, which is why Ollama's behaviour is on the list to check.
    session goes, so shortening never loses anything for good.
 2. **Memory save.** It is started before any shortening.
 3. **Summary.** The current lead writes a summary of everything before a **cut point**.
-   - The cut point is always at a message the user typed. A tool call and its result are never split
-     up, and every tool call has its result on the same side of the cut.
+   - The cut point is normally at a message the user typed. A tool call and its result are never
+     split up, and every tool call has its result on the same side of the cut.
+   - **One turn too big on its own.** A single request can run many tool calls, so even the
+     history from the latest typed message onward may not fit. The cut then moves inside that
+     turn, to just after the latest finished round of tool calls (every call has its result).
+     Everything before the cut goes into the summary, including the work done so far in this turn,
+     and the summary says what is done and what is left.
    - If the earlier part is itself too big for the lead, it is summarised in pieces that fit, and
      the pieces are then combined.
-4. **New history.** The summary, followed by everything from the cut point onward. Kept assistant
-   messages lose their stored provider content (see `native` in the plan) and keep only their
-   text and tool calls. Anthropic thinking blocks would be rejected after the earlier history
-   changed.
+4. **New history.**
+   - **Cut at a typed message:** the summary, followed by everything from the cut point onward.
+     Kept assistant messages lose their stored provider content (see `native` in the plan) and
+     keep only their text and tool calls. Anthropic thinking blocks would be rejected after the
+     earlier history changed.
+   - **Cut inside a turn:** one user message holding the summary, the user's request word for
+     word, and the latest round's tool results copied in as text. The lead then carries on with the
+     turn, and no earlier assistant message is kept. The reason is in Anthropic's migration notes
+     ("Compacting"). An assistant message whose tool call is about to get its result must go back
+     with its thinking intact, and that is impossible once the earlier history has changed. So the
+     round is folded into the new message instead of kept. If the request and those results still
+     do not fit, the results go into the summary too. If the request alone does not fit, the turn
+     ends with the error described above.
 
 **If the memory save fails,** shortening still goes ahead. The transcript on disk already holds
 everything, and the alternative is a session that cannot continue. The failure is logged and shown.
@@ -281,10 +295,25 @@ are two: `LocalExecutor` and `DockerExecutor`. Tools cannot tell which one they 
      user. The other choice is to skip that file.
    - A deletion is applied only if the real file still matches its snapshot.
 
-**Links (symbolic links and Windows junctions)** are never followed when copying or applying:
+**Links (symbolic links and Windows junctions)** are never followed when copying or applying.
+Copying alone does not isolate a worker. A link with an absolute target (every Windows junction has
+one) still reaches its original destination from the copy, so a worker on the host could change
+the live project through it.
 - **Snapshot.** Each path's type is recorded (file, folder or link) along with its hash, and a
-  link's target is recorded too. A link is copied as a link. Whatever it points to is not copied,
-  so a link leading out of the project becomes a dead link in the copy.
+  link's original target is recorded too. Files are copied as new files, never hard-linked to the
+  originals.
+- **Links in the copy:**
+  - A link whose target is inside the project is recreated pointing at the same place **in the
+    copy**. A junction gets the copy's absolute path.
+  - A link whose target is outside the project, or does not exist, is left out of the copy. The
+    session or worker is told which links were left out, and the review lists them.
+  - Before the copy is used, Tachikoma resolves every link in it and refuses to start if any of
+    them leads outside the copy.
+  - The review compares each link with its original target, so the rewriting never shows up as a
+    change.
+  - This covers links that exist when the copy is made. A worker that can run shell commands on the
+    host could still make new links or write outside its copy. What stops that is the CLI's own
+    restrictions (see "CLI workers") or the container.
 - **Applying** works only on ordinary files, and only at a real destination inside the project:
   - Before each write, the destination's parent folders are resolved to their real location. The
     write is refused if any part of the path is a link, or if the real location is outside the
@@ -312,9 +341,22 @@ does not see what they do. So:
   `mcp`, and asks in `ask` and `project` modes. In the config, the user can mark a server or tool
   `trusted: read-only` to skip the question. That is the user's statement, not something Tachikoma
   can check, and the config says so.
+- **Remote (HTTP) servers obey the session's network setting.** Tachikoma's MCP client connects
+  from the host, so the container's network limits do not cover it. The client checks each address
+  itself before connecting:
+  - Network off: every remote server is refused.
+  - A list of allowed sites: the server's site must be on the list. So must the sign-in (OAuth)
+    addresses the client contacts for it.
+  - The client follows redirects itself and checks each one the same way, so a listed site cannot
+    pass the connection on to an unlisted one. A refused redirect fails the connection.
+  - The check holds whatever the approval or `trusted` settings say. Approving a tool or trusting
+    a server never widens the network.
 - **Refused** when the session's restrictions cannot hold:
   - a `host` server's tools in an unattended loop with `never` mode, unless they are marked trusted
-  - remote (HTTP) servers when the session's network is off
+  - a remote server that fails the network check above
+- **Limit:** a local server marked `host` runs as an ordinary program on the machine. Tachikoma
+  cannot limit its network use, so with the network off or limited, a `host` server can still
+  reach the internet.
 - **Tachikoma's own servers** (memory and code search) are exempt. Their effects are known: memory
   writes go to the palace, and search only reads the index.
 
@@ -506,6 +548,7 @@ Data folder:
   run; they never quietly fall back to running on the host
 - the budget controller
 - the copy-then-review snapshot
+- the network check for remote MCP servers
 
 If one of these fails, every action that depends on it fails with an error, and a loop stops.
 
