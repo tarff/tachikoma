@@ -25,7 +25,7 @@ own API. Tools act through an executor, so release 2 can swap in Docker without 
 **This plan's code has already been run.** Every code block below was copied by script from a scratch
 build made on 2026-10-22, not retyped. In that build:
 - it typechecked with no errors;
-- 61 tests passed and the live test was skipped (3 full runs, no failures);
+- 63 tests passed and the live test was skipped (3 full runs, no failures);
 - the built command gave the outputs shown in Task 13.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
@@ -48,6 +48,13 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
   guessed price.
 - **Claude Haiku 5.5 is not priced either,** because its price changes above 100K-token prompts. It shows
   as `?` too.
+
+**Known limits of release 1.** Each is fixed in the release named here (see the design):
+- **No shortening yet** (release 3). A full context window ends the turn with an error. Switching
+  `/lead` to a model with a smaller window can make the next request fail with an error.
+- **No budget controller yet** (release 6). An interactive session runs until you stop it.
+- **The `native` content is never removed yet.** Only shortening needs to remove it, and that comes
+  in release 3.
 
 **Open questions for you:**
 1. **Licence.** MIT is the usual choice for a portfolio project. Superpowers, which ships in release 4, is
@@ -386,110 +393,15 @@ The executor is the switch that the Docker sandbox will plug into later (release
 model input against a schema before any tool runs. The helpers file gives every later test a scripted
 model (`FakeProvider`) and a temporary project folder.
 
+Cancelling a command must stop everything it started, not just the shell. Otherwise a cancelled
+`npm test` keeps running. This came out of review: the first version passed `signal` to `spawn`, which
+kills only the shell, and the test below caught the program the shell had started still running.
+
 **Files:**
-- Create: `src/exec/executor.ts`, `src/exec/local.ts`, `src/tools/tool.ts`, `tests/helpers.ts`
+- Create: `src/exec/executor.ts`, `src/exec/local.ts`, `src/tools/tool.ts`
+- Test: `tests/helpers.ts`, `tests/exec/local.test.ts`
 
-**Step 1: Write the code**
-
-`src/exec/executor.ts`:
-
-```typescript
-export interface ExecResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-// Everything a tool does to the machine goes through here, so the Docker sandbox can replace it.
-export interface Executor {
-  exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult>;
-  readFile(abs: string): Promise<string>;
-  writeFile(abs: string, content: string): Promise<void>;
-}
-```
-
-`src/exec/local.ts`:
-
-```typescript
-import { spawn } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
-import type { ExecResult, Executor } from "./executor.js";
-
-export function shellFor(platform: NodeJS.Platform = process.platform): { name: string; argv: (command: string) => string[] } {
-  if (platform === "win32") {
-    return {
-      name: "PowerShell",
-      // Without this PowerShell writes the console code page, which garbles anything outside ASCII.
-      argv: (c) => ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${c}`],
-    };
-  }
-  return { name: "sh", argv: (c) => ["/bin/sh", "-c", c] };
-}
-
-export class LocalExecutor implements Executor {
-  exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult> {
-    const [file, ...args] = shellFor().argv(command);
-    return new Promise((resolve, reject) => {
-      const child = spawn(file!, args, { cwd, signal, windowsHide: true });
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (d) => (stdout += d));
-      child.stderr.on("data", (d) => (stderr += d));
-      child.on("error", reject);
-      child.on("close", (code) => resolve({ code, stdout, stderr }));
-    });
-  }
-
-  readFile(abs: string): Promise<string> {
-    return readFile(abs, "utf8");
-  }
-
-  async writeFile(abs: string, content: string): Promise<void> {
-    await mkdir(path.dirname(abs), { recursive: true });
-    await writeFile(abs, content, "utf8");
-  }
-}
-```
-
-`src/tools/tool.ts`:
-
-```typescript
-import { z } from "zod";
-import type { PermissionGate } from "../core/permissions.js";
-import type { ToolSpec } from "../core/types.js";
-import type { Executor } from "../exec/executor.js";
-
-export interface ToolContext {
-  root: string;
-  executor: Executor;
-  gate: PermissionGate;
-  signal?: AbortSignal;
-}
-
-export interface Tool {
-  spec: ToolSpec;
-  run(input: unknown, ctx: ToolContext): Promise<string>;
-}
-
-// A tool whose input is checked against its schema before it runs. Model output is untrusted.
-export function defineTool<S extends z.ZodType>(
-  name: string,
-  description: string,
-  schema: S,
-  run: (input: z.infer<S>, ctx: ToolContext) => Promise<string>,
-): Tool {
-  const { $schema: _, ...inputSchema } = z.toJSONSchema(schema) as Record<string, unknown>;
-  return {
-    spec: { name, description, inputSchema },
-    async run(input, ctx) {
-      const parsed = schema.safeParse(input);
-      if (!parsed.success) throw new Error(`Invalid input for ${name}: ${z.prettifyError(parsed.error)}`);
-      return run(parsed.data, ctx);
-    },
-  };
-}
-```
+**Step 1: Write the helpers and the failing test**
 
 `tests/helpers.ts`:
 
@@ -546,16 +458,177 @@ export const texts = (m: Message) => m.parts.flatMap((p: Part) => (p.type === "t
 export { Bus };
 ```
 
-**Step 2: Typecheck**
+`tests/exec/local.test.ts`:
 
-Run: `npm run typecheck`
-Expected: no output, exit code 0. These pieces are covered by the tests in Tasks 4 to 6.
+```typescript
+import { existsSync, readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { LocalExecutor } from "../../src/exec/local.js";
+import { tempContext } from "../helpers.js";
 
-**Step 3: Commit**
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+describe("LocalExecutor", () => {
+  it("cancelling a command also stops the programs it started", async () => {
+    const { root } = await tempContext();
+    // A grandchild: the shell starts node, which records its pid and waits.
+    await writeFile(path.join(root, "child.js"), `require("fs").writeFileSync("pid", String(process.pid)); setTimeout(() => {}, 60000);`);
+    const abort = new AbortController();
+    const run = new LocalExecutor().exec("node child.js", root, abort.signal);
+    const pidFile = path.join(root, "pid");
+    for (let i = 0; i < 100 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 50));
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    expect(alive(pid)).toBe(true);
+
+    abort.abort();
+    await expect(run).rejects.toThrow("Cancelled");
+    for (let i = 0; i < 40 && alive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+    expect(alive(pid)).toBe(false);
+  }, 15_000);
+});
+```
+
+**Step 2: Run it and watch it fail**
+
+Run: `npx vitest run tests/exec/local.test.ts`
+Expected: FAIL, cannot find module `../../src/exec/local.js`
+
+**Step 3: Write the code**
+
+`src/exec/executor.ts`:
+
+```typescript
+export interface ExecResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+// Everything a tool does to the machine goes through here, so the Docker sandbox can replace it.
+export interface Executor {
+  exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult>;
+  readFile(abs: string): Promise<string>;
+  writeFile(abs: string, content: string): Promise<void>;
+}
+```
+
+`src/exec/local.ts`:
+
+```typescript
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { ExecResult, Executor } from "./executor.js";
+
+export function shellFor(platform: NodeJS.Platform = process.platform): { name: string; argv: (command: string) => string[] } {
+  if (platform === "win32") {
+    return {
+      name: "PowerShell",
+      // Without this PowerShell writes the console code page, which garbles anything outside ASCII.
+      argv: (c) => ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${c}`],
+    };
+  }
+  return { name: "sh", argv: (c) => ["/bin/sh", "-c", c] };
+}
+
+// Stops the shell and everything it started. Killing only the shell would leave its children running.
+export function killTree(child: ChildProcess): void {
+  if (child.pid === undefined || child.exitCode !== null) return;
+  if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+  else process.kill(-child.pid, "SIGKILL"); // the shell leads its own process group (detached below)
+}
+
+export class LocalExecutor implements Executor {
+  exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult> {
+    if (signal?.aborted) return Promise.reject(new Error("Cancelled"));
+    const [file, ...args] = shellFor().argv(command);
+    return new Promise((resolve, reject) => {
+      const child = spawn(file!, args, { cwd, windowsHide: true, detached: process.platform !== "win32" });
+      let stdout = "";
+      let stderr = "";
+      const onAbort = () => killTree(child);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("error", reject);
+      child.on("close", (code) => {
+        signal?.removeEventListener("abort", onAbort);
+        if (signal?.aborted) reject(new Error("Cancelled"));
+        else resolve({ code, stdout, stderr });
+      });
+    });
+  }
+
+  readFile(abs: string): Promise<string> {
+    return readFile(abs, "utf8");
+  }
+
+  async writeFile(abs: string, content: string): Promise<void> {
+    await mkdir(path.dirname(abs), { recursive: true });
+    await writeFile(abs, content, "utf8");
+  }
+}
+```
+
+`src/tools/tool.ts`:
+
+```typescript
+import { z } from "zod";
+import type { PermissionGate } from "../core/permissions.js";
+import type { ToolSpec } from "../core/types.js";
+import type { Executor } from "../exec/executor.js";
+
+export interface ToolContext {
+  root: string;
+  executor: Executor;
+  gate: PermissionGate;
+  signal?: AbortSignal;
+}
+
+export interface Tool {
+  spec: ToolSpec;
+  run(input: unknown, ctx: ToolContext): Promise<string>;
+}
+
+// A tool whose input is checked against its schema before it runs. Model output is untrusted.
+export function defineTool<S extends z.ZodType>(
+  name: string,
+  description: string,
+  schema: S,
+  run: (input: z.infer<S>, ctx: ToolContext) => Promise<string>,
+): Tool {
+  const { $schema: _, ...inputSchema } = z.toJSONSchema(schema) as Record<string, unknown>;
+  return {
+    spec: { name, description, inputSchema },
+    async run(input, ctx) {
+      const parsed = schema.safeParse(input);
+      if (!parsed.success) throw new Error(`Invalid input for ${name}: ${z.prettifyError(parsed.error)}`);
+      return run(parsed.data, ctx);
+    },
+  };
+}
+```
+
+**Step 4: Run the test and the typecheck**
+
+Run: `npx vitest run tests/exec/local.test.ts && npm run typecheck`
+Expected: 1 test passes, and no type errors. On Windows this kills the tree with `taskkill /T`. On macOS
+and Linux it kills the shell's process group; that path is first run by the release 8 install test.
+
+**Step 5: Commit**
 
 ```bash
-git add src/exec/executor.ts src/exec/local.ts src/tools/tool.ts tests/helpers.ts
-git commit -m "feat: executor, tool definition and test helpers"
+git add src/exec/executor.ts src/exec/local.ts src/tools/tool.ts tests/helpers.ts tests/exec/local.test.ts
+git commit -m "feat: executor that cancels whole process trees, tool definition, test helpers"
 ```
 
 ### Task 4: File tools
@@ -880,6 +953,20 @@ describe("Session", () => {
     expect(errors).toEqual([]);
   });
 
+  it("does not log a tool cancelled by the user as an error", async () => {
+    const abort = new AbortController();
+    const slow = defineTool("slow", "Waits to be cancelled", z.object({}), async (_, ctx) => {
+      abort.abort();
+      throw new Error(ctx.signal?.aborted ? "Cancelled" : "not cancelled");
+    });
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const session = new Session({ lead: new FakeProvider("a", [callTool("c1", "slow", {})]), tools: [slow], system: "t", ctx: await tempContext(), bus });
+    await session.send("go", abort.signal);
+    expect(session.messages.at(-1)!.parts[0]).toMatchObject({ isError: true, output: "Cancelled by the user." });
+    expect(errors).toEqual([]);
+  });
+
   it("logs a provider failure without throwing", async () => {
     const { session, errors } = await setup([new Error("rate limited")]);
     await session.send("go");
@@ -1018,6 +1105,7 @@ export class Session {
       return result(call, truncate(await tool.run(call.input, { ...this.opts.ctx, signal })), false);
     } catch (err) {
       if (err instanceof Declined) return result(call, err.message, true);
+      if (signal?.aborted) return result(call, "Cancelled by the user.", true); // not a failure, so not logged
       return fail(truncate(errorText(err)));
     }
   }
@@ -1036,7 +1124,7 @@ function result(call: ToolCall, output: string, isError: boolean): ToolResult {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/session.test.ts && npm run typecheck`
-Expected: 11 tests pass, and no type errors.
+Expected: 12 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2298,7 +2386,7 @@ if (parsed.print !== undefined) {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  61 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  63 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -2373,7 +2461,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  61 passed | 1 skipped`.
+Expected: `Tests  63 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 

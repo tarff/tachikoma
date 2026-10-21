@@ -62,26 +62,132 @@ comes out.
 Those subscriptions are meant for the companies' own tools. API providers use API keys, and a
 subscription is used only by running that company's own CLI as a worker.
 
+### Fitting the context window
+
+Long sessions fill the context window. Switching to a lead with a smaller window can make the very
+next request impossible.
+
+**Checked before every request and every lead switch.** The size of the next request, plus room
+for the reply, is compared with the lead's context window:
+- **Anthropic:** an exact count from its token-counting endpoint.
+- **Other providers:** the last reported prompt size plus an estimate for what has been added since.
+
+If it will not fit, the history is shortened first.
+
+**Shortening the history:**
+1. **Full transcript on disk.** Every message is appended to `.tachikoma/sessions/<id>.jsonl` as the
+   session goes, so shortening never loses anything for good.
+2. **Memory save.** It is started before any shortening.
+3. **Summary.** The current lead writes a summary of everything before a **cut point**.
+   - The cut point is always at a message the user typed. A tool call and its result are never split
+     up, and every tool call has its result on the same side of the cut.
+   - If the earlier part is itself too big for the lead, it is summarised in pieces that fit, and
+     the pieces are then combined.
+4. **New history.** The summary, followed by everything from the cut point onward. Kept assistant
+   messages lose their stored provider content (see `native` in the plan) and keep only their
+   text and tool calls. Anthropic thinking blocks would be rejected after the earlier history
+   changed.
+
+**If the memory save fails,** shortening still goes ahead. The transcript on disk already holds
+everything, and the alternative is a session that cannot continue. The failure is logged and shown.
+
+**Shortening is the only exception to "the history only grows."** It resets the prompt cache.
+
+**Still to measure:** how much recent history to keep after the cut point.
+
 ## 2. Orchestration and loops
 
 **Delegation.** The lead hands out work with one tool, `delegate(task, worker, tools)`. Each worker
 runs its own copy of the agent loop with a fresh context, and only its final answer comes back.
-- **API workers** run inside Tachikoma, and their tokens and cost appear in the status line.
+- **API workers** run inside Tachikoma, and their tokens and cost appear in the status line. Their
+  tools go through Tachikoma's executor and permission gate like the lead's.
 - **CLI workers** run as child processes using their JSON output modes. Each is bound by its own
-  subscription's limits.
+  subscription's limits. They run their own tools, so Tachikoma's executor cannot police them
+  directly. The rules below say where they run and what they may do.
 - **Parallel work.** Several `delegate` calls made in one turn run at the same time. The cap on
   how many run at once is a setting. Its default comes from measuring rate limits (see
   "Still to measure").
 
-**Switching the lead.** `/lead <provider:model>` swaps the lead mid-session.
+### CLI workers: where they run and what they may do
 
-**Loops** run in headless mode and come in two kinds:
+**What each CLI can enforce** (each `--help`, checked 2026-10-22):
+
+| CLI | Limit its tools | Sandbox | Spending cap | Machine-readable output |
+|---|---|---|---|---|
+| `claude -p` 2.1.307 | `--allowedTools` / `--disallowedTools`, `--permission-mode` | none | `--max-budget-usd` | `--output-format json` |
+| `codex exec` 0.163.0 | none | `--sandbox read-only` or `workspace-write`, `--cd` | none | `--json` |
+| `kimi -p` | none: approve everything (`--yolo`) or `--plan` | none | none | `--output-format stream-json` |
+
+**Where they run.**
+- With the sandbox on, a CLI worker runs **inside the session's container**. The default image
+  includes the CLIs, and their login files are mounted read-only. Whether each CLI's login works
+  that way is still to be checked.
+- With the sandbox off, it runs on the host under that CLI's own restrictions, set as below.
+
+**What they may do.** Tachikoma turns the `tools` list passed to `delegate` into each CLI's own
+controls:
+- `claude`: an allowed-tools list, a permission mode, and the budget left (see Budgets).
+- `codex`: `read-only` for tasks that only read, `workspace-write` limited to the project folder for
+  tasks that edit.
+- `kimi`: plan mode for tasks that only read, if plan mode turns out to be read-only (still to be
+  checked). Anything more needs the sandbox. Its `acp` mode may route its actions through
+  Tachikoma's permission gate instead (still to be checked).
+
+**Tachikoma refuses a delegation** and tells the lead why when:
+- the CLI cannot enforce the requested tools where it would run. For example, `kimi` with write or
+  shell access on the host.
+- running it would need a flag that turns off the CLI's own safety (`--yolo`,
+  `--dangerously-bypass-approvals-and-sandbox`) outside the container.
+- the run has a cost-only budget and the CLI cannot report or cap its spending (see Budgets).
+
+**Approval.** In `ask` mode a CLI worker running in the background cannot show prompts. So the
+delegation itself needs one approval, which shows the worker, the task, the folder and exactly what
+it will be allowed to do.
+
+### Switching the lead
+
+`/lead <provider:model>` swaps the lead mid-session. If the history does not fit the new lead's
+context window, Tachikoma shortens it first (see "Fitting the context window"). If it still does
+not fit, the switch is refused, with the numbers.
+
+### Loops
+
+Loops run in headless mode and come in two kinds:
 - **On a timer:** run a prompt every N minutes.
 - **Until done:** repeat until a check command passes, such as "the tests pass". The check is a
   real command, so the model cannot simply declare itself finished.
 
-Every loop needs a limit set by the user: a cost, a number of rounds or a length of time. There is
-no default limit, because no data yet supports one.
+Every loop needs a limit set by the user. There is no default limit, because no data yet supports
+one.
+
+### Budgets
+
+One budget controller covers each run: an interactive session or a loop.
+
+**What the budget counts.** Every participant draws on the same budget: the lead, every worker at
+any depth, every retry, and every check command.
+
+**The three limits:**
+- **Time.** Wall-clock time from the start of the run. Always enforceable.
+- **Rounds.** Model requests across the whole run, counted before each one is sent. Always
+  enforceable.
+- **Cost.** USD. It can only be enforced when every participant reports its cost:
+  - priced API models
+  - `claude -p`, which also gets `--max-budget-usd` set to what is left
+
+  A model with no known price, or a `codex` or `kimi` worker, cannot be measured. A run that might
+  use one must also have a time or rounds limit, or it is refused at start.
+
+**When a limit is hit:**
+1. **Before any work starts** (a model request, a tool run, a worker or a check command), the
+   controller is asked first. Once the budget is spent, nothing new starts.
+2. **Work already running is cancelled**:
+   - every in-flight request is aborted
+   - every process tree is killed: shell commands and everything they started, and CLI workers
+   - every worker container is stopped with `docker kill`
+3. **A request already sent may still be billed.** So spending can go past a cost limit by up to
+   the requests that were in flight at that moment. The run's report shows the real spend next to
+   the limit.
 
 **When a worker fails,** the lead gets a result marked as an error, not a crash. The lead decides
 whether to retry, reroute or give up, and the failure is also written to the error log.
@@ -105,6 +211,23 @@ are two: `LocalExecutor` and `DockerExecutor`. Tools cannot tell which one they 
   diff and the user picks what to keep. This is the default for loops. It also avoids Docker
   Desktop's slow reads of Windows folders on large repos.
 
+**Applying a copy-then-review session without losing anyone's work:**
+1. **Snapshot.** At the start, Tachikoma copies the project exactly as it is, including uncommitted
+   and untracked files, so work in progress is the starting point and nothing is lost. It records
+   the SHA-256 hash of every file. The real folder is not touched again until the user applies
+   changes.
+2. **The changes** are the container's copy compared with the snapshot: added, changed and deleted
+   files.
+3. **Each change the user accepts** is checked against the real folder before it is applied:
+   - If the real file still matches its snapshot hash (or, for an added file, still does not
+     exist), the change is applied. The file it replaces is first saved to
+     `.tachikoma/backups/<session>/`, so it can be undone.
+   - If the real file changed in the meantime (edited, created or deleted by the user), it is a
+     **conflict**, and Tachikoma never overwrites it. It offers a three-way merge (`git merge-file`
+     with the snapshot as the base), with any conflict markers written to a separate file for the
+     user. The other choice is to skip that file.
+   - A deletion is applied only if the real file still matches its snapshot.
+
 **Permission modes** are the same for both executors: ask before every risky action, ask only for
 actions outside the project, or never ask. "Never ask" is meant to be paired with the sandbox.
 
@@ -122,6 +245,25 @@ actions outside the project, or never ask. "Never ask" is meant to be paired wit
   with the `sqlite_exact` backend (`mcp_server/_guards.py:574-582`).
 - Tachikoma starts this process, restarts it when it dies, turns off its idle shutdown
   (`MEMPALACE_MCP_IDLE_HOURS=0`), and sets a time limit on each call.
+- **One writer across every session, not just within one.** Two `tachi` sessions started separately
+  share one memory service:
+  - **Owner.** The service is owned by a small background supervisor, not by any one session, so
+    closing the session that started it does not cut off the others. The supervisor holds an OS file
+    lock on `<data folder>/palace.lock` for as long as it runs. The OS frees that lock if the process
+    crashes, so a lock is never left stale. Your MemPalace notes show why that matters: the PID
+    written in its own lock files was often out of date.
+  - **Connecting.** A session that needs memory tries to take the lock:
+    - If it gets the lock, it starts the supervisor, which writes its local address (a named pipe
+      on Windows, a Unix socket elsewhere) to `<data folder>/memory.endpoint`.
+    - If it doesn't, it reads that file and connects.
+  - **Startup race.** Taking the lock is atomic, so only one session can win. The others wait for
+    the endpoint file.
+  - **Crash recovery.** If a session cannot connect and the lock is free, the owner has crashed. The
+    session takes the lock and starts a new supervisor.
+  - **Shutdown.** The supervisor stops when its last session disconnects. There is no idle timer,
+    so there is no number to guess.
+  - **Check first:** MemPalace 3.9 and later add a "hub" mode. If it gives the same guarantees, use
+    it instead of writing our own supervisor (see "Still to measure").
 - Settings shipped with it: the `sqlite_exact` backend, `exclude_patterns` for bulk data files,
   an embedding thread count, and `PYTHONIOENCODING=utf-8`.
 
@@ -131,7 +273,7 @@ actions outside the project, or never ask. "Never ask" is meant to be paired wit
 |---|---|
 | Session start | Tell the model to search memory before answering about past work, and include lessons that match the task |
 | End of each turn | Save in the background; the user never waits for it |
-| Before the history is shortened | Save first |
+| Before the history is shortened | Start a save first. If it fails, shorten anyway: the transcript on disk keeps everything (see "Fitting the context window") |
 | Session exit | A final save, allowed to finish within a time limit |
 
 **Lessons from the author's MemPalace history** (an audit of their setup on 2026-10-22, checked
@@ -269,8 +411,23 @@ Data folder:
 
 **Errors:**
 - Every failure says what broke and how to fix it, and nothing fails silently.
-- A part that fails turns off by itself while the rest keeps running, and the status line shows
-  it in red.
+- What happens next depends on whether the part that failed is a safeguard.
+
+**Safeguards.** An action that needs one never runs without it:
+- the permission gate
+- the chosen executor: if the sandbox was chosen and Docker fails, shell and file tools refuse to
+  run; they never quietly fall back to running on the host
+- the budget controller
+- the copy-then-review snapshot
+
+If one of these fails, every action that depends on it fails with an error, and a loop stops.
+
+**Optional services** turn off by themselves while the rest keeps running, and the status line
+shows them in red:
+- memory
+- code search
+- lessons
+- writing the error log
 
 ## Still to measure
 
@@ -286,6 +443,15 @@ whose results are recorded.
 5. How superpowers v7 maps tool names for other harnesses.
 6. How many lessons to include, and how close a match must be. Needs a real error log first.
 7. Whether the slow FTS delete in MemPalace 3.11 matters at the palace sizes users reach.
+8. Whether `claude`, `codex` and `kimi` logins work inside a container when their login files are
+   mounted read-only.
+9. Whether `kimi --plan` is truly read-only, and whether `kimi acp` can send its actions through
+   Tachikoma's permission gate.
+10. Whether `codex exec --json` reports token use or cost. If it does, `codex` can count towards
+    cost limits.
+11. Whether MemPalace's hub mode (3.9 and later) gives one writer across separate processes, with
+    crash recovery. If not, Tachikoma uses its own lock-file supervisor.
+12. How much recent history to keep after the cut point when shortening.
 
 ## Release order
 
@@ -297,10 +463,12 @@ Each release works on its own and can be shown.
    - Anthropic and OpenAI-format providers, with lead switching
    - the terminal interface with status line
    - the error log
-2. Docker sandbox, both modes
-3. MCP client, and MemPalace in the uv environment
+2. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
+3. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
+   disk; shortening the history
 4. Skills: the loader, vendored superpowers, Tachikoma's own skills
 5. Codebase search with EmbeddingGemma 2
-6. CLI workers and delegation
+6. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
+   refusal rules. The controller comes first because workers have to be cancellable as a group.
 7. Loops: on a timer, and until done
 8. `tachi setup` / `tachi doctor`, and the fresh-install CI
