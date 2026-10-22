@@ -13,8 +13,10 @@ This is release 1 of 8: the core. The command is `tachi`.
   local Ollama. `/lead <provider:model>` switches the lead in the middle of a session, and the
   conversation carries over.
 - **File and shell tools:** read, write and edit files, and run shell commands (PowerShell on
-  Windows, `/bin/sh` elsewhere). The project is the folder you start `tachi` in. Each action goes
-  through a permission mode, set with `--mode`:
+  Windows, `/bin/sh` elsewhere). Files are read with numbered lines, 2,000 lines at a time, as
+  Claude Code does. The project is the folder you start `tachi` in. Each action goes through a
+  permission mode, set with `--mode`; when it asks about a write or an edit, it shows what will go
+  into the file first:
   - `ask` (the default): asks before every write and shell command, and before anything outside the
     project.
   - `project`: writes inside the project without asking; asks before shell commands and anything
@@ -24,9 +26,10 @@ This is release 1 of 8: the core. The command is `tachi`.
 - **A terminal interface** with a status line showing the lead, context use, tokens, cost, mode and
   error count. `--status` picks which parts to show.
 - **Headless runs:** `-p "<prompt>"` runs one prompt, prints the answer and exits. Add `--json` to
-  get every event as one JSON line.
-- **An error log:** every failure is written to `.tachikoma/errors.jsonl` in the project, and that
-  folder is kept out of git. `/errors` summarises it.
+  get every event as one JSON line. Details below.
+- **An error log:** every failure, and every refusal another model answered, is written to
+  `.tachikoma/errors.jsonl` in the project, and that folder is kept out of git. `/errors`
+  summarises it.
 - **Refusals:** for the Anthropic models that support it, Anthropic's own fallback re-runs a refused
   request on another model. `--fallback <provider:model>` adds a retry on a model of your choice,
   which can be from another provider. Off unless set. Every rescue is shown and logged.
@@ -40,6 +43,9 @@ npm install
 npm run build
 node dist/cli.js --lead <provider:model>
 ```
+
+`npm link` in this folder puts the `tachi` command on your PATH, so `tachi --lead ...` works from
+any folder.
 
 Run it from the folder you want it to work in, for example
 `node /path/to/tachikoma/dist/cli.js --lead ...`. You can set `TACHI_LEAD` instead of passing
@@ -72,11 +78,28 @@ Other options, from `node dist/cli.js --help`:
 In a session, `/lead <provider:model>` switches the lead model, `/errors` summarises the error log
 and `/exit` quits. Ctrl-C stops the current turn, or quits when idle.
 
+## Headless runs
+
+`tachi -p "<prompt>"` prints the answer and exits. Nobody is there to approve an action, so anything
+the permission mode would ask about is refused, and the model is told so.
+
+- **The output is made safe for a terminal**, as on screen: control characters and escape codes in
+  the answer and in error messages are printed as text, such as `\u001b`. Line breaks and tabs stay,
+  and Windows line endings become plain ones. An answer saved with `> file` is therefore not
+  byte-for-byte what the model wrote.
+- **`--json`** prints one line per event: `message`, `usage`, `error` and `lead`. A request that
+  Anthropic's fallback rescued gives one `usage` line for each model that declined (marked
+  `priceKnown`), then one for the reply.
+- **Exit codes:** 0 when the run finished; 1 when a request failed, the model refused or hit a limit,
+  or an action was refused; 130 when stopped with Ctrl-C; 143 on SIGTERM and 129 on SIGHUP. If
+  whatever reads the output closes it early (`| head -1`), Tachikoma stops quietly instead of
+  crashing; the exit code is then 0, or the run's own code if it had already finished.
+
 ## Providers
 
 | Provider | `--lead` prefix | Environment variable |
 |---|---|---|
-| Anthropic | `anthropic:` | `ANTHROPIC_API_KEY` (the SDK also accepts `ANTHROPIC_AUTH_TOKEN`) |
+| Anthropic | `anthropic:` | `ANTHROPIC_API_KEY` (an API key only; Tachikoma never signs in with a subscription) |
 | OpenAI | `openai:` | `OPENAI_API_KEY` |
 | OpenRouter | `openrouter:` | `OPENROUTER_API_KEY` |
 | Kimi (Moonshot) | `kimi:` | `MOONSHOT_API_KEY` |
@@ -102,6 +125,9 @@ Each is fixed in a later release.
   returns at once. On macOS and Linux it does stop it.
 - **On Windows, shell exit codes are only 0 or 1.** PowerShell reports only whether the last command
   succeeded, so a program's own exit code is lost.
+- **On Windows, PowerShell error messages repeat the whole command**, including the line Tachikoma
+  puts first to make the output UTF-8. The ways around it that were tried either lost the exit code or
+  turned error messages into XML.
 
 ## What comes next
 

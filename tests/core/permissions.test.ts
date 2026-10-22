@@ -35,6 +35,18 @@ describe("PermissionGate", () => {
     expect(asked).toEqual(["shell"]);
   });
 
+  it("passes the action's detail on with its summary", async () => {
+    const asked: [string, string | undefined][] = [];
+    const gate = new PermissionGate("ask", async (summary, detail) => (asked.push([summary, detail]), true));
+    await gate.require({ kind: "write", outside: false, summary: "write a", detail: "x\ny" });
+    expect(asked).toEqual([["write a", "x\ny"]]);
+  });
+
+  it("words a refusal as told, so -p mode does not say a user declined", async () => {
+    const gate = new PermissionGate("ask", async () => false, "Not allowed in -p mode");
+    await expect(gate.require(act("shell"))).rejects.toThrow("Not allowed in -p mode: shell");
+  });
+
   it("does not ask when no approval is needed", async () => {
     let asked = false;
     const gate = new PermissionGate("ask", async () => (asked = true));
@@ -54,6 +66,9 @@ describe("visible", () => {
     ["a delete", "a\u007fb", "a\\u007fb"],
     ["a right-to-left override", "ls \u202etxt.exe", "ls \\u202etxt.exe"],
     ["a bidi isolate", "ls \u2066x\u2069", "ls \\u2066x\\u2069"],
+    ["a direction mark", "ls \u200ex\u200f", "ls \\u200ex\\u200f"],
+    ["an Arabic letter mark", "a\u061cb", "a\\u061cb"],
+    ["a line or paragraph separator", "a\u2028b\u2029", "a\\u2028b\\u2029"],
   ])("shows %s literally", (_, text, shown) => {
     expect(visible(text)).toBe(shown);
   });

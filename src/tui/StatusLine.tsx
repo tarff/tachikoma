@@ -1,4 +1,4 @@
-import { Box, Text } from "ink";
+import { Text } from "ink";
 
 export type Segment = "lead" | "context" | "tokens" | "cost" | "mode" | "errors";
 export const SEGMENTS: Segment[] = ["lead", "context", "tokens", "cost", "mode", "errors"];
@@ -39,16 +39,17 @@ export function formatSegment(s: Segment, i: StatusInfo): string {
   }
 }
 
+// One line, cut at the end to the terminal's width (Ink measures it in columns) instead of wrapping.
 export function StatusLine({ info, segments }: { info: StatusInfo; segments: Segment[] }) {
   return (
-    <Box>
+    <Text inverse wrap="truncate-end">
       {segments.map((s, n) => (
-        <Text key={n} inverse color={s === "errors" && info.errors > 0 ? "red" : undefined}>
+        <Text key={n} color={s === "errors" && info.errors > 0 ? "red" : undefined}>
           {n === 0 ? " " : " | "}
           {formatSegment(s, info)}
           {n === segments.length - 1 ? " " : ""}
         </Text>
       ))}
-    </Box>
+    </Text>
   );
 }

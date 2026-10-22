@@ -111,7 +111,6 @@ describe("Session", () => {
     const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [reply("answered by b")]), tools: [], system: "t", ctx: await tempContext(), bus });
     await session.send("go");
     expect(stats.errors).toBe(0);
-    expect(stats.fallbacks).toBe(1);
   });
 
   it("still reports the refusal when the fallback provider's request fails", async () => {

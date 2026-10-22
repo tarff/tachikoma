@@ -1,6 +1,7 @@
-import type { BetaMessage } from "@anthropic-ai/sdk/resources/beta/messages/messages";
+import Anthropic from "@anthropic-ai/sdk";
+import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { Models } from "@anthropic-ai/sdk/resources/models";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../src/core/types.js";
 import { AnthropicProvider, fromAnthropic, toAnthropic } from "../../src/providers/anthropic.js";
 
@@ -126,6 +127,28 @@ describe("fromAnthropic", () => {
     expect(turn.usage).toEqual({ input: 100, output: 20, cacheRead: 0, cacheWrite: 0 }); // the answering attempt only
   });
 
+  it("counts each model that declined, in order, even one the entry does not name", () => {
+    const hop = (model: string | null, output: number) => ({ type: "message", model, input_tokens: 50, output_tokens: output, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: null });
+    const turn = fromAnthropic(
+      message({
+        model: "claude-opus-4-8",
+        usage: {
+          input_tokens: 50,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          iterations: [hop(null, 0), hop("claude-opus-5", 5), { ...hop("claude-opus-4-8", 5), type: "fallback_message" }],
+        } as unknown as BetaMessage["usage"],
+        content: [{ type: "text", text: "hi", citations: null }] as BetaMessage["content"],
+      }),
+    );
+    const usage = (output: number) => ({ input: 50, output, cacheRead: 0, cacheWrite: 0 });
+    expect(turn.declined).toEqual([
+      { provider: "anthropic:unknown", usage: usage(0), priceKnown: false },
+      { provider: "anthropic:claude-opus-5", usage: usage(5), priceKnown: true },
+    ]);
+  });
+
   it("names the fallback model on a sticky turn, which carries no fallback block", () => {
     const turn = fromAnthropic(
       message({
@@ -175,10 +198,33 @@ describe("fromAnthropic", () => {
   });
 });
 
-describe("AnthropicProvider.contextWindow", () => {
-  afterEach(() => vi.restoreAllMocks());
+describe("AnthropicProvider", () => {
+  beforeEach(() => vi.stubEnv("ANTHROPIC_API_KEY", "test-key"));
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
 
-  it("asks again after a failed lookup, and remembers a successful one", async () => {
+  it("needs ANTHROPIC_API_KEY, and takes no other kind of sign-in", () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "a-bearer-token");
+    expect(() => new AnthropicProvider("claude-opus-5-5")).toThrow("Set ANTHROPIC_API_KEY to use anthropic");
+  });
+
+  it("names the underlying reason a connection failed", async () => {
+    const fetchErr = new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND api.anthropic.com") });
+    vi.spyOn(Messages.prototype, "stream").mockReturnValue({ finalMessage: () => Promise.reject(new Anthropic.APIConnectionError({ cause: fetchErr })) } as never);
+    const p = new AnthropicProvider("claude-opus-5-5");
+    await expect(p.complete({ system: "s", messages: [], tools: [] })).rejects.toThrow("Could not reach https://api.anthropic.com (getaddrinfo ENOTFOUND api.anthropic.com)");
+  });
+
+  it("reports a timeout as a timeout", async () => {
+    vi.spyOn(Messages.prototype, "stream").mockReturnValue({ finalMessage: () => Promise.reject(new Anthropic.APIConnectionTimeoutError()) } as never);
+    const p = new AnthropicProvider("claude-opus-5-5");
+    await expect(p.complete({ system: "s", messages: [], tools: [] })).rejects.toThrow("https://api.anthropic.com did not answer in time");
+  });
+
+  it("asks again after a failed context-window lookup, and remembers a successful one", async () => {
     const retrieve = vi
       .spyOn(Models.prototype, "retrieve")
       .mockRejectedValueOnce(new Error("offline"))

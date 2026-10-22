@@ -18,9 +18,10 @@ describe("error log", () => {
     const rows = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({ session: "s1", kind: "tool", attempted: "shell", lead: "fake:a" });
-    expect(summarize(file)).toContain("2 errors logged");
-    expect(summarize(file)).toContain("  tool: 1");
-    expect(summarize(file)).toContain("request\n  429");
+    const out = summarize(file).join("\n");
+    expect(out).toContain("2 errors logged");
+    expect(out).toContain("  tool: 1");
+    expect(out).toContain("request\n  429");
   });
 
   it("keeps its folder out of git, without touching the project's .gitignore", async () => {
@@ -58,7 +59,7 @@ describe("error log", () => {
   });
 
   it("says so when there is no log yet", () => {
-    expect(summarize(path.join(tmpdir(), "does-not-exist.jsonl"))).toBe("No errors logged yet.");
+    expect(summarize(path.join(tmpdir(), "does-not-exist.jsonl"))).toEqual(["No errors logged yet."]);
   });
 
   const row = (attempted: string) => JSON.stringify({ at: "2026-10-22T00:00:00.000Z", session: "s1", kind: "tool", attempted, message: "it broke", lead: "fake:a" });
@@ -70,7 +71,7 @@ describe("error log", () => {
 
   it("skips a half-written line and says how many it skipped", async () => {
     const file = await logFile(row("shell").slice(0, 20), row("shell"));
-    const out = summarize(file);
+    const out = summarize(file).join("\n");
     expect(out).toContain("1 errors logged");
     expect(out).toContain("shell\n  it broke");
     expect(out).toContain("(1 unreadable line skipped)");
@@ -78,27 +79,32 @@ describe("error log", () => {
 
   it("skips rows missing fields and null lines", async () => {
     const file = await logFile(JSON.stringify({ kind: "tool", attempted: "shell" }), "null", "5", row("shell"));
-    const out = summarize(file);
+    const out = summarize(file).join("\n");
     expect(out).toContain("1 errors logged");
     expect(out).toContain("(3 unreadable lines skipped)");
   });
 
   it("skips a last row that has no message", async () => {
-    const out = summarize(await logFile(row("shell"), JSON.stringify({ at: "x", kind: "tool", attempted: "shell" })));
+    const out = summarize(await logFile(row("shell"), JSON.stringify({ at: "x", kind: "tool", attempted: "shell" }))).join("\n");
     expect(out).toContain("shell\n  it broke");
     expect(out).toContain("(1 unreadable line skipped)");
   });
 
   it("still reports skipped lines when no row could be read", async () => {
-    expect(summarize(await logFile("{"))).toBe("No errors logged yet.\n(1 unreadable line skipped)");
+    expect(summarize(await logFile("{"))).toEqual(["No errors logged yet.", "(1 unreadable line skipped)"]);
   });
 
-  it("shortens a long attempted action to the terminal width", async () => {
-    const file = await logFile(row(`write_file ${"x".repeat(5000)}`));
-    const recent = (width?: number) => summarize(file, width).split("\n").find((l) => l.startsWith("Most recent"))!;
-    expect(recent(40)).toHaveLength(40);
-    expect(recent(40).endsWith("…")).toBe(true);
-    expect(recent().length).toBeLessThanOrEqual(process.stdout.columns ?? 80);
+  it("keeps the most recent action and its message whole, each on a row of its own, for the screen to cut", async () => {
+    const out = summarize(await logFile(row(`write_file ${"x".repeat(5000)}`)));
+    expect(out).toContain(`Most recent (2026-10-22T00:00:00.000Z): write_file ${"x".repeat(5000)}`);
+    expect(out).toContain("  it broke");
+  });
+
+  it("counts refusals another model answered apart from the errors", async () => {
+    const rescue = JSON.stringify({ at: "x", session: "s1", kind: "fallback", attempted: "response", message: "a declined; b answered instead", lead: "a" });
+    const out = summarize(await logFile(row("shell"), rescue));
+    expect(out[0]).toMatch(/^1 errors and 1 refusals another model answered, logged in /);
+    expect(out).toContain("  fallback: 1");
   });
 });
 
@@ -128,6 +134,5 @@ describe("Stats", () => {
     const stats = new Stats(bus);
     bus.emit("error", { kind: "fallback", attempted: "x", message: "a declined; b answered instead", lead: "a" });
     expect(stats.errors).toBe(0);
-    expect(stats.fallbacks).toBe(1);
   });
 });

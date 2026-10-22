@@ -8,6 +8,7 @@ export interface Action {
   kind: "read" | "write" | "shell";
   outside: boolean;
   summary: string;
+  detail?: string; // what a write puts in the file, shown above the question; not escaped here
 }
 
 export function needsApproval(mode: Mode, action: Action): boolean {
@@ -23,9 +24,10 @@ const NAMED: Record<string, string> = { "\n": "⏎", "\r": "␍", "\t": "⇥" };
 
 // Shows control characters as escapes, so the approval prompt shows what will run: escape codes can
 // hide or recolour text, \r and many \n can push part of a command out of sight, and bidi overrides
-// can reorder it. `tabs` keeps tabs as they are, for prose in the scrollback.
+// can reorder it, as can invisible direction marks. `tabs` keeps tabs as they are, for prose in the
+// scrollback.
 export function visible(text: string, opts: { tabs?: boolean } = {}): string {
-  return text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) =>
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, (c) =>
     opts.tabs && c === "\t" ? c : (NAMED[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`),
   );
 }
@@ -36,12 +38,13 @@ export class Declined extends Error {}
 export class PermissionGate {
   constructor(
     readonly mode: Mode,
-    private readonly ask: (summary: string) => Promise<boolean>,
+    private readonly ask: (summary: string, detail?: string) => Promise<boolean>,
+    private readonly refusal = "The user declined", // what the model is told; in -p mode nobody was asked
   ) {}
 
   async require(action: Action): Promise<void> {
     if (!needsApproval(this.mode, action)) return;
     const shown = visible(action.summary);
-    if (!(await this.ask(shown))) throw new Declined(`The user declined: ${shown}`);
+    if (!(await this.ask(shown, action.detail))) throw new Declined(`${this.refusal}: ${shown}`);
   }
 }

@@ -86,7 +86,22 @@ build made on 2026-10-22, not retyped. In that build:
   - **Anthropic's declined attempts are counted**, as the design says. Each is counted at the price of
     the model that declined; one that declined before any output shows its cost as `?`, because only
     some refusal categories are billed and the reply does not say which applied.
-- That makes 169 tests in all.
+- Asked for on 2026-10-22, after the final review:
+  - **`read_file` reads in parts**, as Claude Code's own Read tool does: numbered lines, 2,000 at a
+    time unless `limit` says otherwise, from line `offset`. A note saying which lines are shown comes
+    first, where the session's 30,000-character cut cannot remove it.
+  - **Approving a write or an edit shows what will go into the file**, in the scrollback above the
+    question.
+  - **Anthropic takes an API key only** (`ANTHROPIC_API_KEY`, checked at start), not the SDK's
+    bearer token or stored login, either of which can carry a subscription token. Its connection
+    errors name the reason, as OpenAI's do.
+  - **The status line and one-line scrollback entries are cut by Ink** to the terminal's width in
+    columns, so wide characters and escapes count; `/errors` gives one such row per line, and counts
+    rescued refusals apart from errors. The unused `Stats.fallbacks` is gone.
+  - **In `-p` mode a refused action is not called the user's decision.** A blank `-p` prompt is
+    refused before any request. An outside SIGINT in interactive mode runs the exit cleanup.
+    Invisible direction marks and line separators are escaped too.
+- That makes 189 tests in all.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
@@ -97,6 +112,7 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
 | Value | Source |
 |---|---|
 | Tool output cut at 30,000 characters | Claude Code's own Bash tool limit, used until our logs show it should move |
+| `read_file` shows 2,000 lines unless told otherwise | Claude Code's own Read tool description (2026-10-22) |
 | `max_tokens` 64,000 on Anthropic requests | claude-api skill: the default for streamed requests |
 | Anthropic prices; cache writes 1.25x input | claude-api skill model table (cached 2026-10-06) and its prompt-caching notes |
 | Provider base URLs | each provider's docs, checked 2026-10-22 |
@@ -128,6 +144,9 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
   to fail; both are on the live test's list (Task 14).
 - **Windows exit codes are 0 or 1.** PowerShell `-Command` reports only whether the last command
   succeeded, so a program's own exit code is lost.
+- **PowerShell error messages repeat the whole command**, including the UTF-8 line we put first.
+  Tried on 2026-10-22: the line on its own line (still repeated), a script block (lost the exit
+  code), `-EncodedCommand` (errors and progress come back as XML).
 - **Commands have no time limit**, so one that keeps its output open runs until you cancel it. A time
   limit needs data first, and comes with the budget controller (release 6). Closing the terminal
   (SIGHUP), SIGTERM, and Ctrl-C in headless mode all go through the exit cleanup, which stops running
@@ -331,6 +350,21 @@ export interface Provider {
 export function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+// Why a connection failed, for both SDKs. Their message is only "Connection error."; Node's fetch
+// error ("fetch failed") holds the real reason, such as ECONNREFUSED or ENOTFOUND, further down its
+// causes. For "localhost" that is an AggregateError with an empty message (one try per address), so
+// its first try is used.
+export function connectReason(err: Error): string {
+  let found = err.message;
+  const seen = new Set<unknown>([err]); // a chain that loops back on itself would never end
+  for (let e: unknown = err.cause; e instanceof Error && !seen.has(e); e = e.cause) {
+    seen.add(e);
+    if (e instanceof AggregateError && e.errors[0] instanceof Error) found = e.errors[0].message;
+    else if (e.message) found = e.message;
+  }
+  return found;
+}
 ```
 
 `src/core/bus.ts`:
@@ -450,6 +484,18 @@ describe("PermissionGate", () => {
     expect(asked).toEqual(["shell"]);
   });
 
+  it("passes the action's detail on with its summary", async () => {
+    const asked: [string, string | undefined][] = [];
+    const gate = new PermissionGate("ask", async (summary, detail) => (asked.push([summary, detail]), true));
+    await gate.require({ kind: "write", outside: false, summary: "write a", detail: "x\ny" });
+    expect(asked).toEqual([["write a", "x\ny"]]);
+  });
+
+  it("words a refusal as told, so -p mode does not say a user declined", async () => {
+    const gate = new PermissionGate("ask", async () => false, "Not allowed in -p mode");
+    await expect(gate.require(act("shell"))).rejects.toThrow("Not allowed in -p mode: shell");
+  });
+
   it("does not ask when no approval is needed", async () => {
     let asked = false;
     const gate = new PermissionGate("ask", async () => (asked = true));
@@ -469,6 +515,9 @@ describe("visible", () => {
     ["a delete", "a\u007fb", "a\\u007fb"],
     ["a right-to-left override", "ls \u202etxt.exe", "ls \\u202etxt.exe"],
     ["a bidi isolate", "ls \u2066x\u2069", "ls \\u2066x\\u2069"],
+    ["a direction mark", "ls \u200ex\u200f", "ls \\u200ex\\u200f"],
+    ["an Arabic letter mark", "a\u061cb", "a\\u061cb"],
+    ["a line or paragraph separator", "a\u2028b\u2029", "a\\u2028b\\u2029"],
   ])("shows %s literally", (_, text, shown) => {
     expect(visible(text)).toBe(shown);
   });
@@ -515,6 +564,7 @@ export interface Action {
   kind: "read" | "write" | "shell";
   outside: boolean;
   summary: string;
+  detail?: string; // what a write puts in the file, shown above the question; not escaped here
 }
 
 export function needsApproval(mode: Mode, action: Action): boolean {
@@ -530,9 +580,10 @@ const NAMED: Record<string, string> = { "\n": "⏎", "\r": "␍", "\t": "⇥" };
 
 // Shows control characters as escapes, so the approval prompt shows what will run: escape codes can
 // hide or recolour text, \r and many \n can push part of a command out of sight, and bidi overrides
-// can reorder it. `tabs` keeps tabs as they are, for prose in the scrollback.
+// can reorder it, as can invisible direction marks. `tabs` keeps tabs as they are, for prose in the
+// scrollback.
 export function visible(text: string, opts: { tabs?: boolean } = {}): string {
-  return text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) =>
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, (c) =>
     opts.tabs && c === "\t" ? c : (NAMED[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`),
   );
 }
@@ -543,13 +594,14 @@ export class Declined extends Error {}
 export class PermissionGate {
   constructor(
     readonly mode: Mode,
-    private readonly ask: (summary: string) => Promise<boolean>,
+    private readonly ask: (summary: string, detail?: string) => Promise<boolean>,
+    private readonly refusal = "The user declined", // what the model is told; in -p mode nobody was asked
   ) {}
 
   async require(action: Action): Promise<void> {
     if (!needsApproval(this.mode, action)) return;
     const shown = visible(action.summary);
-    if (!(await this.ask(shown))) throw new Declined(`The user declined: ${shown}`);
+    if (!(await this.ask(shown, action.detail))) throw new Declined(`${this.refusal}: ${shown}`);
   }
 }
 ```
@@ -557,7 +609,7 @@ export class PermissionGate {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/permissions.test.ts && npm run typecheck`
-Expected: 28 tests pass, and no type errors.
+Expected: 33 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -623,14 +675,16 @@ export function collectErrors(bus: Bus): ErrorEvent[] {
   return errors;
 }
 
-export async function tempContext(mode: Mode = "never", answers: boolean[] = []): Promise<ToolContext & { asked: string[] }> {
+export async function tempContext(mode: Mode = "never", answers: boolean[] = []): Promise<ToolContext & { asked: string[]; details: (string | undefined)[] }> {
   const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
   const asked: string[] = [];
-  const gate = new PermissionGate(mode, async (summary) => {
+  const details: (string | undefined)[] = [];
+  const gate = new PermissionGate(mode, async (summary, detail) => {
     asked.push(summary);
+    details.push(detail);
     return answers.shift() ?? false;
   });
-  return { root, executor: new LocalExecutor(), gate, asked };
+  return { root, executor: new LocalExecutor(), gate, asked, details };
 }
 
 export const texts = (m: Message) => m.parts.flatMap((p: Part) => (p.type === "text" ? [p.text] : []));
@@ -962,7 +1016,40 @@ describe("file tools", () => {
   it("writes, then reads back", async () => {
     const ctx = await tempContext();
     await writeFileTool.run({ path: "sub/a.txt", content: "hello" }, ctx);
-    expect(await readFileTool.run({ path: "sub/a.txt" }, ctx)).toBe("hello");
+    expect(await readFileTool.run({ path: "sub/a.txt" }, ctx)).toBe("     1\thello");
+  });
+
+  it("numbers the lines it reads, and reads a part when given offset and limit", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), "one\r\ntwo\nthree\n");
+    expect(await readFileTool.run({ path: "a.txt" }, ctx)).toBe("     1\tone\n     2\ttwo\n     3\tthree");
+    expect(await readFileTool.run({ path: "a.txt", offset: 2, limit: 1 }, ctx)).toBe(
+      "(showing lines 2-2 of 3; use offset and limit to read the rest)\n     2\ttwo",
+    );
+  });
+
+  it("reads 2,000 lines unless told otherwise, saying so first, where a cut-off cannot hide it", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), Array.from({ length: 2500 }, (_, i) => `line ${i + 1}`).join("\n"));
+    const out = await readFileTool.run({ path: "a.txt" }, ctx);
+    expect(out.split("\n")[0]).toBe("(showing lines 1-2000 of 2500; use offset and limit to read the rest)");
+    expect(out).toContain("  2000\tline 2000");
+    expect(out).not.toContain("line 2001");
+  });
+
+  it("says how long a file is when asked to start past its end, and when it is empty", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), "one\ntwo\n");
+    await writeFile(path.join(ctx.root, "empty.txt"), "");
+    expect(await readFileTool.run({ path: "a.txt", offset: 5 }, ctx)).toBe("(a.txt has 2 lines)");
+    expect(await readFileTool.run({ path: "empty.txt" }, ctx)).toBe("(empty.txt is empty)");
+  });
+
+  it("shows what a write or an edit will put in the file when asking", async () => {
+    const ctx = await tempContext("ask", [true, true]);
+    await writeFileTool.run({ path: "a.txt", content: "one\ntwo" }, ctx);
+    await editFileTool.run({ path: "a.txt", old_text: "one\ntwo", new_text: "three" }, ctx);
+    expect(ctx.details).toEqual(["one\ntwo", "- one\n- two\n+ three"]);
   });
 
   it("edits one unique match", async () => {
@@ -1097,14 +1184,28 @@ export function resolveIn(root: string, p: string): { abs: string; outside: bool
   return { abs, outside, shown: rel === path.relative(root, abs) ? abs : `${abs} (really ${real})` };
 }
 
+// Read the way Claude Code's own Read tool does (its tool description, 2026-10-22): up to 2,000 lines
+// unless `limit` says otherwise, from line `offset` (counted from 1), each after its number in
+// `cat -n` style.
+const READ_LINES = 2000;
+
 export const readFileTool = defineTool(
   "read_file",
-  "Read a text file. Paths are relative to the project root.",
-  z.object({ path: z.string() }),
-  async ({ path: p }, ctx) => {
+  `Read a text file. Paths are relative to the project root. Shows up to ${READ_LINES} lines, each after its line number and a tab; offset (the first line, from 1) and limit read other parts. The numbers are not part of the file.`,
+  z.object({ path: z.string(), offset: z.number().int().min(1).optional(), limit: z.number().int().min(1).optional() }),
+  async ({ path: p, offset = 1, limit = READ_LINES }, ctx) => {
     const { abs, outside, shown } = resolveIn(ctx.root, p);
     await ctx.gate.require({ kind: "read", outside, summary: `read ${shown}` });
-    return ctx.executor.readFile(abs);
+    const text = await ctx.executor.readFile(abs);
+    if (!text) return `(${p} is empty)`;
+    const lines = text.replace(/\r?\n$/, "").split(/\r?\n/);
+    if (offset > lines.length) return `(${p} has ${lines.length} lines)`;
+    const part = lines.slice(offset - 1, offset - 1 + limit);
+    const last = offset + part.length - 1;
+    const numbered = part.map((l, i) => `${String(offset + i).padStart(6)}\t${l}`).join("\n");
+    // First, not last: the session cuts long tool output from the end.
+    if (offset === 1 && last === lines.length) return numbered;
+    return `(showing lines ${offset}-${last} of ${lines.length}; use offset and limit to read the rest)\n${numbered}`;
   },
 );
 
@@ -1114,7 +1215,7 @@ export const writeFileTool = defineTool(
   z.object({ path: z.string(), content: z.string() }),
   async ({ path: p, content }, ctx) => {
     const { abs, outside, shown } = resolveIn(ctx.root, p);
-    await ctx.gate.require({ kind: "write", outside, summary: `write ${shown}` });
+    await ctx.gate.require({ kind: "write", outside, summary: `write ${shown}`, detail: content });
     await ctx.executor.writeFile(abs, content);
     return `Wrote ${content.length} characters to ${p}`;
   },
@@ -1122,11 +1223,13 @@ export const writeFileTool = defineTool(
 
 export const editFileTool = defineTool(
   "edit_file",
-  "Replace one exact, unique piece of text in a file. Read the file first.",
+  "Replace one exact, unique piece of text in a file. Read the file first; old_text leaves out the line numbers read_file shows.",
   z.object({ path: z.string(), old_text: z.string().min(1), new_text: z.string() }),
   async ({ path: p, old_text, new_text }, ctx) => {
     const { abs, outside, shown } = resolveIn(ctx.root, p);
-    await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}` });
+    const marked = (sign: string, s: string) => s.split("\n").map((l) => `${sign} ${l}`);
+    const detail = [...marked("-", old_text), ...(new_text ? marked("+", new_text) : [])].join("\n");
+    await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}`, detail });
     const text = await ctx.executor.readFile(abs);
     // Bytes that are not UTF-8 read back as U+FFFD, and writing the text back would destroy them.
     if (text.includes("�")) throw new Error(`${p} is not UTF-8 text, so edit_file would damage it`);
@@ -1147,7 +1250,7 @@ The replacement in `edit_file` is passed as a function so `$&` and similar seque
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tools/files.test.ts && npm run typecheck`
-Expected: 14 tests pass, and no type errors.
+Expected: 18 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -1407,7 +1510,6 @@ describe("Session", () => {
     const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [reply("answered by b")]), tools: [], system: "t", ctx: await tempContext(), bus });
     await session.send("go");
     expect(stats.errors).toBe(0);
-    expect(stats.fallbacks).toBe(1);
   });
 
   it("still reports the refusal when the fallback provider's request fails", async () => {
@@ -1750,9 +1852,10 @@ skill (2026-10-22):
 `tests/providers/anthropic.test.ts`:
 
 ```typescript
-import type { BetaMessage } from "@anthropic-ai/sdk/resources/beta/messages/messages";
+import Anthropic from "@anthropic-ai/sdk";
+import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { Models } from "@anthropic-ai/sdk/resources/models";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../src/core/types.js";
 import { AnthropicProvider, fromAnthropic, toAnthropic } from "../../src/providers/anthropic.js";
 
@@ -1878,6 +1981,28 @@ describe("fromAnthropic", () => {
     expect(turn.usage).toEqual({ input: 100, output: 20, cacheRead: 0, cacheWrite: 0 }); // the answering attempt only
   });
 
+  it("counts each model that declined, in order, even one the entry does not name", () => {
+    const hop = (model: string | null, output: number) => ({ type: "message", model, input_tokens: 50, output_tokens: output, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: null });
+    const turn = fromAnthropic(
+      message({
+        model: "claude-opus-4-8",
+        usage: {
+          input_tokens: 50,
+          output_tokens: 5,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          iterations: [hop(null, 0), hop("claude-opus-5", 5), { ...hop("claude-opus-4-8", 5), type: "fallback_message" }],
+        } as unknown as BetaMessage["usage"],
+        content: [{ type: "text", text: "hi", citations: null }] as BetaMessage["content"],
+      }),
+    );
+    const usage = (output: number) => ({ input: 50, output, cacheRead: 0, cacheWrite: 0 });
+    expect(turn.declined).toEqual([
+      { provider: "anthropic:unknown", usage: usage(0), priceKnown: false },
+      { provider: "anthropic:claude-opus-5", usage: usage(5), priceKnown: true },
+    ]);
+  });
+
   it("names the fallback model on a sticky turn, which carries no fallback block", () => {
     const turn = fromAnthropic(
       message({
@@ -1927,10 +2052,33 @@ describe("fromAnthropic", () => {
   });
 });
 
-describe("AnthropicProvider.contextWindow", () => {
-  afterEach(() => vi.restoreAllMocks());
+describe("AnthropicProvider", () => {
+  beforeEach(() => vi.stubEnv("ANTHROPIC_API_KEY", "test-key"));
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
 
-  it("asks again after a failed lookup, and remembers a successful one", async () => {
+  it("needs ANTHROPIC_API_KEY, and takes no other kind of sign-in", () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "a-bearer-token");
+    expect(() => new AnthropicProvider("claude-opus-5-5")).toThrow("Set ANTHROPIC_API_KEY to use anthropic");
+  });
+
+  it("names the underlying reason a connection failed", async () => {
+    const fetchErr = new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND api.anthropic.com") });
+    vi.spyOn(Messages.prototype, "stream").mockReturnValue({ finalMessage: () => Promise.reject(new Anthropic.APIConnectionError({ cause: fetchErr })) } as never);
+    const p = new AnthropicProvider("claude-opus-5-5");
+    await expect(p.complete({ system: "s", messages: [], tools: [] })).rejects.toThrow("Could not reach https://api.anthropic.com (getaddrinfo ENOTFOUND api.anthropic.com)");
+  });
+
+  it("reports a timeout as a timeout", async () => {
+    vi.spyOn(Messages.prototype, "stream").mockReturnValue({ finalMessage: () => Promise.reject(new Anthropic.APIConnectionTimeoutError()) } as never);
+    const p = new AnthropicProvider("claude-opus-5-5");
+    await expect(p.complete({ system: "s", messages: [], tools: [] })).rejects.toThrow("https://api.anthropic.com did not answer in time");
+  });
+
+  it("asks again after a failed context-window lookup, and remembers a successful one", async () => {
     const retrieve = vi
       .spyOn(Models.prototype, "retrieve")
       .mockRejectedValueOnce(new Error("offline"))
@@ -1956,7 +2104,7 @@ Expected: FAIL, cannot find module `../../src/providers/anthropic.js`
 ```typescript
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaContentBlock, BetaContentBlockParam, BetaMessage, BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import type { CompletionRequest, Message, Part, Provider, Turn } from "../core/types.js";
+import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type Turn } from "../core/types.js";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -2059,17 +2207,37 @@ export function fromAnthropic(msg: BetaMessage): Turn {
 
 export class AnthropicProvider implements Provider {
   readonly id: string;
-  #client = new Anthropic(); // credentials from ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile
+  #client: Anthropic;
   #window?: number | null;
 
   constructor(
     readonly model: string,
     private readonly effort?: Effort,
   ) {
+    // An API key only. Left to itself the SDK also signs in with ANTHROPIC_AUTH_TOKEN or a stored login
+    // profile, either of which can carry a subscription token, which the design rules out.
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error("Set ANTHROPIC_API_KEY to use anthropic");
+    this.#client = new Anthropic({ apiKey, authToken: null });
     this.id = `anthropic:${model}`;
   }
 
-  async complete({ system, messages, tools, signal }: CompletionRequest): Promise<Turn> {
+  async complete(req: CompletionRequest): Promise<Turn> {
+    try {
+      return await this.#complete(req);
+    } catch (err) {
+      // The timeout error is a subclass of the connection error, so it is checked first.
+      if (err instanceof Anthropic.APIConnectionTimeoutError) {
+        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network.`);
+      }
+      if (err instanceof Anthropic.APIConnectionError) {
+        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check your network.`);
+      }
+      throw err;
+    }
+  }
+
+  async #complete({ system, messages, tools, signal }: CompletionRequest): Promise<Turn> {
     const stream = this.#client.beta.messages.stream(
       {
         model: this.model,
@@ -2105,7 +2273,7 @@ export class AnthropicProvider implements Provider {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/providers/anthropic.test.ts && npm run typecheck`
-Expected: 10 tests pass, and no type errors.
+Expected: 14 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2339,7 +2507,7 @@ Expected: FAIL, cannot find module `../../src/providers/openai.js`
 ```typescript
 import OpenAI from "openai";
 import type { ChatCompletion, ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
-import type { CompletionRequest, Message, Part, Provider, Turn } from "../core/types.js";
+import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type Turn } from "../core/types.js";
 
 // Providers that accept OpenAI's chat-completions format. Base URLs checked 2026-10-22 against each
 // provider's docs: OpenRouter (openrouter.ai/docs), Moonshot/Kimi global platform (platform.kimi.ai),
@@ -2420,21 +2588,6 @@ export function fromOpenAI(res: ChatCompletion, kind: string): Turn {
   const refusal: unknown = choice.message.refusal;
   if (typeof refusal === "string" && refusal) turn.cutOff = { kind: "refusal", detail: refusal };
   return turn;
-}
-
-// Why a connection failed. The SDK's message is only "Connection error."; Node's fetch error ("fetch
-// failed") holds the real reason, such as ECONNREFUSED or ENOTFOUND, further down its causes. For
-// "localhost" that is an AggregateError with an empty message (one try per address), so its first
-// try is used.
-function connectReason(err: Error): string {
-  let found = err.message;
-  const seen = new Set<unknown>([err]); // a chain that loops back on itself would never end
-  for (let e: unknown = err.cause; e instanceof Error && !seen.has(e); e = e.cause) {
-    seen.add(e);
-    if (e instanceof AggregateError && e.errors[0] instanceof Error) found = e.errors[0].message;
-    else if (e.message) found = e.message;
-  }
-  return found;
 }
 
 export class OpenAIProvider implements Provider {
@@ -2659,9 +2812,10 @@ describe("error log", () => {
     const rows = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(rows).toHaveLength(2);
     expect(rows[0]).toMatchObject({ session: "s1", kind: "tool", attempted: "shell", lead: "fake:a" });
-    expect(summarize(file)).toContain("2 errors logged");
-    expect(summarize(file)).toContain("  tool: 1");
-    expect(summarize(file)).toContain("request\n  429");
+    const out = summarize(file).join("\n");
+    expect(out).toContain("2 errors logged");
+    expect(out).toContain("  tool: 1");
+    expect(out).toContain("request\n  429");
   });
 
   it("keeps its folder out of git, without touching the project's .gitignore", async () => {
@@ -2699,7 +2853,7 @@ describe("error log", () => {
   });
 
   it("says so when there is no log yet", () => {
-    expect(summarize(path.join(tmpdir(), "does-not-exist.jsonl"))).toBe("No errors logged yet.");
+    expect(summarize(path.join(tmpdir(), "does-not-exist.jsonl"))).toEqual(["No errors logged yet."]);
   });
 
   const row = (attempted: string) => JSON.stringify({ at: "2026-10-22T00:00:00.000Z", session: "s1", kind: "tool", attempted, message: "it broke", lead: "fake:a" });
@@ -2711,7 +2865,7 @@ describe("error log", () => {
 
   it("skips a half-written line and says how many it skipped", async () => {
     const file = await logFile(row("shell").slice(0, 20), row("shell"));
-    const out = summarize(file);
+    const out = summarize(file).join("\n");
     expect(out).toContain("1 errors logged");
     expect(out).toContain("shell\n  it broke");
     expect(out).toContain("(1 unreadable line skipped)");
@@ -2719,27 +2873,32 @@ describe("error log", () => {
 
   it("skips rows missing fields and null lines", async () => {
     const file = await logFile(JSON.stringify({ kind: "tool", attempted: "shell" }), "null", "5", row("shell"));
-    const out = summarize(file);
+    const out = summarize(file).join("\n");
     expect(out).toContain("1 errors logged");
     expect(out).toContain("(3 unreadable lines skipped)");
   });
 
   it("skips a last row that has no message", async () => {
-    const out = summarize(await logFile(row("shell"), JSON.stringify({ at: "x", kind: "tool", attempted: "shell" })));
+    const out = summarize(await logFile(row("shell"), JSON.stringify({ at: "x", kind: "tool", attempted: "shell" }))).join("\n");
     expect(out).toContain("shell\n  it broke");
     expect(out).toContain("(1 unreadable line skipped)");
   });
 
   it("still reports skipped lines when no row could be read", async () => {
-    expect(summarize(await logFile("{"))).toBe("No errors logged yet.\n(1 unreadable line skipped)");
+    expect(summarize(await logFile("{"))).toEqual(["No errors logged yet.", "(1 unreadable line skipped)"]);
   });
 
-  it("shortens a long attempted action to the terminal width", async () => {
-    const file = await logFile(row(`write_file ${"x".repeat(5000)}`));
-    const recent = (width?: number) => summarize(file, width).split("\n").find((l) => l.startsWith("Most recent"))!;
-    expect(recent(40)).toHaveLength(40);
-    expect(recent(40).endsWith("…")).toBe(true);
-    expect(recent().length).toBeLessThanOrEqual(process.stdout.columns ?? 80);
+  it("keeps the most recent action and its message whole, each on a row of its own, for the screen to cut", async () => {
+    const out = summarize(await logFile(row(`write_file ${"x".repeat(5000)}`)));
+    expect(out).toContain(`Most recent (2026-10-22T00:00:00.000Z): write_file ${"x".repeat(5000)}`);
+    expect(out).toContain("  it broke");
+  });
+
+  it("counts refusals another model answered apart from the errors", async () => {
+    const rescue = JSON.stringify({ at: "x", session: "s1", kind: "fallback", attempted: "response", message: "a declined; b answered instead", lead: "a" });
+    const out = summarize(await logFile(row("shell"), rescue));
+    expect(out[0]).toMatch(/^1 errors and 1 refusals another model answered, logged in /);
+    expect(out).toContain("  fallback: 1");
   });
 });
 
@@ -2769,7 +2928,6 @@ describe("Stats", () => {
     const stats = new Stats(bus);
     bus.emit("error", { kind: "fallback", attempted: "x", message: "a declined; b answered instead", lead: "a" });
     expect(stats.errors).toBe(0);
-    expect(stats.fallbacks).toBe(1);
   });
 });
 ```
@@ -2810,9 +2968,6 @@ export function attachErrorLog(bus: Bus, file: string, session: string): void {
   bus.on("error", write);
 }
 
-// Same rule as the scrollback (tui/describe.ts), kept here so core does not import from the interface.
-const fit = (s: string, width: number) => (s.length <= width ? s : `${s.slice(0, Math.max(0, width - 1))}…`);
-
 // A killed process or a full disk can leave a half-written line; one bad line must not hide the rest.
 function parse(line: string): Row | undefined {
   try {
@@ -2822,23 +2977,26 @@ function parse(line: string): Row | undefined {
   return undefined;
 }
 
-export function summarize(file: string, width = process.stdout.columns ?? 80): string {
-  if (!existsSync(file)) return "No errors logged yet.";
+// One row per screen line. The screen escapes each row and cuts it to its width (a failed write_file's
+// input is the whole file), so the escapes and wide characters count.
+export function summarize(file: string): string[] {
+  if (!existsSync(file)) return ["No errors logged yet."];
   const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
   const rows = lines.map(parse).filter((r) => r !== undefined);
   const skipped = lines.length - rows.length;
   const note = skipped ? [`(${skipped} unreadable line${skipped === 1 ? "" : "s"} skipped)`] : [];
-  if (rows.length === 0) return ["No errors logged yet.", ...note].join("\n");
+  if (rows.length === 0) return ["No errors logged yet.", ...note];
   const counts = new Map<string, number>();
   for (const r of rows) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
+  const rescued = counts.get("fallback") ?? 0; // logged so /errors shows them, but not failures
   const last = rows.at(-1)!;
   return [
-    `${rows.length} errors logged in ${file}`,
+    `${rows.length - rescued} errors${rescued ? ` and ${rescued} refusals another model answered,` : ""} logged in ${file}`,
     ...[...counts].map(([kind, n]) => `  ${kind}: ${n}`),
-    // A failed write_file's input is the whole file.
-    `${fit(`Most recent (${last.at}): ${last.attempted}`, width)}\n  ${last.message.split("\n")[0]}`,
+    `Most recent (${last.at}): ${last.attempted}`,
+    `  ${last.message.split("\n")[0]}`,
     ...note,
-  ].join("\n");
+  ];
 }
 ```
 
@@ -2855,8 +3013,7 @@ export class Stats {
   cost = 0; // USD, for calls whose price is known
   costUnknown = false; // true once any call had no known price
   context = 0; // size of the most recent request plus its reply
-  errors = 0;
-  fallbacks = 0; // refusals another model answered; shown, but not counted as errors
+  errors = 0; // a refusal another model answered is not one
 
   constructor(bus: Bus) {
     bus.on("usage", ({ provider, usage, priceKnown }) => {
@@ -2868,7 +3025,9 @@ export class Stats {
       if (c === null) this.costUnknown = true;
       else this.cost += c;
     });
-    bus.on("error", (e) => (e.kind === "fallback" ? this.fallbacks++ : this.errors++));
+    bus.on("error", (e) => {
+      if (e.kind !== "fallback") this.errors++;
+    });
   }
 }
 ```
@@ -2876,7 +3035,7 @@ export class Stats {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/errorlog.test.ts && npm run typecheck`
-Expected: 13 tests pass, and no type errors.
+Expected: 14 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2942,6 +3101,12 @@ describe("StatusLine", () => {
     expect(shown).not.toContain("lead");
   });
 
+  it("stays on one line of the terminal, cutting off the end", () => {
+    const shown = frame({ ...info, lead: `anthropic:${"x".repeat(200)}` }, SEGMENTS)!;
+    expect(shown.split("\n")).toHaveLength(1);
+    expect(shown).toContain("…");
+  });
+
   it.each([
     [999, 1000, "999 in / 1.0k out"],
     [999_999, 1_000_000, "1.0M in / 1.0M out"], // rounds to 1000.0k, so it is shown in millions
@@ -2963,20 +3128,17 @@ describe("StatusLine", () => {
 
 describe("describe", () => {
   it("shows tool calls and failed results on one line each", () => {
-    const lines = describeMessage(
-      { role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] },
-      80,
-    );
-    expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "red" }]);
+    const lines = describeMessage({ role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] });
+    expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "red", oneLine: true }]);
   });
 
   it("does not show an unknown kind of part as a tool result", () => {
-    expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] }, 80)).toEqual([]);
+    expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] })).toEqual([]);
   });
 
-  it("cuts a one-line entry to the width after escaping, so escapes count", () => {
-    const [line] = describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name: "\u001b\u001b", input: 1 }] }, 10);
-    expect(screen(line!).text).toBe("● \\u001b\\…");
+  it("escapes a one-line entry's line breaks too, so it stays one line", () => {
+    const [line] = describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name: "a\nb", input: 1 }] });
+    expect(screen(line!).text).toBe("● a⏎b 1");
   });
 });
 
@@ -2997,7 +3159,7 @@ Expected: FAIL, cannot find module `../../src/tui/describe.js`
 `src/tui/StatusLine.tsx`:
 
 ```tsx
-import { Box, Text } from "ink";
+import { Text } from "ink";
 
 export type Segment = "lead" | "context" | "tokens" | "cost" | "mode" | "errors";
 export const SEGMENTS: Segment[] = ["lead", "context", "tokens", "cost", "mode", "errors"];
@@ -3038,17 +3200,18 @@ export function formatSegment(s: Segment, i: StatusInfo): string {
   }
 }
 
+// One line, cut at the end to the terminal's width (Ink measures it in columns) instead of wrapping.
 export function StatusLine({ info, segments }: { info: StatusInfo; segments: Segment[] }) {
   return (
-    <Box>
+    <Text inverse wrap="truncate-end">
       {segments.map((s, n) => (
-        <Text key={n} inverse color={s === "errors" && info.errors > 0 ? "red" : undefined}>
+        <Text key={n} color={s === "errors" && info.errors > 0 ? "red" : undefined}>
           {n === 0 ? " " : " | "}
           {formatSegment(s, info)}
           {n === segments.length - 1 ? " " : ""}
         </Text>
       ))}
-    </Box>
+    </Text>
   );
 }
 ```
@@ -3062,27 +3225,27 @@ import type { Message } from "../core/types.js";
 export interface Line {
   text: string;
   color?: string;
-  width?: number; // set for one-line entries: cut to this width once escaped
+  oneLine?: boolean; // shown on one line, cut to the screen's width (App.tsx)
 }
 
 const firstLine = (s: string) => s.split(/\r?\n/)[0] ?? "";
-const fit = (s: string, width: number) => (s.length <= width ? s : `${s.slice(0, Math.max(0, width - 1))}…`);
 
 // Every scrollback line passes through here. Model and provider text can carry escape codes (OSC 52
 // writes the clipboard), \r and bidi overrides, which the terminal would act on. Prose keeps its line
-// breaks and tabs; one-line entries are cut after escaping, so the escapes count toward the width.
+// breaks and tabs. A one-line entry has its line breaks escaped too; the screen cuts it after this, by
+// terminal columns, so the escapes and wide characters count toward the width.
 export function screen(l: Line): Line {
-  const text = l.width === undefined ? l.text.split(/\r?\n/).map((s) => visible(s, { tabs: true })).join("\n") : fit(visible(l.text), l.width);
-  return l.color === undefined ? { text } : { text, color: l.color };
+  const text = l.oneLine ? visible(l.text) : l.text.split(/\r?\n/).map((s) => visible(s, { tabs: true })).join("\n");
+  return { text, ...(l.color === undefined ? {} : { color: l.color }), ...(l.oneLine ? { oneLine: true } : {}) };
 }
 
 // How one message appears in the scrollback.
-export function describe(m: Message, width = process.stdout.columns ?? 80): Line[] {
+export function describe(m: Message): Line[] {
   const lines: Line[] = [];
   for (const p of m.parts) {
     if (p.type === "text") lines.push(m.role === "user" ? { text: `> ${p.text}`, color: "cyan" } : { text: p.text });
-    else if (p.type === "tool_call") lines.push({ text: `● ${p.name} ${JSON.stringify(p.input)}`, color: "yellow", width });
-    else if (p.type === "tool_result") lines.push({ text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, color: p.isError ? "red" : "gray", width });
+    else if (p.type === "tool_call") lines.push({ text: `● ${p.name} ${JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
+    else if (p.type === "tool_result") lines.push({ text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, color: p.isError ? "red" : "gray", oneLine: true });
     else {
       const _: never = p; // a new kind of part must be given its own line here
     }
@@ -3094,7 +3257,7 @@ export function describe(m: Message, width = process.stdout.columns ?? 80): Line
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tui/statusline.test.tsx && npm run typecheck`
-Expected: 10 tests pass, and no type errors.
+Expected: 11 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -3118,7 +3281,7 @@ Ctrl-C stops the current turn, or quits when idle.
 `tests/tui/app.test.tsx`:
 
 ```tsx
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -3150,8 +3313,8 @@ async function mount(turns: ConstructorParameters<typeof FakeProvider>[1], opts:
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
-  let ask: (s: string) => Promise<boolean> = async () => false;
-  const gate = new PermissionGate("ask", (s) => ask(s));
+  let ask: (s: string, d?: string) => Promise<boolean> = async () => false;
+  const gate = new PermissionGate("ask", (s, d) => ask(s, d));
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const session = new Session({ lead, tools: TOOLS, system: "t", ctx: { ...ctx, gate }, bus });
   const app = render(
@@ -3320,6 +3483,33 @@ describe("App", () => {
     expect(app.lastFrame()).toContain("No errors logged yet.");
   });
 
+  it("cuts each row of /errors to the screen's width", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const errorFile = path.join(dir, "errors.jsonl");
+    writeFileSync(errorFile, `${JSON.stringify({ at: "x", session: "s", kind: "tool", attempted: `write_file ${"x".repeat(300)}`, message: "y".repeat(300), lead: "a" })}\n`);
+    const { app } = await mount([], { errorFile });
+    await type(app, "/errors");
+    const rows = app.lastFrame()!.split("\n");
+    expect(rows.find((l) => l.startsWith("Most recent"))!.endsWith("…")).toBe(true);
+    expect(rows.find((l) => l.startsWith("  yyy"))!.endsWith("…")).toBe(true);
+  });
+
+  it("cuts a tool call to the screen's width, counting a wide character as two columns", async () => {
+    const { app } = await mount([callTool("c1", "x", { s: "漢".repeat(80) }), reply("done")]);
+    await type(app, "hi");
+    await until(app, "done");
+    const line = app.lastFrame()!.split("\n").find((l) => l.startsWith("● x"))!;
+    expect(line.endsWith("…")).toBe(true);
+    expect([...line].filter((c) => c === "漢").length).toBeLessThan(50); // the test screen is 100 columns
+  });
+
+  it("shows what a write will put in the file before asking", async () => {
+    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two" }), reply("written")]);
+    await type(app, "make a file");
+    await until(app, "Allow write");
+    expect(app.lastFrame()).toContain("line one\nline two");
+  });
+
   it("shows an error, and keeps running, when the error log cannot be read", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "tachi-"));
     const { app } = await mount([reply("still here")], { errorFile: dir });
@@ -3392,7 +3582,7 @@ export interface AppProps {
   errorFile: string;
   segments: Segment[];
   makeProvider: (spec: string) => Provider;
-  bindAsk: (ask: (summary: string) => Promise<boolean>) => void;
+  bindAsk: (ask: (summary: string, detail?: string) => Promise<boolean>) => void;
 }
 
 export function App({ session, bus, stats, mode, errorFile, segments, makeProvider, bindAsk }: AppProps) {
@@ -3418,9 +3608,11 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
   };
 
   useEffect(() => {
-    bindAsk((text) => {
+    bindAsk((text, detail) => {
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped.
       if (abort.current?.signal.aborted) return Promise.resolve(false);
+      // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
+      if (detail !== undefined) say({ text: detail });
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
         setQuestion({
@@ -3465,7 +3657,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
     if (!text) return;
     try {
       if (text === "/exit") return exit();
-      if (text === "/errors") return say({ text: summarize(errorFile) });
+      if (text === "/errors") return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
       if (text === "/lead") return say({ text: "Usage: /lead <provider:model>" });
       if (text.startsWith("/lead ")) return session.setLead(makeProvider(text.slice("/lead ".length).trim()));
       // A mistyped command must not become a paid turn.
@@ -3504,7 +3696,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
     <>
       <Static items={lines}>
         {(l) => (
-          <Text key={l.id} color={l.color}>
+          <Text key={l.id} color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
             {l.text}
           </Text>
         )}
@@ -3536,7 +3728,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tui/app.test.tsx && npm run typecheck`
-Expected: 18 tests pass, and no type errors.
+Expected: 21 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -3696,6 +3888,7 @@ if (parsed.help) {
 
 const leadSpec = parsed.lead ?? process.env.TACHI_LEAD;
 if (!leadSpec) fail(`No lead model given. Pass --lead or set TACHI_LEAD.\n\n${HELP}`);
+if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
 const mode: Mode = oneOf("mode", parsed.mode, MODES) ?? "ask"; // the safest mode is the default
 const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
 let segments;
@@ -3726,14 +3919,14 @@ try {
 }
 
 let declined = false;
-let ask: (summary: string) => Promise<boolean> = async (summary) => {
+let ask: (summary: string, detail?: string) => Promise<boolean> = async (summary) => {
   declined = true;
   console.error(
     `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused; --mode never means no checks at all): ${summary}`,
   );
   return false;
 };
-const gate = new PermissionGate(mode, (summary) => ask(summary));
+const gate = new PermissionGate(mode, (summary, detail) => ask(summary, detail), parsed.print === undefined ? undefined : "Not allowed in -p mode, where nobody can approve it");
 const session = new Session({ lead, fallback, tools: TOOLS, system: systemPrompt(root), ctx: { root, executor: new LocalExecutor(), gate }, bus });
 
 // The executor stops running commands from an "exit" handler, which dying by a signal skips.
@@ -3766,6 +3959,8 @@ if (parsed.print !== undefined) {
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
   if (!process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
+  // Ctrl-C reaches the interface as a key; a SIGINT here came from outside (`kill -INT`).
+  process.on("SIGINT", () => process.exit(128 + constants.signals.SIGINT));
   render(
     <App
       session={session}
@@ -3888,7 +4083,11 @@ import { describe, expect, it } from "vitest";
 
 // Runs the real command through tsx. Every case here stops before any model is called.
 function tachi(...args: string[]) {
-  const r = spawnSync(process.execPath, ["--import", "tsx", path.resolve("src/cli.tsx"), ...args], { input: "x\n", encoding: "utf8", env: { ...process.env, TACHI_LEAD: "" } });
+  const r = spawnSync(process.execPath, ["--import", "tsx", path.resolve("src/cli.tsx"), ...args], {
+    input: "x\n",
+    encoding: "utf8",
+    env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "" },
+  });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -3897,6 +4096,20 @@ describe("tachi", () => {
     const r = tachi("--lead", "ollama:none", "--fallback", "nope", "-p", "hi");
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/^--fallback: /);
+  });
+
+  it("refuses a blank prompt instead of sending it", () => {
+    for (const prompt of ["", "  "]) {
+      const r = tachi("--lead", "ollama:none", "-p", prompt);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("-p needs a prompt");
+    }
+  });
+
+  it("asks for the Anthropic key before starting", () => {
+    const r = tachi("--lead", "anthropic:claude-opus-5-5", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("Set ANTHROPIC_API_KEY to use anthropic");
   });
 
   it("refuses interactive mode without a terminal, before starting the interface", () => {
@@ -3911,7 +4124,7 @@ describe("tachi", () => {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  169 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  189 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -3986,7 +4199,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  169 passed | 1 skipped`.
+Expected: `Tests  189 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 
