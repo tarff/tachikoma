@@ -3,6 +3,7 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { editFileTool, readFileTool, resolveIn, writeFileTool } from "../../src/tools/files.js";
 import { tempContext } from "../helpers.js";
 
@@ -34,11 +35,11 @@ describe("file tools", () => {
 
   it("reads 2,000 lines unless told otherwise, saying so first, where a cut-off cannot hide it", async () => {
     const ctx = await tempContext();
-    await writeFile(path.join(ctx.root, "a.txt"), Array.from({ length: 2500 }, (_, i) => `line ${i + 1}`).join("\n"));
+    await writeFile(path.join(ctx.root, "a.txt"), Array.from({ length: 2500 }, (_, i) => `l${i + 1}`).join("\n"));
     const out = await readFileTool.run({ path: "a.txt" }, ctx);
     expect(out.split("\n")[0]).toBe("(showing lines 1-2000 of 2500; use offset and limit to read the rest)");
-    expect(out).toContain("  2000\tline 2000");
-    expect(out).not.toContain("line 2001");
+    expect(out).toContain("  2000\tl2000");
+    expect(out).not.toContain("l2001");
   });
 
   it("says how long a file is when asked to start past its end, and when it is empty", async () => {
@@ -126,10 +127,28 @@ describe("file tools", () => {
     expect(await readFile(path.join(ctx.root, "a.txt"))).toEqual(latin1);
   });
 
-  it("mentions Windows line endings when an edit finds nothing", async () => {
+  it("reads \\n in an edit as \\r\\n in a file with Windows line endings, which read_file does not show", async () => {
     const ctx = await tempContext();
-    await writeFileTool.run({ path: "a.txt", content: "one\r\ntwo" }, ctx);
-    await expect(editFileTool.run({ path: "a.txt", old_text: "one\ntwo", new_text: "x" }, ctx)).rejects.toThrow("CRLF line endings");
+    await writeFileTool.run({ path: "a.txt", content: "one\r\ntwo\r\n" }, ctx);
+    await editFileTool.run({ path: "a.txt", old_text: "one\ntwo", new_text: "un\ndeux" }, ctx);
+    expect(await readFile(path.join(ctx.root, "a.txt"), "utf8")).toBe("un\r\ndeux\r\n");
+  });
+
+  it("checks an edit inside the project before asking, so the user is not asked about one that cannot work", async () => {
+    const ctx = await tempContext("ask", [true]);
+    await writeFile(path.join(ctx.root, "a.txt"), "one");
+    await expect(editFileTool.run({ path: "a.txt", old_text: "three", new_text: "x" }, ctx)).rejects.toThrow("old_text was not found");
+    expect(ctx.asked).toEqual([]);
+  });
+
+  it("stops reading before the output limit, and names the last line it really shows", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), Array.from({ length: 2500 }, (_, i) => `${i + 1} ${"x".repeat(100)}`).join("\n"));
+    const out = await readFileTool.run({ path: "a.txt" }, ctx);
+    const last = Number(/^\(showing lines 1-(\d+) of 2500;/.exec(out)![1]);
+    expect(last).toBeLessThan(2000);
+    expect(out.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+    expect(out.split("\n").at(-1)).toMatch(new RegExp(`^ *${last}\\t${last} x`));
   });
 
   it("treats a new file in a new folder inside the project as inside", async () => {

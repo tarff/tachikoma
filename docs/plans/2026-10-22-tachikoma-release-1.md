@@ -101,7 +101,15 @@ build made on 2026-10-22, not retyped. In that build:
   - **In `-p` mode a refused action is not called the user's decision.** A blank `-p` prompt is
     refused before any request. An outside SIGINT in interactive mode runs the exit cleanup.
     Invisible direction marks and line separators are escaped too.
-- That makes 189 tests in all.
+- Review of those changes:
+  - **`read_file` stops before the 30,000-character cut**, so its note names the last line really
+    shown; before, a file of long lines could be noted as "lines 1-2000" and cut at line 269.
+  - **`edit_file` reads `\n` as `\r\n` in a file with Windows line endings**, since `read_file` no
+    longer shows the `\r`. Inside the project an edit is checked before the user is asked about it.
+  - **A write's preview is grey, under a heading** with the path and line count; an empty one says
+    `(empty)`. A test now checks that Anthropic requests carry no bearer token. Rewritten connection
+    errors keep the original as their cause.
+- That makes 193 tests in all.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
@@ -144,6 +152,12 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
   to fail; both are on the live test's list (Task 14).
 - **Windows exit codes are 0 or 1.** PowerShell `-Command` reports only whether the last command
   succeeded, so a program's own exit code is lost.
+- **A single line longer than 30,000 characters** (a minified file, say) is cut, and paging works in
+  whole lines, so the rest of that line cannot be read.
+- **A write's preview shows the whole file**, so a very large one can push its own start out of the
+  terminal's scrollback before the question appears.
+- **The Anthropic SDK still adds any headers set in `ANTHROPIC_CUSTOM_HEADERS`**, including an
+  `Authorization` header if the user puts one there.
 - **PowerShell error messages repeat the whole command**, including the UTF-8 line we put first.
   Tried on 2026-10-22: the line on its own line (still repeated), a script block (lost the exit
   code), `-EncodedCommand` (errors and progress come back as XML).
@@ -999,6 +1013,7 @@ import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { editFileTool, readFileTool, resolveIn, writeFileTool } from "../../src/tools/files.js";
 import { tempContext } from "../helpers.js";
 
@@ -1030,11 +1045,11 @@ describe("file tools", () => {
 
   it("reads 2,000 lines unless told otherwise, saying so first, where a cut-off cannot hide it", async () => {
     const ctx = await tempContext();
-    await writeFile(path.join(ctx.root, "a.txt"), Array.from({ length: 2500 }, (_, i) => `line ${i + 1}`).join("\n"));
+    await writeFile(path.join(ctx.root, "a.txt"), Array.from({ length: 2500 }, (_, i) => `l${i + 1}`).join("\n"));
     const out = await readFileTool.run({ path: "a.txt" }, ctx);
     expect(out.split("\n")[0]).toBe("(showing lines 1-2000 of 2500; use offset and limit to read the rest)");
-    expect(out).toContain("  2000\tline 2000");
-    expect(out).not.toContain("line 2001");
+    expect(out).toContain("  2000\tl2000");
+    expect(out).not.toContain("l2001");
   });
 
   it("says how long a file is when asked to start past its end, and when it is empty", async () => {
@@ -1122,10 +1137,28 @@ describe("file tools", () => {
     expect(await readFile(path.join(ctx.root, "a.txt"))).toEqual(latin1);
   });
 
-  it("mentions Windows line endings when an edit finds nothing", async () => {
+  it("reads \\n in an edit as \\r\\n in a file with Windows line endings, which read_file does not show", async () => {
     const ctx = await tempContext();
-    await writeFileTool.run({ path: "a.txt", content: "one\r\ntwo" }, ctx);
-    await expect(editFileTool.run({ path: "a.txt", old_text: "one\ntwo", new_text: "x" }, ctx)).rejects.toThrow("CRLF line endings");
+    await writeFileTool.run({ path: "a.txt", content: "one\r\ntwo\r\n" }, ctx);
+    await editFileTool.run({ path: "a.txt", old_text: "one\ntwo", new_text: "un\ndeux" }, ctx);
+    expect(await readFile(path.join(ctx.root, "a.txt"), "utf8")).toBe("un\r\ndeux\r\n");
+  });
+
+  it("checks an edit inside the project before asking, so the user is not asked about one that cannot work", async () => {
+    const ctx = await tempContext("ask", [true]);
+    await writeFile(path.join(ctx.root, "a.txt"), "one");
+    await expect(editFileTool.run({ path: "a.txt", old_text: "three", new_text: "x" }, ctx)).rejects.toThrow("old_text was not found");
+    expect(ctx.asked).toEqual([]);
+  });
+
+  it("stops reading before the output limit, and names the last line it really shows", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), Array.from({ length: 2500 }, (_, i) => `${i + 1} ${"x".repeat(100)}`).join("\n"));
+    const out = await readFileTool.run({ path: "a.txt" }, ctx);
+    const last = Number(/^\(showing lines 1-(\d+) of 2500;/.exec(out)![1]);
+    expect(last).toBeLessThan(2000);
+    expect(out.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+    expect(out.split("\n").at(-1)).toMatch(new RegExp(`^ *${last}\\t${last} x`));
   });
 
   it("treats a new file in a new folder inside the project as inside", async () => {
@@ -1155,6 +1188,7 @@ Expected: FAIL, cannot find module `../../src/tools/files.js`
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { defineTool } from "./tool.js";
 
 // Where a path really leads, following symlinks and Windows junctions. Parts that don't exist yet
@@ -1200,12 +1234,22 @@ export const readFileTool = defineTool(
     if (!text) return `(${p} is empty)`;
     const lines = text.replace(/\r?\n$/, "").split(/\r?\n/);
     if (offset > lines.length) return `(${p} has ${lines.length} lines)`;
-    const part = lines.slice(offset - 1, offset - 1 + limit);
-    const last = offset + part.length - 1;
-    const numbered = part.map((l, i) => `${String(offset + i).padStart(6)}\t${l}`).join("\n");
-    // First, not last: the session cuts long tool output from the end.
-    if (offset === 1 && last === lines.length) return numbered;
-    return `(showing lines ${offset}-${last} of ${lines.length}; use offset and limit to read the rest)\n${numbered}`;
+    const note = (last: number) => `(showing lines ${offset}-${last} of ${lines.length}; use offset and limit to read the rest)`;
+    // Stops before the session's cut at MAX_TOOL_OUTPUT, leaving room for the longest note, so the note
+    // names the last line really shown. One line too long for the room on its own is still shown, and
+    // the session cuts it.
+    const room = MAX_TOOL_OUTPUT - note(lines.length).length - 1;
+    const rows: string[] = [];
+    let size = 0;
+    for (let n = offset; n < offset + limit && n <= lines.length; n++) {
+      const row = `${String(n).padStart(6)}\t${lines[n - 1]}`;
+      if (rows.length && size + row.length + 1 > room) break;
+      rows.push(row);
+      size += row.length + 1;
+    }
+    const last = offset + rows.length - 1;
+    if (offset === 1 && last === lines.length) return rows.join("\n");
+    return `${note(last)}\n${rows.join("\n")}`; // first, not last: the session cuts long output from the end
   },
 );
 
@@ -1229,18 +1273,27 @@ export const editFileTool = defineTool(
     const { abs, outside, shown } = resolveIn(ctx.root, p);
     const marked = (sign: string, s: string) => s.split("\n").map((l) => `${sign} ${l}`);
     const detail = [...marked("-", old_text), ...(new_text ? marked("+", new_text) : [])].join("\n");
+    // Inside the project a read needs no approval, so an edit that cannot work fails before the user is
+    // asked. It is checked again after: the file may change while the question waits.
+    if (!outside) edited(await ctx.executor.readFile(abs), p, old_text, new_text);
     await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}`, detail });
-    const text = await ctx.executor.readFile(abs);
-    // Bytes that are not UTF-8 read back as U+FFFD, and writing the text back would destroy them.
-    if (text.includes("�")) throw new Error(`${p} is not UTF-8 text, so edit_file would damage it`);
-    const count = text.split(old_text).length - 1;
-    const crlf = text.includes("\r\n") ? " (the file uses CRLF line endings)" : "";
-    if (count === 0) throw new Error(`old_text was not found in ${p}${crlf}`);
-    if (count > 1) throw new Error(`old_text appears ${count} times in ${p}; include more surrounding text so it is unique`);
-    await ctx.executor.writeFile(abs, text.replace(old_text, () => new_text));
+    await ctx.executor.writeFile(abs, edited(await ctx.executor.readFile(abs), p, old_text, new_text));
     return `Edited ${p}`;
   },
 );
+
+// The file with the edit made, or why it cannot be. read_file hides \r, so in a file with Windows line
+// endings a \n in the edit's text means \r\n.
+function edited(text: string, p: string, old_text: string, new_text: string): string {
+  // Bytes that are not UTF-8 read back as U+FFFD, and writing the text back would destroy them.
+  if (text.includes("�")) throw new Error(`${p} is not UTF-8 text, so edit_file would damage it`);
+  const eol = (s: string) => (text.includes("\r\n") ? s.replace(/\r?\n/g, "\r\n") : s);
+  const [from, to] = [eol(old_text), eol(new_text)];
+  const count = text.split(from).length - 1;
+  if (count === 0) throw new Error(`old_text was not found in ${p}`);
+  if (count > 1) throw new Error(`old_text appears ${count} times in ${p}; include more surrounding text so it is unique`);
+  return text.replace(from, () => to);
+}
 ```
 
 The replacement in `edit_file` is passed as a function so `$&` and similar sequences in the new text are written literally (the test checks this).
@@ -1250,7 +1303,7 @@ The replacement in `edit_file` is passed as a function so `$&` and similar seque
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tools/files.test.ts && npm run typecheck`
-Expected: 18 tests pass, and no type errors.
+Expected: 20 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2057,12 +2110,25 @@ describe("AnthropicProvider", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it("needs ANTHROPIC_API_KEY, and takes no other kind of sign-in", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "");
     vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "a-bearer-token");
     expect(() => new AnthropicProvider("claude-opus-5-5")).toThrow("Set ANTHROPIC_API_KEY to use anthropic");
+  });
+
+  it("sends only the API key, even when a bearer token is set", async () => {
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "a-bearer-token");
+    const sent: Headers[] = [];
+    vi.stubGlobal("fetch", async (_url: unknown, init: RequestInit) => {
+      sent.push(new Headers(init.headers));
+      return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "stop here" } }), { status: 400, headers: { "content-type": "application/json" } });
+    });
+    await expect(new AnthropicProvider("claude-opus-5-5").complete({ system: "s", messages: [], tools: [] })).rejects.toThrow("stop here");
+    expect(sent[0]!.get("x-api-key")).toBe("test-key");
+    expect(sent[0]!.has("authorization")).toBe(false);
   });
 
   it("names the underlying reason a connection failed", async () => {
@@ -2228,10 +2294,10 @@ export class AnthropicProvider implements Provider {
     } catch (err) {
       // The timeout error is a subclass of the connection error, so it is checked first.
       if (err instanceof Anthropic.APIConnectionTimeoutError) {
-        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network.`);
+        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network.`, { cause: err });
       }
       if (err instanceof Anthropic.APIConnectionError) {
-        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check your network.`);
+        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check your network.`, { cause: err });
       }
       throw err;
     }
@@ -2273,7 +2339,7 @@ export class AnthropicProvider implements Provider {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/providers/anthropic.test.ts && npm run typecheck`
-Expected: 14 tests pass, and no type errors.
+Expected: 15 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2618,10 +2684,12 @@ export class OpenAIProvider implements Provider {
     } catch (err) {
       // The timeout error is a subclass of the connection error, so it is checked first.
       if (err instanceof OpenAI.APIConnectionTimeoutError) {
-        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network, or that the server is running.`);
+        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network, or that the server is running.`, { cause: err });
       }
       if (err instanceof OpenAI.APIConnectionError) {
-        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check the address, your network, or that the server is running.`);
+        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check the address, your network, or that the server is running.`, {
+          cause: err,
+        });
       }
       throw err;
     }
@@ -3503,11 +3571,18 @@ describe("App", () => {
     expect([...line].filter((c) => c === "漢").length).toBeLessThan(50); // the test screen is 100 columns
   });
 
-  it("shows what a write will put in the file before asking", async () => {
-    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two" }), reply("written")]);
+  it("shows what a write will put in the file before asking, under a heading", async () => {
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two" }), reply("written")]);
     await type(app, "make a file");
     await until(app, "Allow write");
-    expect(app.lastFrame()).toContain("line one\nline two");
+    expect(app.lastFrame()).toContain(`┌ write ${path.join(ctx.root, "a.txt")} (2 lines)\nline one\nline two`);
+  });
+
+  it("says so when a write would leave the file empty", async () => {
+    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "" }), reply("written")]);
+    await type(app, "empty it");
+    await until(app, "Allow write");
+    expect(app.lastFrame()).toContain("(0 lines)\n(empty)");
   });
 
   it("shows an error, and keeps running, when the error log cannot be read", async () => {
@@ -3612,7 +3687,11 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped.
       if (abort.current?.signal.aborted) return Promise.resolve(false);
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
-      if (detail !== undefined) say({ text: detail });
+      // Grey, under a heading, so file text cannot pass for the conversation or the interface.
+      if (detail !== undefined) {
+        const lines = detail ? detail.split("\n").length : 0;
+        say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
+      }
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
         setQuestion({
@@ -3728,7 +3807,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tui/app.test.tsx && npm run typecheck`
-Expected: 21 tests pass, and no type errors.
+Expected: 22 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -4124,7 +4203,7 @@ describe("tachi", () => {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  189 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  193 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -4199,7 +4278,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  189 passed | 1 skipped`.
+Expected: `Tests  193 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 

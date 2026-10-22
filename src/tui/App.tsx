@@ -49,7 +49,11 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped.
       if (abort.current?.signal.aborted) return Promise.resolve(false);
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
-      if (detail !== undefined) say({ text: detail });
+      // Grey, under a heading, so file text cannot pass for the conversation or the interface.
+      if (detail !== undefined) {
+        const lines = detail ? detail.split("\n").length : 0;
+        say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
+      }
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
         setQuestion({
