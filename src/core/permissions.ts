@@ -23,11 +23,10 @@ const NAMED: Record<string, string> = { "\n": "⏎", "\r": "␍", "\t": "⇥" };
 
 // Shows control characters as escapes, so the approval prompt shows what will run: escape codes can
 // hide or recolour text, \r and many \n can push part of a command out of sight, and bidi overrides
-// can reorder it.
-export function visible(text: string): string {
-  return text.replace(
-    /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
-    (c) => NAMED[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+// can reorder it. `tabs` keeps tabs as they are, for prose in the scrollback.
+export function visible(text: string, opts: { tabs?: boolean } = {}): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) =>
+    opts.tabs && c === "\t" ? c : (NAMED[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`),
   );
 }
 

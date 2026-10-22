@@ -60,7 +60,20 @@ build made on 2026-10-22, not retyped. In that build:
     action to the terminal width. A refusal the `--fallback` model rescues is logged once, as a
     `fallback`, and no longer counts as an error.
   - **The approval prompt** shows a line break as ⏎ (and ␍, ⇥), so a typed `\n` cannot pass for one.
-- That makes 125 tests in all.
+- Code review of Tasks 11, 12 and 13:
+  - **The scrollback** escapes everything the model controls (its text, tool names and inputs, tool
+    errors, provider errors, `/errors`) in one place, so terminal codes such as clipboard writes,
+    hidden text or carriage returns cannot reach the terminal. Tabs in prose stay tabs.
+  - **The interactive screen**: Ctrl-C at an approval prompt answers no and stops the turn; errors
+    are shown instead of ending the program; an unknown `/command` is refused instead of sent to
+    the model; a prompt is answered once; a late context-window lookup cannot apply to a new lead.
+    The status line shows millions as `M`.
+  - **The command**: a headless run in which an action was declined exits 1; Ctrl-C in a headless
+    run stops the turn and its commands and exits 130; SIGTERM and SIGHUP run the exit cleanup;
+    interactive mode without a terminal says to use `-p`; a closed pipe on stdout ends quietly. The
+    system prompt says the tools ask the user themselves, that Windows PowerShell 5.1 has no `&&`,
+    and not to start commands that never return. The error log's folder gets its own `.gitignore`.
+- That makes 157 tests in all.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
@@ -99,9 +112,10 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
 - **Windows exit codes are 0 or 1.** PowerShell `-Command` reports only whether the last command
   succeeded, so a program's own exit code is lost.
 - **Commands have no time limit**, so one that keeps its output open runs until you cancel it. A time
-  limit needs data first, and comes with the budget controller (release 6). If Tachikoma itself is
-  killed by a signal (the terminal closed, or Ctrl-C in headless mode), its exit cleanup does not
-  run, so on macOS and Linux a command still running keeps going.
+  limit needs data first, and comes with the budget controller (release 6). Closing the terminal
+  (SIGHUP), SIGTERM, and Ctrl-C in headless mode all go through the exit cleanup, which stops running
+  commands; a hard kill (SIGKILL) or a crash of Node itself does not, and on macOS and Linux a command
+  then keeps going.
 
 **Decided 2026-10-22:**
 - **Licence:** MIT.
@@ -444,6 +458,10 @@ describe("visible", () => {
     expect(visible("echo done\nrm -rf build")).not.toBe(visible("echo done\\nrm -rf build"));
   });
 
+  it("can leave tabs as tabs, for prose", () => {
+    expect(visible("a\tb\u001b[8m\n", { tabs: true })).toBe("a\tb\\u001b[8m⏎");
+  });
+
   it("leaves ordinary text alone", () => {
     expect(visible("echo café costs 5€ > out.txt")).toBe("echo café costs 5€ > out.txt");
   });
@@ -492,11 +510,10 @@ const NAMED: Record<string, string> = { "\n": "⏎", "\r": "␍", "\t": "⇥" };
 
 // Shows control characters as escapes, so the approval prompt shows what will run: escape codes can
 // hide or recolour text, \r and many \n can push part of a command out of sight, and bidi overrides
-// can reorder it.
-export function visible(text: string): string {
-  return text.replace(
-    /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g,
-    (c) => NAMED[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+// can reorder it. `tabs` keeps tabs as they are, for prose in the scrollback.
+export function visible(text: string, opts: { tabs?: boolean } = {}): string {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, (c) =>
+    opts.tabs && c === "\t" ? c : (NAMED[c] ?? `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`),
   );
 }
 
@@ -520,7 +537,7 @@ export class PermissionGate {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/permissions.test.ts && npm run typecheck`
-Expected: 27 tests pass, and no type errors.
+Expected: 28 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2499,7 +2516,7 @@ Every error event becomes one JSON line in `.tachikoma/errors.jsonl`. The log is
 `tests/core/errorlog.test.ts`:
 
 ```typescript
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -2522,6 +2539,25 @@ describe("error log", () => {
     expect(summarize(file)).toContain("2 errors logged");
     expect(summarize(file)).toContain("  tool: 1");
     expect(summarize(file)).toContain("request\n  429");
+  });
+
+  it("keeps its folder out of git, without touching the project's .gitignore", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const bus = new Bus();
+    attachErrorLog(bus, path.join(root, ".tachikoma", "errors.jsonl"), "s1");
+    bus.emit("error", { kind: "tool", attempted: "write_file secret", message: "x", lead: "fake:a" });
+    expect(readFileSync(path.join(root, ".tachikoma", ".gitignore"), "utf8")).toBe("*\n");
+    expect(existsSync(path.join(root, ".gitignore"))).toBe(false);
+  });
+
+  it("leaves an existing .gitignore in its folder alone", async () => {
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), ".tachikoma");
+    mkdirSync(dir);
+    writeFileSync(path.join(dir, ".gitignore"), "errors.jsonl\n");
+    const bus = new Bus();
+    attachErrorLog(bus, path.join(dir, "errors.jsonl"), "s1");
+    bus.emit("error", { kind: "tool", attempted: "shell", message: "x", lead: "fake:a" });
+    expect(readFileSync(path.join(dir, ".gitignore"), "utf8")).toBe("errors.jsonl\n");
   });
 
   it("turns itself off, saying so once, when the log cannot be written", async () => {
@@ -2616,19 +2652,22 @@ Expected: FAIL, cannot find module `../../src/core/errorlog.js`
 `src/core/errorlog.ts`:
 
 ```typescript
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Bus, ErrorEvent } from "./bus.js";
 import { errorText } from "./types.js";
 
 type Row = ErrorEvent & { at: string; session: string };
 
-// One JSON line per failure, in the project's .tachikoma folder.
+// One JSON line per failure, in the project's .tachikoma folder, which it keeps out of git.
 // The log is optional: if it cannot be written, it says so once and turns itself off.
 export function attachErrorLog(bus: Bus, file: string, session: string): void {
   const write = (e: ErrorEvent) => {
     try {
       mkdirSync(path.dirname(file), { recursive: true });
+      // The log holds failed inputs (whole files, full commands) that may contain secrets.
+      const ignore = path.join(path.dirname(file), ".gitignore");
+      if (!existsSync(ignore)) writeFileSync(ignore, "*\n", "utf8");
       const row: Row = { at: new Date().toISOString(), session, ...e };
       appendFileSync(file, `${JSON.stringify(row)}\n`, "utf8");
     } catch (err) {
@@ -2705,7 +2744,7 @@ export class Stats {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/errorlog.test.ts && npm run typecheck`
-Expected: 10 tests pass, and no type errors.
+Expected: 12 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2729,9 +2768,9 @@ The bar along the bottom, and how each message appears above it.
 
 ```tsx
 import { render } from "ink-testing-library";
-import { describe, expect, it } from "vitest";
-import { describe as describeMessage } from "../../src/tui/describe.js";
-import { SEGMENTS, type StatusInfo, StatusLine } from "../../src/tui/StatusLine.js";
+import { describe, expect, it, vi } from "vitest";
+import { describe as describeMessage, screen } from "../../src/tui/describe.js";
+import { formatSegment, type Segment, SEGMENTS, type StatusInfo, StatusLine } from "../../src/tui/StatusLine.js";
 
 const info: StatusInfo = {
   lead: "anthropic:claude-opus-5-5",
@@ -2745,32 +2784,73 @@ const info: StatusInfo = {
   errors: 2,
 };
 
+// Renders once and unmounts, so Ink instances do not pile up.
+function frame(i: StatusInfo, segments: Segment[]) {
+  const app = render(<StatusLine info={i} segments={segments} />);
+  const shown = app.lastFrame();
+  app.unmount();
+  return shown;
+}
+
 describe("StatusLine", () => {
   it("shows every part by default", () => {
-    const frame = render(<StatusLine info={info} segments={SEGMENTS} />).lastFrame();
-    expect(frame).toContain("lead anthropic:claude-opus-5-5");
-    expect(frame).toContain("ctx 50%");
-    expect(frame).toContain("12.3k in / 678 out");
-    expect(frame).toContain("$0.42");
-    expect(frame).toContain("perm ask");
-    expect(frame).toContain("2 errors");
+    const shown = frame(info, SEGMENTS);
+    expect(shown).toContain("lead anthropic:claude-opus-5-5");
+    expect(shown).toContain("ctx 50%");
+    expect(shown).toContain("12.3k in / 678 out");
+    expect(shown).toContain("$0.42");
+    expect(shown).toContain("perm ask");
+    expect(shown).toContain("2 errors");
   });
 
   it("shows only the chosen parts, and raw context size when the window is unknown", () => {
-    const frame = render(<StatusLine info={{ ...info, contextWindow: null, costUnknown: true }} segments={["context", "cost"]} />).lastFrame();
-    expect(frame).toContain("ctx 500.0k");
-    expect(frame).toContain("$0.42 + ?");
-    expect(frame).not.toContain("lead");
+    const shown = frame({ ...info, contextWindow: null, costUnknown: true }, ["context", "cost"]);
+    expect(shown).toContain("ctx 500.0k");
+    expect(shown).toContain("$0.42 + ?");
+    expect(shown).not.toContain("lead");
+  });
+
+  it.each([
+    [999, 1000, "999 in / 1.0k out"],
+    [999_999, 1_000_000, "1.0M in / 1.0M out"], // rounds to 1000.0k, so it is shown in millions
+    [999_949, 1_000_000, "999.9k in / 1.0M out"],
+  ])("counts %d and %d tokens as thousands or millions", (input, output, shown) => {
+    expect(formatSegment("tokens", { ...info, input, output })).toBe(shown);
+  });
+
+  it("shows a part listed twice without a duplicate-key warning", () => {
+    const warn = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(frame(info, ["cost", "cost"])).toContain("$0.42 | $0.42");
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
 describe("describe", () => {
   it("shows tool calls and failed results on one line each", () => {
     const lines = describeMessage(
-      { role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\nlots more", isError: true }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] },
       80,
     );
-    expect(lines).toEqual([{ text: "  ⎿ exit code: 1", color: "red" }]);
+    expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "red" }]);
+  });
+
+  it("does not show an unknown kind of part as a tool result", () => {
+    expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] }, 80)).toEqual([]);
+  });
+
+  it("cuts a one-line entry to the width after escaping, so escapes count", () => {
+    const [line] = describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name: "\u001b\u001b", input: 1 }] }, 10);
+    expect(screen(line!).text).toBe("● \\u001b\\…");
+  });
+});
+
+describe("screen", () => {
+  it("keeps line breaks and tabs in prose, and escapes everything else", () => {
+    expect(screen({ text: "a\tb\r\nc\rd\n\u001b]52;c;eA==\u0007" }).text).toBe("a\tb\nc␍d\n\\u001b]52;c;eA==\\u0007");
   });
 });
 ```
@@ -2802,7 +2882,12 @@ export interface StatusInfo {
   errors: number;
 }
 
-const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+// The unit is picked after rounding, so 999,999 shows as 1.0M, not 1000.0k.
+const k = (n: number) => {
+  if (n < 1000) return String(n);
+  const thousands = (n / 1000).toFixed(1);
+  return Number(thousands) < 1000 ? `${thousands}k` : `${(n / 1_000_000).toFixed(1)}M`;
+};
 
 export function formatSegment(s: Segment, i: StatusInfo): string {
   switch (s) {
@@ -2825,7 +2910,7 @@ export function StatusLine({ info, segments }: { info: StatusInfo; segments: Seg
   return (
     <Box>
       {segments.map((s, n) => (
-        <Text key={s} inverse color={s === "errors" && info.errors > 0 ? "red" : undefined}>
+        <Text key={n} inverse color={s === "errors" && info.errors > 0 ? "red" : undefined}>
           {n === 0 ? " " : " | "}
           {formatSegment(s, info)}
           {n === segments.length - 1 ? " " : ""}
@@ -2839,23 +2924,36 @@ export function StatusLine({ info, segments }: { info: StatusInfo; segments: Seg
 `src/tui/describe.ts`:
 
 ```typescript
+import { visible } from "../core/permissions.js";
 import type { Message } from "../core/types.js";
 
 export interface Line {
   text: string;
   color?: string;
+  width?: number; // set for one-line entries: cut to this width once escaped
 }
 
-const firstLine = (s: string) => s.split("\n")[0] ?? "";
+const firstLine = (s: string) => s.split(/\r?\n/)[0] ?? "";
 const fit = (s: string, width: number) => (s.length <= width ? s : `${s.slice(0, Math.max(0, width - 1))}…`);
+
+// Every scrollback line passes through here. Model and provider text can carry escape codes (OSC 52
+// writes the clipboard), \r and bidi overrides, which the terminal would act on. Prose keeps its line
+// breaks and tabs; one-line entries are cut after escaping, so the escapes count toward the width.
+export function screen(l: Line): Line {
+  const text = l.width === undefined ? l.text.split(/\r?\n/).map((s) => visible(s, { tabs: true })).join("\n") : fit(visible(l.text), l.width);
+  return l.color === undefined ? { text } : { text, color: l.color };
+}
 
 // How one message appears in the scrollback.
 export function describe(m: Message, width = process.stdout.columns ?? 80): Line[] {
   const lines: Line[] = [];
   for (const p of m.parts) {
     if (p.type === "text") lines.push(m.role === "user" ? { text: `> ${p.text}`, color: "cyan" } : { text: p.text });
-    else if (p.type === "tool_call") lines.push({ text: fit(`● ${p.name} ${JSON.stringify(p.input)}`, width), color: "yellow" });
-    else lines.push({ text: fit(`  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, width), color: p.isError ? "red" : "gray" });
+    else if (p.type === "tool_call") lines.push({ text: `● ${p.name} ${JSON.stringify(p.input)}`, color: "yellow", width });
+    else if (p.type === "tool_result") lines.push({ text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, color: p.isError ? "red" : "gray", width });
+    else {
+      const _: never = p; // a new kind of part must be given its own line here
+    }
   }
   return lines;
 }
@@ -2864,7 +2962,7 @@ export function describe(m: Message, width = process.stdout.columns ?? 80): Line
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tui/statusline.test.tsx && npm run typecheck`
-Expected: 3 tests pass, and no type errors.
+Expected: 10 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2888,12 +2986,16 @@ Ctrl-C stops the current turn, or quits when idle.
 `tests/tui/app.test.tsx`:
 
 ```tsx
+import { existsSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { render } from "ink-testing-library";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
+import type { Provider } from "../../src/core/types.js";
 import { TOOLS } from "../../src/tools/index.js";
 import { App } from "../../src/tui/App.js";
 import { SEGMENTS } from "../../src/tui/StatusLine.js";
@@ -2907,20 +3009,26 @@ async function until(app: ReturnType<typeof render>, text: string) {
   expect(app.lastFrame()).toContain(text);
 }
 
-async function mount(turns: ConstructorParameters<typeof FakeProvider>[1]) {
+const mounted: ReturnType<typeof render>[] = [];
+afterEach(() => {
+  for (const app of mounted.splice(0)) app.unmount();
+});
+
+async function mount(turns: ConstructorParameters<typeof FakeProvider>[1], opts: { lead?: Provider; errorFile?: string } = {}) {
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
   let ask: (s: string) => Promise<boolean> = async () => false;
   const gate = new PermissionGate("ask", (s) => ask(s));
-  const session = new Session({ lead: new FakeProvider("a", turns), tools: TOOLS, system: "t", ctx: { ...ctx, gate }, bus });
+  const lead = opts.lead ?? new FakeProvider("a", turns);
+  const session = new Session({ lead, tools: TOOLS, system: "t", ctx: { ...ctx, gate }, bus });
   const app = render(
     <App
       session={session}
       bus={bus}
       stats={stats}
       mode="ask"
-      errorFile={path.join(ctx.root, "errors.jsonl")}
+      errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
       segments={SEGMENTS}
       makeProvider={() => new FakeProvider("b", [])}
       bindAsk={(fn) => {
@@ -2928,8 +3036,9 @@ async function mount(turns: ConstructorParameters<typeof FakeProvider>[1]) {
       }}
     />,
   );
+  mounted.push(app);
   await tick();
-  return { app, session, ctx, bus };
+  return { app, session, ctx, bus, ask: (s: string) => ask(s) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -2937,6 +3046,21 @@ async function type(app: ReturnType<typeof render>, text: string) {
   await tick();
   app.stdin.write("\r");
   await tick();
+}
+
+// A lead whose request never finishes until it is cancelled.
+const hanging = (): Provider => ({
+  id: "fake:hang",
+  complete: ({ signal }) => new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted")))),
+});
+
+// What a model or provider might send to rewrite the clipboard (OSC 52), hide text, overwrite a line
+// or reverse it.
+const OSC52 = "\u001b]52;c;Y3VybA==\u0007";
+const OSC52_SHOWN = "\\u001b]52;c;Y3VybA==\\u0007";
+
+function expectNoRawControls(frame: string | undefined) {
+  for (const c of ["\u001b", "\u0007", "\r", "‮", "\u009b"]) expect(frame).not.toContain(c);
 }
 
 describe("App", () => {
@@ -2956,11 +3080,92 @@ describe("App", () => {
     await until(app, "written");
   });
 
+  it("on Ctrl-C at an approval prompt, says no, stops the turn and gives the input line back", async () => {
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
+    await type(app, "make a file");
+    const target = path.join(ctx.root, "a.txt");
+    await until(app, `Allow write ${target}? [y/n]`);
+    app.stdin.write("\u0003");
+    await until(app, `write ${target}: declined (cancelled)`);
+    await until(app, "›");
+    expect(app.lastFrame()).not.toContain("working");
+    expect(app.lastFrame()).not.toContain("[y/n]");
+    expect(app.lastFrame()).not.toContain("written");
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("says no at once, without a prompt, when asked after the turn was cancelled", async () => {
+    const { app, ask } = await mount([], { lead: hanging() });
+    await type(app, "hi");
+    await until(app, "working");
+    app.stdin.write("\u0003");
+    await until(app, "›");
+    expect(app.lastFrame()).not.toContain("working");
+    const answer = await Promise.race([ask("write x"), tick().then(() => "still waiting")]);
+    expect(answer).toBe(false);
+    expect(app.lastFrame()).not.toContain("[y/n]");
+  });
+
+  it("counts only the first of two answers typed together", async () => {
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
+    await type(app, "make a file");
+    const target = path.join(ctx.root, "a.txt");
+    await until(app, `Allow write ${target}? [y/n]`);
+    // Two key events before the screen redraws; one chunk "yn" would arrive as a single input.
+    app.stdin.write("y");
+    app.stdin.write("n");
+    await until(app, "written");
+    expect(app.lastFrame()).toContain(`write ${target}: allowed`);
+    expect(app.lastFrame()).not.toContain("declined");
+  });
+
   it("switches the lead with /lead", async () => {
     const { app, session } = await mount([]);
     await type(app, "/lead fake:b");
     expect(session.lead.id).toBe("fake:b");
     expect(app.lastFrame()).toContain("lead is now fake:b");
+  });
+
+  it("shows how to use /lead, and does not send it to the model", async () => {
+    const { app, session } = await mount([]);
+    await type(app, "/lead");
+    expect(app.lastFrame()).toContain("Usage: /lead <provider:model>");
+    expect(session.messages).toEqual([]);
+  });
+
+  it("refuses an unknown command instead of sending it to the model", async () => {
+    const { app, session } = await mount([]);
+    await type(app, "/eror");
+    expect(app.lastFrame()).toContain("Unknown command: /eror");
+    expect(app.lastFrame()).toContain("/errors");
+    expect(session.messages).toEqual([]);
+  });
+
+  it("sends a message that only starts with a path", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await type(app, "/usr/bin is missing");
+    await until(app, "ok");
+    expect(session.messages[0]).toMatchObject({ role: "user", parts: [{ type: "text", text: "/usr/bin is missing" }] });
+  });
+
+  it("ignores a context-window lookup that finishes after the lead changed", async () => {
+    let finish: (n: number) => void = () => {};
+    const slow = Object.assign(new FakeProvider("a", []), { contextWindow: () => new Promise<number>((r) => (finish = r)) });
+    const { app } = await mount([], { lead: slow });
+    await type(app, "/lead fake:b");
+    finish(1000);
+    await tick();
+    expect(app.lastFrame()).toContain("lead fake:b");
+    expect(app.lastFrame()).toContain("ctx 0 ");
+    expect(app.lastFrame()).not.toContain("ctx 0%");
+  });
+
+  it("keeps going when the context-window lookup fails", async () => {
+    const broken = Object.assign(new FakeProvider("a", [reply("still here")]), { contextWindow: () => Promise.reject(new Error("no window")) });
+    const { app } = await mount([], { lead: broken });
+    await type(app, "hi");
+    await until(app, "still here");
+    expect(app.lastFrame()).toContain("ctx 15 "); // the window stays unknown, so the raw size is shown
   });
 
   it("shows when another model answered a refused turn", async () => {
@@ -2974,6 +3179,45 @@ describe("App", () => {
     const { app } = await mount([]);
     await type(app, "/errors");
     expect(app.lastFrame()).toContain("No errors logged yet.");
+  });
+
+  it("shows an error, and keeps running, when the error log cannot be read", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const { app } = await mount([reply("still here")], { errorFile: dir });
+    await type(app, "/errors");
+    await until(app, "EISDIR");
+    await type(app, "hi");
+    await until(app, "still here");
+  });
+
+  it("shows control characters in a reply as escapes, keeping real line breaks", async () => {
+    const { app } = await mount([reply(`one${OSC52}\u001b[8mhidden\rover‮back\ntwo`)]);
+    await type(app, "hi");
+    await until(app, "two");
+    const frame = app.lastFrame();
+    expect(frame).toContain(`one${OSC52_SHOWN}\\u001b[8mhidden␍over\\u202eback\n`);
+    expectNoRawControls(frame);
+  });
+
+  it("shows control characters in a tool call's name and input, and in its error, as escapes", async () => {
+    const { app } = await mount([callTool("c1", `x${OSC52}\r`, { s: "‮\u009b" }), reply("done")]);
+    await type(app, "hi");
+    await until(app, "done");
+    const frame = app.lastFrame();
+    expect(frame).toContain(`● x${OSC52_SHOWN}␍ {"s":"\\u202e\\u009b"}`);
+    expect(frame).toContain(`⎿ Unknown tool: x${OSC52_SHOWN}␍`);
+    expectNoRawControls(frame);
+  });
+
+  it("shows control characters in the user's line and in provider errors as escapes", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("message", { role: "user", parts: [{ type: "text", text: "a\u001b[8mb\rc" }] });
+    bus.emit("error", { kind: "provider", attempted: "x", message: `bad${OSC52}`, lead: "fake:a" });
+    await until(app, "✗ provider");
+    const frame = app.lastFrame();
+    expect(frame).toContain("> a\\u001b[8mb␍c");
+    expect(frame).toContain(`✗ provider: bad${OSC52_SHOWN}`);
+    expectNoRawControls(frame);
   });
 });
 ```
@@ -2996,8 +3240,10 @@ import type { Mode } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
-import { describe, type Line } from "./describe.js";
+import { describe, type Line, screen } from "./describe.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
+
+type Question = { text: string; answer: (ok: boolean, how: string) => void };
 
 export interface AppProps {
   session: Session;
@@ -3015,16 +3261,41 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [question, setQuestion] = useState<{ text: string; answer: (ok: boolean) => void } | null>(null);
+  const [question, setQuestion] = useState<Question | null>(null);
   const [contextWindow, setContextWindow] = useState<number | null>(null);
   const [, rerender] = useState(0);
   const abort = useRef<AbortController | null>(null);
   const nextId = useRef(0);
 
-  const say = (...add: Line[]) => setLines((l) => [...l, ...add.map((x) => ({ ...x, id: nextId.current++ }))]);
+  const say = (...add: Line[]) => setLines((l) => [...l, ...add.map((x) => ({ ...screen(x), id: nextId.current++ }))]);
+
+  // A late answer for the previous lead must not show as the new lead's window.
+  const lookUpWindow = () => {
+    const lead = session.lead;
+    setContextWindow(null);
+    lead.contextWindow?.()
+      .then((n) => session.lead === lead && setContextWindow(n))
+      .catch(() => {}); // stays unknown
+  };
 
   useEffect(() => {
-    bindAsk((text) => new Promise((resolve) => setQuestion({ text, answer: resolve })));
+    bindAsk((text) => {
+      // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped.
+      if (abort.current?.signal.aborted) return Promise.resolve(false);
+      return new Promise((resolve) => {
+        let open = true; // answered once: two keys arriving together would otherwise both be logged
+        setQuestion({
+          text,
+          answer: (ok, how) => {
+            if (!open) return;
+            open = false;
+            say({ text: `${text}: ${how}`, color: "gray" });
+            resolve(ok);
+            setQuestion(null);
+          },
+        });
+      });
+    });
     const onMessage = (m: Message) => say(...describe(m));
     const onError = (e: ErrorEvent) => {
       if (e.kind === "tool") rerender((n) => n + 1);
@@ -3034,13 +3305,13 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
     const onUsage = () => rerender((n) => n + 1);
     const onLead = (id: string) => {
       say({ text: `lead is now ${id}`, color: "magenta" });
-      session.lead.contextWindow?.().then(setContextWindow) ?? setContextWindow(null);
+      lookUpWindow();
     };
     bus.on("message", onMessage);
     bus.on("error", onError);
     bus.on("usage", onUsage);
     bus.on("lead", onLead);
-    session.lead.contextWindow?.().then(setContextWindow);
+    lookUpWindow();
     return () => {
       bus.off("message", onMessage);
       bus.off("error", onError);
@@ -3049,35 +3320,36 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
     };
   }, []);
 
+  // Called without await, so nothing may escape: an unhandled rejection ends the program.
   const submit = async (raw: string) => {
     const text = raw.trim();
     if (!text) return;
-    if (text === "/exit") return exit();
-    if (text === "/errors") return say({ text: summarize(errorFile) });
-    if (text.startsWith("/lead ")) {
-      try {
-        session.setLead(makeProvider(text.slice("/lead ".length).trim()));
-      } catch (err) {
-        say({ text: errorText(err), color: "red" });
-      }
-      return;
-    }
-    abort.current = new AbortController();
-    setBusy(true);
     try {
-      await session.send(text, abort.current.signal);
-    } finally {
-      setBusy(false);
+      if (text === "/exit") return exit();
+      if (text === "/errors") return say({ text: summarize(errorFile) });
+      if (text === "/lead") return say({ text: "Usage: /lead <provider:model>" });
+      if (text.startsWith("/lead ")) return session.setLead(makeProvider(text.slice("/lead ".length).trim()));
+      // A mistyped command must not become a paid turn.
+      // A slash and a bare word is a command; "/usr/bin is missing" is a message.
+      if (/^\/[a-z]+$/i.test(text.split(/\s/)[0]!)) return say({ text: `Unknown command: ${text}. Commands: /lead <provider:model>, /errors, /exit`, color: "red" });
+      abort.current = new AbortController();
+      setBusy(true);
+      try {
+        await session.send(text, abort.current.signal);
+      } finally {
+        setBusy(false);
+      }
+    } catch (err) {
+      say({ text: errorText(err), color: "red" });
     }
   };
 
   useInput((ch, key) => {
     if (question) {
-      if (ch === "y" || ch === "n") {
-        say({ text: `${question.text}: ${ch === "y" ? "allowed" : "declined"}`, color: "gray" });
-        question.answer(ch === "y");
-        setQuestion(null);
-      }
+      if (key.ctrl && ch === "c") {
+        question.answer(false, "declined (cancelled)");
+        abort.current?.abort();
+      } else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
       return;
     }
     if (key.ctrl && ch === "c") return busy ? abort.current?.abort() : exit();
@@ -3125,7 +3397,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tui/app.test.tsx && npm run typecheck`
-Expected: 5 tests pass, and no type errors.
+Expected: 17 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -3137,7 +3409,8 @@ git commit -m "feat: interactive screen"
 ### Task 13: Command-line entry point
 
 **Files:**
-- Create: `src/core/prompt.ts`, `src/cli.tsx`
+- Create: `src/core/prompt.ts`, `src/clilib.ts`, `src/cli.tsx`
+- Test: `tests/clilib.test.ts`, `tests/cli.test.ts`
 
 **Step 1: Write the code**
 
@@ -3151,9 +3424,45 @@ export function systemPrompt(root: string, platform: NodeJS.Platform = process.p
   return [
     "You are Tachikoma, a coding agent working in the user's terminal.",
     `The project root is ${root}. File paths are relative to it.`,
-    `Shell commands run with ${shellFor(platform).name} on ${platform}.`,
+    // powershell.exe is 5.1, which has no && or ||; models often assume a newer PowerShell or bash.
+    platform === "win32"
+      ? "Shell commands run with Windows PowerShell 5.1 on Windows: chain commands with ;, not && or ||."
+      : `Shell commands run with ${shellFor(platform).name} on ${platform}.`,
+    "Commands get no input and have no time limit, so do not start servers, watchers or anything interactive: it would never return.",
+    "Call tools directly. Tachikoma asks the user before risky actions and tells you if they decline; do not retry a declined action another way.",
     "Read files before changing them, prefer edit_file to rewriting whole files, and say plainly when something failed.",
   ].join("\n");
+}
+```
+
+`src/clilib.ts`:
+
+```typescript
+import { constants } from "node:os";
+import { type Segment, SEGMENTS } from "./tui/StatusLine.js";
+
+// Stopped wins: an aborted request reports no error, and the shell reads 128 + n as "stopped by signal n".
+// A declined action fails the run, or a script would take a run that did nothing for success.
+export function headlessExit(run: { aborted: boolean; failed: boolean; declined: boolean }): number {
+  if (run.aborted) return 128 + constants.signals.SIGINT;
+  return run.failed || run.declined ? 1 : 0;
+}
+
+// A segment named twice is shown once, where it first appears.
+export function statusSegments(value: string | undefined): Segment[] {
+  if (value === undefined) return SEGMENTS;
+  const names = value.split(",").map((s) => {
+    const name = s.trim();
+    if (!(SEGMENTS as string[]).includes(name)) throw new Error(`--status must be one of: ${SEGMENTS.join(", ")} (got "${name}")`);
+    return name as Segment;
+  });
+  return [...new Set(names)];
+}
+
+// A reader such as `head` that stops early is a normal end, not a crash.
+export function endOnEpipe(err: NodeJS.ErrnoException): void {
+  if (err.code !== "EPIPE") throw err;
+  process.exit();
 }
 ```
 
@@ -3162,9 +3471,11 @@ export function systemPrompt(root: string, platform: NodeJS.Platform = process.p
 ```tsx
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { render } from "ink";
+import { endOnEpipe, headlessExit, statusSegments } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { MODES, type Mode, PermissionGate } from "./core/permissions.js";
@@ -3177,7 +3488,7 @@ import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { createProvider } from "./providers/registry.js";
 import { TOOLS } from "./tools/index.js";
 import { App } from "./tui/App.js";
-import { type Segment, SEGMENTS } from "./tui/StatusLine.js";
+import { SEGMENTS } from "./tui/StatusLine.js";
 
 const HELP = `tachi: a coding agent for your terminal
 
@@ -3210,6 +3521,8 @@ function oneOf<T extends string>(name: string, value: string | undefined, allowe
   return value as T;
 }
 
+process.stdout.on("error", endOnEpipe);
+
 let parsed;
 try {
   parsed = parseArgs({
@@ -3236,7 +3549,12 @@ const leadSpec = parsed.lead ?? process.env.TACHI_LEAD;
 if (!leadSpec) fail(`No lead model given. Pass --lead or set TACHI_LEAD.\n\n${HELP}`);
 const mode: Mode = oneOf("mode", parsed.mode, MODES) ?? "ask"; // the safest mode is the default
 const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
-const segments = parsed.status === undefined ? SEGMENTS : parsed.status.split(",").map((s) => oneOf<Segment>("status", s.trim(), SEGMENTS)!);
+let segments;
+try {
+  segments = statusSegments(parsed.status);
+} catch (err) {
+  fail(errorText(err));
+}
 
 const root = process.cwd();
 const errorFile = path.join(root, ".tachikoma", "errors.jsonl");
@@ -3249,17 +3567,28 @@ let lead: Provider;
 let fallback: Provider | undefined;
 try {
   lead = makeProvider(leadSpec);
-  if (parsed.fallback) fallback = makeProvider(parsed.fallback);
 } catch (err) {
   fail(errorText(err));
 }
+try {
+  if (parsed.fallback) fallback = makeProvider(parsed.fallback);
+} catch (err) {
+  fail(`--fallback: ${errorText(err)}`); // otherwise it reads like a bad lead
+}
 
+let declined = false;
 let ask: (summary: string) => Promise<boolean> = async (summary) => {
-  console.error(`declined, nobody to ask in -p mode (use --mode never to allow): ${summary}`);
+  declined = true;
+  console.error(
+    `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused; --mode never means no checks at all): ${summary}`,
+  );
   return false;
 };
 const gate = new PermissionGate(mode, (summary) => ask(summary));
 const session = new Session({ lead, fallback, tools: TOOLS, system: systemPrompt(root), ctx: { root, executor: new LocalExecutor(), gate }, bus });
+
+// The executor stops running commands from an "exit" handler, which dying by a signal skips.
+for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => process.exit(128 + constants.signals[sig]));
 
 if (parsed.print !== undefined) {
   let failed = false;
@@ -3276,13 +3605,18 @@ if (parsed.print !== undefined) {
       else if (e.kind !== "tool") console.error(`${e.kind}: ${e.message}`);
     });
   }
-  await session.send(parsed.print);
+  // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us.
+  // A second Ctrl-C gets Node's default and ends at once.
+  const stop = new AbortController();
+  process.once("SIGINT", () => stop.abort());
+  await session.send(parsed.print, stop.signal);
   if (!parsed.json) {
     const last = session.messages.at(-1);
     if (last?.role === "assistant") console.log(last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n"));
   }
-  process.exitCode = failed ? 1 : 0;
+  process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
+  if (!process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
   render(
     <App
       session={session}
@@ -3301,10 +3635,100 @@ if (parsed.print !== undefined) {
 }
 ```
 
+The command's own tests: the headless exit code, `--status` parsing, a broken pipe on stdout, and two
+runs of the command itself that stop before any model call.
+
+`tests/clilib.test.ts`:
+
+```typescript
+import { spawn } from "node:child_process";
+import { constants } from "node:os";
+import { describe, expect, it } from "vitest";
+import { headlessExit, statusSegments } from "../src/clilib.js";
+import { SEGMENTS } from "../src/tui/StatusLine.js";
+
+describe("headlessExit", () => {
+  const run = { aborted: false, failed: false, declined: false };
+
+  it("is 0 when the run finished cleanly", () => {
+    expect(headlessExit(run)).toBe(0);
+  });
+
+  it("is 1 when a turn failed", () => {
+    expect(headlessExit({ ...run, failed: true })).toBe(1);
+  });
+
+  it("is 1 when an action was declined, so a script does not take it for success", () => {
+    expect(headlessExit({ ...run, declined: true })).toBe(1);
+  });
+
+  it("is 128 + SIGINT when stopped, whatever else happened", () => {
+    expect(headlessExit({ aborted: true, failed: true, declined: true })).toBe(128 + constants.signals.SIGINT);
+  });
+});
+
+describe("statusSegments", () => {
+  it("shows every segment when none are given", () => {
+    expect(statusSegments(undefined)).toEqual(SEGMENTS);
+  });
+
+  it("keeps the first of repeated segments", () => {
+    expect(statusSegments("cost, lead,cost,lead")).toEqual(["cost", "lead"]);
+  });
+
+  it("names --status when a segment is unknown", () => {
+    expect(() => statusSegments("lead,nope")).toThrow('--status must be one of: lead, context, tokens, cost, mode, errors (got "nope")');
+  });
+});
+
+describe("endOnEpipe", () => {
+  it("ends quietly when the reader of its output stops early", async () => {
+    // A real pipe: a single large write fails with EPIPE once the reader has gone.
+    const script = `import { endOnEpipe } from "./src/clilib.ts"; process.stdout.on("error", endOnEpipe); process.stdout.write("x\\n".repeat(1e6));`;
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d));
+    child.stdout.once("data", () => child.stdout.destroy());
+    const code = await new Promise((resolve) => child.on("close", resolve));
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+  });
+});
+```
+
+`tests/cli.test.ts`:
+
+```typescript
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+
+// Runs the real command through tsx. Every case here stops before any model is called.
+function tachi(...args: string[]) {
+  const r = spawnSync(process.execPath, ["--import", "tsx", path.resolve("src/cli.tsx"), ...args], { input: "x\n", encoding: "utf8", env: { ...process.env, TACHI_LEAD: "" } });
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+describe("tachi", () => {
+  it("names --fallback when its value is bad", () => {
+    const r = tachi("--lead", "ollama:none", "--fallback", "nope", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^--fallback: /);
+  });
+
+  it("refuses interactive mode without a terminal, before starting the interface", () => {
+    const r = tachi("--lead", "ollama:none");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+    expect(r.stderr).not.toContain("    at "); // no stack trace
+  });
+});
+```
+
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  125 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  157 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -3322,7 +3746,7 @@ All five gave exactly this output in the scratch build on 2026-10-22.
 **Step 4: Commit**
 
 ```bash
-git add src/core/prompt.ts src/cli.tsx
+git add src/core/prompt.ts src/clilib.ts src/cli.tsx tests/clilib.test.ts tests/cli.test.ts
 git commit -m "feat: tachi command, interactive and headless"
 ```
 
@@ -3379,7 +3803,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  125 passed | 1 skipped`.
+Expected: `Tests  157 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 

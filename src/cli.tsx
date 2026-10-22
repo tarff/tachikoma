@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { render } from "ink";
+import { endOnEpipe, headlessExit, statusSegments } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { MODES, type Mode, PermissionGate } from "./core/permissions.js";
@@ -15,7 +17,7 @@ import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { createProvider } from "./providers/registry.js";
 import { TOOLS } from "./tools/index.js";
 import { App } from "./tui/App.js";
-import { type Segment, SEGMENTS } from "./tui/StatusLine.js";
+import { SEGMENTS } from "./tui/StatusLine.js";
 
 const HELP = `tachi: a coding agent for your terminal
 
@@ -48,6 +50,8 @@ function oneOf<T extends string>(name: string, value: string | undefined, allowe
   return value as T;
 }
 
+process.stdout.on("error", endOnEpipe);
+
 let parsed;
 try {
   parsed = parseArgs({
@@ -74,7 +78,12 @@ const leadSpec = parsed.lead ?? process.env.TACHI_LEAD;
 if (!leadSpec) fail(`No lead model given. Pass --lead or set TACHI_LEAD.\n\n${HELP}`);
 const mode: Mode = oneOf("mode", parsed.mode, MODES) ?? "ask"; // the safest mode is the default
 const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
-const segments = parsed.status === undefined ? SEGMENTS : parsed.status.split(",").map((s) => oneOf<Segment>("status", s.trim(), SEGMENTS)!);
+let segments;
+try {
+  segments = statusSegments(parsed.status);
+} catch (err) {
+  fail(errorText(err));
+}
 
 const root = process.cwd();
 const errorFile = path.join(root, ".tachikoma", "errors.jsonl");
@@ -87,17 +96,28 @@ let lead: Provider;
 let fallback: Provider | undefined;
 try {
   lead = makeProvider(leadSpec);
-  if (parsed.fallback) fallback = makeProvider(parsed.fallback);
 } catch (err) {
   fail(errorText(err));
 }
+try {
+  if (parsed.fallback) fallback = makeProvider(parsed.fallback);
+} catch (err) {
+  fail(`--fallback: ${errorText(err)}`); // otherwise it reads like a bad lead
+}
 
+let declined = false;
 let ask: (summary: string) => Promise<boolean> = async (summary) => {
-  console.error(`declined, nobody to ask in -p mode (use --mode never to allow): ${summary}`);
+  declined = true;
+  console.error(
+    `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused; --mode never means no checks at all): ${summary}`,
+  );
   return false;
 };
 const gate = new PermissionGate(mode, (summary) => ask(summary));
 const session = new Session({ lead, fallback, tools: TOOLS, system: systemPrompt(root), ctx: { root, executor: new LocalExecutor(), gate }, bus });
+
+// The executor stops running commands from an "exit" handler, which dying by a signal skips.
+for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => process.exit(128 + constants.signals[sig]));
 
 if (parsed.print !== undefined) {
   let failed = false;
@@ -114,13 +134,18 @@ if (parsed.print !== undefined) {
       else if (e.kind !== "tool") console.error(`${e.kind}: ${e.message}`);
     });
   }
-  await session.send(parsed.print);
+  // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us.
+  // A second Ctrl-C gets Node's default and ends at once.
+  const stop = new AbortController();
+  process.once("SIGINT", () => stop.abort());
+  await session.send(parsed.print, stop.signal);
   if (!parsed.json) {
     const last = session.messages.at(-1);
     if (last?.role === "assistant") console.log(last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n"));
   }
-  process.exitCode = failed ? 1 : 0;
+  process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
+  if (!process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
   render(
     <App
       session={session}

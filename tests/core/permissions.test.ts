@@ -63,6 +63,10 @@ describe("visible", () => {
     expect(visible("echo done\nrm -rf build")).not.toBe(visible("echo done\\nrm -rf build"));
   });
 
+  it("can leave tabs as tabs, for prose", () => {
+    expect(visible("a\tb\u001b[8m\n", { tabs: true })).toBe("a\tb\\u001b[8m⏎");
+  });
+
   it("leaves ordinary text alone", () => {
     expect(visible("echo café costs 5€ > out.txt")).toBe("echo café costs 5€ > out.txt");
   });

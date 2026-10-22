@@ -1,9 +1,13 @@
+import { existsSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { render } from "ink-testing-library";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
+import type { Provider } from "../../src/core/types.js";
 import { TOOLS } from "../../src/tools/index.js";
 import { App } from "../../src/tui/App.js";
 import { SEGMENTS } from "../../src/tui/StatusLine.js";
@@ -17,20 +21,26 @@ async function until(app: ReturnType<typeof render>, text: string) {
   expect(app.lastFrame()).toContain(text);
 }
 
-async function mount(turns: ConstructorParameters<typeof FakeProvider>[1]) {
+const mounted: ReturnType<typeof render>[] = [];
+afterEach(() => {
+  for (const app of mounted.splice(0)) app.unmount();
+});
+
+async function mount(turns: ConstructorParameters<typeof FakeProvider>[1], opts: { lead?: Provider; errorFile?: string } = {}) {
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
   let ask: (s: string) => Promise<boolean> = async () => false;
   const gate = new PermissionGate("ask", (s) => ask(s));
-  const session = new Session({ lead: new FakeProvider("a", turns), tools: TOOLS, system: "t", ctx: { ...ctx, gate }, bus });
+  const lead = opts.lead ?? new FakeProvider("a", turns);
+  const session = new Session({ lead, tools: TOOLS, system: "t", ctx: { ...ctx, gate }, bus });
   const app = render(
     <App
       session={session}
       bus={bus}
       stats={stats}
       mode="ask"
-      errorFile={path.join(ctx.root, "errors.jsonl")}
+      errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
       segments={SEGMENTS}
       makeProvider={() => new FakeProvider("b", [])}
       bindAsk={(fn) => {
@@ -38,8 +48,9 @@ async function mount(turns: ConstructorParameters<typeof FakeProvider>[1]) {
       }}
     />,
   );
+  mounted.push(app);
   await tick();
-  return { app, session, ctx, bus };
+  return { app, session, ctx, bus, ask: (s: string) => ask(s) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -47,6 +58,21 @@ async function type(app: ReturnType<typeof render>, text: string) {
   await tick();
   app.stdin.write("\r");
   await tick();
+}
+
+// A lead whose request never finishes until it is cancelled.
+const hanging = (): Provider => ({
+  id: "fake:hang",
+  complete: ({ signal }) => new Promise((_, reject) => signal?.addEventListener("abort", () => reject(new Error("aborted")))),
+});
+
+// What a model or provider might send to rewrite the clipboard (OSC 52), hide text, overwrite a line
+// or reverse it.
+const OSC52 = "\u001b]52;c;Y3VybA==\u0007";
+const OSC52_SHOWN = "\\u001b]52;c;Y3VybA==\\u0007";
+
+function expectNoRawControls(frame: string | undefined) {
+  for (const c of ["\u001b", "\u0007", "\r", "‮", "\u009b"]) expect(frame).not.toContain(c);
 }
 
 describe("App", () => {
@@ -66,11 +92,92 @@ describe("App", () => {
     await until(app, "written");
   });
 
+  it("on Ctrl-C at an approval prompt, says no, stops the turn and gives the input line back", async () => {
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
+    await type(app, "make a file");
+    const target = path.join(ctx.root, "a.txt");
+    await until(app, `Allow write ${target}? [y/n]`);
+    app.stdin.write("\u0003");
+    await until(app, `write ${target}: declined (cancelled)`);
+    await until(app, "›");
+    expect(app.lastFrame()).not.toContain("working");
+    expect(app.lastFrame()).not.toContain("[y/n]");
+    expect(app.lastFrame()).not.toContain("written");
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("says no at once, without a prompt, when asked after the turn was cancelled", async () => {
+    const { app, ask } = await mount([], { lead: hanging() });
+    await type(app, "hi");
+    await until(app, "working");
+    app.stdin.write("\u0003");
+    await until(app, "›");
+    expect(app.lastFrame()).not.toContain("working");
+    const answer = await Promise.race([ask("write x"), tick().then(() => "still waiting")]);
+    expect(answer).toBe(false);
+    expect(app.lastFrame()).not.toContain("[y/n]");
+  });
+
+  it("counts only the first of two answers typed together", async () => {
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
+    await type(app, "make a file");
+    const target = path.join(ctx.root, "a.txt");
+    await until(app, `Allow write ${target}? [y/n]`);
+    // Two key events before the screen redraws; one chunk "yn" would arrive as a single input.
+    app.stdin.write("y");
+    app.stdin.write("n");
+    await until(app, "written");
+    expect(app.lastFrame()).toContain(`write ${target}: allowed`);
+    expect(app.lastFrame()).not.toContain("declined");
+  });
+
   it("switches the lead with /lead", async () => {
     const { app, session } = await mount([]);
     await type(app, "/lead fake:b");
     expect(session.lead.id).toBe("fake:b");
     expect(app.lastFrame()).toContain("lead is now fake:b");
+  });
+
+  it("shows how to use /lead, and does not send it to the model", async () => {
+    const { app, session } = await mount([]);
+    await type(app, "/lead");
+    expect(app.lastFrame()).toContain("Usage: /lead <provider:model>");
+    expect(session.messages).toEqual([]);
+  });
+
+  it("refuses an unknown command instead of sending it to the model", async () => {
+    const { app, session } = await mount([]);
+    await type(app, "/eror");
+    expect(app.lastFrame()).toContain("Unknown command: /eror");
+    expect(app.lastFrame()).toContain("/errors");
+    expect(session.messages).toEqual([]);
+  });
+
+  it("sends a message that only starts with a path", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await type(app, "/usr/bin is missing");
+    await until(app, "ok");
+    expect(session.messages[0]).toMatchObject({ role: "user", parts: [{ type: "text", text: "/usr/bin is missing" }] });
+  });
+
+  it("ignores a context-window lookup that finishes after the lead changed", async () => {
+    let finish: (n: number) => void = () => {};
+    const slow = Object.assign(new FakeProvider("a", []), { contextWindow: () => new Promise<number>((r) => (finish = r)) });
+    const { app } = await mount([], { lead: slow });
+    await type(app, "/lead fake:b");
+    finish(1000);
+    await tick();
+    expect(app.lastFrame()).toContain("lead fake:b");
+    expect(app.lastFrame()).toContain("ctx 0 ");
+    expect(app.lastFrame()).not.toContain("ctx 0%");
+  });
+
+  it("keeps going when the context-window lookup fails", async () => {
+    const broken = Object.assign(new FakeProvider("a", [reply("still here")]), { contextWindow: () => Promise.reject(new Error("no window")) });
+    const { app } = await mount([], { lead: broken });
+    await type(app, "hi");
+    await until(app, "still here");
+    expect(app.lastFrame()).toContain("ctx 15 "); // the window stays unknown, so the raw size is shown
   });
 
   it("shows when another model answered a refused turn", async () => {
@@ -84,5 +191,44 @@ describe("App", () => {
     const { app } = await mount([]);
     await type(app, "/errors");
     expect(app.lastFrame()).toContain("No errors logged yet.");
+  });
+
+  it("shows an error, and keeps running, when the error log cannot be read", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const { app } = await mount([reply("still here")], { errorFile: dir });
+    await type(app, "/errors");
+    await until(app, "EISDIR");
+    await type(app, "hi");
+    await until(app, "still here");
+  });
+
+  it("shows control characters in a reply as escapes, keeping real line breaks", async () => {
+    const { app } = await mount([reply(`one${OSC52}\u001b[8mhidden\rover‮back\ntwo`)]);
+    await type(app, "hi");
+    await until(app, "two");
+    const frame = app.lastFrame();
+    expect(frame).toContain(`one${OSC52_SHOWN}\\u001b[8mhidden␍over\\u202eback\n`);
+    expectNoRawControls(frame);
+  });
+
+  it("shows control characters in a tool call's name and input, and in its error, as escapes", async () => {
+    const { app } = await mount([callTool("c1", `x${OSC52}\r`, { s: "‮\u009b" }), reply("done")]);
+    await type(app, "hi");
+    await until(app, "done");
+    const frame = app.lastFrame();
+    expect(frame).toContain(`● x${OSC52_SHOWN}␍ {"s":"\\u202e\\u009b"}`);
+    expect(frame).toContain(`⎿ Unknown tool: x${OSC52_SHOWN}␍`);
+    expectNoRawControls(frame);
+  });
+
+  it("shows control characters in the user's line and in provider errors as escapes", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("message", { role: "user", parts: [{ type: "text", text: "a\u001b[8mb\rc" }] });
+    bus.emit("error", { kind: "provider", attempted: "x", message: `bad${OSC52}`, lead: "fake:a" });
+    await until(app, "✗ provider");
+    const frame = app.lastFrame();
+    expect(frame).toContain("> a\\u001b[8mb␍c");
+    expect(frame).toContain(`✗ provider: bad${OSC52_SHOWN}`);
+    expectNoRawControls(frame);
   });
 });
