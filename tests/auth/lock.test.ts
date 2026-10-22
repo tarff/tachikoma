@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir, uptime } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -81,6 +81,23 @@ await withLock(${lock}, async () => {
     expect(await withLock(file, async () => "taken", () => (waited = true))).toBe("taken");
     expect(waited).toBe(false);
   });
+
+  // A backup or antivirus program can hold a leftover lock open, so that it cannot be removed yet.
+  it.runIf(process.platform === "win32")("waits without blocking while another program holds a leftover lock open", async () => {
+    const file = path.join(await tempDir(), "login.lock");
+    const gone = spawn(process.execPath, ["-e", ""]);
+    await new Promise((r) => gone.on("close", r));
+    writeFileSync(file, String(gone.pid));
+    const holder = spawn("powershell.exe", ["-NoProfile", "-Command", `$f = [IO.File]::Open('${file}', 'Open', 'Read', 'Read'); 'open'; Start-Sleep -Seconds 2; $f.Close()`]);
+    let out = "";
+    holder.stdout.on("data", (d) => (out += d));
+    while (!out.includes("open")) await new Promise((r) => setTimeout(r, 20));
+    const mine = withLock(file, async () => "taken");
+    const start = Date.now();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(Date.now() - start).toBeLessThan(1_000); // not held up for the program's 2 s
+    expect(await mine).toBe("taken");
+  }, 30_000);
 
   it("leaves a lock that another process took over in the meantime", async () => {
     const file = path.join(await tempDir(), "login.lock");

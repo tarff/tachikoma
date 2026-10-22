@@ -46,10 +46,13 @@ function running(pid: number): boolean {
 }
 
 // On Windows a file that is being deleted while another process still has it open cannot be opened
-// or made again until that process lets go; the folder changes when it does.
-const busy = (err: unknown) => process.platform === "win32" && ["EPERM", "EACCES"].includes((err as NodeJS.ErrnoException).code ?? "");
+// or made again until that process lets go; the folder changes when it does. A file another program
+// holds open (a backup or antivirus tool) cannot be removed until it lets go (`EBUSY`); the recheck
+// finds out when.
+const busy = (err: unknown) => process.platform === "win32" && ["EPERM", "EACCES", "EBUSY"].includes((err as NodeJS.ErrnoException).code ?? "");
 
-// Takes the lock and returns null, or returns the pid holding it (0 while Windows is removing it).
+// Takes the lock and returns null, or returns the pid holding it (0 while Windows is removing it, or
+// will not let it be removed yet).
 function tryTake(file: string): number | null {
   // The pid is written to a file of this process's own first, then linked in as the lock. Linking
   // fails if the lock exists, and the lock is never seen without its pid.
@@ -85,8 +88,9 @@ function tryTake(file: string): number | null {
       // moment in which two waiters could both take it over (see "Known limits").
       try {
         if (readFileSync(file, "utf8") === text) unlinkSync(file);
-      } catch {
-        // gone already: try again
+      } catch (err) {
+        if (busy(err)) return 0;
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; // ENOENT: gone already, try again
       }
     }
   } finally {
