@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describe, expect, it } from "vitest";
-import { headlessExit, jsonLine, prose, statusSegments } from "../src/clilib.js";
+import { headlessAnswer, headlessExit, jsonLine, prose, statusSegments } from "../src/clilib.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 
 describe("headlessExit", () => {
@@ -34,6 +34,30 @@ describe("headless output", () => {
     const line = jsonLine("message", data);
     expect(line).not.toMatch(/[\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
     expect(JSON.parse(line)).toEqual({ event: "message", data });
+  });
+});
+
+describe("headlessAnswer", () => {
+  const piped = { raw: false, tty: false };
+
+  it("leaves ordinary text exactly as written: Windows line endings, tabs and plain direction marks", () => {
+    const text = "line one\r\nline two\tתודה\u200f عربي\u061c ok\u200e\n";
+    expect(headlessAnswer(text, piped)).toEqual({ out: text });
+  });
+
+  it("escapes control codes, a lone carriage return and text-order overrides, and says so when piped", () => {
+    expect(headlessAnswer("a\u001b[8mb\rc\u202ed\u2066e", piped)).toEqual({
+      out: "a\\u001b[8mb␍c\\u202ed\\u2066e",
+      note: "note: 4 control characters in the answer were printed as escapes; --raw prints the answer exactly",
+    });
+  });
+
+  it("gives no note on a terminal, where the escapes are in plain sight", () => {
+    expect(headlessAnswer("a\u001bb", { raw: false, tty: true })).toEqual({ out: "a\\u001bb" });
+  });
+
+  it("prints the answer exactly with --raw", () => {
+    expect(headlessAnswer("a\u001b]52;c;eA==\u0007", { raw: true, tty: false })).toEqual({ out: "a\u001b]52;c;eA==\u0007" });
   });
 });
 

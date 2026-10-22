@@ -72,6 +72,7 @@ Other options, from `node dist/cli.js --help`:
 --status <list>   status line parts, comma-separated: lead,context,tokens,cost,mode,errors
 -p, --print <prompt>  run without the interface
 --json            with -p, print every event as one JSON line
+--raw             with -p, print the answer exactly as written, control codes and all
 -h, --help        show this help
 ```
 
@@ -83,10 +84,13 @@ and `/exit` quits. Ctrl-C stops the current turn, or quits when idle.
 `tachi -p "<prompt>"` prints the answer and exits. Nobody is there to approve an action, so anything
 the permission mode would ask about is refused, and the model is told so.
 
-- **The output is made safe for a terminal**, as on screen: control characters and escape codes in
-  the answer and in error messages are printed as text, such as `\u001b`. Line breaks and tabs stay,
-  and Windows line endings become plain ones. An answer saved with `> file` is therefore not
-  byte-for-byte what the model wrote.
+- **The output is made safe for a terminal**, wherever it goes: control characters, escape codes and
+  marks that reorder text, in the answer and in error messages, are printed as text such as
+  `\u001b`. Saved output is often shown on a terminal later, so a pipe or file gets the same
+  treatment (as in `gh` and Gemini CLI). Line breaks, Windows line endings, tabs and the ordinary
+  direction marks of right-to-left text stay as they are. When the answer goes to a pipe or a file
+  and something was escaped, a note on stderr says so. `--raw` prints the answer exactly as the model
+  wrote it, with a warning.
 - **`--json`** prints one line per event: `message`, `usage`, `error` and `lead`. A request that
   Anthropic's fallback rescued gives one `usage` line for each model that declined (marked
   `priceKnown`), then one for the reply.
