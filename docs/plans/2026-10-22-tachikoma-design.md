@@ -29,6 +29,11 @@ learn from experience. The command is `tachi`.
 | Refusals | Keep Anthropic's fallback, show every rescue, and add an optional fallback to a model from another provider | User, 2026-10-22 ("keep it with the notice and maybe add an option for it to try another model from a different provider") |
 | Subscriptions | Claude plans only through the real `claude` CLI as a worker; ChatGPT plans through OpenAI's own sign-in flow for open-source tools, in release 2 | User, 2026-10-22 ("yes use the subscription for OpenAI", "Release 2"), after checking each company's terms |
 | More providers | Look later into more providers and bring-your-own keys | User, 2026-10-22 ("byo keys like openrouter etc", "at a later" date) |
+| ChatGPT sign-in, how it works | A `chatgpt:` lead name; `tachi login`/`logout` and `/login`/`/logout`; Tachikoma's own adapter calling OpenAI directly (not through Codex) | User, 2026-10-22 (chose each option; "Both" for the commands; asked "why no logout", so it was added) |
+| ChatGPT sign-in, the saved login | A private file, with an optional OS keychain; one account at a time | User, 2026-10-22 (chose each option, and every hardening step offered) |
+| Hardening | The file tools refuse the data folder; shell commands do not get API keys | User, 2026-10-22 (chose both) |
+| Model picker | `/model` lists the models of every provider that is set up | User, 2026-10-22 (asked for a list "like Claude code"; chose every provider) |
+| Context window | The model list's own figure, then OpenAI's model pages; the status line shows how much is left | User, 2026-10-22 (chose this; "Codes cli at least shows me how much context is left as a %") |
 
 ## 1. Overall shape
 
@@ -59,6 +64,8 @@ the middle of a session: the history is converted into the new lead's format whe
 comes out.
 - Anthropic has its own adapter.
 - OpenAI, OpenRouter, Kimi and Ollama share one OpenAI-format adapter.
+- A ChatGPT plan has its own adapter, for OpenAI's Responses API (release 2; see "Sign in with
+  ChatGPT").
 - CLI workers (`claude -p`, `codex exec`, `kimi`) sit behind the same interface, marked as
   workers that cannot lead.
 
@@ -70,6 +77,7 @@ comes out.
   tools (its terms are dated 2026-09-29). It signs in under its own name, keeps the tokens on the
   user's machine, and passes no access on to other tools. It never reuses the Codex CLI's own
   sign-in. Requests go to the Responses API, which the flow requires, so this needs its own adapter.
+  The details are in "Sign in with ChatGPT (release 2)" below.
 - **Everyone else** uses API keys.
 
 ### Fitting the context window
@@ -161,6 +169,176 @@ the cost shows `?`.
 **Budgets cover both.** The refused attempt and the retry each count as a request.
 
 **Still to measure:** how much recent history to keep after the cut point.
+
+### Sign in with ChatGPT (release 2)
+
+OpenAI's Sign in with ChatGPT for open-source tools lets an OpenAI model lead on the user's ChatGPT
+plan instead of an API key. Sources, all read on 2026-10-22:
+- **The flow's docs:** developers.openai.com/siwc/token-sharing-open-source and its pages: sign-in,
+  accounts and sessions, models and inference, token reference, errors and recovery, preview
+  limitations.
+- **OpenAI's interface guidelines:** developers.openai.com/siwc/ui-ux-guidelines.
+- **The terms:** openai.com/policies/sign-in-with-chatgpt-terms, dated 2026-09-29.
+
+OpenAI's example code (github.com/openai/sign-in-with-chatgpt-devkit) is under a non-commercial
+licence. Tachikoma's version is written from the docs and copies none of it.
+
+**Using it**
+- **Choosing it.** `--lead chatgpt:<model>` or `/lead chatgpt:<model>` bills the plan, and
+  `openai:<model>` always uses `OPENAI_API_KEY`. Tachikoma never picks between them by itself, so it
+  is always clear which bill a request goes to.
+- **Signing in and out.** `tachi login chatgpt` or `/login chatgpt` signs in; `tachi logout chatgpt`
+  or `/logout chatgpt` signs out. Tachikoma never opens a browser by itself: a `chatgpt:` lead while
+  signed out is an error that names the command.
+- **What sign-in shows.** It prints "Continue with ChatGPT in your browser", the wording OpenAI's
+  guidelines use. If no browser opens, it prints the address to open by hand. When it works, it says
+  "Signed in as <email>."
+- **The first sign-in ever** also shows OpenAI's one-time notice, as the guidelines ask: "You're using
+  your ChatGPT plan. Eligible usage in this app uses your ChatGPT plan. Manage usage:
+  https://chatgpt.com/settings/usage".
+- **One account at a time.** Signing in while already signed in says so, and names the logout command.
+  Each account's registration is kept separately and is never overwritten by another's. Signing back
+  in to an account skips OpenAI's account picker.
+- **A model name the account does not offer** is an error that lists the models it does, from the
+  account's own model list.
+- **The status line** shows `chatgpt:<model>` as the lead, and "ChatGPT plan" where the cost would
+  be. The guidelines ask apps to show that the plan is in use, and per-token prices do not apply.
+- **When the plan's limit runs out,** the turn stops with "ChatGPT usage limit reached. Review your
+  plan or this app's limit: https://chatgpt.com/settings/usage", and the error is logged.
+  - Tachikoma never moves the request to an API key. OpenAI's own route never switches billing either
+    (errors and recovery page).
+  - `--fallback` stays for refusals only.
+- **Signing out while ChatGPT leads.** The next message says to sign in again or switch with `/lead`.
+- **Headless runs.** `-p` works once signed in.
+- **Unattended use.** The terms say: "Obtain express consent before background use." So release 8's
+  loops must ask before they use the plan.
+
+**Signing in**
+1. **Machine ID.** On the first sign-in, Tachikoma makes a random ID for this machine (a `urn:uuid:`)
+   and saves it. The docs require a fixed ID per machine that says nothing about the user. It is not
+   a secret.
+2. **The listener.** A listener starts on `127.0.0.1`, on any free port, at `/auth/callback`. The
+   docs require exactly that address form; `localhost` is not allowed.
+3. **The browser** opens OpenAI's authorize page with:
+   - the name "Tachikoma", sent on the first registration only;
+   - the scopes for plan use;
+   - a PKCE check value (S256), a fresh `state` and a fresh `nonce`.
+4. **Checking the reply.** The reply must carry this attempt's `state`. The issued client ID is saved
+   before the code is exchanged, as the docs advise.
+5. **Checking the ID token:** its signature against OpenAI's published keys, then the issuer, the
+   audience (the issued client ID), the expiry and the nonce.
+6. **Plan use.** If the granted scopes lack `chatgpt.tokens.use.direct`, Tachikoma says plan use was
+   not allowed, and saves no plan login.
+7. **No time limit.** The listener waits until the user finishes in the browser or presses Ctrl-C.
+
+**The saved login** is `<data folder>/chatgpt.json`.
+- **Contents:**
+  - the machine ID;
+  - one record per account (email and OpenAI's account ID), with the client ID OpenAI issued for it;
+  - the tokens, granted scopes and expiry for the account that is signed in.
+- **Written whole.** It is written to a new file in the same folder and then swapped in, so it is
+  never left half-written.
+- **Private from the start.** The file and the folder are created private: mode 600 and 700 on macOS
+  and Linux. On Windows, the user's profile folder already allows only that user. A file found
+  readable by others is made private again, and the user is told, much as ssh does with private keys.
+- **The same as Claude Code and Codex.** Claude Code keeps its login this way on Linux and Windows
+  (code.claude.com/docs/en/authentication, "Credential management"). Codex keeps `~/.codex/auth.json`
+  and says to "treat `~/.codex/auth.json` like a password" (learn.chatgpt.com/docs/auth).
+- **The keychain option.** `tachi login chatgpt --keychain` puts the tokens in the operating system's
+  credential store: Windows Credential Manager, the macOS Keychain or the Linux secret service. The
+  rest of the record stays in the file. The add-on package is chosen while planning, after checking
+  that it is maintained and how old its release is, and it is installed through `sfw`.
+- **Never shown.** Tokens never appear in the error log, in `--json` output or in any address.
+
+**Renewing**
+- **Lifetimes.** A login lasts 1 hour, and each renewal is good for a further 30 days (token
+  reference).
+- **When.** Tachikoma renews before a request when less than 60 seconds are left, as OpenAI's example
+  code does. It never renews before the `earliest_refresh_at` time OpenAI sends.
+- **One session at a time.** Each renewal replaces the renewal token, and two sessions renewing with
+  the old one could both be signed out. So only one session renews at a time, under a lock; the
+  others wait, then read the new file.
+- **When renewal fails.** If the login is expired or cancelled, the user is told to sign in again. If
+  the network failed, the login is kept and the error is reported.
+
+**Signing out**
+- Tachikoma cancels the renewal token with OpenAI, then deletes the tokens.
+- If OpenAI cannot be reached, the tokens are still deleted, and the user is told that the
+  cancellation was not confirmed.
+- The machine ID and the account's client ID are kept, as the docs say to.
+
+**Requests** go to the Responses API at `https://api.openai.com/v1/responses`, through a new adapter,
+`src/providers/chatgpt.ts`.
+- **The client.** It uses the `openai` package Tachikoma already has; version 7.30.0 types every field
+  needed. The login is passed as a function, so a renewed login is picked up without restarting
+  anything.
+- **Every request**:
+  - is streamed and not stored (`stream: true`, `store: false`), as the route requires;
+  - carries the whole conversation, since nothing is kept at OpenAI;
+  - puts Tachikoma's instructions in `instructions`, because system messages are refused;
+  - sends none of the fields the route refuses, such as `temperature` or `max_output_tokens`.
+- **The conversation:**
+  - Text, tool calls (`function_call` with its `call_id`) and tool results (`function_call_output`)
+    are converted both ways.
+  - OpenAI's encrypted reasoning items must go back with tool results. They are kept with the
+    message, as Anthropic's thinking is, and are taken from each item's finished form in the stream.
+    They are sent back only while ChatGPT leads.
+- **A reply counts as finished only on `response.completed`.** A failed reply, a cut-off reply or a
+  dropped stream is an error, as with every other provider.
+- **Token counts** are read from the completed reply.
+
+**Context window.** The status line can show how much is left only if the window size is known.
+- **First: the model list's own figure.** Codex reads `context_window` from each entry of OpenAI's
+  model list (github.com/openai/codex, `codex-rs/protocol/src/openai_models.rs`, read 2026-10-22).
+  The sign-in docs describe the same list, with the same field names for the ones they mention.
+- **Otherwise: OpenAI's model pages.** These give the API's window: GPT-6.1 Sol, for example, has 1.05M
+  tokens (developers.openai.com/api/docs/models/gpt-6.1-sol, 2026-10-22). The figures go in a small
+  dated table with their sources, like the price table.
+- **The plan's window may be smaller.** No page says the plan gets the same window as the API, and
+  Codex assumes 272,000 tokens for a model it does not know. If OpenAI rejects a request as too long,
+  Tachikoma says so plainly.
+
+**Errors** follow the errors and recovery page.
+- **No automatic retries.** The SDK's own retries are off, as in OpenAI's example code, because
+  retrying a usage limit only hits it again.
+- **The usage limit** (`subscription_sharing_usage_limit_exceeded`) gives the message above. It can
+  arrive part way through a stream.
+- **Not eligible, or plan use not allowed:** Tachikoma says why, and suggests `openai:` with an API key.
+- **A login OpenAI rejects:** "Sign in again with `tachi login chatgpt`."
+- **Service unavailable:** the error is reported and the login is kept. OpenAI asks for "bounded
+  backoff" but gives no numbers, so Tachikoma does not retry by itself.
+
+**Hardening for every provider**, added in release 2 because the saved login makes it matter more.
+The sandbox (release 3) closes both gaps properly.
+- **The file tools refuse Tachikoma's data folder** in every permission mode, `never` included. Shell
+  commands cannot be policed that way until the sandbox.
+- **Shell commands do not get the API keys:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+  `OPENROUTER_API_KEY` and `MOONSHOT_API_KEY`. In release 1, `src/exec/local.ts` passes its whole
+  environment to every command, so a command could print a key back to the model. The cost: a command
+  that genuinely needs one of these keys does not see it.
+
+**The model picker (`/model`).**
+- **The list.** It opens a list moved through with the arrow keys: Enter picks, Esc closes, and typing
+  filters, since OpenRouter alone lists hundreds of models. The current lead is marked.
+- **What it shows,** grouped by provider: ChatGPT when signed in, each provider whose API key is set,
+  and Ollama when it is running. All are asked at once, each at its own model-list address, which is
+  checked against that provider's docs while planning.
+- **A provider that fails** is shown with the reason, such as "not running" or "key rejected", rather
+  than hidden.
+- **Picking** a model does the same as `/lead <provider:model>`.
+- **No new package.** It is built with Ink's own keyboard input.
+
+**Order of building.** The first real sign-in comes straight after the sign-in code, before the
+adapter. The docs do not say whether a new open-source app needs OpenAI's approval or listing before
+its users can sign in. If it does, that shows up before anything else is built. Signing in and reading
+the model list use none of the plan's limit.
+
+**Still to measure for release 2.** These are checked on the user's own Plus account:
+- whether a new, unlisted app can sign in;
+- whether the model list includes `context_window`;
+- whether tools can be listed plainly or must be grouped in a namespace;
+- whether completed replies carry token counts;
+- whether a reasoning-effort setting is accepted. Until then, `--effort` stays Anthropic-only.
 
 ## 2. Orchestration and loops
 
@@ -512,8 +690,9 @@ it.
 
 The bar along the bottom shows:
 - the lead model
-- how full the context window is
-- tokens and cost this session
+- how much of the context window is left, as a percentage when the window size is known (`ctx 96%
+  left`, as Codex shows it), or the tokens in use when it is not (from release 2)
+- tokens and cost this session (on a ChatGPT plan, "ChatGPT plan" in place of the cost)
 - running workers
 - sandbox mode
 - whether memory and search are up
@@ -623,6 +802,9 @@ whose results are recorded.
 15. Whether Docker's built-in name lookup answers for outside sites from a container on an
     `--internal` network. If it does, the sandbox's limited network needs its own lookup server
     that answers only for allowed sites.
+16. The release 2 checks listed under "Sign in with ChatGPT": whether an unlisted app can sign in,
+    whether the model list includes `context_window`, how tools must be sent, whether token counts
+    are filled in, and whether a reasoning-effort setting is accepted.
 
 ## Release order
 
