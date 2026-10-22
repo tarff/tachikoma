@@ -47,6 +47,11 @@ export const readFileTool = defineTool(
     if (!text) return `(${p} is empty)`;
     const lines = text.replace(/\r?\n$/, "").split(/\r?\n/);
     if (offset > lines.length) return `(${p} has ${lines.length} lines)`;
+    const row = (n: number) => `${String(n).padStart(6)}\t${lines[n - 1]}`;
+    if (offset === 1 && limit >= lines.length) {
+      const whole = lines.map((_, i) => row(i + 1)).join("\n");
+      if (whole.length <= MAX_TOOL_OUTPUT) return whole; // the whole file needs no note
+    }
     const note = (last: number) => `(showing lines ${offset}-${last} of ${lines.length}; use offset and limit to read the rest)`;
     // Stops before the session's cut at MAX_TOOL_OUTPUT, leaving room for the longest note, so the note
     // names the last line really shown. One line too long for the room on its own is still shown, and
@@ -55,14 +60,11 @@ export const readFileTool = defineTool(
     const rows: string[] = [];
     let size = 0;
     for (let n = offset; n < offset + limit && n <= lines.length; n++) {
-      const row = `${String(n).padStart(6)}\t${lines[n - 1]}`;
-      if (rows.length && size + row.length + 1 > room) break;
-      rows.push(row);
-      size += row.length + 1;
+      if (rows.length && size + row(n).length + 1 > room) break;
+      rows.push(row(n));
+      size += row(n).length + 1;
     }
-    const last = offset + rows.length - 1;
-    if (offset === 1 && last === lines.length) return rows.join("\n");
-    return `${note(last)}\n${rows.join("\n")}`; // first, not last: the session cuts long output from the end
+    return `${note(offset + rows.length - 1)}\n${rows.join("\n")}`; // first, not last: the session cuts from the end
   },
 );
 
@@ -95,15 +97,18 @@ export const editFileTool = defineTool(
   },
 );
 
-// The file with the edit made, or why it cannot be. read_file hides \r, so in a file with Windows line
-// endings a \n in the edit's text means \r\n.
+// The file with the edit made, or why it cannot be. read_file hides \r, so when the text as sent is not
+// found in a file with Windows line endings, its \n is tried as \r\n.
 function edited(text: string, p: string, old_text: string, new_text: string): string {
   // Bytes that are not UTF-8 read back as U+FFFD, and writing the text back would destroy them.
   if (text.includes("�")) throw new Error(`${p} is not UTF-8 text, so edit_file would damage it`);
-  const eol = (s: string) => (text.includes("\r\n") ? s.replace(/\r?\n/g, "\r\n") : s);
-  const [from, to] = [eol(old_text), eol(new_text)];
-  const count = text.split(from).length - 1;
-  if (count === 0) throw new Error(`old_text was not found in ${p}`);
+  // The text as sent first: a file can mix both endings, and its \n part must stay editable.
+  const crlf = (s: string) => s.replace(/\r?\n/g, "\r\n");
+  const times = (s: string) => text.split(s).length - 1;
+  const exact = times(old_text) > 0 || !text.includes("\r\n");
+  const [from, to] = exact ? [old_text, new_text] : [crlf(old_text), crlf(new_text)];
+  const count = times(from);
+  if (count === 0) throw new Error(`old_text was not found in ${p}${text.includes("\r\n") ? " (the file uses CRLF line endings in places)" : ""}`);
   if (count > 1) throw new Error(`old_text appears ${count} times in ${p}; include more surrounding text so it is unique`);
   return text.replace(from, () => to);
 }

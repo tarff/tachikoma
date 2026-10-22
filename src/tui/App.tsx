@@ -51,7 +51,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface.
       if (detail !== undefined) {
-        const lines = detail ? detail.split("\n").length : 0;
+        const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
         say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
       }
       return new Promise((resolve) => {
