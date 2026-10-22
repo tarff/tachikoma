@@ -1,5 +1,14 @@
 import { constants } from "node:os";
+import { visible } from "./core/permissions.js";
+import { screen } from "./tui/describe.js";
 import { type Segment, SEGMENTS } from "./tui/StatusLine.js";
+
+// Headless output reaches the terminal too, so model and provider text gets the scrollback's escaping.
+export const prose = (text: string) => screen({ text }).text;
+
+// JSON.stringify has already escaped \n, \r, \t and the other C0 characters; visible() writes the rest
+// (C1, DEL, bidi overrides) as the \uXXXX escapes JSON itself uses, so the line parses to the same value.
+export const jsonLine = (event: string, data: unknown) => visible(JSON.stringify({ event, data }));
 
 // Stopped wins: an aborted request reports no error, and the shell reads 128 + n as "stopped by signal n".
 // A declined action fails the run, or a script would take a run that did nothing for success.

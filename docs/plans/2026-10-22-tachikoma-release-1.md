@@ -77,7 +77,16 @@ build made on 2026-10-22, not retyped. In that build:
   runs the next command even after a failure) and gives `a; if ($?) { b }`; the prompt no longer
   promises the user is asked (nobody is, in `-p`); the connection-error walk stops on a looping
   cause chain; `/tmp is full` is a message, not a command; a closed pipe on stderr ends quietly.
-- That makes 161 tests in all.
+- Final review of the whole release:
+  - **Headless output** (`-p` and `--json`) gets the scrollback's escaping, so a model's answer or a
+    provider's error cannot send terminal codes either. JSON lines stay valid and parse to the same value.
+  - **Replies from OpenAI-format models** no longer keep whitespace-only text, and tool arguments that
+    are JSON but not an object are wrapped like broken JSON. Anthropic rejects both, so after `/lead`
+    to Anthropic one such reply would have failed every later request.
+  - **Anthropic's declined attempts are counted**, as the design says. Each is counted at the price of
+    the model that declined; one that declined before any output shows its cost as `?`, because only
+    some refusal categories are billed and the reply does not say which applied.
+- That makes 169 tests in all.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
@@ -301,6 +310,9 @@ export interface Turn {
   // Set when the provider itself handed the request to another model (Anthropic's fallback).
   fallbacks?: { from: string; to: string }[];
   servedBy?: string; // "<provider>:<model>" that actually answered, when not the one asked
+  // Attempts by models that declined before this reply, each with its own usage; `usage` above covers
+  // only the attempt that answered. `priceKnown` is false when whether it was billed is not known.
+  declined?: { provider: string; usage: Usage; priceKnown: boolean }[];
 }
 
 export interface CompletionRequest {
@@ -336,7 +348,7 @@ export interface ErrorEvent {
 
 export interface Events {
   message: [Message];
-  usage: [{ provider: string; usage: Usage }];
+  usage: [{ provider: string; usage: Usage; priceKnown?: boolean }];
   error: [ErrorEvent];
   lead: [string];
 }
@@ -1530,6 +1542,15 @@ describe("Session", () => {
     await session.send("go");
     expect(seen).toEqual([{ provider: "fake:a", usage }]);
   });
+
+  it("reports attempts the provider's own fallback declined, before the reply's usage", async () => {
+    const declined = [{ provider: "fake:x", usage, priceKnown: false }];
+    const { session, bus } = await setup([{ ...reply("hi"), servedBy: "fake:y", declined }]);
+    const seen: unknown[] = [];
+    bus.on("usage", (u) => seen.push(u));
+    await session.send("go");
+    expect(seen).toEqual([{ provider: "fake:x", usage, priceKnown: false }, { provider: "fake:y", usage }]); // last sets the context size
+  });
 });
 ```
 
@@ -1647,7 +1668,8 @@ export class Session {
     const { bus, tools, system } = this.opts;
     try {
       const turn = await provider.complete({ system, messages: this.messages, tools: tools.map((t) => t.spec), signal });
-      bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage });
+      for (const d of turn.declined ?? []) bus.emit("usage", d);
+      bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage }); // last: it sets the context size
       return turn;
     } catch (err) {
       if (!signal?.aborted) bus.emit("error", { kind: "provider", attempted: `request to ${provider.id}`, message: errorText(err), lead: this.#lead.id });
@@ -1687,7 +1709,7 @@ function result(call: ToolCall, output: string, isError: boolean): ToolResult {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/session.test.ts && npm run typecheck`
-Expected: 23 tests pass, and no type errors.
+Expected: 24 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -1827,6 +1849,33 @@ describe("fromAnthropic", () => {
     expect(turn.fallbacks).toEqual([{ from: "claude-opus-5-5", to: "claude-opus-4-8" }]);
     expect(turn.servedBy).toBe("anthropic:claude-opus-4-8");
     expect(turn.parts).toEqual([{ type: "text", text: "hi" }]);
+    // Declined before any output: billed only in some refusal categories, which the entry does not name.
+    expect(turn.declined).toEqual([{ provider: "anthropic:claude-opus-5-5", usage: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0 }, priceKnown: false }]);
+  });
+
+  it("counts a model that declined part way through its reply at that model's price", () => {
+    const turn = fromAnthropic(
+      message({
+        model: "claude-opus-4-8",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          iterations: [
+            { type: "message", model: "claude-opus-5-5", input_tokens: 90, output_tokens: 30, cache_read_input_tokens: 10, cache_creation_input_tokens: 5, cache_creation: null },
+            { type: "fallback_message", model: "claude-opus-4-8", input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: null },
+          ],
+        } as unknown as BetaMessage["usage"],
+        content: [
+          { type: "text", text: "let me", citations: null },
+          { type: "fallback", from: { model: "claude-opus-5-5" }, to: { model: "claude-opus-4-8" }, trigger: { type: "refusal" } },
+          { type: "text", text: "hi", citations: null },
+        ] as unknown as BetaMessage["content"],
+      }),
+    );
+    expect(turn.declined).toEqual([{ provider: "anthropic:claude-opus-5-5", usage: { input: 90, output: 30, cacheRead: 10, cacheWrite: 5 }, priceKnown: true }]);
+    expect(turn.usage).toEqual({ input: 100, output: 20, cacheRead: 0, cacheWrite: 0 }); // the answering attempt only
   });
 
   it("names the fallback model on a sticky turn, which carries no fallback block", () => {
@@ -1845,6 +1894,7 @@ describe("fromAnthropic", () => {
     );
     expect(turn.servedBy).toBe("anthropic:claude-opus-4-8");
     expect(turn.fallbacks).toBeUndefined();
+    expect(turn.declined).toBeUndefined(); // nothing declined on this turn
   });
 
   it("drops the declined model's unfinished tool calls and thinking, keeping its text", () => {
@@ -1971,8 +2021,7 @@ export function fromAnthropic(msg: BetaMessage): Turn {
     else if (b.type === "tool_use") parts.push({ type: "tool_call", id: b.id, name: b.name, input: b.input });
     else if (b.type === "fallback") fallbacks.push({ from: b.from.model, to: b.to.model });
   }
-  // Covers only the attempt that produced this message: tokens a model spent before declining mid-stream
-  // are in usage.iterations alone, so they are not counted here.
+  // Covers only the attempt that produced this message; each declined attempt is counted below.
   const u = msg.usage;
   const turn: Turn = {
     parts,
@@ -1982,7 +2031,26 @@ export function fromAnthropic(msg: BetaMessage): Turn {
   // Blocks mark where this turn switched models (for the notice); sticky turns, served by the fallback
   // model with no switch, carry none, so who answered comes from usage.iterations and `model`.
   if (fallbacks.length) turn.fallbacks = fallbacks;
-  if (u.iterations?.some((it) => it.type === "fallback_message")) turn.servedBy = `anthropic:${msg.model}`;
+  const iterations = u.iterations ?? [];
+  if (iterations.some((it) => it.type === "fallback_message")) {
+    turn.servedBy = `anthropic:${msg.model}`;
+    // Each model that declined first has a `message` entry (we use no server tools, which add more). From
+    // platform.claude.com/docs/en/build-with-claude/refusals-and-fallback, "Billing and rate limits"
+    // (2026-10-22): a decline after some output is billed at that model's rates; one before any output
+    // only in some refusal categories, which the entry does not name, so its price is unknown.
+    const declined = iterations.flatMap((it) =>
+      it.type === "message"
+        ? [
+            {
+              provider: `anthropic:${it.model ?? "unknown"}`,
+              usage: { input: it.input_tokens, output: it.output_tokens, cacheRead: it.cache_read_input_tokens, cacheWrite: it.cache_creation_input_tokens },
+              priceKnown: it.output_tokens > 0,
+            },
+          ]
+        : [],
+    );
+    if (declined.length) turn.declined = declined;
+  }
   if (msg.stop_reason === "max_tokens") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit" };
   if (msg.stop_reason === "model_context_window_exceeded") turn.cutOff = { kind: "max_tokens", detail: "The conversation filled the context window" };
   if (msg.stop_reason === "refusal") turn.cutOff = { kind: "refusal", detail: `The model declined (category: ${msg.stop_details?.category ?? "none given"})` };
@@ -2037,7 +2105,7 @@ export class AnthropicProvider implements Provider {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/providers/anthropic.test.ts && npm run typecheck`
-Expected: 9 tests pass, and no type errors.
+Expected: 10 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2066,6 +2134,7 @@ import type { ChatCompletion } from "openai/resources/chat/completions";
 import { Completions } from "openai/resources/chat/completions";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../src/core/types.js";
+import { toAnthropic } from "../../src/providers/anthropic.js";
 import { fromOpenAI, OpenAIProvider, toOpenAI } from "../../src/providers/openai.js";
 
 function completion(message: Record<string, unknown>, finish_reason = "stop", usage?: Record<string, unknown>): ChatCompletion {
@@ -2134,6 +2203,18 @@ describe("fromOpenAI", () => {
     expect(turn.parts[0]).toMatchObject({ input: { invalid_json: "{oops" } });
   });
 
+  it("passes on tool arguments that are JSON but not an object the same way", () => {
+    for (const args of ["null", "[]", "3"]) {
+      const turn = fromOpenAI(completion({ content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: args } }] }), "openai");
+      expect(turn.parts[0]).toMatchObject({ input: { invalid_json: args } });
+    }
+  });
+
+  it("drops text that is only whitespace, sent by some models next to tool calls", () => {
+    const turn = fromOpenAI(completion({ content: "\n\n", tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: "{}" } }] }, "tool_calls"), "ollama");
+    expect(turn.parts).toEqual([{ type: "tool_call", id: "c1", name: "x", input: {} }]);
+  });
+
   it("reports hitting the output limit and content filtering", () => {
     expect(fromOpenAI(completion({ content: "par" }, "length"), "openai").cutOff?.kind).toBe("max_tokens");
     expect(fromOpenAI(completion({ content: "" }, "content_filter"), "openai").cutOff?.kind).toBe("refusal");
@@ -2142,6 +2223,24 @@ describe("fromOpenAI", () => {
   it("reports a refusal given in message.refusal", () => {
     const turn = fromOpenAI(completion({ content: null, refusal: "I can't help with that." }), "openai");
     expect(turn.cutOff).toEqual({ kind: "refusal", detail: "I can't help with that." });
+  });
+});
+
+describe("after /lead to Anthropic", () => {
+  // Anthropic rejects whitespace-only text blocks and tool input that is not an object, and the history
+  // is append-only, so one such reply stored would fail every later Anthropic request.
+  it("sends Anthropic a valid copy of an OpenAI-format tool-call turn", () => {
+    const turn = fromOpenAI(completion({ content: " \n", tool_calls: [{ id: "call:1", type: "function", function: { name: "x", arguments: "null" } }] }, "tool_calls"), "kimi");
+    const history: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "go" }] },
+      { role: "assistant", parts: turn.parts, native: turn.native },
+      { role: "user", parts: [{ type: "tool_result", callId: "call:1", output: "bad input", isError: true }] },
+    ];
+    expect(toAnthropic(history)).toEqual([
+      { role: "user", content: [{ type: "text", text: "go" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "x", input: { invalid_json: "null" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "bad input", is_error: true }] },
+    ]);
   });
 });
 
@@ -2285,19 +2384,24 @@ export function toOpenAI(system: string, messages: Message[], kind: string): Cha
   return out;
 }
 
+// Anything but a JSON object is wrapped: it fails the tool's schema check, so the model is told, and
+// Anthropic rejects tool input that is not an object if the history is later sent there.
 function parseArgs(raw: string): unknown {
   try {
-    return JSON.parse(raw || "{}");
+    const v: unknown = JSON.parse(raw || "{}");
+    if (typeof v === "object" && v !== null && !Array.isArray(v)) return v;
   } catch {
-    return { invalid_json: raw }; // fails the tool's schema check, so the model is told
+    // broken JSON, wrapped below
   }
+  return { invalid_json: raw };
 }
 
 export function fromOpenAI(res: ChatCompletion, kind: string): Turn {
   const choice = res.choices[0];
   if (!choice) throw new Error("The provider returned no reply");
   const parts: Part[] = [];
-  if (choice.message.content) parts.push({ type: "text", text: choice.message.content });
+  // Local and Kimi models often send "\n\n" next to tool calls; Anthropic rejects whitespace-only text.
+  if (choice.message.content?.trim()) parts.push({ type: "text", text: choice.message.content });
   for (const c of choice.message.tool_calls ?? []) {
     if (c.type === "function") parts.push({ type: "tool_call", id: c.id, name: c.function.name, input: parseArgs(c.function.arguments) });
   }
@@ -2375,7 +2479,7 @@ export class OpenAIProvider implements Provider {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/providers/openai.test.ts && npm run typecheck`
-Expected: 14 tests pass, and no type errors.
+Expected: 17 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2651,6 +2755,15 @@ describe("Stats", () => {
     expect(stats.context).toBe(15);
   });
 
+  it("counts the tokens of an attempt whose price is not known, and shows the cost as unknown", () => {
+    const bus = new Bus();
+    const stats = new Stats(bus);
+    bus.emit("usage", { provider: "anthropic:claude-opus-5-5", usage: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 }, priceKnown: false });
+    expect(stats.input).toBe(10);
+    expect(stats.cost).toBe(0);
+    expect(stats.costUnknown).toBe(true);
+  });
+
   it("does not count a rescued refusal as an error", () => {
     const bus = new Bus();
     const stats = new Stats(bus);
@@ -2746,12 +2859,12 @@ export class Stats {
   fallbacks = 0; // refusals another model answered; shown, but not counted as errors
 
   constructor(bus: Bus) {
-    bus.on("usage", ({ provider, usage }) => {
+    bus.on("usage", ({ provider, usage, priceKnown }) => {
       const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
       this.input += prompt;
       this.output += usage.output;
       this.context = prompt + usage.output;
-      const c = cost(provider, usage);
+      const c = priceKnown === false ? null : cost(provider, usage);
       if (c === null) this.costUnknown = true;
       else this.cost += c;
     });
@@ -2763,7 +2876,7 @@ export class Stats {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/errorlog.test.ts && npm run typecheck`
-Expected: 12 tests pass, and no type errors.
+Expected: 13 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -3465,7 +3578,16 @@ export function systemPrompt(root: string, platform: NodeJS.Platform = process.p
 
 ```typescript
 import { constants } from "node:os";
+import { visible } from "./core/permissions.js";
+import { screen } from "./tui/describe.js";
 import { type Segment, SEGMENTS } from "./tui/StatusLine.js";
+
+// Headless output reaches the terminal too, so model and provider text gets the scrollback's escaping.
+export const prose = (text: string) => screen({ text }).text;
+
+// JSON.stringify has already escaped \n, \r, \t and the other C0 characters; visible() writes the rest
+// (C1, DEL, bidi overrides) as the \uXXXX escapes JSON itself uses, so the line parses to the same value.
+export const jsonLine = (event: string, data: unknown) => visible(JSON.stringify({ event, data }));
 
 // Stopped wins: an aborted request reports no error, and the shell reads 128 + n as "stopped by signal n".
 // A declined action fails the run, or a script would take a run that did nothing for success.
@@ -3501,7 +3623,7 @@ import { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { render } from "ink";
-import { endOnEpipe, headlessExit, statusSegments } from "./clilib.js";
+import { endOnEpipe, headlessExit, jsonLine, prose, statusSegments } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { MODES, type Mode, PermissionGate } from "./core/permissions.js";
@@ -3624,12 +3746,12 @@ if (parsed.print !== undefined) {
   });
   if (parsed.json) {
     for (const event of ["message", "usage", "error", "lead"] as const) {
-      bus.on(event, (data: unknown) => console.log(JSON.stringify({ event, data })));
+      bus.on(event, (data: unknown) => console.log(jsonLine(event, data)));
     }
   } else {
     bus.on("error", (e) => {
-      if (e.kind === "fallback") console.error(`note: ${e.message}`);
-      else if (e.kind !== "tool") console.error(`${e.kind}: ${e.message}`);
+      if (e.kind === "fallback") console.error(prose(`note: ${e.message}`));
+      else if (e.kind !== "tool") console.error(prose(`${e.kind}: ${e.message}`));
     });
   }
   // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us.
@@ -3639,7 +3761,7 @@ if (parsed.print !== undefined) {
   await session.send(parsed.print, stop.signal);
   if (!parsed.json) {
     const last = session.messages.at(-1);
-    if (last?.role === "assistant") console.log(last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n"));
+    if (last?.role === "assistant") console.log(prose(last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")));
   }
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
@@ -3671,7 +3793,7 @@ runs of the command itself that stop before any model call.
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describe, expect, it } from "vitest";
-import { headlessExit, statusSegments } from "../src/clilib.js";
+import { headlessExit, jsonLine, prose, statusSegments } from "../src/clilib.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 
 describe("headlessExit", () => {
@@ -3691,6 +3813,19 @@ describe("headlessExit", () => {
 
   it("is 128 + SIGINT when stopped, whatever else happened", () => {
     expect(headlessExit({ aborted: true, failed: true, declined: true })).toBe(128 + constants.signals.SIGINT);
+  });
+});
+
+describe("headless output", () => {
+  it("shows escape codes and bidi overrides in an answer as text, keeping line breaks and tabs", () => {
+    expect(prose("a\u001b]52;c;eA==\u0007\nb\tc\u202e")).toBe("a\\u001b]52;c;eA==\\u0007\nb\tc\\u202e");
+  });
+
+  it("escapes what JSON leaves raw, and the line still parses to the same value", () => {
+    const data = { text: "x\u009b8m\u202e\u007f\n" };
+    const line = jsonLine("message", data);
+    expect(line).not.toMatch(/[\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
+    expect(JSON.parse(line)).toEqual({ event: "message", data });
   });
 });
 
@@ -3776,7 +3911,7 @@ describe("tachi", () => {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  161 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  169 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -3851,7 +3986,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  161 passed | 1 skipped`.
+Expected: `Tests  169 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 

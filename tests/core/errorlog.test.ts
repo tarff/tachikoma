@@ -114,6 +114,15 @@ describe("Stats", () => {
     expect(stats.context).toBe(15);
   });
 
+  it("counts the tokens of an attempt whose price is not known, and shows the cost as unknown", () => {
+    const bus = new Bus();
+    const stats = new Stats(bus);
+    bus.emit("usage", { provider: "anthropic:claude-opus-5-5", usage: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 }, priceKnown: false });
+    expect(stats.input).toBe(10);
+    expect(stats.cost).toBe(0);
+    expect(stats.costUnknown).toBe(true);
+  });
+
   it("does not count a rescued refusal as an error", () => {
     const bus = new Bus();
     const stats = new Stats(bus);

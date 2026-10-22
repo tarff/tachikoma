@@ -97,6 +97,33 @@ describe("fromAnthropic", () => {
     expect(turn.fallbacks).toEqual([{ from: "claude-opus-5-5", to: "claude-opus-4-8" }]);
     expect(turn.servedBy).toBe("anthropic:claude-opus-4-8");
     expect(turn.parts).toEqual([{ type: "text", text: "hi" }]);
+    // Declined before any output: billed only in some refusal categories, which the entry does not name.
+    expect(turn.declined).toEqual([{ provider: "anthropic:claude-opus-5-5", usage: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0 }, priceKnown: false }]);
+  });
+
+  it("counts a model that declined part way through its reply at that model's price", () => {
+    const turn = fromAnthropic(
+      message({
+        model: "claude-opus-4-8",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          iterations: [
+            { type: "message", model: "claude-opus-5-5", input_tokens: 90, output_tokens: 30, cache_read_input_tokens: 10, cache_creation_input_tokens: 5, cache_creation: null },
+            { type: "fallback_message", model: "claude-opus-4-8", input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: null },
+          ],
+        } as unknown as BetaMessage["usage"],
+        content: [
+          { type: "text", text: "let me", citations: null },
+          { type: "fallback", from: { model: "claude-opus-5-5" }, to: { model: "claude-opus-4-8" }, trigger: { type: "refusal" } },
+          { type: "text", text: "hi", citations: null },
+        ] as unknown as BetaMessage["content"],
+      }),
+    );
+    expect(turn.declined).toEqual([{ provider: "anthropic:claude-opus-5-5", usage: { input: 90, output: 30, cacheRead: 10, cacheWrite: 5 }, priceKnown: true }]);
+    expect(turn.usage).toEqual({ input: 100, output: 20, cacheRead: 0, cacheWrite: 0 }); // the answering attempt only
   });
 
   it("names the fallback model on a sticky turn, which carries no fallback block", () => {
@@ -115,6 +142,7 @@ describe("fromAnthropic", () => {
     );
     expect(turn.servedBy).toBe("anthropic:claude-opus-4-8");
     expect(turn.fallbacks).toBeUndefined();
+    expect(turn.declined).toBeUndefined(); // nothing declined on this turn
   });
 
   it("drops the declined model's unfinished tool calls and thinking, keeping its text", () => {

@@ -12,12 +12,12 @@ export class Stats {
   fallbacks = 0; // refusals another model answered; shown, but not counted as errors
 
   constructor(bus: Bus) {
-    bus.on("usage", ({ provider, usage }) => {
+    bus.on("usage", ({ provider, usage, priceKnown }) => {
       const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
       this.input += prompt;
       this.output += usage.output;
       this.context = prompt + usage.output;
-      const c = cost(provider, usage);
+      const c = priceKnown === false ? null : cost(provider, usage);
       if (c === null) this.costUnknown = true;
       else this.cost += c;
     });

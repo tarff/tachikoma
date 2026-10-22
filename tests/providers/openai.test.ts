@@ -3,6 +3,7 @@ import type { ChatCompletion } from "openai/resources/chat/completions";
 import { Completions } from "openai/resources/chat/completions";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../src/core/types.js";
+import { toAnthropic } from "../../src/providers/anthropic.js";
 import { fromOpenAI, OpenAIProvider, toOpenAI } from "../../src/providers/openai.js";
 
 function completion(message: Record<string, unknown>, finish_reason = "stop", usage?: Record<string, unknown>): ChatCompletion {
@@ -71,6 +72,18 @@ describe("fromOpenAI", () => {
     expect(turn.parts[0]).toMatchObject({ input: { invalid_json: "{oops" } });
   });
 
+  it("passes on tool arguments that are JSON but not an object the same way", () => {
+    for (const args of ["null", "[]", "3"]) {
+      const turn = fromOpenAI(completion({ content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: args } }] }), "openai");
+      expect(turn.parts[0]).toMatchObject({ input: { invalid_json: args } });
+    }
+  });
+
+  it("drops text that is only whitespace, sent by some models next to tool calls", () => {
+    const turn = fromOpenAI(completion({ content: "\n\n", tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: "{}" } }] }, "tool_calls"), "ollama");
+    expect(turn.parts).toEqual([{ type: "tool_call", id: "c1", name: "x", input: {} }]);
+  });
+
   it("reports hitting the output limit and content filtering", () => {
     expect(fromOpenAI(completion({ content: "par" }, "length"), "openai").cutOff?.kind).toBe("max_tokens");
     expect(fromOpenAI(completion({ content: "" }, "content_filter"), "openai").cutOff?.kind).toBe("refusal");
@@ -79,6 +92,24 @@ describe("fromOpenAI", () => {
   it("reports a refusal given in message.refusal", () => {
     const turn = fromOpenAI(completion({ content: null, refusal: "I can't help with that." }), "openai");
     expect(turn.cutOff).toEqual({ kind: "refusal", detail: "I can't help with that." });
+  });
+});
+
+describe("after /lead to Anthropic", () => {
+  // Anthropic rejects whitespace-only text blocks and tool input that is not an object, and the history
+  // is append-only, so one such reply stored would fail every later Anthropic request.
+  it("sends Anthropic a valid copy of an OpenAI-format tool-call turn", () => {
+    const turn = fromOpenAI(completion({ content: " \n", tool_calls: [{ id: "call:1", type: "function", function: { name: "x", arguments: "null" } }] }, "tool_calls"), "kimi");
+    const history: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "go" }] },
+      { role: "assistant", parts: turn.parts, native: turn.native },
+      { role: "user", parts: [{ type: "tool_result", callId: "call:1", output: "bad input", isError: true }] },
+    ];
+    expect(toAnthropic(history)).toEqual([
+      { role: "user", content: [{ type: "text", text: "go" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "x", input: { invalid_json: "null" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: "bad input", is_error: true }] },
+    ]);
   });
 });
 

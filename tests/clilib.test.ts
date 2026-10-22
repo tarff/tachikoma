@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describe, expect, it } from "vitest";
-import { headlessExit, statusSegments } from "../src/clilib.js";
+import { headlessExit, jsonLine, prose, statusSegments } from "../src/clilib.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 
 describe("headlessExit", () => {
@@ -21,6 +21,19 @@ describe("headlessExit", () => {
 
   it("is 128 + SIGINT when stopped, whatever else happened", () => {
     expect(headlessExit({ aborted: true, failed: true, declined: true })).toBe(128 + constants.signals.SIGINT);
+  });
+});
+
+describe("headless output", () => {
+  it("shows escape codes and bidi overrides in an answer as text, keeping line breaks and tabs", () => {
+    expect(prose("a\u001b]52;c;eA==\u0007\nb\tc\u202e")).toBe("a\\u001b]52;c;eA==\\u0007\nb\tc\\u202e");
+  });
+
+  it("escapes what JSON leaves raw, and the line still parses to the same value", () => {
+    const data = { text: "x\u009b8m\u202e\u007f\n" };
+    const line = jsonLine("message", data);
+    expect(line).not.toMatch(/[\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
+    expect(JSON.parse(line)).toEqual({ event: "message", data });
   });
 });
 
