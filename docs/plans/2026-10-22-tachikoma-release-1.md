@@ -8,7 +8,7 @@ line, and an error log.
 
 **Architecture:** One agent loop (`Session`) sends events on a bus. The interface, status line, headless
 output and error log all listen to that bus. Providers convert a neutral message format to and from their
-own API. Tools act through an executor, so release 2 can swap in Docker without touching them. Design:
+own API. Tools act through an executor, so release 3 can swap in Docker without touching them. Design:
 `docs/plans/2026-10-22-tachikoma-design.md`.
 
 **Tech stack:**
@@ -146,14 +146,14 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
   as `?` too.
 
 **Known limits of release 1.** Each is fixed in the release named here (see the design):
-- **No shortening yet** (release 3). A full context window ends the turn with an error. Switching
+- **No shortening yet** (release 4). A full context window ends the turn with an error. Switching
   `/lead` to a model with a smaller window can make the next request fail with an error.
-- **No budget controller yet** (release 6). An interactive session runs until you stop it.
+- **No budget controller yet** (release 7). An interactive session runs until you stop it.
 - **The `native` content is never removed yet.** Only shortening needs to remove it, and that comes
-  in release 3.
+  in release 4.
 - **File tools check a path, then use it.** Another program that swaps a folder for a link in
   between could redirect the write. A hard link inside the project to an outside file looks like an
-  ordinary file. Both need something already running on the machine; the sandbox (release 2) is the
+  ordinary file. Both need something already running on the machine; the sandbox (release 3) is the
   answer.
 - **On Windows, cancelling cannot stop a program whose shell has already exited** (`taskkill /T`
   cannot find a tree whose root is gone). Cancel still returns at once. On macOS and Linux the
@@ -174,7 +174,7 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
   Tried on 2026-10-22: the line on its own line (still repeated), a script block (lost the exit
   code), `-EncodedCommand` (errors and progress come back as XML).
 - **Commands have no time limit**, so one that keeps its output open runs until you cancel it. A time
-  limit needs data first, and comes with the budget controller (release 6). Closing the terminal
+  limit needs data first, and comes with the budget controller (release 7). Closing the terminal
   (SIGHUP), SIGTERM, and Ctrl-C in headless mode all go through the exit cleanup, which stops running
   commands; a hard kill (SIGKILL) or a crash of Node itself does not, and on macOS and Linux a command
   then keeps going.
@@ -223,7 +223,7 @@ Task 14.
 }
 ```
 
-`private` stays `true` until the npm scope is chosen (release 8). The licence field is added in Task 14.
+`private` stays `true` until the npm scope is chosen (release 9). The licence field is added in Task 14.
 
 `tsconfig.json` (typechecks source and tests, emits nothing):
 
@@ -646,7 +646,7 @@ git commit -m "feat: permission gate"
 
 ### Task 3: Executor, tool definition and test helpers
 
-The executor is the switch that the Docker sandbox will plug into later (release 2). `defineTool` checks
+The executor is the switch that the Docker sandbox will plug into later (release 3). `defineTool` checks
 model input against a schema before any tool runs. The helpers file gives every later test a scripted
 model (`FakeProvider`) and a temporary project folder.
 
@@ -998,7 +998,7 @@ export function defineTool<S extends z.ZodObject>(
 
 Run: `npx vitest run tests/exec/local.test.ts && npm run typecheck`
 Expected: 5 tests pass, and no type errors. On Windows this kills the tree with `taskkill /T`. On macOS
-and Linux it kills the shell's process group; that path is first run by the release 8 install test.
+and Linux it kills the shell's process group; that path is first run by the release 9 install test.
 
 **Step 5: Commit**
 
