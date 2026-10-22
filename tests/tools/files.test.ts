@@ -134,11 +134,27 @@ describe("file tools", () => {
     expect(await readFile(path.join(ctx.root, "a.txt"), "utf8")).toBe("un\r\ndeux\r\n");
   });
 
+  it("matches the text as sent first, so a file that mixes line endings can be edited in either part", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "m.txt"), "a\r\nb\r\nc\nd\ne\n");
+    await editFileTool.run({ path: "m.txt", old_text: "c\nd", new_text: "x\ny" }, ctx);
+    await editFileTool.run({ path: "m.txt", old_text: "a\nb", new_text: "p\nq" }, ctx);
+    expect(await readFile(path.join(ctx.root, "m.txt"), "utf8")).toBe("p\r\nq\r\nx\ny\ne\n");
+  });
+
   it("checks an edit inside the project before asking, so the user is not asked about one that cannot work", async () => {
     const ctx = await tempContext("ask", [true]);
     await writeFile(path.join(ctx.root, "a.txt"), "one");
     await expect(editFileTool.run({ path: "a.txt", old_text: "three", new_text: "x" }, ctx)).rejects.toThrow("old_text was not found");
     expect(ctx.asked).toEqual([]);
+  });
+
+  it("gives a whole file that fits under the output limit in one piece, with no note", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), Array.from({ length: 10 }, () => "x".repeat(2991)).join("\n"));
+    const out = await readFileTool.run({ path: "a.txt" }, ctx);
+    expect(out.startsWith("(showing")).toBe(false);
+    expect(out).toHaveLength(29_989); // just under MAX_TOOL_OUTPUT, closer than any note would leave room for
   });
 
   it("stops reading before the output limit, and names the last line it really shows", async () => {

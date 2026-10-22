@@ -109,7 +109,11 @@ build made on 2026-10-22, not retyped. In that build:
   - **A write's preview is grey, under a heading** with the path and line count; an empty one says
     `(empty)`. A test now checks that Anthropic requests carry no bearer token. Rewritten connection
     errors keep the original as their cause.
-- That makes 193 tests in all.
+- Re-review of those: `edit_file` tries the text as sent first and only then with `\r\n`, so a file
+  that mixes line endings stays editable in its `\n` part (and says so when nothing matches); a whole
+  file that fits under the cut comes back without a note; the preview's line count leaves out a
+  final newline, as `read_file` does.
+- That makes 195 tests in all.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
@@ -1144,11 +1148,27 @@ describe("file tools", () => {
     expect(await readFile(path.join(ctx.root, "a.txt"), "utf8")).toBe("un\r\ndeux\r\n");
   });
 
+  it("matches the text as sent first, so a file that mixes line endings can be edited in either part", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "m.txt"), "a\r\nb\r\nc\nd\ne\n");
+    await editFileTool.run({ path: "m.txt", old_text: "c\nd", new_text: "x\ny" }, ctx);
+    await editFileTool.run({ path: "m.txt", old_text: "a\nb", new_text: "p\nq" }, ctx);
+    expect(await readFile(path.join(ctx.root, "m.txt"), "utf8")).toBe("p\r\nq\r\nx\ny\ne\n");
+  });
+
   it("checks an edit inside the project before asking, so the user is not asked about one that cannot work", async () => {
     const ctx = await tempContext("ask", [true]);
     await writeFile(path.join(ctx.root, "a.txt"), "one");
     await expect(editFileTool.run({ path: "a.txt", old_text: "three", new_text: "x" }, ctx)).rejects.toThrow("old_text was not found");
     expect(ctx.asked).toEqual([]);
+  });
+
+  it("gives a whole file that fits under the output limit in one piece, with no note", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), Array.from({ length: 10 }, () => "x".repeat(2991)).join("\n"));
+    const out = await readFileTool.run({ path: "a.txt" }, ctx);
+    expect(out.startsWith("(showing")).toBe(false);
+    expect(out).toHaveLength(29_989); // just under MAX_TOOL_OUTPUT, closer than any note would leave room for
   });
 
   it("stops reading before the output limit, and names the last line it really shows", async () => {
@@ -1234,6 +1254,11 @@ export const readFileTool = defineTool(
     if (!text) return `(${p} is empty)`;
     const lines = text.replace(/\r?\n$/, "").split(/\r?\n/);
     if (offset > lines.length) return `(${p} has ${lines.length} lines)`;
+    const row = (n: number) => `${String(n).padStart(6)}\t${lines[n - 1]}`;
+    if (offset === 1 && limit >= lines.length) {
+      const whole = lines.map((_, i) => row(i + 1)).join("\n");
+      if (whole.length <= MAX_TOOL_OUTPUT) return whole; // the whole file needs no note
+    }
     const note = (last: number) => `(showing lines ${offset}-${last} of ${lines.length}; use offset and limit to read the rest)`;
     // Stops before the session's cut at MAX_TOOL_OUTPUT, leaving room for the longest note, so the note
     // names the last line really shown. One line too long for the room on its own is still shown, and
@@ -1242,14 +1267,11 @@ export const readFileTool = defineTool(
     const rows: string[] = [];
     let size = 0;
     for (let n = offset; n < offset + limit && n <= lines.length; n++) {
-      const row = `${String(n).padStart(6)}\t${lines[n - 1]}`;
-      if (rows.length && size + row.length + 1 > room) break;
-      rows.push(row);
-      size += row.length + 1;
+      if (rows.length && size + row(n).length + 1 > room) break;
+      rows.push(row(n));
+      size += row(n).length + 1;
     }
-    const last = offset + rows.length - 1;
-    if (offset === 1 && last === lines.length) return rows.join("\n");
-    return `${note(last)}\n${rows.join("\n")}`; // first, not last: the session cuts long output from the end
+    return `${note(offset + rows.length - 1)}\n${rows.join("\n")}`; // first, not last: the session cuts from the end
   },
 );
 
@@ -1282,15 +1304,18 @@ export const editFileTool = defineTool(
   },
 );
 
-// The file with the edit made, or why it cannot be. read_file hides \r, so in a file with Windows line
-// endings a \n in the edit's text means \r\n.
+// The file with the edit made, or why it cannot be. read_file hides \r, so when the text as sent is not
+// found in a file with Windows line endings, its \n is tried as \r\n.
 function edited(text: string, p: string, old_text: string, new_text: string): string {
   // Bytes that are not UTF-8 read back as U+FFFD, and writing the text back would destroy them.
   if (text.includes("�")) throw new Error(`${p} is not UTF-8 text, so edit_file would damage it`);
-  const eol = (s: string) => (text.includes("\r\n") ? s.replace(/\r?\n/g, "\r\n") : s);
-  const [from, to] = [eol(old_text), eol(new_text)];
-  const count = text.split(from).length - 1;
-  if (count === 0) throw new Error(`old_text was not found in ${p}`);
+  // The text as sent first: a file can mix both endings, and its \n part must stay editable.
+  const crlf = (s: string) => s.replace(/\r?\n/g, "\r\n");
+  const times = (s: string) => text.split(s).length - 1;
+  const exact = times(old_text) > 0 || !text.includes("\r\n");
+  const [from, to] = exact ? [old_text, new_text] : [crlf(old_text), crlf(new_text)];
+  const count = times(from);
+  if (count === 0) throw new Error(`old_text was not found in ${p}${text.includes("\r\n") ? " (the file uses CRLF line endings in places)" : ""}`);
   if (count > 1) throw new Error(`old_text appears ${count} times in ${p}; include more surrounding text so it is unique`);
   return text.replace(from, () => to);
 }
@@ -1303,7 +1328,7 @@ The replacement in `edit_file` is passed as a function so `$&` and similar seque
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tools/files.test.ts && npm run typecheck`
-Expected: 20 tests pass, and no type errors.
+Expected: 22 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -3572,7 +3597,7 @@ describe("App", () => {
   });
 
   it("shows what a write will put in the file before asking, under a heading", async () => {
-    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two" }), reply("written")]);
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two\n" }), reply("written")]);
     await type(app, "make a file");
     await until(app, "Allow write");
     expect(app.lastFrame()).toContain(`┌ write ${path.join(ctx.root, "a.txt")} (2 lines)\nline one\nline two`);
@@ -3689,7 +3714,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface.
       if (detail !== undefined) {
-        const lines = detail ? detail.split("\n").length : 0;
+        const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
         say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
       }
       return new Promise((resolve) => {
@@ -4203,7 +4228,7 @@ describe("tachi", () => {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  193 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  195 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -4278,7 +4303,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  193 passed | 1 skipped`.
+Expected: `Tests  195 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 

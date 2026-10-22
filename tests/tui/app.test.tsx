@@ -221,7 +221,7 @@ describe("App", () => {
   });
 
   it("shows what a write will put in the file before asking, under a heading", async () => {
-    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two" }), reply("written")]);
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two\n" }), reply("written")]);
     await type(app, "make a file");
     await until(app, "Allow write");
     expect(app.lastFrame()).toContain(`┌ write ${path.join(ctx.root, "a.txt")} (2 lines)\nline one\nline two`);
