@@ -4007,6 +4007,8 @@ Expected: 1 passed. A second lead in `TACHI_LIVE_LEADS` (comma-separated) also r
 - OpenRouter after `/lead` to another model of the same provider: the first model's reasoning fields
   are sent to the second.
 - Ollama accepts its own `reasoning` field being sent back.
+- When every model in Anthropic's fallback chain declines, whether the last refusal's entry in
+  `usage.iterations` is a `fallback_message`. If it is not, the earlier declined attempts go uncounted.
 
 **Step 4: README and licence**
 
