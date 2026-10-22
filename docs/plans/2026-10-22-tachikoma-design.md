@@ -31,6 +31,7 @@ learn from experience. The command is `tachi`.
 | More providers | Look later into more providers and bring-your-own keys | User, 2026-10-22 ("byo keys like openrouter etc", "at a later" date) |
 | ChatGPT sign-in, how it works | A `chatgpt:` lead name; `tachi login`/`logout` and `/login`/`/logout`; Tachikoma's own adapter calling OpenAI directly (not through Codex) | User, 2026-10-22 (chose each option; "Both" for the commands; asked "why no logout", so it was added) |
 | ChatGPT sign-in, the saved login | A private file, with an optional OS keychain; one account at a time | User, 2026-10-22 (chose each option, and every hardening step offered) |
+| ChatGPT sign-in, after review | On Windows, an explicit permission that lets in only the user; if plan use is not granted, the account's record is kept but the plan is not used; records keyed by OpenAI's client ID and account, not email | User, 2026-10-22 (approved the design review's changes: "Yes"), after checking OpenAI's sign-in and accounts pages |
 | Hardening | The file tools refuse the data folder; shell commands do not get API keys | User, 2026-10-22 (chose both) |
 | Model picker | `/model` lists the models of every provider that is set up | User, 2026-10-22 (asked for a list "like Claude code"; chose every provider) |
 | Context window | The model list's own figure, then OpenAI's model pages; the status line shows how much is left | User, 2026-10-22 (chose this; "Codes cli at least shows me how much context is left as a %") |
@@ -64,8 +65,8 @@ the middle of a session: the history is converted into the new lead's format whe
 comes out.
 - Anthropic has its own adapter.
 - OpenAI, OpenRouter, Kimi and Ollama share one OpenAI-format adapter.
-- A ChatGPT plan has its own adapter, for OpenAI's Responses API (release 2; see "Sign in with
-  ChatGPT").
+- A ChatGPT plan has its own adapter, for OpenAI's Responses API (release 2; see the
+  [release 2 design](2026-10-22-tachikoma-release-2-design.md)).
 - CLI workers (`claude -p`, `codex exec`, `kimi`) sit behind the same interface, marked as
   workers that cannot lead.
 
@@ -77,7 +78,7 @@ comes out.
   tools (its terms are dated 2026-09-29). It signs in under its own name, keeps the tokens on the
   user's machine, and passes no access on to other tools. It never reuses the Codex CLI's own
   sign-in. Requests go to the Responses API, which the flow requires, so this needs its own adapter.
-  The details are in "Sign in with ChatGPT (release 2)" below.
+  The details are in the [release 2 design](2026-10-22-tachikoma-release-2-design.md).
 - **Everyone else** uses API keys.
 
 ### Fitting the context window
@@ -107,7 +108,9 @@ them would break this, which is why Ollama's behaviour is on the list to check.
 
 **Shortening the history:**
 1. **Full transcript on disk.** Every message is appended to `.tachikoma/sessions/<id>.jsonl` as the
-   session goes, so shortening never loses anything for good.
+   session goes, so shortening never loses anything for good. Before the history is replaced, the
+   transcript up to the cut point must be safely written. If that fails, shortening and the waiting
+   request stop with an error. The memory save is no substitute, as it may not hold everything.
 2. **Memory save.** It is started before any shortening.
 3. **Summary.** The current lead writes a summary of everything before a **cut point**.
    - The cut point is normally at a message the user typed. A tool call and its result are never
@@ -121,9 +124,10 @@ them would break this, which is why Ollama's behaviour is on the list to check.
      the pieces are then combined.
 4. **New history.**
    - **Cut at a typed message:** the summary, followed by everything from the cut point onward.
-     Kept assistant messages lose their stored provider content (see `native` in the plan) and
-     keep only their text and tool calls. Anthropic thinking blocks would be rejected after the
-     earlier history changed.
+     A provider's stored reasoning (see `native` in the plan) is never edited or rebuilt. If a
+     provider cannot take back a kept tool call without its original reasoning, that finished
+     round is folded into the summary as text, as in a cut inside a turn below. A tool call is never
+     kept with its reasoning stripped when its provider needs that reasoning.
    - **Cut inside a turn:** one user message holding the summary, the user's request word for
      word, and the latest round's tool results copied in as text. The lead then carries on with the
      turn, and no earlier assistant message is kept. The reason is in Anthropic's migration notes
@@ -137,6 +141,12 @@ them would break this, which is why Ollama's behaviour is on the list to check.
 everything, and the alternative is a session that cannot continue. The failure is logged and shown.
 
 **Shortening is the only exception to "the history only grows."** It resets the prompt cache.
+- **A summary must fit** in the space the next request has, and is checked again before it is used.
+- **Summary requests are requests,** pieces included: Ctrl-C and budgets apply to them as to any
+  other.
+- **A failed summary changes nothing.** The history stays as it was, and the waiting turn ends, or
+  the lead switch is refused.
+- **Before shortening ships** (release 4), a request that is too long ends with an error.
 
 ### When a model refuses
 
@@ -166,179 +176,15 @@ categories, which the reply does not name per attempt; so that attempt's cost sh
 2026-10-22). A rescued reply is priced at the model that answered; if that model has no known price,
 the cost shows `?`.
 
-**Budgets cover both.** The refused attempt and the retry each count as a request.
+**Budgets cover both.** Tachikoma's own retry counts as another request. Anthropic's fallback
+happens inside one request, so it is counted as that request, with all its usage (see "Budgets").
+Tool calls run only from a complete reply: a tool call in a cut-off or refused reply never runs.
 
 **Still to measure:** how much recent history to keep after the cut point.
 
 ### Sign in with ChatGPT (release 2)
 
-OpenAI's Sign in with ChatGPT for open-source tools lets an OpenAI model lead on the user's ChatGPT
-plan instead of an API key. Sources, all read on 2026-10-22:
-- **The flow's docs:** developers.openai.com/siwc/token-sharing-open-source and its pages: sign-in,
-  accounts and sessions, models and inference, token reference, errors and recovery, preview
-  limitations.
-- **OpenAI's interface guidelines:** developers.openai.com/siwc/ui-ux-guidelines.
-- **The terms:** openai.com/policies/sign-in-with-chatgpt-terms, dated 2026-09-29.
-
-OpenAI's example code (github.com/openai/sign-in-with-chatgpt-devkit) is under a non-commercial
-licence. Tachikoma's version is written from the docs and copies none of it.
-
-**Using it**
-- **Choosing it.** `--lead chatgpt:<model>` or `/lead chatgpt:<model>` bills the plan, and
-  `openai:<model>` always uses `OPENAI_API_KEY`. Tachikoma never picks between them by itself, so it
-  is always clear which bill a request goes to.
-- **Signing in and out.** `tachi login chatgpt` or `/login chatgpt` signs in; `tachi logout chatgpt`
-  or `/logout chatgpt` signs out. Tachikoma never opens a browser by itself: a `chatgpt:` lead while
-  signed out is an error that names the command.
-- **What sign-in shows.** It prints "Continue with ChatGPT in your browser", the wording OpenAI's
-  guidelines use. If no browser opens, it prints the address to open by hand. When it works, it says
-  "Signed in as <email>."
-- **The first sign-in ever** also shows OpenAI's one-time notice, as the guidelines ask: "You're using
-  your ChatGPT plan. Eligible usage in this app uses your ChatGPT plan. Manage usage:
-  https://chatgpt.com/settings/usage".
-- **One account at a time.** Signing in while already signed in says so, and names the logout command.
-  Each account's registration is kept separately and is never overwritten by another's. Signing back
-  in to an account skips OpenAI's account picker.
-- **A model name the account does not offer** is an error that lists the models it does, from the
-  account's own model list.
-- **The status line** shows `chatgpt:<model>` as the lead, and "ChatGPT plan" where the cost would
-  be. The guidelines ask apps to show that the plan is in use, and per-token prices do not apply.
-- **When the plan's limit runs out,** the turn stops with "ChatGPT usage limit reached. Review your
-  plan or this app's limit: https://chatgpt.com/settings/usage", and the error is logged.
-  - Tachikoma never moves the request to an API key. OpenAI's own route never switches billing either
-    (errors and recovery page).
-  - `--fallback` stays for refusals only.
-- **Signing out while ChatGPT leads.** The next message says to sign in again or switch with `/lead`.
-- **Headless runs.** `-p` works once signed in.
-- **Unattended use.** The terms say: "Obtain express consent before background use." So release 8's
-  loops must ask before they use the plan.
-
-**Signing in**
-1. **Machine ID.** On the first sign-in, Tachikoma makes a random ID for this machine (a `urn:uuid:`)
-   and saves it. The docs require a fixed ID per machine that says nothing about the user. It is not
-   a secret.
-2. **The listener.** A listener starts on `127.0.0.1`, on any free port, at `/auth/callback`. The
-   docs require exactly that address form; `localhost` is not allowed.
-3. **The browser** opens OpenAI's authorize page with:
-   - the name "Tachikoma", sent on the first registration only;
-   - the scopes for plan use;
-   - a PKCE check value (S256), a fresh `state` and a fresh `nonce`.
-4. **Checking the reply.** The reply must carry this attempt's `state`. The issued client ID is saved
-   before the code is exchanged, as the docs advise.
-5. **Checking the ID token:** its signature against OpenAI's published keys, then the issuer, the
-   audience (the issued client ID), the expiry and the nonce.
-6. **Plan use.** If the granted scopes lack `chatgpt.tokens.use.direct`, Tachikoma says plan use was
-   not allowed, and saves no plan login.
-7. **No time limit.** The listener waits until the user finishes in the browser or presses Ctrl-C.
-
-**The saved login** is `<data folder>/chatgpt.json`.
-- **Contents:**
-  - the machine ID;
-  - one record per account (email and OpenAI's account ID), with the client ID OpenAI issued for it;
-  - the tokens, granted scopes and expiry for the account that is signed in.
-- **Written whole.** It is written to a new file in the same folder and then swapped in, so it is
-  never left half-written.
-- **Private from the start.** The file and the folder are created private: mode 600 and 700 on macOS
-  and Linux. On Windows, the user's profile folder already allows only that user. A file found
-  readable by others is made private again, and the user is told, much as ssh does with private keys.
-- **The same as Claude Code and Codex.** Claude Code keeps its login this way on Linux and Windows
-  (code.claude.com/docs/en/authentication, "Credential management"). Codex keeps `~/.codex/auth.json`
-  and says to "treat `~/.codex/auth.json` like a password" (learn.chatgpt.com/docs/auth).
-- **The keychain option.** `tachi login chatgpt --keychain` puts the tokens in the operating system's
-  credential store: Windows Credential Manager, the macOS Keychain or the Linux secret service. The
-  rest of the record stays in the file. The add-on package is chosen while planning, after checking
-  that it is maintained and how old its release is, and it is installed through `sfw`.
-- **Never shown.** Tokens never appear in the error log, in `--json` output or in any address.
-
-**Renewing**
-- **Lifetimes.** A login lasts 1 hour, and each renewal is good for a further 30 days (token
-  reference).
-- **When.** Tachikoma renews before a request when less than 60 seconds are left, as OpenAI's example
-  code does. It never renews before the `earliest_refresh_at` time OpenAI sends.
-- **One session at a time.** Each renewal replaces the renewal token, and two sessions renewing with
-  the old one could both be signed out. So only one session renews at a time, under a lock; the
-  others wait, then read the new file.
-- **When renewal fails.** If the login is expired or cancelled, the user is told to sign in again. If
-  the network failed, the login is kept and the error is reported.
-
-**Signing out**
-- Tachikoma cancels the renewal token with OpenAI, then deletes the tokens.
-- If OpenAI cannot be reached, the tokens are still deleted, and the user is told that the
-  cancellation was not confirmed.
-- The machine ID and the account's client ID are kept, as the docs say to.
-
-**Requests** go to the Responses API at `https://api.openai.com/v1/responses`, through a new adapter,
-`src/providers/chatgpt.ts`.
-- **The client.** It uses the `openai` package Tachikoma already has; version 7.30.0 types every field
-  needed. The login is passed as a function, so a renewed login is picked up without restarting
-  anything.
-- **Every request**:
-  - is streamed and not stored (`stream: true`, `store: false`), as the route requires;
-  - carries the whole conversation, since nothing is kept at OpenAI;
-  - puts Tachikoma's instructions in `instructions`, because system messages are refused;
-  - sends none of the fields the route refuses, such as `temperature` or `max_output_tokens`.
-- **The conversation:**
-  - Text, tool calls (`function_call` with its `call_id`) and tool results (`function_call_output`)
-    are converted both ways.
-  - OpenAI's encrypted reasoning items must go back with tool results. They are kept with the
-    message, as Anthropic's thinking is, and are taken from each item's finished form in the stream.
-    They are sent back only while ChatGPT leads.
-- **A reply counts as finished only on `response.completed`.** A failed reply, a cut-off reply or a
-  dropped stream is an error, as with every other provider.
-- **Token counts** are read from the completed reply.
-
-**Context window.** The status line can show how much is left only if the window size is known.
-- **First: the model list's own figure.** Codex reads `context_window` from each entry of OpenAI's
-  model list (github.com/openai/codex, `codex-rs/protocol/src/openai_models.rs`, read 2026-10-22).
-  The sign-in docs describe the same list, with the same field names for the ones they mention.
-- **Otherwise: OpenAI's model pages.** These give the API's window: GPT-6.1 Sol, for example, has 1.05M
-  tokens (developers.openai.com/api/docs/models/gpt-6.1-sol, 2026-10-22). The figures go in a small
-  dated table with their sources, like the price table.
-- **The plan's window may be smaller.** No page says the plan gets the same window as the API, and
-  Codex assumes 272,000 tokens for a model it does not know. If OpenAI rejects a request as too long,
-  Tachikoma says so plainly.
-
-**Errors** follow the errors and recovery page.
-- **No automatic retries.** The SDK's own retries are off, as in OpenAI's example code, because
-  retrying a usage limit only hits it again.
-- **The usage limit** (`subscription_sharing_usage_limit_exceeded`) gives the message above. It can
-  arrive part way through a stream.
-- **Not eligible, or plan use not allowed:** Tachikoma says why, and suggests `openai:` with an API key.
-- **A login OpenAI rejects:** "Sign in again with `tachi login chatgpt`."
-- **Service unavailable:** the error is reported and the login is kept. OpenAI asks for "bounded
-  backoff" but gives no numbers, so Tachikoma does not retry by itself.
-
-**Hardening for every provider**, added in release 2 because the saved login makes it matter more.
-The sandbox (release 3) closes both gaps properly.
-- **The file tools refuse Tachikoma's data folder** in every permission mode, `never` included. Shell
-  commands cannot be policed that way until the sandbox.
-- **Shell commands do not get the API keys:** `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-  `OPENROUTER_API_KEY` and `MOONSHOT_API_KEY`. In release 1, `src/exec/local.ts` passes its whole
-  environment to every command, so a command could print a key back to the model. The cost: a command
-  that genuinely needs one of these keys does not see it.
-
-**The model picker (`/model`).**
-- **The list.** It opens a list moved through with the arrow keys: Enter picks, Esc closes, and typing
-  filters, since OpenRouter alone lists hundreds of models. The current lead is marked.
-- **What it shows,** grouped by provider: ChatGPT when signed in, each provider whose API key is set,
-  and Ollama when it is running. All are asked at once, each at its own model-list address, which is
-  checked against that provider's docs while planning.
-- **A provider that fails** is shown with the reason, such as "not running" or "key rejected", rather
-  than hidden.
-- **Picking** a model does the same as `/lead <provider:model>`.
-- **No new package.** It is built with Ink's own keyboard input.
-
-**Order of building.** The first real sign-in comes straight after the sign-in code, before the
-adapter. The docs do not say whether a new open-source app needs OpenAI's approval or listing before
-its users can sign in. If it does, that shows up before anything else is built. Signing in and reading
-the model list use none of the plan's limit.
-
-**Still to measure for release 2.** These are checked on the user's own Plus account:
-- whether a new, unlisted app can sign in;
-- whether the model list includes `context_window`;
-- whether tools can be listed plainly or must be grouped in a namespace;
-- whether completed replies carry token counts;
-- whether a reasoning-effort setting is accepted. Until then, `--effort` stays Anthropic-only.
+Designed in its own file: [2026-10-22-tachikoma-release-2-design.md](2026-10-22-tachikoma-release-2-design.md).
 
 ## 2. Orchestration and loops
 
@@ -356,12 +202,22 @@ runs its own copy of the agent loop with a fresh context, and only its final ans
   - Each worker that can edit gets its **own copy** of the project, taken the same way as a
     copy-then-review snapshot. In live-link mode the copy is taken from the live folder.
   - Workers that only read share the project read-only.
-  - When a worker finishes, its changes are merged into the project with the same conflict-checked
-    apply as copy-then-review, in the order the workers finish.
+  - A worker copies from, and merges back into, **the folder its parent works in**, with the same
+    conflict-checked apply as copy-then-review, in the order the workers finish.
+    - In live-link mode, that folder is the live project.
+    - In copy-then-review, it is the session's private copy. Only the user's final review moves
+      changes from there into the live project, so no worker can skip that review.
+    - A worker started by another worker merges into that worker's copy.
   - If a file was changed by an earlier worker, or by the user, since this worker's copy was taken,
     it is a conflict. It goes back to the lead as a result that needs resolving, and is never
     overwritten.
+  - Merges into one folder happen one at a time, and the lead's own writes wait their turn too. So
+    two writers can never both pass the conflict check against the same old version of a file.
   - Separate containers on one shared live mount are not allowed.
+  - Starting a worker in its copy's folder does not keep it there: a program it runs can write
+    anywhere it can reach. So a worker that can run code must be confined to its copy (a container,
+    or the CLI's own checked file sandbox), or the delegation is refused. Approving the task does
+    not lift that rule.
 
 ### CLI workers: where they run and what they may do
 
@@ -374,9 +230,11 @@ runs its own copy of the agent loop with a fresh context, and only its final ans
 | `kimi -p` | none: approve everything (`--yolo`) or `--plan` | none | none | `--output-format stream-json` |
 
 **Where they run.**
-- With the sandbox on, a CLI worker runs **inside the session's container**. The default image
-  includes the CLIs, and their login files are mounted read-only. Whether each CLI's login works
-  that way is still to be checked.
+- With the sandbox on, a CLI worker runs **in a container of its own**, where only its own copy can
+  be written. It cannot see the live project or any other worker's copy. The default image includes
+  the CLIs, and only that CLI's own login files are mounted, read-only. Whether each CLI's login
+  works that way is still to be checked. Read-only stops the worker changing those files, not
+  reading them, so the delegation's approval says which login files it can read.
 - With the sandbox off, it runs on the host under that CLI's own restrictions, set as below.
 
 **What they may do.** Tachikoma turns the `tools` list passed to `delegate` into each CLI's own
@@ -391,6 +249,15 @@ controls:
 **Tachikoma refuses a delegation** and tells the lead why when:
 - the CLI cannot enforce the requested tools where it would run. For example, `kimi` with write or
   shell access on the host.
+- on the host, the CLI cannot keep its writes inside its own copy. A tools list that allows the
+  shell does not do that, so a CLI without a checked file sandbox gets no shell or code running on
+  the host. Inside a container the tools list still applies: the container limits the damage, but
+  a task that only reads still may not write.
+- the session's network setting cannot be enforced for the worker. On the host, a CLI may join a
+  session with the network off or limited to allowed sites only if that limit is checked to hold
+  for it. In a container, the sites the CLI needs for its provider and login must already be
+  allowed, so a session with the network off refuses any CLI that needs an outside provider.
+  Tachikoma never opens the network by itself to make a delegation work.
 - running it would need a flag that turns off the CLI's own safety (`--yolo`,
   `--dangerously-bypass-approvals-and-sandbox`) outside the container.
 - the run has a cost-only budget and the CLI cannot report or cap its spending (see Budgets).
@@ -438,11 +305,31 @@ any depth, every retry, and every check command.
 
   A model with no known price, or a `codex` or `kimi` worker, cannot be measured. A run that might
   use one must also have a time or rounds limit, or it is refused at start.
+  ChatGPT plan use has no dollar price, and none is guessed, so it too needs a time or rounds
+  limit. These checks are made again at every lead switch, fallback and delegation, not only at
+  the start. A CLI worker always needs a time limit, even when there is a cost limit.
+
+**Taking from the budget.**
+- **One at a time.** Each request takes its round from the budget before it is sent, and two
+  participants can never take the same last round. The SDKs' own retries are off, or each retry
+  takes its own round.
+- **Fallbacks inside one request.** Anthropic's fallback happens inside one request, where
+  Tachikoma cannot stop it. It counts as that one request, with all the usage reported.
+- **CLI spending.** The spending cap a CLI worker is given is set aside from what is left until the
+  worker reports what it really spent. So two CLIs running at once cannot both be given the same
+  remaining money.
+- **The last round.** After the last permitted request, the tool calls from its reply may still
+  run, but no further request starts. Running out of time or money, or Ctrl-C, stops new tool calls
+  too.
+- **CLI turns.** A CLI's own turns are counted separately and can go past the rounds limit. When CLI
+  workers are on, the status line says the rounds limit covers only Tachikoma's own requests.
 
 **When a limit is hit:**
 1. **Before any work starts** (a model request, a tool run, a worker or a check command), the
-   controller is asked first. Once the budget is spent, nothing new starts.
-2. **Work already running is cancelled**:
+   controller is asked first. Once time or money runs out, nothing new starts. Once the rounds run
+   out, no new request or worker starts, but requests already let through, including ones running
+   side by side, may finish, and so may their tool calls and checks, within the other limits.
+2. **When time or money runs out, or the user presses Ctrl-C, work already running is cancelled**:
    - every in-flight request is aborted
    - every process tree is killed: shell commands and everything they started, and CLI workers
    - every worker container is stopped with `docker kill`
@@ -455,15 +342,25 @@ whether to retry, reroute or give up, and the failure is also written to the err
 
 ## 3. Sandbox
 
-All tools that touch the machine (shell, file writes, running code) go through an executor. There
-are two: `LocalExecutor` and `DockerExecutor`. Tools cannot tell which one they are using.
+Tachikoma's own tools that touch the machine (shell, file writes, running code) go through an
+executor. There are two: `LocalExecutor` and `DockerExecutor`. Tools cannot tell which one they
+are using. CLI workers and MCP tools run their own actions, under their own rules below.
 
 **The Docker executor:**
-- Starts one container per session, removed when the session ends. Each worker can have its own.
+- Starts one container per session, and another for each worker that runs code or writes files.
+  A container is removed only once its changes have been handed over for review or deliberately
+  thrown away. If a run is stopped, runs out of budget or crashes, the copy and its snapshot are
+  kept for review: cleanup never quietly destroys work the user has not seen.
 - Is driven through the `docker` command, not a library, so its commands match what a user would
   type.
 - Uses a default image with Node, Python, git and uv. A project can supply its own Dockerfile.
 - Has network access set per session: on, off, or a list of allowed sites.
+- Runs without special powers: no root-level privileges, no access to Docker itself, no sharing the
+  host's processes or network, no extra folders from the host, and no access to Tachikoma's saved
+  logins. A project's own Dockerfile cannot add any of these.
+- **The network setting covers the work, not the model.** The lead's requests to its provider are
+  made on the host, so the setting controls what workspace commands and MCP servers can reach, not
+  Tachikoma's own talk with the provider. The provider's keys and logins stay on the host.
 
 **How the network setting is enforced.** Docker has no built-in "only these sites" setting, so:
 - **Off:** the container is started with `--network none`.
@@ -475,6 +372,14 @@ are two: `LocalExecutor` and `DockerExecutor`. Tools cannot tell which one they 
   - The worker container's `HTTP_PROXY` and `HTTPS_PROXY` point at it. The proxy lets a request
     through only if its host name is on the list. It uses the same check as the MCP client (see
     "MCP tools"), so the two can never disagree.
+  - **The check is strict.** It compares the exact host name and port. It refuses addresses with a
+    password in them and anything but web addresses. It looks up where the name points at the
+    moment of connecting, and connects to that checked address.
+  - **Allowing a site never allows the local machine or network.** The machine itself, private
+    network addresses and the Docker host need their own separate grant, even when an allowed
+    name points at one of them.
+  - **Nothing widens the list.** A secure (HTTPS) connection stays tied to the host and port that
+    were approved, and wildcards and redirects cannot add sites.
   - A program that ignores the proxy settings has no route out, so its connection fails rather
     than getting around the list.
   - Only web traffic (HTTP and HTTPS) can pass. Anything else, such as `git` over SSH, fails when
@@ -482,6 +387,11 @@ are two: `LocalExecutor` and `DockerExecutor`. Tools cannot tell which one they 
   - Whether Docker's name lookup still answers for outside sites on an internal network is still to
     be checked (see "Still to measure"). If it does, site names could leak out through lookups,
     though no data connection could be made.
+  - The worker cannot reach the host, other workers' containers or the proxy's own settings. The
+    proxy offers workers nothing but the filtered connection.
+  - **Not offered until proven.** The limited network is not available on a platform until tests
+    show these limits hold there, name lookups included. Tachikoma never claims a limit it has not
+    checked.
 
 **How the container sees the project:**
 - **Live link:** the project folder is mounted into the container, so edits land in the real
@@ -494,18 +404,41 @@ are two: `LocalExecutor` and `DockerExecutor`. Tools cannot tell which one they 
 1. **Snapshot.** At the start, Tachikoma copies the project exactly as it is, including uncommitted
    and untracked files, so work in progress is the starting point and nothing is lost. It records
    the SHA-256 hash of every file. The real folder is not touched again until the user applies
-   changes.
+   changes, apart from Tachikoma adding to its own session and error records.
+   - **Where the snapshot lives.** Outside the project, so it can never copy itself.
+   - **What is left out.** Tachikoma's own `.tachikoma` data is not copied, and is never applied
+     back.
+   - **Git.** If a worker needs git, its copy gets a new repository of its own, made from the
+     snapshot. Nothing that points back at the real repository is reused: no worktree links, hooks
+     or shared object stores. A worker's commits stay in its copy, and `.git` files and folders
+     are never applied back.
+   - **What is recorded.** Each file's content and whether it is executable. Anything that is not
+     an ordinary file, folder or link is reported and left out, never read as a file.
+   - **Files that change during copying** are copied and hashed again. If the project will not
+     hold still, the snapshot is refused.
 2. **The changes** are the container's copy compared with the snapshot: added, changed and deleted
-   files.
+   files, and files made executable or not.
 3. **Each change the user accepts** is checked against the real folder before it is applied:
-   - If the real file still matches its snapshot hash (or, for an added file, still does not
-     exist), the change is applied. The file it replaces is first saved to
-     `.tachikoma/backups/<session>/`, so it can be undone.
+   - If the real file still matches its snapshot (same content, still an ordinary file, same
+     executable setting), or for an added file still does not exist, the change is applied. The file it replaces is first
+     saved to `.tachikoma/backups/<session>/`, so it can be undone.
    - If the real file changed in the meantime (edited, created or deleted by the user), it is a
      **conflict**, and Tachikoma never overwrites it. It offers a three-way merge (`git merge-file`
      with the snapshot as the base), with any conflict markers written to a separate file for the
      user. The other choice is to skip that file.
-   - A deletion is applied only if the real file still matches its snapshot.
+   - A deletion is applied only if the real file still matches its snapshot in the same way.
+   - **Backups and writes follow the same rules** about staying inside the project (see "Links"
+     below).
+   - **Each file is replaced in one step.** The new content is prepared outside the project, the
+     real file is checked once more, and then the new file is swapped in.
+   - **A record of what was applied.** Each applied change is written to a log on disk first. If
+     the backup or the log cannot be written, nothing is replaced.
+   - **After a crash,** Tachikoma reports exactly which files were applied. It never rolls back by
+     itself over edits the user made since.
+   - **Binary files in conflict** are left to the user to resolve, never put through a text merge.
+   - **Edits from outside Tachikoma.** Tachikoma's own writers take turns, but an editor the user
+     has open does not. So the user is asked not to edit during the final apply, and a file found
+     changed at that point is skipped. This is not an all-or-nothing change to the whole folder.
 
 **Links (symbolic links and Windows junctions)** are never followed when copying or applying.
 Copying alone does not isolate a worker. A link with an absolute target (every Windows junction has
@@ -529,7 +462,12 @@ the live project through it.
 - **Applying** works only on ordinary files, and only at a real destination inside the project:
   - Before each write, the destination's parent folders are resolved to their real location. The
     write is refused if any part of the path is a link, or if the real location is outside the
-    project.
+    project. Deletes and backups use the same rule.
+  - The file itself must be an ordinary file, and must not be a hard link that also appears
+    somewhere else.
+  - Where the operating system allows it, the file operations themselves refuse to follow links,
+    so a link swapped in between the check and the write is not followed either. If that cannot
+    be guaranteed for an operation, the operation is refused.
   - A change that creates, retargets or deletes a link is shown in the review but never applied
     automatically. The user handles it by hand.
   - A path whose type changed since the snapshot (for example a file that is now a folder or a link)
@@ -549,10 +487,22 @@ does not see what they do. So:
   session's container**, so their effects stay in the box. A server that cannot run in the container
   must be marked `host` in the user's config. Its tools then follow the approval rule below, even in
   `never` mode.
+- **Each worker gets its own servers.** An MCP server that can change files is started again for
+  each worker, tied to that worker's copy and container. A worker is never handed a server, or a
+  tool connection, that can change its parent's or another worker's files. This holds for API
+  workers and for MCP settings passed to a CLI worker. A host or remote tool whose effects cannot
+  be kept to the worker's own copy is not given to the worker, even if it is marked trusted.
+  Memory is shared, since its operations are limited; code search reads the index of the
+  worker's own copy.
 - **Approval.** Each MCP tool call goes through the permission gate as its own kind of action,
   `mcp`, and asks in `ask` and `project` modes. In the config, the user can mark a server or tool
   `trusted: read-only` to skip the question. That is the user's statement, not something Tachikoma
   can check, and the config says so.
+- **Only the user grants trust.** Running on the host, network access and `trusted` come only from
+  the user's own global config or from the user's approval at the time. A project's config, a
+  skill, the model's output or a tool's result cannot grant trust or loosen these rules, so a
+  downloaded repo cannot mark its own tools trusted. A copy of the project keeps its skills and
+  config, but their trust settings never count as the user's.
 - **Remote (HTTP) servers obey the session's network setting.** Tachikoma's MCP client connects
   from the host, so the container's network limits do not cover it. The client checks each address
   itself before connecting:
@@ -569,7 +519,10 @@ does not see what they do. So:
   - a local server marked `host` when the session's network is off or limited. It runs as an
     ordinary program on the machine, so Tachikoma cannot limit its network use.
 - **Tachikoma's own servers** (memory and code search) are exempt. Their effects are known: memory
-  writes go to the palace, and search only reads the index.
+  writes go to the palace, and search only reads the index of the folder the session works in.
+  Only a fixed list of those limited operations is offered to the model. Running the server,
+  mining any folder, moving the palace and other admin tools are neither offered nor exempt. The
+  search model is downloaded during setup, never from inside a session that has the network off.
 
 ## 4. Memory, error log and lessons
 
@@ -592,16 +545,27 @@ does not see what they do. So:
     lock on `<data folder>/palace.lock` for as long as it runs. The OS frees that lock if the process
     crashes, so a lock is never left stale. Your MemPalace notes show why that matters: the PID
     written in its own lock files was often out of date.
-  - **Connecting.** A session that needs memory tries to take the lock:
-    - If it gets the lock, it starts the supervisor, which writes its local address (a named pipe
-      on Windows, a Unix socket elsewhere) to `<data folder>/memory.endpoint`.
-    - If it doesn't, it reads that file and connects.
-  - **Startup race.** Taking the lock is atomic, so only one session can win. The others wait for
-    the endpoint file.
-  - **Crash recovery.** If a session cannot connect and the lock is free, the owner has crashed. The
-    session takes the lock and starts a new supervisor.
-  - **Shutdown.** The supervisor stops when its last session disconnects. There is no idle timer,
-    so there is no number to guess.
+  - **Connecting.** A session connects to the address in `<data folder>/memory.endpoint`, or, if
+    there is none, starts a supervisor.
+    - Each new supervisor tries to take the lock itself. Only the one that gets it starts
+      MemPalace; the others exit. A session never hands a lock it holds to another process.
+    - Once MemPalace is ready, the supervisor writes its local address (a named pipe on Windows, a
+      Unix socket elsewhere) to the endpoint file in one step, with a new version number.
+  - **Startup race.** A session that finds the address missing, out of date or not answering tries
+    again, for a limited time. How long is still to be measured (see "Still to measure"). On
+    connecting, it checks the version number. The endpoint file and the socket are private to the
+    user, with the same owner checks as the saved login.
+  - **Crash recovery.** A free lock alone does not prove the old MemPalace process has stopped: it
+    can outlive its supervisor, and two writers would damage the palace. So MemPalace must stop
+    when its supervisor stops, or its own writer guard must confirm the old process is gone,
+    before a new one starts. Tachikoma never turns that guard off, and never kills a process known
+    only by a PID that may be out of date. If it cannot be sure, memory is switched off with an
+    explanation, and the session carries on without it.
+  - **Shutdown.** New connections and the decision that the last session has left are handled one
+    at a time, so a session cannot slip in as the supervisor decides to stop. When it stops, the
+    supervisor refuses new connections, finishes the saves waiting in its queue (for a limited
+    time, still to be measured), stops MemPalace, and removes its address before freeing the lock.
+    A session arriving during this starts afresh. There is no idle timer.
   - **Check first:** MemPalace 3.9 and later add a "hub" mode. If it gives the same guarantees, use
     it instead of writing our own supervisor (see "Still to measure").
 - Settings shipped with it: the `sqlite_exact` backend, `exclude_patterns` for bulk data files,
@@ -750,6 +714,29 @@ Data folder:
 - **Fresh install:** GitHub Actions on clean Windows, macOS and Linux machines installs the packed
   tarball, runs `tachi setup --yes`, then runs `tachi doctor`, which must pass.
 
+**Edge cases each release must test, as it ships:**
+- **Sign-in (2):** two processes signing in, renewing and signing out at once; a sign-in that
+  finishes after a logout; the file and keychain disagreeing; a reply with the wrong client ID; and
+  no secret reaching a log when something fails.
+- **Shortening and switching (4):** a finished tool round kept across a lead switch or a
+  shortening; one turn too big on its own; a failed transcript write; a failed summary. A reply
+  that stops part way never runs its tools.
+- **Workers (7):** merges in both session modes, workers started by workers, and workers finishing
+  at the same moment. No worker writes another worker's copy or, in copy-then-review, the live
+  project, whether directly, through an MCP server or through settings a CLI inherits.
+- **Snapshots and applying (3):** uncommitted files, `.git` links, Tachikoma's own records,
+  binary files, executable bits, links, junctions, hard links, a file that became a folder, and an
+  apply or export cut off part way.
+- **Network (3):** network off and allowed-site lists against direct connections, redirects,
+  names that change where they point, local addresses, host services, host CLIs and remote MCP
+  servers; and a project file trying to grant itself trust.
+- **Budgets (7):** many participants taking the last round at once, tool calls after the last
+  round, retries, several CLIs given spending caps at once, stopping every process a command
+  started, and keeping changes not yet reviewed.
+- **Memory service (4):** several sessions starting it at once, an out-of-date address, an old
+  MemPalace process still running, a session connecting during shutdown, and saves still queued
+  when the last session leaves. A successful connection alone does not prove any of these.
+
 **Errors:**
 - Every failure says what broke and how to fix it, and nothing fails silently.
 - What happens next depends on whether the part that failed is a safeguard.
@@ -761,6 +748,8 @@ Data folder:
 - the budget controller
 - the copy-then-review snapshot
 - the network check for remote MCP servers
+- writing the transcript before shortening, keeping workers to their own copies, and the
+  conflict checks when changes are applied
 
 If one of these fails, every action that depends on it fails with an error, and a loop stops.
 
@@ -802,9 +791,12 @@ whose results are recorded.
 15. Whether Docker's built-in name lookup answers for outside sites from a container on an
     `--internal` network. If it does, the sandbox's limited network needs its own lookup server
     that answers only for allowed sites.
-16. The release 2 checks listed under "Sign in with ChatGPT": whether an unlisted app can sign in,
-    whether the model list includes `context_window`, how tools must be sent, whether token counts
-    are filled in, and whether a reasoning-effort setting is accepted.
+16. The release 2 checks listed in the release 2 design: whether an unlisted app can sign in,
+    whether the model list includes `context_window`, a full tool round, whether token counts are
+    filled in, and whether a reasoning-effort setting is accepted.
+17. Two waits for the memory service, only if hub mode (item 11) is not used: how long a session
+    keeps trying to connect while a supervisor starts, and how long a stopping supervisor gives its
+    queued saves to finish. Both come from timing real startups and saves.
 
 ## Release order
 
