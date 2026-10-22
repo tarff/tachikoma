@@ -107,6 +107,9 @@ the permission mode would ask about is refused, and the model is told so.
 
 Costs are shown only for models with a known price. Others show `?`; Ollama counts as free.
 
+The Anthropic SDK still adds any headers you set in `ANTHROPIC_CUSTOM_HEADERS`, so do not put an
+`Authorization` header there.
+
 ## Known limits of release 1
 
 Each is fixed in a later release.

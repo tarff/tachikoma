@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { defineTool } from "./tool.js";
 
 // Where a path really leads, following symlinks and Windows junctions. Parts that don't exist yet
@@ -46,12 +47,22 @@ export const readFileTool = defineTool(
     if (!text) return `(${p} is empty)`;
     const lines = text.replace(/\r?\n$/, "").split(/\r?\n/);
     if (offset > lines.length) return `(${p} has ${lines.length} lines)`;
-    const part = lines.slice(offset - 1, offset - 1 + limit);
-    const last = offset + part.length - 1;
-    const numbered = part.map((l, i) => `${String(offset + i).padStart(6)}\t${l}`).join("\n");
-    // First, not last: the session cuts long tool output from the end.
-    if (offset === 1 && last === lines.length) return numbered;
-    return `(showing lines ${offset}-${last} of ${lines.length}; use offset and limit to read the rest)\n${numbered}`;
+    const note = (last: number) => `(showing lines ${offset}-${last} of ${lines.length}; use offset and limit to read the rest)`;
+    // Stops before the session's cut at MAX_TOOL_OUTPUT, leaving room for the longest note, so the note
+    // names the last line really shown. One line too long for the room on its own is still shown, and
+    // the session cuts it.
+    const room = MAX_TOOL_OUTPUT - note(lines.length).length - 1;
+    const rows: string[] = [];
+    let size = 0;
+    for (let n = offset; n < offset + limit && n <= lines.length; n++) {
+      const row = `${String(n).padStart(6)}\t${lines[n - 1]}`;
+      if (rows.length && size + row.length + 1 > room) break;
+      rows.push(row);
+      size += row.length + 1;
+    }
+    const last = offset + rows.length - 1;
+    if (offset === 1 && last === lines.length) return rows.join("\n");
+    return `${note(last)}\n${rows.join("\n")}`; // first, not last: the session cuts long output from the end
   },
 );
 
@@ -75,15 +86,24 @@ export const editFileTool = defineTool(
     const { abs, outside, shown } = resolveIn(ctx.root, p);
     const marked = (sign: string, s: string) => s.split("\n").map((l) => `${sign} ${l}`);
     const detail = [...marked("-", old_text), ...(new_text ? marked("+", new_text) : [])].join("\n");
+    // Inside the project a read needs no approval, so an edit that cannot work fails before the user is
+    // asked. It is checked again after: the file may change while the question waits.
+    if (!outside) edited(await ctx.executor.readFile(abs), p, old_text, new_text);
     await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}`, detail });
-    const text = await ctx.executor.readFile(abs);
-    // Bytes that are not UTF-8 read back as U+FFFD, and writing the text back would destroy them.
-    if (text.includes("�")) throw new Error(`${p} is not UTF-8 text, so edit_file would damage it`);
-    const count = text.split(old_text).length - 1;
-    const crlf = text.includes("\r\n") ? " (the file uses CRLF line endings)" : "";
-    if (count === 0) throw new Error(`old_text was not found in ${p}${crlf}`);
-    if (count > 1) throw new Error(`old_text appears ${count} times in ${p}; include more surrounding text so it is unique`);
-    await ctx.executor.writeFile(abs, text.replace(old_text, () => new_text));
+    await ctx.executor.writeFile(abs, edited(await ctx.executor.readFile(abs), p, old_text, new_text));
     return `Edited ${p}`;
   },
 );
+
+// The file with the edit made, or why it cannot be. read_file hides \r, so in a file with Windows line
+// endings a \n in the edit's text means \r\n.
+function edited(text: string, p: string, old_text: string, new_text: string): string {
+  // Bytes that are not UTF-8 read back as U+FFFD, and writing the text back would destroy them.
+  if (text.includes("�")) throw new Error(`${p} is not UTF-8 text, so edit_file would damage it`);
+  const eol = (s: string) => (text.includes("\r\n") ? s.replace(/\r?\n/g, "\r\n") : s);
+  const [from, to] = [eol(old_text), eol(new_text)];
+  const count = text.split(from).length - 1;
+  if (count === 0) throw new Error(`old_text was not found in ${p}`);
+  if (count > 1) throw new Error(`old_text appears ${count} times in ${p}; include more surrounding text so it is unique`);
+  return text.replace(from, () => to);
+}

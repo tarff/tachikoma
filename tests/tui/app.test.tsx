@@ -220,11 +220,18 @@ describe("App", () => {
     expect([...line].filter((c) => c === "漢").length).toBeLessThan(50); // the test screen is 100 columns
   });
 
-  it("shows what a write will put in the file before asking", async () => {
-    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two" }), reply("written")]);
+  it("shows what a write will put in the file before asking, under a heading", async () => {
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two" }), reply("written")]);
     await type(app, "make a file");
     await until(app, "Allow write");
-    expect(app.lastFrame()).toContain("line one\nline two");
+    expect(app.lastFrame()).toContain(`┌ write ${path.join(ctx.root, "a.txt")} (2 lines)\nline one\nline two`);
+  });
+
+  it("says so when a write would leave the file empty", async () => {
+    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "" }), reply("written")]);
+    await type(app, "empty it");
+    await until(app, "Allow write");
+    expect(app.lastFrame()).toContain("(0 lines)\n(empty)");
   });
 
   it("shows an error, and keeps running, when the error log cannot be read", async () => {

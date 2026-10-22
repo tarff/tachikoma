@@ -203,12 +203,25 @@ describe("AnthropicProvider", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it("needs ANTHROPIC_API_KEY, and takes no other kind of sign-in", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "");
     vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "a-bearer-token");
     expect(() => new AnthropicProvider("claude-opus-5-5")).toThrow("Set ANTHROPIC_API_KEY to use anthropic");
+  });
+
+  it("sends only the API key, even when a bearer token is set", async () => {
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "a-bearer-token");
+    const sent: Headers[] = [];
+    vi.stubGlobal("fetch", async (_url: unknown, init: RequestInit) => {
+      sent.push(new Headers(init.headers));
+      return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "stop here" } }), { status: 400, headers: { "content-type": "application/json" } });
+    });
+    await expect(new AnthropicProvider("claude-opus-5-5").complete({ system: "s", messages: [], tools: [] })).rejects.toThrow("stop here");
+    expect(sent[0]!.get("x-api-key")).toBe("test-key");
+    expect(sent[0]!.has("authorization")).toBe(false);
   });
 
   it("names the underlying reason a connection failed", async () => {

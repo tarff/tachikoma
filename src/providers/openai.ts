@@ -111,10 +111,12 @@ export class OpenAIProvider implements Provider {
     } catch (err) {
       // The timeout error is a subclass of the connection error, so it is checked first.
       if (err instanceof OpenAI.APIConnectionTimeoutError) {
-        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network, or that the server is running.`);
+        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network, or that the server is running.`, { cause: err });
       }
       if (err instanceof OpenAI.APIConnectionError) {
-        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check the address, your network, or that the server is running.`);
+        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check the address, your network, or that the server is running.`, {
+          cause: err,
+        });
       }
       throw err;
     }

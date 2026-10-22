@@ -124,10 +124,10 @@ export class AnthropicProvider implements Provider {
     } catch (err) {
       // The timeout error is a subclass of the connection error, so it is checked first.
       if (err instanceof Anthropic.APIConnectionTimeoutError) {
-        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network.`);
+        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network.`, { cause: err });
       }
       if (err instanceof Anthropic.APIConnectionError) {
-        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check your network.`);
+        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check your network.`, { cause: err });
       }
       throw err;
     }
