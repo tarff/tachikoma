@@ -44,6 +44,9 @@ describe("toAnthropic", () => {
       { role: "user", parts: [{ type: "text", text: "hi" }] },
       { role: "assistant", parts: [], native: { provider: "anthropic", content: [] } },
       { role: "assistant", parts: [] },
+      // Only the fallback marker survived (the fallback model stopped before writing anything); the
+      // API ignores the marker, so this message is empty too.
+      { role: "assistant", parts: [], native: { provider: "anthropic", content: [{ type: "fallback", from: { model: "a" }, to: { model: "b" } }] } },
       { role: "user", parts: [{ type: "text", text: "again" }] },
     ];
     expect(toAnthropic(history).map((m) => m.role)).toEqual(["user", "user"]);

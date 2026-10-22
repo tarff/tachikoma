@@ -21,16 +21,33 @@ export function attachErrorLog(bus: Bus, file: string, session: string): void {
   bus.on("error", write);
 }
 
-export function summarize(file: string): string {
+// Same rule as the scrollback (tui/describe.ts), kept here so core does not import from the interface.
+const fit = (s: string, width: number) => (s.length <= width ? s : `${s.slice(0, Math.max(0, width - 1))}…`);
+
+// A killed process or a full disk can leave a half-written line; one bad line must not hide the rest.
+function parse(line: string): Row | undefined {
+  try {
+    const r = JSON.parse(line);
+    if (typeof r?.kind === "string" && typeof r.attempted === "string" && typeof r.message === "string") return r;
+  } catch {}
+  return undefined;
+}
+
+export function summarize(file: string, width = process.stdout.columns ?? 80): string {
   if (!existsSync(file)) return "No errors logged yet.";
-  const rows: Row[] = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-  if (rows.length === 0) return "No errors logged yet.";
+  const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+  const rows = lines.map(parse).filter((r) => r !== undefined);
+  const skipped = lines.length - rows.length;
+  const note = skipped ? [`(${skipped} unreadable line${skipped === 1 ? "" : "s"} skipped)`] : [];
+  if (rows.length === 0) return ["No errors logged yet.", ...note].join("\n");
   const counts = new Map<string, number>();
   for (const r of rows) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
   const last = rows.at(-1)!;
   return [
     `${rows.length} errors logged in ${file}`,
     ...[...counts].map(([kind, n]) => `  ${kind}: ${n}`),
-    `Most recent (${last.at}): ${last.attempted}\n  ${last.message.split("\n")[0]}`,
+    // A failed write_file's input is the whole file.
+    `${fit(`Most recent (${last.at}): ${last.attempted}`, width)}\n  ${last.message.split("\n")[0]}`,
+    ...note,
   ].join("\n");
 }

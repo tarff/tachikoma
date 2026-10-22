@@ -41,6 +41,46 @@ describe("error log", () => {
   it("says so when there is no log yet", () => {
     expect(summarize(path.join(tmpdir(), "does-not-exist.jsonl"))).toBe("No errors logged yet.");
   });
+
+  const row = (attempted: string) => JSON.stringify({ at: "2026-10-22T00:00:00.000Z", session: "s1", kind: "tool", attempted, message: "it broke", lead: "fake:a" });
+  async function logFile(...lines: string[]) {
+    const file = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "errors.jsonl");
+    writeFileSync(file, `${lines.join("\n")}\n`);
+    return file;
+  }
+
+  it("skips a half-written line and says how many it skipped", async () => {
+    const file = await logFile(row("shell").slice(0, 20), row("shell"));
+    const out = summarize(file);
+    expect(out).toContain("1 errors logged");
+    expect(out).toContain("shell\n  it broke");
+    expect(out).toContain("(1 unreadable line skipped)");
+  });
+
+  it("skips rows missing fields and null lines", async () => {
+    const file = await logFile(JSON.stringify({ kind: "tool", attempted: "shell" }), "null", "5", row("shell"));
+    const out = summarize(file);
+    expect(out).toContain("1 errors logged");
+    expect(out).toContain("(3 unreadable lines skipped)");
+  });
+
+  it("skips a last row that has no message", async () => {
+    const out = summarize(await logFile(row("shell"), JSON.stringify({ at: "x", kind: "tool", attempted: "shell" })));
+    expect(out).toContain("shell\n  it broke");
+    expect(out).toContain("(1 unreadable line skipped)");
+  });
+
+  it("still reports skipped lines when no row could be read", async () => {
+    expect(summarize(await logFile("{"))).toBe("No errors logged yet.\n(1 unreadable line skipped)");
+  });
+
+  it("shortens a long attempted action to the terminal width", async () => {
+    const file = await logFile(row(`write_file ${"x".repeat(5000)}`));
+    const recent = (width?: number) => summarize(file, width).split("\n").find((l) => l.startsWith("Most recent"))!;
+    expect(recent(40)).toHaveLength(40);
+    expect(recent(40).endsWith("…")).toBe(true);
+    expect(recent().length).toBeLessThanOrEqual(process.stdout.columns ?? 80);
+  });
 });
 
 describe("Stats", () => {
