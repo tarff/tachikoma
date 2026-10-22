@@ -11,6 +11,6 @@ export function parseLead(spec: string): { kind: string; model: string } {
 export function createProvider(spec: string, opts: { effort?: Effort } = {}): Provider {
   const { kind, model } = parseLead(spec);
   if (kind === "anthropic") return new AnthropicProvider(model, opts.effort);
-  if (kind in PRESETS) return new OpenAIProvider(kind, model);
+  if (Object.hasOwn(PRESETS, kind)) return new OpenAIProvider(kind, model); // `in` would accept "constructor"
   throw new Error(`Unknown provider "${kind}". Known: anthropic, ${Object.keys(PRESETS).join(", ")}`);
 }

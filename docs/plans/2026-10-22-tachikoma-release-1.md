@@ -49,7 +49,18 @@ build made on 2026-10-22, not retyped. In that build:
     `send()` while a turn is running.
   - **The Anthropic provider** follows Anthropic's server-side fallback rules (Task 7 notes), leaves
     out empty assistant messages, and retries a failed context-window lookup.
-- That makes 107 tests in all.
+- Code review of Tasks 8, 9 and 10:
+  - **OpenAI-format providers** send back the reasoning fields a provider returned (`reasoning_content`,
+    `reasoning`, `reasoning_details`) when the same provider leads again, as Kimi's docs require on
+    tool-call turns (platform.kimi.ai, "use thinking models", checked 2026-10-22), and never to another
+    provider. Empty assistant messages are left out, `message.refusal` counts as a refusal, and a
+    timeout or refused connection is named as such.
+  - **Provider names** such as `constructor` are no longer mistaken for providers.
+  - **The error log's reader** skips damaged lines instead of crashing `/errors`, and fits the failed
+    action to the terminal width. A refusal the `--fallback` model rescues is logged once, as a
+    `fallback`, and no longer counts as an error.
+  - **The approval prompt** shows a line break as ⏎ (and ␍, ⇥), so a typed `\n` cannot pass for one.
+- That makes 125 tests in all.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
@@ -416,9 +427,9 @@ describe("PermissionGate", () => {
 describe("visible", () => {
   it.each([
     ["an escape code", "echo \u001b[8mhidden", "echo \\u001b[8mhidden"],
-    ["a carriage return", "rm -rf ~\rls", "rm -rf ~\\rls"],
-    ["newlines", "ls\n\nrm -rf ~", "ls\\n\\nrm -rf ~"],
-    ["a tab", "a\tb", "a\\tb"],
+    ["a carriage return", "rm -rf ~\rls", "rm -rf ~␍ls"],
+    ["newlines", "ls\n\nrm -rf ~", "ls⏎⏎rm -rf ~"],
+    ["a tab", "a\tb", "a⇥b"],
     ["a NUL", "a\u0000b", "a\\u0000b"],
     ["a C1 control", "a\u009bb", "a\\u009bb"],
     ["a delete", "a\u007fb", "a\\u007fb"],
@@ -428,6 +439,11 @@ describe("visible", () => {
     expect(visible(text)).toBe(shown);
   });
 
+  it("shows a real line break differently from a typed backslash-n", () => {
+    // Otherwise `echo done` + a line break + `rm -rf build` would look like one harmless echo.
+    expect(visible("echo done\nrm -rf build")).not.toBe(visible("echo done\\nrm -rf build"));
+  });
+
   it("leaves ordinary text alone", () => {
     expect(visible("echo café costs 5€ > out.txt")).toBe("echo café costs 5€ > out.txt");
   });
@@ -435,8 +451,8 @@ describe("visible", () => {
   it("is what the gate asks with", async () => {
     const asked: string[] = [];
     const gate = new PermissionGate("ask", async (summary) => (asked.push(summary), false));
-    await expect(gate.require({ kind: "shell", outside: false, summary: "run: ls\rrm -rf ~" })).rejects.toThrow("run: ls\\rrm -rf ~");
-    expect(asked).toEqual(["run: ls\\rrm -rf ~"]);
+    await expect(gate.require({ kind: "shell", outside: false, summary: "run: ls\rrm -rf ~" })).rejects.toThrow("run: ls␍rm -rf ~");
+    expect(asked).toEqual(["run: ls␍rm -rf ~"]);
   });
 });
 ```
@@ -470,7 +486,9 @@ export function needsApproval(mode: Mode, action: Action): boolean {
   return action.kind === "shell";
 }
 
-const NAMED: Record<string, string> = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+// Symbols, not \n-style escapes: a typed backslash-n must not look like a real line break, or two
+// commands could pass for one.
+const NAMED: Record<string, string> = { "\n": "⏎", "\r": "␍", "\t": "⇥" };
 
 // Shows control characters as escapes, so the approval prompt shows what will run: escape codes can
 // hide or recolour text, \r and many \n can push part of a command out of sight, and bidi overrides
@@ -502,7 +520,7 @@ export class PermissionGate {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/permissions.test.ts && npm run typecheck`
-Expected: 26 tests pass, and no type errors.
+Expected: 27 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -1243,6 +1261,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { Declined } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
+import { Stats } from "../../src/core/stats.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Bus, FakeProvider, callTool, collectErrors, reply, tempContext, usage } from "../helpers.js";
@@ -1284,6 +1303,14 @@ describe("Session", () => {
     await session.send("go");
     expect(session.messages[2]!.parts[0]).toMatchObject({ isError: true, output: "it broke" });
     expect(errors).toEqual([expect.objectContaining({ kind: "tool", message: "it broke", lead: "fake:a" })]);
+  });
+
+  it("cuts a very long tool input in the error it reports", async () => {
+    const text = "x".repeat(MAX_TOOL_OUTPUT + 5);
+    const { session, errors } = await setup([callTool("c1", "nope", { text }), reply("ok")]);
+    await session.send("go");
+    const full = `nope ${JSON.stringify({ text })}`;
+    expect(errors[0]!.attempted).toBe(`${full.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${full.length - MAX_TOOL_OUTPUT} more characters]`);
   });
 
   it("reports an unknown tool to the model", async () => {
@@ -1331,9 +1358,32 @@ describe("Session", () => {
     await session.send("go");
     expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
     expect(session.messages[1]!.parts).toEqual([{ type: "text", text: "answered by b" }]);
-    expect(errors.map((e) => e.kind)).toEqual(["refusal", "fallback"]);
-    expect(errors[1]!.message).toBe("fake:a declined; fake:b answered instead");
+    expect(errors.map((e) => e.kind)).toEqual(["fallback"]); // the rescued refusal is reported only as the rescue
+    expect(errors[0]!.message).toBe("fake:a declined; fake:b answered instead");
     expect(seen).toEqual(["fake:a", "fake:b"]); // the refused attempt is billed too
+  });
+
+  it("does not count a rescued refusal in the status line's errors", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const bus = new Bus();
+    const stats = new Stats(bus);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [reply("answered by b")]), tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(stats.errors).toBe(0);
+    expect(stats.fallbacks).toBe(1);
+  });
+
+  it("still reports the refusal when the fallback provider's request fails", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [new Error("rate limited")]), tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
+      ["provider", "request to fake:b", "rate limited"],
+      ["refusal", "response from fake:a", "declined"],
+    ]);
+    expect(session.messages.map((m) => m.role)).toEqual(["user"]);
   });
 
   it("stops when the fallback provider refuses as well", async () => {
@@ -1373,7 +1423,6 @@ describe("Session", () => {
     const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [rescued]), tools: [], system: "t", ctx: await tempContext(), bus });
     await session.send("go");
     expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
-      ["refusal", "response from fake:a", "declined"],
       ["fallback", "response from fake:a", "fake:a declined; fake:b answered instead"],
       ["fallback", "response from fake:b", "claude-opus-5-5 declined; claude-opus-4-8 answered instead (Anthropic's fallback)"],
     ]);
@@ -1387,7 +1436,6 @@ describe("Session", () => {
     const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [cut]), tools: [], system: "t", ctx: await tempContext(), bus });
     await session.send("go");
     expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
-      ["refusal", "response from fake:a", "declined"],
       ["fallback", "response from fake:a", "fake:a declined; fake:b answered instead"],
       ["max_tokens", "response from fake:b", "limit"],
     ]);
@@ -1531,11 +1579,13 @@ export class Session {
       const rescue = this.opts.fallback;
       if (turn.cutOff?.kind === "refusal" && rescue) {
         // The refused reply is discarded, never stored, so the history stays append-only.
-        bus.emit("error", { kind: "refusal", attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id });
+        const refused = { kind: "refusal", attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
         answeredBy = rescue;
         turn = await this.#request(rescue, signal);
+        // A rescued refusal is reported only as the rescue, so the status line does not count it as an error.
+        if (!turn || turn.cutOff?.kind === "refusal") bus.emit("error", refused);
+        else bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
         if (!turn) return;
-        if (turn.cutOff?.kind !== "refusal") bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
       }
       if (turn.cutOff?.kind === "refusal") {
         // Never stored, on any path: the output may be empty or half-written, and an empty assistant
@@ -1583,7 +1633,8 @@ export class Session {
   async #runTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
     if (signal?.aborted) return result(call, "Cancelled by the user.", true);
     const fail = (message: string) => {
-      this.opts.bus.emit("error", { kind: "tool", attempted: `${call.name} ${JSON.stringify(call.input)}`, message, lead: this.#lead.id });
+      // Capped like the message: a failed write_file's input is the whole file.
+      this.opts.bus.emit("error", { kind: "tool", attempted: truncate(`${call.name} ${JSON.stringify(call.input)}`), message, lead: this.#lead.id });
       return result(call, message, true);
     };
     const tool = this.opts.tools.find((t) => t.spec.name === call.name);
@@ -1611,7 +1662,7 @@ function result(call: ToolCall, output: string, isError: boolean): ToolResult {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/session.test.ts && npm run typecheck`
-Expected: 20 tests pass, and no type errors.
+Expected: 23 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -1698,6 +1749,9 @@ describe("toAnthropic", () => {
       { role: "user", parts: [{ type: "text", text: "hi" }] },
       { role: "assistant", parts: [], native: { provider: "anthropic", content: [] } },
       { role: "assistant", parts: [] },
+      // Only the fallback marker survived (the fallback model stopped before writing anything); the
+      // API ignores the marker, so this message is empty too.
+      { role: "assistant", parts: [], native: { provider: "anthropic", content: [{ type: "fallback", from: { model: "a" }, to: { model: "b" } }] } },
       { role: "user", parts: [{ type: "text", text: "again" }] },
     ];
     expect(toAnthropic(history).map((m) => m.role)).toEqual(["user", "user"]);
@@ -1862,7 +1916,8 @@ export function toAnthropic(messages: Message[]): BetaMessageParam[] {
       )
       // A reply can come back empty (context full before any output), but the API rejects an empty
       // message anywhere but last, and the history is append-only, so it would fail every later request.
-      .filter((m) => m.role === "user" || m.content.length > 0)
+      // A `fallback` block alone counts as empty: it is an ignored audit marker.
+      .filter((m) => m.role === "user" || (m.content as { type: string }[]).some((b) => b.type !== "fallback"))
   );
 }
 
@@ -1981,10 +2036,12 @@ failure names the address it tried.
 `tests/providers/openai.test.ts`:
 
 ```typescript
+import OpenAI from "openai";
 import type { ChatCompletion } from "openai/resources/chat/completions";
-import { describe, expect, it } from "vitest";
+import { Completions } from "openai/resources/chat/completions";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "../../src/core/types.js";
-import { fromOpenAI, toOpenAI } from "../../src/providers/openai.js";
+import { fromOpenAI, OpenAIProvider, toOpenAI } from "../../src/providers/openai.js";
 
 function completion(message: Record<string, unknown>, finish_reason = "stop", usage?: Record<string, unknown>): ChatCompletion {
   return {
@@ -2004,7 +2061,7 @@ describe("toOpenAI", () => {
       { role: "assistant", parts: [{ type: "text", text: "looking" }, { type: "tool_call", id: "c1", name: "read_file", input: { path: "a" } }] },
       { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "nope", isError: true }, { type: "text", text: "and?" }] },
     ];
-    expect(toOpenAI("sys", history)).toEqual([
+    expect(toOpenAI("sys", history, "openai")).toEqual([
       { role: "system", content: "sys" },
       { role: "user", content: "hi" },
       { role: "assistant", content: "looking", tool_calls: [{ id: "c1", type: "function", function: { name: "read_file", arguments: '{"path":"a"}' } }] },
@@ -2015,7 +2072,20 @@ describe("toOpenAI", () => {
 
   it("converts Anthropic turns too, ignoring their native content", () => {
     const history: Message[] = [{ role: "assistant", parts: [{ type: "text", text: "hi" }], native: { provider: "anthropic", content: [] } }];
-    expect(toOpenAI("s", history)[1]).toEqual({ role: "assistant", content: "hi" });
+    expect(toOpenAI("s", history, "openai")[1]).toEqual({ role: "assistant", content: "hi" });
+  });
+
+  it("leaves out assistant messages with neither text nor tool calls", () => {
+    const history: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "hi" }] },
+      { role: "assistant", parts: [] },
+      { role: "user", parts: [{ type: "text", text: "again" }] },
+    ];
+    expect(toOpenAI("s", history, "openai")).toEqual([
+      { role: "system", content: "s" },
+      { role: "user", content: "hi" },
+      { role: "user", content: "again" },
+    ]);
   });
 });
 
@@ -2027,19 +2097,99 @@ describe("fromOpenAI", () => {
         "tool_calls",
         { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, prompt_tokens_details: { cached_tokens: 40 } },
       ),
+      "openai",
     );
     expect(turn.parts).toEqual([{ type: "tool_call", id: "c1", name: "read_file", input: { path: "a" } }]);
     expect(turn.usage).toEqual({ input: 60, output: 20, cacheRead: 40, cacheWrite: 0 });
+    expect(turn.native).toBeUndefined();
   });
 
   it("passes broken tool arguments on so the schema check rejects them", () => {
-    const turn = fromOpenAI(completion({ content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: "{oops" } }] }));
+    const turn = fromOpenAI(completion({ content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "x", arguments: "{oops" } }] }), "openai");
     expect(turn.parts[0]).toMatchObject({ input: { invalid_json: "{oops" } });
   });
 
   it("reports hitting the output limit and content filtering", () => {
-    expect(fromOpenAI(completion({ content: "par" }, "length")).cutOff?.kind).toBe("max_tokens");
-    expect(fromOpenAI(completion({ content: "" }, "content_filter")).cutOff?.kind).toBe("refusal");
+    expect(fromOpenAI(completion({ content: "par" }, "length"), "openai").cutOff?.kind).toBe("max_tokens");
+    expect(fromOpenAI(completion({ content: "" }, "content_filter"), "openai").cutOff?.kind).toBe("refusal");
+  });
+
+  it("reports a refusal given in message.refusal", () => {
+    const turn = fromOpenAI(completion({ content: null, refusal: "I can't help with that." }), "openai");
+    expect(turn.cutOff).toEqual({ kind: "refusal", detail: "I can't help with that." });
+  });
+});
+
+describe("reasoning fields", () => {
+  const call = { id: "c1", type: "function", function: { name: "read_file", arguments: '{"path":"a"}' } };
+
+  it("keeps Kimi's reasoning_content and replays it only to Kimi", () => {
+    const turn = fromOpenAI(completion({ content: null, reasoning_content: "think first", tool_calls: [call] }, "tool_calls"), "kimi");
+    expect(turn.native).toEqual({ provider: "kimi", content: { reasoning_content: "think first" } });
+
+    const history: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "hi" }] },
+      { role: "assistant", parts: turn.parts, ...(turn.native ? { native: turn.native } : {}) },
+      { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "ok", isError: false }] },
+    ];
+    expect(toOpenAI("s", history, "kimi")[2]).toEqual({
+      role: "assistant",
+      content: null,
+      reasoning_content: "think first",
+      tool_calls: [{ id: "c1", type: "function", function: { name: "read_file", arguments: '{"path":"a"}' } }],
+    });
+    expect(toOpenAI("s", history, "openai")[2]).toEqual({
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "c1", type: "function", function: { name: "read_file", arguments: '{"path":"a"}' } }],
+    });
+  });
+
+  it("keeps OpenRouter's reasoning and reasoning_details and nothing else from the raw message", () => {
+    const details = [{ type: "reasoning.encrypted", data: "abc" }];
+    const turn = fromOpenAI(
+      completion({ content: "hi", reasoning: "hmm", reasoning_details: details, annotations: [], audio: null }),
+      "openrouter",
+    );
+    expect(turn.native).toEqual({ provider: "openrouter", content: { reasoning: "hmm", reasoning_details: details } });
+  });
+});
+
+describe("OpenAIProvider", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("rejects names every object inherits", () => {
+    expect(() => new OpenAIProvider("constructor", "m")).toThrow('Unknown OpenAI-format provider "constructor"');
+    expect(() => new OpenAIProvider("toString", "m")).toThrow('Unknown OpenAI-format provider "toString"');
+  });
+
+  it("reports a timeout as a timeout", async () => {
+    vi.spyOn(Completions.prototype, "create").mockRejectedValue(new OpenAI.APIConnectionTimeoutError());
+    const p = new OpenAIProvider("ollama", "m");
+    await expect(p.complete({ system: "s", messages: [], tools: [] })).rejects.toThrow("http://localhost:11434/v1 did not answer in time");
+  });
+
+  it("names the underlying reason a connection failed", async () => {
+    // Node's fetch throws "fetch failed" and puts the real reason in its own cause.
+    const fetchErr = new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED 127.0.0.1:11434") });
+    vi.spyOn(Completions.prototype, "create").mockRejectedValue(new OpenAI.APIConnectionError({ cause: fetchErr }));
+    const p = new OpenAIProvider("ollama", "m");
+    await expect(p.complete({ system: "s", messages: [], tools: [] })).rejects.toThrow(
+      "Could not reach http://localhost:11434/v1 (connect ECONNREFUSED 127.0.0.1:11434)",
+    );
+  });
+
+  it("names the reason when it is wrapped in an AggregateError with no message", async () => {
+    // What Node 24 throws on Windows for "localhost": one try per address, grouped, with an empty message.
+    const tries = [new Error("connect ECONNREFUSED ::1:11434"), new Error("connect ECONNREFUSED 127.0.0.1:11434")];
+    const fetchErr = new TypeError("fetch failed", { cause: new AggregateError(tries, "") });
+    vi.spyOn(Completions.prototype, "create").mockRejectedValue(new OpenAI.APIConnectionError({ cause: fetchErr }));
+    const p = new OpenAIProvider("ollama", "m");
+    await expect(p.complete({ system: "s", messages: [], tools: [] })).rejects.toThrow(
+      "Could not reach http://localhost:11434/v1 (connect ECONNREFUSED ::1:11434)",
+    );
   });
 });
 ```
@@ -2068,15 +2218,24 @@ export const PRESETS: Record<string, { baseURL?: string; keyEnv?: string }> = {
   ollama: { baseURL: "http://localhost:11434/v1" }, // local; needs no key
 };
 
-export function toOpenAI(system: string, messages: Message[]): ChatCompletionMessageParam[] {
+// Reasoning fields some providers return and need back on later turns: Kimi's `reasoning_content`
+// (platform.kimi.ai/docs/guide/use-thinking-models.md, 2026-10-22: tool-call loops fail without it) and
+// OpenRouter's `reasoning` / `reasoning_details`. Only these are kept, as OpenAI rejects unknown fields.
+const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_details"];
+
+export function toOpenAI(system: string, messages: Message[], kind: string): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [{ role: "system", content: system }];
   for (const m of messages) {
     const text = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
     if (m.role === "assistant") {
       const calls = m.parts.flatMap((p) => (p.type === "tool_call" ? [p] : []));
+      // The SDK requires content unless there are tool calls; an empty reply (all output spent on
+      // reasoning) stays in the append-only history, so sending it would fail every later request.
+      if (!text && !calls.length) continue;
       out.push({
         role: "assistant",
         content: text || null,
+        ...(m.native?.provider === kind ? (m.native.content as Record<string, unknown>) : {}),
         ...(calls.length
           ? { tool_calls: calls.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: JSON.stringify(c.input) } })) }
           : {}),
@@ -2100,7 +2259,7 @@ function parseArgs(raw: string): unknown {
   }
 }
 
-export function fromOpenAI(res: ChatCompletion): Turn {
+export function fromOpenAI(res: ChatCompletion, kind: string): Turn {
   const choice = res.choices[0];
   if (!choice) throw new Error("The provider returned no reply");
   const parts: Part[] = [];
@@ -2113,9 +2272,29 @@ export function fromOpenAI(res: ChatCompletion): Turn {
     parts,
     usage: { input: (res.usage?.prompt_tokens ?? 0) - cached, output: res.usage?.completion_tokens ?? 0, cacheRead: cached, cacheWrite: 0 },
   };
+  // Not in the SDK's type, so read from the raw message; null carries nothing to send back.
+  const raw = choice.message as unknown as Record<string, unknown>;
+  const reasoning = Object.fromEntries(REASONING_FIELDS.flatMap((f) => (raw[f] != null ? [[f, raw[f]]] : [])));
+  if (Object.keys(reasoning).length) turn.native = { provider: kind, content: reasoning };
   if (choice.finish_reason === "length") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit" };
   if (choice.finish_reason === "content_filter") turn.cutOff = { kind: "refusal", detail: "The provider's content filter stopped the response" };
+  // OpenAI can decline with the reason in `refusal`, empty content and finish_reason "stop".
+  const refusal: unknown = choice.message.refusal;
+  if (typeof refusal === "string" && refusal) turn.cutOff = { kind: "refusal", detail: refusal };
   return turn;
+}
+
+// Why a connection failed. The SDK's message is only "Connection error."; Node's fetch error ("fetch
+// failed") holds the real reason, such as ECONNREFUSED or ENOTFOUND, further down its causes. For
+// "localhost" that is an AggregateError with an empty message (one try per address), so its first
+// try is used.
+function connectReason(err: Error): string {
+  let found = err.message;
+  for (let e: unknown = err.cause; e instanceof Error; e = e.cause) {
+    if (e instanceof AggregateError && e.errors[0] instanceof Error) found = e.errors[0].message;
+    else if (e.message) found = e.message;
+  }
+  return found;
 }
 
 export class OpenAIProvider implements Provider {
@@ -2126,7 +2305,8 @@ export class OpenAIProvider implements Provider {
     readonly kind: string,
     readonly model: string,
   ) {
-    const preset = PRESETS[kind];
+    // hasOwn, so inherited names such as "constructor" are not taken for presets.
+    const preset = Object.hasOwn(PRESETS, kind) ? PRESETS[kind] : undefined;
     if (!preset) throw new Error(`Unknown OpenAI-format provider "${kind}"`);
     const apiKey = preset.keyEnv ? process.env[preset.keyEnv] : "ollama"; // the SDK needs some key; Ollama ignores it
     if (!apiKey) throw new Error(`Set ${preset.keyEnv} to use ${kind}`);
@@ -2138,13 +2318,17 @@ export class OpenAIProvider implements Provider {
     const specs: ChatCompletionTool[] = tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
     try {
       const res = await this.#client.chat.completions.create(
-        { model: this.model, messages: toOpenAI(system, messages), ...(specs.length ? { tools: specs } : {}) },
+        { model: this.model, messages: toOpenAI(system, messages, this.kind), ...(specs.length ? { tools: specs } : {}) },
         { signal },
       );
-      return fromOpenAI(res);
+      return fromOpenAI(res, this.kind);
     } catch (err) {
+      // The timeout error is a subclass of the connection error, so it is checked first.
+      if (err instanceof OpenAI.APIConnectionTimeoutError) {
+        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network, or that the server is running.`);
+      }
       if (err instanceof OpenAI.APIConnectionError) {
-        throw new Error(`Could not reach ${this.#client.baseURL} (${err.message}). Check the address, your network, or that the server is running.`);
+        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check the address, your network, or that the server is running.`);
       }
       throw err;
     }
@@ -2155,7 +2339,7 @@ export class OpenAIProvider implements Provider {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/providers/openai.test.ts && npm run typecheck`
-Expected: 5 tests pass, and no type errors.
+Expected: 13 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2203,6 +2387,10 @@ describe("createProvider", () => {
     expect(() => createProvider("acme:x")).toThrow('Unknown provider "acme". Known: anthropic, openai, openrouter, kimi, ollama');
   });
 
+  it("does not mistake names every object has for providers", () => {
+    expect(() => createProvider("constructor:x")).toThrow('Unknown provider "constructor"');
+  });
+
   it("says which key is missing", () => {
     vi.stubEnv("OPENROUTER_API_KEY", "");
     expect(() => createProvider("openrouter:some/model")).toThrow("Set OPENROUTER_API_KEY to use openrouter");
@@ -2248,7 +2436,7 @@ export function parseLead(spec: string): { kind: string; model: string } {
 export function createProvider(spec: string, opts: { effort?: Effort } = {}): Provider {
   const { kind, model } = parseLead(spec);
   if (kind === "anthropic") return new AnthropicProvider(model, opts.effort);
-  if (kind in PRESETS) return new OpenAIProvider(kind, model);
+  if (Object.hasOwn(PRESETS, kind)) return new OpenAIProvider(kind, model); // `in` would accept "constructor"
   throw new Error(`Unknown provider "${kind}". Known: anthropic, ${Object.keys(PRESETS).join(", ")}`);
 }
 ```
@@ -2265,9 +2453,10 @@ export interface Rates {
   cacheWrite: number;
 }
 
-// USD per million tokens, copied 2026-10-22 from the claude-api skill's model table (cached
-// 2026-10-06) and its prompt-caching notes: cache reads as listed per model, cache writes 1.25x input
-// (5-minute cache). Claude Haiku 5.5 is left out because its price changes above 100K-token prompts.
+// USD per million tokens, copied 2026-10-22 from the claude-api skill: input, output and cache reads
+// from each model's notes in shared/models.md, cache writes 1.25x input for the 5-minute cache
+// (shared/prompt-caching.md, "Economics"). Claude Haiku 5.5 is left out because its price changes
+// above 100K-token prompts.
 // A model missing here shows its cost as "?"; we never guess a price.
 export const PRICES: Record<string, Rates> = {
   "anthropic:claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
@@ -2286,7 +2475,7 @@ export function cost(provider: string, u: Usage): number | null {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/providers/registry.test.ts && npm run typecheck`
-Expected: 9 tests pass, and no type errors.
+Expected: 10 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -2353,6 +2542,46 @@ describe("error log", () => {
   it("says so when there is no log yet", () => {
     expect(summarize(path.join(tmpdir(), "does-not-exist.jsonl"))).toBe("No errors logged yet.");
   });
+
+  const row = (attempted: string) => JSON.stringify({ at: "2026-10-22T00:00:00.000Z", session: "s1", kind: "tool", attempted, message: "it broke", lead: "fake:a" });
+  async function logFile(...lines: string[]) {
+    const file = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "errors.jsonl");
+    writeFileSync(file, `${lines.join("\n")}\n`);
+    return file;
+  }
+
+  it("skips a half-written line and says how many it skipped", async () => {
+    const file = await logFile(row("shell").slice(0, 20), row("shell"));
+    const out = summarize(file);
+    expect(out).toContain("1 errors logged");
+    expect(out).toContain("shell\n  it broke");
+    expect(out).toContain("(1 unreadable line skipped)");
+  });
+
+  it("skips rows missing fields and null lines", async () => {
+    const file = await logFile(JSON.stringify({ kind: "tool", attempted: "shell" }), "null", "5", row("shell"));
+    const out = summarize(file);
+    expect(out).toContain("1 errors logged");
+    expect(out).toContain("(3 unreadable lines skipped)");
+  });
+
+  it("skips a last row that has no message", async () => {
+    const out = summarize(await logFile(row("shell"), JSON.stringify({ at: "x", kind: "tool", attempted: "shell" })));
+    expect(out).toContain("shell\n  it broke");
+    expect(out).toContain("(1 unreadable line skipped)");
+  });
+
+  it("still reports skipped lines when no row could be read", async () => {
+    expect(summarize(await logFile("{"))).toBe("No errors logged yet.\n(1 unreadable line skipped)");
+  });
+
+  it("shortens a long attempted action to the terminal width", async () => {
+    const file = await logFile(row(`write_file ${"x".repeat(5000)}`));
+    const recent = (width?: number) => summarize(file, width).split("\n").find((l) => l.startsWith("Most recent"))!;
+    expect(recent(40)).toHaveLength(40);
+    expect(recent(40).endsWith("…")).toBe(true);
+    expect(recent().length).toBeLessThanOrEqual(process.stdout.columns ?? 80);
+  });
 });
 
 describe("Stats", () => {
@@ -2410,17 +2639,34 @@ export function attachErrorLog(bus: Bus, file: string, session: string): void {
   bus.on("error", write);
 }
 
-export function summarize(file: string): string {
+// Same rule as the scrollback (tui/describe.ts), kept here so core does not import from the interface.
+const fit = (s: string, width: number) => (s.length <= width ? s : `${s.slice(0, Math.max(0, width - 1))}…`);
+
+// A killed process or a full disk can leave a half-written line; one bad line must not hide the rest.
+function parse(line: string): Row | undefined {
+  try {
+    const r = JSON.parse(line);
+    if (typeof r?.kind === "string" && typeof r.attempted === "string" && typeof r.message === "string") return r;
+  } catch {}
+  return undefined;
+}
+
+export function summarize(file: string, width = process.stdout.columns ?? 80): string {
   if (!existsSync(file)) return "No errors logged yet.";
-  const rows: Row[] = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-  if (rows.length === 0) return "No errors logged yet.";
+  const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+  const rows = lines.map(parse).filter((r) => r !== undefined);
+  const skipped = lines.length - rows.length;
+  const note = skipped ? [`(${skipped} unreadable line${skipped === 1 ? "" : "s"} skipped)`] : [];
+  if (rows.length === 0) return ["No errors logged yet.", ...note].join("\n");
   const counts = new Map<string, number>();
   for (const r of rows) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
   const last = rows.at(-1)!;
   return [
     `${rows.length} errors logged in ${file}`,
     ...[...counts].map(([kind, n]) => `  ${kind}: ${n}`),
-    `Most recent (${last.at}): ${last.attempted}\n  ${last.message.split("\n")[0]}`,
+    // A failed write_file's input is the whole file.
+    `${fit(`Most recent (${last.at}): ${last.attempted}`, width)}\n  ${last.message.split("\n")[0]}`,
+    ...note,
   ].join("\n");
 }
 ```
@@ -2459,7 +2705,7 @@ export class Stats {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/core/errorlog.test.ts && npm run typecheck`
-Expected: 5 tests pass, and no type errors.
+Expected: 10 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -3058,7 +3304,7 @@ if (parsed.print !== undefined) {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  107 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  125 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -3067,7 +3313,7 @@ node dist/cli.js --help            # prints the help, exit 0
 node dist/cli.js                   # "No lead model given. Pass --lead or set TACHI_LEAD." exit 1
 node dist/cli.js --lead acme:x     # 'Unknown provider "acme". Known: anthropic, openai, openrouter, kimi, ollama' exit 1
 node dist/cli.js --lead ollama:qwen3 --mode yolo    # "--mode must be one of: ask, project, never" exit 1
-node dist/cli.js --lead ollama:none -p hi           # with no Ollama running: "provider: Could not reach http://localhost:11434/v1 ..." exit 1
+node dist/cli.js --lead ollama:none -p hi           # with no Ollama running: "provider: Could not reach http://localhost:11434/v1 (connect ECONNREFUSED ::1:11434) ..." exit 1
 cat .tachikoma/errors.jsonl        # one line for the failed request
 ```
 
@@ -3133,7 +3379,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  107 passed | 1 skipped`.
+Expected: `Tests  125 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 

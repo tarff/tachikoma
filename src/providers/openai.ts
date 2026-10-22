@@ -12,15 +12,24 @@ export const PRESETS: Record<string, { baseURL?: string; keyEnv?: string }> = {
   ollama: { baseURL: "http://localhost:11434/v1" }, // local; needs no key
 };
 
-export function toOpenAI(system: string, messages: Message[]): ChatCompletionMessageParam[] {
+// Reasoning fields some providers return and need back on later turns: Kimi's `reasoning_content`
+// (platform.kimi.ai/docs/guide/use-thinking-models.md, 2026-10-22: tool-call loops fail without it) and
+// OpenRouter's `reasoning` / `reasoning_details`. Only these are kept, as OpenAI rejects unknown fields.
+const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_details"];
+
+export function toOpenAI(system: string, messages: Message[], kind: string): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [{ role: "system", content: system }];
   for (const m of messages) {
     const text = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
     if (m.role === "assistant") {
       const calls = m.parts.flatMap((p) => (p.type === "tool_call" ? [p] : []));
+      // The SDK requires content unless there are tool calls; an empty reply (all output spent on
+      // reasoning) stays in the append-only history, so sending it would fail every later request.
+      if (!text && !calls.length) continue;
       out.push({
         role: "assistant",
         content: text || null,
+        ...(m.native?.provider === kind ? (m.native.content as Record<string, unknown>) : {}),
         ...(calls.length
           ? { tool_calls: calls.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: JSON.stringify(c.input) } })) }
           : {}),
@@ -44,7 +53,7 @@ function parseArgs(raw: string): unknown {
   }
 }
 
-export function fromOpenAI(res: ChatCompletion): Turn {
+export function fromOpenAI(res: ChatCompletion, kind: string): Turn {
   const choice = res.choices[0];
   if (!choice) throw new Error("The provider returned no reply");
   const parts: Part[] = [];
@@ -57,9 +66,29 @@ export function fromOpenAI(res: ChatCompletion): Turn {
     parts,
     usage: { input: (res.usage?.prompt_tokens ?? 0) - cached, output: res.usage?.completion_tokens ?? 0, cacheRead: cached, cacheWrite: 0 },
   };
+  // Not in the SDK's type, so read from the raw message; null carries nothing to send back.
+  const raw = choice.message as unknown as Record<string, unknown>;
+  const reasoning = Object.fromEntries(REASONING_FIELDS.flatMap((f) => (raw[f] != null ? [[f, raw[f]]] : [])));
+  if (Object.keys(reasoning).length) turn.native = { provider: kind, content: reasoning };
   if (choice.finish_reason === "length") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit" };
   if (choice.finish_reason === "content_filter") turn.cutOff = { kind: "refusal", detail: "The provider's content filter stopped the response" };
+  // OpenAI can decline with the reason in `refusal`, empty content and finish_reason "stop".
+  const refusal: unknown = choice.message.refusal;
+  if (typeof refusal === "string" && refusal) turn.cutOff = { kind: "refusal", detail: refusal };
   return turn;
+}
+
+// Why a connection failed. The SDK's message is only "Connection error."; Node's fetch error ("fetch
+// failed") holds the real reason, such as ECONNREFUSED or ENOTFOUND, further down its causes. For
+// "localhost" that is an AggregateError with an empty message (one try per address), so its first
+// try is used.
+function connectReason(err: Error): string {
+  let found = err.message;
+  for (let e: unknown = err.cause; e instanceof Error; e = e.cause) {
+    if (e instanceof AggregateError && e.errors[0] instanceof Error) found = e.errors[0].message;
+    else if (e.message) found = e.message;
+  }
+  return found;
 }
 
 export class OpenAIProvider implements Provider {
@@ -70,7 +99,8 @@ export class OpenAIProvider implements Provider {
     readonly kind: string,
     readonly model: string,
   ) {
-    const preset = PRESETS[kind];
+    // hasOwn, so inherited names such as "constructor" are not taken for presets.
+    const preset = Object.hasOwn(PRESETS, kind) ? PRESETS[kind] : undefined;
     if (!preset) throw new Error(`Unknown OpenAI-format provider "${kind}"`);
     const apiKey = preset.keyEnv ? process.env[preset.keyEnv] : "ollama"; // the SDK needs some key; Ollama ignores it
     if (!apiKey) throw new Error(`Set ${preset.keyEnv} to use ${kind}`);
@@ -82,13 +112,17 @@ export class OpenAIProvider implements Provider {
     const specs: ChatCompletionTool[] = tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
     try {
       const res = await this.#client.chat.completions.create(
-        { model: this.model, messages: toOpenAI(system, messages), ...(specs.length ? { tools: specs } : {}) },
+        { model: this.model, messages: toOpenAI(system, messages, this.kind), ...(specs.length ? { tools: specs } : {}) },
         { signal },
       );
-      return fromOpenAI(res);
+      return fromOpenAI(res, this.kind);
     } catch (err) {
+      // The timeout error is a subclass of the connection error, so it is checked first.
+      if (err instanceof OpenAI.APIConnectionTimeoutError) {
+        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network, or that the server is running.`);
+      }
       if (err instanceof OpenAI.APIConnectionError) {
-        throw new Error(`Could not reach ${this.#client.baseURL} (${err.message}). Check the address, your network, or that the server is running.`);
+        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check the address, your network, or that the server is running.`);
       }
       throw err;
     }

@@ -17,7 +17,9 @@ export function needsApproval(mode: Mode, action: Action): boolean {
   return action.kind === "shell";
 }
 
-const NAMED: Record<string, string> = { "\n": "\\n", "\r": "\\r", "\t": "\\t" };
+// Symbols, not \n-style escapes: a typed backslash-n must not look like a real line break, or two
+// commands could pass for one.
+const NAMED: Record<string, string> = { "\n": "⏎", "\r": "␍", "\t": "⇥" };
 
 // Shows control characters as escapes, so the approval prompt shows what will run: escape codes can
 // hide or recolour text, \r and many \n can push part of a command out of sight, and bidi overrides

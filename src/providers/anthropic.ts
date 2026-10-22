@@ -35,7 +35,8 @@ export function toAnthropic(messages: Message[]): BetaMessageParam[] {
       )
       // A reply can come back empty (context full before any output), but the API rejects an empty
       // message anywhere but last, and the history is append-only, so it would fail every later request.
-      .filter((m) => m.role === "user" || m.content.length > 0)
+      // A `fallback` block alone counts as empty: it is an ignored audit marker.
+      .filter((m) => m.role === "user" || (m.content as { type: string }[]).some((b) => b.type !== "fallback"))
   );
 }
 

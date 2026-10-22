@@ -59,11 +59,13 @@ export class Session {
       const rescue = this.opts.fallback;
       if (turn.cutOff?.kind === "refusal" && rescue) {
         // The refused reply is discarded, never stored, so the history stays append-only.
-        bus.emit("error", { kind: "refusal", attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id });
+        const refused = { kind: "refusal", attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
         answeredBy = rescue;
         turn = await this.#request(rescue, signal);
+        // A rescued refusal is reported only as the rescue, so the status line does not count it as an error.
+        if (!turn || turn.cutOff?.kind === "refusal") bus.emit("error", refused);
+        else bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
         if (!turn) return;
-        if (turn.cutOff?.kind !== "refusal") bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
       }
       if (turn.cutOff?.kind === "refusal") {
         // Never stored, on any path: the output may be empty or half-written, and an empty assistant
@@ -111,7 +113,8 @@ export class Session {
   async #runTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
     if (signal?.aborted) return result(call, "Cancelled by the user.", true);
     const fail = (message: string) => {
-      this.opts.bus.emit("error", { kind: "tool", attempted: `${call.name} ${JSON.stringify(call.input)}`, message, lead: this.#lead.id });
+      // Capped like the message: a failed write_file's input is the whole file.
+      this.opts.bus.emit("error", { kind: "tool", attempted: truncate(`${call.name} ${JSON.stringify(call.input)}`), message, lead: this.#lead.id });
       return result(call, message, true);
     };
     const tool = this.opts.tools.find((t) => t.spec.name === call.name);

@@ -46,9 +46,9 @@ describe("PermissionGate", () => {
 describe("visible", () => {
   it.each([
     ["an escape code", "echo \u001b[8mhidden", "echo \\u001b[8mhidden"],
-    ["a carriage return", "rm -rf ~\rls", "rm -rf ~\\rls"],
-    ["newlines", "ls\n\nrm -rf ~", "ls\\n\\nrm -rf ~"],
-    ["a tab", "a\tb", "a\\tb"],
+    ["a carriage return", "rm -rf ~\rls", "rm -rf ~␍ls"],
+    ["newlines", "ls\n\nrm -rf ~", "ls⏎⏎rm -rf ~"],
+    ["a tab", "a\tb", "a⇥b"],
     ["a NUL", "a\u0000b", "a\\u0000b"],
     ["a C1 control", "a\u009bb", "a\\u009bb"],
     ["a delete", "a\u007fb", "a\\u007fb"],
@@ -58,6 +58,11 @@ describe("visible", () => {
     expect(visible(text)).toBe(shown);
   });
 
+  it("shows a real line break differently from a typed backslash-n", () => {
+    // Otherwise `echo done` + a line break + `rm -rf build` would look like one harmless echo.
+    expect(visible("echo done\nrm -rf build")).not.toBe(visible("echo done\\nrm -rf build"));
+  });
+
   it("leaves ordinary text alone", () => {
     expect(visible("echo café costs 5€ > out.txt")).toBe("echo café costs 5€ > out.txt");
   });
@@ -65,7 +70,7 @@ describe("visible", () => {
   it("is what the gate asks with", async () => {
     const asked: string[] = [];
     const gate = new PermissionGate("ask", async (summary) => (asked.push(summary), false));
-    await expect(gate.require({ kind: "shell", outside: false, summary: "run: ls\rrm -rf ~" })).rejects.toThrow("run: ls\\rrm -rf ~");
-    expect(asked).toEqual(["run: ls\\rrm -rf ~"]);
+    await expect(gate.require({ kind: "shell", outside: false, summary: "run: ls\rrm -rf ~" })).rejects.toThrow("run: ls␍rm -rf ~");
+    expect(asked).toEqual(["run: ls␍rm -rf ~"]);
   });
 });

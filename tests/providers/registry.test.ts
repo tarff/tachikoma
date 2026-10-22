@@ -20,6 +20,10 @@ describe("createProvider", () => {
     expect(() => createProvider("acme:x")).toThrow('Unknown provider "acme". Known: anthropic, openai, openrouter, kimi, ollama');
   });
 
+  it("does not mistake names every object has for providers", () => {
+    expect(() => createProvider("constructor:x")).toThrow('Unknown provider "constructor"');
+  });
+
   it("says which key is missing", () => {
     vi.stubEnv("OPENROUTER_API_KEY", "");
     expect(() => createProvider("openrouter:some/model")).toThrow("Set OPENROUTER_API_KEY to use openrouter");

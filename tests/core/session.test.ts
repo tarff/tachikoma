@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { Declined } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
+import { Stats } from "../../src/core/stats.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Bus, FakeProvider, callTool, collectErrors, reply, tempContext, usage } from "../helpers.js";
@@ -43,6 +44,14 @@ describe("Session", () => {
     await session.send("go");
     expect(session.messages[2]!.parts[0]).toMatchObject({ isError: true, output: "it broke" });
     expect(errors).toEqual([expect.objectContaining({ kind: "tool", message: "it broke", lead: "fake:a" })]);
+  });
+
+  it("cuts a very long tool input in the error it reports", async () => {
+    const text = "x".repeat(MAX_TOOL_OUTPUT + 5);
+    const { session, errors } = await setup([callTool("c1", "nope", { text }), reply("ok")]);
+    await session.send("go");
+    const full = `nope ${JSON.stringify({ text })}`;
+    expect(errors[0]!.attempted).toBe(`${full.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${full.length - MAX_TOOL_OUTPUT} more characters]`);
   });
 
   it("reports an unknown tool to the model", async () => {
@@ -90,9 +99,32 @@ describe("Session", () => {
     await session.send("go");
     expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
     expect(session.messages[1]!.parts).toEqual([{ type: "text", text: "answered by b" }]);
-    expect(errors.map((e) => e.kind)).toEqual(["refusal", "fallback"]);
-    expect(errors[1]!.message).toBe("fake:a declined; fake:b answered instead");
+    expect(errors.map((e) => e.kind)).toEqual(["fallback"]); // the rescued refusal is reported only as the rescue
+    expect(errors[0]!.message).toBe("fake:a declined; fake:b answered instead");
     expect(seen).toEqual(["fake:a", "fake:b"]); // the refused attempt is billed too
+  });
+
+  it("does not count a rescued refusal in the status line's errors", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const bus = new Bus();
+    const stats = new Stats(bus);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [reply("answered by b")]), tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(stats.errors).toBe(0);
+    expect(stats.fallbacks).toBe(1);
+  });
+
+  it("still reports the refusal when the fallback provider's request fails", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [new Error("rate limited")]), tools: [], system: "t", ctx: await tempContext(), bus });
+    await session.send("go");
+    expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
+      ["provider", "request to fake:b", "rate limited"],
+      ["refusal", "response from fake:a", "declined"],
+    ]);
+    expect(session.messages.map((m) => m.role)).toEqual(["user"]);
   });
 
   it("stops when the fallback provider refuses as well", async () => {
@@ -132,7 +164,6 @@ describe("Session", () => {
     const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [rescued]), tools: [], system: "t", ctx: await tempContext(), bus });
     await session.send("go");
     expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
-      ["refusal", "response from fake:a", "declined"],
       ["fallback", "response from fake:a", "fake:a declined; fake:b answered instead"],
       ["fallback", "response from fake:b", "claude-opus-5-5 declined; claude-opus-4-8 answered instead (Anthropic's fallback)"],
     ]);
@@ -146,7 +177,6 @@ describe("Session", () => {
     const session = new Session({ lead: new FakeProvider("a", [refused]), fallback: new FakeProvider("b", [cut]), tools: [], system: "t", ctx: await tempContext(), bus });
     await session.send("go");
     expect(errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([
-      ["refusal", "response from fake:a", "declined"],
       ["fallback", "response from fake:a", "fake:a declined; fake:b answered instead"],
       ["max_tokens", "response from fake:b", "limit"],
     ]);
