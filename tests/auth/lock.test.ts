@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, uptime } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -72,6 +72,22 @@ await withLock(${lock}, async () => {
     expect(await withLock(file, async () => "taken")).toBe("taken");
   });
 
+  it("takes over a lock made before the computer last started, whatever process has its pid now", async () => {
+    const file = path.join(await tempDir(), "login.lock");
+    writeFileSync(file, String(process.ppid)); // running, and not this process
+    const boot = Date.now() / 1000 - uptime();
+    utimesSync(file, boot - 1, boot - 1);
+    let waited = false;
+    expect(await withLock(file, async () => "taken", () => (waited = true))).toBe("taken");
+    expect(waited).toBe(false);
+  });
+
+  it("leaves a lock that another process took over in the meantime", async () => {
+    const file = path.join(await tempDir(), "login.lock");
+    await withLock(file, async () => writeFileSync(file, String(process.ppid)));
+    expect(readFileSync(file, "utf8")).toBe(String(process.ppid));
+  });
+
   it("takes over a lock with no pid in it", async () => {
     const file = path.join(await tempDir(), "login.lock");
     writeFileSync(file, "");
@@ -100,10 +116,12 @@ await withLock(${lock}, async () => {
     const dir = await tempDir();
     const file = path.join(dir, "login.lock");
     let release!: () => void;
-    const first = withLock(file, () => new Promise<void>((r) => (release = r)));
+    let firstDone = false;
+    const first = withLock(file, () => new Promise<void>((r) => (release = r)).then(() => void (firstDone = true)));
     const queued = new AbortController();
     const second = withLock(file, async () => "second", undefined, queued.signal);
-    const third = withLock(file, async () => "third");
+    // The cancelled call's place in the queue still waits for the first.
+    const third = withLock(file, async () => (firstDone ? "third" : "third, while the first held the lock"));
     queued.abort();
     await expect(second).rejects.toThrow("aborted");
     release();
@@ -132,12 +150,15 @@ await withLock(${lock}, async () => {
     let release!: () => void;
     const first = withLock(file, () => new Promise<void>((r) => (release = r)));
     while (!existsSync(file)) await new Promise((r) => setTimeout(r, 10));
-    const other = run(dir, "other", `await withLock(${JSON.stringify(file)}, async () => console.log("in"), (pid) => console.log("waiting for " + pid));`);
+    const other = run(dir, "other", `await withLock(${JSON.stringify(file)}, async () => console.log("got it"), (pid) => console.log("waiting for " + pid));`);
     while (!other.output().includes("waiting")) await new Promise((r) => setTimeout(r, 20));
     expect(other.output().trim()).toBe(`waiting for ${process.pid}`);
+    const released = Date.now();
     release();
     await first;
+    while (!other.output().includes("got it")) await new Promise((r) => setTimeout(r, 20));
+    // Woken by the release itself: the 5 s recheck alone would take most of 5 s here.
+    expect(Date.now() - released).toBeLessThan(2_500);
     expect(await other.done).toBe(0);
-    expect(other.output()).toContain("in");
   }, 30_000);
 });
