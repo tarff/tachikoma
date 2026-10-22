@@ -73,7 +73,11 @@ build made on 2026-10-22, not retyped. In that build:
     interactive mode without a terminal says to use `-p`; a closed pipe on stdout ends quietly. The
     system prompt says the tools ask the user themselves, that Windows PowerShell 5.1 has no `&&`,
     and not to start commands that never return. The error log's folder gets its own `.gitignore`.
-- That makes 157 tests in all.
+- Re-review of those fixes: the Windows prompt line no longer offers `;` as a stand-in for `&&` (it
+  runs the next command even after a failure) and gives `a; if ($?) { b }`; the prompt no longer
+  promises the user is asked (nobody is, in `-p`); the connection-error walk stops on a looping
+  cause chain; `/tmp is full` is a message, not a command; a closed pipe on stderr ends quietly.
+- That makes 161 tests in all.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
@@ -109,6 +113,10 @@ yesterday) and Ink 8.0.0. Ink 7.1.1 was picked because Ink 8.0.0 is a brand-new 
 - **On Windows, cancelling cannot stop a program whose shell has already exited** (`taskkill /T`
   cannot find a tree whose root is gone). Cancel still returns at once. On macOS and Linux the
   process-group kill reaches it.
+- **Reasoning is sent back by provider, not by model.** After `/lead openrouter:A` then
+  `/lead openrouter:B`, model A's reasoning fields go to model B; and switching to Kimi after
+  another model's tool calls leaves those calls without `reasoning_content`. Neither is confirmed
+  to fail; both are on the live test's list (Task 14).
 - **Windows exit codes are 0 or 1.** PowerShell `-Command` reports only whether the last command
   succeeded, so a program's own exit code is lost.
 - **Commands have no time limit**, so one that keeps its output open runs until you cancel it. A time
@@ -2198,6 +2206,15 @@ describe("OpenAIProvider", () => {
     );
   });
 
+  it("stops walking a chain of causes that loops back on itself", async () => {
+    const a = new Error("connect ECONNREFUSED 127.0.0.1:11434");
+    const b = new TypeError("fetch failed", { cause: a });
+    a.cause = b;
+    vi.spyOn(Completions.prototype, "create").mockRejectedValue(new OpenAI.APIConnectionError({ cause: b }));
+    const p = new OpenAIProvider("ollama", "m");
+    await expect(p.complete({ system: "s", messages: [], tools: [] })).rejects.toThrow("Could not reach http://localhost:11434/v1");
+  }, 5_000);
+
   it("names the reason when it is wrapped in an AggregateError with no message", async () => {
     // What Node 24 throws on Windows for "localhost": one try per address, grouped, with an empty message.
     const tries = [new Error("connect ECONNREFUSED ::1:11434"), new Error("connect ECONNREFUSED 127.0.0.1:11434")];
@@ -2307,7 +2324,9 @@ export function fromOpenAI(res: ChatCompletion, kind: string): Turn {
 // try is used.
 function connectReason(err: Error): string {
   let found = err.message;
-  for (let e: unknown = err.cause; e instanceof Error; e = e.cause) {
+  const seen = new Set<unknown>([err]); // a chain that loops back on itself would never end
+  for (let e: unknown = err.cause; e instanceof Error && !seen.has(e); e = e.cause) {
+    seen.add(e);
     if (e instanceof AggregateError && e.errors[0] instanceof Error) found = e.errors[0].message;
     else if (e.message) found = e.message;
   }
@@ -2356,7 +2375,7 @@ export class OpenAIProvider implements Provider {
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/providers/openai.test.ts && npm run typecheck`
-Expected: 13 tests pass, and no type errors.
+Expected: 14 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -3141,6 +3160,13 @@ describe("App", () => {
     expect(session.messages).toEqual([]);
   });
 
+  it("sends a message that starts with a one-word path", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await type(app, "/tmp is full");
+    await until(app, "ok");
+    expect(session.messages[0]).toMatchObject({ role: "user", parts: [{ type: "text", text: "/tmp is full" }] });
+  });
+
   it("sends a message that only starts with a path", async () => {
     const { app, session } = await mount([reply("ok")]);
     await type(app, "/usr/bin is missing");
@@ -3330,8 +3356,8 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       if (text === "/lead") return say({ text: "Usage: /lead <provider:model>" });
       if (text.startsWith("/lead ")) return session.setLead(makeProvider(text.slice("/lead ".length).trim()));
       // A mistyped command must not become a paid turn.
-      // A slash and a bare word is a command; "/usr/bin is missing" is a message.
-      if (/^\/[a-z]+$/i.test(text.split(/\s/)[0]!)) return say({ text: `Unknown command: ${text}. Commands: /lead <provider:model>, /errors, /exit`, color: "red" });
+      // A slash and a bare word on its own is a command; "/tmp is full" is a message.
+      if (/^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: /lead <provider:model>, /errors, /exit`, color: "red" });
       abort.current = new AbortController();
       setBusy(true);
       try {
@@ -3397,7 +3423,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
 **Step 4: Run the tests and the typecheck**
 
 Run: `npx vitest run tests/tui/app.test.tsx && npm run typecheck`
-Expected: 17 tests pass, and no type errors.
+Expected: 18 tests pass, and no type errors.
 
 **Step 5: Commit**
 
@@ -3410,7 +3436,7 @@ git commit -m "feat: interactive screen"
 
 **Files:**
 - Create: `src/core/prompt.ts`, `src/clilib.ts`, `src/cli.tsx`
-- Test: `tests/clilib.test.ts`, `tests/cli.test.ts`
+- Test: `tests/clilib.test.ts`, `tests/cli.test.ts`, `tests/core/prompt.test.ts`
 
 **Step 1: Write the code**
 
@@ -3426,10 +3452,10 @@ export function systemPrompt(root: string, platform: NodeJS.Platform = process.p
     `The project root is ${root}. File paths are relative to it.`,
     // powershell.exe is 5.1, which has no && or ||; models often assume a newer PowerShell or bash.
     platform === "win32"
-      ? "Shell commands run with Windows PowerShell 5.1 on Windows: chain commands with ;, not && or ||."
+      ? "Shell commands run with Windows PowerShell 5.1 on Windows, which has no && or ||. `a; b` runs b even if a failed; to run b only if a succeeded, write `a; if ($?) { b }`."
       : `Shell commands run with ${shellFor(platform).name} on ${platform}.`,
     "Commands get no input and have no time limit, so do not start servers, watchers or anything interactive: it would never return.",
-    "Call tools directly. Tachikoma asks the user before risky actions and tells you if they decline; do not retry a declined action another way.",
+    "Call tools directly. Risky actions need the user's approval, and the tool tells you when it was not given; do not retry a declined action another way.",
     "Read files before changing them, prefer edit_file to rewriting whole files, and say plainly when something failed.",
   ].join("\n");
 }
@@ -3522,6 +3548,7 @@ function oneOf<T extends string>(name: string, value: string | undefined, allowe
 }
 
 process.stdout.on("error", endOnEpipe);
+process.stderr.on("error", endOnEpipe); // `tachi -p … 2>&1 | head -1`
 
 let parsed;
 try {
@@ -3696,6 +3723,27 @@ describe("endOnEpipe", () => {
 });
 ```
 
+`tests/core/prompt.test.ts`:
+
+```typescript
+import { describe, expect, it } from "vitest";
+import { systemPrompt } from "../../src/core/prompt.js";
+
+describe("systemPrompt", () => {
+  it("gives PowerShell 5.1 a way to run a command only if the last one succeeded", () => {
+    // `a; b` runs b even when a failed, so `;` alone is not a safe stand-in for `&&`.
+    const prompt = systemPrompt("C:\\proj", "win32");
+    expect(prompt).toContain("if ($?)");
+    expect(prompt).not.toContain("chain commands with ;");
+  });
+
+  it("does not promise that someone will be asked", () => {
+    // In headless runs nobody is there to ask: the action is refused instead.
+    expect(systemPrompt("/proj", "linux")).not.toContain("asks the user before risky actions");
+  });
+});
+```
+
 `tests/cli.test.ts`:
 
 ```typescript
@@ -3728,7 +3776,7 @@ describe("tachi", () => {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  157 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  161 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -3746,7 +3794,7 @@ All five gave exactly this output in the scratch build on 2026-10-22.
 **Step 4: Commit**
 
 ```bash
-git add src/core/prompt.ts src/clilib.ts src/cli.tsx tests/clilib.test.ts tests/cli.test.ts
+git add src/core/prompt.ts src/clilib.ts src/cli.tsx tests/clilib.test.ts tests/cli.test.ts tests/core/prompt.test.ts
 git commit -m "feat: tachi command, interactive and headless"
 ```
 
@@ -3803,7 +3851,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  157 passed | 1 skipped`.
+Expected: `Tests  161 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 
@@ -3815,6 +3863,15 @@ TACHI_LIVE=1 TACHI_LIVE_LEADS=anthropic:claude-opus-5-5 npx vitest run tests/liv
 ```
 
 Expected: 1 passed. A second lead in `TACHI_LIVE_LEADS` (comma-separated) also runs the lead-switch test.
+
+**Also to check live** (code review raised these; none can be settled without a real provider):
+- Anthropic accepts an assistant message whose only block is a `fallback` marker being left out.
+- How Kimi reports cached tokens (`usage.cached_tokens` at the top level, or under
+  `prompt_tokens_details`).
+- Kimi K3 after a lead switch: tool calls from another model carry no `reasoning_content`.
+- OpenRouter after `/lead` to another model of the same provider: the first model's reasoning fields
+  are sent to the second.
+- Ollama accepts its own `reasoning` field being sent back.
 
 **Step 4: README and licence**
 

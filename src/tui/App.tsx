@@ -96,8 +96,8 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       if (text === "/lead") return say({ text: "Usage: /lead <provider:model>" });
       if (text.startsWith("/lead ")) return session.setLead(makeProvider(text.slice("/lead ".length).trim()));
       // A mistyped command must not become a paid turn.
-      // A slash and a bare word is a command; "/usr/bin is missing" is a message.
-      if (/^\/[a-z]+$/i.test(text.split(/\s/)[0]!)) return say({ text: `Unknown command: ${text}. Commands: /lead <provider:model>, /errors, /exit`, color: "red" });
+      // A slash and a bare word on its own is a command; "/tmp is full" is a message.
+      if (/^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: /lead <provider:model>, /errors, /exit`, color: "red" });
       abort.current = new AbortController();
       setBusy(true);
       try {
