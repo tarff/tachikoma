@@ -143,6 +143,15 @@ describe("OpenAIProvider", () => {
     );
   });
 
+  it("stops walking a chain of causes that loops back on itself", async () => {
+    const a = new Error("connect ECONNREFUSED 127.0.0.1:11434");
+    const b = new TypeError("fetch failed", { cause: a });
+    a.cause = b;
+    vi.spyOn(Completions.prototype, "create").mockRejectedValue(new OpenAI.APIConnectionError({ cause: b }));
+    const p = new OpenAIProvider("ollama", "m");
+    await expect(p.complete({ system: "s", messages: [], tools: [] })).rejects.toThrow("Could not reach http://localhost:11434/v1");
+  }, 5_000);
+
   it("names the reason when it is wrapped in an AggregateError with no message", async () => {
     // What Node 24 throws on Windows for "localhost": one try per address, grouped, with an empty message.
     const tries = [new Error("connect ECONNREFUSED ::1:11434"), new Error("connect ECONNREFUSED 127.0.0.1:11434")];

@@ -153,6 +153,13 @@ describe("App", () => {
     expect(session.messages).toEqual([]);
   });
 
+  it("sends a message that starts with a one-word path", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await type(app, "/tmp is full");
+    await until(app, "ok");
+    expect(session.messages[0]).toMatchObject({ role: "user", parts: [{ type: "text", text: "/tmp is full" }] });
+  });
+
   it("sends a message that only starts with a path", async () => {
     const { app, session } = await mount([reply("ok")]);
     await type(app, "/usr/bin is missing");

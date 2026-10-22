@@ -84,7 +84,9 @@ export function fromOpenAI(res: ChatCompletion, kind: string): Turn {
 // try is used.
 function connectReason(err: Error): string {
   let found = err.message;
-  for (let e: unknown = err.cause; e instanceof Error; e = e.cause) {
+  const seen = new Set<unknown>([err]); // a chain that loops back on itself would never end
+  for (let e: unknown = err.cause; e instanceof Error && !seen.has(e); e = e.cause) {
+    seen.add(e);
     if (e instanceof AggregateError && e.errors[0] instanceof Error) found = e.errors[0].message;
     else if (e.message) found = e.message;
   }

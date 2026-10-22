@@ -51,6 +51,7 @@ function oneOf<T extends string>(name: string, value: string | undefined, allowe
 }
 
 process.stdout.on("error", endOnEpipe);
+process.stderr.on("error", endOnEpipe); // `tachi -p … 2>&1 | head -1`
 
 let parsed;
 try {
