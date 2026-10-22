@@ -27,6 +27,8 @@ learn from experience. The command is `tachi`.
 | Skills | obra/superpowers built in, plus our own skills for features only Tachikoma has | User, 2026-10-22 ("go with that") |
 | Licence | MIT | User, 2026-10-22 ("portfolio only, go with MIT") |
 | Refusals | Keep Anthropic's fallback, show every rescue, and add an optional fallback to a model from another provider | User, 2026-10-22 ("keep it with the notice and maybe add an option for it to try another model from a different provider") |
+| Subscriptions | Claude plans only through the real `claude` CLI as a worker; ChatGPT plans through OpenAI's own sign-in flow for open-source tools, in release 2 | User, 2026-10-22 ("yes use the subscription for OpenAI", "Release 2"), after checking each company's terms |
+| More providers | Look later into more providers and bring-your-own keys | User, 2026-10-22 ("byo keys like openrouter etc", "at a later" date) |
 
 ## 1. Overall shape
 
@@ -60,9 +62,15 @@ comes out.
 - CLI workers (`claude -p`, `codex exec`, `kimi`) sit behind the same interface, marked as
   workers that cannot lead.
 
-**Subscriptions.** Tachikoma never signs in with a Claude or ChatGPT subscription token itself.
-Those subscriptions are meant for the companies' own tools. API providers use API keys, and a
-subscription is used only by running that company's own CLI as a worker.
+**Subscriptions.** Each company's terms were checked on 2026-10-22.
+- **Claude:** Tachikoma never signs in with a Claude subscription itself. Anthropic does not permit
+  third-party developers to "offer Claude.ai login into their own applications" (Claude Code's legal
+  and compliance page). A Claude plan is used only by running the unmodified `claude` CLI as a worker.
+- **ChatGPT:** Tachikoma signs in itself, through OpenAI's Sign in with ChatGPT flow for open-source
+  tools (its terms are dated 2026-09-29). It signs in under its own name, keeps the tokens on the
+  user's machine, and passes no access on to other tools. It never reuses the Codex CLI's own
+  sign-in. Requests go to the Responses API, which the flow requires, so this needs its own adapter.
+- **Everyone else** uses API keys.
 
 ### Fitting the context window
 
@@ -626,12 +634,15 @@ Each release works on its own and can be shown.
    - Anthropic and OpenAI-format providers, with lead switching
    - the terminal interface with status line
    - the error log
-2. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
-3. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
+2. Sign in with ChatGPT, and its Responses API adapter
+3. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
+4. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
    disk; shortening the history
-4. Skills: the loader, vendored superpowers, Tachikoma's own skills
-5. Codebase search with EmbeddingGemma 2
-6. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
+5. Skills: the loader, vendored superpowers, Tachikoma's own skills
+6. Codebase search with EmbeddingGemma 2
+7. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
    refusal rules. The controller comes first because workers have to be cancellable as a group.
-7. Loops: on a timer, and until done
-8. `tachi setup` / `tachi doctor`, and the fresh-install CI
+8. Loops: on a timer, and until done
+9. `tachi setup` / `tachi doctor`, and the fresh-install CI
+
+Not yet placed: more providers and bring-your-own keys, to be looked into later.
