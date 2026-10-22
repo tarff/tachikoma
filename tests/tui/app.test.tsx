@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -30,8 +30,8 @@ async function mount(turns: ConstructorParameters<typeof FakeProvider>[1], opts:
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
-  let ask: (s: string) => Promise<boolean> = async () => false;
-  const gate = new PermissionGate("ask", (s) => ask(s));
+  let ask: (s: string, d?: string) => Promise<boolean> = async () => false;
+  const gate = new PermissionGate("ask", (s, d) => ask(s, d));
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const session = new Session({ lead, tools: TOOLS, system: "t", ctx: { ...ctx, gate }, bus });
   const app = render(
@@ -198,6 +198,33 @@ describe("App", () => {
     const { app } = await mount([]);
     await type(app, "/errors");
     expect(app.lastFrame()).toContain("No errors logged yet.");
+  });
+
+  it("cuts each row of /errors to the screen's width", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const errorFile = path.join(dir, "errors.jsonl");
+    writeFileSync(errorFile, `${JSON.stringify({ at: "x", session: "s", kind: "tool", attempted: `write_file ${"x".repeat(300)}`, message: "y".repeat(300), lead: "a" })}\n`);
+    const { app } = await mount([], { errorFile });
+    await type(app, "/errors");
+    const rows = app.lastFrame()!.split("\n");
+    expect(rows.find((l) => l.startsWith("Most recent"))!.endsWith("…")).toBe(true);
+    expect(rows.find((l) => l.startsWith("  yyy"))!.endsWith("…")).toBe(true);
+  });
+
+  it("cuts a tool call to the screen's width, counting a wide character as two columns", async () => {
+    const { app } = await mount([callTool("c1", "x", { s: "漢".repeat(80) }), reply("done")]);
+    await type(app, "hi");
+    await until(app, "done");
+    const line = app.lastFrame()!.split("\n").find((l) => l.startsWith("● x"))!;
+    expect(line.endsWith("…")).toBe(true);
+    expect([...line].filter((c) => c === "漢").length).toBeLessThan(50); // the test screen is 100 columns
+  });
+
+  it("shows what a write will put in the file before asking", async () => {
+    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "line one\nline two" }), reply("written")]);
+    await type(app, "make a file");
+    await until(app, "Allow write");
+    expect(app.lastFrame()).toContain("line one\nline two");
   });
 
   it("shows an error, and keeps running, when the error log cannot be read", async () => {

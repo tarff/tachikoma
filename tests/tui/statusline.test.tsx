@@ -41,6 +41,12 @@ describe("StatusLine", () => {
     expect(shown).not.toContain("lead");
   });
 
+  it("stays on one line of the terminal, cutting off the end", () => {
+    const shown = frame({ ...info, lead: `anthropic:${"x".repeat(200)}` }, SEGMENTS)!;
+    expect(shown.split("\n")).toHaveLength(1);
+    expect(shown).toContain("…");
+  });
+
   it.each([
     [999, 1000, "999 in / 1.0k out"],
     [999_999, 1_000_000, "1.0M in / 1.0M out"], // rounds to 1000.0k, so it is shown in millions
@@ -62,20 +68,17 @@ describe("StatusLine", () => {
 
 describe("describe", () => {
   it("shows tool calls and failed results on one line each", () => {
-    const lines = describeMessage(
-      { role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] },
-      80,
-    );
-    expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "red" }]);
+    const lines = describeMessage({ role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] });
+    expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "red", oneLine: true }]);
   });
 
   it("does not show an unknown kind of part as a tool result", () => {
-    expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] }, 80)).toEqual([]);
+    expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] })).toEqual([]);
   });
 
-  it("cuts a one-line entry to the width after escaping, so escapes count", () => {
-    const [line] = describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name: "\u001b\u001b", input: 1 }] }, 10);
-    expect(screen(line!).text).toBe("● \\u001b\\…");
+  it("escapes a one-line entry's line breaks too, so it stays one line", () => {
+    const [line] = describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name: "a\nb", input: 1 }] });
+    expect(screen(line!).text).toBe("● a⏎b 1");
   });
 });
 

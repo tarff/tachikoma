@@ -20,7 +20,40 @@ describe("file tools", () => {
   it("writes, then reads back", async () => {
     const ctx = await tempContext();
     await writeFileTool.run({ path: "sub/a.txt", content: "hello" }, ctx);
-    expect(await readFileTool.run({ path: "sub/a.txt" }, ctx)).toBe("hello");
+    expect(await readFileTool.run({ path: "sub/a.txt" }, ctx)).toBe("     1\thello");
+  });
+
+  it("numbers the lines it reads, and reads a part when given offset and limit", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), "one\r\ntwo\nthree\n");
+    expect(await readFileTool.run({ path: "a.txt" }, ctx)).toBe("     1\tone\n     2\ttwo\n     3\tthree");
+    expect(await readFileTool.run({ path: "a.txt", offset: 2, limit: 1 }, ctx)).toBe(
+      "(showing lines 2-2 of 3; use offset and limit to read the rest)\n     2\ttwo",
+    );
+  });
+
+  it("reads 2,000 lines unless told otherwise, saying so first, where a cut-off cannot hide it", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), Array.from({ length: 2500 }, (_, i) => `line ${i + 1}`).join("\n"));
+    const out = await readFileTool.run({ path: "a.txt" }, ctx);
+    expect(out.split("\n")[0]).toBe("(showing lines 1-2000 of 2500; use offset and limit to read the rest)");
+    expect(out).toContain("  2000\tline 2000");
+    expect(out).not.toContain("line 2001");
+  });
+
+  it("says how long a file is when asked to start past its end, and when it is empty", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), "one\ntwo\n");
+    await writeFile(path.join(ctx.root, "empty.txt"), "");
+    expect(await readFileTool.run({ path: "a.txt", offset: 5 }, ctx)).toBe("(a.txt has 2 lines)");
+    expect(await readFileTool.run({ path: "empty.txt" }, ctx)).toBe("(empty.txt is empty)");
+  });
+
+  it("shows what a write or an edit will put in the file when asking", async () => {
+    const ctx = await tempContext("ask", [true, true]);
+    await writeFileTool.run({ path: "a.txt", content: "one\ntwo" }, ctx);
+    await editFileTool.run({ path: "a.txt", old_text: "one\ntwo", new_text: "three" }, ctx);
+    expect(ctx.details).toEqual(["one\ntwo", "- one\n- two\n+ three"]);
   });
 
   it("edits one unique match", async () => {

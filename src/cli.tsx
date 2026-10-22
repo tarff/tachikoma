@@ -77,6 +77,7 @@ if (parsed.help) {
 
 const leadSpec = parsed.lead ?? process.env.TACHI_LEAD;
 if (!leadSpec) fail(`No lead model given. Pass --lead or set TACHI_LEAD.\n\n${HELP}`);
+if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
 const mode: Mode = oneOf("mode", parsed.mode, MODES) ?? "ask"; // the safest mode is the default
 const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
 let segments;
@@ -107,14 +108,14 @@ try {
 }
 
 let declined = false;
-let ask: (summary: string) => Promise<boolean> = async (summary) => {
+let ask: (summary: string, detail?: string) => Promise<boolean> = async (summary) => {
   declined = true;
   console.error(
     `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused; --mode never means no checks at all): ${summary}`,
   );
   return false;
 };
-const gate = new PermissionGate(mode, (summary) => ask(summary));
+const gate = new PermissionGate(mode, (summary, detail) => ask(summary, detail), parsed.print === undefined ? undefined : "Not allowed in -p mode, where nobody can approve it");
 const session = new Session({ lead, fallback, tools: TOOLS, system: systemPrompt(root), ctx: { root, executor: new LocalExecutor(), gate }, bus });
 
 // The executor stops running commands from an "exit" handler, which dying by a signal skips.
@@ -147,6 +148,8 @@ if (parsed.print !== undefined) {
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
   if (!process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
+  // Ctrl-C reaches the interface as a key; a SIGINT here came from outside (`kill -INT`).
+  process.on("SIGINT", () => process.exit(128 + constants.signals.SIGINT));
   render(
     <App
       session={session}

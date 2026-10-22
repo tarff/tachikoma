@@ -36,14 +36,16 @@ export function collectErrors(bus: Bus): ErrorEvent[] {
   return errors;
 }
 
-export async function tempContext(mode: Mode = "never", answers: boolean[] = []): Promise<ToolContext & { asked: string[] }> {
+export async function tempContext(mode: Mode = "never", answers: boolean[] = []): Promise<ToolContext & { asked: string[]; details: (string | undefined)[] }> {
   const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
   const asked: string[] = [];
-  const gate = new PermissionGate(mode, async (summary) => {
+  const details: (string | undefined)[] = [];
+  const gate = new PermissionGate(mode, async (summary, detail) => {
     asked.push(summary);
+    details.push(detail);
     return answers.shift() ?? false;
   });
-  return { root, executor: new LocalExecutor(), gate, asked };
+  return { root, executor: new LocalExecutor(), gate, asked, details };
 }
 
 export const texts = (m: Message) => m.parts.flatMap((p: Part) => (p.type === "text" ? [p.text] : []));

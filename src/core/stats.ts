@@ -8,8 +8,7 @@ export class Stats {
   cost = 0; // USD, for calls whose price is known
   costUnknown = false; // true once any call had no known price
   context = 0; // size of the most recent request plus its reply
-  errors = 0;
-  fallbacks = 0; // refusals another model answered; shown, but not counted as errors
+  errors = 0; // a refusal another model answered is not one
 
   constructor(bus: Bus) {
     bus.on("usage", ({ provider, usage, priceKnown }) => {
@@ -21,6 +20,8 @@ export class Stats {
       if (c === null) this.costUnknown = true;
       else this.cost += c;
     });
-    bus.on("error", (e) => (e.kind === "fallback" ? this.fallbacks++ : this.errors++));
+    bus.on("error", (e) => {
+      if (e.kind !== "fallback") this.errors++;
+    });
   }
 }

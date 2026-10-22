@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import type { ChatCompletion, ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
-import type { CompletionRequest, Message, Part, Provider, Turn } from "../core/types.js";
+import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type Turn } from "../core/types.js";
 
 // Providers that accept OpenAI's chat-completions format. Base URLs checked 2026-10-22 against each
 // provider's docs: OpenRouter (openrouter.ai/docs), Moonshot/Kimi global platform (platform.kimi.ai),
@@ -81,21 +81,6 @@ export function fromOpenAI(res: ChatCompletion, kind: string): Turn {
   const refusal: unknown = choice.message.refusal;
   if (typeof refusal === "string" && refusal) turn.cutOff = { kind: "refusal", detail: refusal };
   return turn;
-}
-
-// Why a connection failed. The SDK's message is only "Connection error."; Node's fetch error ("fetch
-// failed") holds the real reason, such as ECONNREFUSED or ENOTFOUND, further down its causes. For
-// "localhost" that is an AggregateError with an empty message (one try per address), so its first
-// try is used.
-function connectReason(err: Error): string {
-  let found = err.message;
-  const seen = new Set<unknown>([err]); // a chain that loops back on itself would never end
-  for (let e: unknown = err.cause; e instanceof Error && !seen.has(e); e = e.cause) {
-    seen.add(e);
-    if (e instanceof AggregateError && e.errors[0] instanceof Error) found = e.errors[0].message;
-    else if (e.message) found = e.message;
-  }
-  return found;
 }
 
 export class OpenAIProvider implements Provider {

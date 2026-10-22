@@ -60,3 +60,18 @@ export interface Provider {
 export function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+// Why a connection failed, for both SDKs. Their message is only "Connection error."; Node's fetch
+// error ("fetch failed") holds the real reason, such as ECONNREFUSED or ENOTFOUND, further down its
+// causes. For "localhost" that is an AggregateError with an empty message (one try per address), so
+// its first try is used.
+export function connectReason(err: Error): string {
+  let found = err.message;
+  const seen = new Set<unknown>([err]); // a chain that loops back on itself would never end
+  for (let e: unknown = err.cause; e instanceof Error && !seen.has(e); e = e.cause) {
+    seen.add(e);
+    if (e instanceof AggregateError && e.errors[0] instanceof Error) found = e.errors[0].message;
+    else if (e.message) found = e.message;
+  }
+  return found;
+}

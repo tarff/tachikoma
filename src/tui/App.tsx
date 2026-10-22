@@ -19,7 +19,7 @@ export interface AppProps {
   errorFile: string;
   segments: Segment[];
   makeProvider: (spec: string) => Provider;
-  bindAsk: (ask: (summary: string) => Promise<boolean>) => void;
+  bindAsk: (ask: (summary: string, detail?: string) => Promise<boolean>) => void;
 }
 
 export function App({ session, bus, stats, mode, errorFile, segments, makeProvider, bindAsk }: AppProps) {
@@ -45,9 +45,11 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
   };
 
   useEffect(() => {
-    bindAsk((text) => {
+    bindAsk((text, detail) => {
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped.
       if (abort.current?.signal.aborted) return Promise.resolve(false);
+      // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
+      if (detail !== undefined) say({ text: detail });
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
         setQuestion({
@@ -92,7 +94,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
     if (!text) return;
     try {
       if (text === "/exit") return exit();
-      if (text === "/errors") return say({ text: summarize(errorFile) });
+      if (text === "/errors") return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
       if (text === "/lead") return say({ text: "Usage: /lead <provider:model>" });
       if (text.startsWith("/lead ")) return session.setLead(makeProvider(text.slice("/lead ".length).trim()));
       // A mistyped command must not become a paid turn.
@@ -131,7 +133,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
     <>
       <Static items={lines}>
         {(l) => (
-          <Text key={l.id} color={l.color}>
+          <Text key={l.id} color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
             {l.text}
           </Text>
         )}

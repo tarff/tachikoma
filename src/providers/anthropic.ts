@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaContentBlock, BetaContentBlockParam, BetaMessage, BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import type { CompletionRequest, Message, Part, Provider, Turn } from "../core/types.js";
+import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type Turn } from "../core/types.js";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -103,17 +103,37 @@ export function fromAnthropic(msg: BetaMessage): Turn {
 
 export class AnthropicProvider implements Provider {
   readonly id: string;
-  #client = new Anthropic(); // credentials from ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile
+  #client: Anthropic;
   #window?: number | null;
 
   constructor(
     readonly model: string,
     private readonly effort?: Effort,
   ) {
+    // An API key only. Left to itself the SDK also signs in with ANTHROPIC_AUTH_TOKEN or a stored login
+    // profile, either of which can carry a subscription token, which the design rules out.
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error("Set ANTHROPIC_API_KEY to use anthropic");
+    this.#client = new Anthropic({ apiKey, authToken: null });
     this.id = `anthropic:${model}`;
   }
 
-  async complete({ system, messages, tools, signal }: CompletionRequest): Promise<Turn> {
+  async complete(req: CompletionRequest): Promise<Turn> {
+    try {
+      return await this.#complete(req);
+    } catch (err) {
+      // The timeout error is a subclass of the connection error, so it is checked first.
+      if (err instanceof Anthropic.APIConnectionTimeoutError) {
+        throw new Error(`${this.#client.baseURL} did not answer in time (${err.message}). Check your network.`);
+      }
+      if (err instanceof Anthropic.APIConnectionError) {
+        throw new Error(`Could not reach ${this.#client.baseURL} (${connectReason(err)}). Check your network.`);
+      }
+      throw err;
+    }
+  }
+
+  async #complete({ system, messages, tools, signal }: CompletionRequest): Promise<Turn> {
     const stream = this.#client.beta.messages.stream(
       {
         model: this.model,

@@ -24,9 +24,6 @@ export function attachErrorLog(bus: Bus, file: string, session: string): void {
   bus.on("error", write);
 }
 
-// Same rule as the scrollback (tui/describe.ts), kept here so core does not import from the interface.
-const fit = (s: string, width: number) => (s.length <= width ? s : `${s.slice(0, Math.max(0, width - 1))}…`);
-
 // A killed process or a full disk can leave a half-written line; one bad line must not hide the rest.
 function parse(line: string): Row | undefined {
   try {
@@ -36,21 +33,24 @@ function parse(line: string): Row | undefined {
   return undefined;
 }
 
-export function summarize(file: string, width = process.stdout.columns ?? 80): string {
-  if (!existsSync(file)) return "No errors logged yet.";
+// One row per screen line. The screen escapes each row and cuts it to its width (a failed write_file's
+// input is the whole file), so the escapes and wide characters count.
+export function summarize(file: string): string[] {
+  if (!existsSync(file)) return ["No errors logged yet."];
   const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
   const rows = lines.map(parse).filter((r) => r !== undefined);
   const skipped = lines.length - rows.length;
   const note = skipped ? [`(${skipped} unreadable line${skipped === 1 ? "" : "s"} skipped)`] : [];
-  if (rows.length === 0) return ["No errors logged yet.", ...note].join("\n");
+  if (rows.length === 0) return ["No errors logged yet.", ...note];
   const counts = new Map<string, number>();
   for (const r of rows) counts.set(r.kind, (counts.get(r.kind) ?? 0) + 1);
+  const rescued = counts.get("fallback") ?? 0; // logged so /errors shows them, but not failures
   const last = rows.at(-1)!;
   return [
-    `${rows.length} errors logged in ${file}`,
+    `${rows.length - rescued} errors${rescued ? ` and ${rescued} refusals another model answered,` : ""} logged in ${file}`,
     ...[...counts].map(([kind, n]) => `  ${kind}: ${n}`),
-    // A failed write_file's input is the whole file.
-    `${fit(`Most recent (${last.at}): ${last.attempted}`, width)}\n  ${last.message.split("\n")[0]}`,
+    `Most recent (${last.at}): ${last.attempted}`,
+    `  ${last.message.split("\n")[0]}`,
     ...note,
-  ].join("\n");
+  ];
 }
