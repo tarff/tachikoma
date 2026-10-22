@@ -1,4 +1,5 @@
-import { linkSync, readFileSync, unlinkSync, watch, writeFileSync } from "node:fs";
+import { linkSync, readFileSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
+import { uptime } from "node:os";
 import path from "node:path";
 
 // One change to the saved login at a time, across every Tachikoma process (release 2 design, "One
@@ -13,11 +14,22 @@ const RECHECK_MS = 5_000;
 const held = new Set<string>();
 // Released on every exit Node sees: normal ends, errors, and SIGTERM/SIGHUP, which cli.tsx turns into
 // exits. A hard kill leaves the file behind, and the next process takes it over (below).
-process.on("exit", () => held.forEach(unlinkSafe));
+process.on("exit", () => held.forEach(release));
 
 function unlinkSafe(file: string): void {
   try {
     unlinkSync(file);
+  } catch {
+    // already gone
+  }
+}
+
+// Removes the lock only while it still holds this process's pid: another process may have taken it
+// over in the meantime (see "Known limits").
+function release(file: string): void {
+  held.delete(file);
+  try {
+    if (readFileSync(file, "utf8") === String(process.pid)) unlinkSync(file);
   } catch {
     // already gone
   }
@@ -54,16 +66,21 @@ function tryTake(file: string): number | null {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       }
       let text: string;
+      let made: number;
       try {
         text = readFileSync(file, "utf8");
+        made = statSync(file).mtimeMs;
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // released in between
         if (busy(err)) return 0;
         throw err;
       }
       const pid = Number(text);
-      // A lock without a pid was not made by this code, which never leaves one half made: abandoned.
-      if (Number.isInteger(pid) && pid > 0 && running(pid)) return pid;
+      // A lock without a pid was not made by this code, which never leaves one half made: abandoned. So
+      // is one made before the computer last started, whatever process has its pid now: it was left by
+      // a crash or a power cut.
+      const beforeBoot = made < Date.now() - uptime() * 1000;
+      if (Number.isInteger(pid) && pid > 0 && running(pid) && !beforeBoot) return pid;
       // Its owner is gone. It is read again just before removal, which narrows, but does not close, the
       // moment in which two waiters could both take it over (see "Known limits").
       try {
@@ -149,8 +166,7 @@ export function withLock<T>(file: string, fn: () => Promise<T>, onWait: (pid: nu
       try {
         return await fn();
       } finally {
-        held.delete(file);
-        unlinkSafe(file);
+        release(file);
       }
     } finally {
       finished();
