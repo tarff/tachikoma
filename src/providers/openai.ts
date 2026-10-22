@@ -45,19 +45,24 @@ export function toOpenAI(system: string, messages: Message[], kind: string): Cha
   return out;
 }
 
+// Anything but a JSON object is wrapped: it fails the tool's schema check, so the model is told, and
+// Anthropic rejects tool input that is not an object if the history is later sent there.
 function parseArgs(raw: string): unknown {
   try {
-    return JSON.parse(raw || "{}");
+    const v: unknown = JSON.parse(raw || "{}");
+    if (typeof v === "object" && v !== null && !Array.isArray(v)) return v;
   } catch {
-    return { invalid_json: raw }; // fails the tool's schema check, so the model is told
+    // broken JSON, wrapped below
   }
+  return { invalid_json: raw };
 }
 
 export function fromOpenAI(res: ChatCompletion, kind: string): Turn {
   const choice = res.choices[0];
   if (!choice) throw new Error("The provider returned no reply");
   const parts: Part[] = [];
-  if (choice.message.content) parts.push({ type: "text", text: choice.message.content });
+  // Local and Kimi models often send "\n\n" next to tool calls; Anthropic rejects whitespace-only text.
+  if (choice.message.content?.trim()) parts.push({ type: "text", text: choice.message.content });
   for (const c of choice.message.tool_calls ?? []) {
     if (c.type === "function") parts.push({ type: "tool_call", id: c.id, name: c.function.name, input: parseArgs(c.function.arguments) });
   }

@@ -102,7 +102,8 @@ export class Session {
     const { bus, tools, system } = this.opts;
     try {
       const turn = await provider.complete({ system, messages: this.messages, tools: tools.map((t) => t.spec), signal });
-      bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage });
+      for (const d of turn.declined ?? []) bus.emit("usage", d);
+      bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage }); // last: it sets the context size
       return turn;
     } catch (err) {
       if (!signal?.aborted) bus.emit("error", { kind: "provider", attempted: `request to ${provider.id}`, message: errorText(err), lead: this.#lead.id });

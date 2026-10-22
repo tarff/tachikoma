@@ -4,7 +4,7 @@ import { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { render } from "ink";
-import { endOnEpipe, headlessExit, statusSegments } from "./clilib.js";
+import { endOnEpipe, headlessExit, jsonLine, prose, statusSegments } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { MODES, type Mode, PermissionGate } from "./core/permissions.js";
@@ -127,12 +127,12 @@ if (parsed.print !== undefined) {
   });
   if (parsed.json) {
     for (const event of ["message", "usage", "error", "lead"] as const) {
-      bus.on(event, (data: unknown) => console.log(JSON.stringify({ event, data })));
+      bus.on(event, (data: unknown) => console.log(jsonLine(event, data)));
     }
   } else {
     bus.on("error", (e) => {
-      if (e.kind === "fallback") console.error(`note: ${e.message}`);
-      else if (e.kind !== "tool") console.error(`${e.kind}: ${e.message}`);
+      if (e.kind === "fallback") console.error(prose(`note: ${e.message}`));
+      else if (e.kind !== "tool") console.error(prose(`${e.kind}: ${e.message}`));
     });
   }
   // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us.
@@ -142,7 +142,7 @@ if (parsed.print !== undefined) {
   await session.send(parsed.print, stop.signal);
   if (!parsed.json) {
     const last = session.messages.at(-1);
-    if (last?.role === "assistant") console.log(last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n"));
+    if (last?.role === "assistant") console.log(prose(last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")));
   }
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {

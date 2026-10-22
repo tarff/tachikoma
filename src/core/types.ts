@@ -39,6 +39,9 @@ export interface Turn {
   // Set when the provider itself handed the request to another model (Anthropic's fallback).
   fallbacks?: { from: string; to: string }[];
   servedBy?: string; // "<provider>:<model>" that actually answered, when not the one asked
+  // Attempts by models that declined before this reply, each with its own usage; `usage` above covers
+  // only the attempt that answered. `priceKnown` is false when whether it was billed is not known.
+  declined?: { provider: string; usage: Usage; priceKnown: boolean }[];
 }
 
 export interface CompletionRequest {

@@ -65,8 +65,7 @@ export function fromAnthropic(msg: BetaMessage): Turn {
     else if (b.type === "tool_use") parts.push({ type: "tool_call", id: b.id, name: b.name, input: b.input });
     else if (b.type === "fallback") fallbacks.push({ from: b.from.model, to: b.to.model });
   }
-  // Covers only the attempt that produced this message: tokens a model spent before declining mid-stream
-  // are in usage.iterations alone, so they are not counted here.
+  // Covers only the attempt that produced this message; each declined attempt is counted below.
   const u = msg.usage;
   const turn: Turn = {
     parts,
@@ -76,7 +75,26 @@ export function fromAnthropic(msg: BetaMessage): Turn {
   // Blocks mark where this turn switched models (for the notice); sticky turns, served by the fallback
   // model with no switch, carry none, so who answered comes from usage.iterations and `model`.
   if (fallbacks.length) turn.fallbacks = fallbacks;
-  if (u.iterations?.some((it) => it.type === "fallback_message")) turn.servedBy = `anthropic:${msg.model}`;
+  const iterations = u.iterations ?? [];
+  if (iterations.some((it) => it.type === "fallback_message")) {
+    turn.servedBy = `anthropic:${msg.model}`;
+    // Each model that declined first has a `message` entry (we use no server tools, which add more). From
+    // platform.claude.com/docs/en/build-with-claude/refusals-and-fallback, "Billing and rate limits"
+    // (2026-10-22): a decline after some output is billed at that model's rates; one before any output
+    // only in some refusal categories, which the entry does not name, so its price is unknown.
+    const declined = iterations.flatMap((it) =>
+      it.type === "message"
+        ? [
+            {
+              provider: `anthropic:${it.model ?? "unknown"}`,
+              usage: { input: it.input_tokens, output: it.output_tokens, cacheRead: it.cache_read_input_tokens, cacheWrite: it.cache_creation_input_tokens },
+              priceKnown: it.output_tokens > 0,
+            },
+          ]
+        : [],
+    );
+    if (declined.length) turn.declined = declined;
+  }
   if (msg.stop_reason === "max_tokens") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit" };
   if (msg.stop_reason === "model_context_window_exceeded") turn.cutOff = { kind: "max_tokens", detail: "The conversation filled the context window" };
   if (msg.stop_reason === "refusal") turn.cutOff = { kind: "refusal", detail: `The model declined (category: ${msg.stop_details?.category ?? "none given"})` };

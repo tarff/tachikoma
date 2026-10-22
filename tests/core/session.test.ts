@@ -246,4 +246,13 @@ describe("Session", () => {
     await session.send("go");
     expect(seen).toEqual([{ provider: "fake:a", usage }]);
   });
+
+  it("reports attempts the provider's own fallback declined, before the reply's usage", async () => {
+    const declined = [{ provider: "fake:x", usage, priceKnown: false }];
+    const { session, bus } = await setup([{ ...reply("hi"), servedBy: "fake:y", declined }]);
+    const seen: unknown[] = [];
+    bus.on("usage", (u) => seen.push(u));
+    await session.send("go");
+    expect(seen).toEqual([{ provider: "fake:x", usage, priceKnown: false }, { provider: "fake:y", usage }]); // last sets the context size
+  });
 });

@@ -10,7 +10,7 @@ export interface ErrorEvent {
 
 export interface Events {
   message: [Message];
-  usage: [{ provider: string; usage: Usage }];
+  usage: [{ provider: string; usage: Usage; priceKnown?: boolean }];
   error: [ErrorEvent];
   lead: [string];
 }

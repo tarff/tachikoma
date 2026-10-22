@@ -143,8 +143,12 @@ every later Anthropic request fail. The turn ends with the refusal shown and log
 **Never silent.** Each rescue is shown in the scrollback (`↪ claude-opus-5-5 declined;
 claude-opus-4-8 answered instead`) and written to the error log as a `fallback` entry, so
 `/errors` shows how often it happens. It is not counted in the status line's error count. The
-refused attempt's tokens are still counted, because they are billed. A rescued reply is priced at
-the model that answered; if that model has no known price, the cost shows `?`.
+refused attempt's tokens are still counted, at the price of the model that refused. Anthropic bills a
+refusal that came part way through a reply, but one before any output only in some refusal
+categories, which the reply does not name per attempt; so that attempt's cost shows `?`
+(platform.claude.com/docs/en/build-with-claude/refusals-and-fallback, "Billing and rate limits",
+2026-10-22). A rescued reply is priced at the model that answered; if that model has no known price,
+the cost shows `?`.
 
 **Budgets cover both.** The refused attempt and the retry each count as a request.
 
