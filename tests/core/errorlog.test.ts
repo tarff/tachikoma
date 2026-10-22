@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -21,6 +21,25 @@ describe("error log", () => {
     expect(summarize(file)).toContain("2 errors logged");
     expect(summarize(file)).toContain("  tool: 1");
     expect(summarize(file)).toContain("request\n  429");
+  });
+
+  it("keeps its folder out of git, without touching the project's .gitignore", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const bus = new Bus();
+    attachErrorLog(bus, path.join(root, ".tachikoma", "errors.jsonl"), "s1");
+    bus.emit("error", { kind: "tool", attempted: "write_file secret", message: "x", lead: "fake:a" });
+    expect(readFileSync(path.join(root, ".tachikoma", ".gitignore"), "utf8")).toBe("*\n");
+    expect(existsSync(path.join(root, ".gitignore"))).toBe(false);
+  });
+
+  it("leaves an existing .gitignore in its folder alone", async () => {
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), ".tachikoma");
+    mkdirSync(dir);
+    writeFileSync(path.join(dir, ".gitignore"), "errors.jsonl\n");
+    const bus = new Bus();
+    attachErrorLog(bus, path.join(dir, "errors.jsonl"), "s1");
+    bus.emit("error", { kind: "tool", attempted: "shell", message: "x", lead: "fake:a" });
+    expect(readFileSync(path.join(dir, ".gitignore"), "utf8")).toBe("errors.jsonl\n");
   });
 
   it("turns itself off, saying so once, when the log cannot be written", async () => {

@@ -15,7 +15,12 @@ export interface StatusInfo {
   errors: number;
 }
 
-const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+// The unit is picked after rounding, so 999,999 shows as 1.0M, not 1000.0k.
+const k = (n: number) => {
+  if (n < 1000) return String(n);
+  const thousands = (n / 1000).toFixed(1);
+  return Number(thousands) < 1000 ? `${thousands}k` : `${(n / 1_000_000).toFixed(1)}M`;
+};
 
 export function formatSegment(s: Segment, i: StatusInfo): string {
   switch (s) {
@@ -38,7 +43,7 @@ export function StatusLine({ info, segments }: { info: StatusInfo; segments: Seg
   return (
     <Box>
       {segments.map((s, n) => (
-        <Text key={s} inverse color={s === "errors" && info.errors > 0 ? "red" : undefined}>
+        <Text key={n} inverse color={s === "errors" && info.errors > 0 ? "red" : undefined}>
           {n === 0 ? " " : " | "}
           {formatSegment(s, info)}
           {n === segments.length - 1 ? " " : ""}

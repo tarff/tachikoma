@@ -1,16 +1,19 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Bus, ErrorEvent } from "./bus.js";
 import { errorText } from "./types.js";
 
 type Row = ErrorEvent & { at: string; session: string };
 
-// One JSON line per failure, in the project's .tachikoma folder.
+// One JSON line per failure, in the project's .tachikoma folder, which it keeps out of git.
 // The log is optional: if it cannot be written, it says so once and turns itself off.
 export function attachErrorLog(bus: Bus, file: string, session: string): void {
   const write = (e: ErrorEvent) => {
     try {
       mkdirSync(path.dirname(file), { recursive: true });
+      // The log holds failed inputs (whole files, full commands) that may contain secrets.
+      const ignore = path.join(path.dirname(file), ".gitignore");
+      if (!existsSync(ignore)) writeFileSync(ignore, "*\n", "utf8");
       const row: Row = { at: new Date().toISOString(), session, ...e };
       appendFileSync(file, `${JSON.stringify(row)}\n`, "utf8");
     } catch (err) {
