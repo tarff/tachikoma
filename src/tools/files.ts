@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { dataDir } from "../core/datadir.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { defineTool } from "./tool.js";
 
@@ -20,15 +21,21 @@ function realTarget(abs: string): string | null {
 
 // `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
 // it somewhere else.
+// Whether `rel`, a path relative to some folder, leads out of it. On Windows a path on another drive
+// comes back absolute.
+const leaves = (rel: string) => rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+
 export function resolveIn(root: string, p: string): { abs: string; outside: boolean; shown: string } {
   const abs = path.resolve(root, p);
   const base = realTarget(root);
   const real = realTarget(abs);
   if (base === null || real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
+  // The saved login lives there. Refused in every mode, `never` included, and after following links,
+  // so a link cannot get round it.
+  const data = realTarget(path.resolve(dataDir()));
+  if (data === null || !leaves(path.relative(data, real))) throw new Error(`${abs} is in Tachikoma's data folder, which the file tools never touch`);
   const rel = path.relative(base, real);
-  // On Windows a path on another drive comes back absolute.
-  const outside = rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
-  return { abs, outside, shown: rel === path.relative(root, abs) ? abs : `${abs} (really ${real})` };
+  return { abs, outside: leaves(rel), shown: rel === path.relative(root, abs) ? abs : `${abs} (really ${real})` };
 }
 
 // Read the way Claude Code's own Read tool does (its tool description, 2026-10-22): up to 2,000 lines
