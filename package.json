@@ -2,6 +2,7 @@
   "name": "tachikoma",
   "version": "0.1.0",
   "description": "A coding-agent harness: any model can lead, with memory, a sandbox and lessons from its own mistakes.",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "bin": {
