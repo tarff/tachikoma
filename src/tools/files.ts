@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { type BigIntStats, existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { dataDir } from "../core/datadir.js";
@@ -19,12 +19,31 @@ function realTarget(abs: string): string | null {
   return path.join(realpathSync(existing), ...rest);
 }
 
-// `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
-// it somewhere else.
 // Whether `rel`, a path relative to some folder, leads out of it. On Windows a path on another drive
 // comes back absolute.
 const leaves = (rel: string) => rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
 
+// Whether `real` is the data folder or in it. The path is compared first, which also covers a data
+// folder not made yet. Then each folder on the way up is compared by what it is (its volume and file
+// number), since Windows reaches one folder by its short name, by \\?\ and by \\localhost\C$, and
+// macOS ignores case. A hard link is another name for a file in an ordinary folder, so a file with
+// more than one name is compared with each file directly in the data folder.
+function inData(data: string, real: string): boolean {
+  if (!leaves(path.relative(data, real))) return true;
+  const id = statSync(data, { bigint: true, throwIfNoEntry: false });
+  if (!id) return false;
+  const same = (a: BigIntStats | undefined, b: BigIntStats) => a !== undefined && a.dev === b.dev && a.ino === b.ino;
+  for (let p = real; ; p = path.dirname(p)) {
+    if (same(statSync(p, { bigint: true, throwIfNoEntry: false }), id)) return true;
+    if (path.dirname(p) === p) break;
+  }
+  const file = statSync(real, { bigint: true, throwIfNoEntry: false });
+  if (!file || !file.isFile() || file.nlink < 2n) return false;
+  return readdirSync(data).some((name) => same(statSync(path.join(data, name), { bigint: true, throwIfNoEntry: false }), file));
+}
+
+// `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
+// it somewhere else.
 export function resolveIn(root: string, p: string): { abs: string; outside: boolean; shown: string } {
   const abs = path.resolve(root, p);
   const base = realTarget(root);
@@ -33,7 +52,7 @@ export function resolveIn(root: string, p: string): { abs: string; outside: bool
   // The saved login lives there. Refused in every mode, `never` included, and after following links,
   // so a link cannot get round it.
   const data = realTarget(path.resolve(dataDir()));
-  if (data === null || !leaves(path.relative(data, real))) throw new Error(`${abs} is in Tachikoma's data folder, which the file tools never touch`);
+  if (data === null || inData(data, real)) throw new Error(`${abs} is in Tachikoma's data folder, which the file tools never touch`);
   const rel = path.relative(base, real);
   return { abs, outside: leaves(rel), shown: rel === path.relative(root, abs) ? abs : `${abs} (really ${real})` };
 }

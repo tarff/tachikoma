@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, linkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -45,6 +46,42 @@ describe("the data folder", () => {
     // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink.
     await symlink(path.join(ctx.root, "data"), path.join(ctx.root, "innocent"), "junction");
     await expect(readFileTool.run({ path: "innocent/chatgpt.json" }, ctx)).rejects.toThrow("Tachikoma's data folder");
+  });
+
+  it("is refused through a hard link to one of its files", async () => {
+    const ctx = await setup();
+    linkSync(path.join(ctx.root, "data", "chatgpt.json"), path.join(ctx.root, "innocent.json"));
+    await expect(readFileTool.run({ path: "innocent.json" }, ctx)).rejects.toThrow("Tachikoma's data folder");
+    await expect(writeFileTool.run({ path: "innocent.json", content: "x" }, ctx)).rejects.toThrow("Tachikoma's data folder");
+    expect(await readFile(path.join(ctx.root, "data", "chatgpt.json"), "utf8")).toBe("{}");
+    // Other hard-linked files, as a pnpm project is full of, are still read.
+    await writeFile(path.join(ctx.root, "a.txt"), "fine");
+    linkSync(path.join(ctx.root, "a.txt"), path.join(ctx.root, "b.txt"));
+    expect(await readFileTool.run({ path: "b.txt" }, ctx)).toBe("     1\tfine");
+  });
+
+  // Windows reaches one folder by its short name (TACHIK~1), by \\?\ and by the loopback share
+  // \\localhost\C$, and macOS ignores case. Each spelling that reaches the file on this machine is tried.
+  it.runIf(process.platform === "win32" || process.platform === "darwin")("is refused by every spelling that reaches it", async () => {
+    const ctx = await tempContext("never");
+    const data = path.join(ctx.root, "tachikoma");
+    await mkdir(data);
+    await writeFile(path.join(data, "chatgpt.json"), "{}");
+    vi.stubEnv("TACHI_DATA_DIR", data);
+    const file = path.join(data, "chatgpt.json");
+    const spellings = [path.join(ctx.root, "TACHIKOMA", "chatgpt.json")];
+    if (process.platform === "win32") {
+      const short = /(\S+~\d+)\s+tachikoma\s*$/im.exec(execFileSync("cmd", ["/c", "dir", "/x", ctx.root], { encoding: "utf8" }))?.[1];
+      if (short) spellings.push(path.join(ctx.root, short, "chatgpt.json"));
+      spellings.push(`\\\\?\\${file}`, `\\\\localhost\\${file[0]}$${file.slice(2)}`);
+    }
+    const reaching = spellings.filter((p) => existsSync(p));
+    expect(reaching.length).toBeGreaterThan(0);
+    for (const p of reaching) {
+      await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow("Tachikoma's data folder");
+      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow("Tachikoma's data folder");
+    }
+    expect(await readFile(file, "utf8")).toBe("{}");
   });
 
   it("leaves a folder whose name only starts the same alone", async () => {
