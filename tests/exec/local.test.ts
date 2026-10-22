@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor } from "../../src/exec/local.js";
 import { tempContext } from "../helpers.js";
@@ -87,6 +87,16 @@ describe("LocalExecutor", () => {
     const [kept, marker] = r.stdout.split("\n[cut: ");
     expect(kept).toBe("x".repeat(MAX_TOOL_OUTPUT));
     expect(marker).toMatch(/^\d+ more characters\]$/);
+  }, 15_000);
+
+  it("does not pass the API keys to commands", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-secret");
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
+    const root = await script(`console.log(process.env.OPENAI_API_KEY ?? "none", process.env.PATH ? "path" : "no path");`);
+    const r = await new LocalExecutor().exec("node script.js", root);
+    expect(r.stdout.trim()).toBe("none path");
   }, 15_000);
 
   it("decodes characters split across chunks", async () => {

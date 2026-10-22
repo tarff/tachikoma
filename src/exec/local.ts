@@ -2,6 +2,7 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Readable } from "node:stream";
+import { commandEnv } from "./env.js";
 import { type ExecResult, type Executor, MAX_TOOL_OUTPUT } from "./executor.js";
 
 export function shellFor(platform: NodeJS.Platform = process.platform): { name: string; argv: (command: string) => string[] } {
@@ -56,7 +57,7 @@ export class LocalExecutor implements Executor {
     const [file, ...args] = shellFor().argv(command);
     return new Promise((resolve, reject) => {
       // No stdin: a command waiting for input would otherwise wait forever.
-      const child = spawn(file!, args, { cwd, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(file!, args, { cwd, env: commandEnv(), windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
       running.add(child);
       const stdout = collect(child.stdout);
       const stderr = collect(child.stderr);

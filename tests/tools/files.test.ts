@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { editFileTool, readFileTool, resolveIn, writeFileTool } from "../../src/tools/files.js";
 import { tempContext } from "../helpers.js";
@@ -14,6 +14,43 @@ describe("resolveIn", () => {
     expect(resolveIn(root, "../x").outside).toBe(true);
     expect(resolveIn(root, path.resolve("/elsewhere/x")).outside).toBe(true);
     expect(resolveIn(root, "..foo").outside).toBe(false); // a file named "..foo" is inside
+  });
+});
+
+describe("the data folder", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  // The project itself holds the data folder here, so `never` mode would otherwise allow everything.
+  async function setup() {
+    const ctx = await tempContext("never");
+    const data = path.join(ctx.root, "data");
+    await mkdir(data);
+    await writeFile(path.join(data, "chatgpt.json"), "{}");
+    vi.stubEnv("TACHI_DATA_DIR", data);
+    return ctx;
+  }
+
+  it("is refused to every file tool, even in never mode", async () => {
+    const ctx = await setup();
+    const refused = "is in Tachikoma's data folder, which the file tools never touch";
+    await expect(readFileTool.run({ path: "data/chatgpt.json" }, ctx)).rejects.toThrow(refused);
+    await expect(writeFileTool.run({ path: "data/new.json", content: "x" }, ctx)).rejects.toThrow(refused);
+    await expect(editFileTool.run({ path: "data/chatgpt.json", old_text: "{}", new_text: "[]" }, ctx)).rejects.toThrow(refused);
+    await expect(readFileTool.run({ path: "data" }, ctx)).rejects.toThrow(refused);
+    expect(await readFile(path.join(ctx.root, "data", "chatgpt.json"), "utf8")).toBe("{}");
+  });
+
+  it("is refused through a link too", async () => {
+    const ctx = await setup();
+    // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink.
+    await symlink(path.join(ctx.root, "data"), path.join(ctx.root, "innocent"), "junction");
+    await expect(readFileTool.run({ path: "innocent/chatgpt.json" }, ctx)).rejects.toThrow("Tachikoma's data folder");
+  });
+
+  it("leaves a folder whose name only starts the same alone", async () => {
+    const ctx = await setup();
+    await writeFile(path.join(ctx.root, "data2.txt"), "fine");
+    expect(await readFileTool.run({ path: "data2.txt" }, ctx)).toBe("     1\tfine");
   });
 });
 
