@@ -4,7 +4,7 @@ import { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { render } from "ink";
-import { endOnEpipe, headlessExit, jsonLine, prose, statusSegments } from "./clilib.js";
+import { endOnEpipe, headlessAnswer, headlessExit, jsonLine, prose, statusSegments } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { MODES, type Mode, PermissionGate } from "./core/permissions.js";
@@ -34,6 +34,7 @@ Options:
   --status <list>   status line parts, comma-separated: ${SEGMENTS.join(",")}
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
+  --raw             with -p, print the answer exactly as written, control codes and all
   -h, --help        show this help
 
 In a session: /lead <provider:model> switches the lead model, /errors summarises the error log,
@@ -64,6 +65,7 @@ try {
       status: { type: "string" },
       print: { type: "string", short: "p" },
       json: { type: "boolean" },
+      raw: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   }).values;
@@ -78,6 +80,8 @@ if (parsed.help) {
 const leadSpec = parsed.lead ?? process.env.TACHI_LEAD;
 if (!leadSpec) fail(`No lead model given. Pass --lead or set TACHI_LEAD.\n\n${HELP}`);
 if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
+if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works only with -p, and not with --json, which is already exact");
+if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
 const mode: Mode = oneOf("mode", parsed.mode, MODES) ?? "ask"; // the safest mode is the default
 const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
 let segments;
@@ -143,7 +147,12 @@ if (parsed.print !== undefined) {
   await session.send(parsed.print, stop.signal);
   if (!parsed.json) {
     const last = session.messages.at(-1);
-    if (last?.role === "assistant") console.log(prose(last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")));
+    if (last?.role === "assistant") {
+      const text = last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
+      const { out, note } = headlessAnswer(text, { raw: parsed.raw === true, tty: process.stdout.isTTY === true });
+      console.log(out);
+      if (note) console.error(note);
+    }
   }
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {

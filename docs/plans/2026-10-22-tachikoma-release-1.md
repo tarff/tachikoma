@@ -113,7 +113,15 @@ build made on 2026-10-22, not retyped. In that build:
   that mixes line endings stays editable in its `\n` part (and says so when nothing matches); a whole
   file that fits under the cut comes back without a note; the preview's line count leaves out a
   final newline, as `read_file` does.
-- That makes 195 tests in all.
+- **The `-p` answer, decided 2026-10-22 after research.** It stays escaped wherever it goes, not only
+  on a terminal, because saved output is often shown on one later. GitHub CLI (security advisories
+  GHSA-crc3-h8v6-qh57 and GHSA-3m3g-3wcr-px46, 2026) guards piped output too, and Gemini CLI
+  (PR #17172, 2026-01-21) strips it everywhere with raw output opt-in. Embrace The Red's "Terminal
+  DiLLMa" (2024-12-06) recommends encoding by default with an opt-in. `--raw` prints the exact
+  answer, with a warning; when escaping changed piped output, a note on stderr says so. Windows line
+  endings, tabs and the plain direction marks of right-to-left text (U+200E, U+200F, U+061C) are kept;
+  overrides and isolates are still escaped.
+- That makes 201 tests in all.
 
 **Why these versions.** Each is the newest release published at least 14 days before 2026-10-22, so a
 freshly compromised release cannot slip in. That rule passed over Anthropic SDK 1.1.0 (published
@@ -3881,6 +3889,21 @@ import { type Segment, SEGMENTS } from "./tui/StatusLine.js";
 // Headless output reaches the terminal too, so model and provider text gets the scrollback's escaping.
 export const prose = (text: string) => screen({ text }).text;
 
+// The -p answer may be saved and read later, so it is escaped wherever it goes (gh and Gemini CLI do the
+// same; see "Changed while building"). Unlike the scrollback, it keeps what is harmless and wanted in a
+// saved file: \r\n (a \r just before \n cannot overwrite anything), tabs, and the plain direction marks
+// U+200E, U+200F and U+061C of ordinary right-to-left text. Overrides and isolates, which can reorder
+// text, are still escaped. Escaping is never silent off the terminal: the note says it happened.
+const UNSAFE = /\r(?!\n)|[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/g;
+
+export function headlessAnswer(text: string, opts: { raw: boolean; tty: boolean }): { out: string; note?: string } {
+  if (opts.raw) return { out: text };
+  let n = 0;
+  const out = text.replace(UNSAFE, (c) => (n++, visible(c)));
+  if (!n || opts.tty) return { out };
+  return { out, note: `note: ${n} control character${n === 1 ? " in the answer was" : "s in the answer were"} printed as escapes; --raw prints the answer exactly` };
+}
+
 // JSON.stringify has already escaped \n, \r, \t and the other C0 characters; visible() writes the rest
 // (C1, DEL, bidi overrides) as the \uXXXX escapes JSON itself uses, so the line parses to the same value.
 export const jsonLine = (event: string, data: unknown) => visible(JSON.stringify({ event, data }));
@@ -3919,7 +3942,7 @@ import { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { render } from "ink";
-import { endOnEpipe, headlessExit, jsonLine, prose, statusSegments } from "./clilib.js";
+import { endOnEpipe, headlessAnswer, headlessExit, jsonLine, prose, statusSegments } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { MODES, type Mode, PermissionGate } from "./core/permissions.js";
@@ -3949,6 +3972,7 @@ Options:
   --status <list>   status line parts, comma-separated: ${SEGMENTS.join(",")}
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
+  --raw             with -p, print the answer exactly as written, control codes and all
   -h, --help        show this help
 
 In a session: /lead <provider:model> switches the lead model, /errors summarises the error log,
@@ -3979,6 +4003,7 @@ try {
       status: { type: "string" },
       print: { type: "string", short: "p" },
       json: { type: "boolean" },
+      raw: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
   }).values;
@@ -3993,6 +4018,8 @@ if (parsed.help) {
 const leadSpec = parsed.lead ?? process.env.TACHI_LEAD;
 if (!leadSpec) fail(`No lead model given. Pass --lead or set TACHI_LEAD.\n\n${HELP}`);
 if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
+if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works only with -p, and not with --json, which is already exact");
+if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
 const mode: Mode = oneOf("mode", parsed.mode, MODES) ?? "ask"; // the safest mode is the default
 const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
 let segments;
@@ -4058,7 +4085,12 @@ if (parsed.print !== undefined) {
   await session.send(parsed.print, stop.signal);
   if (!parsed.json) {
     const last = session.messages.at(-1);
-    if (last?.role === "assistant") console.log(prose(last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")));
+    if (last?.role === "assistant") {
+      const text = last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
+      const { out, note } = headlessAnswer(text, { raw: parsed.raw === true, tty: process.stdout.isTTY === true });
+      console.log(out);
+      if (note) console.error(note);
+    }
   }
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
@@ -4092,7 +4124,7 @@ runs of the command itself that stop before any model call.
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describe, expect, it } from "vitest";
-import { headlessExit, jsonLine, prose, statusSegments } from "../src/clilib.js";
+import { headlessAnswer, headlessExit, jsonLine, prose, statusSegments } from "../src/clilib.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 
 describe("headlessExit", () => {
@@ -4125,6 +4157,30 @@ describe("headless output", () => {
     const line = jsonLine("message", data);
     expect(line).not.toMatch(/[\u007f-\u009f\u202a-\u202e\u2066-\u2069]/);
     expect(JSON.parse(line)).toEqual({ event: "message", data });
+  });
+});
+
+describe("headlessAnswer", () => {
+  const piped = { raw: false, tty: false };
+
+  it("leaves ordinary text exactly as written: Windows line endings, tabs and plain direction marks", () => {
+    const text = "line one\r\nline two\tתודה\u200f عربي\u061c ok\u200e\n";
+    expect(headlessAnswer(text, piped)).toEqual({ out: text });
+  });
+
+  it("escapes control codes, a lone carriage return and text-order overrides, and says so when piped", () => {
+    expect(headlessAnswer("a\u001b[8mb\rc\u202ed\u2066e", piped)).toEqual({
+      out: "a\\u001b[8mb␍c\\u202ed\\u2066e",
+      note: "note: 4 control characters in the answer were printed as escapes; --raw prints the answer exactly",
+    });
+  });
+
+  it("gives no note on a terminal, where the escapes are in plain sight", () => {
+    expect(headlessAnswer("a\u001bb", { raw: false, tty: true })).toEqual({ out: "a\\u001bb" });
+  });
+
+  it("prints the answer exactly with --raw", () => {
+    expect(headlessAnswer("a\u001b]52;c;eA==\u0007", { raw: true, tty: false })).toEqual({ out: "a\u001b]52;c;eA==\u0007" });
   });
 });
 
@@ -4210,6 +4266,19 @@ describe("tachi", () => {
     }
   });
 
+  it("allows --raw only with -p, and without --json, which is already exact", () => {
+    for (const args of [["--lead", "ollama:none", "--raw"], ["--lead", "ollama:none", "-p", "hi", "--json", "--raw"]]) {
+      const r = tachi(...args);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("--raw works only with -p, and not with --json");
+    }
+  });
+
+  it("warns that --raw output is not made safe for a terminal", () => {
+    const r = tachi("--lead", "ollama:none", "-p", "hi", "--raw");
+    expect(r.stderr).toContain("warning: --raw prints the answer exactly as the model wrote it");
+  });
+
   it("asks for the Anthropic key before starting", () => {
     const r = tachi("--lead", "anthropic:claude-opus-5-5", "-p", "hi");
     expect(r.code).toBe(1);
@@ -4228,7 +4297,7 @@ describe("tachi", () => {
 **Step 2: Build and run the whole suite**
 
 Run: `npm run typecheck && npm test && npm run build`
-Expected: `Tests  195 passed`, then a `dist/` folder holding `cli.js`.
+Expected: `Tests  201 passed`, then a `dist/` folder holding `cli.js`.
 
 **Step 3: Smoke-test the command without any API key**
 
@@ -4303,7 +4372,7 @@ describe.skipIf(!process.env.TACHI_LIVE || leads.length === 0)("live providers",
 **Step 2: Check it is skipped by default**
 
 Run: `npm test`
-Expected: `Tests  195 passed | 1 skipped`.
+Expected: `Tests  201 passed | 1 skipped`.
 
 **Step 3: Run it for real (costs money, needs your key)**
 

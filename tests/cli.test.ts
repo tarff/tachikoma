@@ -27,6 +27,19 @@ describe("tachi", () => {
     }
   });
 
+  it("allows --raw only with -p, and without --json, which is already exact", () => {
+    for (const args of [["--lead", "ollama:none", "--raw"], ["--lead", "ollama:none", "-p", "hi", "--json", "--raw"]]) {
+      const r = tachi(...args);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("--raw works only with -p, and not with --json");
+    }
+  });
+
+  it("warns that --raw output is not made safe for a terminal", () => {
+    const r = tachi("--lead", "ollama:none", "-p", "hi", "--raw");
+    expect(r.stderr).toContain("warning: --raw prints the answer exactly as the model wrote it");
+  });
+
   it("asks for the Anthropic key before starting", () => {
     const r = tachi("--lead", "anthropic:claude-opus-5-5", "-p", "hi");
     expect(r.code).toBe(1);
