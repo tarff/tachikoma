@@ -72,7 +72,7 @@ const OSC52 = "\u001b]52;c;Y3VybA==\u0007";
 const OSC52_SHOWN = "\\u001b]52;c;Y3VybA==\\u0007";
 
 function expectNoRawControls(frame: string | undefined) {
-  for (const c of ["\u001b", "\u0007", "\r", "‮", "\u009b"]) expect(frame).not.toContain(c);
+  for (const c of ["\u001b", "\u0007", "\r", "\u202e", "\u009b"]) expect(frame).not.toContain(c);
 }
 
 describe("App", () => {
@@ -244,7 +244,7 @@ describe("App", () => {
   });
 
   it("shows control characters in a reply as escapes, keeping real line breaks", async () => {
-    const { app } = await mount([reply(`one${OSC52}\u001b[8mhidden\rover‮back\ntwo`)]);
+    const { app } = await mount([reply(`one${OSC52}\u001b[8mhidden\rover\u202eback\ntwo`)]);
     await type(app, "hi");
     await until(app, "two");
     const frame = app.lastFrame();
@@ -253,7 +253,7 @@ describe("App", () => {
   });
 
   it("shows control characters in a tool call's name and input, and in its error, as escapes", async () => {
-    const { app } = await mount([callTool("c1", `x${OSC52}\r`, { s: "‮\u009b" }), reply("done")]);
+    const { app } = await mount([callTool("c1", `x${OSC52}\r`, { s: "\u202e\u009b" }), reply("done")]);
     await type(app, "hi");
     await until(app, "done");
     const frame = app.lastFrame();
