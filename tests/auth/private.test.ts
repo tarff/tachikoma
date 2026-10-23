@@ -82,18 +82,34 @@ describe("private files", () => {
   });
 
   // Another Tachikoma reading the login has it open for a moment, and Windows will not replace a file
-  // that is open. The save waits for it.
+  // that is open. The save waits for it, for up to 1 s. Resolves once the file is open.
+  async function holdOpen(file: string, ms: number): Promise<void> {
+    const script = `$ErrorActionPreference = 'Stop'; $f = [IO.File]::Open($env:P, 'Open', 'Read', 'ReadWrite'); 'open'; Start-Sleep -Milliseconds ${ms}; $f.Close()`;
+    const holder = spawn(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, P: file } });
+    let out = "";
+    holder.stdout.on("data", (d) => (out += d));
+    while (!out.includes("open")) await new Promise((r) => setTimeout(r, 20));
+  }
+
   it.runIf(windows)("on Windows, saves while another program has the file open for a moment", async () => {
     const dir = temp();
     const file = path.join(dir, "chatgpt.json");
     writePrivate(file, "one");
-    const holder = spawn("powershell.exe", ["-NoProfile", "-Command", `$f = [IO.File]::Open('${file}', 'Open', 'Read', 'ReadWrite'); 'open'; Start-Sleep -Milliseconds 300; $f.Close()`]);
-    let out = "";
-    holder.stdout.on("data", (d) => (out += d));
-    while (!out.includes("open")) await new Promise((r) => setTimeout(r, 20));
+    await holdOpen(file, 300); // well under the 1 s the save waits
     writePrivate(file, "two");
     expect(readPrivate(file, () => {})).toBe("two");
   });
+
+  // 15 s, as for the other tests that start a program: PowerShell's start and the 1 s wait.
+  it.runIf(windows)("on Windows, gives up after 1 s, keeping the old file and no copy", async () => {
+    const dir = temp();
+    const file = path.join(dir, "chatgpt.json");
+    writePrivate(file, "one");
+    await holdOpen(file, 2_000); // twice the 1 s the save waits
+    expect(() => writePrivate(file, "two")).toThrow(`${file} was kept open by another program, so it could not be saved`);
+    expect(readPrivate(file, () => {})).toBe("one");
+    expect(readdirSync(dir)).toEqual(["chatgpt.json"]);
+  }, 15_000);
 
   it.runIf(windows)("on Windows, lets in only the user, from the start", () => {
     const dir = temp();
