@@ -183,7 +183,7 @@ describe("against OpenAI's flow", () => {
     });
     const server = await serve((res) => res.writeHead(307, { location: other.url }).end());
     await expect(refresh({ ...ep, token_endpoint: server.url }, { clientId: "c", refreshToken: "secret-r" })).rejects.toThrow(
-      "The request to OpenAI's sign-in service failed (unexpected redirect)",
+      new OAuthError("The request to OpenAI's sign-in service failed (unexpected redirect)."),
     );
     expect(asked).toBe(false);
   });
@@ -210,7 +210,26 @@ describe("against OpenAI's flow", () => {
     const fake = await FakeOpenAI.start();
     await expect(discover(fake.issuer.replace("127.0.0.1", "localhost"))).rejects.toThrow("wrong issuer");
   });
+
+  it("says plainly when the sign-in settings cannot be read, such as a Wi-Fi login page in their place", async () => {
+    for (const answer of [webPage, shapeless]) {
+      await expect(discover((await serve(answer)).url)).rejects.toThrow(new OAuthError("OpenAI's sign-in settings could not be read."));
+    }
+  });
+
+  it("passes on a Ctrl-C while the settings are arriving, rather than calling them unreadable", async () => {
+    const stop = new AbortController();
+    const server = await serve((res) => {
+      res.writeHead(200, { "content-type": "application/json" }).write('{"issuer":');
+      setTimeout(() => stop.abort(), 20); // once the answer has begun
+    });
+    await expect(discover(server.url, stop.signal)).rejects.toThrow("aborted");
+  });
 });
+
+// Answers in place of OpenAI's: a web page, and JSON without the fields asked for.
+const webPage = (res: http.ServerResponse) => res.writeHead(200, { "content-type": "text/html" }).end("<!doctype html><p>Sign in to the Wi-Fi</p>");
+const shapeless = (res: http.ServerResponse) => res.writeHead(200, { "content-type": "application/json" }).end('{"keys":"none"}');
 
 describe("verifyIdToken", () => {
   async function setup() {
@@ -231,10 +250,19 @@ describe("verifyIdToken", () => {
     ["audience", { aud: "oaiapp_other" }, "another client"],
     ["expiry", { exp: now() - 1 }, "expired"],
     ["nonce", { nonce: "other" }, "not from this sign-in"],
-    ["sub", { sub: "" }, ""],
+    ["sub", { sub: "" }, "The ID token is malformed."],
   ])("refuses the wrong %s", async (_, change, message) => {
     const { fake, good, check } = await setup();
     await expect(check(fake.idToken({ ...good, ...change }))).rejects.toThrow(message);
+  });
+
+  it("says plainly when OpenAI's signing keys cannot be read", async () => {
+    const { fake, good } = await setup();
+    const ep = await discover(fake.issuer);
+    for (const answer of [webPage, shapeless]) {
+      const keys = { ...ep, jwks_uri: (await serve(answer)).url };
+      await expect(verifyIdToken(keys, fake.idToken(good), { clientId: "oaiapp_1", nonce: "n" })).rejects.toThrow(new OAuthError("OpenAI's signing keys could not be read."));
+    }
   });
 
   it("refuses a bad signature, an unknown key and an algorithm other than RS256", async () => {
@@ -245,7 +273,7 @@ describe("verifyIdToken", () => {
     await expect(check(fake.idToken(good, "k2"))).rejects.toThrow("key OpenAI does not publish");
     const none = Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url");
     await expect(check(`${none}.${b}.x`)).rejects.toThrow("not signed with RS256");
-    for (const head of ["{not json", "null"]) await expect(check(`${Buffer.from(head).toString("base64url")}.${b}.x`)).rejects.toThrow(OAuthError);
+    for (const head of ["{not json", "null"]) await expect(check(`${Buffer.from(head).toString("base64url")}.${b}.x`)).rejects.toThrow(new OAuthError("The ID token is malformed."));
   });
 
   // OpenID Connect Core 1.0, section 3.1.3.7: with several audiences, `azp` names the client the token
@@ -263,5 +291,16 @@ describe("verifyIdToken", () => {
     const checking = verifyIdToken(ep, fake.idToken(good), { clientId: "oaiapp_1", nonce: "n" }, stop.signal);
     setTimeout(() => stop.abort(), 20);
     await expect(checking).rejects.toThrow();
+  });
+
+  it("passes on a Ctrl-C while the keys are arriving, rather than calling them unreadable", async () => {
+    const { fake, good } = await setup();
+    const stop = new AbortController();
+    const keys = await serve((res) => {
+      res.writeHead(200, { "content-type": "application/json" }).write('{"keys":');
+      setTimeout(() => stop.abort(), 20); // once the answer has begun
+    });
+    const ep = { ...(await discover(fake.issuer)), jwks_uri: keys.url };
+    await expect(verifyIdToken(ep, fake.idToken(good), { clientId: "oaiapp_1", nonce: "n" }, stop.signal)).rejects.toThrow("aborted");
   });
 });

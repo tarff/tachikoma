@@ -34,6 +34,17 @@ function ctrlCAt(path: string, stop: AbortController, answered = false): void {
   onTestFinished(() => void vi.restoreAllMocks());
 }
 
+// A browser that takes `reply` back to the sign-in's callback, in place of OpenAI's answer.
+function browserReplying(reply: Record<string, string>): (url: string) => void {
+  return (url) =>
+    void (async () => {
+      const authorize = new URL((await fetch(url, { redirect: "manual" })).headers.get("location")!);
+      const back = new URL(authorize.searchParams.get("redirect_uri")!);
+      back.search = new URLSearchParams({ state: authorize.searchParams.get("state")!, ...reply }).toString();
+      await fetch(back);
+    })().catch(() => {});
+}
+
 // Another process holds the lock: a running process that is not this one, as in the store's tests.
 function lockHeld(store: LoginStore): void {
   store.read(); // makes the folder
@@ -133,6 +144,39 @@ describe("signIn", () => {
     expect(fake.tokenRequests).toHaveLength(0);
   });
 
+  it.each([
+    [{ error: "server_error" }, "Sign-in failed (server_error)."],
+    [{}, "OpenAI's reply had no sign-in code. Try again."],
+  ])("stops at a reply of %j, without exchanging anything", async (reply, message) => {
+    const { fake, store, io, opts } = await setup();
+    await expect(signIn(store, { ...io, openBrowser: browserReplying(reply) }, opts)).rejects.toThrow(new LoginError(message));
+    expect(fake.tokenRequests).toHaveLength(0);
+  });
+
+  it("refuses OpenAI's tokens when they come without an ID token, and saves no login", async () => {
+    const { store, io, opts } = await setup();
+    const real = globalThis.fetch;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const res = await real(input, init);
+      if (!String(input).endsWith("/token")) return res;
+      const body = (await res.json()) as Record<string, unknown>;
+      delete body.id_token;
+      return Response.json(body);
+    });
+    onTestFinished(() => void vi.restoreAllMocks());
+    await expect(signIn(store, io, opts)).rejects.toThrow(new LoginError("OpenAI's reply had no ID token, so the account could not be checked."));
+    expect(store.read().active).toBeUndefined();
+  });
+
+  it("says when the saved account asked for does not exist, also with none saved", async () => {
+    const { fake, store, io, opts } = await setup();
+    await expect(signIn(store, io, { ...opts, account: 1 })).rejects.toThrow(new LoginError("There is no saved account 1."));
+    expect(fake.authorizeRequests).toHaveLength(0); // nothing registered
+    await signIn(store, io, opts);
+    await signOut(store, io, opts);
+    await expect(signIn(store, io, { ...opts, account: 2 })).rejects.toThrow(new LoginError("There is no saved account 2."));
+  });
+
   it("keeps the account but not plan use when that scope was not granted", async () => {
     const { fake, store, said, io, opts } = await setup();
     fake.scope = "openid profile email offline_access";
@@ -147,8 +191,13 @@ describe("signIn", () => {
     await signIn(store, io, opts);
     await signOut(store, io, opts);
     fake.sub = "user-2";
-    await expect(signIn(store, io, opts)).rejects.toThrow("That was a different ChatGPT account from me@example.com");
+    await expect(signIn(store, io, opts)).rejects.toThrow(
+      new LoginError("That was a different ChatGPT account from me@example.com, so its sign-in was cancelled. To add another account, run `tachi login chatgpt --new`."),
+    );
     expect(store.read().active).toBeUndefined();
+    expect(fake.revoked.map((q) => q.get("client_id"))).toEqual(["oaiapp_1", "oaiapp_1"]); // the logout's, then the other account's
+    fake.revokeStatus = 503;
+    await expect(signIn(store, io, opts)).rejects.toThrow("OpenAI did not confirm that its sign-in was cancelled; you can disconnect Tachikoma in that account's ChatGPT settings.");
   });
 
   it("refuses a sign-in that finishes after the saved login changed, such as by a logout", async () => {
@@ -267,6 +316,16 @@ describe("signIn", () => {
     await signIn(store, io, { ...opts, account: 2 });
     expect(store.read().active).toMatchObject({ clientId: "oaiapp_1", sub: "user-1" });
   });
+
+  it("tells apart saved accounts with the same email by their client ID", async () => {
+    const { fake, store, io, opts } = await setup();
+    await signIn(store, io, opts);
+    await signOut(store, io, opts);
+    fake.issuedClientId = "oaiapp_2"; // the same person, registered again with --new
+    await signIn(store, io, { ...opts, fresh: true });
+    await signOut(store, io, opts);
+    await expect(signIn(store, io, opts)).rejects.toThrow("1. me@example.com (oaiapp_2)\n  2. me@example.com (oaiapp_1)\n");
+  });
 });
 
 describe("signOut", () => {
@@ -289,7 +348,9 @@ describe("signOut", () => {
     fake.revokeStatus = 503;
     await signOut(store, io, opts);
     expect(store.read().active).toBeUndefined();
-    expect(said.at(-1)).toContain("OpenAI did not confirm that the sign-in was cancelled (OpenAI refused the request (HTTP 503))");
+    expect(said.at(-1)).toBe(
+      "Signed out on this computer, but OpenAI did not confirm that the sign-in was cancelled. OpenAI refused the request (HTTP 503). You can disconnect Tachikoma in ChatGPT's settings.",
+    );
   });
 
   it("deletes the ID token even when the login was already dropped, so the next sign-in sends no hint", async () => {
@@ -321,7 +382,9 @@ describe("signOut", () => {
     await store.update(async (login, save) => void save(login)); // the lock is free
     stop.abort(); // Ctrl-C
     await out;
-    expect(said.at(-1)).toContain("OpenAI did not confirm that the sign-in was cancelled (you stopped the wait)");
+    expect(said.at(-1)).toBe(
+      "Signed out on this computer, but OpenAI did not confirm that the sign-in was cancelled. You stopped waiting for its answer. You can disconnect Tachikoma in ChatGPT's settings.",
+    );
   });
 
   it("stops at Ctrl-C while waiting for the lock, and changes nothing", async () => {

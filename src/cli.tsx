@@ -23,10 +23,10 @@ import { SEGMENTS } from "./tui/StatusLine.js";
 const HELP = `tachi: a coding agent for your terminal
 
 Usage:
-  tachi --lead <provider:model> [options]          interactive session
-  tachi --lead <provider:model> -p "<prompt>"      run one prompt, print the answer, exit
-  tachi login chatgpt [--new | --account <n>]      sign in to use your ChatGPT plan
-  tachi logout chatgpt                             sign out of ChatGPT
+  tachi --lead <provider:model> [options]            interactive session
+  tachi --lead <provider:model> -p "<prompt>"        run one prompt, print the answer, exit
+  tachi login chatgpt [--new | --account <number>]   sign in to use your ChatGPT plan
+  tachi logout chatgpt                               sign out of ChatGPT
 
 Options:
   --lead <spec>     anthropic:<model> | openai:<model> | openrouter:<model> | kimi:<model> | ollama:<model>
@@ -64,7 +64,7 @@ if (verb === "login" || verb === "logout") {
   process.once("SIGINT", () => stop.abort()); // Ctrl-C while the browser part waits
   try {
     await accountCommand(verb, process.argv.slice(3), (line) => console.log(prose(line)), stop.signal);
-    process.exit(0);
+    process.exit(stop.signal.aborted ? 128 + constants.signals.SIGINT : 0); // Ctrl-C can end the wait for OpenAI to cancel the sign-in, after signing out here
   } catch (err) {
     console.error(prose(errorText(err)));
     process.exit(stop.signal.aborted ? 128 + constants.signals.SIGINT : 1);

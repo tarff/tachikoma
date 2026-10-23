@@ -34,7 +34,7 @@ async function request(url: string, init: RequestInit): Promise<Response> {
     return await fetch(url, init);
   } catch (err) {
     if (init.signal?.aborted || !(err instanceof Error)) throw err;
-    throw new OAuthError(`The request to OpenAI's sign-in service failed (${connectReason(err)})`);
+    throw new OAuthError(`The request to OpenAI's sign-in service failed (${connectReason(err)}).`);
   }
 }
 
@@ -50,9 +50,15 @@ export type Endpoints = z.infer<typeof EndpointsSchema>;
 // The docs say to load the endpoints from OpenAI's discovery document.
 export async function discover(issuer = ISSUER, signal?: AbortSignal): Promise<Endpoints> {
   const res = await request(`${issuer}/.well-known/openid-configuration`, { signal });
-  if (!res.ok) throw new OAuthError(`Could not read OpenAI's sign-in settings (HTTP ${res.status})`, undefined, res.status);
-  const ep = EndpointsSchema.parse(await res.json());
-  if (ep.issuer !== issuer) throw new OAuthError(`OpenAI's sign-in settings name the wrong issuer (${ep.issuer})`);
+  if (!res.ok) throw new OAuthError(`Could not read OpenAI's sign-in settings (HTTP ${res.status}).`, undefined, res.status);
+  // Not JSON, such as a Wi-Fi login page in its place, or without these fields.
+  const parsed = EndpointsSchema.safeParse(await res.json().catch(() => undefined));
+  if (!parsed.success) {
+    signal?.throwIfAborted(); // cut off by Ctrl-C, rather than unreadable
+    throw new OAuthError("OpenAI's sign-in settings could not be read.");
+  }
+  const ep = parsed.data;
+  if (ep.issuer !== issuer) throw new OAuthError(`OpenAI's sign-in settings name the wrong issuer (${ep.issuer}).`);
   return ep;
 }
 
@@ -136,7 +142,7 @@ export async function listen(state: string, signal?: AbortSignal): Promise<Liste
     signal?.removeEventListener("abort", onAbort);
   };
   const onAbort = () => {
-    settle.reject(new OAuthError("Sign-in was cancelled"));
+    settle.reject(new OAuthError("Sign-in was cancelled."));
     close();
   };
   await new Promise<void>((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
@@ -169,7 +175,7 @@ async function post(url: string, form: Record<string, string>, signal?: AbortSig
   } catch {
     signal?.throwIfAborted(); // otherwise not JSON
   }
-  throw new OAuthError(`OpenAI refused the request (HTTP ${res.status}${code ? `, ${code}` : ""})`, code, res.status);
+  throw new OAuthError(`OpenAI refused the request (HTTP ${res.status}${code ? `, ${code}` : ""}).`, code, res.status);
 }
 
 // A reply that cannot be read is an error that quotes none of it: it holds tokens.
@@ -178,7 +184,7 @@ async function tokens(ep: Endpoints, form: Record<string, string>, signal?: Abor
   const parsed = TokenSchema.safeParse(await res.json().catch(() => undefined));
   if (!parsed.success) {
     signal?.throwIfAborted(); // cut off by Ctrl-C, rather than unreadable
-    throw new OAuthError("OpenAI's sign-in reply could not be read");
+    throw new OAuthError("OpenAI's sign-in reply could not be read.");
   }
   return parsed.data;
 }
@@ -205,27 +211,37 @@ const JwksSchema = z.object({ keys: z.array(z.looseObject({ kid: z.string().opti
 // `id_token_signing_alg_values_supported`), so nothing else is accepted.
 export async function verifyIdToken(ep: Endpoints, idToken: string, p: { clientId: string; nonce: string }, signal?: AbortSignal): Promise<{ sub: string; email?: string }> {
   const [head, body, sig] = idToken.split(".");
-  if (!head || !body || !sig) throw new OAuthError("The ID token is malformed");
+  if (!head || !body || !sig) throw new OAuthError("The ID token is malformed.");
   let header: { alg?: unknown; kid?: unknown } | null;
   try {
     header = JSON.parse(Buffer.from(head, "base64url").toString("utf8"));
   } catch {
     header = null;
   }
-  if (!header || typeof header !== "object") throw new OAuthError("The ID token is malformed");
-  if (header.alg !== "RS256") throw new OAuthError("The ID token is not signed with RS256");
+  if (!header || typeof header !== "object") throw new OAuthError("The ID token is malformed.");
+  if (header.alg !== "RS256") throw new OAuthError("The ID token is not signed with RS256.");
   const res = await request(ep.jwks_uri, { signal });
-  if (!res.ok) throw new OAuthError(`Could not read OpenAI's signing keys (HTTP ${res.status})`, undefined, res.status);
-  const jwk = JwksSchema.parse(await res.json()).keys.find((k) => k.kid === header.kid);
-  if (!jwk) throw new OAuthError("The ID token was signed with a key OpenAI does not publish");
+  if (!res.ok) throw new OAuthError(`Could not read OpenAI's signing keys (HTTP ${res.status}).`, undefined, res.status);
+  const keys = JwksSchema.safeParse(await res.json().catch(() => undefined));
+  if (!keys.success) {
+    signal?.throwIfAborted();
+    throw new OAuthError("OpenAI's signing keys could not be read.");
+  }
+  const jwk = keys.data.keys.find((k) => k.kid === header.kid);
+  if (!jwk) throw new OAuthError("The ID token was signed with a key OpenAI does not publish.");
   const key = createPublicKey({ key: jwk as JsonWebKey, format: "jwk" });
-  if (!verify("sha256", Buffer.from(`${head}.${body}`), key, Buffer.from(sig, "base64url"))) throw new OAuthError("The ID token's signature is wrong");
-  const claims = ClaimsSchema.parse(JSON.parse(Buffer.from(body, "base64url").toString("utf8")));
-  if (claims.iss !== ep.issuer) throw new OAuthError("The ID token names the wrong issuer");
+  if (!verify("sha256", Buffer.from(`${head}.${body}`), key, Buffer.from(sig, "base64url"))) throw new OAuthError("The ID token's signature is wrong.");
+  let claims: z.infer<typeof ClaimsSchema>;
+  try {
+    claims = ClaimsSchema.parse(JSON.parse(Buffer.from(body, "base64url").toString("utf8")));
+  } catch {
+    throw new OAuthError("The ID token is malformed.");
+  }
+  if (claims.iss !== ep.issuer) throw new OAuthError("The ID token names the wrong issuer.");
   // With several audiences, `azp` names the one it was issued to (OpenID Connect Core 1.0, 3.1.3.7).
   if (!(Array.isArray(claims.aud) ? claims.aud : [claims.aud]).includes(p.clientId) || (claims.azp !== undefined && claims.azp !== p.clientId))
-    throw new OAuthError("The ID token is for another client");
-  if (claims.exp * 1000 <= Date.now()) throw new OAuthError("The ID token has expired");
-  if (claims.nonce !== p.nonce) throw new OAuthError("The ID token is not from this sign-in");
+    throw new OAuthError("The ID token is for another client.");
+  if (claims.exp * 1000 <= Date.now()) throw new OAuthError("The ID token has expired.");
+  if (claims.nonce !== p.nonce) throw new OAuthError("The ID token is not from this sign-in.");
   return { sub: claims.sub, ...(claims.email ? { email: claims.email } : {}) };
 }

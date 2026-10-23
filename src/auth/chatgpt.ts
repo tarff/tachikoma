@@ -41,14 +41,18 @@ const who = (login: SavedLogin, a = signedIn(login)) => login.accounts.find((x) 
 
 // Which saved account to sign in to: the only one, the one asked for, or a new one.
 function choose(login: SavedLogin, opts: { account?: number; fresh?: boolean }): Account | undefined {
-  if (opts.fresh || login.accounts.length === 0) return undefined;
+  if (opts.fresh) return undefined;
   if (opts.account !== undefined) {
     const a = login.accounts[opts.account - 1];
     if (!a) throw new LoginError(`There is no saved account ${opts.account}.`);
     return a;
   }
+  if (login.accounts.length === 0) return undefined;
   if (login.accounts.length === 1) return login.accounts[0];
-  const list = login.accounts.map((a, i) => `  ${i + 1}. ${a.email ?? a.sub}`).join("\n");
+  // One person registered twice has one email twice; the client IDs tell those apart.
+  const name = (a: Account) => a.email ?? a.sub;
+  const twice = (a: Account) => login.accounts.filter((b) => name(b) === name(a)).length > 1;
+  const list = login.accounts.map((a, i) => `  ${i + 1}. ${name(a)}${twice(a) ? ` (${a.clientId})` : ""}`).join("\n");
   throw new LoginError(`Saved ChatGPT accounts:\n${list}\nChoose one with \`tachi login chatgpt --account <number>\`, or add another with \`--new\`.`);
 }
 
@@ -108,7 +112,12 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: n
     const id = await verifyIdToken(ep, t.id_token, { clientId, nonce: attempt.nonce }, opts.signal);
     opts.signal?.throwIfAborted(); // Ctrl-C after the last answer: nothing is saved
     if (start.account && id.sub !== start.account.sub) {
-      throw new LoginError(`That was a different ChatGPT account from ${start.account.email ?? "the saved one"}. To add another account, run \`tachi login chatgpt --new\`.`);
+      // OpenAI has signed that account in, so its sign-in is cancelled, as at a logout.
+      const cancelled = await revoke(ep, { clientId, refreshToken: t.refresh_token }, opts.signal).then(
+        () => ", so its sign-in was cancelled.",
+        () => ". OpenAI did not confirm that its sign-in was cancelled; you can disconnect Tachikoma in that account's ChatGPT settings.",
+      );
+      throw new LoginError(`That was a different ChatGPT account from ${start.account.email ?? "the saved one"}${cancelled} To add another account, run \`tachi login chatgpt --new\`.`);
     }
     const tokens = tokensFrom(t);
     const planUse = tokens.scopes.includes(PLAN_SCOPE);
@@ -156,12 +165,12 @@ export async function signOut(store: LoginStore, io: LoginIO, opts: { issuer?: s
     try {
       await revoke(await discover(opts.issuer ?? ISSUER, opts.signal), { clientId: ended.clientId, refreshToken: ended.tokens.refresh }, opts.signal);
     } catch (err) {
-      problem = opts.signal?.aborted ? "you stopped the wait" : errorText(err);
+      problem = opts.signal?.aborted ? "You stopped waiting for its answer." : errorText(err);
     }
   }
   io.say(
     problem
-      ? `Signed out on this computer, but OpenAI did not confirm that the sign-in was cancelled (${problem}). You can disconnect Tachikoma in ChatGPT's settings.`
+      ? `Signed out on this computer, but OpenAI did not confirm that the sign-in was cancelled. ${problem} You can disconnect Tachikoma in ChatGPT's settings.`
       : "Signed out of ChatGPT.",
   );
 }
