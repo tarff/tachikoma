@@ -197,7 +197,25 @@ describe("signIn", () => {
     expect(store.read().active).toBeUndefined();
     expect(fake.revoked.map((q) => q.get("client_id"))).toEqual(["oaiapp_1", "oaiapp_1"]); // the logout's, then the other account's
     fake.revokeStatus = 503;
-    await expect(signIn(store, io, opts)).rejects.toThrow("OpenAI did not confirm that its sign-in was cancelled; you can disconnect Tachikoma in that account's ChatGPT settings.");
+    await expect(signIn(store, io, opts)).rejects.toThrow(
+      new LoginError(
+        "That was a different ChatGPT account from me@example.com, and OpenAI did not confirm that its sign-in was cancelled. OpenAI refused the request (HTTP 503). You can disconnect Tachikoma in that account's ChatGPT settings. To add another account, run `tachi login chatgpt --new`.",
+      ),
+    );
+  });
+
+  it("says the other account may still be connected when Ctrl-C stops that cancel", async () => {
+    const { fake, store, said, io, opts } = await setup();
+    await signIn(store, io, opts);
+    await signOut(store, io, opts);
+    fake.sub = "user-2";
+    const stop = new AbortController();
+    ctrlCAt("/revoke", stop);
+    await expect(signIn(store, io, { ...opts, signal: stop.signal })).rejects.toThrow("aborted");
+    expect(said.at(-1)).toBe(
+      "That was a different ChatGPT account from me@example.com, and OpenAI did not confirm that its sign-in was cancelled. You stopped waiting for its answer. You can disconnect Tachikoma in that account's ChatGPT settings.",
+    );
+    expect(store.read().active).toBeUndefined();
   });
 
   it("refuses a sign-in that finishes after the saved login changed, such as by a logout", async () => {

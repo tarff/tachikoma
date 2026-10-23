@@ -113,11 +113,18 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: n
     opts.signal?.throwIfAborted(); // Ctrl-C after the last answer: nothing is saved
     if (start.account && id.sub !== start.account.sub) {
       // OpenAI has signed that account in, so its sign-in is cancelled, as at a logout.
-      const cancelled = await revoke(ep, { clientId, refreshToken: t.refresh_token }, opts.signal).then(
-        () => ", so its sign-in was cancelled.",
-        () => ". OpenAI did not confirm that its sign-in was cancelled; you can disconnect Tachikoma in that account's ChatGPT settings.",
-      );
-      throw new LoginError(`That was a different ChatGPT account from ${start.account.email ?? "the saved one"}${cancelled} To add another account, run \`tachi login chatgpt --new\`.`);
+      const other = `That was a different ChatGPT account from ${start.account.email ?? "the saved one"}`;
+      const again = "To add another account, run `tachi login chatgpt --new`.";
+      try {
+        await revoke(ep, { clientId, refreshToken: t.refresh_token }, opts.signal);
+      } catch (err) {
+        const why = opts.signal?.aborted ? "You stopped waiting for its answer." : errorText(err);
+        const left = `${other}, and OpenAI did not confirm that its sign-in was cancelled. ${why} You can disconnect Tachikoma in that account's ChatGPT settings.`;
+        if (!opts.signal?.aborted) throw new LoginError(`${left} ${again}`);
+        io.say(left); // the command then says "Sign-in was cancelled."
+        throw err;
+      }
+      throw new LoginError(`${other}, so its sign-in was cancelled. ${again}`);
     }
     const tokens = tokensFrom(t);
     const planUse = tokens.scopes.includes(PLAN_SCOPE);
