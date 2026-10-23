@@ -20,9 +20,13 @@ export interface AppProps {
   segments: Segment[];
   makeProvider: (spec: string) => Provider;
   bindAsk: (ask: (summary: string, detail?: string) => Promise<boolean>) => void;
+  // `/login …` and `/logout …`: the words after the command, and where to show what it says.
+  login: (verb: "login" | "logout", words: string[], say: (line: string) => void, signal: AbortSignal) => Promise<void>;
 }
 
-export function App({ session, bus, stats, mode, errorFile, segments, makeProvider, bindAsk }: AppProps) {
+const COMMANDS = "/lead <provider:model>, /login chatgpt, /logout chatgpt, /errors, /exit";
+
+export function App({ session, bus, stats, mode, errorFile, segments, makeProvider, bindAsk, login }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   const [input, setInput] = useState("");
@@ -107,13 +111,17 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       if (text === "/errors") return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
       if (text === "/lead") return say({ text: "Usage: /lead <provider:model>" });
       if (text.startsWith("/lead ")) return session.setLead(makeProvider(text.slice("/lead ".length).trim()));
+      const [command, ...words] = text.split(/\s+/);
+      const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message.
-      if (/^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: /lead <provider:model>, /errors, /exit`, color: "red" });
+      if (!account && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
       abort.current = new AbortController();
       setBusy(true);
       try {
-        await session.send(text, abort.current.signal);
+        // Signing in waits on the browser; Ctrl-C stops it, as it stops a turn.
+        if (account) await login(account, words, (line) => say({ text: line, color: "magenta" }), abort.current.signal);
+        else await session.send(text, abort.current.signal);
       } finally {
         setBusy(false);
       }
