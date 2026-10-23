@@ -53,8 +53,6 @@ function choose(login: SavedLogin, opts: { account?: number; fresh?: boolean }):
 }
 
 export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: number; fresh?: boolean; issuer?: string; signal?: AbortSignal } = {}): Promise<void> {
-  const ep = await discover(opts.issuer ?? ISSUER, opts.signal);
-
   // Under the lock: check, choose the client ID, and save the machine ID before its first use.
   const start = await store.update(async (login, save) => {
     if (signedIn(login)) throw new LoginError(`Already signed in as ${who(login)}. Sign out first with \`tachi logout chatgpt\`.`);
@@ -63,6 +61,9 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: n
     // An unfinished registration's issued ID is used again, as the docs say after a failed exchange.
     return { account, hostId: saved.hostId, version: saved.version, clientId: account?.clientId ?? login.pending?.clientId ?? FIRST_CLIENT };
   }, opts.signal);
+
+  // Asked for after that check, so a signed-in user who is offline is still told so.
+  const ep = await discover(opts.issuer ?? ISSUER, opts.signal);
 
   // The browser part holds no lock: the user can take as long as they like, or press Ctrl-C.
   const attempt = newAttempt();
@@ -113,7 +114,8 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: n
     const planUse = tokens.scopes.includes(PLAN_SCOPE);
     const account: Account = { clientId, sub: id.sub, ...(id.email ? { email: id.email } : {}), idToken: t.id_token };
     const others = login.accounts.filter((a) => a.clientId !== clientId || a.sub !== id.sub);
-    save({ ...login, pending: undefined, accounts: [account, ...others], noticeShown: login.noticeShown || planUse, active: { clientId, sub: id.sub, planUse, tokens } });
+    // Another account's unfinished registration stays, for the next `--new`.
+    save({ ...login, pending: login.pending?.clientId === clientId ? undefined : login.pending, accounts: [account, ...others], noticeShown: login.noticeShown || planUse, active: { clientId, sub: id.sub, planUse, tokens } });
     return { email: id.email ?? "your ChatGPT account", planUse, notice: planUse && !login.noticeShown };
   }, opts.signal);
 
@@ -154,7 +156,7 @@ export async function signOut(store: LoginStore, io: LoginIO, opts: { issuer?: s
     try {
       await revoke(await discover(opts.issuer ?? ISSUER, opts.signal), { clientId: ended.clientId, refreshToken: ended.tokens.refresh }, opts.signal);
     } catch (err) {
-      problem = errorText(err);
+      problem = opts.signal?.aborted ? "you stopped the wait" : errorText(err);
     }
   }
   io.say(
