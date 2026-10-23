@@ -15,30 +15,57 @@ const NAMESPACE = "tachikoma";
 
 // From OpenAI's model pages, for when the account's model list gives no window (release 2 design,
 // "Context window"). A model missing here shows the tokens in use instead of a percentage.
-export const CONTEXT_WINDOWS: Record<string, number> = {
+const CONTEXT_WINDOWS: Record<string, number> = {
   "gpt-6.1-sol": 1_050_000, // developers.openai.com/api/docs/models/gpt-6.1-sol, 2026-10-22
 };
 
 export const USAGE_LIMIT = `ChatGPT usage limit reached. Review your plan or this app's limit: ${USAGE_URL}`;
 
+const SIGN_IN_AGAIN = "Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt`.";
+
+const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
+
+// What OpenAI said: an error object's `message`, or the `{"detail": "..."}` that can come back before a
+// stream opens (errors and recovery page). Anything else, such as a web page, is not quoted.
+function said(error: unknown): string | undefined {
+  const e = error as { message?: unknown; detail?: unknown } | null | undefined;
+  if (typeof e?.message === "string" && e.message.trim()) return e.message;
+  if (typeof e?.detail === "string" && e.detail.trim()) return e.detail;
+}
+
+// A failure as OpenAI reports it. The errors and recovery page asks apps to keep the HTTP status, the
+// code, `error.param` and the request ID.
+interface Failure {
+  code?: string | null;
+  param?: string | null;
+  status?: number;
+  message?: string;
+  requestId?: string | null;
+}
+
 // The plan's errors, by OpenAI's code (errors and recovery page). Each stops the turn; none is retried.
-function planError(code: string | null | undefined, status: number | undefined, message: string): Error {
-  switch (code) {
-    case "subscription_sharing_usage_limit_exceeded":
-      return new Error(USAGE_LIMIT);
-    case "subscription_sharing_user_not_eligible":
-    case "chatpass_v2_scope_not_authorized":
-    case "chatpass_v2_invalid_authorization_context":
-      return new Error(`This ChatGPT account cannot be used here (${code}). Use openai:<model> with an API key instead.`);
-    case "subscription_sharing_invalid_user":
-      return new Error(`OpenAI did not accept the ChatGPT sign-in (${code}). Sign in again with \`tachi login chatgpt\`.`);
-    case "subscription_sharing_usage_unavailable":
-    case "subscription_sharing_user_unavailable":
-      return new Error(`ChatGPT plan use is unavailable right now (${code}). Your sign-in is kept; try again later.`);
-  }
-  if (status === 401) return new Error(`OpenAI did not accept the ChatGPT sign-in (HTTP 401). Sign in again with \`tachi login chatgpt\`.`);
-  if (status === 503) return new Error(`ChatGPT plan use is unavailable right now (HTTP 503). Your sign-in is kept; try again later.`);
-  return new Error(`OpenAI refused the request${status ? ` (HTTP ${status}${code ? `, ${code}` : ""})` : code ? ` (${code})` : ""}: ${message}`);
+function planError({ code, param, status, message, requestId }: Failure): Error {
+  const why = message ? ` ${sentence(message)}` : "";
+  const text = (() => {
+    switch (code) {
+      case "subscription_sharing_usage_limit_exceeded":
+        return USAGE_LIMIT;
+      case "subscription_sharing_user_not_eligible":
+      case "chatpass_v2_scope_not_authorized":
+      case "chatpass_v2_invalid_authorization_context":
+        return `This ChatGPT account cannot use its plan here (${code}).${why} Use openai:<model> with an API key instead.`;
+      case "subscription_sharing_invalid_user":
+        return `OpenAI did not accept the ChatGPT sign-in (${code}).${why} ${SIGN_IN_AGAIN}`;
+      case "subscription_sharing_usage_unavailable":
+      case "subscription_sharing_user_unavailable":
+        return `ChatGPT plan use is unavailable right now (${code}).${why} Your sign-in is kept; try again later.`;
+    }
+    if (status === 401) return `OpenAI did not accept the ChatGPT sign-in (HTTP 401).${why} ${SIGN_IN_AGAIN}`;
+    if (status === 503) return `ChatGPT plan use is unavailable right now (HTTP 503).${why} Your sign-in is kept; try again later.`;
+    const about = [status && `HTTP ${status}`, code, param && `about ${param}`].filter(Boolean).join(", ");
+    return `OpenAI refused the request${about ? ` (${about})` : ""}.${why}`;
+  })();
+  return new Error(requestId ? `${text} OpenAI's request ID: ${requestId}.` : text);
 }
 
 export function toResponses(messages: Message[]): ResponseInputItem[] {
@@ -78,7 +105,7 @@ export function toolsFor(specs: ToolSpec[]): Tool[] {
 }
 
 // The reply, from the stream's finished items. It counts as finished only on `response.completed`.
-export async function fromStream(events: AsyncIterable<ResponseStreamEvent>, tools: ToolSpec[]): Promise<Turn> {
+export async function fromStream(events: AsyncIterable<ResponseStreamEvent>, tools: ToolSpec[], requestId?: string | null): Promise<Turn> {
   const items: ResponseOutputItem[] = [];
   let usage: ResponseUsage | null | undefined;
   let incomplete: string | undefined;
@@ -93,12 +120,12 @@ export async function fromStream(events: AsyncIterable<ResponseStreamEvent>, too
       break;
     } else if (e.type === "response.failed") {
       const err = e.response.error;
-      throw planError(err?.code, undefined, err?.message ?? "the reply failed");
+      throw planError({ code: err?.code, message: said(err) ?? "The reply failed.", requestId });
     } else if (e.type === "error") {
-      throw planError(e.code, undefined, e.message);
+      throw planError({ code: e.code, param: e.param, message: said(e), requestId });
     }
   }
-  if (usage === undefined && incomplete === undefined) throw new Error("The reply stopped before it finished");
+  if (usage === undefined && incomplete === undefined) throw new Error("The reply stopped before it finished.");
 
   const parts: Part[] = [];
   let refusal: string | undefined;
@@ -110,10 +137,10 @@ export async function fromStream(events: AsyncIterable<ResponseStreamEvent>, too
         else if (c.type === "refusal") refusal = c.refusal;
       }
     } else if (item.type === "function_call") {
-      // Mapped back to Tachikoma's tools. Anything else keeps its full name, which no tool has, so the
-      // session refuses it as an unknown tool.
-      const ours = (item.namespace === undefined || item.namespace === NAMESPACE) && known.has(item.name);
-      parts.push({ type: "tool_call", id: item.call_id, name: ours ? item.name : `${item.namespace ?? ""}.${item.name}`, input: parseArgs(item.arguments) });
+      // Mapped back to Tachikoma's tools, which may come with no namespace. Anything else keeps its full
+      // name, which no tool has, so the session refuses it as an unknown tool.
+      const ours = !item.namespace || (item.namespace === NAMESPACE && known.has(item.name));
+      parts.push({ type: "tool_call", id: item.call_id, name: ours ? item.name : `${item.namespace}.${item.name}`, input: parseArgs(item.arguments) });
     }
   }
   const cached = usage?.input_tokens_details?.cached_tokens ?? 0;
@@ -124,31 +151,42 @@ export async function fromStream(events: AsyncIterable<ResponseStreamEvent>, too
     usage: { input: (usage?.input_tokens ?? 0) - cached - written, output: usage?.output_tokens ?? 0, cacheRead: cached, cacheWrite: written },
   };
   if (incomplete === "content_filter") turn.cutOff = { kind: "refusal", detail: "OpenAI's content filter stopped the response" };
-  else if (incomplete) turn.cutOff = { kind: "max_tokens", detail: `The response stopped early (${incomplete})` };
+  else if (incomplete === "max_output_tokens") turn.cutOff = { kind: "max_tokens", detail: "The response reached its length limit" };
+  else if (incomplete) turn.cutOff = { kind: "max_tokens", detail: `The response stopped early, for a reason OpenAI gives as "${incomplete}"` };
   if (refusal) turn.cutOff = { kind: "refusal", detail: refusal };
   return turn;
 }
 
-// The account's own model list (models and inference page): `models`, each with `slug`,
-// `display_name` and `visibility`. Codex also reads `context_window` from it.
+// The account's own model list (models and inference page): `models`, each with `slug` and
+// `visibility`. Codex also reads `context_window` from it.
 export interface PlanModel {
   slug: string;
-  name: string;
   listed: boolean; // `visibility: "list"`, the ones meant to be shown
   contextWindow: number | null;
 }
 
+// The first request of a session's first `chatgpt:` turn, so its failures read like the turn's own.
 export async function planModels(token: string, base = API_BASE, signal?: AbortSignal): Promise<PlanModel[]> {
-  const res = await fetch(`${base}/models`, { headers: { authorization: `Bearer ${token}` }, signal });
-  if (!res.ok) throw planError(undefined, res.status, "could not list the account's models");
-  const body = (await res.json()) as { models?: Record<string, unknown>[] };
-  if (!Array.isArray(body.models)) throw new Error("OpenAI's model list was not in the expected form");
+  let res: Response;
+  try {
+    res = await fetch(`${base}/models`, { headers: { authorization: `Bearer ${token}` }, signal });
+  } catch (err) {
+    if (signal?.aborted || !(err instanceof Error)) throw err;
+    throw new Error(`Could not reach ${base} (${connectReason(err)}). Check your network.`, { cause: err });
+  }
+  const body = (await res.json().catch(() => undefined)) as { error?: Record<string, unknown>; models?: Record<string, unknown>[] } | undefined;
+  signal?.throwIfAborted();
+  if (!res.ok) {
+    const error: Record<string, unknown> | undefined = body?.error ?? body; // the `{"detail": "..."}` form has no `error`
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    throw planError({ code: str(error?.code), param: str(error?.param), status: res.status, message: said(error), requestId: res.headers.get("x-request-id") });
+  }
+  if (!Array.isArray(body?.models)) throw new Error("OpenAI's model list could not be read.");
   return body.models.flatMap((m) =>
     typeof m.slug === "string"
       ? [
           {
             slug: m.slug,
-            name: typeof m.display_name === "string" ? m.display_name : m.slug,
             listed: m.visibility === "list",
             contextWindow: typeof m.context_window === "number" ? m.context_window : null,
           },
@@ -176,7 +214,7 @@ export class ChatGPTProvider implements Provider {
     const found = this.#models.list.find((m) => m.slug === this.model);
     if (!found) {
       const offered = this.#models.list.filter((m) => m.listed).map((m) => `chatgpt:${m.slug}`);
-      throw new Error(`Your ChatGPT account does not offer ${this.model}. It offers: ${offered.join(", ") || "no models"}`);
+      throw new Error(`Your ChatGPT account does not offer ${this.model}. ${offered.length ? `It offers: ${offered.join(", ")}.` : "It offers no models."}`);
     }
     return found;
   }
@@ -197,16 +235,19 @@ export class ChatGPTProvider implements Provider {
     const client = new OpenAI({ apiKey: token, baseURL: this.base, maxRetries: 0 });
     const toolList = toolsFor(tools);
     try {
-      const stream = await client.responses.create(
-        // Only fields the route accepts: no temperature, max_output_tokens or the like.
-        { model: this.model, instructions: system, input: toResponses(messages), ...(toolList.length ? { tools: toolList } : {}), stream: true, store: false },
-        { signal },
-      );
-      return await fromStream(stream, tools);
+      const { data: stream, request_id } = await client.responses
+        .create(
+          // Only fields the route accepts: no temperature, max_output_tokens or the like.
+          { model: this.model, instructions: system, input: toResponses(messages), ...(toolList.length ? { tools: toolList } : {}), stream: true, store: false },
+          { signal },
+        )
+        .withResponse();
+      return await fromStream(stream, tools, request_id);
     } catch (err) {
       if (err instanceof OpenAI.APIConnectionTimeoutError) throw new Error(`${this.base} did not answer in time. Check your network.`, { cause: err });
       if (err instanceof OpenAI.APIConnectionError) throw new Error(`Could not reach ${this.base} (${connectReason(err)}). Check your network.`, { cause: err });
-      if (err instanceof OpenAI.APIError) throw planError(err.code, err.status, err.message);
+      // The SDK's own message repeats the status and quotes any body, so OpenAI's text is taken from the body.
+      if (err instanceof OpenAI.APIError) throw planError({ code: err.code, param: err.param, status: err.status, message: said(err.error), requestId: err.requestID });
       throw err;
     }
   }

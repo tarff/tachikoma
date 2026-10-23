@@ -71,35 +71,59 @@ describe("fromStream", () => {
     expect(turn.parts[0]).toMatchObject({ name: "web.search" });
   });
 
+  it("maps a call with no namespace back to Tachikoma's tool, and leaves an unknown one as it is", async () => {
+    const { namespace: _, ...bare } = call;
+    const turn = await fromStream(events(done(bare), done({ ...bare, call_id: "call_2", name: "nope" }), done({ ...call, call_id: "call_3", name: "nope" }), completed), tools);
+    expect(turn.parts.map((p) => p.type === "tool_call" && p.name)).toEqual(["read_file", "nope", "tachikoma.nope"]);
+  });
+
   it("treats a stream that ends without response.completed as an error", async () => {
-    await expect(fromStream(events(done(text)), tools)).rejects.toThrow("The reply stopped before it finished");
+    await expect(fromStream(events(done(text)), tools)).rejects.toThrow(new Error("The reply stopped before it finished."));
   });
 
   it("stops on the usage limit, even part way through a stream", async () => {
     const failed = { type: "response.failed", response: { error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit" } } } as unknown as ResponseStreamEvent;
     await expect(fromStream(events(done(text), failed), tools)).rejects.toThrow(USAGE_LIMIT);
     const error = { type: "error", code: "subscription_sharing_usage_unavailable", message: "busy", param: null } as unknown as ResponseStreamEvent;
-    await expect(fromStream(events(error), tools)).rejects.toThrow("ChatGPT plan use is unavailable right now");
+    await expect(fromStream(events(error), tools)).rejects.toThrow(new Error("ChatGPT plan use is unavailable right now (subscription_sharing_usage_unavailable). busy. Your sign-in is kept; try again later."));
   });
 
-  it("marks a reply cut short, and a refusal", async () => {
-    const short = { type: "response.incomplete", response: { usage, incomplete_details: { reason: "max_output_tokens" } } } as unknown as ResponseStreamEvent;
-    expect((await fromStream(events(done(text), short), tools)).cutOff).toEqual({ kind: "max_tokens", detail: "The response stopped early (max_output_tokens)" });
+  it("says what each of the plan's errors means, in OpenAI's words, with the request ID", async () => {
+    const error = (code: string, message: string, param: string | null = null) => ({ type: "error", code, message, param }) as unknown as ResponseStreamEvent;
+    const cases: [ResponseStreamEvent, string][] = [
+      ...["subscription_sharing_user_not_eligible", "chatpass_v2_scope_not_authorized", "chatpass_v2_invalid_authorization_context"].map(
+        (code): [ResponseStreamEvent, string] => [error(code, "Not for this workspace."), `This ChatGPT account cannot use its plan here (${code}). Not for this workspace. Use openai:<model> with an API key instead.`],
+      ),
+      [error("subscription_sharing_invalid_user", "Unknown user"), "OpenAI did not accept the ChatGPT sign-in (subscription_sharing_invalid_user). Unknown user. Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt`."],
+      [error("subscription_sharing_user_unavailable", "Try later!"), "ChatGPT plan use is unavailable right now (subscription_sharing_user_unavailable). Try later! Your sign-in is kept; try again later."],
+      [error("subscription_sharing_unsupported_capability", "Not on this route", "tools"), "OpenAI refused the request (subscription_sharing_unsupported_capability, about tools). Not on this route."],
+      [{ type: "response.failed", response: { error: { code: "server_error", message: "" } } } as unknown as ResponseStreamEvent, "OpenAI refused the request (server_error). The reply failed."],
+    ];
+    for (const [event, message] of cases) await expect(fromStream(events(event), tools, "req_1")).rejects.toThrow(new Error(`${message} OpenAI's request ID: req_1.`));
+  });
+
+  it("marks a reply cut short, by the length limit or OpenAI's content filter, and a refusal", async () => {
+    const short = (reason: string) => ({ type: "response.incomplete", response: { usage, incomplete_details: { reason } } }) as unknown as ResponseStreamEvent;
+    expect((await fromStream(events(done(text), short("max_output_tokens")), tools)).cutOff).toEqual({ kind: "max_tokens", detail: "The response reached its length limit" });
+    expect((await fromStream(events(short("max_messages")), tools)).cutOff).toEqual({ kind: "max_tokens", detail: 'The response stopped early, for a reason OpenAI gives as "max_messages"' });
+    expect((await fromStream(events(short("content_filter")), tools)).cutOff).toEqual({ kind: "refusal", detail: "OpenAI's content filter stopped the response" });
     const refused = { ...text, content: [{ type: "refusal", refusal: "No." }] };
     expect((await fromStream(events(done(refused), completed), tools)).cutOff).toEqual({ kind: "refusal", detail: "No." });
   });
 });
 
 // A stand-in for api.openai.com: the account's model list and a streamed Responses reply.
-async function fakeApi(respond: (body: Record<string, unknown>, res: http.ServerResponse) => void) {
+const planList = [{ slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list" }, { slug: "hidden", display_name: "Hidden", visibility: "hide", context_window: 9 }];
+const json = (res: http.ServerResponse, status: number, body: unknown) =>
+  res.writeHead(status, { "content-type": "application/json", "x-request-id": "req_9" }).end(JSON.stringify(body));
+
+async function fakeApi(respond: (body: Record<string, unknown>, res: http.ServerResponse) => void, list: (res: http.ServerResponse) => void = (res) => json(res, 200, { models: planList })) {
   const seen: { auth?: string; body: Record<string, unknown> }[] = [];
   let lists = 0;
   const server = http.createServer(async (req, res) => {
     if (req.url === "/v1/models") {
       lists++;
-      return void res.writeHead(200, { "content-type": "application/json" }).end(
-        JSON.stringify({ models: [{ slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list" }, { slug: "hidden", display_name: "Hidden", visibility: "hide", context_window: 9 }] }),
-      );
+      return list(res);
     }
     let text = "";
     for await (const chunk of req) text += chunk;
@@ -116,7 +140,7 @@ async function fakeApi(respond: (body: Record<string, unknown>, res: http.Server
 }
 
 const sse = (res: http.ServerResponse, list: unknown[]) => {
-  res.writeHead(200, { "content-type": "text/event-stream" });
+  res.writeHead(200, { "content-type": "text/event-stream", "x-request-id": "req_9" });
   for (const e of list) res.write(`event: ${(e as { type: string }).type}\ndata: ${JSON.stringify(e)}\n\n`);
   res.end();
 };
@@ -179,9 +203,73 @@ describe("ChatGPTProvider", () => {
     expect(api.seen).toHaveLength(1);
   });
 
+  it("says what a refused request means, in OpenAI's words, with the request ID", async () => {
+    const cases: [(res: http.ServerResponse) => void, string][] = [
+      [(res) => json(res, 401, { error: { code: null, message: "Bad token", type: "x", param: null } }), "OpenAI did not accept the ChatGPT sign-in (HTTP 401). Bad token. Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt`. OpenAI's request ID: req_9."],
+      [(res) => json(res, 503, { detail: "Direct routing is off" }), "ChatGPT plan use is unavailable right now (HTTP 503). Direct routing is off. Your sign-in is kept; try again later. OpenAI's request ID: req_9."],
+      [(res) => json(res, 403, { detail: "Region not supported" }), "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9."],
+      [(res) => json(res, 400, { error: { code: "too_long", message: "Your input is too long.", type: "x", param: "input" } }), "OpenAI refused the request (HTTP 400, too_long, about input). Your input is too long. OpenAI's request ID: req_9."],
+      [(res) => res.writeHead(502, { "content-type": "text/html" }).end("<html>Bad gateway</html>"), "OpenAI refused the request (HTTP 502)."],
+    ];
+    for (const [answer, message] of cases) {
+      const api = await fakeApi((_, res) => answer(res));
+      await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error(message));
+    }
+  });
+
+  it("keeps the request ID of a reply that fails part way through", async () => {
+    const failed = { type: "response.failed", response: { error: { code: "server_error", message: "Something broke" } } };
+    const api = await fakeApi((_, res) => sse(res, [done(text), failed]));
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error("OpenAI refused the request (server_error). Something broke. OpenAI's request ID: req_9."));
+  });
+
+  it("says a reply that could not be fetched could not reach OpenAI", async () => {
+    const api = await fakeApi((_, res) => res.socket?.destroy());
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(`Could not reach ${api.base} (`);
+  });
+
+  it("says why the account's model list could not be fetched", async () => {
+    const closed = http.createServer();
+    await new Promise<void>((r) => closed.listen(0, "127.0.0.1", r));
+    const port = (closed.address() as AddressInfo).port;
+    await new Promise((r) => closed.close(r));
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, `http://127.0.0.1:${port}/v1`).complete(request)).rejects.toThrow(`Could not reach http://127.0.0.1:${port}/v1 (connect ECONNREFUSED`);
+
+    const cases: [(res: http.ServerResponse) => void, string][] = [
+      [(res) => res.writeHead(200, { "content-type": "text/html" }).end("<html>wifi</html>"), "OpenAI's model list could not be read."],
+      [(res) => json(res, 200, { data: [] }), "OpenAI's model list could not be read."],
+      [
+        (res) => json(res, 403, { error: { code: "subscription_sharing_user_not_eligible", message: "Not for this workspace", type: "x", param: null } }),
+        "This ChatGPT account cannot use its plan here (subscription_sharing_user_not_eligible). Not for this workspace. Use openai:<model> with an API key instead. OpenAI's request ID: req_9.",
+      ],
+      [(res) => json(res, 403, { detail: "Region not supported" }), "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9."],
+      [(res) => res.writeHead(500).end(), "OpenAI refused the request (HTTP 500)."],
+    ];
+    for (const [list, message] of cases) {
+      const api = await fakeApi(() => {}, list);
+      await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error(message));
+    }
+  });
+
+  it("stops at once on Ctrl-C, while the login is read, the model list is fetched or the reply is awaited", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    const watched = { check: () => {}, token: async (signal?: AbortSignal) => (signals.push(signal), { token: "tok-1", account: "app user-1" }) } as unknown as ChatGPTAuth;
+    for (const wait of ["list", "reply"]) {
+      let arrived!: () => void;
+      const asked = new Promise<void>((r) => (arrived = r));
+      const api = await fakeApi(() => arrived(), wait === "list" ? () => arrived() : undefined); // never answered
+      const stop = new AbortController();
+      const turn = new ChatGPTProvider("gpt-6.1-sol", watched, api.base).complete({ ...request, signal: stop.signal });
+      await asked;
+      stop.abort();
+      await expect(turn).rejects.toThrow();
+      expect(signals.at(-1)).toBe(stop.signal);
+    }
+  });
+
   it("refuses a model the account does not offer, listing the ones it does", async () => {
     const api = await fakeApi(() => {});
-    await expect(new ChatGPTProvider("gpt-9", auth, api.base).complete(request)).rejects.toThrow("Your ChatGPT account does not offer gpt-9. It offers: chatgpt:gpt-6.1-sol");
+    await expect(new ChatGPTProvider("gpt-9", auth, api.base).complete(request)).rejects.toThrow(new Error("Your ChatGPT account does not offer gpt-9. It offers: chatgpt:gpt-6.1-sol."));
     expect(api.seen).toHaveLength(0);
   });
 
@@ -189,6 +277,8 @@ describe("ChatGPTProvider", () => {
     const api = await fakeApi(() => {});
     expect(await new ChatGPTProvider("hidden", auth, api.base).contextWindow()).toBe(9);
     expect(await new ChatGPTProvider("gpt-6.1-sol", auth, api.base).contextWindow()).toBe(1_050_000);
+    const listed = await fakeApi(() => {}, (res) => json(res, 200, { models: [{ ...planList[0], context_window: 500_000 }] }));
+    expect(await new ChatGPTProvider("gpt-6.1-sol", auth, listed.base).contextWindow()).toBe(500_000);
   });
 
   it("is refused at once when signed out", () => {
