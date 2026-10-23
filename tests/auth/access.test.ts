@@ -181,7 +181,7 @@ console.log((await new ChatGPTAuth(new LoginStore(${JSON.stringify(dir)}, () => 
     const old = store.read().active!.tokens!;
     await age({ expiresAt: Date.now() });
     const stop = new AbortController();
-    ctrlCWaiting("/token", stop); // never answered, so the renewal carries on until Node gives up
+    ctrlCWaiting("/token", stop); // never answered, so the renewal is still waiting when the test ends
     await expect(auth.token(stop.signal)).rejects.toMatchObject({ name: "AbortError" });
     expect(store.read().active?.tokens?.refresh).toBe(old.refresh);
   });
