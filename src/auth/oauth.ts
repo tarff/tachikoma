@@ -76,8 +76,11 @@ export function authorizeUrl(
   return `${ep.authorization_endpoint}?${q}`;
 }
 
-// The page the browser lands on. It loads nothing from anywhere (`default-src 'none'`).
+// The page the browser lands on, and the one for the start address opened again. They load nothing
+// from anywhere (`default-src 'none'`).
 const PAGE = "<!doctype html><meta charset=utf-8><title>Tachikoma</title><p>You can close this tab. Tachikoma shows whether sign-in worked.</p>";
+const USED = "<!doctype html><meta charset=utf-8><title>Tachikoma</title><p>This sign-in was already opened in another tab. Finish it there, or stop it in Tachikoma and sign in again.</p>";
+const HTML = { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'none'", "cache-control": "no-store" };
 
 export interface Listener {
   redirectUri: string;
@@ -95,13 +98,23 @@ export interface Listener {
 export async function listen(state: string, signal?: AbortSignal): Promise<Listener> {
   let settle!: { resolve: (q: URLSearchParams) => void; reject: (e: Error) => void };
   const reply = new Promise<URLSearchParams>((resolve, reject) => (settle = { resolve, reject }));
+  reply.catch(() => {}); // Ctrl-C may come before anyone waits for it
   let target: string | undefined;
+  let started = false;
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? "/", "http://127.0.0.1");
-    if (req.method === "GET" && url.pathname === "/auth/start" && target) return void res.writeHead(302, { location: target, "cache-control": "no-store" }).end();
+    // Any program here can send a request line that is not an address; it is turned away, not thrown.
+    const url = URL.parse(req.url ?? "/", "http://127.0.0.1");
+    if (!url) return void res.writeHead(400).end();
+    // Once only: the address holds the ID token sent as a hint, and any program here could ask for it.
+    if (req.method === "GET" && url.pathname === "/auth/start" && target) {
+      if (started) return void res.writeHead(410, HTML).end(USED);
+      started = true;
+      return void res.writeHead(302, { location: target, "cache-control": "no-store" }).end();
+    }
     if (req.method !== "GET" || url.pathname !== "/auth/callback") return void res.writeHead(404).end();
     if (url.searchParams.get("state") !== state) return void res.writeHead(400, { "content-type": "text/plain" }).end("This reply is not for the sign-in Tachikoma is waiting for.");
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'none'", "cache-control": "no-store" }).end(PAGE);
+    // Once the page is sent, a browser's spare connection is closed too.
+    res.writeHead(200, { ...HTML, connection: "close" }).end(PAGE, () => server.closeAllConnections());
     settle.resolve(url.searchParams);
     close();
   });
@@ -134,20 +147,28 @@ export type TokenResponse = z.infer<typeof TokenSchema>;
 
 // A form POST to an OpenAI sign-in endpoint. Errors carry OpenAI's code, never a token.
 async function post(url: string, form: Record<string, string>, signal?: AbortSignal): Promise<Response> {
-  const res = await fetch(url, { method: "POST", headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(form), signal });
+  // A redirect would send the form, tokens and all, to another address.
+  const res = await fetch(url, { method: "POST", headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(form), redirect: "error", signal });
   if (res.ok) return res;
   let code: string | undefined;
   try {
     const body: unknown = await res.json();
     if (body && typeof body === "object" && "error" in body && typeof body.error === "string") code = body.error;
   } catch {
-    // not JSON
+    signal?.throwIfAborted(); // otherwise not JSON
   }
   throw new OAuthError(`OpenAI refused the request (HTTP ${res.status}${code ? `, ${code}` : ""})`, code, res.status);
 }
 
+// A reply that cannot be read is an error that quotes none of it: it holds tokens.
 async function tokens(ep: Endpoints, form: Record<string, string>, signal?: AbortSignal): Promise<TokenResponse> {
-  return TokenSchema.parse(await (await post(ep.token_endpoint, { ...form, resource: RESOURCE }, signal)).json());
+  const res = await post(ep.token_endpoint, { ...form, resource: RESOURCE }, signal);
+  const parsed = TokenSchema.safeParse(await res.json().catch(() => undefined));
+  if (!parsed.success) {
+    signal?.throwIfAborted(); // cut off by Ctrl-C, rather than unreadable
+    throw new OAuthError("OpenAI's sign-in reply could not be read");
+  }
+  return parsed.data;
 }
 
 export function exchange(ep: Endpoints, p: { clientId: string; code: string; verifier: string; redirectUri: string }, signal?: AbortSignal): Promise<TokenResponse> {
@@ -164,7 +185,7 @@ export async function revoke(ep: Endpoints, p: { clientId: string; refreshToken:
   await post(ep.revocation_endpoint, { token: p.refreshToken, token_type_hint: "refresh_token", client_id: p.clientId }, signal);
 }
 
-const ClaimsSchema = z.object({ iss: z.string(), aud: z.union([z.string(), z.array(z.string())]), exp: z.number(), nonce: z.string().optional(), sub: z.string().min(1), email: z.string().optional() });
+const ClaimsSchema = z.object({ iss: z.string(), aud: z.union([z.string(), z.array(z.string())]), azp: z.string().optional(), exp: z.number(), nonce: z.string().optional(), sub: z.string().min(1), email: z.string().optional() });
 const JwksSchema = z.object({ keys: z.array(z.looseObject({ kid: z.string().optional() })) });
 
 // The docs' checks, in order: the signature against OpenAI's published keys, then issuer, audience
@@ -173,7 +194,13 @@ const JwksSchema = z.object({ keys: z.array(z.looseObject({ kid: z.string().opti
 export async function verifyIdToken(ep: Endpoints, idToken: string, p: { clientId: string; nonce: string }, signal?: AbortSignal): Promise<{ sub: string; email?: string }> {
   const [head, body, sig] = idToken.split(".");
   if (!head || !body || !sig) throw new OAuthError("The ID token is malformed");
-  const header = JSON.parse(Buffer.from(head, "base64url").toString("utf8")) as { alg?: unknown; kid?: unknown };
+  let header: { alg?: unknown; kid?: unknown } | null;
+  try {
+    header = JSON.parse(Buffer.from(head, "base64url").toString("utf8"));
+  } catch {
+    header = null;
+  }
+  if (!header || typeof header !== "object") throw new OAuthError("The ID token is malformed");
   if (header.alg !== "RS256") throw new OAuthError("The ID token is not signed with RS256");
   const res = await fetch(ep.jwks_uri, { signal });
   if (!res.ok) throw new OAuthError(`Could not read OpenAI's signing keys (HTTP ${res.status})`, undefined, res.status);
@@ -183,7 +210,9 @@ export async function verifyIdToken(ep: Endpoints, idToken: string, p: { clientI
   if (!verify("sha256", Buffer.from(`${head}.${body}`), key, Buffer.from(sig, "base64url"))) throw new OAuthError("The ID token's signature is wrong");
   const claims = ClaimsSchema.parse(JSON.parse(Buffer.from(body, "base64url").toString("utf8")));
   if (claims.iss !== ep.issuer) throw new OAuthError("The ID token names the wrong issuer");
-  if (!(Array.isArray(claims.aud) ? claims.aud : [claims.aud]).includes(p.clientId)) throw new OAuthError("The ID token is for another client");
+  // With several audiences, `azp` names the one it was issued to (OpenID Connect Core 1.0, 3.1.3.7).
+  if (!(Array.isArray(claims.aud) ? claims.aud : [claims.aud]).includes(p.clientId) || (claims.azp !== undefined && claims.azp !== p.clientId))
+    throw new OAuthError("The ID token is for another client");
   if (claims.exp * 1000 <= Date.now()) throw new OAuthError("The ID token has expired");
   if (claims.nonce !== p.nonce) throw new OAuthError("The ID token is not from this sign-in");
   return { sub: claims.sub, ...(claims.email ? { email: claims.email } : {}) };
