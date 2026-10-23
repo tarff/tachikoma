@@ -63,9 +63,12 @@ function planError({ code, param, status, message, requestId }: Failure): Error 
     if (status === 401) return `OpenAI did not accept the ChatGPT sign-in (HTTP 401).${why} ${SIGN_IN_AGAIN}`;
     if (status === 503) return `ChatGPT plan use is unavailable right now (HTTP 503).${why} Your sign-in is kept; try again later.`;
     const about = [status && `HTTP ${status}`, code, param && `about ${param}`].filter(Boolean).join(", ");
-    return `OpenAI refused the request${about ? ` (${about})` : ""}.${why}`;
+    // A server error, or a reply that failed part way, is OpenAI failing rather than refusing.
+    const what = status !== undefined && status < 500 ? "refused" : "could not complete";
+    return `OpenAI ${what} the request${about ? ` (${about})` : ""}.${why}`;
   })();
-  return new Error(requestId ? `${text} OpenAI's request ID: ${requestId}.` : text);
+  // The usage limit ends on an address, so a full stop goes after it before the next sentence.
+  return new Error(requestId ? `${sentence(text)} OpenAI's request ID: ${requestId}.` : text);
 }
 
 export function toResponses(messages: Message[]): ResponseInputItem[] {
@@ -244,6 +247,7 @@ export class ChatGPTProvider implements Provider {
         .withResponse();
       return await fromStream(stream, tools, request_id);
     } catch (err) {
+      if (signal?.aborted) throw err; // Ctrl-C, passed on as it is (the SDK's abort error is an APIError)
       if (err instanceof OpenAI.APIConnectionTimeoutError) throw new Error(`${this.base} did not answer in time. Check your network.`, { cause: err });
       if (err instanceof OpenAI.APIConnectionError) throw new Error(`Could not reach ${this.base} (${connectReason(err)}). Check your network.`, { cause: err });
       // The SDK's own message repeats the status and quotes any body, so OpenAI's text is taken from the body.
