@@ -189,7 +189,7 @@ if (parsed.print !== undefined) {
       segments={segments}
       makeProvider={makeProvider}
       login={accountCommand}
-      listModels={(signal) => listModels(signal)}
+      listModels={(signal, warn) => listModels(signal, process.env, warn)}
       bindAsk={(fn) => {
         ask = fn;
       }}

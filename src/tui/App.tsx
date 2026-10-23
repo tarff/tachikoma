@@ -25,7 +25,8 @@ export interface AppProps {
   // `/login …` and `/logout …`: the words after the command, where to show what it says, a signal
   // Ctrl-C aborts, and how a command is typed here ("/").
   login: (verb: "login" | "logout", words: string[], say: (line: string) => void, signal: AbortSignal, prefix: string) => Promise<void>;
-  listModels: (signal: AbortSignal) => Promise<ModelGroup[]>;
+  // `/model`: every provider's models, and where to show what reading the saved login says.
+  listModels: (signal: AbortSignal, warn: (line: string) => void) => Promise<ModelGroup[]>;
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /errors, /exit";
@@ -131,7 +132,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
         // Signing in waits on the browser; Ctrl-C stops it, as it stops a turn.
         if (account) await login(account, words, (line) => say({ text: line, color: "magenta" }), abort.current.signal, "/");
         else if (alone("/model")) {
-          const groups = await listModels(abort.current.signal);
+          const groups = await listModels(abort.current.signal, (line) => say({ text: line, color: "magenta" }));
           if (!abort.current.signal.aborted) setPicker(groups);
         } else await session.send(text, abort.current.signal);
       } finally {
