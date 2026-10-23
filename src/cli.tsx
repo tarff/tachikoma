@@ -4,6 +4,7 @@ import { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { render } from "ink";
+import { accountCommand } from "./auth/chatgpt.js";
 import { endOnEpipe, headlessAnswer, headlessExit, jsonLine, prose, statusSegments } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
@@ -24,6 +25,8 @@ const HELP = `tachi: a coding agent for your terminal
 Usage:
   tachi --lead <provider:model> [options]          interactive session
   tachi --lead <provider:model> -p "<prompt>"      run one prompt, print the answer, exit
+  tachi login chatgpt [--new | --account <n>]      sign in to use your ChatGPT plan
+  tachi logout chatgpt                             sign out of ChatGPT
 
 Options:
   --lead <spec>     anthropic:<model> | openai:<model> | openrouter:<model> | kimi:<model> | ollama:<model>
@@ -53,6 +56,20 @@ function oneOf<T extends string>(name: string, value: string | undefined, allowe
 
 process.stdout.on("error", endOnEpipe);
 process.stderr.on("error", endOnEpipe); // `tachi -p … 2>&1 | head -1`
+
+// `tachi login chatgpt` and `tachi logout chatgpt` do only that, then exit.
+const verb = process.argv[2];
+if (verb === "login" || verb === "logout") {
+  const stop = new AbortController();
+  process.once("SIGINT", () => stop.abort()); // Ctrl-C while the browser part waits
+  try {
+    await accountCommand(verb, process.argv.slice(3), (line) => console.log(prose(line)), stop.signal);
+    process.exit(0);
+  } catch (err) {
+    console.error(prose(errorText(err)));
+    process.exit(stop.signal.aborted ? 128 + constants.signals.SIGINT : 1);
+  }
+}
 
 let parsed;
 try {
