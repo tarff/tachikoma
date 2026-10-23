@@ -106,12 +106,15 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
   const submit = async (raw: string) => {
     const text = raw.trim();
     if (!text) return;
+    // Commands ignore case; a message is sent as typed.
+    const [first = "", ...words] = text.split(/\s+/);
+    const command = first.toLowerCase();
+    const alone = (name: string) => command === name && !words.length;
     try {
-      if (text === "/exit") return exit();
-      if (text === "/errors") return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
-      if (text === "/lead") return say({ text: "Usage: /lead <provider:model>" });
-      if (text.startsWith("/lead ")) return session.setLead(makeProvider(text.slice("/lead ".length).trim()));
-      const [command, ...words] = text.split(/\s+/);
+      if (alone("/exit")) return exit();
+      if (alone("/errors")) return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
+      if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
+      if (command === "/lead") return session.setLead(makeProvider(words.join(" ")));
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message.
