@@ -60,10 +60,10 @@ describe("tachi", { timeout: 15_000 }, () => {
   });
 
   it("explains login's usage instead of starting a sign-in", () => {
-    expect(tachi("login", "openai").stderr).toContain("Only ChatGPT has a login: `login chatgpt`. Other providers use an API key.");
+    expect(tachi("login", "openai").stderr).toContain("Only ChatGPT has a login: `tachi login chatgpt`. Other providers use an API key.");
     const r = tachi("login", "chatgpt", "--account", "x");
     expect(r.code).toBe(1);
-    expect(r.stderr).toContain("Usage: login chatgpt [--new | --account <number>]");
+    expect(r.stderr).toContain("Usage: tachi login chatgpt [--new | --account <number>]");
   });
 
   it("refuses interactive mode without a terminal, before starting the interface", () => {

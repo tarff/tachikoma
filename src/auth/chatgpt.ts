@@ -14,6 +14,7 @@ const NOTICE = `You're using your ChatGPT plan. Eligible usage in this app uses 
 export interface LoginIO {
   say(line: string): void;
   openBrowser(url: string): void;
+  prefix?: string; // how a command is typed, for the messages: "tachi " (the default) or "/" in a session
 }
 
 // The system's own way to open an address, with no shell in between and no API keys passed on.
@@ -25,14 +26,17 @@ export function openBrowser(url: string): void {
   child.unref();
 }
 
-// The words after `login` or `logout`, on the command line or after `/login` in a session.
-export function loginArgs(words: string[], verb: "login" | "logout"): { account?: number; fresh?: boolean } {
+// The words after `login` or `logout`, on the command line or after `/login` in a session; `prefix` is
+// how a command is typed there, for the messages.
+export function loginArgs(words: string[], verb: "login" | "logout", prefix = "tachi "): { account?: number; fresh?: boolean } {
   const [provider, ...rest] = words;
-  if (provider !== "chatgpt") throw new LoginError(`Only ChatGPT has a ${verb}: \`${verb} chatgpt\`. Other providers use an API key.`);
-  if (verb === "logout" && rest.length) throw new LoginError("Usage: logout chatgpt");
+  const usage = new LoginError(verb === "login" ? `Usage: ${prefix}login chatgpt [--new | --account <number>]` : `Usage: ${prefix}logout chatgpt`);
+  if (provider === undefined) throw usage;
+  if (provider !== "chatgpt") throw new LoginError(`Only ChatGPT has a ${verb}: \`${prefix}${verb} chatgpt\`. Other providers use an API key.`);
+  if (verb === "logout" && rest.length) throw usage;
   if (rest.length === 1 && rest[0] === "--new") return { fresh: true };
   if (rest.length === 2 && rest[0] === "--account" && /^[1-9]\d*$/.test(rest[1]!)) return { account: Number(rest[1]) };
-  if (rest.length) throw new LoginError("Usage: login chatgpt [--new | --account <number>]");
+  if (rest.length) throw usage;
   return {};
 }
 
@@ -40,7 +44,7 @@ const signedIn = (login: SavedLogin) => (login.active?.tokens ? login.active : u
 const who = (login: SavedLogin, a = signedIn(login)) => login.accounts.find((x) => x.clientId === a?.clientId && x.sub === a?.sub)?.email ?? "your ChatGPT account";
 
 // Which saved account to sign in to: the only one, the one asked for, or a new one.
-function choose(login: SavedLogin, opts: { account?: number; fresh?: boolean }): Account | undefined {
+function choose(login: SavedLogin, opts: { account?: number; fresh?: boolean }, typed: string): Account | undefined {
   if (opts.fresh) return undefined;
   if (opts.account !== undefined) {
     const a = login.accounts[opts.account - 1];
@@ -53,14 +57,15 @@ function choose(login: SavedLogin, opts: { account?: number; fresh?: boolean }):
   const name = (a: Account) => a.email ?? a.sub;
   const twice = (a: Account) => login.accounts.filter((b) => name(b) === name(a)).length > 1;
   const list = login.accounts.map((a, i) => `  ${i + 1}. ${name(a)}${twice(a) ? ` (${a.clientId})` : ""}`).join("\n");
-  throw new LoginError(`Saved ChatGPT accounts:\n${list}\nChoose one with \`tachi login chatgpt --account <number>\`, or add another with \`--new\`.`);
+  throw new LoginError(`Saved ChatGPT accounts:\n${list}\nChoose one with \`${typed}login chatgpt --account <number>\`, or add another with \`--new\`.`);
 }
 
 export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: number; fresh?: boolean; issuer?: string; signal?: AbortSignal } = {}): Promise<void> {
+  const typed = io.prefix ?? "tachi ";
   // Under the lock: check, choose the client ID, and save the machine ID before its first use.
   const start = await store.update(async (login, save) => {
-    if (signedIn(login)) throw new LoginError(`Already signed in as ${who(login)}. Sign out first with \`tachi logout chatgpt\`.`);
-    const account = choose(login, opts);
+    if (signedIn(login)) throw new LoginError(`Already signed in as ${who(login)}. Sign out first with \`${typed}logout chatgpt\`.`);
+    const account = choose(login, opts, typed);
     const saved = save(login);
     // An unfinished registration's issued ID is used again, as the docs say after a failed exchange.
     return { account, hostId: saved.hostId, version: saved.version, clientId: account?.clientId ?? login.pending?.clientId ?? FIRST_CLIENT };
@@ -114,7 +119,7 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: n
     if (start.account && id.sub !== start.account.sub) {
       // OpenAI has signed that account in, so its sign-in is cancelled, as at a logout.
       const other = `That was a different ChatGPT account from ${start.account.email ?? "the saved one"}`;
-      const again = "To add another account, run `tachi login chatgpt --new`.";
+      const again = `To add another account, run \`${typed}login chatgpt --new\`.`;
       try {
         await revoke(ep, { clientId, refreshToken: t.refresh_token }, opts.signal);
       } catch (err) {
@@ -140,11 +145,11 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: n
   else io.say(`Signed in as ${done.email}, but using your ChatGPT plan was not allowed. To use it, sign out and in again and allow it; or use openai:<model> with an API key.`);
 }
 
-// `login chatgpt …` or `logout chatgpt`, typed on the command line or in a session.
-export async function accountCommand(verb: "login" | "logout", words: string[], say: (line: string) => void, signal?: AbortSignal): Promise<void> {
-  const opts = loginArgs(words, verb);
+// `login chatgpt …` or `logout chatgpt`, typed on the command line, or in a session with `prefix` "/".
+export async function accountCommand(verb: "login" | "logout", words: string[], say: (line: string) => void, signal?: AbortSignal, prefix = "tachi "): Promise<void> {
+  const opts = loginArgs(words, verb, prefix);
   const store = new LoginStore(dataDir(), say);
-  const io = { say, openBrowser };
+  const io = { say, openBrowser, prefix };
   try {
     if (verb === "login") await signIn(store, io, { ...opts, ...(signal ? { signal } : {}) });
     else await signOut(store, io, signal ? { signal } : {});
