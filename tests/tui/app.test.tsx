@@ -176,7 +176,7 @@ describe("App", () => {
     await tick();
     expect(app.lastFrame()).toContain("lead fake:b");
     expect(app.lastFrame()).toContain("ctx 0 ");
-    expect(app.lastFrame()).not.toContain("ctx 0%");
+    expect(app.lastFrame()).not.toMatch(/ctx \d+% left/);
   });
 
   it("asks for the context window again after a reply, when only a reply makes it known", async () => {
@@ -190,6 +190,20 @@ describe("App", () => {
     await until(app, "there");
     await until(app, "%");
     expect(app.lastFrame()).toMatch(/ctx \d+%/);
+  });
+
+  it("keeps the window it knows when asking again after a reply fails", async () => {
+    let asked = 0;
+    const flaky = Object.assign(new FakeProvider("a", [reply("there")]), {
+      contextWindow: () => (asked++ ? Promise.reject(new Error("offline")) : Promise.resolve(1000)),
+    });
+    const { app } = await mount([], { lead: flaky });
+    await until(app, "% left");
+    await type(app, "hi");
+    await until(app, "there");
+    await tick();
+    expect(asked).toBe(2);
+    expect(app.lastFrame()).toContain("% left");
   });
 
   it("keeps going when the context-window lookup fails", async () => {

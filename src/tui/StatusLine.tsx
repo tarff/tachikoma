@@ -36,7 +36,8 @@ export function formatSegment(s: Segment, i: StatusInfo): string {
       const dollars = `$${i.cost.toFixed(2)}${i.costUnknown ? " + ?" : ""}`;
       // A plan has no per-token price; OpenAI's guidelines ask apps to show that the plan is in use.
       if (!i.lead.startsWith("chatgpt:")) return dollars;
-      return i.cost || i.costUnknown ? `ChatGPT plan + ${dollars}` : "ChatGPT plan";
+      if (i.cost) return `ChatGPT plan + ${dollars}`;
+      return i.costUnknown ? "ChatGPT plan + ?" : "ChatGPT plan";
     }
     case "mode":
       return `perm ${i.mode}`;
