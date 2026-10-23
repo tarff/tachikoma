@@ -26,7 +26,8 @@ const HELP = `tachi: a coding agent for your terminal
 Usage:
   tachi --lead <provider:model> [options]            interactive session
   tachi --lead <provider:model> -p "<prompt>"        run one prompt, print the answer, exit
-  tachi login chatgpt [--new | --account <number>]   sign in to use your ChatGPT plan
+  tachi login chatgpt [--new | --account <number>]   sign in to use your ChatGPT plan;
+                      [--keychain]                   --keychain keeps the login in the system keychain
   tachi logout chatgpt                               sign out of ChatGPT
 
 Options:

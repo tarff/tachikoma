@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.132.0",
+    "@napi-rs/keyring": "2.1.0",
     "ink": "7.1.1",
     "openai": "7.30.0",
     "react": "19.3.0",

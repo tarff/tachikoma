@@ -28,25 +28,40 @@ export function openBrowser(url: string): void {
   child.unref();
 }
 
-// The words after `login` or `logout`, on the command line or after `/login` in a session; `prefix` is
-// how a command is typed there, for the messages.
-export function loginArgs(words: string[], verb: "login" | "logout", prefix = CLI): { account?: number; fresh?: boolean } {
+// The words after `login` or `logout`, on the command line or after `/login` in a session.
+export interface LoginOptions {
+  account?: number; // which saved account, counted from 1
+  fresh?: boolean; // a new account
+  keychain?: boolean; // keep the tokens in the system keychain
+}
+
+// `prefix` is how a command is typed, for the messages.
+export function loginArgs(words: string[], verb: "login" | "logout", prefix = CLI): LoginOptions {
   const [provider, ...rest] = words;
-  const usage = new LoginError(verb === "login" ? `Usage: ${prefix}login chatgpt [--new | --account <number>]` : `Usage: ${prefix}logout chatgpt`);
+  const usage = new LoginError(verb === "login" ? `Usage: ${prefix}login chatgpt [--new | --account <number>] [--keychain]` : `Usage: ${prefix}logout chatgpt`);
   if (provider === undefined) throw usage;
   if (provider.toLowerCase() !== "chatgpt") throw new LoginError(`Only ChatGPT has a ${verb}: \`${prefix}${verb} chatgpt\`. Other providers use an API key.`);
-  if (verb === "logout" && rest.length) throw usage;
-  if (rest.length === 1 && rest[0] === "--new") return { fresh: true };
-  if (rest.length === 2 && rest[0] === "--account" && /^[1-9]\d*$/.test(rest[1]!)) return { account: Number(rest[1]) };
-  if (rest.length) throw usage;
-  return {};
+  if (verb === "logout") {
+    if (rest.length) throw usage;
+    return {};
+  }
+  const opts: LoginOptions = {};
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i];
+    const chosen = opts.fresh || opts.account !== undefined;
+    if (word === "--keychain" && !opts.keychain) opts.keychain = true;
+    else if (word === "--new" && !chosen) opts.fresh = true;
+    else if (word === "--account" && !chosen && /^[1-9]\d*$/.test(rest[i + 1] ?? "")) opts.account = Number(rest[++i]);
+    else throw usage;
+  }
+  return opts;
 }
 
 const signedIn = (login: SavedLogin) => (login.active?.tokens ? login.active : undefined);
 const who = (login: SavedLogin, a = signedIn(login)) => login.accounts.find((x) => x.clientId === a?.clientId && x.sub === a?.sub)?.email ?? "your ChatGPT account";
 
 // Which saved account to sign in to: the only one, the one asked for, or a new one.
-function choose(login: SavedLogin, opts: { account?: number; fresh?: boolean }, typed: string): Account | undefined {
+function choose(login: SavedLogin, opts: LoginOptions, typed: string): Account | undefined {
   if (opts.fresh) return undefined;
   if (opts.account !== undefined) {
     const a = login.accounts[opts.account - 1];
@@ -62,16 +77,24 @@ function choose(login: SavedLogin, opts: { account?: number; fresh?: boolean }, 
   throw new LoginError(`Saved ChatGPT accounts:\n${list}\nChoose one with \`${typed}login chatgpt --account <number>\`, or add another with \`--new\`.`);
 }
 
-export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: number; fresh?: boolean; issuer?: string; signal?: AbortSignal } = {}): Promise<void> {
+export async function signIn(store: LoginStore, io: LoginIO, opts: LoginOptions & { issuer?: string; signal?: AbortSignal } = {}): Promise<void> {
   const typed = io.prefix ?? CLI;
   // Under the lock: check, choose the client ID, and save the machine ID before its first use.
   const start = await store.update(async (login, save) => {
-    if (signedIn(login)) throw new LoginError(`Already signed in as ${who(login)}. Sign out first with \`${typed}logout chatgpt\`.`);
+    if (signedIn(login)) {
+      // Already signed in, `--keychain` moves the tokens there.
+      if (opts.keychain && !login.keychain) {
+        save({ ...login, keychain: true });
+        return undefined;
+      }
+      throw new LoginError(`Already signed in as ${who(login)}. Sign out first with \`${typed}logout chatgpt\`.`);
+    }
     const account = choose(login, opts, typed);
     const saved = save(login);
     // An unfinished registration's issued ID is used again, as the docs say after a failed exchange.
     return { account, hostId: saved.hostId, version: saved.version, clientId: account?.clientId ?? login.pending?.clientId ?? FIRST_CLIENT };
   }, opts.signal);
+  if (!start) return io.say("Your ChatGPT login is now kept in the system keychain.");
 
   // Asked for after that check, so a signed-in user who is offline is still told so.
   const ep = await discover(opts.issuer ?? ISSUER, opts.signal);
@@ -137,8 +160,14 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: n
     const planUse = tokens.scopes.includes(PLAN_SCOPE);
     const account: Account = { clientId, sub: id.sub, ...(id.email ? { email: id.email } : {}), idToken: t.id_token };
     const others = login.accounts.filter((a) => a.clientId !== clientId || a.sub !== id.sub);
-    // Another account's unfinished registration stays, for the next `--new`.
-    save({ ...login, pending: login.pending?.clientId === clientId ? undefined : login.pending, accounts: [account, ...others], noticeShown: login.noticeShown || planUse, active: { clientId, sub: id.sub, planUse, tokens } });
+    save({
+      ...login,
+      pending: login.pending?.clientId === clientId ? undefined : login.pending, // another account's unfinished registration stays, for the next `--new`
+      accounts: [account, ...others],
+      noticeShown: login.noticeShown || planUse,
+      active: { clientId, sub: id.sub, planUse, tokens },
+      keychain: opts.keychain === true, // chosen at each sign-in
+    });
     return { email: id.email ?? "your ChatGPT account", planUse, notice: planUse && !login.noticeShown };
   }, opts.signal);
 
