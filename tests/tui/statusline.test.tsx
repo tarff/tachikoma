@@ -50,7 +50,8 @@ describe("StatusLine", () => {
     const plan = { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0, costUnknown: false };
     expect(formatSegment("cost", plan)).toBe("ChatGPT plan");
     expect(formatSegment("cost", { ...plan, cost: 0.42 })).toBe("ChatGPT plan + $0.42");
-    expect(formatSegment("cost", { ...plan, costUnknown: true })).toBe("ChatGPT plan + $0.00 + ?");
+    expect(formatSegment("cost", { ...plan, costUnknown: true })).toBe("ChatGPT plan + ?");
+    expect(formatSegment("cost", { ...plan, cost: 0.42, costUnknown: true })).toBe("ChatGPT plan + $0.42 + ?");
   });
 
   it("stays on one line of the terminal, cutting off the end", () => {
