@@ -33,17 +33,35 @@ describe("LoginStore", () => {
     expect(readFileSync(store.file, "utf8")).toBe("{ not json");
   });
 
+  it("says which process it waits for, and which file to delete if none is running", async () => {
+    const warnings: string[] = [];
+    const store = new LoginStore(temp(), (w) => warnings.push(w));
+    store.read(); // makes the folder
+    writeFileSync(store.lockFile, String(process.ppid)); // running, and not this process
+    const stop = new AbortController();
+    const changing = store.update(async () => {}, stop.signal);
+    while (!warnings.length) await new Promise((r) => setTimeout(r, 20));
+    stop.abort();
+    await expect(changing).rejects.toThrow();
+    expect(warnings[0]).toContain(`process ${process.ppid}`);
+    expect(warnings[0]).toContain(store.lockFile);
+  });
+
   it("loses no change when two processes change the login at once", async () => {
     const dir = temp();
     const url = pathToFileURL(path.resolve("src/auth/store.ts")).href;
     const script = path.join(path.dirname(dir), "add.mts");
-    // Each process adds five accounts, one change at a time.
+    // Each process adds five accounts, one change at a time, pausing between reading and saving so
+    // that the two overlap.
     writeFileSync(
       script,
       `import { LoginStore } from ${JSON.stringify(url)};
 const store = new LoginStore(${JSON.stringify(dir)}, () => {});
 for (let i = 0; i < 5; i++) {
-  await store.update(async (login, save) => { save({ ...login, accounts: [...login.accounts, { clientId: process.argv[2] + i, sub: "s" }] }); });
+  await store.update(async (login, save) => {
+    await new Promise((r) => setTimeout(r, 20));
+    save({ ...login, accounts: [...login.accounts, { clientId: process.argv[2] + i, sub: "s" }] });
+  });
 }`,
     );
     const runs = ["a", "b"].map((tag) => new Promise((resolve) => spawn(process.execPath, ["--import", "tsx", script, tag], { stdio: "inherit" }).on("close", resolve)));

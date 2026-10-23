@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmodSync, fsyncSync, linkSync, mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -79,6 +79,20 @@ describe("private files", () => {
     expect(() => privateDir(`${dir}-link`)).toThrow("is not a plain folder");
     mkdirSync(path.join(dir, "chatgpt.json"));
     expect(() => readPrivate(path.join(dir, "chatgpt.json"), () => {})).toThrow("is not a plain file");
+  });
+
+  // Another Tachikoma reading the login has it open for a moment, and Windows will not replace a file
+  // that is open. The save waits for it.
+  it.runIf(windows)("on Windows, saves while another program has the file open for a moment", async () => {
+    const dir = temp();
+    const file = path.join(dir, "chatgpt.json");
+    writePrivate(file, "one");
+    const holder = spawn("powershell.exe", ["-NoProfile", "-Command", `$f = [IO.File]::Open('${file}', 'Open', 'Read', 'ReadWrite'); 'open'; Start-Sleep -Milliseconds 300; $f.Close()`]);
+    let out = "";
+    holder.stdout.on("data", (d) => (out += d));
+    while (!out.includes("open")) await new Promise((r) => setTimeout(r, 20));
+    writePrivate(file, "two");
+    expect(readPrivate(file, () => {})).toBe("two");
   });
 
   it.runIf(windows)("on Windows, lets in only the user, from the start", () => {
