@@ -6,7 +6,9 @@ import type { Mode } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
+import type { ModelGroup } from "../providers/models.js";
 import { describe, type Line, screen } from "./describe.js";
+import { ModelPicker } from "./ModelPicker.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
 
 type Question = { text: string; answer: (ok: boolean, how: string) => void };
@@ -23,17 +25,19 @@ export interface AppProps {
   // `/login …` and `/logout …`: the words after the command, where to show what it says, a signal
   // Ctrl-C aborts, and how a command is typed here ("/").
   login: (verb: "login" | "logout", words: string[], say: (line: string) => void, signal: AbortSignal, prefix: string) => Promise<void>;
+  listModels: (signal: AbortSignal) => Promise<ModelGroup[]>;
 }
 
-const COMMANDS = "/lead <provider:model>, /login chatgpt, /logout chatgpt, /errors, /exit";
+const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /errors, /exit";
 
-export function App({ session, bus, stats, mode, errorFile, segments, makeProvider, bindAsk, login }: AppProps) {
+export function App({ session, bus, stats, mode, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [question, setQuestion] = useState<Question | null>(null);
   const [contextWindow, setContextWindow] = useState<number | null>(null);
+  const [picker, setPicker] = useState<ModelGroup[] | null>(null);
   const [, rerender] = useState(0);
   const abort = useRef<AbortController | null>(null);
   const nextId = useRef(0);
@@ -119,14 +123,17 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
-      if (!account && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
-      if (words.length && ["/exit", "/errors"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
+      if (!account && !alone("/model") && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
+      if (words.length && ["/exit", "/errors", "/model"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
       abort.current = new AbortController();
       setBusy(true);
       try {
         // Signing in waits on the browser; Ctrl-C stops it, as it stops a turn.
         if (account) await login(account, words, (line) => say({ text: line, color: "magenta" }), abort.current.signal, "/");
-        else await session.send(text, abort.current.signal);
+        else if (alone("/model")) {
+          const groups = await listModels(abort.current.signal);
+          if (!abort.current.signal.aborted) setPicker(groups);
+        } else await session.send(text, abort.current.signal);
       } finally {
         setBusy(false);
       }
@@ -135,7 +142,18 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
     }
   };
 
+  // Picking does what `/lead <provider:model>` does.
+  const pick = (spec: string) => {
+    setPicker(null);
+    try {
+      session.setLead(makeProvider(spec));
+    } catch (err) {
+      say({ text: errorText(err), color: "red" });
+    }
+  };
+
   useInput((ch, key) => {
+    if (picker) return; // the picker reads the keys while it is open
     if (question) {
       if (key.ctrl && ch === "c") {
         question.answer(false, "declined (cancelled)");
@@ -161,7 +179,9 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
           </Text>
         )}
       </Static>
-      {question ? (
+      {picker ? (
+        <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={() => setPicker(null)} />
+      ) : question ? (
         <Text color="yellow">Allow {question.text}? [y/n]</Text>
       ) : (
         <Text>{busy ? "… working (Ctrl-C to stop)" : `› ${input}`}</Text>

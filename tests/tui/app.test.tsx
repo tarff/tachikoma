@@ -9,6 +9,7 @@ import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import type { Provider } from "../../src/core/types.js";
 import { TOOLS } from "../../src/tools/index.js";
+import type { ModelGroup } from "../../src/providers/models.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { SEGMENTS } from "../../src/tui/StatusLine.js";
 import { Bus, FakeProvider, callTool, reply, tempContext } from "../helpers.js";
@@ -30,7 +31,7 @@ type Login = AppProps["login"];
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
-  opts: { lead?: Provider; errorFile?: string; login?: Login; made?: string[] } = {},
+  opts: { lead?: Provider; errorFile?: string; login?: Login; models?: ModelGroup[]; made?: string[] } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
@@ -52,6 +53,7 @@ async function mount(
         return new FakeProvider("b", []);
       }}
       login={opts.login ?? (async () => {})}
+      listModels={async () => opts.models ?? []}
       bindAsk={(fn) => {
         ask = fn;
       }}
@@ -222,6 +224,52 @@ describe("App", () => {
     app.stdin.write("\u0003");
     await until(app, "Sign-in was cancelled");
     await until(app, "›");
+  });
+
+  const models: ModelGroup[] = [
+    { provider: "fake", models: ["a", "b", "c"] },
+    { provider: "ollama", error: "not running" },
+    { provider: "evil", models: [`x${OSC52}`] },
+  ];
+
+  it("lists every provider's models with /model, marks the lead, and picks with the arrow keys and Enter", async () => {
+    const made: string[] = [];
+    const { app } = await mount([], { models, made });
+    await type(app, "/model");
+    await until(app, "ollama (not running)");
+    expect(app.lastFrame()).toContain("● fake:a");
+    expect(app.lastFrame()).toContain(`evil:x${OSC52_SHOWN}`);
+    expectNoRawControls(app.lastFrame());
+    await tick(); // the picker starts reading keys just after it first appears
+    app.stdin.write("\u001b[B"); // down
+    await tick();
+    app.stdin.write("\r");
+    await until(app, "lead is now fake:b");
+    expect(made).toEqual(["fake:b"]);
+  });
+
+  it("filters as the user types, and closes on Esc without changing the lead", async () => {
+    const made: string[] = [];
+    const { app } = await mount([], { models, made });
+    await type(app, "/Model"); // commands ignore case
+    await until(app, "fake:c");
+    await tick();
+    app.stdin.write("c");
+    await tick();
+    expect(app.lastFrame()).toContain("fake:c");
+    expect(app.lastFrame()).not.toContain("● fake:a"); // the status line still names the lead
+    expect(app.lastFrame()).not.toContain("not running");
+    app.stdin.write("\u001b");
+    await until(app, "›");
+    expect(app.lastFrame()).not.toContain("fake:c");
+    expect(made).toEqual([]);
+  });
+
+  it("refuses words after /model instead of sending them to the model", async () => {
+    const { app, session } = await mount([], { models });
+    await type(app, "/model gpt");
+    await until(app, "/model takes nothing after it.");
+    expect(session.messages).toEqual([]);
   });
 
   it("sends a message that starts with a one-word path", async () => {
