@@ -188,8 +188,8 @@ describe("App", () => {
     expect(app.lastFrame()).not.toMatch(/ctx \d+%/);
     await type(app, "hi");
     await until(app, "there");
-    await until(app, "%");
-    expect(app.lastFrame()).toMatch(/ctx \d+%/);
+    await until(app, "% left");
+    expect(app.lastFrame()).toMatch(/ctx \d+% left/);
   });
 
   it("keeps the window it knows when asking again after a reply fails", async () => {
@@ -203,6 +203,20 @@ describe("App", () => {
     await until(app, "there");
     await tick();
     expect(asked).toBe(2);
+    expect(app.lastFrame()).toContain("% left");
+  });
+
+  it("shows only the latest lookup's answer, so a slow earlier one cannot undo it", async () => {
+    let first: (n: number | null) => void = () => {};
+    let asked = 0;
+    const slow = Object.assign(new FakeProvider("a", [reply("there")]), {
+      contextWindow: () => (asked++ ? Promise.resolve(1000) : new Promise<number | null>((r) => (first = r))),
+    });
+    const { app } = await mount([], { lead: slow });
+    await type(app, "hi");
+    await until(app, "% left");
+    first(null); // as Anthropic's lookup answers when it gives up
+    await tick();
     expect(app.lastFrame()).toContain("% left");
   });
 

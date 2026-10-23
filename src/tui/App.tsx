@@ -32,17 +32,18 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
   const [, rerender] = useState(0);
   const abort = useRef<AbortController | null>(null);
   const nextId = useRef(0);
+  const lookups = useRef(0);
 
   const say = (...add: Line[]) => setLines((l) => [...l, ...add.map((x) => ({ ...screen(x), id: nextId.current++ }))]);
 
-  // A late answer for the previous lead must not show as the new lead's window. Asked again after
-  // each reply, without clearing what is shown: a ChatGPT plan's window is known only once a reply has
-  // fetched the account's model list.
+  // Only the latest lookup's answer is shown: a late one, for the previous lead or from before a
+  // request, must not replace it. Asked again after each request, without clearing what is shown: a
+  // ChatGPT plan's window is known only once a request has fetched the account's model list.
   const lookUpWindow = (fresh = true) => {
-    const lead = session.lead;
+    const asked = ++lookups.current;
     if (fresh) setContextWindow(null);
-    lead.contextWindow?.()
-      .then((n) => session.lead === lead && setContextWindow(n))
+    session.lead.contextWindow?.()
+      .then((n) => asked === lookups.current && setContextWindow(n))
       .catch(() => {}); // stays unknown
   };
 
