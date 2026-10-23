@@ -2,6 +2,7 @@ import { createHash, createPublicKey, type JsonWebKey, randomBytes, verify } fro
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { z } from "zod";
+import { connectReason } from "../core/types.js";
 
 // OpenAI's Sign in with ChatGPT for open-source tools, from its docs (developers.openai.com/siwc/
 // token-sharing-open-source and its pages "sign-in", "accounts and sessions" and "token reference",
@@ -26,6 +27,17 @@ export class OAuthError extends Error {
   }
 }
 
+// Node's fetch fails with only "fetch failed"; the reason, such as a refused redirect or a host that
+// cannot be found, is further down (connectReason). Ctrl-C's error is passed on as it is.
+async function request(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    if (init.signal?.aborted || !(err instanceof Error)) throw err;
+    throw new OAuthError(`The request to OpenAI's sign-in service failed (${connectReason(err)})`);
+  }
+}
+
 const EndpointsSchema = z.object({
   issuer: z.string(),
   authorization_endpoint: z.string(),
@@ -37,7 +49,7 @@ export type Endpoints = z.infer<typeof EndpointsSchema>;
 
 // The docs say to load the endpoints from OpenAI's discovery document.
 export async function discover(issuer = ISSUER, signal?: AbortSignal): Promise<Endpoints> {
-  const res = await fetch(`${issuer}/.well-known/openid-configuration`, { signal });
+  const res = await request(`${issuer}/.well-known/openid-configuration`, { signal });
   if (!res.ok) throw new OAuthError(`Could not read OpenAI's sign-in settings (HTTP ${res.status})`, undefined, res.status);
   const ep = EndpointsSchema.parse(await res.json());
   if (ep.issuer !== issuer) throw new OAuthError(`OpenAI's sign-in settings name the wrong issuer (${ep.issuer})`);
@@ -148,7 +160,7 @@ export type TokenResponse = z.infer<typeof TokenSchema>;
 // A form POST to an OpenAI sign-in endpoint. Errors carry OpenAI's code, never a token.
 async function post(url: string, form: Record<string, string>, signal?: AbortSignal): Promise<Response> {
   // A redirect would send the form, tokens and all, to another address.
-  const res = await fetch(url, { method: "POST", headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(form), redirect: "error", signal });
+  const res = await request(url, { method: "POST", headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(form), redirect: "error", signal });
   if (res.ok) return res;
   let code: string | undefined;
   try {
@@ -202,7 +214,7 @@ export async function verifyIdToken(ep: Endpoints, idToken: string, p: { clientI
   }
   if (!header || typeof header !== "object") throw new OAuthError("The ID token is malformed");
   if (header.alg !== "RS256") throw new OAuthError("The ID token is not signed with RS256");
-  const res = await fetch(ep.jwks_uri, { signal });
+  const res = await request(ep.jwks_uri, { signal });
   if (!res.ok) throw new OAuthError(`Could not read OpenAI's signing keys (HTTP ${res.status})`, undefined, res.status);
   const jwk = JwksSchema.parse(await res.json()).keys.find((k) => k.kid === header.kid);
   if (!jwk) throw new OAuthError("The ID token was signed with a key OpenAI does not publish");

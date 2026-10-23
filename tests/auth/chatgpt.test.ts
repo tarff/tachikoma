@@ -1,18 +1,43 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { type LoginIO, loginArgs, signIn, signOut } from "../../src/auth/chatgpt.js";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { accountCommand, type LoginIO, loginArgs, signIn, signOut } from "../../src/auth/chatgpt.js";
 import { LoginError, LoginStore } from "../../src/auth/store.js";
 import { FakeOpenAI } from "./fake-openai.js";
 
-async function setup() {
+async function setup(warn: (line: string) => void = () => {}) {
   const fake = await FakeOpenAI.start();
-  const store = new LoginStore(path.join(mkdtempSync(path.join(tmpdir(), "tachi-login-")), "data"), () => {});
+  const store = new LoginStore(path.join(mkdtempSync(path.join(tmpdir(), "tachi-login-")), "data"), warn);
   const said: string[] = [];
   const io: LoginIO = { say: (l) => said.push(l), openBrowser: fake.browser };
   const opts = { issuer: fake.issuer };
   return { fake, store, said, io, opts };
+}
+
+// Ctrl-C while the request to `path` waits for an answer that never comes, so only Ctrl-C can end
+// it; or, with `answered`, just after the answer has arrived.
+function ctrlCAt(path: string, stop: AbortController, answered = false): void {
+  const real = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (!String(input).endsWith(path)) return real(input, init);
+    if (answered) {
+      const body = await (await real(input, init)).text();
+      stop.abort();
+      return new Response(body, { headers: { "content-type": "application/json" } });
+    }
+    return new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+      stop.abort();
+    });
+  });
+  onTestFinished(() => void vi.restoreAllMocks());
+}
+
+// Another process holds the lock: a running process that is not this one, as in the store's tests.
+function lockHeld(store: LoginStore): void {
+  store.read(); // makes the folder
+  writeFileSync(store.lockFile, String(process.ppid));
 }
 
 const NOTICE = "You're using your ChatGPT plan. Eligible usage in this app uses your ChatGPT plan. Manage usage: https://chatgpt.com/settings/usage";
@@ -149,6 +174,73 @@ describe("signIn", () => {
     expect(store.read().active).toBeUndefined();
   });
 
+  it.each([
+    ["asking for OpenAI's sign-in settings", "/.well-known/openid-configuration"],
+    ["fetching OpenAI's signing keys", "/jwks"],
+  ])("stops at Ctrl-C while %s, and saves no login", async (_, at) => {
+    const { store, io, opts } = await setup();
+    const stop = new AbortController();
+    ctrlCAt(at, stop);
+    await expect(signIn(store, io, { ...opts, signal: stop.signal })).rejects.toThrow("aborted");
+    expect(store.read().active).toBeUndefined();
+  });
+
+  it("stops at Ctrl-C pressed just after OpenAI's last answer, and saves no login", async () => {
+    const { store, io, opts } = await setup();
+    const stop = new AbortController();
+    ctrlCAt("/jwks", stop, true);
+    await expect(signIn(store, io, { ...opts, signal: stop.signal })).rejects.toThrow("aborted");
+    expect(store.read()).toMatchObject({ accounts: [] });
+    expect(store.read().active).toBeUndefined();
+  });
+
+  it("stops at Ctrl-C while waiting for the browser", async () => {
+    const { store, said, opts } = await setup();
+    const stop = new AbortController();
+    const io: LoginIO = { say: (l) => said.push(l), openBrowser: () => stop.abort() };
+    await expect(signIn(store, io, { ...opts, signal: stop.signal })).rejects.toThrow("Sign-in was cancelled");
+  });
+
+  it.each(["before", "after"])("stops at Ctrl-C while waiting for the lock %s the browser, and saves nothing", async (when) => {
+    const warnings: string[] = [];
+    const { fake, store, said, opts } = await setup((w) => warnings.push(w));
+    const io: LoginIO = {
+      say: (l) => said.push(l),
+      openBrowser: (url) => {
+        lockHeld(store);
+        fake.browser(url);
+      },
+    };
+    if (when === "before") lockHeld(store);
+    const stop = new AbortController();
+    const out = signIn(store, io, { ...opts, signal: stop.signal });
+    while (!warnings.length) await new Promise((r) => setTimeout(r, 10));
+    stop.abort();
+    await expect(out).rejects.toThrow("aborted");
+    expect(store.read().pending).toBeUndefined(); // not even the issued client ID
+    expect(store.read().active).toBeUndefined();
+  });
+
+  it("keeps another account's unfinished registration while signing in to a saved one", async () => {
+    const { fake, store, io, opts } = await setup();
+    await signIn(store, io, opts);
+    await signOut(store, io, opts);
+    fake.issuedClientId = "oaiapp_2";
+    fake.idTokenIssuer = "https://evil.example"; // the new registration's exchange works, then its check fails
+    await expect(signIn(store, io, { ...opts, fresh: true })).rejects.toThrow("wrong issuer");
+    fake.idTokenIssuer = undefined;
+    await signIn(store, io, opts); // the saved account
+    expect(store.read().pending).toEqual({ clientId: "oaiapp_2" });
+  });
+
+  it("says it is already signed in, even when OpenAI cannot be reached", async () => {
+    const { store, io, opts } = await setup();
+    await signIn(store, io, opts);
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed"));
+    onTestFinished(() => void vi.restoreAllMocks());
+    await expect(signIn(store, io, opts)).rejects.toThrow("Already signed in as me@example.com.");
+  });
+
   it("saves the issued client ID before the exchange and uses it for the next try", async () => {
     const { fake, store, io, opts } = await setup();
     fake.idTokenIssuer = "https://evil.example"; // the exchange works, then the ID token check fails
@@ -229,7 +321,20 @@ describe("signOut", () => {
     await store.update(async (login, save) => void save(login)); // the lock is free
     stop.abort(); // Ctrl-C
     await out;
-    expect(said.at(-1)).toContain("OpenAI did not confirm that the sign-in was cancelled");
+    expect(said.at(-1)).toContain("OpenAI did not confirm that the sign-in was cancelled (you stopped the wait)");
+  });
+
+  it("stops at Ctrl-C while waiting for the lock, and changes nothing", async () => {
+    const warnings: string[] = [];
+    const { store, io, opts } = await setup((w) => warnings.push(w));
+    await signIn(store, io, opts);
+    lockHeld(store);
+    const stop = new AbortController();
+    const out = signOut(store, io, { ...opts, signal: stop.signal });
+    while (!warnings.length) await new Promise((r) => setTimeout(r, 10));
+    stop.abort();
+    await expect(out).rejects.toThrow("aborted");
+    expect(store.read().active?.tokens).toBeDefined();
   });
 
   it("cancels a sign-in still waiting in the browser, even with nobody signed in", async () => {
@@ -241,5 +346,20 @@ describe("signOut", () => {
     await expect(signIn(store, meddling, opts)).rejects.toThrow("The saved login changed while you were signing in");
     expect(said).toContain("Not signed in to ChatGPT.");
     expect(fake.tokenRequests).toHaveLength(0);
+  });
+});
+
+describe("accountCommand", () => {
+  it.each([
+    ["login", "Sign-in was cancelled."],
+    ["logout", "Sign-out was cancelled."],
+  ] as const)("says the %s was cancelled at Ctrl-C", async (verb, message) => {
+    vi.stubEnv("TACHI_DATA_DIR", path.join(mkdtempSync(path.join(tmpdir(), "tachi-login-")), "data"));
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("fetch failed")); // never reaches OpenAI
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+      vi.restoreAllMocks();
+    });
+    await expect(accountCommand(verb, ["chatgpt"], () => {}, AbortSignal.abort())).rejects.toThrow(message);
   });
 });

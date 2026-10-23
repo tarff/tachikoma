@@ -182,8 +182,18 @@ describe("against OpenAI's flow", () => {
       res.writeHead(200).end("{}");
     });
     const server = await serve((res) => res.writeHead(307, { location: other.url }).end());
-    await expect(refresh({ ...ep, token_endpoint: server.url }, { clientId: "c", refreshToken: "secret-r" })).rejects.toThrow();
+    await expect(refresh({ ...ep, token_endpoint: server.url }, { clientId: "c", refreshToken: "secret-r" })).rejects.toThrow(
+      "The request to OpenAI's sign-in service failed (unexpected redirect)",
+    );
     expect(asked).toBe(false);
+  });
+
+  it("says why OpenAI could not be reached, where Node's fetch says only \"fetch failed\"", async () => {
+    const server = http.createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const issuer = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    await new Promise((resolve) => server.close(resolve)); // nothing listens there now
+    await expect(discover(issuer)).rejects.toThrow("The request to OpenAI's sign-in service failed (connect ECONNREFUSED");
   });
 
   it("keeps tokens out of the error for a reply it cannot read", async () => {
