@@ -95,9 +95,9 @@ describe("fromStream", () => {
       [error("subscription_sharing_user_not_eligible", "Not for this workspace."), "This ChatGPT account cannot use its plan here (subscription_sharing_user_not_eligible). Not for this workspace. Use openai:<model> with an API key instead."],
       ...["chatpass_v2_scope_not_authorized", "chatpass_v2_invalid_authorization_context"].map((code): [ResponseStreamEvent, string] => [
         error(code, "Not granted"),
-        `OpenAI says this ChatGPT sign-in's permissions do not cover the request (${code}). Not granted. Sign out with \`tachi logout chatgpt\`, then sign in again with \`tachi login chatgpt\` and allow plan use.`,
+        `OpenAI says this ChatGPT sign-in's permissions do not cover the request (${code}). Not granted. Sign out with \`tachi logout chatgpt\`, then sign in again with \`tachi login chatgpt\` (or /logout chatgpt and /login chatgpt in a session) and allow plan use.`,
       ]),
-      [error("subscription_sharing_invalid_user", "Unknown user"), "OpenAI did not accept the ChatGPT sign-in (subscription_sharing_invalid_user). Unknown user. Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt`."],
+      [error("subscription_sharing_invalid_user", "Unknown user"), "OpenAI did not accept the ChatGPT sign-in (subscription_sharing_invalid_user). Unknown user. Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt` (or /logout chatgpt and /login chatgpt in a session)."],
       [error("subscription_sharing_user_unavailable", "Try later!"), "ChatGPT plan use is unavailable right now (subscription_sharing_user_unavailable). Try later! Your sign-in is kept; try again later."],
       [error("subscription_sharing_unsupported_capability", "Not on this route", "tools"), "OpenAI could not complete the request (subscription_sharing_unsupported_capability, about tools). Not on this route."],
       [{ type: "response.failed", response: { error: { code: "server_error", message: "" } } } as unknown as ResponseStreamEvent, "OpenAI could not complete the request (server_error). The reply failed."],
@@ -207,7 +207,7 @@ describe("ChatGPTProvider", () => {
 
   it("says what a refused request means, in OpenAI's words, with the request ID", async () => {
     const cases: [(res: http.ServerResponse) => void, string][] = [
-      [(res) => json(res, 401, { error: { code: "invalid_token", message: "Bad token", type: "x", param: null } }), "OpenAI did not accept the ChatGPT sign-in (HTTP 401, invalid_token). Bad token. Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt`. OpenAI's request ID: req_9."],
+      [(res) => json(res, 401, { error: { code: "invalid_token", message: "Bad token", type: "x", param: null } }), "OpenAI did not accept the ChatGPT sign-in (HTTP 401, invalid_token). Bad token. Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt` (or /logout chatgpt and /login chatgpt in a session). OpenAI's request ID: req_9."],
       [(res) => json(res, 503, { detail: "Direct routing is off" }), "ChatGPT plan use is unavailable right now (HTTP 503). Direct routing is off. Your sign-in is kept; try again later. OpenAI's request ID: req_9."],
       [(res) => json(res, 503, { error: { code: "server_overloaded", message: "Busy", type: "x", param: null } }), "ChatGPT plan use is unavailable right now (HTTP 503, server_overloaded). Busy. Your sign-in is kept; try again later. OpenAI's request ID: req_9."],
       [(res) => json(res, 429, { error: { code: "rate_limit_exceeded", message: "Slow down", type: "x", param: null } }), "OpenAI refused the request (HTTP 429, rate_limit_exceeded). Slow down. Try again later. OpenAI's request ID: req_9."],

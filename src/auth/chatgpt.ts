@@ -14,8 +14,10 @@ const NOTICE = `You're using your ChatGPT plan. Eligible usage in this app uses 
 export interface LoginIO {
   say(line: string): void;
   openBrowser(url: string): void;
-  prefix?: string; // how a command is typed, for the messages: "tachi " (the default) or "/" in a session
+  prefix?: string; // how a command is typed, for the messages: CLI (the default) or "/" in a session
 }
+
+const CLI = "tachi "; // how a command is typed on the command line
 
 // The system's own way to open an address, with no shell in between and no API keys passed on.
 export function openBrowser(url: string): void {
@@ -28,11 +30,11 @@ export function openBrowser(url: string): void {
 
 // The words after `login` or `logout`, on the command line or after `/login` in a session; `prefix` is
 // how a command is typed there, for the messages.
-export function loginArgs(words: string[], verb: "login" | "logout", prefix = "tachi "): { account?: number; fresh?: boolean } {
+export function loginArgs(words: string[], verb: "login" | "logout", prefix = CLI): { account?: number; fresh?: boolean } {
   const [provider, ...rest] = words;
   const usage = new LoginError(verb === "login" ? `Usage: ${prefix}login chatgpt [--new | --account <number>]` : `Usage: ${prefix}logout chatgpt`);
   if (provider === undefined) throw usage;
-  if (provider !== "chatgpt") throw new LoginError(`Only ChatGPT has a ${verb}: \`${prefix}${verb} chatgpt\`. Other providers use an API key.`);
+  if (provider.toLowerCase() !== "chatgpt") throw new LoginError(`Only ChatGPT has a ${verb}: \`${prefix}${verb} chatgpt\`. Other providers use an API key.`);
   if (verb === "logout" && rest.length) throw usage;
   if (rest.length === 1 && rest[0] === "--new") return { fresh: true };
   if (rest.length === 2 && rest[0] === "--account" && /^[1-9]\d*$/.test(rest[1]!)) return { account: Number(rest[1]) };
@@ -61,7 +63,7 @@ function choose(login: SavedLogin, opts: { account?: number; fresh?: boolean }, 
 }
 
 export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: number; fresh?: boolean; issuer?: string; signal?: AbortSignal } = {}): Promise<void> {
-  const typed = io.prefix ?? "tachi ";
+  const typed = io.prefix ?? CLI;
   // Under the lock: check, choose the client ID, and save the machine ID before its first use.
   const start = await store.update(async (login, save) => {
     if (signedIn(login)) throw new LoginError(`Already signed in as ${who(login)}. Sign out first with \`${typed}logout chatgpt\`.`);
@@ -146,7 +148,7 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: { account?: n
 }
 
 // `login chatgpt …` or `logout chatgpt`, typed on the command line, or in a session with `prefix` "/".
-export async function accountCommand(verb: "login" | "logout", words: string[], say: (line: string) => void, signal?: AbortSignal, prefix = "tachi "): Promise<void> {
+export async function accountCommand(verb: "login" | "logout", words: string[], say: (line: string) => void, signal?: AbortSignal, prefix = CLI): Promise<void> {
   const opts = loginArgs(words, verb, prefix);
   const store = new LoginStore(dataDir(), say);
   const io = { say, openBrowser, prefix };

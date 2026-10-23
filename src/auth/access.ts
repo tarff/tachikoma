@@ -82,7 +82,7 @@ export class ChatGPTAuth {
         }
         // "Invalid client: `invalid_client`. Fix the client configuration." (errors and recovery page)
         if (err instanceof OAuthError && err.code === "invalid_client") {
-          throw new LoginError(`Could not renew the ChatGPT sign-in. ${errorText(err)} OpenAI did not accept Tachikoma's registration, so trying again will not help. Sign out with \`tachi logout chatgpt\`, then register again with \`tachi login chatgpt --new\`.`);
+          throw new LoginError(`Could not renew the ChatGPT sign-in. ${errorText(err)} OpenAI did not accept Tachikoma's registration, so trying again will not help. Sign out with \`tachi logout chatgpt\`, then register again with \`tachi login chatgpt --new\` (or /logout chatgpt and /login chatgpt --new in a session).`);
         }
         throw new LoginError(`Could not renew the ChatGPT sign-in. ${errorText(err)} You are still signed in, so you can try again.`);
       }

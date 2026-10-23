@@ -30,7 +30,7 @@ type Login = AppProps["login"];
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
-  opts: { lead?: Provider; errorFile?: string; login?: Login } = {},
+  opts: { lead?: Provider; errorFile?: string; login?: Login; made?: string[] } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
@@ -47,7 +47,10 @@ async function mount(
       mode="ask"
       errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
       segments={SEGMENTS}
-      makeProvider={() => new FakeProvider("b", [])}
+      makeProvider={(spec) => {
+        opts.made?.push(spec);
+        return new FakeProvider("b", []);
+      }}
       login={opts.login ?? (async () => {})}
       bindAsk={(fn) => {
         ask = fn;
@@ -156,6 +159,16 @@ describe("App", () => {
     await type(app, "/eror");
     expect(app.lastFrame()).toContain("Unknown command: /eror");
     expect(app.lastFrame()).toContain("/errors");
+    expect(app.lastFrame()).toContain("/login chatgpt");
+    expect(session.messages).toEqual([]);
+  });
+
+  it("refuses words after a command that takes none, instead of sending them to the model", async () => {
+    const { app, session } = await mount([]);
+    await type(app, "/exit now");
+    await until(app, "/exit takes nothing after it.");
+    await type(app, "/Errors please");
+    await until(app, "/errors takes nothing after it.");
     expect(session.messages).toEqual([]);
   });
 
@@ -184,14 +197,20 @@ describe("App", () => {
       say("signed in");
     };
     const lead = new FakeProvider("a", [reply("ok")]);
-    const { app, session } = await mount([], { lead, login });
+    const made: string[] = [];
+    const { app, session } = await mount([], { lead, login, made });
     await type(app, "/LOGIN chatgpt");
     await until(app, "signed in");
     await type(app, "/Lead");
     await until(app, "Usage: /lead");
+    await type(app, "/Errors");
+    await until(app, "No errors logged yet.");
     await type(app, "/Tmp is full");
     await until(app, "ok");
+    await type(app, "/LEAD fake:B"); // the words after a command keep their case
+    await until(app, "lead is now fake:b");
     expect(calls).toEqual(["login chatgpt"]);
+    expect(made).toEqual(["fake:B"]);
     expect(session.messages[0]).toMatchObject({ role: "user", parts: [{ type: "text", text: "/Tmp is full" }] });
   });
 

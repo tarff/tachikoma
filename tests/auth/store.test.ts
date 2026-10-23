@@ -30,6 +30,7 @@ describe("LoginStore", () => {
     store.read(); // makes the folder
     writeFileSync(store.file, "{ not json");
     expect(() => store.read()).toThrow(LoginError);
+    expect(() => store.read()).toThrow("Move it aside, then sign in again with `tachi login chatgpt` (or /login chatgpt in a session).");
     expect(readFileSync(store.file, "utf8")).toBe("{ not json");
   });
 
