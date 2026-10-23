@@ -329,10 +329,20 @@ describe("App", () => {
     await type(app, "/model");
     await until(app, "fake:c");
     await tick();
-    app.stdin.write("b");
-    app.stdin.write("\r"); // before the screen shows the filter
+    app.stdin.write("b\r"); // a letter and Enter in one read of the terminal, as a paste ends
     await until(app, "›");
     expect(made).toEqual(["fake:c", "fake:b"]);
+  });
+
+  it("keeps control characters out of the filter, and shows the rest escaped", async () => {
+    const { app } = await mount([], { models });
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick();
+    app.stdin.write("b\t\u202e");
+    await until(app, "Filter: b\\u202e ·");
+    app.stdin.write("x\r"); // nothing matches, so the line end picks nothing
+    await until(app, "Filter: b\\u202ex ·");
   });
 
   it("says when there is nothing to pick from", async () => {

@@ -130,6 +130,9 @@ describe("listModels", () => {
       { provider: "openai", models: ["via-proxy"] },
     ]);
     expect(seen).not.toContain("https://api.openai.com/v1/models");
+    expect(await listModels(undefined, { OPENAI_API_KEY: "sk-oa", OPENAI_BASE_URL: "https://proxy.example/v1/" })).toEqual([
+      { provider: "openai", models: ["via-proxy"] },
+    ]);
   });
 
   it("shows a ChatGPT sign-in that cannot be used, with why", async () => {

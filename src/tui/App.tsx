@@ -132,7 +132,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
         // Signing in waits on the browser; Ctrl-C stops it, as it stops a turn.
         if (account) await login(account, words, (line) => say({ text: line, color: "magenta" }), abort.current.signal, "/");
         else if (alone("/model")) {
-          const { signal } = abort.current; // read once: the next command replaces it
+          const { signal } = abort.current; // this command's own, read before the wait
           const groups = await listModels(signal, (line) => say({ text: line, color: "magenta" }));
           if (!signal.aborted) setPicker(groups);
         } else await session.send(text, abort.current.signal);
