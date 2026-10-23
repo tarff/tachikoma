@@ -106,7 +106,7 @@ describe("private files", () => {
     const file = path.join(dir, "chatgpt.json");
     writePrivate(file, "one");
     await holdOpen(file, 2_000); // twice the 1 s the save waits
-    expect(() => writePrivate(file, "two")).toThrow(`${file} was kept open by another program, so it could not be saved`);
+    expect(() => writePrivate(file, "two")).toThrow(`${file} could not be replaced, perhaps because another program has it open, so it was not saved`);
     expect(readPrivate(file, () => {})).toBe("one");
     expect(readdirSync(dir)).toEqual(["chatgpt.json"]);
   }, 15_000);
