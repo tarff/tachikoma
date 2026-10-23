@@ -60,10 +60,18 @@ describe("loginArgs", () => {
     expect(loginArgs(["ChatGPT"], "logout")).toEqual({});
     expect(loginArgs(["chatgpt", "--new"], "login")).toEqual({ fresh: true });
     expect(loginArgs(["chatgpt", "--account", "2"], "login")).toEqual({ account: 2 });
+    expect(loginArgs(["chatgpt", "--keychain", "--new"], "login")).toEqual({ keychain: true, fresh: true });
     expect(loginArgs(["chatgpt"], "logout")).toEqual({});
   });
 
-  it.each([[["openai"]], [[]], [["chatgpt", "--account", "0"]], [["chatgpt", "--new", "--account", "1"]], [["chatgpt", "x"]]])("refuses %j", (words) => {
+  it.each([
+    [["openai"]],
+    [[]],
+    [["chatgpt", "--account", "0"]],
+    [["chatgpt", "--new", "--account", "1"]],
+    [["chatgpt", "--keychain", "--keychain"]],
+    [["chatgpt", "x"]],
+  ])("refuses %j", (words) => {
     expect(() => loginArgs(words, "login")).toThrow(LoginError);
   });
 
@@ -74,7 +82,7 @@ describe("loginArgs", () => {
   it("names the command as it is typed: with tachi on the command line, with a slash in a session", () => {
     expect(() => loginArgs(["openai"], "login")).toThrow(new LoginError("Only ChatGPT has a login: `tachi login chatgpt`. Other providers use an API key."));
     expect(() => loginArgs(["openai"], "logout", "/")).toThrow(new LoginError("Only ChatGPT has a logout: `/logout chatgpt`. Other providers use an API key."));
-    expect(() => loginArgs([], "login", "/")).toThrow(new LoginError("Usage: /login chatgpt [--new | --account <number>]"));
+    expect(() => loginArgs([], "login", "/")).toThrow(new LoginError("Usage: /login chatgpt [--new | --account <number>] [--keychain]"));
     expect(() => loginArgs(["chatgpt", "now"], "logout", "/")).toThrow(new LoginError("Usage: /logout chatgpt"));
   });
 });
