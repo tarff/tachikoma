@@ -11,8 +11,8 @@ const TokensSchema = z.object({
   access: z.string(),
   refresh: z.string(),
   expiresAt: z.number(), // milliseconds since 1970, from `expires_in`
-  // Kept exactly as OpenAI sent it: its docs name the field but not its meaning or units, which the
-  // first real sign-in shows (plan, Task 7).
+  // Kept exactly as OpenAI sent it: its docs name the field but not its meaning or units. The first
+  // real sign-in sent seconds since 1970 (main design, item 16).
   earliestRefreshAt: z.unknown().optional(),
   scopes: z.array(z.string()),
 });
