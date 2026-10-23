@@ -29,21 +29,27 @@ async function signedIn() {
     });
     return { release, done };
   };
-  return { fake, dir, store, io, auth, age, renewals, busy };
+  // Waits for anything still holding the lock, such as a renewal carrying on after Ctrl-C.
+  const settled = () => store.update(async () => {});
+  return { fake, dir, store, io, auth, age, renewals, busy, settled };
+}
+
+// Requests to `path` get `answer`, which can `send` them on to the fake; the rest go straight there.
+function intercept(path: string, answer: (send: () => Promise<Response>, init?: RequestInit) => Promise<Response>): void {
+  const real = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => (String(input).endsWith(path) ? answer(() => real(input, init), init) : real(input, init)));
+  onTestFinished(() => void vi.restoreAllMocks());
 }
 
 // Ctrl-C while the request to `path` waits for an answer that never comes, so only Ctrl-C can end it.
-function ctrlCAt(path: string, stop: AbortController): void {
-  const real = globalThis.fetch;
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-    if (!String(input).endsWith(path)) return real(input, init);
-    return new Promise<Response>((_, reject) => {
-      init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
-      stop.abort();
-    });
+const ctrlCWaiting = (path: string, stop: AbortController) =>
+  intercept(path, (_, init) => {
+    const out = new Promise<Response>((_, reject) => init?.signal?.addEventListener("abort", () => reject(init.signal!.reason)));
+    stop.abort();
+    return out;
   });
-  onTestFinished(() => void vi.restoreAllMocks());
-}
+
+const SETTINGS = "/.well-known/openid-configuration";
 
 describe("ChatGPTAuth", () => {
   it("uses the saved token while it has more than a minute left, and says which account it is for", async () => {
@@ -70,6 +76,22 @@ describe("ChatGPTAuth", () => {
     await age({ expiresAt: Date.now() + 30_000, earliestRefreshAt: Math.floor(Date.now() / 1000) + 600 });
     await auth.token();
     expect(renewals()).toBe(0);
+  });
+
+  // The real sign-in sends earliest_refresh_at (main design, item 16), so this is the usual renewal.
+  it("renews once earliest_refresh_at has passed", async () => {
+    const { auth, age, renewals } = await signedIn();
+    await age({ expiresAt: Date.now() + 30_000, earliestRefreshAt: Math.floor(Date.now() / 1000) - 1 });
+    await auth.token();
+    expect(renewals()).toBe(1);
+  });
+
+  it("renews once when two requests in one process need it at the same moment", async () => {
+    const { auth, age, renewals } = await signedIn();
+    await age({ expiresAt: Date.now() });
+    const [a, b] = await Promise.all([auth.token(), auth.token()]);
+    expect(renewals()).toBe(1);
+    expect(b.token).toBe(a.token);
   });
 
   it("renews once when two processes need it at the same moment", async () => {
@@ -117,29 +139,83 @@ console.log((await new ChatGPTAuth(new LoginStore(${JSON.stringify(dir)}, () => 
     expect(store.read().active?.tokens).toBeDefined();
   });
 
-  // Ctrl-C ends the request as it ends anything else, with the abort itself, and the login stays.
-  it.each([
-    ["asking for OpenAI's sign-in settings", "/.well-known/openid-configuration"],
-    ["renewing", "/token"],
-  ])("stops at Ctrl-C while %s, and keeps the login", async (_, at) => {
-    const { store, auth, age } = await signedIn();
+  // The errors page: "Invalid client: `invalid_client`. Fix the client configuration."
+  it("says to register again when OpenAI does not accept the registration", async () => {
+    const { fake, store, auth, age } = await signedIn();
     await age({ expiresAt: Date.now() });
-    const stop = new AbortController();
-    ctrlCAt(at, stop);
-    await expect(auth.token(stop.signal)).rejects.toMatchObject({ name: "AbortError" });
+    fake.renewalError = "invalid_client";
+    await expect(auth.token()).rejects.toThrow(
+      /^Could not renew the ChatGPT sign-in\. OpenAI refused the request \(HTTP 400, invalid_client\)\. OpenAI did not accept Tachikoma's registration, so trying again will not help\. Sign out with `tachi logout chatgpt`, then register again with `tachi login chatgpt --new`\.$/,
+    );
     expect(store.read().active?.tokens).toBeDefined();
   });
 
-  it("stops at Ctrl-C while waiting for the lock, and keeps the login", async () => {
-    const { store, auth, age, renewals, busy } = await signedIn();
+  // Ctrl-C ends the wait as it ends anything else, with the abort itself, and the login stays.
+  it("stops at Ctrl-C while asking for OpenAI's sign-in settings, and sends no renewal", async () => {
+    const { store, auth, age, renewals, settled } = await signedIn();
+    await age({ expiresAt: Date.now() });
+    const stop = new AbortController();
+    ctrlCWaiting(SETTINGS, stop);
+    await expect(auth.token(stop.signal)).rejects.toMatchObject({ name: "AbortError" });
+    await settled();
+    expect(renewals()).toBe(0);
+    expect(store.read().active?.tokens).toBeDefined();
+  });
+
+  it("sends no renewal after a Ctrl-C pressed just as OpenAI's sign-in settings arrive", async () => {
+    const { auth, age, renewals, settled } = await signedIn();
+    await age({ expiresAt: Date.now() });
+    const stop = new AbortController();
+    intercept(SETTINGS, async (send) => {
+      const body = await (await send()).text();
+      stop.abort();
+      return new Response(body, { headers: { "content-type": "application/json" } });
+    });
+    await expect(auth.token(stop.signal)).rejects.toMatchObject({ name: "AbortError" });
+    await settled();
+    expect(renewals()).toBe(0);
+  });
+
+  it("stops waiting at Ctrl-C while OpenAI renews, and keeps the login", async () => {
+    const { store, auth, age } = await signedIn();
+    const old = store.read().active!.tokens!;
+    await age({ expiresAt: Date.now() });
+    const stop = new AbortController();
+    ctrlCWaiting("/token", stop); // never answered, so the renewal carries on until Node gives up
+    await expect(auth.token(stop.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(store.read().active?.tokens?.refresh).toBe(old.refresh);
+  });
+
+  // OpenAI replaces the renewal token as it answers, so dropping its answer would sign the user out.
+  it("saves a renewal whose answer is arriving at Ctrl-C, for the next request to use", async () => {
+    const { store, auth, age, renewals } = await signedIn();
+    await age({ expiresAt: Date.now() });
+    const stop = new AbortController();
+    intercept("/token", async (send) => {
+      const res = await send();
+      stop.abort();
+      return res;
+    });
+    await expect(auth.token(stop.signal)).rejects.toMatchObject({ name: "AbortError" });
+    const next = await auth.token();
+    expect(renewals()).toBe(1);
+    expect(next.token).toBe(store.read().active!.tokens!.access);
+    expect(store.read().active!.tokens!.expiresAt).toBeGreaterThan(Date.now() + 3_500_000);
+  });
+
+  it("stops at Ctrl-C while waiting for the lock, and sends no renewal", async () => {
+    const { store, auth, age, renewals, busy, settled } = await signedIn();
     await age({ expiresAt: Date.now() });
     const other = busy();
+    const fetches = vi.spyOn(globalThis, "fetch");
+    onTestFinished(() => void vi.restoreAllMocks());
     const stop = new AbortController();
     const out = auth.token(stop.signal);
     stop.abort();
     await expect(out).rejects.toMatchObject({ name: "AbortError" });
     other.release();
-    await other.done;
+    await settled();
+    expect(fetches).not.toHaveBeenCalled(); // it gave up waiting, rather than going on to ask OpenAI
     expect(renewals()).toBe(0);
     expect(store.read().active?.tokens).toBeDefined();
   });

@@ -20,7 +20,7 @@ const due = (t: Tokens, now: number) => t.expiresAt - now < RENEW_BEFORE_MS && n
 // The refresh errors after which a login cannot be used again (errors and recovery page).
 const DEAD = new Set(["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"]);
 
-export const SIGN_IN_AGAIN = "Sign in to ChatGPT with `tachi login chatgpt` (or /login chatgpt in a session), or switch with /lead.";
+const SIGN_IN_AGAIN ="Sign in to ChatGPT with `tachi login chatgpt` (or /login chatgpt in a session), or switch with /lead.";
 
 function usable(login: SavedLogin): { clientId: string; sub: string; tokens: Tokens } {
   const a = login.active;
@@ -37,9 +37,19 @@ export interface Access {
 
 const access = (u: ReturnType<typeof usable>): Access => ({ token: u.tokens.access, account: `${u.clientId} ${u.sub}` });
 
+// Rejects with the abort as soon as `signal` is aborted, and leaves `work` to finish on its own.
+function unlessAborted<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    void work.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
+  });
+}
+
 export class ChatGPTAuth {
   constructor(
-    readonly store: LoginStore,
+    private readonly store: LoginStore,
     private readonly issuer = ISSUER,
   ) {}
 
@@ -49,22 +59,30 @@ export class ChatGPTAuth {
   }
 
   // The access token for the next request. The saved login is read every time, so a logout or a
-  // renewal by another process is seen at once. Ctrl-C (`signal`) stops a renewal.
+  // renewal by another process is seen at once. Ctrl-C (`signal`) stops the wait at once, but a
+  // renewal already sent carries on and is saved: OpenAI replaces the renewal token as it answers,
+  // so losing the answer would sign the user out. An answer that never comes, Node gives up on
+  // (after 300 s, undici's default).
   async token(signal?: AbortSignal): Promise<Access> {
     const now = usable(this.store.read());
     if (!due(now.tokens, Date.now())) return access(now);
     // Under the lock, and read again: another process may have renewed it already.
-    return this.store.update(async (login, save) => {
+    const renewal = this.store.update(async (login, save) => {
       const current = usable(login);
       if (!due(current.tokens, Date.now())) return access(current);
       let t;
       try {
-        t = await refresh(await discover(this.issuer, signal), { clientId: current.clientId, refreshToken: current.tokens.refresh }, signal);
+        const ep = await discover(this.issuer, signal);
+        signal?.throwIfAborted(); // not sent yet, so Ctrl-C still stops it
+        t = await refresh(ep, { clientId: current.clientId, refreshToken: current.tokens.refresh });
       } catch (err) {
-        if (signal?.aborted) throw err;
         if (err instanceof OAuthError && err.code && DEAD.has(err.code)) {
           save({ ...login, active: undefined });
           throw new LoginError(`Your ChatGPT sign-in has expired or was cancelled. ${SIGN_IN_AGAIN}`);
+        }
+        // "Invalid client: `invalid_client`. Fix the client configuration." (errors and recovery page)
+        if (err instanceof OAuthError && err.code === "invalid_client") {
+          throw new LoginError(`Could not renew the ChatGPT sign-in. ${errorText(err)} OpenAI did not accept Tachikoma's registration, so trying again will not help. Sign out with \`tachi logout chatgpt\`, then register again with \`tachi login chatgpt --new\`.`);
         }
         throw new LoginError(`Could not renew the ChatGPT sign-in. ${errorText(err)} You are still signed in, so you can try again.`);
       }
@@ -73,5 +91,6 @@ export class ChatGPTAuth {
       const tokens = tokensFrom(t);
       return access(usable(save({ ...login, active: { ...login.active!, planUse: tokens.scopes.includes(PLAN_SCOPE), tokens } })));
     }, signal);
+    return unlessAborted(renewal, signal);
   }
 }
