@@ -8,9 +8,9 @@ import { LoginError, type LoginStore, type SavedLogin, type Tokens, tokensFrom }
 // Renewed when less than this is left, as OpenAI's example code does (release 2 design).
 const RENEW_BEFORE_MS = 60_000;
 
-// OpenAI's docs name `earliest_refresh_at` but not its units. Read as seconds since 1970, the unit the
-// Responses API uses for its own times (`created_at`), until the first real sign-in shows otherwise
-// (plan, Task 7). Anything else is not understood, so it never holds a renewal back.
+// OpenAI's docs name `earliest_refresh_at` but not its units. It is seconds since 1970: at the first
+// real sign-in it was 361 s before the access token expired (main design, item 16). Anything else
+// is not understood, so it never holds a renewal back.
 function earliestMs(t: Tokens): number {
   return typeof t.earliestRefreshAt === "number" ? t.earliestRefreshAt * 1000 : 0;
 }
@@ -25,7 +25,7 @@ export const SIGN_IN_AGAIN = "Sign in to ChatGPT with `tachi login chatgpt` (or 
 function usable(login: SavedLogin): { clientId: string; sub: string; tokens: Tokens } {
   const a = login.active;
   if (!a?.tokens) throw new LoginError(`Not signed in to ChatGPT. ${SIGN_IN_AGAIN}`);
-  if (!a.planUse) throw new LoginError("Using your ChatGPT plan was not allowed when you signed in. Sign out and in again and allow it, or use openai:<model> with an API key.");
+  if (!a.planUse) throw new LoginError("This ChatGPT sign-in does not allow using your plan. Sign out, sign in again and allow it, or use openai:<model> with an API key.");
   return { clientId: a.clientId, sub: a.sub, tokens: a.tokens };
 }
 

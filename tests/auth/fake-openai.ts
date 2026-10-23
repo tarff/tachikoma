@@ -18,6 +18,7 @@ export class FakeOpenAI {
   revokeStatus = 200;
   revokeHangs = false; // the revocation is never answered
   tokenHangs = false; // token requests (exchange and renewal) are never answered
+  renewalError: string | undefined; // renewals are refused with this error code
   earliestRefreshAt: unknown;
   readonly authorizeRequests: URLSearchParams[] = [];
   readonly tokenRequests: URLSearchParams[] = [];
@@ -116,6 +117,7 @@ export class FakeOpenAI {
           return void json(200, this.#tokens(pending.clientId, pending.nonce));
         }
         if (form.get("grant_type") === "refresh_token") {
+          if (this.renewalError) return void json(400, { error: this.renewalError });
           // Each refresh token works once and is replaced (token reference page).
           if (!this.#refresh.delete(form.get("refresh_token") ?? "")) return void json(400, { error: "refresh_token_reused" });
           return void json(200, this.#tokens(form.get("client_id")!));

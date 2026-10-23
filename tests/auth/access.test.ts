@@ -3,10 +3,10 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { ChatGPTAuth } from "../../src/auth/access.js";
 import { signIn, signOut } from "../../src/auth/chatgpt.js";
-import { LoginStore, type Tokens } from "../../src/auth/store.js";
+import { LoginStore, type SavedLogin, type Tokens } from "../../src/auth/store.js";
 import { FakeOpenAI } from "./fake-openai.js";
 
 async function signedIn() {
@@ -19,7 +19,30 @@ async function signedIn() {
   // Changes the saved tokens, as time passing would.
   const age = (change: Partial<Tokens>) => store.update(async (login, save) => void save({ ...login, active: { ...login.active!, tokens: { ...login.active!.tokens!, ...change } } }));
   const renewals = () => fake.tokenRequests.filter((q) => q.get("grant_type") === "refresh_token").length;
-  return { fake, dir, store, io, auth, age, renewals };
+  // Another change to the login, holding the lock until `release()`; `then` is what it saves.
+  const busy = (then?: (login: SavedLogin) => SavedLogin) => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const done = store.update(async (login, save) => {
+      await gate;
+      if (then) save(then(login));
+    });
+    return { release, done };
+  };
+  return { fake, dir, store, io, auth, age, renewals, busy };
+}
+
+// Ctrl-C while the request to `path` waits for an answer that never comes, so only Ctrl-C can end it.
+function ctrlCAt(path: string, stop: AbortController): void {
+  const real = globalThis.fetch;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    if (!String(input).endsWith(path)) return real(input, init);
+    return new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+      stop.abort();
+    });
+  });
+  onTestFinished(() => void vi.restoreAllMocks());
 }
 
 describe("ChatGPTAuth", () => {
@@ -73,40 +96,67 @@ console.log((await new ChatGPTAuth(new LoginStore(${JSON.stringify(dir)}, () => 
     expect(b).toBe(a);
   }, 60_000);
 
-  it("asks the user to sign in again when the renewal token is dead, and drops the tokens", async () => {
-    const { store, auth, age } = await signedIn();
-    await age({ expiresAt: Date.now(), refresh: "used-up" });
-    await expect(auth.token()).rejects.toThrow("Your ChatGPT sign-in has expired or was cancelled. Sign in to ChatGPT with `tachi login chatgpt`");
-    expect(store.read().active).toBeUndefined();
-    expect(store.read().accounts).toHaveLength(1); // the account and its client ID stay
+  // The errors page's list of renewal errors after which a login cannot be used again.
+  it.each(["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"])(
+    "asks the user to sign in again after %s, and drops the tokens",
+    async (code) => {
+      const { fake, store, auth, age } = await signedIn();
+      await age({ expiresAt: Date.now() });
+      fake.renewalError = code;
+      await expect(auth.token()).rejects.toThrow("Your ChatGPT sign-in has expired or was cancelled. Sign in to ChatGPT with `tachi login chatgpt`");
+      expect(store.read().active).toBeUndefined();
+      expect(store.read().accounts).toHaveLength(1); // the account and its client ID stay
+    },
+  );
+
+  it("keeps the login when OpenAI refuses a renewal for another reason", async () => {
+    const { fake, store, auth, age } = await signedIn();
+    await age({ expiresAt: Date.now() });
+    fake.renewalError = "invalid_request";
+    await expect(auth.token()).rejects.toThrow(/^Could not renew the ChatGPT sign-in\. OpenAI refused the request \(HTTP 400, invalid_request\)\. You are still signed in, so you can try again\.$/);
+    expect(store.read().active?.tokens).toBeDefined();
   });
 
-  it("stops a renewal at Ctrl-C, and keeps the login", async () => {
-    const { fake, store, auth, age, renewals } = await signedIn();
+  // Ctrl-C ends the request as it ends anything else, with the abort itself, and the login stays.
+  it.each([
+    ["asking for OpenAI's sign-in settings", "/.well-known/openid-configuration"],
+    ["renewing", "/token"],
+  ])("stops at Ctrl-C while %s, and keeps the login", async (_, at) => {
+    const { store, auth, age } = await signedIn();
     await age({ expiresAt: Date.now() });
-    fake.tokenHangs = true;
+    const stop = new AbortController();
+    ctrlCAt(at, stop);
+    await expect(auth.token(stop.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(store.read().active?.tokens).toBeDefined();
+  });
+
+  it("stops at Ctrl-C while waiting for the lock, and keeps the login", async () => {
+    const { store, auth, age, renewals, busy } = await signedIn();
+    await age({ expiresAt: Date.now() });
+    const other = busy();
     const stop = new AbortController();
     const out = auth.token(stop.signal);
-    while (renewals() === 0) await new Promise((r) => setTimeout(r, 10));
     stop.abort();
-    await expect(out).rejects.toThrow("aborted");
+    await expect(out).rejects.toMatchObject({ name: "AbortError" });
+    other.release();
+    await other.done;
+    expect(renewals()).toBe(0);
     expect(store.read().active?.tokens).toBeDefined();
   });
 
   it("keeps the login when OpenAI cannot be reached", async () => {
-    const { store, age, renewals } = await signedIn();
+    const { store, age } = await signedIn();
     await age({ expiresAt: Date.now() });
     const offline = new ChatGPTAuth(store, "http://127.0.0.1:9"); // nothing listens on the discard port
     await expect(offline.token()).rejects.toThrow(/^Could not renew the ChatGPT sign-in\. The request to OpenAI's sign-in service failed \([^()]+\)\. You are still signed in, so you can try again\.$/);
     expect(store.read().active?.tokens).toBeDefined();
-    expect(renewals()).toBe(0);
   });
 
   it("refuses the request when a renewal takes plan use away", async () => {
     const { store, auth, age, fake, renewals } = await signedIn();
     await age({ expiresAt: Date.now() });
     fake.scope = "openid email offline_access";
-    await expect(auth.token()).rejects.toThrow("Using your ChatGPT plan was not allowed");
+    await expect(auth.token()).rejects.toThrow("This ChatGPT sign-in does not allow using your plan. Sign out, sign in again and allow it, or use openai:<model> with an API key.");
     expect(renewals()).toBe(1);
     expect(store.read().active?.planUse).toBe(false);
   });
@@ -118,6 +168,17 @@ console.log((await new ChatGPTAuth(new LoginStore(${JSON.stringify(dir)}, () => 
     expect(() => auth.check()).toThrow("Not signed in to ChatGPT.");
     fake.scope = "openid email";
     await signIn(store, io, { issuer: fake.issuer });
-    await expect(auth.token()).rejects.toThrow("Using your ChatGPT plan was not allowed");
+    await expect(auth.token()).rejects.toThrow("This ChatGPT sign-in does not allow using your plan.");
+  });
+
+  it("refuses when a logout lands while the renewal waits for the lock", async () => {
+    const { store, auth, age, renewals, busy } = await signedIn();
+    await age({ expiresAt: Date.now() });
+    const logout = busy((login) => ({ ...login, active: undefined }));
+    const out = auth.token();
+    logout.release();
+    await logout.done;
+    await expect(out).rejects.toThrow("Not signed in to ChatGPT.");
+    expect(renewals()).toBe(0);
   });
 });
