@@ -177,6 +177,24 @@ describe("App", () => {
     expect(lead.seen).toEqual([]);
   });
 
+  it("takes commands in any case, and sends a message as typed", async () => {
+    const calls: string[] = [];
+    const login: Login = async (verb, words, say) => {
+      calls.push([verb, ...words].join(" "));
+      say("signed in");
+    };
+    const lead = new FakeProvider("a", [reply("ok")]);
+    const { app, session } = await mount([], { lead, login });
+    await type(app, "/LOGIN chatgpt");
+    await until(app, "signed in");
+    await type(app, "/Lead");
+    await until(app, "Usage: /lead");
+    await type(app, "/Tmp is full");
+    await until(app, "ok");
+    expect(calls).toEqual(["login chatgpt"]);
+    expect(session.messages[0]).toMatchObject({ role: "user", parts: [{ type: "text", text: "/Tmp is full" }] });
+  });
+
   it("stops a sign-in on Ctrl-C, and shows why it failed", async () => {
     const login: Login = (_verb, _words, _say, signal) => new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("Sign-in was cancelled"))));
     const { app } = await mount([], { login });
