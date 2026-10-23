@@ -118,6 +118,26 @@ export function readPrivate(file: string, warn: (message: string) => void): stri
   return readFileSync(file, "utf8");
 }
 
+// On Windows a file another process has open, such as another Tachikoma reading the login, cannot be
+// replaced (EPERM). The swap is tried again every millisecond for up to RENAME_RETRY_MS. Measured on
+// 2026-10-23, with two processes reading the file nonstop: of 3,000 saves, 27% were refused at first,
+// and the slowest went through after 0.76 s. The user chose 1 s.
+const RENAME_RETRY_MS = 1_000;
+const pause = new Int32Array(new SharedArrayBuffer(4));
+
+function swapIn(temp: string, file: string): void {
+  const start = Date.now();
+  for (;;) {
+    try {
+      return renameSync(temp, file);
+    } catch (err) {
+      const refused = windows && ["EPERM", "EACCES", "EBUSY"].includes((err as NodeJS.ErrnoException).code ?? "");
+      if (!refused || Date.now() - start >= RENAME_RETRY_MS) throw err;
+      Atomics.wait(pause, 0, 0, 1);
+    }
+  }
+}
+
 // Writes the whole file to a new private file in the same folder, then swaps it in, so it is never
 // left half-written.
 export function writePrivate(file: string, text: string): void {
@@ -131,7 +151,7 @@ export function writePrivate(file: string, text: string): void {
     } finally {
       closeSync(fd);
     }
-    renameSync(temp, file);
+    swapIn(temp, file);
   } catch (err) {
     rmSync(temp, { force: true }); // no copy of the login is left behind
     throw err;
