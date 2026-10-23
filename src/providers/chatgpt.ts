@@ -13,12 +13,6 @@ export const API_BASE = "https://api.openai.com/v1";
 // openai package's `NamespaceTool` type (7.30.0).
 const NAMESPACE = "tachikoma";
 
-// From OpenAI's model pages, for when the account's model list gives no window (release 2 design,
-// "Context window"). A model missing here shows the tokens in use instead of a percentage.
-const CONTEXT_WINDOWS: Record<string, number> = {
-  "gpt-6.1-sol": 1_050_000, // developers.openai.com/api/docs/models/gpt-6.1-sol, 2026-10-22
-};
-
 export const USAGE_LIMIT = `ChatGPT usage limit reached. Review your plan or this app's limit: ${USAGE_URL}`;
 
 const SIGN_IN_AGAIN = "Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt`.";
@@ -43,32 +37,48 @@ interface Failure {
   requestId?: string | null;
 }
 
+// `text`, with OpenAI's request ID when there is one. The usage limit ends on an address, so a full
+// stop goes after it before the next sentence.
+const withId = (text: string, requestId?: string | null) => (requestId ? `${sentence(text)} OpenAI's request ID: ${requestId}.` : text);
+
 // The plan's errors, by OpenAI's code (errors and recovery page). Each stops the turn; none is retried.
-function planError({ code, param, status, message, requestId }: Failure): Error {
+function planText({ code, param, status, message }: Failure): string {
   const why = message ? ` ${sentence(message)}` : "";
-  const text = (() => {
-    switch (code) {
-      case "subscription_sharing_usage_limit_exceeded":
-        return USAGE_LIMIT;
-      case "subscription_sharing_user_not_eligible":
-      case "chatpass_v2_scope_not_authorized":
-      case "chatpass_v2_invalid_authorization_context":
-        return `This ChatGPT account cannot use its plan here (${code}).${why} Use openai:<model> with an API key instead.`;
-      case "subscription_sharing_invalid_user":
-        return `OpenAI did not accept the ChatGPT sign-in (${code}).${why} ${SIGN_IN_AGAIN}`;
-      case "subscription_sharing_usage_unavailable":
-      case "subscription_sharing_user_unavailable":
-        return `ChatGPT plan use is unavailable right now (${code}).${why} Your sign-in is kept; try again later.`;
-    }
-    if (status === 401) return `OpenAI did not accept the ChatGPT sign-in (HTTP 401).${why} ${SIGN_IN_AGAIN}`;
-    if (status === 503) return `ChatGPT plan use is unavailable right now (HTTP 503).${why} Your sign-in is kept; try again later.`;
-    const about = [status && `HTTP ${status}`, code, param && `about ${param}`].filter(Boolean).join(", ");
-    // A server error, or a reply that failed part way, is OpenAI failing rather than refusing.
-    const what = status !== undefined && status < 500 ? "refused" : "could not complete";
-    return `OpenAI ${what} the request${about ? ` (${about})` : ""}.${why}`;
-  })();
-  // The usage limit ends on an address, so a full stop goes after it before the next sentence.
-  return new Error(requestId ? `${sentence(text)} OpenAI's request ID: ${requestId}.` : text);
+  const about = [status && `HTTP ${status}`, code, param && `about ${param}`].filter(Boolean).join(", ");
+  switch (code) {
+    case "subscription_sharing_usage_limit_exceeded":
+      return USAGE_LIMIT;
+    case "subscription_sharing_user_not_eligible":
+      return `This ChatGPT account cannot use its plan here (${code}).${why} Use openai:<model> with an API key instead.`;
+    // "Check the client and grant configuration rather than retrying or changing billing."
+    case "chatpass_v2_scope_not_authorized":
+    case "chatpass_v2_invalid_authorization_context":
+      return `OpenAI says this ChatGPT sign-in's permissions do not cover the request (${code}).${why} Sign out with \`tachi logout chatgpt\`, then sign in again with \`tachi login chatgpt\` and allow plan use.`;
+    case "subscription_sharing_invalid_user":
+      return `OpenAI did not accept the ChatGPT sign-in (${code}).${why} ${SIGN_IN_AGAIN}`;
+    case "subscription_sharing_usage_unavailable":
+    case "subscription_sharing_user_unavailable":
+      return `ChatGPT plan use is unavailable right now (${code}).${why} Your sign-in is kept; try again later.`;
+  }
+  if (status === 401) return `OpenAI did not accept the ChatGPT sign-in (${about}).${why} ${SIGN_IN_AGAIN}`;
+  if (status === 503) return `ChatGPT plan use is unavailable right now (${about}).${why} Your sign-in is kept; try again later.`;
+  // A server error, or a reply that failed part way, is OpenAI failing rather than refusing. HTTP 429
+  // is "too many requests" (RFC 6585).
+  const what = status !== undefined && status < 500 ? "refused" : "could not complete";
+  return `OpenAI ${what} the request${about ? ` (${about})` : ""}.${why}${status === 429 ? " Try again later." : ""}`;
+}
+
+const planError = (failure: Failure) => new Error(withId(planText(failure), failure.requestId));
+
+// A connection that drops part way through a reply ends the stream with Node's bare "terminated", a
+// TypeError from undici (the fetch under the SDK).
+async function* dropped<T>(events: AsyncIterable<T>, requestId: string | null): AsyncGenerator<T> {
+  try {
+    yield* events;
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err;
+    throw new Error(withId(`The connection to OpenAI dropped before the reply finished (${connectReason(err)}). Check your network and try again.`, requestId), { cause: err });
+  }
 }
 
 export function toResponses(messages: Message[]): ResponseInputItem[] {
@@ -125,10 +135,12 @@ export async function fromStream(events: AsyncIterable<ResponseStreamEvent>, too
       const err = e.response.error;
       throw planError({ code: err?.code, message: said(err) ?? "The reply failed.", requestId });
     } else if (e.type === "error") {
+      // Only an error event with no event name reaches here: the SDK throws a named `event: error`
+      // itself (core/streaming.js), and complete() reads that one.
       throw planError({ code: e.code, param: e.param, message: said(e), requestId });
     }
   }
-  if (usage === undefined && incomplete === undefined) throw new Error("The reply stopped before it finished.");
+  if (usage === undefined && incomplete === undefined) throw new Error(withId("OpenAI's reply stopped before it finished. Try again.", requestId));
 
   const parts: Part[] = [];
   let refusal: string | undefined;
@@ -184,7 +196,7 @@ export async function planModels(token: string, base = API_BASE, signal?: AbortS
     const str = (v: unknown) => (typeof v === "string" ? v : undefined);
     throw planError({ code: str(error?.code), param: str(error?.param), status: res.status, message: said(error), requestId: res.headers.get("x-request-id") });
   }
-  if (!Array.isArray(body?.models)) throw new Error("OpenAI's model list could not be read.");
+  if (!Array.isArray(body?.models)) throw new Error(withId("OpenAI's model list could not be read. Check your network and try again.", res.headers.get("x-request-id")));
   return body.models.flatMap((m) =>
     typeof m.slug === "string"
       ? [
@@ -245,7 +257,7 @@ export class ChatGPTProvider implements Provider {
           { signal },
         )
         .withResponse();
-      return await fromStream(stream, tools, request_id);
+      return await fromStream(dropped(stream, request_id), tools, request_id);
     } catch (err) {
       if (signal?.aborted) throw err; // Ctrl-C, passed on as it is (the SDK's abort error is an APIError)
       if (err instanceof OpenAI.APIConnectionTimeoutError) throw new Error(`${this.base} did not answer in time. Check your network.`, { cause: err });
@@ -256,12 +268,9 @@ export class ChatGPTProvider implements Provider {
     }
   }
 
+  // From the model list the last request fetched, so the status line never reads or renews the login:
+  // a renewal there that found the login dead would clear it unseen. Unknown until the first reply.
   async contextWindow(): Promise<number | null> {
-    try {
-      const m = await this.#model(await this.auth.token());
-      return m.contextWindow ?? CONTEXT_WINDOWS[this.model] ?? null;
-    } catch {
-      return null;
-    }
+    return this.#models?.list.find((m) => m.slug === this.model)?.contextWindow ?? null;
   }
 }
