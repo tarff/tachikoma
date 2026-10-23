@@ -83,7 +83,7 @@ describe("fromStream", () => {
 
   it("stops on the usage limit, even part way through a stream", async () => {
     const failed = { type: "response.failed", response: { error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit" } } } as unknown as ResponseStreamEvent;
-    await expect(fromStream(events(done(text), failed), tools)).rejects.toThrow(USAGE_LIMIT);
+    await expect(fromStream(events(done(text), failed), tools)).rejects.toThrow(new Error(USAGE_LIMIT));
     const error = { type: "error", code: "subscription_sharing_usage_unavailable", message: "busy", param: null } as unknown as ResponseStreamEvent;
     await expect(fromStream(events(error), tools)).rejects.toThrow(new Error("ChatGPT plan use is unavailable right now (subscription_sharing_usage_unavailable). busy. Your sign-in is kept; try again later."));
   });
@@ -96,8 +96,8 @@ describe("fromStream", () => {
       ),
       [error("subscription_sharing_invalid_user", "Unknown user"), "OpenAI did not accept the ChatGPT sign-in (subscription_sharing_invalid_user). Unknown user. Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt`."],
       [error("subscription_sharing_user_unavailable", "Try later!"), "ChatGPT plan use is unavailable right now (subscription_sharing_user_unavailable). Try later! Your sign-in is kept; try again later."],
-      [error("subscription_sharing_unsupported_capability", "Not on this route", "tools"), "OpenAI refused the request (subscription_sharing_unsupported_capability, about tools). Not on this route."],
-      [{ type: "response.failed", response: { error: { code: "server_error", message: "" } } } as unknown as ResponseStreamEvent, "OpenAI refused the request (server_error). The reply failed."],
+      [error("subscription_sharing_unsupported_capability", "Not on this route", "tools"), "OpenAI could not complete the request (subscription_sharing_unsupported_capability, about tools). Not on this route."],
+      [{ type: "response.failed", response: { error: { code: "server_error", message: "" } } } as unknown as ResponseStreamEvent, "OpenAI could not complete the request (server_error). The reply failed."],
     ];
     for (const [event, message] of cases) await expect(fromStream(events(event), tools, "req_1")).rejects.toThrow(new Error(`${message} OpenAI's request ID: req_1.`));
   });
@@ -196,10 +196,9 @@ describe("ChatGPTProvider", () => {
   });
 
   it("stops on the usage limit at once, with no retry", async () => {
-    const api = await fakeApi((_, res) =>
-      res.writeHead(429, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit", type: "x", param: null } })),
-    );
-    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(USAGE_LIMIT);
+    const api = await fakeApi((_, res) => json(res, 429, { error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit", type: "x", param: null } }));
+    // A full stop goes after the address, before the request ID.
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`));
     expect(api.seen).toHaveLength(1);
   });
 
@@ -209,7 +208,7 @@ describe("ChatGPTProvider", () => {
       [(res) => json(res, 503, { detail: "Direct routing is off" }), "ChatGPT plan use is unavailable right now (HTTP 503). Direct routing is off. Your sign-in is kept; try again later. OpenAI's request ID: req_9."],
       [(res) => json(res, 403, { detail: "Region not supported" }), "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9."],
       [(res) => json(res, 400, { error: { code: "too_long", message: "Your input is too long.", type: "x", param: "input" } }), "OpenAI refused the request (HTTP 400, too_long, about input). Your input is too long. OpenAI's request ID: req_9."],
-      [(res) => res.writeHead(502, { "content-type": "text/html" }).end("<html>Bad gateway</html>"), "OpenAI refused the request (HTTP 502)."],
+      [(res) => res.writeHead(502, { "content-type": "text/html" }).end("<html>Bad gateway</html>"), "OpenAI could not complete the request (HTTP 502)."],
     ];
     for (const [answer, message] of cases) {
       const api = await fakeApi((_, res) => answer(res));
@@ -220,7 +219,7 @@ describe("ChatGPTProvider", () => {
   it("keeps the request ID of a reply that fails part way through", async () => {
     const failed = { type: "response.failed", response: { error: { code: "server_error", message: "Something broke" } } };
     const api = await fakeApi((_, res) => sse(res, [done(text), failed]));
-    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error("OpenAI refused the request (server_error). Something broke. OpenAI's request ID: req_9."));
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error("OpenAI could not complete the request (server_error). Something broke. OpenAI's request ID: req_9."));
   });
 
   it("says a reply that could not be fetched could not reach OpenAI", async () => {
@@ -243,7 +242,7 @@ describe("ChatGPTProvider", () => {
         "This ChatGPT account cannot use its plan here (subscription_sharing_user_not_eligible). Not for this workspace. Use openai:<model> with an API key instead. OpenAI's request ID: req_9.",
       ],
       [(res) => json(res, 403, { detail: "Region not supported" }), "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9."],
-      [(res) => res.writeHead(500).end(), "OpenAI refused the request (HTTP 500)."],
+      [(res) => res.writeHead(500).end(), "OpenAI could not complete the request (HTTP 500)."],
     ];
     for (const [list, message] of cases) {
       const api = await fakeApi(() => {}, list);
@@ -262,7 +261,9 @@ describe("ChatGPTProvider", () => {
       const turn = new ChatGPTProvider("gpt-6.1-sol", watched, api.base).complete({ ...request, signal: stop.signal });
       await asked;
       stop.abort();
-      await expect(turn).rejects.toThrow();
+      const err = await turn.catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).not.toMatch(/Could not reach|OpenAI refused|could not complete/); // passed on, not explained
       expect(signals.at(-1)).toBe(stop.signal);
     }
   });
@@ -271,6 +272,8 @@ describe("ChatGPTProvider", () => {
     const api = await fakeApi(() => {});
     await expect(new ChatGPTProvider("gpt-9", auth, api.base).complete(request)).rejects.toThrow(new Error("Your ChatGPT account does not offer gpt-9. It offers: chatgpt:gpt-6.1-sol."));
     expect(api.seen).toHaveLength(0);
+    const none = await fakeApi(() => {}, (res) => json(res, 200, { models: [planList[1]] }));
+    await expect(new ChatGPTProvider("gpt-9", auth, none.base).complete(request)).rejects.toThrow(new Error("Your ChatGPT account does not offer gpt-9. It offers no models."));
   });
 
   it("takes the context window from the model list, then from OpenAI's model pages", async () => {
