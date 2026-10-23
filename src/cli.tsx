@@ -15,6 +15,7 @@ import { Stats } from "./core/stats.js";
 import { errorText, type Provider } from "./core/types.js";
 import { LocalExecutor } from "./exec/local.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
+import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
 import { TOOLS } from "./tools/index.js";
 import { App } from "./tui/App.js";
@@ -41,9 +42,9 @@ Options:
   --raw             with -p, print the answer exactly as written, control codes and all
   -h, --help        show this help
 
-In a session: /lead <provider:model> switches the lead model, /login chatgpt and /logout chatgpt
-sign in and out, /errors summarises the error log, /exit quits. Ctrl-C stops the current turn, or
-quits when idle.`;
+In a session: /lead <provider:model> switches the lead model, /model picks it from a list,
+/login chatgpt and /logout chatgpt sign in and out, /errors summarises the error log, /exit quits.
+Ctrl-C stops the current turn, or quits when idle.`;
 
 function fail(message: string): never {
   console.error(message);
@@ -188,6 +189,7 @@ if (parsed.print !== undefined) {
       segments={segments}
       makeProvider={makeProvider}
       login={accountCommand}
+      listModels={(signal) => listModels(signal)}
       bindAsk={(fn) => {
         ask = fn;
       }}
