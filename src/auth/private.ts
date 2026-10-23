@@ -134,7 +134,7 @@ function swapIn(temp: string, file: string): void {
     } catch (err) {
       const refused = windows && ["EPERM", "EACCES", "EBUSY"].includes((err as NodeJS.ErrnoException).code ?? "");
       if (!refused) throw err;
-      if (performance.now() - start >= RENAME_RETRY_MS) throw new PrivateFileError(`${file} was kept open by another program, so it could not be saved`);
+      if (performance.now() - start >= RENAME_RETRY_MS) throw new PrivateFileError(`${file} could not be replaced, perhaps because another program has it open, so it was not saved`);
       Atomics.wait(pause, 0, 0, 1);
     }
   }
