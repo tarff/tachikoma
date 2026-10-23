@@ -17,7 +17,7 @@ import { PRESETS } from "./openai.js";
 export type ModelGroup = { provider: string; models: string[] } | { provider: string; error: string };
 
 // OpenAI's own address, unless OPENAI_BASE_URL is set: the OpenAI SDK reads it for openai: leads, so
-// the list comes from where they go.
+// the list comes from where they go. One slash at the end is dropped, as the SDK does.
 const OPENAI_BASE = "https://api.openai.com/v1";
 
 const fetchFailed = (err: unknown) => err instanceof Error && err.message === "fetch failed"; // Node's fetch
@@ -35,7 +35,7 @@ function reason(err: unknown): string {
 async function openaiFormat(base: string, key: string | undefined, signal?: AbortSignal): Promise<string[]> {
   const ids: string[] = [];
   const asked = new Set<string>();
-  for (let url: string | undefined = `${base}/models`; url && !asked.has(url); ) {
+  for (let url: string | undefined = `${base.replace(/\/$/, "")}/models`; url && !asked.has(url); ) {
     asked.add(url);
     const res = await fetch(url, { headers: key ? { authorization: `Bearer ${key}` } : {}, signal });
     if (res.status === 401 || res.status === 403) throw new Error("key rejected");

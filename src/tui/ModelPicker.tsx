@@ -40,20 +40,30 @@ export function ModelPicker({ groups, current, onPick, onClose }: { groups: Mode
   const focus = shown.findIndex((r) => r.kind === "model" && r.spec === models[at]);
   const top = Math.min(Math.max(0, focus - Math.floor(height / 2)), Math.max(0, shown.length - height));
 
+  // Picks the chosen model, as the keys before it left the filter and the choice.
+  const pick = () => {
+    const { models, at } = view(groups, state.current!.filter, state.current!.chosen);
+    const spec = models[at];
+    if (spec) onPick(spec);
+    else redraw((n) => n + 1);
+  };
+
   useInput((ch, key) => {
     const s = state.current!;
     const { models, at } = view(groups, s.filter, s.chosen);
     if (key.escape || (key.ctrl && ch === "c")) return onClose();
-    if (key.return) {
-      const spec = models[at];
-      if (spec) onPick(spec);
-      return;
-    }
+    if (key.return) return pick();
     if (key.upArrow) s.chosen = Math.max(0, at - 1);
     else if (key.downArrow) s.chosen = Math.max(0, Math.min(models.length - 1, at + 1));
     else if (key.backspace || key.delete) Object.assign(s, { filter: s.filter.slice(0, -1), chosen: 0 });
-    else if (!key.ctrl && !key.meta && ch) Object.assign(s, { filter: s.filter + ch, chosen: 0 });
-    else return;
+    else if (!key.ctrl && !key.meta && ch) {
+      // A paste, or a letter and Enter in one read of the terminal, comes as one piece of text: what is
+      // before a line end filters, without its control characters, and the line end picks.
+      const [typed = "", ...after] = ch.split(/[\r\n]/);
+      const text = typed.replace(/\p{Cc}/gu, "");
+      if (text) Object.assign(s, { filter: s.filter + text, chosen: 0 });
+      if (after.length) return pick();
+    } else return;
     redraw((n) => n + 1);
   });
 
@@ -73,7 +83,7 @@ export function ModelPicker({ groups, current, onPick, onClose }: { groups: Mode
       )}
       {models.length === 0 && <Text color="gray">{filter ? "No models match." : "No models to pick from."}</Text>}
       <Text color="gray" wrap="truncate-end">
-        Filter: {filter || "(type to filter)"} · ↑↓ move · Enter picks · Esc closes
+        Filter: {visible(filter) || "(type to filter)"} · ↑↓ move · Enter picks · Esc closes
       </Text>
     </>
   );
