@@ -47,7 +47,7 @@ export function toOpenAI(system: string, messages: Message[], kind: string): Cha
 
 // Anything but a JSON object is wrapped: it fails the tool's schema check, so the model is told, and
 // Anthropic rejects tool input that is not an object if the history is later sent there.
-function parseArgs(raw: string): unknown {
+export function parseArgs(raw: string): unknown {
   try {
     const v: unknown = JSON.parse(raw || "{}");
     if (typeof v === "object" && v !== null && !Array.isArray(v)) return v;

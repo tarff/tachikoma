@@ -1,0 +1,198 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import type { ResponseStreamEvent } from "openai/resources/responses/responses";
+import { describe, expect, it, onTestFinished } from "vitest";
+import type { ChatGPTAuth } from "../../src/auth/access.js";
+import type { Message, ToolSpec } from "../../src/core/types.js";
+import { ChatGPTProvider, fromStream, toolsFor, toResponses, USAGE_LIMIT } from "../../src/providers/chatgpt.js";
+
+const tools: ToolSpec[] = [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: { path: { type: "string" } } } }];
+const usage = { input_tokens: 100, input_tokens_details: { cached_tokens: 30, cache_write_tokens: 10 }, output_tokens: 20, output_tokens_details: { reasoning_tokens: 5 }, total_tokens: 120 };
+const reasoning = { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "opaque" };
+const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file", namespace: "tachikoma", arguments: '{"path":"a.txt"}', status: "completed" };
+const text = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Done.", annotations: [] }] };
+
+const done = (item: unknown) => ({ type: "response.output_item.done", item }) as unknown as ResponseStreamEvent;
+const completed = { type: "response.completed", response: { usage } } as unknown as ResponseStreamEvent;
+async function* events(...list: ResponseStreamEvent[]) {
+  yield* list;
+}
+
+describe("toResponses", () => {
+  it("converts the conversation, tool calls and results included", () => {
+    const history: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "hi" }] },
+      { role: "assistant", parts: [{ type: "text", text: "looking" }, { type: "tool_call", id: "toolu_1", name: "read_file", input: { path: "a" } }], native: { provider: "anthropic", content: [] } },
+      { role: "user", parts: [{ type: "tool_result", callId: "toolu_1", output: "nope", isError: true }] },
+    ];
+    expect(toResponses(history)).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "looking" },
+      { type: "function_call", call_id: "toolu_1", name: "read_file", namespace: "tachikoma", arguments: '{"path":"a"}' },
+      { type: "function_call_output", call_id: "toolu_1", output: "Error: nope" },
+    ]);
+  });
+
+  it("sends a ChatGPT turn back exactly as it came, encrypted reasoning included", () => {
+    const history: Message[] = [{ role: "assistant", parts: [], native: { provider: "chatgpt", content: [reasoning, call] } }];
+    expect(toResponses(history)).toEqual([reasoning, call]);
+  });
+});
+
+describe("toolsFor", () => {
+  it("groups the tools in one namespace, as the plan's route requires", () => {
+    expect(toolsFor(tools)).toEqual([
+      {
+        type: "namespace",
+        name: "tachikoma",
+        description: "Tachikoma's tools, which act on the user's project.",
+        tools: [{ type: "function", name: "read_file", description: "Read a file", parameters: tools[0]!.inputSchema }],
+      },
+    ]);
+    expect(toolsFor([])).toEqual([]);
+  });
+});
+
+describe("fromStream", () => {
+  it("reads the finished items, keeps them in order to send back, and splits the cached tokens", async () => {
+    const turn = await fromStream(events(done(reasoning), done(text), done(call), completed), tools);
+    expect(turn.parts).toEqual([
+      { type: "text", text: "Done." },
+      { type: "tool_call", id: "call_1", name: "read_file", input: { path: "a.txt" } },
+    ]);
+    expect(turn.native).toEqual({ provider: "chatgpt", content: [reasoning, text, call] });
+    expect(turn.usage).toEqual({ input: 60, output: 20, cacheRead: 30, cacheWrite: 10 });
+    expect(turn.cutOff).toBeUndefined();
+  });
+
+  it("gives a tool name that is not Tachikoma's its full name, so the session refuses it", async () => {
+    const other = { ...call, namespace: "web", name: "search" };
+    const turn = await fromStream(events(done(other), completed), tools);
+    expect(turn.parts[0]).toMatchObject({ name: "web.search" });
+  });
+
+  it("treats a stream that ends without response.completed as an error", async () => {
+    await expect(fromStream(events(done(text)), tools)).rejects.toThrow("The reply stopped before it finished");
+  });
+
+  it("stops on the usage limit, even part way through a stream", async () => {
+    const failed = { type: "response.failed", response: { error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit" } } } as unknown as ResponseStreamEvent;
+    await expect(fromStream(events(done(text), failed), tools)).rejects.toThrow(USAGE_LIMIT);
+    const error = { type: "error", code: "subscription_sharing_usage_unavailable", message: "busy", param: null } as unknown as ResponseStreamEvent;
+    await expect(fromStream(events(error), tools)).rejects.toThrow("ChatGPT plan use is unavailable right now");
+  });
+
+  it("marks a reply cut short, and a refusal", async () => {
+    const short = { type: "response.incomplete", response: { usage, incomplete_details: { reason: "max_output_tokens" } } } as unknown as ResponseStreamEvent;
+    expect((await fromStream(events(done(text), short), tools)).cutOff).toEqual({ kind: "max_tokens", detail: "The response stopped early (max_output_tokens)" });
+    const refused = { ...text, content: [{ type: "refusal", refusal: "No." }] };
+    expect((await fromStream(events(done(refused), completed), tools)).cutOff).toEqual({ kind: "refusal", detail: "No." });
+  });
+});
+
+// A stand-in for api.openai.com: the account's model list and a streamed Responses reply.
+async function fakeApi(respond: (body: Record<string, unknown>, res: http.ServerResponse) => void) {
+  const seen: { auth?: string; body: Record<string, unknown> }[] = [];
+  let lists = 0;
+  const server = http.createServer(async (req, res) => {
+    if (req.url === "/v1/models") {
+      lists++;
+      return void res.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({ models: [{ slug: "gpt-6.1-sol", display_name: "GPT-6.1 Sol", visibility: "list" }, { slug: "hidden", display_name: "Hidden", visibility: "hide", context_window: 9 }] }),
+      );
+    }
+    let text = "";
+    for await (const chunk of req) text += chunk;
+    const body = JSON.parse(text) as Record<string, unknown>;
+    seen.push({ auth: req.headers.authorization, body });
+    respond(body, res);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  onTestFinished(() => {
+    server.close();
+    server.closeAllConnections();
+  });
+  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, seen, lists: () => lists };
+}
+
+const sse = (res: http.ServerResponse, list: unknown[]) => {
+  res.writeHead(200, { "content-type": "text/event-stream" });
+  for (const e of list) res.write(`event: ${(e as { type: string }).type}\ndata: ${JSON.stringify(e)}\n\n`);
+  res.end();
+};
+const auth = { check: () => {}, token: async () => ({ token: "tok-1", account: "app user-1" }) } as unknown as ChatGPTAuth;
+const request = { system: "be brief", messages: [{ role: "user" as const, parts: [{ type: "text" as const, text: "hi" }] }], tools };
+
+describe("ChatGPTProvider", () => {
+  it("streams an unstored request with the login, the instructions and the grouped tools, and nothing the route refuses", async () => {
+    const api = await fakeApi((_, res) => sse(res, [done(text), completed]));
+    const turn = await new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request);
+    expect(turn.parts).toEqual([{ type: "text", text: "Done." }]);
+    const { auth: header, body } = api.seen[0]!;
+    expect(header).toBe("Bearer tok-1");
+    expect(body).toMatchObject({ model: "gpt-6.1-sol", instructions: "be brief", stream: true, store: false, input: [{ role: "user", content: "hi" }], tools: [{ type: "namespace" }] });
+    for (const refused of ["temperature", "max_output_tokens", "previous_response_id", "metadata", "user", "prompt"]) expect(body).not.toHaveProperty(refused);
+  });
+
+  it("reads the login again after fetching the model list, so a logout in the meantime stops the request", async () => {
+    const api = await fakeApi((_, res) => sse(res, [done(text), completed]));
+    const left = ["tok-1"]; // one token, then signed out
+    const once = {
+      check: () => {},
+      token: async () => {
+        const token = left.shift();
+        if (!token) throw new Error("Not signed in to ChatGPT.");
+        return { token, account: "app user-1" };
+      },
+    } as unknown as ChatGPTAuth;
+    await expect(new ChatGPTProvider("gpt-6.1-sol", once, api.base).complete(request)).rejects.toThrow("Not signed in to ChatGPT.");
+    expect(api.seen).toHaveLength(0);
+  });
+
+  it("fetches the model list again after a switch to another account", async () => {
+    const api = await fakeApi((_, res) => sse(res, [done(text), completed]));
+    let account = "app user-1";
+    const switching = { check: () => {}, token: async () => ({ token: "tok-1", account }) } as unknown as ChatGPTAuth;
+    const provider = new ChatGPTProvider("gpt-6.1-sol", switching, api.base);
+    await provider.complete(request);
+    await provider.complete(request);
+    expect(api.lists()).toBe(1);
+    account = "app user-2";
+    await provider.complete(request);
+    expect(api.lists()).toBe(2);
+  });
+
+  it("checks the model again when the account changes while its list is fetched", async () => {
+    const api = await fakeApi((_, res) => sse(res, [done(text), completed]));
+    const first = [{ token: "tok-1", account: "app user-1" }];
+    const switching = { check: () => {}, token: async () => first.shift() ?? { token: "tok-2", account: "app user-2" } } as unknown as ChatGPTAuth;
+    await new ChatGPTProvider("gpt-6.1-sol", switching, api.base).complete(request);
+    expect(api.lists()).toBe(2);
+    expect(api.seen[0]!.auth).toBe("Bearer tok-2");
+  });
+
+  it("stops on the usage limit at once, with no retry", async () => {
+    const api = await fakeApi((_, res) =>
+      res.writeHead(429, { "content-type": "application/json" }).end(JSON.stringify({ error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit", type: "x", param: null } })),
+    );
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(USAGE_LIMIT);
+    expect(api.seen).toHaveLength(1);
+  });
+
+  it("refuses a model the account does not offer, listing the ones it does", async () => {
+    const api = await fakeApi(() => {});
+    await expect(new ChatGPTProvider("gpt-9", auth, api.base).complete(request)).rejects.toThrow("Your ChatGPT account does not offer gpt-9. It offers: chatgpt:gpt-6.1-sol");
+    expect(api.seen).toHaveLength(0);
+  });
+
+  it("takes the context window from the model list, then from OpenAI's model pages", async () => {
+    const api = await fakeApi(() => {});
+    expect(await new ChatGPTProvider("hidden", auth, api.base).contextWindow()).toBe(9);
+    expect(await new ChatGPTProvider("gpt-6.1-sol", auth, api.base).contextWindow()).toBe(1_050_000);
+  });
+
+  it("is refused at once when signed out", () => {
+    const out = { check: () => { throw new Error("Not signed in to ChatGPT."); } } as unknown as ChatGPTAuth;
+    expect(() => new ChatGPTProvider("gpt-6.1-sol", out)).toThrow("Not signed in to ChatGPT.");
+  });
+});
