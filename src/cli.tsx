@@ -29,8 +29,9 @@ Usage:
   tachi logout chatgpt                               sign out of ChatGPT
 
 Options:
-  --lead <spec>     anthropic:<model> | openai:<model> | openrouter:<model> | kimi:<model> | ollama:<model>
-                    (or set TACHI_LEAD)
+  --lead <spec>     anthropic:<model> | chatgpt:<model> | openai:<model> | openrouter:<model>
+                    | kimi:<model> | ollama:<model> (or set TACHI_LEAD)
+                    chatgpt: uses your ChatGPT plan; openai: uses OPENAI_API_KEY
   --mode <mode>     when to ask before acting: ${MODES.join(" | ")} (default: ask)
   --effort <level>  Anthropic models only: ${EFFORTS.join(" | ")}
   --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)

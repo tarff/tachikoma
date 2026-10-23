@@ -35,10 +35,12 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
 
   const say = (...add: Line[]) => setLines((l) => [...l, ...add.map((x) => ({ ...screen(x), id: nextId.current++ }))]);
 
-  // A late answer for the previous lead must not show as the new lead's window.
-  const lookUpWindow = () => {
+  // A late answer for the previous lead must not show as the new lead's window. Asked again after
+  // each reply, without clearing what is shown: a ChatGPT plan's window is known only once a reply has
+  // fetched the account's model list.
+  const lookUpWindow = (fresh = true) => {
     const lead = session.lead;
-    setContextWindow(null);
+    if (fresh) setContextWindow(null);
     lead.contextWindow?.()
       .then((n) => session.lead === lead && setContextWindow(n))
       .catch(() => {}); // stays unknown
@@ -74,7 +76,10 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       else if (e.kind === "fallback") say({ text: `↪ ${e.message}`, color: "magenta" });
       else say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
     };
-    const onUsage = () => rerender((n) => n + 1);
+    const onUsage = () => {
+      rerender((n) => n + 1);
+      lookUpWindow(false);
+    };
     const onLead = (id: string) => {
       say({ text: `lead is now ${id}`, color: "magenta" });
       lookUpWindow();

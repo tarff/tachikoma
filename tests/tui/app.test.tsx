@@ -179,6 +179,19 @@ describe("App", () => {
     expect(app.lastFrame()).not.toContain("ctx 0%");
   });
 
+  it("asks for the context window again after a reply, when only a reply makes it known", async () => {
+    let answered = false;
+    const later = Object.assign(new FakeProvider("a", [reply("there")]), { contextWindow: async () => (answered ? 1000 : null) });
+    const complete = later.complete.bind(later);
+    later.complete = async (req) => ((answered = true), complete(req));
+    const { app } = await mount([], { lead: later });
+    expect(app.lastFrame()).not.toMatch(/ctx \d+%/);
+    await type(app, "hi");
+    await until(app, "there");
+    await until(app, "%");
+    expect(app.lastFrame()).toMatch(/ctx \d+%/);
+  });
+
   it("keeps going when the context-window lookup fails", async () => {
     const broken = Object.assign(new FakeProvider("a", [reply("still here")]), { contextWindow: () => Promise.reject(new Error("no window")) });
     const { app } = await mount([], { lead: broken });
