@@ -31,7 +31,7 @@ type Login = AppProps["login"];
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
-  opts: { lead?: Provider; errorFile?: string; login?: Login; models?: ModelGroup[]; note?: string; made?: string[] } = {},
+  opts: { lead?: Provider; errorFile?: string; login?: Login; models?: ModelGroup[]; note?: string; slow?: boolean; made?: string[] } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
@@ -53,8 +53,9 @@ async function mount(
         return new FakeProvider("b", []);
       }}
       login={opts.login ?? (async () => {})}
-      listModels={async (_signal, warn) => {
+      listModels={async (signal, warn) => {
         if (opts.note) warn(opts.note);
+        if (opts.slow) await new Promise((resolve) => signal.addEventListener("abort", resolve)); // until Ctrl-C
         return opts.models ?? [];
       }}
       bindAsk={(fn) => {
@@ -314,6 +315,43 @@ describe("App", () => {
     await tick();
     expect(app.lastFrame()).toContain("fake:a");
     expect(app.lastFrame()).not.toContain("empty");
+  });
+
+  it("reads keys that arrive together in order, each after the one before", async () => {
+    const made: string[] = [];
+    const { app } = await mount([], { models, made });
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick();
+    app.stdin.write("\u001b[B\u001b[B"); // two downs in one read of the terminal
+    app.stdin.write("\r");
+    await until(app, "›");
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick();
+    app.stdin.write("b");
+    app.stdin.write("\r"); // before the screen shows the filter
+    await until(app, "›");
+    expect(made).toEqual(["fake:c", "fake:b"]);
+  });
+
+  it("says when there is nothing to pick from", async () => {
+    const { app } = await mount([], { models: [{ provider: "openai", error: "key rejected" }] });
+    await type(app, "/model");
+    await until(app, "openai (key rejected)");
+    expect(app.lastFrame()).toContain("No models to pick from.");
+    expect(app.lastFrame()).not.toContain("No models match.");
+  });
+
+  it("stops reading the lists on Ctrl-C, without opening the picker", async () => {
+    const { app } = await mount([], { models, slow: true });
+    await type(app, "/model");
+    await until(app, "Ctrl-C to stop");
+    app.stdin.write("\u0003");
+    await until(app, "›");
+    await tick();
+    expect(app.lastFrame()).not.toContain("fake:c");
+    expect(app.lastFrame()).not.toContain("Filter:");
   });
 
   it("sends a message that starts with a one-word path", async () => {

@@ -16,6 +16,8 @@ import { PRESETS } from "./openai.js";
 
 export type ModelGroup = { provider: string; models: string[] } | { provider: string; error: string };
 
+// OpenAI's own address, unless OPENAI_BASE_URL is set: the OpenAI SDK reads it for openai: leads, so
+// the list comes from where they go.
 const OPENAI_BASE = "https://api.openai.com/v1";
 
 const fetchFailed = (err: unknown) => err instanceof Error && err.message === "fetch failed"; // Node's fetch
@@ -40,9 +42,12 @@ async function openaiFormat(base: string, key: string | undefined, signal?: Abor
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = (await res.json().catch(() => {
       throw new Error("the answer was not a model list"); // a Wi-Fi sign-in page, say
-    })) as { data?: { id?: unknown }[]; links?: { next?: unknown } };
-    for (const m of body.data ?? []) if (typeof m.id === "string") ids.push(m.id);
-    const next: URL | undefined = typeof body.links?.next === "string" && body.links.next ? new URL(body.links.next, url) : undefined;
+    })) as { data?: unknown; links?: { next?: unknown } } | null;
+    const data = body?.data;
+    if (!Array.isArray(data)) throw new Error("the answer was not a model list");
+    for (const m of data as ({ id?: unknown } | null)[]) if (typeof m?.id === "string") ids.push(m.id);
+    const link = body?.links?.next;
+    const next: URL | undefined = typeof link === "string" && link ? new URL(link, url) : undefined;
     if (next && next.origin !== new URL(url).origin) throw new Error("its next page is on another site");
     url = next?.href;
   }
@@ -75,7 +80,7 @@ export async function listModels(signal?: AbortSignal, env: NodeJS.ProcessEnv = 
   for (const [kind, preset] of Object.entries(PRESETS)) {
     const key = preset.keyEnv ? env[preset.keyEnv] : undefined;
     if (preset.keyEnv && !key) continue; // not set up
-    asks.push({ provider: kind, list: () => openaiFormat(preset.baseURL ?? OPENAI_BASE, key, signal) });
+    asks.push({ provider: kind, list: () => openaiFormat(preset.baseURL ?? (env.OPENAI_BASE_URL || OPENAI_BASE), key, signal) });
   }
   const groups = await Promise.all(
     asks.map(async ({ provider, list }): Promise<ModelGroup[]> => {
