@@ -119,20 +119,22 @@ export function readPrivate(file: string, warn: (message: string) => void): stri
 }
 
 // On Windows a file another process has open, such as another Tachikoma reading the login, cannot be
-// replaced (EPERM). The swap is tried again every millisecond for up to RENAME_RETRY_MS. Measured on
-// 2026-10-23, with two processes reading the file nonstop: of 3,000 saves, 27% were refused at first,
-// and the slowest went through after 0.76 s. The user chose 1 s.
+// replaced (EPERM). The swap is tried again, after the shortest pause asked for (1 ms; Windows's timer
+// makes it about 16 ms), for up to RENAME_RETRY_MS. Measured on 2026-10-23 with the same pause, with
+// two processes reading the file nonstop: of 3,000 saves, 27% were refused at first, and the slowest
+// went through after 0.76 s. The user chose 1 s. performance.now() keeps counting if the clock is set.
 const RENAME_RETRY_MS = 1_000;
 const pause = new Int32Array(new SharedArrayBuffer(4));
 
 function swapIn(temp: string, file: string): void {
-  const start = Date.now();
+  const start = performance.now();
   for (;;) {
     try {
       return renameSync(temp, file);
     } catch (err) {
       const refused = windows && ["EPERM", "EACCES", "EBUSY"].includes((err as NodeJS.ErrnoException).code ?? "");
-      if (!refused || Date.now() - start >= RENAME_RETRY_MS) throw err;
+      if (!refused) throw err;
+      if (performance.now() - start >= RENAME_RETRY_MS) throw new PrivateFileError(`${file} was kept open by another program, so it could not be saved`);
       Atomics.wait(pause, 0, 0, 1);
     }
   }
