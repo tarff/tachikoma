@@ -32,7 +32,7 @@ export function openBrowser(url: string): void {
 export interface LoginOptions {
   account?: number; // which saved account, counted from 1
   fresh?: boolean; // a new account
-  keychain?: boolean; // keep the tokens in the system keychain
+  keychain?: boolean; // seal the tokens with a key kept in the system keychain
 }
 
 // `prefix` is how a command is typed, for the messages.
@@ -82,19 +82,24 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: LoginOptions 
   // Under the lock: check, choose the client ID, and save the machine ID before its first use.
   const start = await store.update(async (login, save) => {
     if (signedIn(login)) {
-      // Already signed in, `--keychain` moves the tokens there.
-      if (opts.keychain && !login.keychain) {
+      // Already signed in, `--keychain` on its own seals the tokens with the keychain's key.
+      if (opts.keychain && !login.keychain && !opts.fresh && opts.account === undefined) {
+        store.checkKeychain(login, "The login stays in its private file.");
         save({ ...login, keychain: true });
         return undefined;
       }
       throw new LoginError(`Already signed in as ${who(login)}. Sign out first with \`${typed}logout chatgpt\`.`);
     }
+    // A login that cannot be opened (store.ts) waits for logout, which says that OpenAI was not asked to
+    // cancel it; and one in a keychain that is only locked is not replaced.
+    if (login.active) throw new LoginError(`The saved ChatGPT login cannot be opened. Sign out first with \`${typed}logout chatgpt\`.`);
     const account = choose(login, opts, typed);
     const saved = save(login);
+    if (opts.keychain) store.checkKeychain(saved, "Sign in without --keychain to keep the login in its private file.");
     // An unfinished registration's issued ID is used again, as the docs say after a failed exchange.
     return { account, hostId: saved.hostId, version: saved.version, clientId: account?.clientId ?? login.pending?.clientId ?? FIRST_CLIENT };
   }, opts.signal);
-  if (!start) return io.say("Your ChatGPT login is now kept in the system keychain.");
+  if (!start) return io.say("Your ChatGPT login is now sealed with a key kept in the system keychain.");
 
   // Asked for after that check, so a signed-in user who is offline is still told so.
   const ep = await discover(opts.issuer ?? ISSUER, opts.signal);
@@ -210,7 +215,7 @@ export async function signOut(store: LoginStore, io: LoginIO, opts: { issuer?: s
     } catch (err) {
       problem = opts.signal?.aborted ? "You stopped waiting for its answer." : errorText(err);
     }
-  }
+  } else if (ended.sealed) problem = "The saved login could not be opened, so OpenAI was not asked.";
   io.say(
     problem
       ? `Signed out on this computer, but OpenAI did not confirm that the sign-in was cancelled. ${problem} You can disconnect Tachikoma in ChatGPT's settings.`

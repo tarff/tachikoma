@@ -24,6 +24,8 @@ const SIGN_IN_AGAIN = "Sign in with `tachi login chatgpt` (or /login chatgpt in 
 
 function usable(login: SavedLogin): { clientId: string; sub: string; tokens: Tokens } {
   const a = login.active;
+  // A sealed login that cannot be opened (store.ts) waits for a logout before a new sign-in.
+  if (a?.sealed && !a.tokens) throw new LoginError("The saved ChatGPT login cannot be opened. Sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), then sign in again, or choose another lead (--lead, or /lead in a session).");
   if (!a?.tokens) throw new LoginError(`Not signed in to ChatGPT. ${SIGN_IN_AGAIN}`);
   if (!a.planUse) throw new LoginError("This ChatGPT sign-in does not allow using your plan. Sign out, sign in again and allow it, or use openai:<model> with an API key.");
   return { clientId: a.clientId, sub: a.sub, tokens: a.tokens };
