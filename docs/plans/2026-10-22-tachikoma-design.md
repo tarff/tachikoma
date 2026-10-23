@@ -794,6 +794,11 @@ whose results are recorded.
 16. The release 2 checks listed in the release 2 design: whether an unlisted app can sign in,
     whether the model list includes `context_window`, a full tool round, whether token counts are
     filled in, and whether a reasoning-effort setting is accepted.
+    **Measured 2026-10-23, at the first real sign-in (the user's account):** an unlisted app can
+    sign in, and plan use was granted. The model list has `context_window` for every model (272,000
+    tokens, and 500,000 for gpt-6.1-sol), and also `max_context_window` (872,000 for most).
+    `earliest_refresh_at` is seconds since 1970, 361 s before the access token expires; the access
+    token lasts about an hour. Still to check: the tool round, token counts and effort.
 17. Two waits for the memory service, only if hub mode (item 11) is not used: how long a session
     keeps trying to connect while a supervisor starts, and how long a stopping supervisor gives its
     queued saves to finish. Both come from timing real startups and saves.
