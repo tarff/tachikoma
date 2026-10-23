@@ -41,8 +41,9 @@ Options:
   --raw             with -p, print the answer exactly as written, control codes and all
   -h, --help        show this help
 
-In a session: /lead <provider:model> switches the lead model, /errors summarises the error log,
-/exit quits. Ctrl-C stops the current turn, or quits when idle.`;
+In a session: /lead <provider:model> switches the lead model, /login chatgpt and /logout chatgpt
+sign in and out, /errors summarises the error log, /exit quits. Ctrl-C stops the current turn, or
+quits when idle.`;
 
 function fail(message: string): never {
   console.error(message);
@@ -186,6 +187,7 @@ if (parsed.print !== undefined) {
       errorFile={errorFile}
       segments={segments}
       makeProvider={makeProvider}
+      login={accountCommand}
       bindAsk={(fn) => {
         ask = fn;
       }}

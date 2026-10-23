@@ -9,7 +9,7 @@ import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import type { Provider } from "../../src/core/types.js";
 import { TOOLS } from "../../src/tools/index.js";
-import { App } from "../../src/tui/App.js";
+import { App, type AppProps } from "../../src/tui/App.js";
 import { SEGMENTS } from "../../src/tui/StatusLine.js";
 import { Bus, FakeProvider, callTool, reply, tempContext } from "../helpers.js";
 
@@ -26,7 +26,12 @@ afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount();
 });
 
-async function mount(turns: ConstructorParameters<typeof FakeProvider>[1], opts: { lead?: Provider; errorFile?: string } = {}) {
+type Login = AppProps["login"];
+
+async function mount(
+  turns: ConstructorParameters<typeof FakeProvider>[1],
+  opts: { lead?: Provider; errorFile?: string; login?: Login } = {},
+) {
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
@@ -43,6 +48,7 @@ async function mount(turns: ConstructorParameters<typeof FakeProvider>[1], opts:
       errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
       segments={SEGMENTS}
       makeProvider={() => new FakeProvider("b", [])}
+      login={opts.login ?? (async () => {})}
       bindAsk={(fn) => {
         ask = fn;
       }}
@@ -151,6 +157,32 @@ describe("App", () => {
     expect(app.lastFrame()).toContain("Unknown command: /eror");
     expect(app.lastFrame()).toContain("/errors");
     expect(session.messages).toEqual([]);
+  });
+
+  it("signs in and out with /login and /logout, showing what they say, and never sends them to the model", async () => {
+    const calls: string[] = [];
+    const login: Login = async (verb, words, say) => {
+      calls.push(`${verb} ${words.join(" ")}`);
+      say(`${verb} done`);
+    };
+    const lead = new FakeProvider("a", []);
+    const { app } = await mount([], { lead, login });
+    await type(app, "/login chatgpt --new");
+    await until(app, "login done");
+    await type(app, "/logout chatgpt");
+    await until(app, "logout done");
+    expect(calls).toEqual(["login chatgpt --new", "logout chatgpt"]);
+    expect(lead.seen).toEqual([]);
+  });
+
+  it("stops a sign-in on Ctrl-C, and shows why it failed", async () => {
+    const login: Login = (_verb, _words, _say, signal) => new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("Sign-in was cancelled"))));
+    const { app } = await mount([], { login });
+    await type(app, "/login chatgpt");
+    await until(app, "working");
+    app.stdin.write("\u0003");
+    await until(app, "Sign-in was cancelled");
+    await until(app, "›");
   });
 
   it("sends a message that starts with a one-word path", async () => {
