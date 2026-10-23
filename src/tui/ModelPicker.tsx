@@ -14,6 +14,7 @@ export function rows(groups: ModelGroup[], filter: string): Row[] {
   const f = filter.toLowerCase();
   return groups.flatMap((g): Row[] => {
     if ("error" in g) return f ? [] : [{ kind: "heading", text: `${g.provider} (${g.error})` }];
+    if (!g.models.length) return f ? [] : [{ kind: "heading", text: `${g.provider} (no models)` }];
     const specs = g.models.map((m) => `${g.provider}:${m}`).filter((s) => s.toLowerCase().includes(f));
     return specs.length ? [{ kind: "heading", text: g.provider }, ...specs.map((spec): Row => ({ kind: "model", spec }))] : [];
   });
@@ -25,7 +26,7 @@ export function ModelPicker({ groups, current, onPick, onClose }: { groups: Mode
   const models = shown.flatMap((r) => (r.kind === "model" ? [r.spec] : []));
   const [chosen, setChosen] = useState(() => Math.max(0, models.indexOf(current)));
   const at = Math.min(chosen, Math.max(0, models.length - 1));
-  // Fits the terminal: the filter line, the help line and the status line take three rows.
+  // Fits the terminal: the help line, the status line and the line Ink ends with take three rows.
   const height = Math.max(1, (useStdout().stdout.rows || shown.length + 3) - 3);
   const focus = shown.findIndex((r) => r.kind === "model" && r.spec === models[at]);
   const top = Math.min(Math.max(0, focus - Math.floor(height / 2)), Math.max(0, shown.length - height));
@@ -54,14 +55,16 @@ export function ModelPicker({ groups, current, onPick, onClose }: { groups: Mode
             {visible(r.text)}
           </Text>
         ) : (
-          <Text key={r.spec} inverse={r.spec === models[at]} wrap="truncate-end">
+          <Text key={`m${top + i}`} inverse={r.spec === models[at]} wrap="truncate-end">
             {r.spec === current ? "● " : "  "}
             {visible(r.spec)}
           </Text>
         ),
       )}
       {models.length === 0 && <Text color="gray">No models match.</Text>}
-      <Text color="gray">Filter: {filter || "(type to filter)"} · ↑↓ move · Enter picks · Esc closes</Text>
+      <Text color="gray" wrap="truncate-end">
+        Filter: {filter || "(type to filter)"} · ↑↓ move · Enter picks · Esc closes
+      </Text>
     </>
   );
 }

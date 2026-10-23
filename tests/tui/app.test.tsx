@@ -31,7 +31,7 @@ type Login = AppProps["login"];
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
-  opts: { lead?: Provider; errorFile?: string; login?: Login; models?: ModelGroup[]; made?: string[] } = {},
+  opts: { lead?: Provider; errorFile?: string; login?: Login; models?: ModelGroup[]; note?: string; made?: string[] } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
@@ -53,7 +53,10 @@ async function mount(
         return new FakeProvider("b", []);
       }}
       login={opts.login ?? (async () => {})}
-      listModels={async () => opts.models ?? []}
+      listModels={async (_signal, warn) => {
+        if (opts.note) warn(opts.note);
+        return opts.models ?? [];
+      }}
       bindAsk={(fn) => {
         ask = fn;
       }}
@@ -270,6 +273,47 @@ describe("App", () => {
     await type(app, "/model gpt");
     await until(app, "/model takes nothing after it.");
     expect(session.messages).toEqual([]);
+  });
+
+  it("moves both ways, unfilters on Backspace, says when nothing matches, and closes on Ctrl-C", async () => {
+    const made: string[] = [];
+    const { app } = await mount([], { models, made });
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick();
+    app.stdin.write("zz");
+    await until(app, "No models match.");
+    app.stdin.write("\u007f");
+    await tick();
+    app.stdin.write("\u007f");
+    await until(app, "fake:c");
+    for (const key of ["\u001b[B", "\u001b[B", "\u001b[A"]) {
+      app.stdin.write(key); // down, down, up
+      await tick();
+    }
+    app.stdin.write("\r");
+    await until(app, "lead is now fake:b");
+    expect(made).toEqual(["fake:b"]);
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick();
+    app.stdin.write("\u0003");
+    await until(app, "›");
+    expect(app.lastFrame()).not.toContain("fake:c");
+    await type(app, "/lead"); // still running
+    await until(app, "Usage: /lead");
+  });
+
+  it("shows a provider with no models, and what signing in says while the lists are read", async () => {
+    const { app } = await mount([], { models: [{ provider: "fake", models: ["a"] }, { provider: "empty", models: [] }], note: "Waiting for Tachikoma (process 7)…" });
+    await type(app, "/model");
+    await until(app, "empty (no models)");
+    expect(app.lastFrame()).toContain("Waiting for Tachikoma (process 7)…");
+    await tick();
+    app.stdin.write("a");
+    await tick();
+    expect(app.lastFrame()).toContain("fake:a");
+    expect(app.lastFrame()).not.toContain("empty");
   });
 
   it("sends a message that starts with a one-word path", async () => {

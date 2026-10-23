@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -41,10 +41,86 @@ describe("listModels", () => {
   it("shows a provider that fails, with the reason", async () => {
     emptyData();
     providers({ "https://api.openai.com/v1/models": () => json({ error: {} }, 401) });
-    expect(await listModels(undefined, { OPENAI_API_KEY: "bad" })).toEqual([
-      { provider: "openai", error: "key rejected" },
-      { provider: "ollama", error: "not running" },
+    expect(await listModels(undefined, { OPENAI_API_KEY: "bad" })).toEqual([{ provider: "openai", error: "key rejected" }]);
+  });
+
+  it("leaves Ollama out when it is not running", async () => {
+    emptyData();
+    const seen = providers({});
+    expect(await listModels(undefined, {})).toEqual([]);
+    expect(seen).toEqual(["http://localhost:11434/v1/models"]);
+  });
+
+  it("says in a few words why a list could not be read, sending each provider its key", async () => {
+    emptyData();
+    providers({
+      "https://api.anthropic.com/v1/models": () => json({ type: "error", error: { type: "invalid_request_error", message: "bad" } }, 400),
+      "https://api.openai.com/v1/models": (key) => (key === "Bearer sk-oa" ? json({}, 500) : json({}, 401)),
+      "https://openrouter.ai/api/v1/models": () => new Response("<html>wifi</html>", { status: 200, headers: { "content-type": "text/html" } }),
+    });
+    expect(await listModels(undefined, { ANTHROPIC_API_KEY: "sk-ant", OPENAI_API_KEY: "sk-oa", OPENROUTER_API_KEY: "sk-or", MOONSHOT_API_KEY: "sk-k" })).toEqual([
+      { provider: "anthropic", error: "HTTP 400" },
+      { provider: "openai", error: "HTTP 500" },
+      { provider: "openrouter", error: "the answer was not a model list" },
+      { provider: "kimi", error: "could not connect: connect ECONNREFUSED" },
     ]);
+    providers({ "https://api.anthropic.com/v1/models": () => json({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }, 401) });
+    expect(await listModels(undefined, { ANTHROPIC_API_KEY: "bad" })).toEqual([{ provider: "anthropic", error: "key rejected" }]);
+  });
+
+  it("says when Anthropic cannot be reached, as for the others", async () => {
+    emptyData();
+    providers({});
+    expect(await listModels(undefined, { ANTHROPIC_API_KEY: "sk-ant" })).toEqual([{ provider: "anthropic", error: "could not connect: connect ECONNREFUSED" }]);
+  });
+
+  it("follows a next page only on the same site, and only once", async () => {
+    emptyData();
+    const seen = providers({
+      "https://elsewhere.example/": () => json({ data: [{ id: "stolen" }] }),
+      "https://openrouter.ai/api/v1/models?page=2": () => json({ data: [{ id: "b/2" }], links: { next: "/api/v1/models?page=2" } }),
+      "https://openrouter.ai/api/v1/models": () => json({ data: [{ id: "a/1" }], links: { next: "/api/v1/models?page=2" } }),
+      "https://api.openai.com/v1/models": () => json({ data: [{ id: "gpt" }], links: { next: "https://elsewhere.example/steal" } }),
+    });
+    expect(await listModels(undefined, { OPENAI_API_KEY: "sk-oa", OPENROUTER_API_KEY: "sk-or" })).toEqual([
+      { provider: "openai", error: "its next page is on another site" },
+      { provider: "openrouter", models: ["a/1", "b/2"] },
+    ]);
+    expect(seen.filter((url) => url.startsWith("https://elsewhere"))).toEqual([]);
+  });
+
+  it("asks every provider at once", async () => {
+    emptyData();
+    let release!: () => void;
+    const both = new Promise<void>((resolve) => (release = resolve));
+    providers({
+      "https://api.openai.com/v1/models": async () => {
+        await both; // answers only once OpenRouter has been asked too
+        return json({ data: [{ id: "gpt" }] });
+      },
+      "https://openrouter.ai/api/v1/models": () => {
+        release();
+        return json({ data: [{ id: "a/1" }] });
+      },
+    });
+    expect(await listModels(undefined, { OPENAI_API_KEY: "sk-oa", OPENROUTER_API_KEY: "sk-or" })).toEqual([
+      { provider: "openai", models: ["gpt"] },
+      { provider: "openrouter", models: ["a/1"] },
+    ]);
+  });
+
+  it("shows a ChatGPT sign-in that cannot be used, with why", async () => {
+    emptyData();
+    const store = new LoginStore(process.env.TACHI_DATA_DIR!, () => {});
+    await store.update(async (login, save) => {
+      save({ ...login, active: { clientId: "c", sub: "s", planUse: false, tokens: { access: "t", refresh: "r", expiresAt: Date.now() + 3_600_000, scopes: [] } } });
+    });
+    providers({});
+    expect(await listModels(undefined, {})).toEqual([
+      { provider: "chatgpt", error: "This ChatGPT sign-in does not allow using your plan. Sign out, sign in again and allow it, or use openai:<model> with an API key." },
+    ]);
+    writeFileSync(store.file, "{ not json");
+    expect(await listModels(undefined, {})).toEqual([{ provider: "chatgpt", error: expect.stringContaining("is damaged") }]);
   });
 
   it("reads Anthropic's list with the key, and follows OpenRouter's pages", async () => {
