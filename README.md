@@ -5,13 +5,16 @@ providers can lead a session. Later releases add handing work to other models an
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, a Docker
 sandbox, and lessons learned from its own error log.
 
-This is release 1 of 9: the core. The command is `tachi`.
+This is release 2 of 9: the core, and signing in with ChatGPT. The command is `tachi`.
 
-## What release 1 does
+## What it does
 
-- **Five providers, any of them can lead:** Anthropic, OpenAI, OpenRouter, Kimi (Moonshot) and a
-  local Ollama. `/lead <provider:model>` switches the lead in the middle of a session, and the
-  conversation carries over.
+- **Six ways to lead, any of them can take over:** Anthropic, your ChatGPT plan, OpenAI, OpenRouter,
+  Kimi (Moonshot) and a local Ollama. `/lead <provider:model>` switches the lead in the middle of a
+  session, and the conversation carries over. `/model` lists the models of every provider that is
+  set up, to pick one with the arrow keys.
+- **Sign in with ChatGPT** (release 2): an OpenAI model can lead on your ChatGPT plan instead of an
+  API key. See [Using your ChatGPT plan](#using-your-chatgpt-plan).
 - **File and shell tools:** read, write and edit files, and run shell commands (PowerShell on
   Windows, `/bin/sh` elsewhere). Files are read with numbered lines, 2,000 lines at a time, as
   Claude Code does. The project is the folder you start `tachi` in. Each action goes through a
@@ -23,8 +26,10 @@ This is release 1 of 9: the core. The command is `tachi`.
     outside the project.
   - `never`: never asks. It is meant for the Docker sandbox, which arrives in release 3. Without the
     sandbox it means no checks at all.
-- **A terminal interface** with a status line showing the lead, context use, tokens, cost, mode and
-  error count. `--status` picks which parts to show.
+- **Your keys and login stay out of reach of the model's tools:** shell commands do not get the API
+  keys, and the file tools refuse Tachikoma's own data folder, where the ChatGPT login is kept.
+- **A terminal interface** with a status line showing the lead, how much of the context window is
+  left, tokens, cost (or "ChatGPT plan"), mode and error count. `--status` picks which parts to show.
 - **Headless runs:** `-p "<prompt>"` runs one prompt, prints the answer and exits. Add `--json` to
   get every event as one JSON line. Details below.
 - **An error log:** every failure, and every refusal another model answered, is written to
@@ -55,6 +60,7 @@ One example per provider:
 
 ```bash
 node dist/cli.js --lead anthropic:claude-opus-5-5
+node dist/cli.js --lead chatgpt:<model>
 node dist/cli.js --lead openai:<model>
 node dist/cli.js --lead openrouter:<model>
 node dist/cli.js --lead kimi:<model>
@@ -64,8 +70,13 @@ node dist/cli.js --lead ollama:qwen3:8b
 Other options, from `node dist/cli.js --help`:
 
 ```
---lead <spec>     anthropic:<model> | openai:<model> | openrouter:<model> | kimi:<model> | ollama:<model>
-                  (or set TACHI_LEAD)
+tachi login chatgpt [--new | --account <number>]   sign in to use your ChatGPT plan;
+                    [--keychain]                   --keychain seals it with a key in the system keychain
+tachi logout chatgpt                               sign out of ChatGPT
+
+--lead <spec>     anthropic:<model> | chatgpt:<model> | openai:<model> | openrouter:<model>
+                  | kimi:<model> | ollama:<model> (or set TACHI_LEAD)
+                  chatgpt: uses your ChatGPT plan; openai: uses OPENAI_API_KEY
 --mode <mode>     when to ask before acting: ask | project | never (default: ask)
 --effort <level>  Anthropic models only: low | medium | high | xhigh | max
 --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
@@ -76,8 +87,37 @@ Other options, from `node dist/cli.js --help`:
 -h, --help        show this help
 ```
 
-In a session, `/lead <provider:model>` switches the lead model, `/errors` summarises the error log
-and `/exit` quits. Ctrl-C stops the current turn, or quits when idle.
+In a session, `/lead <provider:model>` switches the lead model, `/model` picks it from a list,
+`/login chatgpt` and `/logout chatgpt` sign in and out, `/errors` summarises the error log and
+`/exit` quits; commands ignore case. Ctrl-C stops the current turn, or quits when idle.
+
+## Using your ChatGPT plan
+
+Tachikoma uses OpenAI's Sign in with ChatGPT for open-source tools. Eligible ChatGPT plans can lead
+a session with an OpenAI model, billed to the plan instead of an API key.
+
+1. `tachi login chatgpt` prints "Continue with ChatGPT in your browser" and opens your browser. If
+   no browser opens, it prints a local address to open by hand. Approve Tachikoma there. The first
+   time, it shows OpenAI's notice that the app now uses your ChatGPT plan.
+2. `tachi --lead chatgpt:<model>` (or `/lead chatgpt:<model>`) leads with that model. A model your
+   account does not offer is refused with a list of the ones it does; `/model` shows them too.
+3. `tachi logout chatgpt` signs out. It deletes the login from your computer, then asks OpenAI to
+   cancel it, and says so if OpenAI cannot confirm. It also cancels a sign-in still waiting in the
+   browser.
+
+- **`chatgpt:` always bills the plan and `openai:` always uses `OPENAI_API_KEY`.** Tachikoma never
+  switches between them. When the plan's limit runs out, the turn stops with a link to
+  https://chatgpt.com/settings/usage; it does not move to the API key.
+- **The status line** shows "ChatGPT plan" where the cost would be.
+- **One account at a time.** `--new` adds another account; with several saved, `--account <number>`
+  picks one.
+- **The login is a private file** in Tachikoma's data folder (`%LOCALAPPDATA%\tachikoma` on Windows,
+  `~/Library/Application Support/tachikoma` on macOS, `~/.local/share/tachikoma` on Linux). Only you
+  can read it: on Windows Tachikoma sets a permission for you alone, since the profile folder also
+  lets in administrators. With `--keychain`, the tokens in it are also encrypted, with a key kept in
+  the system keychain (Windows Credential Manager, the macOS Keychain or the Linux secret service).
+  To stop using the keychain, sign out and in again without it.
+- **Several Tachikomas at once** take turns to change the login, so a renewal is never lost.
 
 ## Headless runs
 
@@ -103,20 +143,38 @@ the permission mode would ask about is refused, and the model is told so.
 
 | Provider | `--lead` prefix | Environment variable |
 |---|---|---|
-| Anthropic | `anthropic:` | `ANTHROPIC_API_KEY` (an API key only; Tachikoma never signs in with a subscription) |
+| Anthropic | `anthropic:` | `ANTHROPIC_API_KEY` (an API key only; Tachikoma never signs in with a Claude subscription) |
+| ChatGPT plan | `chatgpt:` | none; `tachi login chatgpt` |
 | OpenAI | `openai:` | `OPENAI_API_KEY` |
 | OpenRouter | `openrouter:` | `OPENROUTER_API_KEY` |
 | Kimi (Moonshot) | `kimi:` | `MOONSHOT_API_KEY` |
 | Ollama | `ollama:` | none; it talks to `http://localhost:11434` |
 
-Costs are shown only for models with a known price. Others show `?`; Ollama counts as free.
+Costs are shown only for models with a known price. Others show `?`; Ollama counts as free, and a
+ChatGPT plan shows as "ChatGPT plan".
+
+Shell commands never see these API keys, so a command cannot print one back to the model. A command
+that needs one of them does not get it either.
 
 The Anthropic SDK still adds any headers you set in `ANTHROPIC_CUSTOM_HEADERS`, so do not put an
 `Authorization` header there.
 
-## Known limits of release 1
+## Known limits
 
-Each is fixed in a later release.
+Each is fixed in a later release, unless it says otherwise.
+
+- **An approved shell command can still read your login.** Commands on your own machine run with your
+  own access, so one you approve can read files and the system keychain. Keeping keys from commands
+  and the data folder from the file tools prevents accidents, not a determined command. The sandbox
+  (release 3) keeps commands away from the login.
+- **On a ChatGPT plan, `--effort` does nothing yet.** Whether the plan accepts a reasoning setting is
+  still to be measured.
+- **The context left is shown only for models whose window is known.** On a ChatGPT plan it comes
+  from the account's model list, from the first reply on. Other models show the tokens in use.
+- **If a Tachikoma is killed while changing the login,** the next one takes over its lock, within 5
+  seconds if it was already waiting. If two take it over at the same moment, a renewal can be lost,
+  and you sign in again (not planned to change).
+- **A reply already streaming when you sign out** finishes. The next request is refused.
 
 - **The history is never shortened** (release 4). When the context window is full, the turn ends
   with an error. Switching `/lead` to a model with a smaller window can make the next request fail.
@@ -138,9 +196,10 @@ Each is fixed in a later release.
 
 ## What comes next
 
-1. Core (this release): the agent loop, local file and shell tools, Anthropic and OpenAI-format
-   providers with lead switching, the terminal interface with status line, the error log.
-2. Sign in with ChatGPT, so an OpenAI model can lead on your ChatGPT plan instead of an API key.
+1. Core (done): the agent loop, local file and shell tools, Anthropic and OpenAI-format providers
+   with lead switching, the terminal interface with status line, the error log.
+2. Sign in with ChatGPT (this release), so an OpenAI model can lead on your ChatGPT plan instead of
+   an API key; the `/model` picker.
 3. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is
    applied).
 4. MCP tools and long-term memory (MemPalace); transcripts saved to disk; shortening the history.
