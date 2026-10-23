@@ -15,7 +15,7 @@ const NAMESPACE = "tachikoma";
 
 export const USAGE_LIMIT = `ChatGPT usage limit reached. Review your plan or this app's limit: ${USAGE_URL}`;
 
-const SIGN_IN_AGAIN = "Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt`.";
+const SIGN_IN_AGAIN = "Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt` (or /logout chatgpt and /login chatgpt in a session).";
 
 const sentence = (text: string) => (/[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`);
 
@@ -53,7 +53,7 @@ function planText({ code, param, status, message }: Failure): string {
     // "Check the client and grant configuration rather than retrying or changing billing."
     case "chatpass_v2_scope_not_authorized":
     case "chatpass_v2_invalid_authorization_context":
-      return `OpenAI says this ChatGPT sign-in's permissions do not cover the request (${code}).${why} Sign out with \`tachi logout chatgpt\`, then sign in again with \`tachi login chatgpt\` and allow plan use.`;
+      return `OpenAI says this ChatGPT sign-in's permissions do not cover the request (${code}).${why} Sign out with \`tachi logout chatgpt\`, then sign in again with \`tachi login chatgpt\` (or /logout chatgpt and /login chatgpt in a session) and allow plan use.`;
     case "subscription_sharing_invalid_user":
       return `OpenAI did not accept the ChatGPT sign-in (${code}).${why} ${SIGN_IN_AGAIN}`;
     case "subscription_sharing_usage_unavailable":

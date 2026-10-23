@@ -20,7 +20,8 @@ export interface AppProps {
   segments: Segment[];
   makeProvider: (spec: string) => Provider;
   bindAsk: (ask: (summary: string, detail?: string) => Promise<boolean>) => void;
-  // `/login …` and `/logout …`: the words after the command, and where to show what it says.
+  // `/login …` and `/logout …`: the words after the command, where to show what it says, a signal
+  // Ctrl-C aborts, and how a command is typed here ("/").
   login: (verb: "login" | "logout", words: string[], say: (line: string) => void, signal: AbortSignal, prefix: string) => Promise<void>;
 }
 
@@ -117,8 +118,9 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       if (command === "/lead") return session.setLead(makeProvider(words.join(" ")));
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
-      // A slash and a bare word on its own is a command; "/tmp is full" is a message.
+      // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
       if (!account && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
+      if (words.length && ["/exit", "/errors"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
       abort.current = new AbortController();
       setBusy(true);
       try {

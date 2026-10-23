@@ -56,6 +56,7 @@ const NOTICE = "You're using your ChatGPT plan. Eligible usage in this app uses 
 describe("loginArgs", () => {
   it("reads the provider and the account choice", () => {
     expect(loginArgs(["chatgpt"], "login")).toEqual({});
+    expect(loginArgs(["ChatGPT"], "login")).toEqual({}); // the provider's name in any case
     expect(loginArgs(["chatgpt", "--new"], "login")).toEqual({ fresh: true });
     expect(loginArgs(["chatgpt", "--account", "2"], "login")).toEqual({ account: 2 });
     expect(loginArgs(["chatgpt"], "logout")).toEqual({});

@@ -84,7 +84,7 @@ export class LoginStore {
     } catch {
       parsed = undefined;
     }
-    if (!parsed?.success) throw new LoginError(`The saved login in ${this.file} is damaged. Move it aside, then sign in again with \`tachi login chatgpt\`.`);
+    if (!parsed?.success) throw new LoginError(`The saved login in ${this.file} is damaged. Move it aside, then sign in again with \`tachi login chatgpt\` (or /login chatgpt in a session).`);
     return parsed.data;
   }
 

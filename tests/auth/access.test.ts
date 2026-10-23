@@ -145,7 +145,7 @@ console.log((await new ChatGPTAuth(new LoginStore(${JSON.stringify(dir)}, () => 
     await age({ expiresAt: Date.now() });
     fake.renewalError = "invalid_client";
     await expect(auth.token()).rejects.toThrow(
-      /^Could not renew the ChatGPT sign-in\. OpenAI refused the request \(HTTP 400, invalid_client\)\. OpenAI did not accept Tachikoma's registration, so trying again will not help\. Sign out with `tachi logout chatgpt`, then register again with `tachi login chatgpt --new`\.$/,
+      /^Could not renew the ChatGPT sign-in\. OpenAI refused the request \(HTTP 400, invalid_client\)\. OpenAI did not accept Tachikoma's registration, so trying again will not help\. Sign out with `tachi logout chatgpt`, then register again with `tachi login chatgpt --new` \(or \/logout chatgpt and \/login chatgpt --new in a session\)\.$/,
     );
     expect(store.read().active?.tokens).toBeDefined();
   });
