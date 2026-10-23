@@ -3,9 +3,10 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
+import { ChatGPTAuth } from "../../src/auth/access.js";
 import { signIn, signOut } from "../../src/auth/chatgpt.js";
 import { type Keychain, KeychainError, systemKeychain } from "../../src/auth/keychain.js";
-import { LoginStore } from "../../src/auth/store.js";
+import { LoginError, LoginStore } from "../../src/auth/store.js";
 import { FakeOpenAI } from "./fake-openai.js";
 
 // A keychain in memory, for the store's own tests.
@@ -48,6 +49,8 @@ describe("the login with --keychain", () => {
     return { fake, keychain, store, warned, said, io, opts: { issuer: fake.issuer } };
   }
   const saved = (store: LoginStore) => JSON.parse(readFileSync(store.file, "utf8"));
+  const NOT_CANCELLED =
+    "Signed out on this computer, but OpenAI did not confirm that the sign-in was cancelled. The saved login could not be opened, so OpenAI was not asked. You can disconnect Tachikoma in ChatGPT's settings.";
 
   it("keeps only a key in the keychain, made once, and the tokens sealed in the file", async () => {
     const keychain = memoryKeychain();
@@ -77,37 +80,47 @@ describe("the login with --keychain", () => {
     expect(one.store.read().active!.tokens!.access).not.toBe(two.store.read().active!.tokens!.access);
   });
 
-  it("counts a missing key, another key or a changed file as signed out, and both logout and sign-in work", async () => {
+  it("counts a missing key, another key or a changed file as not usable; sign-in waits for logout, which says OpenAI was not asked", async () => {
     const keychain = memoryKeychain();
-    const { store, warned, said, io, opts } = await setup(keychain);
+    const { fake, store, warned, said, io, opts } = await setup(keychain);
     await signIn(store, io, { ...opts, keychain: true });
     const name = `chatgpt.${store.read().hostId}`;
     const key = keychain.entries.get(name)!;
     const good = readFileSync(store.file, "utf8");
 
     keychain.entries.delete(name);
-    expect(store.read().active).toBeUndefined();
+    expect(store.read().active?.tokens).toBeUndefined();
+    expect(() => new ChatGPTAuth(store, fake.issuer).check()).toThrow(new LoginError("The saved ChatGPT login cannot be opened. Sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), then sign in again, or choose another lead (--lead, or /lead in a session)."));
     keychain.entries.set(name, randomBytes(32).toString("base64"));
-    expect(store.read().active).toBeUndefined();
+    expect(store.read().active?.tokens).toBeUndefined();
     keychain.entries.set(name, key);
     const changed = saved(store);
     const sealed = Buffer.from(changed.active.sealed, "base64");
     sealed[sealed.length - 1]! ^= 1;
     changed.active.sealed = sealed.toString("base64");
     writeFileSync(store.file, JSON.stringify(changed));
-    expect(store.read().active).toBeUndefined();
+    expect(store.read().active?.tokens).toBeUndefined();
     expect(warned.at(-1)).toBe(
-      "The key in the system keychain is missing or does not fit. The saved ChatGPT login is not used; sign in again with `tachi login chatgpt` (or /login chatgpt in a session).",
+      "The key in the system keychain is missing or does not fit. The saved ChatGPT login is not used; sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), then sign in again.",
     );
+    // Refused before the browser, so the user hears at logout that OpenAI was not asked, and a login
+    // that is only locked is not replaced.
+    await expect(signIn(store, io, { ...opts, keychain: true })).rejects.toThrow(
+      new LoginError("The saved ChatGPT login cannot be opened. Sign out first with `tachi logout chatgpt`."),
+    );
+    expect(saved(store).active.sealed).toEqual(changed.active.sealed);
 
     await signOut(store, io, opts);
-    expect(said.at(-1)).toBe("Not signed in to ChatGPT.");
+    expect(said.at(-1)).toBe(NOT_CANCELLED);
+    expect(store.read().active).toBeUndefined();
+    const warnings = warned.length;
     await signIn(store, io, { ...opts, keychain: true });
     expect(store.read().active?.tokens).toBeDefined();
+    expect(warned).toHaveLength(warnings);
     expect(readFileSync(store.file, "utf8")).not.toBe(good);
   });
 
-  it("counts a keychain that cannot be used as signed out, with the reason", async () => {
+  it("counts a keychain that cannot be used as not usable, with the reason, and logout says OpenAI was not asked", async () => {
     const memory = memoryKeychain();
     let broken = false;
     const keychain: Keychain = {
@@ -121,10 +134,96 @@ describe("the login with --keychain", () => {
     const { store, warned, said, io, opts } = await setup(keychain);
     await signIn(store, io, { ...opts, keychain: true });
     broken = true;
-    expect(store.read().active).toBeUndefined();
-    expect(warned.at(-1)).toBe("The system keychain could not be used (locked). The saved ChatGPT login is not used; sign in again with `tachi login chatgpt` (or /login chatgpt in a session).");
+    expect(store.read().active?.tokens).toBeUndefined();
+    expect(warned.at(-1)).toBe("The system keychain could not be used (locked). The saved ChatGPT login is not used; sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), then sign in again.");
     await signOut(store, io, opts);
-    expect(said.at(-1)).toBe("Not signed in to ChatGPT.");
+    expect(said.at(-1)).toBe(NOT_CANCELLED);
+  });
+
+  it("finds a keychain that cannot be used before the browser opens, when signing in or moving a login", async () => {
+    const locked = () => {
+      throw new KeychainError("The system keychain could not be used (locked).");
+    };
+    const { fake, store, io, opts } = await setup({ read: locked, write: locked, clear: locked });
+    let opened = false;
+    const watched = { ...io, openBrowser: (url: string) => ((opened = true), fake.browser(url)) };
+    const refused = new LoginError("The system keychain could not be used (locked). Sign in without --keychain to keep the login in its private file.");
+    await expect(signIn(store, watched, { ...opts, keychain: true })).rejects.toThrow(refused);
+    expect(opened).toBe(false);
+    await signIn(store, watched, opts);
+    await expect(signIn(store, watched, { ...opts, keychain: true })).rejects.toThrow(
+      new LoginError("The system keychain could not be used (locked). The login stays in its private file."),
+    );
+    expect(store.read().keychain).toBe(false);
+    expect(store.read().active?.tokens).toBeDefined();
+  });
+
+  it("asks the keychain nothing once OpenAI has issued tokens, so a keychain locked by then loses none", async () => {
+    const memory = memoryKeychain();
+    let locked = false;
+    const keychain: Keychain = {
+      read: (name) => {
+        if (locked) throw new KeychainError("The system keychain could not be used (locked).");
+        return memory.read(name);
+      },
+      write: (name, text) => {
+        if (locked) throw new KeychainError("The system keychain could not be used (locked).");
+        memory.write(name, text);
+      },
+      clear: memory.clear,
+    };
+    const { fake, store, io, opts } = await setup(keychain);
+    // Locked once the browser opens: the sign-in is still saved, with the key made before it.
+    await signIn(store, { ...io, openBrowser: (url: string) => ((locked = true), fake.browser(url)) }, { ...opts, keychain: true });
+    locked = false;
+    const tokens = store.read().active!.tokens!;
+    // Locked as a renewal's new tokens arrive, in a process started later: they are still saved.
+    await new LoginStore(path.dirname(store.file), () => {}, keychain).update(async (current, save) => {
+      locked = true;
+      save({ ...current, active: { ...current.active!, tokens: { ...tokens, access: "renewed" } } });
+    });
+    locked = false;
+    expect(store.read().active?.tokens?.access).toBe("renewed");
+  });
+
+  it("replaces a key of the wrong length before sealing with it", async () => {
+    const keychain = memoryKeychain();
+    const { store, io, opts } = await setup(keychain);
+    await signIn(store, io, { ...opts, keychain: true });
+    await signOut(store, io, opts);
+    const name = `chatgpt.${store.read().hostId}`;
+    keychain.entries.set(name, Buffer.from("short").toString("base64"));
+    await signIn(store, io, { ...opts, keychain: true });
+    expect(Buffer.from(keychain.entries.get(name)!, "base64")).toHaveLength(32);
+    expect(store.read().active?.tokens).toBeDefined();
+  });
+
+  it("reads the keychain again once another process has changed the login", async () => {
+    const keychain = memoryKeychain();
+    const { store, io, opts } = await setup(keychain);
+    const other = new LoginStore(path.dirname(store.file), () => {}, keychain);
+    await signIn(store, io, { ...opts, keychain: true });
+    // Elsewhere: signed out, which removes the key, and signed in without the keychain.
+    await signOut(other, io, opts);
+    await signIn(other, io, opts);
+    await signIn(store, io, { ...opts, keychain: true });
+    expect(new LoginStore(path.dirname(store.file), () => {}, keychain).read().active?.tokens).toBeDefined();
+  });
+
+  it("keeps the key when the keychain cannot be reached at logout, and still signs out", async () => {
+    const memory = memoryKeychain();
+    const keychain: Keychain = {
+      ...memory,
+      clear: () => {
+        throw new KeychainError("The system keychain could not be used (locked).");
+      },
+    };
+    const { store, said, io, opts } = await setup(keychain);
+    await signIn(store, io, { ...opts, keychain: true });
+    await signOut(store, io, opts);
+    expect(said.at(-1)).toBe("Signed out of ChatGPT.");
+    expect(store.read().active).toBeUndefined();
+    expect(memory.entries.size).toBe(1);
   });
 
   it("moves a login into the keychain when already signed in, and removes the key at logout", async () => {
@@ -133,8 +232,9 @@ describe("the login with --keychain", () => {
     await signIn(store, io, opts);
     expect(keychain.entries.size).toBe(0);
     const tokens = store.read().active!.tokens!;
+    await expect(signIn(store, io, { ...opts, keychain: true, fresh: true })).rejects.toThrow(/^Already signed in as /);
     await signIn(store, io, { ...opts, keychain: true });
-    expect(said.at(-1)).toBe("Your ChatGPT login is now kept in the system keychain.");
+    expect(said.at(-1)).toBe("Your ChatGPT login is now sealed with a key kept in the system keychain.");
     expect(keychain.entries.size).toBe(1);
     expect(readFileSync(store.file, "utf8")).not.toContain(tokens.refresh);
     expect(store.read().active?.tokens).toEqual(tokens);

@@ -27,7 +27,7 @@ Usage:
   tachi --lead <provider:model> [options]            interactive session
   tachi --lead <provider:model> -p "<prompt>"        run one prompt, print the answer, exit
   tachi login chatgpt [--new | --account <number>]   sign in to use your ChatGPT plan;
-                      [--keychain]                   --keychain keeps the login in the system keychain
+                      [--keychain]                   --keychain seals it with a key in the system keychain
   tachi logout chatgpt                               sign out of ChatGPT
 
 Options:

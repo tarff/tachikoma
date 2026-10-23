@@ -49,7 +49,8 @@ const LoginSchema = z.object({
   keychain: z.boolean().optional(),
 });
 
-// The key's name in the keychain, by the data folder's machine ID, so data folders never share one.
+// The key's name in the keychain, by the data folder's machine ID, so data folders made apart never
+// share one (a copied folder shares its original's).
 const keyName = (login: SavedLogin) => `chatgpt.${login.hostId}`;
 
 // AES-256-GCM: a 32-byte key (FIPS 197) and a new random 12-byte nonce for each seal, the size NIST
@@ -98,6 +99,11 @@ export function tokensFrom(t: TokenResponse): Tokens {
 export class LoginStore {
   readonly file: string;
   readonly lockFile: string;
+  // The key last read or made, and the version of the login it went with. It lasts from that read (or
+  // the check before a sign-in's browser opens) to the save that follows, so the keychain is not asked
+  // again once OpenAI has issued tokens, and one locked by then loses none. Any read of another
+  // version, such as one saved since, drops it.
+  #key: { name: string; key: string; version: number } | undefined;
 
   constructor(
     dir: string,
@@ -120,40 +126,62 @@ export class LoginStore {
     }
     if (!parsed?.success) throw new LoginError(`The saved login in ${this.file} is damaged. Move it aside, then sign in again with \`tachi login chatgpt\` (or /login chatgpt in a session).`);
     const login = parsed.data;
+    if (this.#key?.version !== login.version) this.#key = undefined;
     const active = login.active;
     if (!active?.sealed) return login;
     // Sealed with the keychain's key. No key, another key, a changed file or a keychain that cannot be
-    // used: signed out, so that both logout and signing in again work.
+    // used: kept without tokens, so it is not used. Sign-in waits for logout, which says that OpenAI was
+    // not asked to cancel it.
     let why = "The key in the system keychain is missing or does not fit.";
     let tokens: Tokens | undefined;
     try {
-      const key = this.keychain.read(keyName(login));
+      const name = keyName(login);
+      const key = this.keychain.read(name);
       tokens = key === null ? undefined : unseal(key, active.sealed);
+      if (key !== null && tokens) this.#key = { name, key, version: login.version };
     } catch (err) {
       if (!(err instanceof KeychainError)) throw err;
       why = err.message;
     }
     const { sealed: _, ...rest } = active;
     if (tokens) return { ...login, active: { ...rest, tokens } };
-    this.warn(`${why} The saved ChatGPT login is not used; sign in again with \`tachi login chatgpt\` (or /login chatgpt in a session).`);
-    return { ...login, active: undefined };
+    this.warn(`${why} The saved ChatGPT login is not used; sign out with \`tachi logout chatgpt\` (or /logout chatgpt in a session), then sign in again.`);
+    return login;
   }
 
-  // Writes the whole login. With the keychain, the tokens are sealed with its key. The key is made
-  // once and goes into the keychain before anything is sealed with it, so the file, written whole,
-  // never refers to a key that is not there yet.
+  // For `--keychain`, before the browser opens: the key is read or made now, so a keychain that cannot
+  // be used is found first. `instead` says what the user can do then. A key made for a sign-in that is
+  // then cancelled stays, opening nothing, for the next one.
+  checkKeychain(login: SavedLogin, instead: string): void {
+    try {
+      this.#keyFor(login);
+    } catch (err) {
+      if (err instanceof KeychainError) throw new LoginError(`${err.message} ${instead}`);
+      throw err;
+    }
+  }
+
+  // The data folder's key. It is made once and goes into the keychain before anything is sealed with
+  // it, so the file, written whole, never refers to a key that is not there yet.
+  #keyFor(login: SavedLogin): string {
+    const name = keyName(login);
+    if (this.#key?.name === name) return this.#key.key;
+    let key = this.keychain.read(name);
+    if (key === null || Buffer.from(key, "base64").length !== KEY_BYTES) {
+      key = randomBytes(KEY_BYTES).toString("base64");
+      this.keychain.write(name, key);
+    }
+    this.#key = { name, key, version: login.version };
+    return key;
+  }
+
+  // Writes the whole login. With the keychain, the tokens are sealed with its key.
   #write(login: SavedLogin): void {
     let onDisk = login;
     const active = login.active;
     if (login.keychain && active?.tokens) {
-      const name = keyName(login);
-      let key = this.keychain.read(name);
-      if (key === null || Buffer.from(key, "base64").length !== KEY_BYTES) {
-        key = randomBytes(KEY_BYTES).toString("base64");
-        this.keychain.write(name, key);
-      }
       const { tokens, ...rest } = active;
-      onDisk = { ...login, active: { ...rest, sealed: seal(key, tokens) } };
+      onDisk = { ...login, active: { ...rest, sealed: seal(this.#keyFor(login), tokens) } };
     }
     writePrivate(this.file, `${JSON.stringify(onDisk, null, 2)}\n`);
     if (login.keychain && !active) {
