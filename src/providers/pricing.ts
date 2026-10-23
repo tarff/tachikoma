@@ -20,6 +20,7 @@ export const PRICES: Record<string, Rates> = {
 
 export function cost(provider: string, u: Usage): number | null {
   if (provider.startsWith("ollama:")) return 0; // runs locally
+  if (provider.startsWith("chatgpt:")) return 0; // billed to the ChatGPT plan, not per token
   const r = PRICES[provider];
   if (!r) return null;
   return (u.input * r.input + u.output * r.output + u.cacheRead * r.cacheRead + u.cacheWrite * r.cacheWrite) / 1_000_000;

@@ -27,11 +27,17 @@ export function formatSegment(s: Segment, i: StatusInfo): string {
     case "lead":
       return `lead ${i.lead}`;
     case "context":
-      return i.contextWindow ? `ctx ${Math.round((100 * i.context) / i.contextWindow)}%` : `ctx ${k(i.context)}`;
+      // How much is left, as Codex shows it (main design, "Status line"); the tokens in use when the
+      // window is not known.
+      return i.contextWindow ? `ctx ${Math.max(0, 100 - Math.round((100 * i.context) / i.contextWindow))}% left` : `ctx ${k(i.context)}`;
     case "tokens":
       return `${k(i.input)} in / ${k(i.output)} out`;
-    case "cost":
-      return `$${i.cost.toFixed(2)}${i.costUnknown ? " + ?" : ""}`;
+    case "cost": {
+      const dollars = `$${i.cost.toFixed(2)}${i.costUnknown ? " + ?" : ""}`;
+      // A plan has no per-token price; OpenAI's guidelines ask apps to show that the plan is in use.
+      if (!i.lead.startsWith("chatgpt:")) return dollars;
+      return i.cost || i.costUnknown ? `ChatGPT plan + ${dollars}` : "ChatGPT plan";
+    }
     case "mode":
       return `perm ${i.mode}`;
     case "errors":

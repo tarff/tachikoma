@@ -27,7 +27,7 @@ describe("StatusLine", () => {
   it("shows every part by default", () => {
     const shown = frame(info, SEGMENTS);
     expect(shown).toContain("lead anthropic:claude-opus-5-5");
-    expect(shown).toContain("ctx 50%");
+    expect(shown).toContain("ctx 50% left");
     expect(shown).toContain("12.3k in / 678 out");
     expect(shown).toContain("$0.42");
     expect(shown).toContain("perm ask");
@@ -39,6 +39,18 @@ describe("StatusLine", () => {
     expect(shown).toContain("ctx 500.0k");
     expect(shown).toContain("$0.42 + ?");
     expect(shown).not.toContain("lead");
+  });
+
+  it("shows how much context is left, never below none", () => {
+    expect(formatSegment("context", { ...info, context: 40_000, contextWindow: 1_000_000 })).toBe("ctx 96% left");
+    expect(formatSegment("context", { ...info, context: 1_200_000, contextWindow: 1_000_000 })).toBe("ctx 0% left");
+  });
+
+  it("shows the ChatGPT plan where the cost would be, plus any API cost so far", () => {
+    const plan = { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0, costUnknown: false };
+    expect(formatSegment("cost", plan)).toBe("ChatGPT plan");
+    expect(formatSegment("cost", { ...plan, cost: 0.42 })).toBe("ChatGPT plan + $0.42");
+    expect(formatSegment("cost", { ...plan, costUnknown: true })).toBe("ChatGPT plan + $0.00 + ?");
   });
 
   it("stays on one line of the terminal, cutting off the end", () => {

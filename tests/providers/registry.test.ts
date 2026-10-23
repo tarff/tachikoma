@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cost } from "../../src/providers/pricing.js";
 import { createProvider, parseLead } from "../../src/providers/registry.js";
@@ -17,7 +20,12 @@ describe("parseLead", () => {
 
 describe("createProvider", () => {
   it("names unknown providers and lists the known ones", () => {
-    expect(() => createProvider("acme:x")).toThrow('Unknown provider "acme". Known: anthropic, openai, openrouter, kimi, ollama');
+    expect(() => createProvider("acme:x")).toThrow('Unknown provider "acme". Known: anthropic, chatgpt, openai, openrouter, kimi, ollama');
+  });
+
+  it("refuses a ChatGPT lead while signed out, naming the command", () => {
+    vi.stubEnv("TACHI_DATA_DIR", path.join(mkdtempSync(path.join(tmpdir(), "tachi-reg-")), "data"));
+    expect(() => createProvider("chatgpt:gpt-6.1-sol")).toThrow("Not signed in to ChatGPT. Sign in to ChatGPT with `tachi login chatgpt`");
   });
 
   it("does not mistake names every object has for providers", () => {
@@ -41,6 +49,7 @@ describe("cost", () => {
   });
   it("counts local models as free and unknown ones as unknown", () => {
     expect(cost("ollama:qwen3:8b", u)).toBe(0);
+    expect(cost("chatgpt:gpt-6.1-sol", u)).toBe(0); // billed to the plan
     expect(cost("openai:some-model", u)).toBeNull();
   });
 });

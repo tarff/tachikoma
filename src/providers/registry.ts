@@ -1,5 +1,9 @@
+import { ChatGPTAuth } from "../auth/access.js";
+import { LoginStore } from "../auth/store.js";
+import { dataDir } from "../core/datadir.js";
 import type { Provider } from "../core/types.js";
 import { AnthropicProvider, type Effort } from "./anthropic.js";
+import { ChatGPTProvider } from "./chatgpt.js";
 import { OpenAIProvider, PRESETS } from "./openai.js";
 
 export function parseLead(spec: string): { kind: string; model: string } {
@@ -11,6 +15,8 @@ export function parseLead(spec: string): { kind: string; model: string } {
 export function createProvider(spec: string, opts: { effort?: Effort } = {}): Provider {
   const { kind, model } = parseLead(spec);
   if (kind === "anthropic") return new AnthropicProvider(model, opts.effort);
+  // The plan, never an API key: `openai:` is the API key (release 2 design, "Choosing it").
+  if (kind === "chatgpt") return new ChatGPTProvider(model, new ChatGPTAuth(new LoginStore(dataDir())));
   if (Object.hasOwn(PRESETS, kind)) return new OpenAIProvider(kind, model); // `in` would accept "constructor"
-  throw new Error(`Unknown provider "${kind}". Known: anthropic, ${Object.keys(PRESETS).join(", ")}`);
+  throw new Error(`Unknown provider "${kind}". Known: anthropic, chatgpt, ${Object.keys(PRESETS).join(", ")}`);
 }
