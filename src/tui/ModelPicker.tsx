@@ -1,5 +1,5 @@
 import { Text, useInput, useStdout } from "ink";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { visible } from "../core/permissions.js";
 import type { ModelGroup } from "../providers/models.js";
 
@@ -20,31 +20,41 @@ export function rows(groups: ModelGroup[], filter: string): Row[] {
   });
 }
 
-export function ModelPicker({ groups, current, onPick, onClose }: { groups: ModelGroup[]; current: string; onPick: (spec: string) => void; onClose: () => void }) {
-  const [filter, setFilter] = useState("");
+// The rows shown for a filter, the models among them, and which of those is chosen.
+function view(groups: ModelGroup[], filter: string, chosen: number) {
   const shown = rows(groups, filter);
   const models = shown.flatMap((r) => (r.kind === "model" ? [r.spec] : []));
-  const [chosen, setChosen] = useState(() => Math.max(0, models.indexOf(current)));
-  const at = Math.min(chosen, Math.max(0, models.length - 1));
+  return { shown, models, at: Math.min(chosen, Math.max(0, models.length - 1)) };
+}
+
+export function ModelPicker({ groups, current, onPick, onClose }: { groups: ModelGroup[]; current: string; onPick: (spec: string) => void; onClose: () => void }) {
+  // Each key reads and changes this at once: Ink can pass on several keys from one read of the
+  // terminal before the screen is drawn again, and each must see what the one before it did.
+  const state = useRef<{ filter: string; chosen: number } | null>(null);
+  state.current ??= { filter: "", chosen: Math.max(0, view(groups, "", 0).models.indexOf(current)) };
+  const [, redraw] = useState(0);
+  const { filter } = state.current;
+  const { shown, models, at } = view(groups, filter, state.current.chosen);
   // Fits the terminal: the help line, the status line and the line Ink ends with take three rows.
   const height = Math.max(1, (useStdout().stdout.rows || shown.length + 3) - 3);
   const focus = shown.findIndex((r) => r.kind === "model" && r.spec === models[at]);
   const top = Math.min(Math.max(0, focus - Math.floor(height / 2)), Math.max(0, shown.length - height));
 
   useInput((ch, key) => {
-    if (key.escape || (key.ctrl && ch === "c")) onClose();
-    else if (key.return) {
+    const s = state.current!;
+    const { models, at } = view(groups, s.filter, s.chosen);
+    if (key.escape || (key.ctrl && ch === "c")) return onClose();
+    if (key.return) {
       const spec = models[at];
       if (spec) onPick(spec);
-    } else if (key.upArrow) setChosen(Math.max(0, at - 1));
-    else if (key.downArrow) setChosen(Math.min(models.length - 1, at + 1));
-    else if (key.backspace || key.delete) {
-      setFilter((s) => s.slice(0, -1));
-      setChosen(0);
-    } else if (!key.ctrl && !key.meta && ch) {
-      setFilter((s) => s + ch);
-      setChosen(0);
+      return;
     }
+    if (key.upArrow) s.chosen = Math.max(0, at - 1);
+    else if (key.downArrow) s.chosen = Math.max(0, Math.min(models.length - 1, at + 1));
+    else if (key.backspace || key.delete) Object.assign(s, { filter: s.filter.slice(0, -1), chosen: 0 });
+    else if (!key.ctrl && !key.meta && ch) Object.assign(s, { filter: s.filter + ch, chosen: 0 });
+    else return;
+    redraw((n) => n + 1);
   });
 
   return (
@@ -61,7 +71,7 @@ export function ModelPicker({ groups, current, onPick, onClose }: { groups: Mode
           </Text>
         ),
       )}
-      {models.length === 0 && <Text color="gray">No models match.</Text>}
+      {models.length === 0 && <Text color="gray">{filter ? "No models match." : "No models to pick from."}</Text>}
       <Text color="gray" wrap="truncate-end">
         Filter: {filter || "(type to filter)"} · ↑↓ move · Enter picks · Esc closes
       </Text>

@@ -109,6 +109,29 @@ describe("listModels", () => {
     ]);
   });
 
+  it("says so when an answer is not a model list", async () => {
+    emptyData();
+    providers({
+      "https://api.openai.com/v1/models": () => json(null),
+      "https://openrouter.ai/api/v1/models": () => json({ data: {} }),
+      "https://api.moonshot.ai/v1/models": () => json({ data: [null, { id: "kimi-k3" }] }),
+    });
+    expect(await listModels(undefined, { OPENAI_API_KEY: "sk-oa", OPENROUTER_API_KEY: "sk-or", MOONSHOT_API_KEY: "sk-k" })).toEqual([
+      { provider: "openai", error: "the answer was not a model list" },
+      { provider: "openrouter", error: "the answer was not a model list" },
+      { provider: "kimi", models: ["kimi-k3"] },
+    ]);
+  });
+
+  it("asks OpenAI at OPENAI_BASE_URL when it is set, as the OpenAI SDK does for openai: leads", async () => {
+    emptyData();
+    const seen = providers({ "https://proxy.example/v1/models": () => json({ data: [{ id: "via-proxy" }] }) });
+    expect(await listModels(undefined, { OPENAI_API_KEY: "sk-oa", OPENAI_BASE_URL: "https://proxy.example/v1" })).toEqual([
+      { provider: "openai", models: ["via-proxy"] },
+    ]);
+    expect(seen).not.toContain("https://api.openai.com/v1/models");
+  });
+
   it("shows a ChatGPT sign-in that cannot be used, with why", async () => {
     emptyData();
     const store = new LoginStore(process.env.TACHI_DATA_DIR!, () => {});
