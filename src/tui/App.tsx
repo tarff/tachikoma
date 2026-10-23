@@ -21,7 +21,7 @@ export interface AppProps {
   makeProvider: (spec: string) => Provider;
   bindAsk: (ask: (summary: string, detail?: string) => Promise<boolean>) => void;
   // `/login …` and `/logout …`: the words after the command, and where to show what it says.
-  login: (verb: "login" | "logout", words: string[], say: (line: string) => void, signal: AbortSignal) => Promise<void>;
+  login: (verb: "login" | "logout", words: string[], say: (line: string) => void, signal: AbortSignal, prefix: string) => Promise<void>;
 }
 
 const COMMANDS = "/lead <provider:model>, /login chatgpt, /logout chatgpt, /errors, /exit";
@@ -120,7 +120,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
       setBusy(true);
       try {
         // Signing in waits on the browser; Ctrl-C stops it, as it stops a turn.
-        if (account) await login(account, words, (line) => say({ text: line, color: "magenta" }), abort.current.signal);
+        if (account) await login(account, words, (line) => say({ text: line, color: "magenta" }), abort.current.signal, "/");
         else await session.send(text, abort.current.signal);
       } finally {
         setBusy(false);

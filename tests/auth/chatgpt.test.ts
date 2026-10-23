@@ -66,7 +66,14 @@ describe("loginArgs", () => {
   });
 
   it("takes nothing after logout chatgpt", () => {
-    expect(() => loginArgs(["chatgpt", "--new"], "logout")).toThrow("Usage: logout chatgpt");
+    expect(() => loginArgs(["chatgpt", "--new"], "logout")).toThrow("Usage: tachi logout chatgpt");
+  });
+
+  it("names the command as it is typed: with tachi on the command line, with a slash in a session", () => {
+    expect(() => loginArgs(["openai"], "login")).toThrow(new LoginError("Only ChatGPT has a login: `tachi login chatgpt`. Other providers use an API key."));
+    expect(() => loginArgs(["openai"], "logout", "/")).toThrow(new LoginError("Only ChatGPT has a logout: `/logout chatgpt`. Other providers use an API key."));
+    expect(() => loginArgs([], "login", "/")).toThrow(new LoginError("Usage: /login chatgpt [--new | --account <number>]"));
+    expect(() => loginArgs(["chatgpt", "now"], "logout", "/")).toThrow(new LoginError("Usage: /logout chatgpt"));
   });
 });
 
@@ -114,10 +121,23 @@ describe("signIn", () => {
     expect(said).not.toContain(NOTICE);
   });
 
+  it("lists the saved accounts when there are several, naming the command as it is typed", async () => {
+    const { fake, store, io, opts } = await setup();
+    await signIn(store, io, opts);
+    await signOut(store, io, opts);
+    Object.assign(fake, { sub: "user-2", email: "you@example.com" });
+    await signIn(store, io, { ...opts, fresh: true });
+    await signOut(store, io, opts);
+    await expect(signIn(store, { ...io, prefix: "/" }, opts)).rejects.toThrow(
+      new LoginError("Saved ChatGPT accounts:\n  1. you@example.com\n  2. me@example.com\nChoose one with `/login chatgpt --account <number>`, or add another with `--new`."),
+    );
+  });
+
   it("refuses to sign in twice", async () => {
     const { store, io, opts } = await setup();
     await signIn(store, io, opts);
     await expect(signIn(store, io, opts)).rejects.toThrow("Already signed in as me@example.com. Sign out first with `tachi logout chatgpt`.");
+    await expect(signIn(store, { ...io, prefix: "/" }, opts)).rejects.toThrow("Already signed in as me@example.com. Sign out first with `/logout chatgpt`.");
   });
 
   it("refuses a different client ID when signing in again, and keeps the old record", async () => {
@@ -191,8 +211,8 @@ describe("signIn", () => {
     await signIn(store, io, opts);
     await signOut(store, io, opts);
     fake.sub = "user-2";
-    await expect(signIn(store, io, opts)).rejects.toThrow(
-      new LoginError("That was a different ChatGPT account from me@example.com, so its sign-in was cancelled. To add another account, run `tachi login chatgpt --new`."),
+    await expect(signIn(store, { ...io, prefix: "/" }, opts)).rejects.toThrow(
+      new LoginError("That was a different ChatGPT account from me@example.com, so its sign-in was cancelled. To add another account, run `/login chatgpt --new`."),
     );
     expect(store.read().active).toBeUndefined();
     expect(fake.revoked.map((q) => q.get("client_id"))).toEqual(["oaiapp_1", "oaiapp_1"]); // the logout's, then the other account's
@@ -442,5 +462,18 @@ describe("accountCommand", () => {
       vi.restoreAllMocks();
     });
     await expect(accountCommand(verb, ["chatgpt"], () => {}, AbortSignal.abort())).rejects.toThrow(message);
+  });
+
+  it("names the commands with a slash when typed in a session", async () => {
+    const { store, io, opts } = await setup();
+    await signIn(store, io, opts);
+    vi.stubEnv("TACHI_DATA_DIR", path.dirname(store.file));
+    onTestFinished(() => void vi.unstubAllEnvs());
+    await expect(accountCommand("login", ["chatgpt"], () => {}, undefined, "/")).rejects.toThrow(
+      new LoginError("Already signed in as me@example.com. Sign out first with `/logout chatgpt`."),
+    );
+    await expect(accountCommand("login", ["openai"], () => {}, undefined, "/")).rejects.toThrow(
+      new LoginError("Only ChatGPT has a login: `/login chatgpt`. Other providers use an API key."),
+    );
   });
 });

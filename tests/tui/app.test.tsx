@@ -161,17 +161,19 @@ describe("App", () => {
 
   it("signs in and out with /login and /logout, showing what they say, and never sends them to the model", async () => {
     const calls: string[] = [];
-    const login: Login = async (verb, words, say) => {
-      calls.push(`${verb} ${words.join(" ")}`);
-      say(`${verb} done`);
+    const login: Login = async (verb, words, say, _signal, prefix) => {
+      calls.push([prefix + verb, ...words].join(" "));
+      say(`${verb} done ${calls.length}`);
     };
     const lead = new FakeProvider("a", []);
     const { app } = await mount([], { lead, login });
     await type(app, "/login chatgpt --new");
-    await until(app, "login done");
+    await until(app, "login done 1");
     await type(app, "/logout chatgpt");
-    await until(app, "logout done");
-    expect(calls).toEqual(["login chatgpt --new", "logout chatgpt"]);
+    await until(app, "logout done 2");
+    await type(app, "/login"); // shown how to use it, not called an unknown command
+    await until(app, "login done 3");
+    expect(calls).toEqual(["/login chatgpt --new", "/logout chatgpt", "/login"]);
     expect(lead.seen).toEqual([]);
   });
 
