@@ -42,8 +42,9 @@ describe.skipIf(!process.env.TACHI_LIVE)("first real ChatGPT sign-in", () => {
 });
 
 // A full tool round on the plan: the call, its result and the model's next reply, with the tools
-// grouped as the docs require. This uses the plan's limit. For example:
-//   TACHI_LIVE=1 TACHI_LIVE_CHATGPT=gpt-6.1-sol npm test -- tests/live/chatgpt
+// grouped as the docs require. This uses the plan's limit. For example (-t leaves out the check
+// above, which needs a sign-in less than an hour old):
+//   TACHI_LIVE=1 TACHI_LIVE_CHATGPT=gpt-6.1-sol npm test -- tests/live/chatgpt -t "plan leading"
 const model = process.env.TACHI_LIVE_CHATGPT;
 describe.skipIf(!process.env.TACHI_LIVE || !model)("a ChatGPT plan leading", () => {
   it("reads a file with a tool, and reports the token counts it was given", async () => {
