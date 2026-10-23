@@ -125,7 +125,7 @@ console.log((await new ChatGPTAuth(new LoginStore(${JSON.stringify(dir)}, () => 
       const { fake, store, auth, age } = await signedIn();
       await age({ expiresAt: Date.now() });
       fake.renewalError = code;
-      await expect(auth.token()).rejects.toThrow("Your ChatGPT sign-in has expired or was cancelled. Sign in to ChatGPT with `tachi login chatgpt`");
+      await expect(auth.token()).rejects.toThrow("Your ChatGPT sign-in has expired or was cancelled. Sign in with `tachi login chatgpt`");
       expect(store.read().active).toBeUndefined();
       expect(store.read().accounts).toHaveLength(1); // the account and its client ID stay
     },

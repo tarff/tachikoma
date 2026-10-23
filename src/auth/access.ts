@@ -20,7 +20,7 @@ const due = (t: Tokens, now: number) => t.expiresAt - now < RENEW_BEFORE_MS && n
 // The refresh errors after which a login cannot be used again (errors and recovery page).
 const DEAD = new Set(["invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"]);
 
-const SIGN_IN_AGAIN = "Sign in to ChatGPT with `tachi login chatgpt` (or /login chatgpt in a session), or choose another lead (--lead, or /lead in a session).";
+const SIGN_IN_AGAIN = "Sign in with `tachi login chatgpt` (or /login chatgpt in a session), or choose another lead (--lead, or /lead in a session).";
 
 function usable(login: SavedLogin): { clientId: string; sub: string; tokens: Tokens } {
   const a = login.active;

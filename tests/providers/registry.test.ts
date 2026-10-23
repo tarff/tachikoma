@@ -26,7 +26,7 @@ describe("createProvider", () => {
   it("refuses a ChatGPT lead while signed out, naming the command", () => {
     vi.stubEnv("TACHI_DATA_DIR", path.join(mkdtempSync(path.join(tmpdir(), "tachi-reg-")), "data"));
     expect(() => createProvider("chatgpt:gpt-6.1-sol")).toThrow(
-      new Error("Not signed in to ChatGPT. Sign in to ChatGPT with `tachi login chatgpt` (or /login chatgpt in a session), or choose another lead (--lead, or /lead in a session)."),
+      new Error("Not signed in to ChatGPT. Sign in with `tachi login chatgpt` (or /login chatgpt in a session), or choose another lead (--lead, or /lead in a session)."),
     );
   });
 
