@@ -38,7 +38,7 @@ export function load(e: Editor, text: string): Editor {
   return { ...empty, text, cursor: text.length, killed: e.killed };
 }
 
-const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+export const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 // The places between characters as the screen shows them, so an emoji made of several code points
 // is passed over and deleted as one.
