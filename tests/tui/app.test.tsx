@@ -547,3 +547,68 @@ describe("App", () => {
     expectNoRawControls(frame);
   });
 });
+
+// Each key in its own read of the terminal, as a person types them.
+async function press(app: ReturnType<typeof render>, ...keys: string[]) {
+  for (const k of keys) {
+    app.stdin.write(k);
+    await tick();
+  }
+}
+
+const sent = (session: Session) => session.messages[0]?.parts[0];
+
+describe("App's prompt", () => {
+  it("edits with the line-editing keys, and sends what they leave", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    // Ctrl+W, Home, Ctrl+Right (to the end of "hello"), Alt+Backspace.
+    await press(app, "hello big world", "\u0017", "there", "\u001b[H", ">", "\u001b[1;5C", "\u001b\u007f", "hi");
+    expect(app.lastFrame()).toContain("› >hi big there");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(sent(session)).toEqual({ type: "text", text: ">hi big there" });
+  });
+
+  it("undoes a run of typing with Ctrl+Z", async () => {
+    const { app } = await mount([]);
+    await press(app, "one", "\u0017", "two", "\u001a");
+    expect(app.lastFrame()).toMatch(/^›$/m); // undo took back the typing after Ctrl+W
+    await press(app, "\u001a");
+    expect(app.lastFrame()).toContain("› one");
+  });
+
+  it("makes a new line with backslash and Enter, and with Ctrl+J, and sends the lines as one message", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, "one\\", "\r", "two", "\n", "three");
+    expect(app.lastFrame()).toContain("› one\n  two\n  three");
+    expect(session.messages).toEqual([]);
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(sent(session)).toEqual({ type: "text", text: "one\ntwo\nthree" });
+  });
+
+  it("makes a new line on Shift+Enter where the terminal reports it apart from Enter", async () => {
+    const { app, session } = await mount([]);
+    await press(app, "one", "\u001b[13;2u", "two"); // Shift+Enter in the kitty keyboard protocol
+    expect(app.lastFrame()).toContain("› one\n  two");
+    expect(session.messages).toEqual([]);
+  });
+
+  it("takes a pasted block whole, without sending it at its line breaks", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, "\u001b[200~first line\rsecond line\u001b[201~");
+    expect(app.lastFrame()).toContain("› first line\n  second line");
+    expect(session.messages).toEqual([]);
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(sent(session)).toEqual({ type: "text", text: "first line\nsecond line" });
+  });
+
+  it("wraps at the screen's width, leaving a column for the cursor, and moves up and down by screen row", async () => {
+    const { app } = await mount([]);
+    await press(app, "x".repeat(150)); // the test screen is 100 columns: "› " and 97 of them fit on a row
+    expect(app.lastFrame()).toContain(`› ${"x".repeat(97)}\n  ${"x".repeat(53)}`);
+    await press(app, "\u001b[A", "a", "\u001b[B", "b"); // up, then down again
+    expect(app.lastFrame()).toContain(`› ${"x".repeat(53)}a${"x".repeat(43)}\n  ${"x".repeat(54)}b`);
+  });
+});

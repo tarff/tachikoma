@@ -89,7 +89,8 @@ function change(e: Editor, from: number, to: number, insert: string, how: { typi
   };
 }
 
-const move = (e: Editor, cursor: number): Editor => ({ ...e, cursor, typing: false });
+// The cursor somewhere else, which ends a run of typing. App moves it up and down by screen row.
+export const move = (e: Editor, cursor: number): Editor => ({ ...e, cursor, typing: false });
 
 export function apply(e: Editor, a: Action): Editor {
   const { text, cursor: c } = e;
