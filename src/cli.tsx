@@ -19,6 +19,7 @@ import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
 import { TOOLS } from "./tools/index.js";
 import { App } from "./tui/App.js";
+import { gitBranch } from "./tui/git.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 
 const HELP = `tachi: a coding agent for your terminal
@@ -186,6 +187,8 @@ if (parsed.print !== undefined) {
       bus={bus}
       stats={stats}
       mode={mode}
+      project={path.basename(root) || root}
+      gitBranch={() => gitBranch(root)}
       errorFile={errorFile}
       segments={segments}
       makeProvider={makeProvider}

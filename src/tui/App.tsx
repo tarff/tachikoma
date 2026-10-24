@@ -18,6 +18,8 @@ export interface AppProps {
   bus: Bus;
   stats: Stats;
   mode: Mode;
+  project: string; // the project folder's name, for the status line
+  gitBranch: () => string | null; // read at the start and after each turn: the model may switch branches
   errorFile: string;
   segments: Segment[];
   makeProvider: (spec: string) => Provider;
@@ -31,7 +33,7 @@ export interface AppProps {
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /errors, /exit";
 
-export function App({ session, bus, stats, mode, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
+export function App({ session, bus, stats, mode, project, gitBranch, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   const [input, setInput] = useState("");
@@ -40,6 +42,9 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
   const [contextWindow, setContextWindow] = useState<number | null>(null);
   const [picker, setPicker] = useState<ModelGroup[] | null>(null);
   const [, rerender] = useState(0);
+  const started = useRef(Date.now());
+  const [now, setNow] = useState(started.current);
+  const [branch, setBranch] = useState(gitBranch);
   const abort = useRef<AbortController | null>(null);
   const nextId = useRef(0);
   const lookups = useRef(0);
@@ -100,7 +105,9 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
     bus.on("usage", onUsage);
     bus.on("lead", onLead);
     lookUpWindow();
+    const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
     return () => {
+      clearInterval(minutes);
       bus.off("message", onMessage);
       bus.off("error", onError);
       bus.off("usage", onUsage);
@@ -138,6 +145,7 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
         } else await session.send(text, abort.current.signal);
       } finally {
         setBusy(false);
+        setBranch(gitBranch());
       }
     } catch (err) {
       say({ text: errorText(err), color: "red" });
@@ -200,6 +208,9 @@ export function App({ session, bus, stats, mode, errorFile, segments, makeProvid
           costUnknown: stats.costUnknown,
           mode,
           errors: stats.errors,
+          project,
+          branch,
+          elapsed: now - started.current,
         }}
       />
     </>
