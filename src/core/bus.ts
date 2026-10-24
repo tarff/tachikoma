@@ -8,11 +8,18 @@ export interface ErrorEvent {
   lead: string;
 }
 
+// How a tool call ended. "declined": the user said no, or the mode refused it. "cancelled": the turn
+// was stopped (Esc or Ctrl-C) while the call ran, waited at its question, or had not started.
+export type ToolOutcome = "ok" | "failed" | "declined" | "cancelled";
+
 export interface Events {
   message: [Message];
   usage: [{ provider: string; usage: Usage; priceKnown?: boolean }];
   error: [ErrorEvent];
   lead: [string];
+  // Each call the session takes up, as it runs; its result reaches the conversation with the others.
+  "tool-start": [{ id: string; name: string; input: unknown }];
+  "tool-end": [{ id: string; outcome: ToolOutcome }];
 }
 
 // The session emits; the interface, status line, headless output and error log listen.
