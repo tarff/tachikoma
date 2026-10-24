@@ -36,6 +36,7 @@ export interface AppProps {
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /errors, /exit";
+const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
 
 export function App({ session, bus, stats, mode, project, gitBranch, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
   const { exit } = useApp();
@@ -44,6 +45,7 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
   // screen is drawn again. `goal` is the column Up and Down keep to, until another key moves the cursor.
   const editor = useRef(empty);
   const goal = useRef<number | null>(null);
+  const first = useRef<{ name: string; timer: NodeJS.Timeout } | null>(null); // a key waiting for its second press
   const { columns } = useWindowSize();
   const [busy, setBusy] = useState(false);
   const [question, setQuestion] = useState<Question | null>(null);
@@ -116,6 +118,7 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
     return () => {
       clearInterval(minutes);
+      clearTimeout(first.current?.timer);
       bus.off("message", onMessage);
       bus.off("error", onError);
       bus.off("usage", onUsage);
@@ -176,14 +179,39 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
       if (key.ctrl && ch === "c") {
         question.answer(false, "declined (cancelled)");
         abort.current?.abort();
-      } else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
+      } else if (key.escape) question.answer(false, "declined"); // that action only; the turn goes on
+      else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
       return;
     }
-    if (key.ctrl && ch === "c") return busy ? abort.current?.abort() : exit();
-    if (busy) return;
-    for (const c of commands(ch, key)) run(c);
+    const e = editor.current;
+    const name = key.escape ? "Esc" : key.ctrl && ch === "c" ? "Ctrl-C" : key.ctrl && ch === "d" && !e.text ? "Ctrl-D" : null;
+    if (busy) {
+      if (name === "Esc" || name === "Ctrl-C") abort.current?.abort();
+      return;
+    }
+    const again = name !== null && first.current?.name === name;
+    forget();
+    if (!name) for (const c of commands(ch, key)) run(c);
+    else if (name === "Ctrl-C" && e.text) editor.current = load(e, ""); // one press clears
+    else if (!again) remember(name);
+    else if (name !== "Esc") return exit();
+    else if (e.text) editor.current = load(e, ""); // Esc Esc; on an empty prompt it does nothing
     rerender((n) => n + 1);
   });
+
+  // Esc, Ctrl-C and Ctrl-D count twice when the second press comes within 800 ms of the first, the
+  // window Claude Code's docs give for Ctrl+D. Any other key in between starts the count again.
+  const remember = (name: string) => {
+    const timer = setTimeout(() => {
+      first.current = null;
+      rerender((n) => n + 1);
+    }, DOUBLE_PRESS_MS);
+    first.current = { name, timer };
+  };
+  const forget = () => {
+    clearTimeout(first.current?.timer);
+    first.current = null;
+  };
 
   // A pasted block goes in whole, its line breaks as new lines: it is never sent by them. While the
   // picker is open, pastes reach it as typed text, as before.
@@ -216,6 +244,10 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
     }
   };
 
+  // The hint line, under the prompt (release 3 design, "On screen"): whichever applies.
+  const exitKey = first.current?.name === "Esc" ? undefined : first.current?.name;
+  const hint = exitKey ? `Press ${exitKey} again to exit` : !picker && !question && !busy ? "? for shortcuts" : null;
+
   return (
     <>
       <Static items={lines}>
@@ -228,12 +260,13 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
       {picker ? (
         <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={() => setPicker(null)} />
       ) : question ? (
-        <Text color="yellow">Allow {question.text}? [y/n]</Text>
+        <Text color="yellow">Allow {question.text}? [y/n] · Esc to decline</Text>
       ) : busy ? (
         <Text>… working (Ctrl-C to stop)</Text>
       ) : (
         <Prompt editor={editor.current} columns={columns} />
       )}
+      {hint && <Text dimColor>{hint}</Text>}
       <StatusLine
         segments={segments}
         info={{
