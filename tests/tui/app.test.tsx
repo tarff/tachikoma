@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { render } from "ink-testing-library";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
@@ -11,7 +11,7 @@ import type { Provider } from "../../src/core/types.js";
 import { TOOLS } from "../../src/tools/index.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { App, type AppProps } from "../../src/tui/App.js";
-import { SEGMENTS } from "../../src/tui/StatusLine.js";
+import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { Bus, FakeProvider, callTool, reply, tempContext } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
@@ -31,7 +31,7 @@ type Login = AppProps["login"];
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
-  opts: { lead?: Provider; errorFile?: string; login?: Login; models?: ModelGroup[]; note?: string; slow?: boolean; made?: string[] } = {},
+  opts: { lead?: Provider; errorFile?: string; login?: Login; models?: ModelGroup[]; note?: string; slow?: boolean; made?: string[]; segments?: Segment[]; branches?: string[] } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
@@ -46,8 +46,10 @@ async function mount(
       bus={bus}
       stats={stats}
       mode="ask"
+      project="proj"
+      gitBranch={() => opts.branches?.shift() ?? null}
       errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
-      segments={SEGMENTS}
+      segments={opts.segments ?? SEGMENTS}
       makeProvider={(spec) => {
         opts.made?.push(spec);
         return new FakeProvider("b", []);
@@ -91,6 +93,26 @@ function expectNoRawControls(frame: string | undefined) {
 }
 
 describe("App", () => {
+  it("shows the git branch, read again after each turn, since the model may switch it", async () => {
+    const { app } = await mount([reply("ok")], { segments: ["project"], branches: ["main", "side"] });
+    expect(app.lastFrame()).toContain("proj git:(main)");
+    await type(app, "switch");
+    await until(app, "proj git:(side)");
+  });
+
+  it("shows the project folder, and counts the session's length once a minute", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      const { app } = await mount([], { segments: ["project", "time"] });
+      expect(app.lastFrame()).toContain("proj | ⏱ <1m");
+      vi.advanceTimersByTime(60_000);
+      await tick();
+      expect(app.lastFrame()).toContain("proj | ⏱ 1m");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("sends what the user types and shows the reply", async () => {
     const { app } = await mount([reply("hello there")]);
     await type(app, "hi");

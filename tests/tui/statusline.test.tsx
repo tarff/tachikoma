@@ -1,7 +1,7 @@
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 import { describe as describeMessage, screen } from "../../src/tui/describe.js";
-import { formatSegment, type Segment, SEGMENTS, type StatusInfo, StatusLine } from "../../src/tui/StatusLine.js";
+import { contextBar, duration, formatSegment, type Segment, SEGMENTS, type StatusInfo, StatusLine } from "../../src/tui/StatusLine.js";
 
 const info: StatusInfo = {
   lead: "anthropic:claude-opus-5-5",
@@ -13,6 +13,9 @@ const info: StatusInfo = {
   costUnknown: false,
   mode: "ask",
   errors: 2,
+  project: "Agent Harness",
+  branch: "main",
+  elapsed: 14 * 60_000,
 };
 
 // Renders once and unmounts, so Ink instances do not pile up.
@@ -25,13 +28,44 @@ function frame(i: StatusInfo, segments: Segment[]) {
 
 describe("StatusLine", () => {
   it("shows every part by default", () => {
-    const shown = frame(info, SEGMENTS);
+    expect(SEGMENTS).toEqual(["lead", "context", "tokens", "cost", "mode", "errors", "project", "time"]);
+    // In two parts: all of them are wider than the test terminal's 100 columns.
+    const shown = frame(info, SEGMENTS.slice(0, 4));
     expect(shown).toContain("lead anthropic:claude-opus-5-5");
     expect(shown).toContain("ctx 50% left");
     expect(shown).toContain("12.3k in / 678 out");
     expect(shown).toContain("$0.42");
-    expect(shown).toContain("perm ask");
-    expect(shown).toContain("2 errors");
+    expect(frame(info, SEGMENTS.slice(4))).toBe(" perm ask | 2 errors | Agent Harness git:(main) | ⏱ 14m");
+  });
+
+  it("puts a bar of the context used before how much is left", () => {
+    expect(frame({ ...info, context: 190_000, contextWindow: 1_000_000 }, ["context"])).toBe(" ██░░░░░░░░ ctx 81% left");
+    expect(frame({ ...info, context: 1_200_000, contextWindow: 1_000_000 }, ["context"])).toBe(" ██████████ ctx 0% left");
+    expect(frame({ ...info, context: 45_200, contextWindow: null }, ["context"])).toBe(" ctx 45.2k"); // no window, no bar
+  });
+
+  it.each([
+    [69, "green"],
+    [70, "yellow"],
+    [84, "yellow"],
+    [85, "red"],
+  ])("colours the bar at %d%% used %s", (percent, color) => {
+    expect(contextBar(percent).color).toBe(color);
+  });
+
+  it("shows the project folder and its git branch", () => {
+    expect(formatSegment("project", info)).toBe("Agent Harness git:(main)");
+    expect(formatSegment("project", { ...info, branch: null })).toBe("Agent Harness");
+    expect(formatSegment("project", { ...info, project: "a\u001b[2Jb", branch: "x\u0007" })).toBe("a\\u001b[2Jb git:(x\\u0007)");
+  });
+
+  it.each([
+    [59_999, "<1m"],
+    [60_000, "1m"],
+    [59 * 60_000, "59m"],
+    [65 * 60_000, "1h 5m"],
+  ])("writes %d ms of session as %s", (ms, shown) => {
+    expect(duration(ms)).toBe(shown);
   });
 
   it("shows only the chosen parts, and raw context size when the window is unknown", () => {
