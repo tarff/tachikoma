@@ -150,9 +150,11 @@ describe("listModels", () => {
     });
     keys.clear(); // the key is gone
     providers({});
-    expect(await listModels(undefined, {})).toEqual([
+    const warned: string[] = [];
+    expect(await listModels(undefined, {}, (line) => warned.push(line))).toEqual([
       { provider: "chatgpt", error: "The saved ChatGPT login cannot be opened. Sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), then sign in again, or choose another lead (--lead, or /lead in a session)." },
     ]);
+    expect(warned).toEqual(["The key in the system keychain is missing or does not fit."]);
   });
 
   it("shows a ChatGPT sign-in that cannot be used, with why", async () => {

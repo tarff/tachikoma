@@ -105,8 +105,8 @@ a session with an OpenAI model, billed to the plan instead of an API key.
    account does not offer is refused at the first message, with a list of the ones it does; `/model`
    shows them too.
 3. `tachi logout chatgpt` signs out. It deletes the tokens from your computer, keeping the list of
-   saved accounts, then asks OpenAI to cancel the sign-in, and says so if OpenAI cannot confirm. It
-   also cancels a sign-in still waiting in the browser.
+   saved accounts (without their ID tokens), then asks OpenAI to cancel the sign-in, and says so if
+   OpenAI cannot confirm. It also cancels a sign-in still waiting in the browser.
 
 - **`chatgpt:` always bills the plan and `openai:` always uses `OPENAI_API_KEY`.** Tachikoma never
   switches between them. When the plan's limit runs out, the turn stops with a link to

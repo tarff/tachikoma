@@ -41,7 +41,7 @@ const LoginSchema = z.object({
       clientId: z.string(),
       sub: z.string(),
       planUse: z.boolean(), // whether `chatgpt.tokens.use.direct` was granted
-      tokens: TokensSchema.optional(), // on disk, not there when sealed; once read, only when it could not be opened
+      tokens: TokensSchema.optional(), // missing on disk when sealed; after a read, missing only when the seal could not be opened
       sealed: z.string().optional(), // with `keychain`: the tokens, sealed with the keychain's key
     })
     .optional(),
