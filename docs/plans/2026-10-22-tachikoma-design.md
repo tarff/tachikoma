@@ -28,13 +28,16 @@ learn from experience. The command is `tachi`.
 | Licence | MIT | User, 2026-10-22 ("portfolio only, go with MIT") |
 | Refusals | Keep Anthropic's fallback, show every rescue, and add an optional fallback to a model from another provider | User, 2026-10-22 ("keep it with the notice and maybe add an option for it to try another model from a different provider") |
 | Subscriptions | Claude plans only through the real `claude` CLI as a worker; ChatGPT plans through OpenAI's own sign-in flow for open-source tools, in release 2 | User, 2026-10-22 ("yes use the subscription for OpenAI", "Release 2"), after checking each company's terms |
-| More providers | Look later into more providers and bring-your-own keys | User, 2026-10-22 ("byo keys like openrouter etc", "at a later" date) |
+| More providers | More providers and bring-your-own keys, as release 13 | User, 2026-10-22 ("byo keys like openrouter etc", "at a later" date); placed last, user, 2026-10-25 (option chosen: `tachi setup` builds key entry first) |
 | ChatGPT sign-in, how it works | A `chatgpt:` lead name; `tachi login`/`logout` and `/login`/`/logout`; Tachikoma's own adapter calling OpenAI directly (not through Codex) | User, 2026-10-22 (chose each option; "Both" for the commands; asked "why no logout", so it was added) |
 | ChatGPT sign-in, the saved login | A private file, with an optional OS keychain; one account at a time. As built, the keychain keeps a key and the tokens stay in the file, sealed with it | User, 2026-10-22 (chose each option, and every hardening step offered); the key, user, 2026-10-23 (release 2 design, "As built") |
 | ChatGPT sign-in, after review | On Windows, an explicit permission that lets in only the user; if plan use is not granted, the account's record is kept but the plan is not used; records keyed by OpenAI's client ID and account, not email | User, 2026-10-22 (approved the design review's changes: "Yes"), after checking OpenAI's sign-in and accounts pages |
 | Hardening | The file tools refuse the data folder; shell commands do not get API keys | User, 2026-10-22 (chose both) |
 | Model picker | `/model` lists the models of every provider that is set up | User, 2026-10-22 (asked for a list "like Claude code"; chose every provider) |
 | Context window | The model list's own figure, otherwise the tokens in use; the status line shows how much is left | User, 2026-10-22 (chose this; "Codes cli at least shows me how much context is left as a %"); no model-pages table, user, 2026-10-23 (release 2 design, "As built") |
+| Releases 3 to 5 | Claude Code's keys and screen (3), read-only subagents and the to-do list (4), key extras (5); every later release moves down three | User, 2026-10-23 ("We need all sorts of keyboard commands like Claude code", "It should have subagents. It was in the initial brief."; chose each part) |
+| Release 3, choices | History in a private file per project in the data folder; Shift+Tab reaches `never` only when started with `--mode never`; Ctrl+O prints the last turn's tools in full; `@` lists one folder at a time and sends only the path; after Esc the queue goes on, after Ctrl-C it comes back into the prompt | User, 2026-10-25 (chose each option; [release 3 design](2026-10-25-tachikoma-release-3-design.md)) |
+| Release 3, status line | Adds claude-hud's context bar and colours, the project folder and git branch, the session's length and a tool line | User, 2026-10-25 (asked what claude-hud shows; chose all four parts offered) |
 
 ## 1. Overall shape
 
@@ -146,7 +149,7 @@ everything, and the alternative is a session that cannot continue. The failure i
   other.
 - **A failed summary changes nothing.** The history stays as it was, and the waiting turn ends, or
   the lead switch is refused.
-- **Before shortening ships** (release 4), a request that is too long ends with an error.
+- **Before shortening ships** (release 7), a request that is too long ends with an error.
 
 ### When a model refuses
 
@@ -660,6 +663,8 @@ The bar along the bottom shows:
 - running workers
 - sandbox mode
 - whether memory and search are up
+- from release 3, as claude-hud shows them: a bar for the context used, the project folder and git
+  branch, the session's length, and a line for the turn's tools
 
 The user chooses which parts appear. Cost comes from a pricing table copied from each provider's
 published prices, with the date it was copied. Local models cost nothing.
@@ -808,6 +813,9 @@ whose results are recorded.
 17. Two waits for the memory service, only if hub mode (item 11) is not used: how long a session
     keeps trying to connect while a supervisor starts, and how long a stopping supervisor gives its
     queued saves to finish. Both come from timing real startups and saves.
+18. The release 3 checks in the [release 3 design](2026-10-25-tachikoma-release-3-design.md), in the
+    user's terminal (Windows Terminal, PowerShell 5.1): whether Shift+Enter and Shift+Tab arrive as
+    keys of their own, and that Alt+P, Ctrl+Backspace and a multi-line paste work.
 
 ## Release order
 
@@ -820,14 +828,18 @@ Each release works on its own and can be shown.
    - the terminal interface with status line
    - the error log
 2. Sign in with ChatGPT, and its Responses API adapter
-3. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
-4. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
+3. Claude Code's keys and screen: stopping, editing, multi-line, history, typing while it works,
+   the `/` menu, `@` paths, Shift+Tab modes, the working line and a fuller status line
+   ([release 3 design](2026-10-25-tachikoma-release-3-design.md))
+4. Read-only subagents (read and search only) with a panel under the prompt, and the to-do list
+5. Key extras: vim mode, image paste, external editor, stash, rebinding keys in a file, full screen
+6. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
+7. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
    disk; shortening the history
-5. Skills: the loader, vendored superpowers, Tachikoma's own skills
-6. Codebase search with EmbeddingGemma 2
-7. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
-   refusal rules. The controller comes first because workers have to be cancellable as a group.
-8. Loops: on a timer, and until done
-9. `tachi setup` / `tachi doctor`, and the fresh-install CI
-
-Not yet placed: more providers and bring-your-own keys, to be looked into later.
+8. Skills: the loader, vendored superpowers, Tachikoma's own skills
+9. Codebase search with EmbeddingGemma 2
+10. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
+    refusal rules. The controller comes first because workers have to be cancellable as a group.
+11. Loops: on a timer, and until done
+12. `tachi setup` / `tachi doctor`, and the fresh-install CI
+13. More providers and bring-your-own keys

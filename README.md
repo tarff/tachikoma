@@ -5,7 +5,7 @@ providers can lead a session. Later releases add handing work to other models an
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, a Docker
 sandbox, and lessons learned from its own error log.
 
-This is release 2 of 9: the core, and signing in with ChatGPT. The command is `tachi`.
+This is release 2 of 13: the core, and signing in with ChatGPT. The command is `tachi`.
 
 ## What it does
 
@@ -24,7 +24,7 @@ This is release 2 of 9: the core, and signing in with ChatGPT. The command is `t
     project.
   - `project`: writes inside the project without asking; asks before shell commands and anything
     outside the project.
-  - `never`: never asks. It is meant for the Docker sandbox, which arrives in release 3. Without the
+  - `never`: never asks. It is meant for the Docker sandbox, which arrives in release 6. Without the
     sandbox it means no checks at all, apart from keeping the keys and the data folder from the
     tools.
 - **Your keys and login are kept from the model's tools, against accidents:** shell commands do not
@@ -177,7 +177,7 @@ Each is fixed in a later release, unless it says otherwise.
 - **An approved shell command can still read your login.** Commands on your own machine run with your
   own access, so one you approve can read files and the system keychain. Keeping keys from commands
   and the data folder from the file tools prevents accidents, not a determined command. The sandbox
-  (release 3) keeps commands away from the login.
+  (release 6) keeps commands away from the login.
 - **On a ChatGPT plan, `--effort` does nothing yet.** Whether the plan accepts a reasoning setting is
   still to be measured, and no release is set for it yet.
 - **The context left is shown only for models whose window is known:** Anthropic models, and
@@ -196,15 +196,16 @@ Each is fixed in a later release, unless it says otherwise.
   yet.
 - **A reply already streaming when you sign out** finishes. The next request is refused (not planned
   to change).
-- **The history is never shortened** (release 4). When the context window is full, the turn ends
+- **The history is never shortened** (release 7). When the context window is full, the turn ends
   with an error. Switching `/lead` to a model with a smaller window can make the next request fail.
-- **No budget limit** (release 7). An interactive session runs until you stop it.
-- **Shell commands have no time limit** (release 7). A command that keeps its output open runs until
-  you cancel it. Closing the terminal, SIGTERM, and Ctrl-C in headless mode stop running commands; a
-  hard kill or a crash of Node does not, and on macOS and Linux the command then keeps going.
+- **No budget limit** (release 10). An interactive session runs until you stop it.
+- **Shell commands have no time limit** (release 10). A command that keeps its output open runs
+  until you cancel it. Closing the terminal, SIGTERM, and Ctrl-C in headless mode stop running
+  commands; a hard kill or a crash of Node does not, and on macOS and Linux the command then keeps
+  going.
 - **The file tools check a path, then use it.** Another program that swaps a folder for a link in
   between could redirect a write, and a hard link inside the project to a file outside it looks like
-  an ordinary file. Both need something already running on your machine; the sandbox (release 3) is
+  an ordinary file. Both need something already running on your machine; the sandbox (release 6) is
   the answer.
 - **On Windows, cancelling cannot stop a program whose shell has already exited.** Cancel still
   returns at once. On macOS and Linux it does stop it.
