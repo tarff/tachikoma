@@ -798,7 +798,13 @@ whose results are recorded.
     sign in, and plan use was granted. The model list has `context_window` for every model (272,000
     tokens, and 500,000 for gpt-6.1-sol), and also `max_context_window` (872,000 for most).
     `earliest_refresh_at` is seconds since 1970, 361 s before the access token expires; the access
-    token lasts about an hour. Still to check: the tool round, token counts and effort.
+    token lasts about an hour.
+    **Measured 2026-10-25 (the user's account, chatgpt:gpt-6.1-sol, release 2's live tests):** a full
+    tool round works on the plan: the call, its result and the model's next reply. Completed replies
+    carry token counts: 284 in and 30 out for the tool call, 335 in and 6 out for the answer, with
+    cache counts of 0. Both anthropic:claude-opus-5-5 and the plan read a file with a tool, and a
+    conversation started on Anthropic carried on after `/lead` moved it to the plan. Still untried:
+    a reasoning-effort setting; `--effort` stays Anthropic-only until someone asks for it on a plan.
 17. Two waits for the memory service, only if hub mode (item 11) is not used: how long a session
     keeps trying to connect while a supervisor starts, and how long a stopping supervisor gives its
     queued saves to finish. Both come from timing real startups and saves.
