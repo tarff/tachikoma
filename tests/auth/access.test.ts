@@ -231,7 +231,7 @@ console.log((await new ChatGPTAuth(new LoginStore(${JSON.stringify(dir)}, () => 
       return answer;
     });
     await expect(auth.token()).rejects.toThrow(
-      /^OpenAI renewed your ChatGPT sign-in, but it could not be saved: .+\. The saved sign-in cannot be renewed again, so sign out with `tachi logout chatgpt` \(or \/logout chatgpt in a session\), then sign in again\.$/,
+      /^OpenAI renewed your ChatGPT sign-in, but saving it failed \(.+\)\. The saved sign-in cannot be renewed again, so sign out with `tachi logout chatgpt` \(or \/logout chatgpt in a session\), then sign in again\.$/,
     );
   });
 

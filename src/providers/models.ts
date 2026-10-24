@@ -57,7 +57,12 @@ async function openaiFormat(base: string, key: string | undefined, signal?: Abor
 // `warn` shows what reading the saved login says, such as a wait for another process.
 export async function listModels(signal?: AbortSignal, env: NodeJS.ProcessEnv = process.env, warn: (line: string) => void = () => {}): Promise<ModelGroup[]> {
   const asks: { provider: string; list: () => Promise<string[]> }[] = [];
-  const store = new LoginStore(dataDir(), warn);
+  // The login is read twice below, so a line it says twice is shown once.
+  const shown = new Set<string>();
+  const store = new LoginStore(dataDir(), (line) => {
+    if (!shown.has(line)) warn(line);
+    shown.add(line);
+  });
   // ChatGPT is asked when a sign-in is saved; one that cannot be used is shown, with why.
   let signedIn = true;
   try {

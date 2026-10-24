@@ -96,7 +96,7 @@ export class ChatGPTAuth {
         saved = save({ ...login, active: { ...login.active!, planUse: tokens.scopes.includes(PLAN_SCOPE), tokens } });
       } catch (err) {
         // OpenAI has already replaced the saved renewal token, so the saved login will not renew again.
-        throw new LoginError(`OpenAI renewed your ChatGPT sign-in, but it could not be saved: ${errorText(err)}. The saved sign-in cannot be renewed again, so sign out with \`tachi logout chatgpt\` (or /logout chatgpt in a session), then sign in again.`);
+        throw new LoginError(`OpenAI renewed your ChatGPT sign-in, but saving it failed (${errorText(err)}). The saved sign-in cannot be renewed again, so sign out with \`tachi logout chatgpt\` (or /logout chatgpt in a session), then sign in again.`);
       }
       return access(usable(saved));
     }, signal);
