@@ -212,7 +212,7 @@ describe("signIn", () => {
     fake.scope = "openid profile email offline_access";
     await signIn(store, io, opts);
     expect(store.read()).toMatchObject({ noticeShown: false, active: { planUse: false } });
-    expect(said.at(-1)).toContain("but using your ChatGPT plan was not allowed");
+    expect(said.at(-1)).toContain("but using your ChatGPT plan was not allowed. To use it, sign out with `tachi logout chatgpt`, sign in again");
     expect(said).not.toContain(NOTICE);
   });
 

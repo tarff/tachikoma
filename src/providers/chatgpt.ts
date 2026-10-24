@@ -153,9 +153,11 @@ export async function fromStream(events: AsyncIterable<ResponseStreamEvent>, too
       }
     } else if (item.type === "function_call") {
       // Mapped back to Tachikoma's tools, which may come with no namespace. Anything else keeps its full
-      // name, which no tool has, so the session refuses it as an unknown tool.
+      // name, which no tool has, so the session refuses it as an unknown tool. It is joined with `__`,
+      // since tool names allow only letters, digits, `_` and `-`, and it stays in the history when the
+      // lead moves to another provider.
       const ours = !item.namespace || (item.namespace === NAMESPACE && known.has(item.name));
-      parts.push({ type: "tool_call", id: item.call_id, name: ours ? item.name : `${item.namespace}.${item.name}`, input: parseArgs(item.arguments) });
+      parts.push({ type: "tool_call", id: item.call_id, name: ours ? item.name : `${item.namespace}__${item.name}`, input: parseArgs(item.arguments) });
     }
   }
   const cached = usage?.input_tokens_details?.cached_tokens ?? 0;

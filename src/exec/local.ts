@@ -2,7 +2,7 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Readable } from "node:stream";
-import { commandEnv } from "./env.js";
+import { commandEnv, system32 } from "./env.js";
 import { type ExecResult, type Executor, MAX_TOOL_OUTPUT } from "./executor.js";
 
 export function shellFor(platform: NodeJS.Platform = process.platform): { name: string; argv: (command: string) => string[] } {
@@ -23,7 +23,7 @@ export function killTree(child: ChildProcess): void {
   if (process.platform === "win32") {
     // taskkill cannot find a tree whose root has exited, and Windows may already have given that pid
     // to an unrelated program, so it is only run while the shell is alive.
-    if (child.exitCode === null && child.signalCode === null) spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true });
+    if (child.exitCode === null && child.signalCode === null) spawnSync(system32("taskkill.exe"), ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true, env: commandEnv() });
   } else {
     try {
       process.kill(-child.pid, "SIGKILL"); // the shell leads its own process group (detached below)

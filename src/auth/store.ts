@@ -41,7 +41,7 @@ const LoginSchema = z.object({
       clientId: z.string(),
       sub: z.string(),
       planUse: z.boolean(), // whether `chatgpt.tokens.use.direct` was granted
-      tokens: TokensSchema.optional(), // gone once signed out
+      tokens: TokensSchema.optional(), // on disk, not there when sealed; once read, only when it could not be opened
       sealed: z.string().optional(), // with `keychain`: the tokens, sealed with the keychain's key
     })
     .optional(),
@@ -145,7 +145,7 @@ export class LoginStore {
     }
     const { sealed: _, ...rest } = active;
     if (tokens) return { ...login, active: { ...rest, tokens } };
-    this.warn(`${why} The saved ChatGPT login is not used; sign out with \`tachi logout chatgpt\` (or /logout chatgpt in a session), then sign in again.`);
+    this.warn(why); // each caller says what to do
     return login;
   }
 

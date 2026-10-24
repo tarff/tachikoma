@@ -5,6 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LoginStore } from "../../src/auth/store.js";
 import { listModels } from "../../src/providers/models.js";
 
+// The system keychain is never asked here: keys are kept in this map instead.
+const keys = vi.hoisted(() => new Map<string, string>());
+vi.mock("../../src/auth/keychain.js", async (original) => ({
+  ...(await original<typeof import("../../src/auth/keychain.js")>()),
+  systemKeychain: () => ({ read: (name: string) => keys.get(name) ?? null, write: (name: string, text: string) => void keys.set(name, text), clear: (name: string) => void keys.delete(name) }),
+}));
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -135,6 +142,19 @@ describe("listModels", () => {
     ]);
   });
 
+  it("shows a sealed ChatGPT login that cannot be opened, with why", async () => {
+    emptyData();
+    const store = new LoginStore(process.env.TACHI_DATA_DIR!, () => {});
+    await store.update(async (login, save) => {
+      save({ ...login, keychain: true, active: { clientId: "c", sub: "s", planUse: true, tokens: { access: "t", refresh: "r", expiresAt: Date.now() + 3_600_000, scopes: [] } } });
+    });
+    keys.clear(); // the key is gone
+    providers({});
+    expect(await listModels(undefined, {})).toEqual([
+      { provider: "chatgpt", error: "The saved ChatGPT login cannot be opened. Sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), then sign in again, or choose another lead (--lead, or /lead in a session)." },
+    ]);
+  });
+
   it("shows a ChatGPT sign-in that cannot be used, with why", async () => {
     emptyData();
     const store = new LoginStore(process.env.TACHI_DATA_DIR!, () => {});
@@ -143,7 +163,7 @@ describe("listModels", () => {
     });
     providers({});
     expect(await listModels(undefined, {})).toEqual([
-      { provider: "chatgpt", error: "This ChatGPT sign-in does not allow using your plan. Sign out, sign in again and allow it, or use openai:<model> with an API key." },
+      { provider: "chatgpt", error: "This ChatGPT sign-in does not allow using your plan. Sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), sign in again and allow it, or use openai:<model> with an API key." },
     ]);
     writeFileSync(store.file, "{ not json");
     expect(await listModels(undefined, {})).toEqual([{ provider: "chatgpt", error: expect.stringContaining("is damaged") }]);

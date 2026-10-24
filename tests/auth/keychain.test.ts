@@ -100,9 +100,7 @@ describe("the login with --keychain", () => {
     changed.active.sealed = sealed.toString("base64");
     writeFileSync(store.file, JSON.stringify(changed));
     expect(store.read().active?.tokens).toBeUndefined();
-    expect(warned.at(-1)).toBe(
-      "The key in the system keychain is missing or does not fit. The saved ChatGPT login is not used; sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), then sign in again.",
-    );
+    expect(warned.at(-1)).toBe("The key in the system keychain is missing or does not fit.");
     // Refused before the browser, so the user hears at logout that OpenAI was not asked, and a login
     // that is only locked is not replaced.
     await expect(signIn(store, io, { ...opts, keychain: true })).rejects.toThrow(
@@ -135,7 +133,7 @@ describe("the login with --keychain", () => {
     await signIn(store, io, { ...opts, keychain: true });
     broken = true;
     expect(store.read().active?.tokens).toBeUndefined();
-    expect(warned.at(-1)).toBe("The system keychain could not be used (locked). The saved ChatGPT login is not used; sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), then sign in again.");
+    expect(warned.at(-1)).toBe("The system keychain could not be used (locked).");
     await signOut(store, io, opts);
     expect(said.at(-1)).toBe(NOT_CANCELLED);
   });
@@ -184,6 +182,29 @@ describe("the login with --keychain", () => {
     });
     locked = false;
     expect(store.read().active?.tokens?.access).toBe("renewed");
+  });
+
+  it("renews a sealed login with the same key, and removes the key when a renewal finds the login dead", async () => {
+    const keychain = memoryKeychain();
+    const { fake, store, io, opts } = await setup(keychain);
+    await signIn(store, io, { ...opts, keychain: true });
+    const name = `chatgpt.${store.read().hostId}`;
+    const key = keychain.entries.get(name);
+    const auth = new ChatGPTAuth(store, fake.issuer);
+    // Under a minute left, as time passing would leave it.
+    const age = () => store.update(async (login, save) => void save({ ...login, active: { ...login.active!, tokens: { ...login.active!.tokens!, expiresAt: Date.now() + 59_000 } } }));
+    await age();
+    const old = store.read().active!.tokens!;
+    const { token } = await auth.token();
+    expect(token).not.toBe(old.access);
+    expect(keychain.entries.get(name)).toBe(key);
+    expect(readFileSync(store.file, "utf8")).not.toContain(token);
+    expect(store.read().active!.tokens!.access).toBe(token);
+    await age();
+    fake.renewalError = "invalid_grant";
+    await expect(auth.token()).rejects.toThrow(/^Your ChatGPT sign-in has expired or was cancelled\./);
+    expect(keychain.entries.has(name)).toBe(false);
+    expect(store.read().active).toBeUndefined();
   });
 
   it("replaces a key of the wrong length before sealing with it", async () => {
@@ -235,6 +256,8 @@ describe("the login with --keychain", () => {
     await expect(signIn(store, io, { ...opts, keychain: true, fresh: true })).rejects.toThrow(/^Already signed in as /);
     await signIn(store, io, { ...opts, keychain: true });
     expect(said.at(-1)).toBe("Your ChatGPT login is now sealed with a key kept in the system keychain.");
+    await signIn(store, io, { ...opts, keychain: true });
+    expect(said.at(-1)).toBe("Your ChatGPT login is already sealed with a key kept in the system keychain.");
     expect(keychain.entries.size).toBe(1);
     expect(readFileSync(store.file, "utf8")).not.toContain(tokens.refresh);
     expect(store.read().active?.tokens).toEqual(tokens);

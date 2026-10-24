@@ -68,13 +68,13 @@ describe("fromStream", () => {
   it("gives a tool name that is not Tachikoma's its full name, so the session refuses it", async () => {
     const other = { ...call, namespace: "web", name: "search" };
     const turn = await fromStream(events(done(other), completed), tools);
-    expect(turn.parts[0]).toMatchObject({ name: "web.search" });
+    expect(turn.parts[0]).toMatchObject({ name: "web__search" });
   });
 
   it("maps a call with no namespace back to Tachikoma's tool, and leaves an unknown one as it is", async () => {
     const { namespace: _, ...bare } = call;
     const turn = await fromStream(events(done(bare), done({ ...bare, call_id: "call_2", name: "nope" }), done({ ...call, call_id: "call_3", name: "nope" }), completed), tools);
-    expect(turn.parts.map((p) => p.type === "tool_call" && p.name)).toEqual(["read_file", "nope", "tachikoma.nope"]);
+    expect(turn.parts.map((p) => p.type === "tool_call" && p.name)).toEqual(["read_file", "nope", "tachikoma__nope"]);
   });
 
   it("treats a stream that ends without response.completed as an error", async () => {
