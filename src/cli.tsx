@@ -198,6 +198,7 @@ if (parsed.print !== undefined) {
         ask = fn;
       }}
     />,
-    { exitOnCtrlC: false },
+    // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter.
+    { exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },
   );
 }

@@ -1,4 +1,4 @@
-import { Static, Text, useApp, useInput } from "ink";
+import { Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
 import type { Bus, ErrorEvent } from "../core/bus.js";
 import { summarize } from "../core/errorlog.js";
@@ -8,7 +8,11 @@ import type { Stats } from "../core/stats.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
 import { describe, type Line, screen } from "./describe.js";
+import { apply, empty, load, move } from "./editor.js";
+import { type Command, commands } from "./keys.js";
+import { vertical } from "./layout.js";
 import { ModelPicker } from "./ModelPicker.js";
+import { Prompt, promptWidth } from "./Prompt.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
 
 type Question = { text: string; answer: (ok: boolean, how: string) => void };
@@ -36,7 +40,11 @@ const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgp
 export function App({ session, bus, stats, mode, project, gitBranch, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
-  const [input, setInput] = useState("");
+  // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
+  // screen is drawn again. `goal` is the column Up and Down keep to, until another key moves the cursor.
+  const editor = useRef(empty);
+  const goal = useRef<number | null>(null);
+  const { columns } = useWindowSize();
   const [busy, setBusy] = useState(false);
   const [question, setQuestion] = useState<Question | null>(null);
   const [contextWindow, setContextWindow] = useState<number | null>(null);
@@ -173,12 +181,40 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
     }
     if (key.ctrl && ch === "c") return busy ? abort.current?.abort() : exit();
     if (busy) return;
-    if (key.return) {
-      void submit(input);
-      setInput("");
-    } else if (key.backspace || key.delete) setInput((s) => s.slice(0, -1));
-    else if (!key.ctrl && !key.meta && ch) setInput((s) => s + ch);
+    for (const c of commands(ch, key)) run(c);
+    rerender((n) => n + 1);
   });
+
+  // A pasted block goes in whole, its line breaks as new lines: it is never sent by them. While the
+  // picker is open, pastes reach it as typed text, as before.
+  usePaste(
+    (text) => {
+      if (question || busy) return;
+      run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
+      rerender((n) => n + 1);
+    },
+    { isActive: !picker },
+  );
+
+  const run = (c: Command) => {
+    const e = editor.current;
+    if (c === "up" || c === "down") {
+      const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);
+      if (to) {
+        editor.current = move(e, to.cursor);
+        goal.current = to.goal;
+      }
+      return;
+    }
+    goal.current = null;
+    if (c !== "submit") editor.current = apply(e, c);
+    // A backslash before Enter makes a new line in every terminal, in place of the backslash.
+    else if (e.text.slice(0, e.cursor).endsWith("\\")) editor.current = apply(apply(e, "backspace"), "newline");
+    else {
+      editor.current = load(e, "");
+      void submit(e.text);
+    }
+  };
 
   return (
     <>
@@ -193,8 +229,10 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
         <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={() => setPicker(null)} />
       ) : question ? (
         <Text color="yellow">Allow {question.text}? [y/n]</Text>
+      ) : busy ? (
+        <Text>… working (Ctrl-C to stop)</Text>
       ) : (
-        <Text>{busy ? "… working (Ctrl-C to stop)" : `› ${input}`}</Text>
+        <Prompt editor={editor.current} columns={columns} />
       )}
       <StatusLine
         segments={segments}
