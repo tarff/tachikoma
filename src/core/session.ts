@@ -1,6 +1,6 @@
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
-import type { Bus } from "./bus.js";
+import type { Bus, ToolOutcome } from "./bus.js";
 import { Declined } from "./permissions.js";
 import { errorText, type Message, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
 
@@ -112,19 +112,28 @@ export class Session {
   }
 
   async #runTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
-    if (signal?.aborted) return result(call, "Cancelled by the user.", true);
-    const fail = (message: string) => {
+    const { bus } = this.opts;
+    bus.emit("tool-start", { id: call.id, name: call.name, input: call.input });
+    const [res, outcome] = await this.#execute(call, signal);
+    bus.emit("tool-end", { id: call.id, outcome });
+    return res;
+  }
+
+  async #execute(call: ToolCall, signal?: AbortSignal): Promise<[ToolResult, ToolOutcome]> {
+    if (signal?.aborted) return [result(call, "Cancelled by the user.", true), "cancelled"];
+    const fail = (message: string): [ToolResult, ToolOutcome] => {
       // Capped like the message: a failed write_file's input is the whole file.
       this.opts.bus.emit("error", { kind: "tool", attempted: truncate(`${call.name} ${JSON.stringify(call.input)}`), message, lead: this.#lead.id });
-      return result(call, message, true);
+      return [result(call, message, true), "failed"];
     };
     const tool = this.opts.tools.find((t) => t.spec.name === call.name);
     if (!tool) return fail(`Unknown tool: ${call.name}`);
     try {
-      return result(call, truncate(await tool.run(call.input, { ...this.opts.ctx, signal })), false);
+      return [result(call, truncate(await tool.run(call.input, { ...this.opts.ctx, signal })), false), "ok"];
     } catch (err) {
-      if (err instanceof Declined) return result(call, err.message, true);
-      if (signal?.aborted) return result(call, "Cancelled by the user.", true); // not a failure, so not logged
+      // Ctrl-C at a question declines it and stops the turn: the call was cancelled, not declined.
+      if (err instanceof Declined) return [result(call, err.message, true), signal?.aborted ? "cancelled" : "declined"];
+      if (signal?.aborted) return [result(call, "Cancelled by the user.", true), "cancelled"]; // not a failure, so not logged
       return fail(truncate(errorText(err)));
     }
   }

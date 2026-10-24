@@ -255,3 +255,67 @@ describe("Session", () => {
     expect(seen).toEqual([{ provider: "fake:x", usage, priceKnown: false }, { provider: "fake:y", usage }]); // last sets the context size
   });
 });
+
+describe("Session tool events", () => {
+  // Every tool event in order, as "start <id> <name> <input>" and "end <id> <outcome>".
+  function watch(bus: Bus): string[] {
+    const seen: string[] = [];
+    bus.on("tool-start", (c) => seen.push(`start ${c.id} ${c.name} ${JSON.stringify(c.input)}`));
+    bus.on("tool-end", (c) => seen.push(`end ${c.id} ${c.outcome}`));
+    return seen;
+  }
+  const calls = (...c: [string, string, unknown][]) => ({ parts: c.map(([id, name, input]) => ({ type: "tool_call" as const, id, name, input })), usage });
+
+  it("reports each call as it starts and ends, before the results reach the conversation", async () => {
+    const { session, bus } = await setup([calls(["c1", "echo", { text: "a" }], ["c2", "boom", {}], ["c3", "shy", {}], ["c4", "nope", {}]), reply("ok")]);
+    const seen = watch(bus);
+    bus.on("message", (m) => m.parts[0]?.type === "tool_result" && seen.push("results"));
+    await session.send("go");
+    expect(seen).toEqual([
+      'start c1 echo {"text":"a"}',
+      "end c1 ok",
+      "start c2 boom {}",
+      "end c2 failed",
+      "start c3 shy {}",
+      "end c3 declined",
+      "start c4 nope {}",
+      "end c4 failed",
+      "results",
+    ]);
+  });
+
+  it("ends a call stopped while it runs as cancelled, and one skipped after the stop too", async () => {
+    const abort = new AbortController();
+    const slow = defineTool("slow", "Stops the turn while it runs", z.object({}), async () => {
+      abort.abort();
+      throw new Error("Cancelled");
+    });
+    const bus = new Bus();
+    const seen = watch(bus);
+    const lead = new FakeProvider("a", [calls(["c1", "slow", {}], ["c2", "slow", {}])]);
+    const session = new Session({ lead, tools: [slow], system: "t", ctx: await tempContext(), bus });
+    await session.send("go", abort.signal);
+    expect(seen).toEqual(["start c1 slow {}", "end c1 cancelled", "start c2 slow {}", "end c2 cancelled"]);
+  });
+
+  it("ends a call declined because the turn was stopped at its question as cancelled", async () => {
+    const abort = new AbortController();
+    const asked = defineTool("asked", "Stopped at its question", z.object({}), async () => {
+      abort.abort(); // Ctrl-C at the question declines and stops the turn
+      throw new Declined("The user declined: asked");
+    });
+    const bus = new Bus();
+    const seen = watch(bus);
+    const session = new Session({ lead: new FakeProvider("a", [calls(["c1", "asked", {}])]), tools: [asked], system: "t", ctx: await tempContext(), bus });
+    await session.send("go", abort.signal);
+    expect(seen).toEqual(["start c1 asked {}", "end c1 cancelled"]);
+  });
+
+  it("reports nothing for the calls in a reply that was cut off, since none of them runs", async () => {
+    const cut = { ...callTool("c1", "echo", { text: "x" }), cutOff: { kind: "max_tokens" as const, detail: "limit" } };
+    const { session, bus } = await setup([cut]);
+    const seen = watch(bus);
+    await session.send("go");
+    expect(seen).toEqual([]);
+  });
+});
