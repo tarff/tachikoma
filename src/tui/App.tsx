@@ -1,14 +1,15 @@
-import { Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
+import { type Key, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
 import type { Bus, ErrorEvent } from "../core/bus.js";
 import { summarize } from "../core/errorlog.js";
-import type { Mode } from "../core/permissions.js";
+import { type Mode, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
 import { describe, type Line, screen } from "./describe.js";
-import { apply, empty, load, move } from "./editor.js";
+import { apply, type Editor, empty, load, move } from "./editor.js";
+import { History, matches } from "./history.js";
 import { type Command, commands } from "./keys.js";
 import { vertical } from "./layout.js";
 import { ModelPicker } from "./ModelPicker.js";
@@ -24,6 +25,7 @@ export interface AppProps {
   mode: Mode;
   project: string; // the project folder's name, for the status line
   gitBranch: () => string | null; // read at the start and after each turn: the model may switch branches
+  historyFile: string; // this project's past prompts
   errorFile: string;
   segments: Segment[];
   makeProvider: (spec: string) => Provider;
@@ -38,7 +40,7 @@ export interface AppProps {
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /errors, /exit";
 const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
 
-export function App({ session, bus, stats, mode, project, gitBranch, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
+export function App({ session, bus, stats, mode, project, gitBranch, historyFile, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
@@ -46,6 +48,9 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
   const editor = useRef(empty);
   const goal = useRef<number | null>(null);
   const first = useRef<{ name: string; timer: NodeJS.Timeout } | null>(null); // a key waiting for its second press
+  const step = useRef<{ at: number; draft: string } | null>(null); // where Up has gone in the history, and what was typed before
+  // Ctrl+R: what is searched for, how many older matches Ctrl+R has passed, and the prompt to give back.
+  const search = useRef<{ query: string; skip: number; before: Editor } | null>(null);
   const { columns } = useWindowSize();
   const [busy, setBusy] = useState(false);
   const [question, setQuestion] = useState<Question | null>(null);
@@ -60,6 +65,8 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
   const lookups = useRef(0);
 
   const say = (...add: Line[]) => setLines((l) => [...l, ...add.map((x) => ({ ...screen(x), id: nextId.current++ }))]);
+  const history = useRef<History | null>(null);
+  history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
 
   // Only the latest lookup's answer is shown: a late one, for the previous lead or from before a
   // request, must not replace it. Asked again after each request, without clearing what is shown: a
@@ -114,6 +121,7 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
     bus.on("error", onError);
     bus.on("usage", onUsage);
     bus.on("lead", onLead);
+    history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
     return () => {
@@ -183,6 +191,10 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
       else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
       return;
     }
+    if (search.current) {
+      searchKey(ch, key);
+      return rerender((n) => n + 1);
+    }
     const e = editor.current;
     const name = key.escape ? "Esc" : key.ctrl && ch === "c" ? "Ctrl-C" : key.ctrl && ch === "d" && !e.text ? "Ctrl-D" : null;
     if (busy) {
@@ -192,10 +204,10 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
     const again = name !== null && first.current?.name === name;
     forget();
     if (!name) for (const c of commands(ch, key)) run(c);
-    else if (name === "Ctrl-C" && e.text) editor.current = load(e, ""); // one press clears
+    else if (name === "Ctrl-C" && e.text) clear(e); // one press clears
     else if (!again) remember(name);
     else if (name !== "Esc") return exit();
-    else if (e.text) editor.current = load(e, ""); // Esc Esc; on an empty prompt it does nothing
+    else if (e.text) clear(e); // Esc Esc; on an empty prompt it does nothing
     rerender((n) => n + 1);
   });
 
@@ -217,7 +229,7 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
   // picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
-      if (question || busy) return;
+      if (question || busy || search.current) return;
       run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       rerender((n) => n + 1);
     },
@@ -231,22 +243,95 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
       if (to) {
         editor.current = move(e, to.cursor);
         goal.current = to.goal;
-      }
+      } else recall(c === "up" ? -1 : 1);
       return;
     }
     goal.current = null;
-    if (c !== "submit") editor.current = apply(e, c);
+    if (c === "search") {
+      search.current = { query: "", skip: 0, before: e };
+      step.current = null;
+    } else if (c !== "submit") editor.current = apply(e, c);
     // A backslash before Enter makes a new line in every terminal, in place of the backslash.
     else if (e.text.slice(0, e.cursor).endsWith("\\")) editor.current = apply(apply(e, "backspace"), "newline");
-    else {
-      editor.current = load(e, "");
-      void submit(e.text);
+    else send(e);
+  };
+
+  const send = (e: Editor) => {
+    keep(e.text);
+    editor.current = load(e, "");
+    void submit(e.text);
+  };
+  const clear = (e: Editor) => {
+    keep(e.text);
+    editor.current = load(e, "");
+  };
+  // Saved for Up and Ctrl+R, in this session and later ones: each sent prompt, and one cleared with
+  // Ctrl-C or Esc Esc. The same prompt twice in a row is kept once, as Claude Code keeps it.
+  const keep = (raw: string) => {
+    const text = raw.trim();
+    if (text && history.current!.entries.at(-1) !== text) void history.current!.add(text);
+    step.current = null;
+  };
+
+  // Up from the prompt's first row steps back through the history, Down from its last row forward,
+  // and past the newest prompt back to what was being typed. A prompt comes back with the cursor at
+  // its end.
+  const recall = (dir: -1 | 1) => {
+    const { entries } = history.current!;
+    const e = editor.current;
+    const at = (step.current?.at ?? entries.length) + dir;
+    goal.current = null;
+    if (at < 0 || (!step.current && dir === 1)) return;
+    if (at < entries.length) {
+      step.current = { at, draft: step.current?.draft ?? e.text };
+      editor.current = load(e, entries[at]!);
+    } else {
+      editor.current = load(e, step.current!.draft);
+      step.current = null;
+    }
+  };
+
+  // What the search shows in the prompt: the match, with the cursor at its end, or, with no match,
+  // the prompt as it was.
+  const shown = (): Editor => {
+    const s = search.current!;
+    const match = matches(history.current!.entries, s.query)[s.skip];
+    return match === undefined ? s.before : load(s.before, match);
+  };
+  const endSearch = (e: Editor) => {
+    search.current = null;
+    editor.current = e;
+  };
+  // Ctrl+R's keys, as Claude Code's search has them (interactive-mode.md): typing searches, Ctrl+R
+  // finds an older match, Enter sends the match, Tab or Esc puts it in the prompt to edit, and Ctrl-C,
+  // or Backspace with nothing searched for, gives back what was typed before.
+  const searchKey = (ch: string, key: Key) => {
+    const s = search.current!;
+    if (key.ctrl && ch === "c") return endSearch(s.before);
+    if (key.tab || key.escape) return endSearch(shown());
+    for (const c of commands(ch, key)) {
+      if (typeof c === "object") Object.assign(s, { query: s.query + c.text, skip: 0 });
+      else if (c === "search") s.skip = Math.max(0, Math.min(s.skip + 1, matches(history.current!.entries, s.query).length - 1));
+      else if (c === "backspace" && !s.query) return endSearch(s.before);
+      else if (c === "backspace") Object.assign(s, { query: [...s.query].slice(0, -1).join(""), skip: 0 });
+      else if (c === "submit") {
+        const e = shown();
+        endSearch(e);
+        return send(e);
+      }
     }
   };
 
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies.
   const exitKey = first.current?.name === "Esc" ? undefined : first.current?.name;
-  const hint = exitKey ? `Press ${exitKey} again to exit` : !picker && !question && !busy ? "? for shortcuts" : null;
+  const searching = search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
+  const hint = searching
+    ? `${searching} · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel`
+    : exitKey
+      ? `Press ${exitKey} again to exit`
+      : !picker && !question && !busy
+        ? "? for shortcuts"
+        : null;
 
   return (
     <>
@@ -264,7 +349,7 @@ export function App({ session, bus, stats, mode, project, gitBranch, errorFile, 
       ) : busy ? (
         <Text>… working (Ctrl-C to stop)</Text>
       ) : (
-        <Prompt editor={editor.current} columns={columns} />
+        <Prompt editor={search.current ? shown() : editor.current} columns={columns} />
       )}
       {hint && <Text dimColor>{hint}</Text>}
       <StatusLine

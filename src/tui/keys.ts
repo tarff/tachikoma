@@ -4,10 +4,11 @@ import type { Action } from "./editor.js";
 // What a key means in the prompt (release 3 design, "Editing" and "Multi-line"), for the codes the
 // user's terminal was seen to send on 2026-10-25. Enter sends; Up and Down move by screen row, which
 // needs the screen's width, so App does them.
-export type Command = Action | "submit" | "up" | "down";
+export type Command = Action | "submit" | "up" | "down" | "search";
 
 // Ink names a key held with Ctrl or Alt by its letter.
-const CTRL: Record<string, Action> = { a: "home", e: "end", d: "delete", w: "deleteToSpace", k: "deleteToEnd", u: "deleteToStart", y: "yank", z: "undo" };
+// Ctrl+P and Ctrl+N are Up and Down, as in Claude Code.
+const CTRL: Record<string, Command> = { a: "home", e: "end", d: "delete", w: "deleteToSpace", k: "deleteToEnd", u: "deleteToStart", y: "yank", z: "undo", p: "up", n: "down", r: "search" };
 const ALT: Record<string, Action> = { b: "wordLeft", f: "wordRight", d: "deleteWordAfter" };
 
 export function commands(input: string, key: Key): Command[] {

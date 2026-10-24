@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { History, historyFile } from "../../src/tui/history.js";
+import { History, historyFile, matches } from "../../src/tui/history.js";
 
 const temp = () => mkdtempSync(path.join(tmpdir(), "tachi-history-"));
 const historyUrl = pathToFileURL(path.resolve("src/tui/history.ts")).href;
@@ -71,5 +71,13 @@ describe("History", () => {
     await h.add("two");
     expect(h.entries).toEqual(["one", "two"]);
     expect(said).toEqual([`The prompt history could not be read or saved: ${file} is not a plain file, so it was not used`]);
+  });
+});
+
+describe("matches", () => {
+  it("finds the past prompts holding the search, newest first, each once, in any case", () => {
+    expect(matches(["git status", "ls", "Git log", "git status"], "git")).toEqual(["git status", "Git log"]);
+    expect(matches(["a", "b"], "")).toEqual(["b", "a"]);
+    expect(matches(["a"], "z")).toEqual([]);
   });
 });

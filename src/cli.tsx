@@ -20,6 +20,7 @@ import { createProvider } from "./providers/registry.js";
 import { TOOLS } from "./tools/index.js";
 import { App } from "./tui/App.js";
 import { gitBranch } from "./tui/git.js";
+import { historyFile } from "./tui/history.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 
 const HELP = `tachi: a coding agent for your terminal
@@ -189,6 +190,7 @@ if (parsed.print !== undefined) {
       mode={mode}
       project={path.basename(root) || root}
       gitBranch={() => gitBranch(root)}
+      historyFile={historyFile(root)}
       errorFile={errorFile}
       segments={segments}
       makeProvider={makeProvider}

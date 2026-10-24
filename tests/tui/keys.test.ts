@@ -50,6 +50,12 @@ describe("commands", () => {
     expect(commands("f", key({ meta: true }))).toEqual(["wordRight"]);
     expect(commands("", key({ upArrow: true }))).toEqual(["up"]);
     expect(commands("", key({ downArrow: true }))).toEqual(["down"]);
+    expect(commands("p", key({ ctrl: true }))).toEqual(["up"]);
+    expect(commands("n", key({ ctrl: true }))).toEqual(["down"]);
+  });
+
+  it("searches the history with Ctrl+R", () => {
+    expect(commands("r", key({ ctrl: true }))).toEqual(["search"]);
   });
 
   it("deletes with the keys the user's terminal sends for them", () => {
