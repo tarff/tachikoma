@@ -1,14 +1,16 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { render } from "ink-testing-library";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { privateDir } from "../../src/auth/private.js";
 import { PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import type { Provider } from "../../src/core/types.js";
 import { TOOLS } from "../../src/tools/index.js";
+import { History } from "../../src/tui/history.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
@@ -29,9 +31,29 @@ afterEach(() => {
 
 type Login = AppProps["login"];
 
+// Each test's history is a file in one folder of this file's own, inside a fresh temp folder: the
+// history makes its folder private, which takes about 1.5 s for a new folder on Windows (measured
+// 2026-10-25), once a process.
+const histories = path.join(mkdtempSync(path.join(tmpdir(), "tachi-")), "history");
+mkdirSync(histories);
+beforeAll(() => privateDir(histories)); // so the first test does not wait for it
+let nextHistory = 0;
+
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
-  opts: { lead?: Provider; errorFile?: string; login?: Login; models?: ModelGroup[]; note?: string; slow?: boolean; made?: string[]; segments?: Segment[]; branches?: string[] } = {},
+  opts: {
+    lead?: Provider;
+    errorFile?: string;
+    login?: Login;
+    models?: ModelGroup[];
+    note?: string;
+    slow?: boolean;
+    made?: string[];
+    segments?: Segment[];
+    branches?: string[];
+    historyFile?: string;
+    past?: string[]; // the project's prompts from earlier sessions
+  } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
@@ -40,6 +62,8 @@ async function mount(
   const gate = new PermissionGate("ask", (s, d) => ask(s, d));
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const session = new Session({ lead, tools: TOOLS, system: "t", ctx: { ...ctx, gate }, bus });
+  const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
+  if (opts.past) writeFileSync(historyFile, opts.past.map((p) => `${JSON.stringify(p)}\n`).join(""));
   const app = render(
     <App
       session={session}
@@ -48,6 +72,7 @@ async function mount(
       mode="ask"
       project="proj"
       gitBranch={() => opts.branches?.shift() ?? null}
+      historyFile={historyFile}
       errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
       segments={opts.segments ?? SEGMENTS}
       makeProvider={(spec) => {
@@ -67,7 +92,7 @@ async function mount(
   );
   mounted.push(app);
   await tick();
-  return { app, session, ctx, bus, ask: (s: string) => ask(s) };
+  return { app, session, ctx, bus, historyFile, ask: (s: string) => ask(s) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -705,5 +730,93 @@ describe("App's keys for stopping and exiting", () => {
     await type(app, "hi");
     await until(app, "working");
     expect(app.lastFrame()).not.toContain("? for shortcuts");
+  });
+});
+
+describe("App's history", () => {
+  it("steps back through the project's past prompts with Up, and forward again to what was being typed", async () => {
+    const { app } = await mount([], { past: ["old one", "old two"] });
+    await press(app, "draft", "\u001b[A");
+    expect(app.lastFrame()).toContain("› old two");
+    await press(app, "\u001b[A", "\u001b[A"); // and no further than the oldest
+    expect(app.lastFrame()).toContain("› old one");
+    await press(app, "\u001b[B");
+    expect(app.lastFrame()).toContain("› old two");
+    await press(app, "\u001b[B");
+    expect(app.lastFrame()).toContain("› draft");
+    await press(app, "\u0010"); // Ctrl+P, as Up
+    expect(app.lastFrame()).toContain("› old two");
+    await press(app, "\u000e"); // Ctrl+N, as Down
+    expect(app.lastFrame()).toContain("› draft");
+  });
+
+  it("moves through a prompt's rows first, and reaches the history from the first row", async () => {
+    const { app } = await mount([], { past: ["past"] });
+    await press(app, "a", "\n", "b", "\u001b[A", "x");
+    expect(app.lastFrame()).toContain("› ax\n  b");
+    await press(app, "\u001b[A");
+    expect(app.lastFrame()).toContain("› past");
+  });
+
+  it("saves each sent prompt, once when sent twice in a row, and one cleared with Ctrl-C or Esc Esc", async () => {
+    const { app, historyFile } = await mount([reply("r1"), reply("r2")]);
+    await type(app, "one");
+    await until(app, "r1");
+    await type(app, "  one ");
+    await until(app, "r2");
+    await press(app, "two", "\u0003", "three", "\u001b", "\u001b");
+    expect(new History(historyFile, () => {}).load()).toEqual(["one", "two", "three"]);
+    await press(app, "\u001b[A");
+    expect(app.lastFrame()).toContain("› three");
+  });
+
+  it("says once when the history cannot be read or saved, and still sends the prompt", async () => {
+    // A folder where the file should be, inside a folder of the test's own: the history makes its
+    // folder private, which must never be the system's temp folder.
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "history.jsonl");
+    mkdirSync(dir);
+    const { app } = await mount([reply("still sent")], { historyFile: dir });
+    await until(app, "The prompt history could not be read or saved");
+    await type(app, "hi");
+    await until(app, "still sent");
+    expect(app.lastFrame()!.split("The prompt history could not").length).toBe(2);
+  });
+
+  it("searches the past prompts with Ctrl+R, an older match on each press, and puts one in the prompt on Tab", async () => {
+    const { app } = await mount([], { past: ["git status", "npm test", "git commit -m x", "ls"] });
+    await press(app, "\u0012", "git");
+    expect(app.lastFrame()).toContain("› git commit -m x");
+    expect(app.lastFrame()).toContain("search: git ·");
+    await press(app, "\u0012");
+    expect(app.lastFrame()).toContain("› git status");
+    await press(app, "\u0012"); // no older match: it stays
+    expect(app.lastFrame()).toContain("› git status");
+    await press(app, "\t", "!");
+    expect(app.lastFrame()).toContain("› git status!");
+    expect(app.lastFrame()).toContain("? for shortcuts");
+  });
+
+  it("sends the match on Enter, and puts it in the prompt on Esc", async () => {
+    const { app, session } = await mount([reply("ok")], { past: ["say hi", "say bye"] });
+    await press(app, "\u0012", "bye", "\u001b");
+    expect(app.lastFrame()).toContain("› say bye");
+    await press(app, "\u0015", "\u0012", "hi", "\r"); // Ctrl+U empties the prompt first
+    await until(app, "ok");
+    expect(sent(session)).toEqual({ type: "text", text: "say hi" });
+  });
+
+  it("gives back what was typed when the search is cancelled with Ctrl-C, or with Backspace on an empty search", async () => {
+    const { app } = await mount([], { past: ["say hi"] });
+    await press(app, "draft", "\u0012", "zz");
+    expect(app.lastFrame()).toContain("search: zz (no match)");
+    expect(app.lastFrame()).toContain("› draft");
+    await press(app, "\u0003");
+    expect(app.lastFrame()).toContain("› draft");
+    expect(app.lastFrame()).toContain("? for shortcuts");
+    await press(app, "\u0012", "h");
+    expect(app.lastFrame()).toContain("› say hi");
+    await press(app, "\u007f", "\u007f");
+    expect(app.lastFrame()).toContain("› draft");
+    expect(app.lastFrame()).not.toContain("search:");
   });
 });

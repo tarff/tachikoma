@@ -31,6 +31,13 @@ function parse(text: string): string[] {
   });
 }
 
+// Ctrl+R's matches: the past prompts holding `query`, in any case as the model picker's filter, newest
+// first, each prompt once, at its newest (as Claude Code's search, interactive-mode.md).
+export function matches(entries: readonly string[], query: string): string[] {
+  const q = query.toLowerCase();
+  return [...new Set(entries.toReversed())].filter((e) => e.toLowerCase().includes(q));
+}
+
 export class History {
   // Oldest first: what was saved before this session, then this session's prompts.
   readonly entries: string[] = [];
