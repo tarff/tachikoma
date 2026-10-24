@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -220,6 +220,21 @@ console.log((await new ChatGPTAuth(new LoginStore(${JSON.stringify(dir)}, () => 
     expect(store.read().active?.tokens).toBeDefined();
   });
 
+  it("says to sign out and in again when a renewal cannot be saved, since the saved one will not renew", async () => {
+    const { store, auth, age } = await signedIn();
+    await age({ expiresAt: Date.now() + 59_000 });
+    // Once OpenAI has answered, a folder takes the login file's name, so the new tokens cannot be saved.
+    intercept("/token", async (send) => {
+      const answer = await send();
+      rmSync(store.file);
+      mkdirSync(store.file);
+      return answer;
+    });
+    await expect(auth.token()).rejects.toThrow(
+      /^OpenAI renewed your ChatGPT sign-in, but it could not be saved: .+\. The saved sign-in cannot be renewed again, so sign out with `tachi logout chatgpt` \(or \/logout chatgpt in a session\), then sign in again\.$/,
+    );
+  });
+
   it("keeps the login when OpenAI cannot be reached", async () => {
     const { store, age } = await signedIn();
     await age({ expiresAt: Date.now() });
@@ -232,7 +247,7 @@ console.log((await new ChatGPTAuth(new LoginStore(${JSON.stringify(dir)}, () => 
     const { store, auth, age, fake, renewals } = await signedIn();
     await age({ expiresAt: Date.now() });
     fake.scope = "openid email offline_access";
-    await expect(auth.token()).rejects.toThrow("This ChatGPT sign-in does not allow using your plan. Sign out, sign in again and allow it, or use openai:<model> with an API key.");
+    await expect(auth.token()).rejects.toThrow("This ChatGPT sign-in does not allow using your plan. Sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), sign in again and allow it, or use openai:<model> with an API key.");
     expect(renewals()).toBe(1);
     expect(store.read().active?.planUse).toBe(false);
   });

@@ -61,7 +61,7 @@ export async function listModels(signal?: AbortSignal, env: NodeJS.ProcessEnv = 
   // ChatGPT is asked when a sign-in is saved; one that cannot be used is shown, with why.
   let signedIn = true;
   try {
-    signedIn = Boolean(store.read().active?.tokens);
+    signedIn = Boolean(store.read().active);
   } catch {} // a damaged file: asking says so
   const auth = new ChatGPTAuth(store);
   if (signedIn) asks.push({ provider: "chatgpt", list: async () => (await planModels((await auth.token(signal)).token, API_BASE, signal)).filter((m) => m.listed).map((m) => m.slug) });

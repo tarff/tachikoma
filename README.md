@@ -73,7 +73,7 @@ Other commands and options, from `node dist/cli.js --help`:
 
 ```
 tachi login chatgpt [--new | --account <number>]   sign in to use your ChatGPT plan;
-                    [--keychain]                   --keychain seals it with a key in the system keychain
+                    [--keychain]                   --keychain seals the tokens with a key in the keychain
 tachi logout chatgpt                               sign out of ChatGPT
 
 --lead <spec>     anthropic:<model> | chatgpt:<model> | openai:<model> | openrouter:<model>
@@ -104,9 +104,9 @@ a session with an OpenAI model, billed to the plan instead of an API key.
 2. `tachi --lead chatgpt:<model>` (or `/lead chatgpt:<model>`) leads with that model. A model your
    account does not offer is refused at the first message, with a list of the ones it does; `/model`
    shows them too.
-3. `tachi logout chatgpt` signs out. It deletes the login from your computer, then asks OpenAI to
-   cancel it, and says so if OpenAI cannot confirm. It also cancels a sign-in still waiting in the
-   browser.
+3. `tachi logout chatgpt` signs out. It deletes the tokens from your computer, keeping the list of
+   saved accounts, then asks OpenAI to cancel the sign-in, and says so if OpenAI cannot confirm. It
+   also cancels a sign-in still waiting in the browser.
 
 - **`chatgpt:` always bills the plan and `openai:` always uses `OPENAI_API_KEY`.** Tachikoma never
   switches between them. When the plan's limit runs out, the turn stops with a link to
@@ -120,6 +120,8 @@ a session with an OpenAI model, billed to the plan instead of an API key.
   can read it: on Windows Tachikoma sets a permission for you alone, since the profile folder also
   lets in administrators. With `--keychain`, the tokens in it are also encrypted, with a key kept in
   the system keychain (Windows Credential Manager, the macOS Keychain or the Linux secret service).
+  The list of saved accounts is not: each one's email, and the ID token Tachikoma sends back to
+  OpenAI to skip its account picker. An ID token does not let anyone use your plan.
   If you are already signed in, `tachi login chatgpt --keychain` seals the current login without
   signing in again. If the key is missing or does not fit, or the keychain cannot be used, the login
   is not used: sign out with `tachi logout chatgpt` (OpenAI is then not asked to cancel it; you can
@@ -182,10 +184,16 @@ Each is fixed in a later release, unless it says otherwise.
   ChatGPT-plan models (from the account's model list, once the first reply arrives). Other models
   show the tokens in use; no release is set for them yet.
 - **If a Tachikoma is killed while changing the login,** a renewal it had already sent can be lost,
-  and you sign in again. The next Tachikoma takes over its lock, within 5 seconds if it was already
-  waiting. If another program now has the killed one's process number, the next one waits until the
-  computer restarts, and names the lock file to delete. If two take the lock over at the same
-  moment, a renewal can also be lost (none of this is planned to change).
+  and you sign in again. So is a renewal that cannot be saved, such as when another program holds
+  the login file for over a second or the disk is full; Tachikoma then says to sign out and in again.
+  The next Tachikoma takes over a killed one's lock, within 5 seconds if it was already waiting. If
+  another program now has the killed one's process number, the next one waits until the computer
+  restarts, and names the lock file to delete. If two take the lock over at the same moment, or the
+  clock jumps forward while one holds it, a renewal can also be lost (none of this is planned to
+  change).
+- **On a ChatGPT plan, a failed request is not tried again.** OpenAI asks for "bounded backoff" but
+  gives no numbers, so Tachikoma reports the error and keeps your sign-in; no release is set for it
+  yet.
 - **A reply already streaming when you sign out** finishes. The next request is refused (not planned
   to change).
 - **The history is never shortened** (release 4). When the context window is full, the turn ends

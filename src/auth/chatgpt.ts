@@ -83,10 +83,11 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: LoginOptions 
   const start = await store.update(async (login, save) => {
     if (signedIn(login)) {
       // Already signed in, `--keychain` on its own seals the tokens with the keychain's key.
-      if (opts.keychain && !login.keychain && !opts.fresh && opts.account === undefined) {
+      if (opts.keychain && !opts.fresh && opts.account === undefined) {
+        if (login.keychain) return "already";
         store.checkKeychain(login, "The login stays in its private file.");
         save({ ...login, keychain: true });
-        return undefined;
+        return "now";
       }
       throw new LoginError(`Already signed in as ${who(login)}. Sign out first with \`${typed}logout chatgpt\`.`);
     }
@@ -99,7 +100,7 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: LoginOptions 
     // An unfinished registration's issued ID is used again, as the docs say after a failed exchange.
     return { account, hostId: saved.hostId, version: saved.version, clientId: account?.clientId ?? login.pending?.clientId ?? FIRST_CLIENT };
   }, opts.signal);
-  if (!start) return io.say("Your ChatGPT login is now sealed with a key kept in the system keychain.");
+  if (typeof start === "string") return io.say(`Your ChatGPT login is ${start} sealed with a key kept in the system keychain.`);
 
   // Asked for after that check, so a signed-in user who is offline is still told so.
   const ep = await discover(opts.issuer ?? ISSUER, opts.signal);
@@ -178,7 +179,7 @@ export async function signIn(store: LoginStore, io: LoginIO, opts: LoginOptions 
 
   if (done.notice) io.say(NOTICE);
   if (done.planUse) io.say(`Signed in as ${done.email}.`);
-  else io.say(`Signed in as ${done.email}, but using your ChatGPT plan was not allowed. To use it, sign out and in again and allow it; or use openai:<model> with an API key.`);
+  else io.say(`Signed in as ${done.email}, but using your ChatGPT plan was not allowed. To use it, sign out with \`${typed}logout chatgpt\`, sign in again and allow it; or use openai:<model> with an API key.`);
 }
 
 // `login chatgpt …` or `logout chatgpt`, typed on the command line, or in a session with `prefix` "/".

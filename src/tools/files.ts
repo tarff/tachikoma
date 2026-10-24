@@ -42,6 +42,10 @@ function inData(data: string, real: string): boolean {
   return readdirSync(data).some((name) => same(statSync(path.join(data, name), { bigint: true, throwIfNoEntry: false }), file));
 }
 
+// On Linux, /proc/<process>/environ is a program's starting environment, API keys included, and
+// /proc/self leads to Tachikoma's own.
+export const programEnvironment = (real: string) => /^\/proc\/[^/]+\/(task\/[^/]+\/)?environ$/.test(real);
+
 // `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
 // it somewhere else.
 export function resolveIn(root: string, p: string): { abs: string; outside: boolean; shown: string } {
@@ -53,6 +57,7 @@ export function resolveIn(root: string, p: string): { abs: string; outside: bool
   // so a link cannot get round it.
   const data = realTarget(path.resolve(dataDir()));
   if (data === null || inData(data, real)) throw new Error(`${abs} is in Tachikoma's data folder, which the file tools never touch`);
+  if (programEnvironment(real)) throw new Error(`${abs} is a program's environment, which can hold API keys, so the file tools never read it`);
   const rel = path.relative(base, real);
   return { abs, outside: leaves(rel), shown: rel === path.relative(root, abs) ? abs : `${abs} (really ${real})` };
 }

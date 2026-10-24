@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
-import { editFileTool, readFileTool, resolveIn, writeFileTool } from "../../src/tools/files.js";
+import { editFileTool, programEnvironment, readFileTool, resolveIn, writeFileTool } from "../../src/tools/files.js";
 import { tempContext } from "../helpers.js";
 
 describe("resolveIn", () => {
@@ -15,6 +15,19 @@ describe("resolveIn", () => {
     expect(resolveIn(root, "../x").outside).toBe(true);
     expect(resolveIn(root, path.resolve("/elsewhere/x")).outside).toBe(true);
     expect(resolveIn(root, "..foo").outside).toBe(false); // a file named "..foo" is inside
+  });
+});
+
+describe("a program's environment, on Linux", () => {
+  it("is found by its real path, a thread's included", () => {
+    expect(programEnvironment("/proc/1234/environ")).toBe(true);
+    expect(programEnvironment("/proc/1234/task/1235/environ")).toBe(true);
+    expect(programEnvironment("/proc/1234/cmdline")).toBe(false);
+    expect(programEnvironment("/home/me/proc/1234/environ")).toBe(false);
+  });
+
+  it.runIf(process.platform === "linux")("is refused after following /proc/self", () => {
+    expect(() => resolveIn("/tmp", "/proc/self/environ")).toThrow("/proc/self/environ is a program's environment, which can hold API keys, so the file tools never read it");
   });
 });
 

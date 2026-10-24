@@ -27,7 +27,7 @@ function usable(login: SavedLogin): { clientId: string; sub: string; tokens: Tok
   // A sealed login that cannot be opened (store.ts) waits for a logout before a new sign-in.
   if (a?.sealed && !a.tokens) throw new LoginError("The saved ChatGPT login cannot be opened. Sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), then sign in again, or choose another lead (--lead, or /lead in a session).");
   if (!a?.tokens) throw new LoginError(`Not signed in to ChatGPT. ${SIGN_IN_AGAIN}`);
-  if (!a.planUse) throw new LoginError("This ChatGPT sign-in does not allow using your plan. Sign out, sign in again and allow it, or use openai:<model> with an API key.");
+  if (!a.planUse) throw new LoginError("This ChatGPT sign-in does not allow using your plan. Sign out with `tachi logout chatgpt` (or /logout chatgpt in a session), sign in again and allow it, or use openai:<model> with an API key.");
   return { clientId: a.clientId, sub: a.sub, tokens: a.tokens };
 }
 
@@ -91,7 +91,14 @@ export class ChatGPTAuth {
       // Access token, expiry, scopes and renewal token are replaced together (sign-in page). Plan use
       // can be taken away at a renewal, and then this request is refused too.
       const tokens = tokensFrom(t);
-      return access(usable(save({ ...login, active: { ...login.active!, planUse: tokens.scopes.includes(PLAN_SCOPE), tokens } })));
+      let saved;
+      try {
+        saved = save({ ...login, active: { ...login.active!, planUse: tokens.scopes.includes(PLAN_SCOPE), tokens } });
+      } catch (err) {
+        // OpenAI has already replaced the saved renewal token, so the saved login will not renew again.
+        throw new LoginError(`OpenAI renewed your ChatGPT sign-in, but it could not be saved: ${errorText(err)}. The saved sign-in cannot be renewed again, so sign out with \`tachi logout chatgpt\` (or /logout chatgpt in a session), then sign in again.`);
+      }
+      return access(usable(saved));
     }, signal);
     return unlessAborted(renewal, signal);
   }
