@@ -612,3 +612,98 @@ describe("App's prompt", () => {
     expect(app.lastFrame()).toContain(`› ${"x".repeat(53)}a${"x".repeat(43)}\n  ${"x".repeat(54)}b`);
   });
 });
+
+// After an exit Ink reads no more keys, so a letter typed then never reaches the prompt.
+async function expectExited(app: ReturnType<typeof render>) {
+  await press(app, "x");
+  expect(app.lastFrame()).not.toContain("› x");
+}
+
+describe("App's keys for stopping and exiting", () => {
+  it("stops a turn on Esc, keeping what was done so far", async () => {
+    const { app } = await mount([], { lead: hanging() });
+    await type(app, "hi");
+    await until(app, "working");
+    await press(app, "\u001b");
+    await until(app, "›");
+    expect(app.lastFrame()).not.toContain("working");
+    expect(app.lastFrame()).toContain("> hi");
+  });
+
+  it("declines one action on Esc at a question, and the turn carries on", async () => {
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("carried on")]);
+    await type(app, "make a file");
+    const target = path.join(ctx.root, "a.txt");
+    await until(app, `Allow write ${target}? [y/n] · Esc to decline`);
+    await press(app, "\u001b");
+    await until(app, "carried on");
+    expect(app.lastFrame()).toContain(`write ${target}: declined`);
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("clears the prompt on Esc pressed twice, and not on one Esc or two with a key between", async () => {
+    const { app } = await mount([]);
+    await press(app, "abc", "\u001b");
+    expect(app.lastFrame()).toContain("› abc");
+    await press(app, "d", "\u001b");
+    expect(app.lastFrame()).toContain("› abcd");
+    await press(app, "\u001b");
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    await press(app, "\u001b", "\u001b"); // on an empty prompt, nothing
+    expect(app.lastFrame()).toMatch(/^›$/m);
+  });
+
+  it("clears the prompt on Ctrl-C, and on an empty prompt asks for a second press, which exits", async () => {
+    const { app } = await mount([]);
+    await press(app, "abc", "\u0003");
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    expect(app.lastFrame()).toContain("? for shortcuts");
+    await press(app, "\u0003");
+    expect(app.lastFrame()).toContain("Press Ctrl-C again to exit");
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    await press(app, "\u0003");
+    await expectExited(app);
+  });
+
+  it("deletes the character after the cursor on Ctrl-D, and on an empty prompt asks for a second press, which exits", async () => {
+    const { app } = await mount([]);
+    await press(app, "ab", "\u001b[D", "\u0004");
+    expect(app.lastFrame()).toContain("› a\n");
+    await press(app, "\u0015", "\u0004"); // Ctrl+U empties the prompt
+    expect(app.lastFrame()).toContain("Press Ctrl-D again to exit");
+    await press(app, "\u0004");
+    await expectExited(app);
+  });
+
+  it("forgets a first press after 800 ms, and after any other key", async () => {
+    const { app } = await mount([]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const wait = (ms: number) => vi.advanceTimersByTimeAsync(ms);
+      app.stdin.write("\u0003");
+      await wait(799);
+      expect(app.lastFrame()).toContain("Press Ctrl-C again to exit");
+      await wait(1);
+      expect(app.lastFrame()).toContain("? for shortcuts");
+      app.stdin.write("\u0003");
+      await wait(10);
+      expect(app.lastFrame()).toContain("Press Ctrl-C again to exit"); // a first press again, not an exit
+      app.stdin.write("\u0004"); // another key
+      await wait(10);
+      expect(app.lastFrame()).toContain("Press Ctrl-D again to exit");
+      app.stdin.write("\u0003");
+      await wait(10);
+      expect(app.lastFrame()).toContain("Press Ctrl-C again to exit");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows the shortcuts hint only while the prompt waits for the user", async () => {
+    const { app } = await mount([], { lead: hanging() });
+    expect(app.lastFrame()).toContain("? for shortcuts");
+    await type(app, "hi");
+    await until(app, "working");
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+  });
+});
