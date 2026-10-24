@@ -30,11 +30,11 @@ learn from experience. The command is `tachi`.
 | Subscriptions | Claude plans only through the real `claude` CLI as a worker; ChatGPT plans through OpenAI's own sign-in flow for open-source tools, in release 2 | User, 2026-10-22 ("yes use the subscription for OpenAI", "Release 2"), after checking each company's terms |
 | More providers | Look later into more providers and bring-your-own keys | User, 2026-10-22 ("byo keys like openrouter etc", "at a later" date) |
 | ChatGPT sign-in, how it works | A `chatgpt:` lead name; `tachi login`/`logout` and `/login`/`/logout`; Tachikoma's own adapter calling OpenAI directly (not through Codex) | User, 2026-10-22 (chose each option; "Both" for the commands; asked "why no logout", so it was added) |
-| ChatGPT sign-in, the saved login | A private file, with an optional OS keychain; one account at a time | User, 2026-10-22 (chose each option, and every hardening step offered) |
+| ChatGPT sign-in, the saved login | A private file, with an optional OS keychain; one account at a time. As built, the keychain keeps a key and the tokens stay in the file, sealed with it | User, 2026-10-22 (chose each option, and every hardening step offered); the key, user, 2026-10-23 (release 2 design, "As built") |
 | ChatGPT sign-in, after review | On Windows, an explicit permission that lets in only the user; if plan use is not granted, the account's record is kept but the plan is not used; records keyed by OpenAI's client ID and account, not email | User, 2026-10-22 (approved the design review's changes: "Yes"), after checking OpenAI's sign-in and accounts pages |
 | Hardening | The file tools refuse the data folder; shell commands do not get API keys | User, 2026-10-22 (chose both) |
 | Model picker | `/model` lists the models of every provider that is set up | User, 2026-10-22 (asked for a list "like Claude code"; chose every provider) |
-| Context window | The model list's own figure, then OpenAI's model pages; the status line shows how much is left | User, 2026-10-22 (chose this; "Codes cli at least shows me how much context is left as a %") |
+| Context window | The model list's own figure, otherwise the tokens in use; the status line shows how much is left | User, 2026-10-22 (chose this; "Codes cli at least shows me how much context is left as a %"); no model-pages table, user, 2026-10-23 (release 2 design, "As built") |
 
 ## 1. Overall shape
 

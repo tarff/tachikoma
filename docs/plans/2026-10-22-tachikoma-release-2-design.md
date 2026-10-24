@@ -218,3 +218,39 @@ the model list use none of the plan's limit.
   model's next reply;
 - whether completed replies carry token counts;
 - whether a reasoning-effort setting is accepted. Until then, `--effort` stays Anthropic-only.
+
+The results are in the main design, item 16.
+
+**As built (2026-10-25).** Where the code differs from this design, the reason is below. Each was
+the user's choice, or approved by the user at a task's review.
+- **`--keychain` keeps a key, not the tokens.** The keychain holds one encryption key per data
+  folder, and the tokens stay in the private file, sealed with it (AES-256-GCM; the user's choice,
+  2026-10-23). Windows holds at most 2,560 bytes in one entry (1,281 characters were refused on the
+  user's machine), so the tokens would have been split across entries, and a request reading them
+  without the lock could join pieces from two saves. The key is written once and the file is always
+  written whole, so a read is always of one save, and the file and the keychain have no versions to
+  disagree on. A missing key, another key or a changed file means the login cannot be opened: it is
+  not used, and a new sign-in waits for `tachi logout chatgpt` (the user's choice at Task 13's
+  review). The list of saved accounts, with each one's email and ID token, is not sealed, and the
+  README says so (the user's choice, 2026-10-25).
+- **Signing out deletes the tokens first, then asks OpenAI to cancel them,** with no lock held.
+  Nothing is left on disk while OpenAI answers, so a stalled answer needs no deadline. Nothing new
+  starts after a logout, as above.
+- **No blanking step.** The sign-in reply's address, the code, the PKCE value and the login headers
+  are never passed to an event, an error or the log; the tests check the errors and printed lines.
+- **The adapter reads the login itself before each request** and gives the SDK a plain key, not a
+  function: `openai` 7.30.0 wraps a function's errors ("Failed to get token from 'apiKey' function:
+  ...") and ties it to its realtime cache. A renewed login is still used at once.
+- **No table from OpenAI's model pages for the context window** (the user's choice, 2026-10-23). The
+  pages give 1,050,000 tokens for `gpt-6.1-sol`, twice the 500,000 the plan's own list gave at the
+  first real sign-in (main design, item 16), and the list has always had the field. With no figure,
+  the tokens in use are shown.
+- **Two permission codes say to sign in again, not to use an API key** (the user's choice,
+  2026-10-23): `chatpass_v2_scope_not_authorized` and `chatpass_v2_invalid_authorization_context`,
+  for which OpenAI's errors page says "Check the client and grant configuration rather than
+  retrying or changing billing."
+- **A renewal whose new tokens cannot be saved** says so, and to sign out and in again, since OpenAI
+  has already replaced the saved renewal token (the user's choice, 2026-10-25). The README lists it
+  under Known limits.
+- **Added in the final review:** on Linux the file tools also refuse `/proc/<process>/environ`,
+  which holds a program's starting environment, API keys included.
