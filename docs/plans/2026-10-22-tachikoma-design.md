@@ -826,8 +826,11 @@ whose results are recorded.
     kitty protocol, so Shift+Enter arrives as Enter; Ctrl+J and Ctrl+Enter arrive as a line feed.
     Shift+Tab, Alt+P, Alt+Backspace and Ctrl with each letter used arrive as keys of their own.
     Ctrl+Backspace and Ctrl+H both send 08, which Ink reports as Backspace. Ctrl+Shift+- sends Esc,
-    so Ctrl+_ cannot be typed there. A paste arrives whole, its line breaks as `\r`. Still to try:
-    the built release itself, from the checklist in the release 3 plan.
+    so Ctrl+_ cannot be typed there. A paste arrives whole, its line breaks as `\r`.
+    **The built release, 2026-10-25 (the same terminal, lead `anthropic:claude-haiku-5-5`):** all
+    nine items of the release 3 plan's checklist passed: Shift+Tab's modes, Alt+P's model list, a
+    three-line paste left unsent, Alt+Backspace and Ctrl+Z, Ctrl+J and backslash-Enter, the spinner
+    and Esc during a turn, resizing with a long prompt, the `/` and `@` menus, and Ctrl+O.
 
 ## Release order
 
