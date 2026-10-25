@@ -32,6 +32,19 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.stderr).toMatch(/^--fallback: /);
   });
 
+  it("names --worker when its value is bad, and takes TACHI_WORKER too", () => {
+    expect(tachi("--lead", "ollama:none", "--worker", "nope", "-p", "hi").stderr).toMatch(/^--worker: /);
+    expect(tachi("--lead", "ollama:none", "-p", "hi", { TACHI_WORKER: "nope" }).stderr).toMatch(/^--worker: /);
+  });
+
+  it("takes --max-tasks only as a whole number from 1", () => {
+    for (const bad of ["0", "x", "1.5"]) {
+      const r = tachi("--lead", "ollama:none", "--max-tasks", bad, "-p", "hi");
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain(`--max-tasks must be a whole number from 1 (got "${bad}")`);
+    }
+  });
+
   it("refuses a blank prompt instead of sending it", () => {
     for (const prompt of ["", "  "]) {
       const r = tachi("--lead", "ollama:none", "-p", prompt);

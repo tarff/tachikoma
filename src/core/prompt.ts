@@ -14,3 +14,14 @@ export function systemPrompt(root: string, platform: NodeJS.Platform = process.p
     "Read files before changing them, prefer edit_file to rewriting whole files, and say plainly when something failed.",
   ].join("\n");
 }
+
+// A subagent's own prompt, also fixed for its whole conversation (release 4 design, "What a subagent
+// is given").
+export function subagentPrompt(root: string): string {
+  return [
+    "You are a Tachikoma subagent. The lead agent gave you one task: to find something out in the user's project.",
+    `The project root is ${root}. File paths are relative to it.`,
+    "You can only read, with read_file, find_files and search_files. Call them directly.",
+    "When you know the answer, reply with what you found, citing file paths and line numbers. Your last reply is all the lead sees, so put everything it needs there.",
+  ].join("\n");
+}

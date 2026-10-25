@@ -10,20 +10,26 @@ import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
 import { type Ask, MODES, type Mode, PermissionGate } from "./core/permissions.js";
-import { systemPrompt } from "./core/prompt.js";
+import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { Session } from "./core/session.js";
 import { Stats } from "./core/stats.js";
+import { Tasks } from "./core/tasks.js";
 import { errorText, type Provider } from "./core/types.js";
 import { LocalExecutor } from "./exec/local.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
-import { TOOLS } from "./tools/index.js";
+import { delegateTool } from "./tools/delegate.js";
+import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
 import { gitBranch } from "./tui/git.js";
 import { historyFile } from "./tui/history.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
+
+// Eight Claude Haiku 5.5 subagents ran at once on the user's account with none refused; eight was the
+// most tried (release 4 design, "Before the build", 2026-10-26).
+const MAX_TASKS = 8;
 
 const HELP = `tachi: a coding agent for your terminal
 
@@ -41,6 +47,8 @@ Options:
   --mode <mode>     when to ask before acting: ${MODES.join(" | ")} (default: ask)
   --effort <level>  Anthropic models only: ${EFFORTS.join(" | ")}
   --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
+  --worker <spec>   the model subagents run on (or set TACHI_WORKER); the lead's model unless set
+  --max-tasks <n>   how many subagents run at once (default: ${MAX_TASKS})
   --status <list>   status line parts, comma-separated: ${SEGMENTS.join(",")}
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
@@ -106,6 +114,8 @@ try {
       mode: { type: "string" },
       effort: { type: "string" },
       fallback: { type: "string" },
+      worker: { type: "string" },
+      "max-tasks": { type: "string" },
       status: { type: "string" },
       print: { type: "string", short: "p" },
       json: { type: "boolean" },
@@ -128,6 +138,8 @@ if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works
 if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
 const mode: Mode = oneOf("mode", parsed.mode, MODES) ?? "ask"; // the safest mode is the default
 const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
+const maxTasks = parsed["max-tasks"] === undefined ? MAX_TASKS : Number(parsed["max-tasks"]);
+if (!Number.isInteger(maxTasks) || maxTasks < 1) fail(`--max-tasks must be a whole number from 1 (got "${parsed["max-tasks"]}")`);
 let segments;
 try {
   segments = statusSegments(parsed.status);
@@ -153,6 +165,14 @@ try {
   if (parsed.fallback) fallback = makeProvider(parsed.fallback);
 } catch (err) {
   fail(`--fallback: ${errorText(err)}`); // otherwise it reads like a bad lead
+}
+// Without --worker, a subagent uses the model leading when it starts.
+const workerSpec = parsed.worker ?? process.env.TACHI_WORKER;
+let worker: Provider | undefined;
+try {
+  if (workerSpec) worker = makeProvider(workerSpec);
+} catch (err) {
+  fail(`--worker: ${errorText(err)}`);
 }
 
 const interactive = parsed.print === undefined;
@@ -180,9 +200,19 @@ let ask: Ask = async (summary, _detail, owner) => {
   return false;
 };
 const gate = new PermissionGate(mode, (summary, detail, owner) => ask(summary, detail, owner), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it");
-// The to-do list is the lead's alone; the screen shows it from the bus.
-const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items))];
-const session = new Session({ lead, fallback, tools, system, ctx: { root, executor: new LocalExecutor(), gate }, bus });
+const executor = new LocalExecutor();
+const tasks = new Tasks({
+  bus,
+  max: maxTasks,
+  worker: () => worker ?? session.lead,
+  ...(fallback ? { fallback } : {}),
+  system: [subagentPrompt(root), instructions.text].filter(Boolean).join("\n\n"), // the same instructions as the lead
+  tools: SUBAGENT_TOOLS,
+  ctx: { root, executor, gate },
+});
+// The to-do list and delegate are the lead's alone; the screen shows the list from the bus.
+const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items)), delegateTool(tasks, { headless: !interactive })];
+const session: Session = new Session({ lead, fallback, tools, system, ctx: { root, executor, gate }, bus, inbox: () => tasks.take() });
 
 // The executor stops running commands from an "exit" handler, which dying by a signal skips.
 for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => process.exit(128 + constants.signals[sig]));
