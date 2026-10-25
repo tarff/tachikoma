@@ -57,3 +57,20 @@ export function vertical(text: string, width: number, cursor: number, dir: -1 | 
   }
   return best === null ? null : { cursor: best, goal: aim };
 }
+
+// Which rows of a prompt taller than its space are shown (release 3 design, "The prompt's space"):
+// `space` rows from `top`, keeping the cursor's row in view, moved from the window shown before (its
+// `top`) only as far as the cursor needs. A row cut off above or below gives its place to a count of
+// the rows hidden there, itself included, when there are three rows or more: the cursor's row always
+// stays between the counts.
+export function scroll(total: number, space: number, cursor: number, top: number): { top: number; above: number; below: number } {
+  if (total <= space) return { top: 0, above: 0, below: 0 };
+  const marks = space >= 3;
+  const clamp = (t: number) => Math.min(Math.max(t, 0), total - space);
+  let t = clamp(top);
+  const first = t + (marks && t > 0 ? 1 : 0); // the first and last rows of text shown
+  const last = t + space - 1 - (marks && t + space < total ? 1 : 0);
+  if (cursor < first) t = clamp(!marks ? cursor : cursor > 1 ? cursor - 1 : 0);
+  else if (cursor > last) t = clamp(cursor - space + (marks && cursor < total - 1 ? 2 : 1));
+  return { top: t, above: marks && t > 0 ? t + 1 : 0, below: marks && t + space < total ? total - (t + space - 1) : 0 };
+}

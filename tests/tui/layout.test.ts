@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { layout, vertical } from "../../src/tui/layout.js";
+import { layout, scroll, vertical } from "../../src/tui/layout.js";
 
 describe("layout", () => {
   it("wraps the prompt at the width, by columns", () => {
@@ -47,5 +47,24 @@ describe("vertical", () => {
   it("says there is no row above the first or below the last, where the history starts", () => {
     expect(vertical("ab\ncd", 10, 1, -1, null)).toBeNull();
     expect(vertical("ab\ncd", 10, 4, 1, null)).toBeNull();
+  });
+});
+
+describe("scroll", () => {
+  it("shows every row when they fit", () => {
+    expect(scroll(3, 5, 2, 0)).toEqual({ top: 0, above: 0, below: 0 });
+  });
+
+  it("keeps the cursor's row in view, the first and last rows shown counting the rows cut off", () => {
+    // Ten rows in four, the cursor on the last: rows 6 to 9 are shown, row 6 saying that 7 are above.
+    expect(scroll(10, 4, 9, 0)).toEqual({ top: 6, above: 7, below: 0 });
+    expect(scroll(10, 4, 7, 6)).toEqual({ top: 6, above: 7, below: 0 }); // still in view: the window stays
+    expect(scroll(10, 4, 6, 6)).toEqual({ top: 5, above: 6, below: 2 }); // one row up, and a count below
+    expect(scroll(10, 4, 1, 5)).toEqual({ top: 0, above: 0, below: 7 });
+  });
+
+  it("has no room for the counts in fewer than three rows", () => {
+    expect(scroll(10, 2, 5, 0)).toEqual({ top: 4, above: 0, below: 0 });
+    expect(scroll(10, 1, 5, 4)).toEqual({ top: 5, above: 0, below: 0 });
   });
 });
