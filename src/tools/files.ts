@@ -21,7 +21,7 @@ function realTarget(abs: string): string | null {
 
 // Whether `rel`, a path relative to some folder, leads out of it. On Windows a path on another drive
 // comes back absolute.
-const leaves = (rel: string) => rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+export const leaves = (rel: string) => rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
 
 // Whether `real` is the data folder or in it. The path is compared first, which also covers a data
 // folder not made yet. Then each folder on the way up is compared by what it is (its volume and file
