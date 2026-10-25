@@ -47,7 +47,8 @@ Options:
 
 In a session: /lead <provider:model> switches the lead model, /model picks it from a list,
 /login chatgpt and /logout chatgpt sign in and out, /errors summarises the error log, /exit quits.
-Ctrl-C stops the current turn, or quits when idle.`;
+Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty
+prompt quits. ? on an empty prompt lists every key.`;
 
 function fail(message: string): never {
   console.error(message);

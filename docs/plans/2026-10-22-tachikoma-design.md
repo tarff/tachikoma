@@ -38,6 +38,8 @@ learn from experience. The command is `tachi`.
 | Releases 3 to 5 | Claude Code's keys and screen (3), read-only subagents and the to-do list (4), key extras (5); every later release moves down three | User, 2026-10-23 ("We need all sorts of keyboard commands like Claude code", "It should have subagents. It was in the initial brief."; chose each part) |
 | Release 3, choices | History in a private file per project in the data folder; Shift+Tab reaches `never` only when started with `--mode never`; Ctrl+O prints the last turn's tools in full; `@` lists one folder at a time and sends only the path; after Esc the queue goes on, after Ctrl-C it comes back into the prompt | User, 2026-10-25 (chose each option; [release 3 design](2026-10-25-tachikoma-release-3-design.md)) |
 | Release 3, status line | Adds claude-hud's context bar and colours, the project folder and git branch, the session's length and a tool line | User, 2026-10-25 (asked what claude-hud shows; chose all four parts offered) |
+| Release 3, as built | Undo on Ctrl+Z as well as Ctrl+_; the word before the cursor on Alt+Backspace, with Ctrl+Backspace acting as Backspace; the git branch read from `.git/HEAD`, without the `*` for changes; the spinner moving every 80 ms | User, 2026-10-25 (after the key probes in their terminal, and at the build; [release 3 design](2026-10-25-tachikoma-release-3-design.md), "As built") |
+| Instruction files, and importing from other tools | Release 4 reads a project's AGENTS.md or CLAUDE.md, and the user's own, into each session. `tachi setup` (release 12) offers on its first run to import settings, skills, MCP servers and key bindings from Claude Code, Codex and other tools | User, 2026-10-25 ("a first boot import setup to bring over existing Claude and agents Md files and other setting and skills from other programs"; chose both places from options offered) |
 
 ## 1. Overall shape
 
@@ -651,7 +653,8 @@ it.
   - reviewing sandbox work
   - the author's engineering rules: no assumptions without data, simplicity first, surgical
     changes
-- An opt-in `tachi skills import` copies a user's Claude Code skills after checking each licence.
+- A user's skills from Claude Code and other tools are copied by `tachi setup`'s first-run import
+  (release 12), after checking each licence.
 
 ### Status line
 
@@ -699,6 +702,9 @@ tachi setup
 - checks Docker
 - asks for API keys, and also picks up keys already set as environment variables
   (`ANTHROPIC_API_KEY`, etc.)
+- on its first run, offers to import from the tools it finds (Claude Code, Codex and others):
+  settings, skills (each licence checked first), MCP servers and key bindings. Nothing is imported
+  without asking. Which tools, and how each setting maps, are for release 12's design.
 
 Keys are stored in Tachikoma's config folder, readable only by the user. `tachi doctor` checks
 everything again and says what is broken and how to fix it.
@@ -816,6 +822,12 @@ whose results are recorded.
 18. The release 3 checks in the [release 3 design](2026-10-25-tachikoma-release-3-design.md), in the
     user's terminal (Windows Terminal, PowerShell 5.1): whether Shift+Enter and Shift+Tab arrive as
     keys of their own, and that Alt+P, Ctrl+Backspace and a multi-line paste work.
+    **Measured 2026-10-25 (the user's terminal, Node 24.22.1, before the build):** no answer for the
+    kitty protocol, so Shift+Enter arrives as Enter; Ctrl+J and Ctrl+Enter arrive as a line feed.
+    Shift+Tab, Alt+P, Alt+Backspace and Ctrl with each letter used arrive as keys of their own.
+    Ctrl+Backspace and Ctrl+H both send 08, which Ink reports as Backspace. Ctrl+Shift+- sends Esc,
+    so Ctrl+_ cannot be typed there. A paste arrives whole, its line breaks as `\r`. Still to try:
+    the built release itself, from the checklist in the release 3 plan.
 
 ## Release order
 
@@ -831,7 +843,8 @@ Each release works on its own and can be shown.
 3. Claude Code's keys and screen: stopping, editing, multi-line, history, typing while it works,
    the `/` menu, `@` paths, Shift+Tab modes, the working line and a fuller status line
    ([release 3 design](2026-10-25-tachikoma-release-3-design.md))
-4. Read-only subagents (read and search only) with a panel under the prompt, and the to-do list
+4. Read-only subagents (read and search only) with a panel under the prompt, and the to-do list;
+   reading the project's and the user's instruction files (AGENTS.md, CLAUDE.md) into each session
 5. Key extras: vim mode, image paste, external editor, stash, rebinding keys in a file, full screen
 6. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
 7. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
@@ -841,5 +854,6 @@ Each release works on its own and can be shown.
 10. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
     refusal rules. The controller comes first because workers have to be cancellable as a group.
 11. Loops: on a timer, and until done
-12. `tachi setup` / `tachi doctor`, and the fresh-install CI
+12. `tachi setup` / `tachi doctor`, with a first-run import from other tools, and the fresh-install
+    CI
 13. More providers and bring-your-own keys
