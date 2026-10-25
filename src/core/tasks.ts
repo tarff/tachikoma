@@ -46,7 +46,7 @@ export interface TasksOptions {
 // lead's next request takes them.
 export class Tasks {
   readonly all: Task[] = [];
-  #inbox: { text: string; wake: boolean }[] = [];
+  #inbox: { id: string; text: string; wake: boolean }[] = [];
   #free: number;
   #line: (() => void)[] = []; // subagents waiting for a free place, in order
   #stops = new Map<string, { stop: AbortController; byUser: boolean }>();
@@ -93,6 +93,11 @@ export class Tasks {
     return this.#inbox.some((i) => i.wake);
   }
 
+  // The subagents whose answers are waiting to start a turn, for its working line.
+  answering(): string[] {
+    return this.#inbox.filter((i) => i.wake).map((i) => i.id);
+  }
+
   // Everything waiting for the lead, removed, so each goes into exactly one request.
   take(): string[] {
     return this.#inbox.splice(0).map((i) => i.text);
@@ -111,9 +116,10 @@ export class Tasks {
     t.state = r.state;
     t.ended = Date.now();
     const name = `Background task ${t.id} (${t.task})`;
-    if (t.background && r.state === "done") this.#inbox.push({ text: `${name} finished:\n${truncate(r.text)}`, wake: true });
-    if (t.background && r.state === "failed") this.#inbox.push({ text: `${name} failed: ${r.text}`, wake: true });
-    if (t.background && r.state === "stopped" && stopped.byUser) this.#inbox.push({ text: `${name} was stopped by the user before it finished.`, wake: false });
+    const { id } = t;
+    if (t.background && r.state === "done") this.#inbox.push({ id, text: `${name} finished:\n${truncate(r.text)}`, wake: true });
+    if (t.background && r.state === "failed") this.#inbox.push({ id, text: `${name} failed: ${r.text}`, wake: true });
+    if (t.background && r.state === "stopped" && stopped.byUser) this.#inbox.push({ id, text: `${name} was stopped by the user before it finished.`, wake: false });
     this.#changed();
     return r;
   }

@@ -30,6 +30,24 @@ export class FakeProvider implements Provider {
   }
 }
 
+// A provider whose every request waits until the test answers it, or until it is stopped.
+export class Held implements Provider {
+  readonly asked: CompletionRequest[] = [];
+  #pending: ((t: Turn) => void)[] = [];
+  constructor(readonly id = "fake:held") {}
+  complete(req: CompletionRequest): Promise<Turn> {
+    this.asked.push(structuredClone({ ...req, signal: undefined }));
+    return new Promise((resolve, reject) => {
+      this.#pending.push(resolve);
+      req.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+  }
+  // Answers the oldest request still waiting.
+  answer(turn: Turn | string) {
+    this.#pending.shift()!(typeof turn === "string" ? reply(turn) : turn);
+  }
+}
+
 export function collectErrors(bus: Bus): ErrorEvent[] {
   const errors: ErrorEvent[] = [];
   bus.on("error", (e) => errors.push(e));

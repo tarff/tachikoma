@@ -253,6 +253,7 @@ if (parsed.print !== undefined) {
   render(
     <App
       session={session}
+      tasks={tasks}
       bus={bus}
       stats={stats}
       mode={mode}

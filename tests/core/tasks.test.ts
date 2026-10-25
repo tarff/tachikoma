@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 import { type Ask, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { Stats } from "../../src/core/stats.js";
 import { Tasks } from "../../src/core/tasks.js";
-import type { CompletionRequest, Provider, Turn } from "../../src/core/types.js";
+import type { Provider } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { readFileTool } from "../../src/tools/files.js";
-import { Bus, FakeProvider, callTool, collectErrors, reply, tempContext } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, collectErrors, reply, tempContext } from "../helpers.js";
 
 async function setup(worker: Provider | (() => Provider), opts: { max?: number; ask?: Ask } = {}) {
   const bus = new Bus();
@@ -16,22 +16,6 @@ async function setup(worker: Provider | (() => Provider), opts: { max?: number; 
   return { bus, tasks, ctx, errors: collectErrors(bus) };
 }
 
-// A worker whose every reply waits until the test sends it, or until the subagent is stopped.
-class Held implements Provider {
-  readonly id = "fake:held";
-  readonly asked: CompletionRequest[] = [];
-  #replies: ((t: Turn) => void)[] = [];
-  complete(req: CompletionRequest): Promise<Turn> {
-    this.asked.push(req);
-    return new Promise((resolve, reject) => {
-      this.#replies.push(resolve);
-      req.signal?.addEventListener("abort", () => reject(new Error("aborted")));
-    });
-  }
-  answer(text: string) {
-    this.#replies.shift()!(reply(text));
-  }
-}
 const settle = () => new Promise((r) => setTimeout(r, 20));
 
 describe("Tasks", () => {

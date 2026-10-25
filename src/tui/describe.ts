@@ -10,9 +10,9 @@ export interface Line {
 const firstLine = (s: string) => s.split(/\r?\n/)[0] ?? "";
 
 // A call's main detail (release 3 design, "On screen"): the path for the file tools, the command's
-// first line for shell, the pattern for the search tools; null for a tool without its own summary,
-// which is shown with its whole input.
-const DETAIL: Record<string, string> = { read_file: "path", write_file: "path", edit_file: "path", shell: "command", find_files: "pattern", search_files: "pattern" };
+// first line for shell, the pattern for the search tools, the task for delegate; null for a tool
+// without its own summary, which is shown with its whole input.
+const DETAIL: Record<string, string> = { read_file: "path", write_file: "path", edit_file: "path", shell: "command", find_files: "pattern", search_files: "pattern", delegate: "task" };
 export function brief(name: string, input: unknown): string | null {
   const items = name === "todo" && typeof input === "object" && input !== null ? (input as { items?: unknown }).items : undefined;
   if (Array.isArray(items)) return `${items.length} item${items.length === 1 ? "" : "s"}`; // the list itself is on screen

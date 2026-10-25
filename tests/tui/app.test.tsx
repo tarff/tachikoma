@@ -10,12 +10,14 @@ import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import type { Provider } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
-import { TOOLS } from "../../src/tools/index.js";
+import { Tasks } from "../../src/core/tasks.js";
+import { delegateTool } from "../../src/tools/delegate.js";
+import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import { History } from "../../src/tui/history.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
-import { Bus, FakeProvider, callTool, reply, tempContext } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, reply, tempContext, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 
@@ -23,6 +25,12 @@ const tick = () => new Promise((r) => setTimeout(r, 50));
 async function until(app: ReturnType<typeof render>, text: string) {
   for (let i = 0; i < 40 && !app.lastFrame()?.includes(text); i++) await tick();
   expect(app.lastFrame()).toContain(text);
+}
+
+// Wait until `check` holds.
+async function waitFor(check: () => boolean) {
+  for (let i = 0; i < 40 && !check(); i++) await tick();
+  expect(check()).toBe(true);
 }
 
 // Wait until the screen no longer shows `text`.
@@ -63,6 +71,7 @@ async function mount(
     newLead?: Provider; // what /lead and the picker make
     rows?: number; // the terminal's height
     intro?: AppProps["intro"]; // the start line
+    worker?: Provider; // the subagents' model
     mode?: Mode; // the mode the session starts in
   } = {},
 ) {
@@ -72,12 +81,14 @@ async function mount(
   let ask: (s: string, d?: string, o?: Owner) => Promise<boolean> = async () => false;
   const gate = new PermissionGate(opts.mode ?? "ask", (s, d, o) => ask(s, d, o));
   const lead = opts.lead ?? new FakeProvider("a", turns);
-  const session = new Session({ lead, tools: TOOLS, system: "t", ctx: { ...ctx, gate }, bus });
+  const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
+  const session = new Session({ lead, tools: [...TOOLS, delegateTool(tasks, { headless: false })], system: "t", ctx: { ...ctx, gate }, bus, inbox: () => tasks.take() });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
   if (opts.past) writeFileSync(historyFile, opts.past.map((p) => `${JSON.stringify(p)}\n`).join(""));
   const app = render(
     <App
       session={session}
+      tasks={tasks}
       bus={bus}
       stats={stats}
       mode={opts.mode ?? "ask"}
@@ -111,7 +122,7 @@ async function mount(
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
   await tick();
-  return { app, session, ctx, bus, historyFile, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
+  return { app, session, ctx, bus, tasks, historyFile, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -1049,6 +1060,108 @@ describe("App's space on screen", () => {
     await tick();
     expect(app.lastFrame()).toMatch(/^›\n\? for shortcuts\n[^\n]*$/);
   });
+});
+
+describe("App's background subagents", () => {
+  const bg = (id: string, task: string) => callTool(id, "delegate", { task, background: true });
+  const note = (text: string) => ({ type: "text", text, from: "tasks" });
+
+  it("reads an answer that finishes while the lead is idle in a turn of its own, saying it finished", async () => {
+    const worker = new Held("fake:w");
+    const lead = new FakeProvider("a", [bg("c1", "find x"), reply("started it"), reply("t1 says found")]);
+    const { app } = await mount([], { lead, worker });
+    await type(app, "go");
+    await until(app, "started it");
+    worker.answer("found");
+    await until(app, "t1 says found");
+    expect(app.lastFrame()).toContain("t1 finished");
+    expect(lead.seen[2]!.at(-1)!.parts).toEqual([note("Background task t1 (find x) finished:\nfound")]);
+  });
+
+  it("hands the lead a failure during its turn with the next request's tool results, with no turn of its own", async () => {
+    const lead = new FakeProvider("a", [bg("c1", "find x"), reply("t1 broke")]);
+    const { app } = await mount([], { lead, worker: new FakeProvider("w", [new Error("rate limited")]) });
+    await type(app, "go");
+    await until(app, "t1 broke");
+    expect(app.lastFrame()).toContain("t1 failed");
+    expect(lead.seen[1]!.at(-1)!.parts.at(-1)).toEqual(note("Background task t1 (find x) failed: rate limited"));
+    await tick();
+    expect(lead.seen).toHaveLength(2);
+  });
+
+  it("shows that turn as reading the answer, and Esc stops it like any other", async () => {
+    const worker = new Held("fake:w");
+    const lead = new Held("fake:a");
+    const { app } = await mount([], { lead, worker });
+    await type(app, "go");
+    lead.answer(bg("c1", "find x"));
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("started");
+    await until(app, "started");
+    worker.answer("found");
+    await until(app, "Reading t1's answer");
+    await press(app, "\u001b");
+    await gone(app, "Reading t1's answer");
+  });
+
+  it("reads an answer that came during the lead's last request when the turn ends, before a queued prompt", async () => {
+    const worker = new Held("fake:w");
+    const lead = new Held("fake:a");
+    const { app } = await mount([], { lead, worker });
+    await type(app, "go");
+    lead.answer(bg("c1", "find x"));
+    await waitFor(() => lead.asked.length === 2); // the lead's last request, already sent
+    worker.answer("found");
+    await press(app, "q1", "\r");
+    lead.answer("started");
+    await waitFor(() => lead.asked.length === 3);
+    expect(lead.asked[2]!.messages.at(-1)!.parts).toEqual([note("Background task t1 (find x) finished:\nfound")]);
+    lead.answer("read it");
+    await waitFor(() => lead.asked.length === 4);
+    expect(lead.asked[3]!.messages.at(-1)!.parts).toEqual([{ type: "text", text: "q1" }]);
+    expect(lead.asked.flatMap((r) => r.messages).filter((m) => m.parts.some((p) => p.type === "text" && p.from === "tasks"))).toHaveLength(2); // in one request only, then in the history
+  });
+
+  it("waits while the model list is open, and reads the answer once it closes", async () => {
+    const worker = new Held("fake:w");
+    const lead = new FakeProvider("a", [bg("c1", "find x"), reply("started it"), reply("t1 says found")]);
+    const { app } = await mount([], { lead, worker, models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "go");
+    await until(app, "started it");
+    await press(app, "\u001bp");
+    await until(app, "fake:b");
+    await tick(); // the picker starts reading keys just after it first appears
+    worker.answer("found");
+    await tick();
+    expect(lead.seen).toHaveLength(2);
+    await press(app, "\u001b");
+    await until(app, "t1 says found");
+  });
+
+  it("on Esc, stops the turn and the subagents it waits for, not background ones", async () => {
+    const lead = new FakeProvider("a", [{ parts: [...bg("c1", "a").parts, ...callTool("c2", "delegate", { task: "b" }).parts], usage }]);
+    const { app, tasks } = await mount([], { lead, worker: new Held("fake:w") });
+    await type(app, "go");
+    await waitFor(() => tasks.all.length === 2 && tasks.all.every((t) => t.state === "running"));
+    await press(app, "\u001b");
+    await waitFor(() => tasks.all[1]!.state === "stopped");
+    expect(tasks.all[0]!.state).toBe("running");
+  });
+
+  for (const [way, keys] of [
+    ["/exit", ["/exit", "\r"]],
+    ["Ctrl-C twice", ["\u0003", "\u0003"]],
+    ["Ctrl-D twice", ["\u0004", "\u0004"]],
+  ] as const) {
+    it(`stops every subagent on ${way}`, async () => {
+      const lead = new FakeProvider("a", [bg("c1", "a"), reply("started")]);
+      const { app, tasks } = await mount([], { lead, worker: new Held("fake:w") });
+      await type(app, "go");
+      await until(app, "started");
+      for (const key of keys) await press(app, key);
+      await waitFor(() => tasks.all[0]!.state === "stopped");
+    });
+  }
 });
 
 // A subagent that asks: its name, its stop signal, and whether it was stopped.

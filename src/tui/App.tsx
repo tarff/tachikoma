@@ -5,6 +5,7 @@ import { summarize } from "../core/errorlog.js";
 import { type Ask, type Mode, type Owner, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
+import type { Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { TodoItem } from "../tools/todo.js";
@@ -27,6 +28,7 @@ type Question = { text: string; owner?: Owner; answer: (ok: boolean, how: string
 
 export interface AppProps {
   session: Session;
+  tasks: Tasks; // the lead's subagents
   bus: Bus;
   stats: Stats;
   mode: Mode; // the mode the session started in
@@ -48,6 +50,8 @@ export interface AppProps {
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /errors, /exit";
+// "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
+const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
 
 // What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
@@ -55,7 +59,7 @@ const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (
 const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
-export function App({ session, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
+export function App({ session, tasks, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
@@ -90,6 +94,8 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
   const question = questions.current[0] ?? null;
   const [contextWindow, setContextWindow] = useState<number | null>(null);
   const [picker, setPicker] = useState<ModelGroup[] | null>(null);
+  const listOpen = useRef(false); // the picker, for keys and answers read before the screen is drawn again
+  const announced = useRef(new Set<string>()); // background subagents whose ending has been shown
   const [, rerender] = useState(0);
   const started = useRef(Date.now());
   const [now, setNow] = useState(started.current);
@@ -141,6 +147,7 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
             say({ text: `${q.text}: ${how}`, color: "gray" });
             resolve(ok);
             rerender((n) => n + 1);
+            next(); // an answer may have waited for this question to close
           },
         };
         signal?.addEventListener("abort", cancel, { once: true });
@@ -171,6 +178,16 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
       if (call) call.outcome = outcome;
       rerender((n) => n + 1);
     };
+    // A background subagent's ending is shown when it comes; its answer is read at once when idle.
+    const onTasks = () => {
+      for (const t of tasks.all) {
+        if (!t.background || t.state === "running" || t.state === "waiting" || announced.current.has(t.id)) continue;
+        announced.current.add(t.id);
+        say({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "gray" });
+      }
+      rerender((n) => n + 1);
+      next();
+    };
     const onTodo = (items: TodoItem[]) => {
       todos.current = { items, hidden: false };
       rerender((n) => n + 1);
@@ -182,6 +199,7 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
     bus.on("tool-start", onToolStart);
     bus.on("tool-end", onToolEnd);
     bus.on("todo", onTodo);
+    bus.on("tasks", onTasks);
     say(...intro);
     history.current!.load();
     lookUpWindow();
@@ -196,6 +214,9 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
       bus.off("tool-start", onToolStart);
       bus.off("tool-end", onToolEnd);
       bus.off("todo", onTodo);
+      bus.off("tasks", onTasks);
+      // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending.
+      tasks.stop();
     };
   }, []);
 
@@ -207,25 +228,29 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
   }, [busy]);
 
   // Called without await, so nothing may escape: an unhandled rejection ends the program. The queue
-  // goes on after a turn, however it ended, and after `/model` once the list is closed.
-  const submit = async (raw: string) => {
-    if (!(await perform(raw))) next();
+  // goes on after a turn, however it ended, and after `/model` once the list is closed. `answers`: a
+  // turn with nothing typed, to read the background answers waiting.
+  const submit = async (raw: string, answers = false) => {
+    if (!(await perform(raw, answers))) next();
   };
 
-  // Entries are taken from the front: a command alone, as if typed then; prompts next to each other
-  // as one message, separated by blank lines. Not while something runs: a command that finished
-  // after a turn started (both typed in one read of the terminal) leaves the queue to that turn.
+  // Background answers waiting go first, in a turn of their own (release 4 design, "Background
+  // subagents"). Then the queue's entries, taken from the front: a command alone, as if typed then;
+  // prompts next to each other as one message, separated by blank lines. Not while something runs (a
+  // command that finished after a turn started, both typed in one read of the terminal, leaves the
+  // queue to that turn), nor while a question or the model list is open.
   const next = () => {
-    if (working.current) return;
+    if (working.current || listOpen.current || questions.current.length) return;
+    if (tasks.wakes()) return void submit("", true);
     const q = queue.current;
     const command = q.findIndex(isCommand);
     if (q.length) void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
   };
 
   // True when it opened the model list.
-  const perform = async (raw: string): Promise<boolean | void> => {
+  const perform = async (raw: string, answers = false): Promise<boolean | void> => {
     const text = raw.trim();
-    if (!text) return;
+    if (!text && !answers) return;
     // Commands ignore case; a message is sent as typed.
     const [first = "", ...words] = text.split(/\s+/);
     const command = first.toLowerCase();
@@ -245,12 +270,15 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
       if (words.length && ["/exit", "/errors", "/model"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
       abort.current = new AbortController();
       const turn = !account && !alone("/model");
-      const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : turn ? "Working" : "Reading the model lists";
+      const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(tasks.answering())}` : turn ? "Working" : "Reading the model lists";
       doing.current = { label, at: Date.now(), from: turn ? { output: stats.output, cost: stats.cost, unpriced: stats.unpriced } : null };
       if (turn) calls.current = [];
       setNow(doing.current.at);
       setBusy(true);
       working.current = true;
+      // Finished subagents leave the panel at the user's next turn; after `working`, since the change
+      // it reports would otherwise start the queue.
+      if (turn && !answers) tasks.clearFinished();
       try {
         // Signing in waits on the browser; Ctrl-C stops it, as it stops a turn.
         if (account) await login(account, words, (line) => say({ text: line, color: "magenta" }), abort.current.signal, "/");
@@ -258,6 +286,7 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
           const { signal } = abort.current; // this command's own, read before the wait
           const groups = await listModels(signal, (line) => say({ text: line, color: "magenta" }));
           if (!signal.aborted) {
+            listOpen.current = true;
             setPicker(groups);
             return true;
           }
@@ -274,6 +303,7 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
 
   // Picking does what `/lead <provider:model>` does.
   const pick = (spec: string) => {
+    listOpen.current = false;
     setPicker(null);
     try {
       session.setLead(makeProvider(spec));
@@ -283,6 +313,7 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
     next();
   };
   const closePicker = () => {
+    listOpen.current = false;
     setPicker(null);
     next();
   };
