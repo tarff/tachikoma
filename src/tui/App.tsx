@@ -9,7 +9,7 @@ import type { Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { TodoItem } from "../tools/todo.js";
-import { brief, describe, lastTurn, type Line, screen } from "./describe.js";
+import { brief, callLines, describe, lastTurn, type Line, screen } from "./describe.js";
 import { apply, type Editor, empty, load, move, replace } from "./editor.js";
 import { History, matches } from "./history.js";
 import { type Command, commands, KEY_LIST } from "./keys.js";
@@ -19,7 +19,7 @@ import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu 
 import { ModelPicker } from "./ModelPicker.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
-import { TaskPanel, taskRows } from "./TaskPanel.js";
+import { TaskPanel, taskRow, taskRows } from "./TaskPanel.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
@@ -50,14 +50,14 @@ export interface AppProps {
   listModels: (signal: AbortSignal, warn: (line: string) => void) => Promise<ModelGroup[]>;
 }
 
-const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /errors, /exit";
+const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /exit";
 // "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
 const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
 
 // What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
 // is a message).
-const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout"];
+const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
 export function App({ session, tasks, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
@@ -264,6 +264,7 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
         return exit();
       }
       if (alone("/errors")) return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
+      if (command === "/tasks") return say(...tasksCommand(words));
       if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
       if (command === "/lead") return session.setLead(makeProvider(words.join(" ")));
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
@@ -302,6 +303,30 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     } catch (err) {
       say({ text: errorText(err), color: "red" });
     }
+  };
+
+  // `/tasks` lists the session's subagents, `/tasks t3` prints one's tool calls and answer in full,
+  // and `/tasks stop` stops all of them, or with a number one (release 4 design, "Background subagents").
+  const tasksCommand = (words: string[]): Line[] => {
+    const gray = (text: string): Line => ({ text, color: "gray" });
+    const none = (id: string): Line => ({ text: `No subagent ${id}. /tasks lists them.`, color: "red" });
+    const [verb, id, ...rest] = words;
+    if (verb === undefined) {
+      if (!tasks.all.length) return [gray("No subagents yet.")];
+      const now = Date.now();
+      return [gray(`Subagents: ${tasks.all.length}`), ...tasks.all.map((t) => taskRow(t, now)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
+    }
+    if (verb === "stop" && !rest.length) {
+      if (id === undefined) return [gray(tasks.stop() ? "Stopped every subagent." : "No subagent is running.")];
+      if (!tasks.all.some((t) => t.id === id)) return [none(id)];
+      return [gray(tasks.stop(id) ? `Stopped ${id}.` : `${id} is not running.`)];
+    }
+    if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "red" }];
+    const t = tasks.all.find((x) => x.id === verb);
+    if (!t) return [none(verb)];
+    const calls = callLines(t.messages);
+    const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
+    return [gray(`${t.id} (${t.task}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
   };
 
   // Picking does what `/lead <provider:model>` does.

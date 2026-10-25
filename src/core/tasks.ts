@@ -26,6 +26,7 @@ export interface Task {
   cost: number; // USD, for requests whose price is known
   costUnknown: boolean;
   lastTool: { name: string; input: unknown } | null;
+  answer?: string; // once it ended: its answer, why it failed, or that it was stopped
   shown: boolean; // on the panel: finished ones leave it at the next turn the user starts
   messages: Message[]; // its conversation, for /tasks t3
   done: Promise<Result>;
@@ -114,6 +115,7 @@ export class Tasks {
     const r: Result = result ?? { state: "stopped", text: "" };
     if (r.state === "stopped") r.text = `${t.id} was stopped${stopped.byUser ? " by the user before it finished" : ""}.`;
     t.state = r.state;
+    t.answer = r.text;
     t.ended = Date.now();
     const name = `Background task ${t.id} (${t.task})`;
     const { id } = t;

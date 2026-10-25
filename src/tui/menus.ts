@@ -27,6 +27,7 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/model", run: "/model", note: "Pick the lead model from a list" },
   { label: "/login chatgpt", run: "/login chatgpt", note: "Sign in to ChatGPT" },
   { label: "/logout chatgpt", run: "/logout chatgpt", note: "Sign out of ChatGPT" },
+  { label: "/tasks", run: "/tasks", note: "List the subagents; /tasks t1 shows one, /tasks stop stops them" },
   { label: "/errors", run: "/errors", note: "Summarise the error log" },
   { label: "/exit", run: "/exit", note: "Quit" },
 ];

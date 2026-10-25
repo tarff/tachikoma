@@ -50,11 +50,13 @@ export function describe(m: Message): Line[] {
 export function lastTurn(messages: Message[]): Line[] {
   const start = messages.findLastIndex((m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result"));
   if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }];
-  const parts = messages.slice(start).flatMap((m) => m.parts);
-  const calls = parts.filter((p) => p.type === "tool_call");
+  const calls = callLines(messages.slice(start));
+  return [{ text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "gray" }, ...calls];
+}
+
+// Each tool call in `messages`, with its full input and result, grey: for Ctrl+O and `/tasks t3`.
+export function callLines(messages: Message[]): Line[] {
+  const parts = messages.flatMap((m) => m.parts);
   const results = new Map(parts.flatMap((p) => (p.type === "tool_result" ? [[p.callId, p.output] as const] : [])));
-  return [
-    { text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "gray" },
-    ...calls.map((c) => ({ text: `● ${c.name} ${JSON.stringify(c.input, null, 2)}\n  ⎿ ${results.get(c.id) ?? "(not finished)"}`, color: "gray" })),
-  ];
+  return parts.flatMap((c) => (c.type === "tool_call" ? [{ text: `● ${c.name} ${JSON.stringify(c.input, null, 2)}\n  ⎿ ${results.get(c.id) ?? "(not finished)"}`, color: "gray" }] : []));
 }

@@ -1163,6 +1163,50 @@ describe("App's background subagents", () => {
     expect(app.lastFrame()).not.toContain("t1 find x ·");
   });
 
+  it("lists the session's subagents with /tasks, finished ones taken off the panel included", async () => {
+    const lead = new FakeProvider("a", [bg("c1", "find x"), reply("started it"), reply("next")]);
+    const { app } = await mount([], { lead, worker: new FakeProvider("w", [reply("found")]) });
+    await type(app, "/tasks");
+    await until(app, "No subagents yet.");
+    await type(app, "go");
+    await until(app, "started it");
+    await type(app, "more");
+    await until(app, "next");
+    await type(app, "/tasks");
+    await until(app, "Subagents: 1");
+    expect(app.lastFrame()).toMatch(/Subagents: 1\n✓ t1 find x · w · \d+s · ↓ 5 tokens · \$0\.00 \+ \?\n/);
+  });
+
+  it("prints a subagent's tool calls and answer in full with /tasks t1", async () => {
+    const worker = new FakeProvider("w", [callTool("w1", "find_files", { pattern: "*.ts" }), reply("It is in a.ts")]);
+    const { app } = await mount([callTool("c1", "delegate", { task: "find x" }), reply("done")], { worker });
+    await type(app, "go");
+    await until(app, "done");
+    await type(app, "/tasks t1");
+    await until(app, "t1 (find x), done: 1 tool call");
+    expect(app.lastFrame()).toContain('● find_files {\n  "pattern": "*.ts"\n}\n  ⎿ No files match *.ts');
+    expect(app.lastFrame()).toContain("Answer:\nIt is in a.ts");
+    await type(app, "/tasks t9");
+    await until(app, "No subagent t9. /tasks lists them.");
+  });
+
+  it("stops one subagent with /tasks stop t1, or all with /tasks stop", async () => {
+    const lead = new FakeProvider("a", [{ parts: [...bg("c1", "a").parts, ...bg("c2", "b").parts], usage }, reply("started")]);
+    const { app, tasks } = await mount([], { lead, worker: new Held("fake:w") });
+    await type(app, "go");
+    await until(app, "started");
+    await type(app, "/tasks stop t1");
+    await until(app, "Stopped t1.");
+    expect(tasks.all.map((t) => t.state)).toEqual(["stopped", "running"]);
+    await type(app, "/tasks stop t1");
+    await until(app, "t1 is not running.");
+    await type(app, "/tasks stop");
+    await until(app, "Stopped every subagent.");
+    expect(tasks.all[1]!.state).toBe("stopped");
+    await type(app, "/tasks stop");
+    await until(app, "No subagent is running.");
+  });
+
   for (const [way, keys] of [
     ["/exit", ["/exit", "\r"]],
     ["Ctrl-C twice", ["\u0003", "\u0003"]],

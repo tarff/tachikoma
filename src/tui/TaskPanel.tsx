@@ -29,15 +29,17 @@ const live = (t: Task) => t.state === "running" || t.state === "waiting";
 export function taskRows(tasks: Task[], rows: number, now: number): TaskRow[] {
   const on = tasks.filter((t) => t.shown);
   const ordered = [...on.filter(live), ...on.filter((t) => !live(t))];
-  const row = (t: Task): TaskRow => {
-    const head = `${t.id} ${visible(t.task.split(/\r?\n/)[0] ?? "")} · ${visible(t.model.slice(t.model.indexOf(":") + 1))}`;
-    if (t.state === "waiting") return { ...MARKS.waiting, text: `${head} · waiting` };
-    const tool = t.state === "running" && t.lastTool ? ` · ${visible([t.lastTool.name, brief(t.lastTool.name, t.lastTool.input)].filter(Boolean).join(" "))}` : "";
-    return { ...MARKS[t.state], text: `${head} · ${elapsed(Math.max(0, (t.ended ?? now) - t.started))} · ↓ ${k(t.output)} tokens · ${costText(t.model, t.cost, t.costUnknown)}${tool}` };
-  };
-  if (ordered.length <= rows) return ordered.map(row);
+  if (ordered.length <= rows) return ordered.map((t) => taskRow(t, now));
   if (rows <= 0) return [];
-  return [...ordered.slice(0, rows - 1).map(row), { mark: " ", text: `+${ordered.length - rows + 1} more`, color: "gray" }];
+  return [...ordered.slice(0, rows - 1).map((t) => taskRow(t, now)), { mark: " ", text: `+${ordered.length - rows + 1} more`, color: "gray" }];
+}
+
+// One subagent's row, for the panel and for /tasks.
+export function taskRow(t: Task, now: number): TaskRow {
+  const head = `${t.id} ${visible(t.task.split(/\r?\n/)[0] ?? "")} · ${visible(t.model.slice(t.model.indexOf(":") + 1))}`;
+  if (t.state === "waiting") return { ...MARKS.waiting, text: `${head} · waiting` };
+  const tool = t.state === "running" && t.lastTool ? ` · ${visible([t.lastTool.name, brief(t.lastTool.name, t.lastTool.input)].filter(Boolean).join(" "))}` : "";
+  return { ...MARKS[t.state], text: `${head} · ${elapsed(Math.max(0, (t.ended ?? now) - t.started))} · ↓ ${k(t.output)} tokens · ${costText(t.model, t.cost, t.costUnknown)}${tool}` };
 }
 
 export function TaskPanel({ rows }: { rows: TaskRow[] }) {
