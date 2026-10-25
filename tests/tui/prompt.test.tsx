@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { render } from "ink";
+import { render, Text } from "ink";
 import { afterEach, describe, expect, it } from "vitest";
 import { load, empty } from "../../src/tui/editor.js";
 import { Prompt } from "../../src/tui/Prompt.js";
@@ -37,7 +37,7 @@ afterEach(() => {
 describe("Prompt", () => {
   it("puts the terminal's cursor where typing goes, after the two columns each row starts with", async () => {
     const terminal = new Terminal();
-    const at = (cursor: number) => <Prompt editor={{ ...load(empty, "abcd\nef"), cursor }} columns={terminal.columns} />;
+    const at = (cursor: number) => <Prompt editor={{ ...load(empty, "abcd\nef"), cursor }} columns={terminal.columns} offset={0} />;
     const app = render(at(2), { stdout: terminal as never, stdin: new Keyboard() as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true });
     unmounts.push(app.unmount);
     await tick();
@@ -47,5 +47,20 @@ describe("Prompt", () => {
     app.rerender(at(7));
     await tick();
     expect(terminal.out).toContain("\u001b[1A\u001b[5G\u001b[?25h"); // the second row, after "  ef"
+  });
+
+  it("counts the rows above it, which the cursor is placed from", async () => {
+    const terminal = new Terminal();
+    const tree = (
+      <>
+        <Text>working</Text>
+        <Text>queued</Text>
+        <Prompt editor={{ ...load(empty, "abcd\nef"), cursor: 2 }} columns={terminal.columns} offset={2} />
+      </>
+    );
+    const app = render(tree, { stdout: terminal as never, stdin: new Keyboard() as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true });
+    unmounts.push(app.unmount);
+    await tick();
+    expect(terminal.out).toContain("\u001b[2A\u001b[5G\u001b[?25h"); // up from below the four rows to the third
   });
 });

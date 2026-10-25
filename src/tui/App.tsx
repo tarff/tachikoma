@@ -40,6 +40,11 @@ export interface AppProps {
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /errors, /exit";
 const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
 
+// What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
+// is a message).
+const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout"];
+const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
+
 export function App({ session, bus, stats, mode, project, gitBranch, historyFile, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -53,6 +58,8 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
   const search = useRef<{ query: string; skip: number; before: Editor } | null>(null);
   const { columns } = useWindowSize();
   const [busy, setBusy] = useState(false);
+  const working = useRef(false); // busy, for keys read before the screen is drawn again
+  const queue = useRef<string[]>([]); // what Enter added during a turn, in order
   const [question, setQuestion] = useState<Question | null>(null);
   const [contextWindow, setContextWindow] = useState<number | null>(null);
   const [picker, setPicker] = useState<ModelGroup[] | null>(null);
@@ -134,8 +141,24 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
     };
   }, []);
 
-  // Called without await, so nothing may escape: an unhandled rejection ends the program.
+  // Called without await, so nothing may escape: an unhandled rejection ends the program. The queue
+  // goes on after a turn, however it ended, and after `/model` once the list is closed.
   const submit = async (raw: string) => {
+    if (!(await perform(raw))) next();
+  };
+
+  // Entries are taken from the front: a command alone, as if typed then; prompts next to each other
+  // as one message, separated by blank lines. Not while something runs: a command that finished
+  // after a turn started (both typed in one read of the terminal) leaves the queue to that turn.
+  const next = () => {
+    if (working.current) return;
+    const q = queue.current;
+    const command = q.findIndex(isCommand);
+    if (q.length) void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
+  };
+
+  // True when it opened the model list.
+  const perform = async (raw: string): Promise<boolean | void> => {
     const text = raw.trim();
     if (!text) return;
     // Commands ignore case; a message is sent as typed.
@@ -143,7 +166,10 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
     const command = first.toLowerCase();
     const alone = (name: string) => command === name && !words.length;
     try {
-      if (alone("/exit")) return exit();
+      if (alone("/exit")) {
+        queue.current = [];
+        return exit();
+      }
       if (alone("/errors")) return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
       if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
       if (command === "/lead") return session.setLead(makeProvider(words.join(" ")));
@@ -154,16 +180,21 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
       if (words.length && ["/exit", "/errors", "/model"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
       abort.current = new AbortController();
       setBusy(true);
+      working.current = true;
       try {
         // Signing in waits on the browser; Ctrl-C stops it, as it stops a turn.
         if (account) await login(account, words, (line) => say({ text: line, color: "magenta" }), abort.current.signal, "/");
         else if (alone("/model")) {
           const { signal } = abort.current; // this command's own, read before the wait
           const groups = await listModels(signal, (line) => say({ text: line, color: "magenta" }));
-          if (!signal.aborted) setPicker(groups);
+          if (!signal.aborted) {
+            setPicker(groups);
+            return true;
+          }
         } else await session.send(text, abort.current.signal);
       } finally {
         setBusy(false);
+        working.current = false;
         setBranch(gitBranch());
       }
     } catch (err) {
@@ -179,6 +210,11 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
     } catch (err) {
       say({ text: errorText(err), color: "red" });
     }
+    next();
+  };
+  const closePicker = () => {
+    setPicker(null);
+    next();
   };
 
   useInput((ch, key) => {
@@ -187,6 +223,7 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
       if (key.ctrl && ch === "c") {
         question.answer(false, "declined (cancelled)");
         abort.current?.abort();
+        restore();
       } else if (key.escape) question.answer(false, "declined"); // that action only; the turn goes on
       else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
       return;
@@ -197,9 +234,12 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
     }
     const e = editor.current;
     const name = key.escape ? "Esc" : key.ctrl && ch === "c" ? "Ctrl-C" : key.ctrl && ch === "d" && !e.text ? "Ctrl-D" : null;
-    if (busy) {
-      if (name === "Esc" || name === "Ctrl-C") abort.current?.abort();
-      return;
+    // During a turn the prompt still edits; Esc stops the turn and the queue goes on, Ctrl-C stops it
+    // and the queue comes back. Ctrl-D does not exit while a turn is running.
+    if (working.current && name) {
+      if (name === "Ctrl-C") restore();
+      if (name !== "Ctrl-D") abort.current?.abort();
+      return rerender((n) => n + 1);
     }
     const again = name !== null && first.current?.name === name;
     forget();
@@ -229,7 +269,7 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
   // picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
-      if (question || busy || search.current) return;
+      if (question || search.current) return;
       run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       rerender((n) => n + 1);
     },
@@ -238,6 +278,7 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
 
   const run = (c: Command) => {
     const e = editor.current;
+    if (c === "up" && !e.text && queue.current.length) return restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);
       if (to) {
@@ -259,7 +300,15 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
   const send = (e: Editor) => {
     keep(e.text);
     editor.current = load(e, "");
-    void submit(e.text);
+    if (!working.current) void submit(e.text);
+    else if (e.text.trim()) queue.current.push(e.text.trim());
+  };
+  // Ctrl-C during a turn, or Up on an empty prompt: the queue comes back into the prompt, one entry a
+  // line, after what is there, to edit or send.
+  const restore = () => {
+    if (!queue.current.length) return;
+    editor.current = load(editor.current, [editor.current.text, ...queue.current].filter(Boolean).join("\n"));
+    queue.current = [];
   };
   const clear = (e: Editor) => {
     keep(e.text);
@@ -329,9 +378,13 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
     ? `${searching} · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel`
     : exitKey
       ? `Press ${exitKey} again to exit`
-      : !picker && !question && !busy
-        ? "? for shortcuts"
-        : null;
+      : picker || question
+        ? null
+        : queue.current.length
+          ? "↑ to edit queued messages"
+          : busy
+            ? null
+            : "? for shortcuts";
 
   return (
     <>
@@ -343,13 +396,19 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
         )}
       </Static>
       {picker ? (
-        <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={() => setPicker(null)} />
+        <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} />
       ) : question ? (
         <Text color="yellow">Allow {question.text}? [y/n] · Esc to decline</Text>
-      ) : busy ? (
-        <Text>… working (Ctrl-C to stop)</Text>
       ) : (
-        <Prompt editor={search.current ? shown() : editor.current} columns={columns} />
+        <>
+          {busy && <Text>… working (Ctrl-C to stop)</Text>}
+          {queue.current.map((q, i) => (
+            <Text key={i} color="gray" wrap="truncate-end">
+              {visible(q)}
+            </Text>
+          ))}
+          <Prompt editor={search.current ? shown() : editor.current} columns={columns} offset={(busy ? 1 : 0) + queue.current.length} />
+        </>
       )}
       {hint && <Text dimColor>{hint}</Text>}
       <StatusLine
