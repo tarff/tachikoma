@@ -15,13 +15,14 @@ export type ToolOutcome = "ok" | "failed" | "declined" | "cancelled";
 
 export interface Events {
   message: [Message];
-  usage: [{ provider: string; usage: Usage; priceKnown?: boolean }];
+  usage: [{ provider: string; usage: Usage; priceKnown?: boolean; task?: string }]; // `task`: a subagent's, such as "t3"
   error: [ErrorEvent];
   lead: [string];
   // Each call the session takes up, as it runs; its result reaches the conversation with the others.
   "tool-start": [{ id: string; name: string; input: unknown }];
   "tool-end": [{ id: string; outcome: ToolOutcome }];
   todo: [TodoItem[]]; // the lead's new to-do list
+  tasks: []; // a subagent started, changed or finished
 }
 
 // The session emits; the interface, status line, headless output and error log listen.

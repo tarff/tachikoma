@@ -4,7 +4,7 @@ import type { Bus, ToolOutcome } from "./bus.js";
 import { Declined } from "./permissions.js";
 import { errorText, type Message, type Part, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
 
-function truncate(s: string): string {
+export function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
 }
 
