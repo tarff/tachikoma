@@ -71,7 +71,7 @@ describe("statusSegments", () => {
   });
 
   it("names --status when a segment is unknown", () => {
-    expect(() => statusSegments("lead,nope")).toThrow('--status must be one of: lead, context, tokens, cost, mode, errors, project, time (got "nope")');
+    expect(() => statusSegments("lead,nope")).toThrow('--status must be one of: lead, context, tokens, cost, mode, errors, project, time, tools (got "nope")');
   });
 });
 

@@ -9,6 +9,14 @@ export interface Line {
 
 const firstLine = (s: string) => s.split(/\r?\n/)[0] ?? "";
 
+// A call's main detail (release 3 design, "On screen"): the path for the file tools, the command's
+// first line for shell; null for a tool without its own summary, which is shown with its whole input.
+const DETAIL: Record<string, string> = { read_file: "path", write_file: "path", edit_file: "path", shell: "command" };
+export function brief(name: string, input: unknown): string | null {
+  const value = Object.hasOwn(DETAIL, name) && typeof input === "object" && input !== null ? (input as Record<string, unknown>)[DETAIL[name]!] : undefined;
+  return typeof value === "string" ? firstLine(value) : null;
+}
+
 // Every scrollback line passes through here. Model and provider text can carry escape codes (OSC 52
 // writes the clipboard), \r and bidi overrides, which the terminal would act on. Prose keeps its line
 // breaks and tabs. A one-line entry has its line breaks escaped too; the screen cuts it after this, by
@@ -23,7 +31,7 @@ export function describe(m: Message): Line[] {
   const lines: Line[] = [];
   for (const p of m.parts) {
     if (p.type === "text") lines.push(m.role === "user" ? { text: `> ${p.text}`, color: "cyan" } : { text: p.text });
-    else if (p.type === "tool_call") lines.push({ text: `● ${p.name} ${JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
+    else if (p.type === "tool_call") lines.push({ text: `● ${p.name} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
     else if (p.type === "tool_result") lines.push({ text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, color: p.isError ? "red" : "gray", oneLine: true });
     else {
       const _: never = p; // a new kind of part must be given its own line here
