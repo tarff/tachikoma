@@ -5,7 +5,8 @@ providers can lead a session. Later releases add handing work to other models an
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, a Docker
 sandbox, and lessons learned from its own error log.
 
-This is release 2 of 13: the core, and signing in with ChatGPT. The command is `tachi`.
+This is release 3 of 13: the core, signing in with ChatGPT, and Claude Code's keys and screen. The
+command is `tachi`.
 
 ## What it does
 
@@ -30,8 +31,14 @@ This is release 2 of 13: the core, and signing in with ChatGPT. The command is `
 - **Your keys and login are kept from the model's tools, against accidents:** shell commands do not
   get the API keys, and the file tools refuse Tachikoma's own data folder, where the ChatGPT login
   is kept. A shell command can still read the login; see [Known limits](#known-limits).
-- **A terminal interface** with a status line showing the lead, how much of the context window is
-  left, tokens, cost (or "ChatGPT plan"), mode and error count. `--status` picks which parts to show.
+- **A terminal interface with Claude Code's keys:** Esc stops a turn, the prompt edits as a shell
+  line does, prompts can run over several lines, Up and Ctrl+R bring back past prompts, and what you
+  type while it works waits its turn. `/` lists the commands, `@` the project's files, Shift+Tab
+  switches the permission mode and `?` lists every key.
+- **A status line** showing the lead, how much of the context window is left (with a bar), tokens,
+  cost (or "ChatGPT plan"), mode, error count, the project folder and git branch, and how long the
+  session has run; a line under it counts the turn's tool calls. `--status` picks which parts to
+  show.
 - **Headless runs:** `-p "<prompt>"` runs one prompt, prints the answer and exits. Add `--json` to
   get every event as one JSON line. Details below.
 - **An error log:** every failure, and every refusal another model answered, is written to
@@ -82,7 +89,7 @@ tachi logout chatgpt                               sign out of ChatGPT
 --mode <mode>     when to ask before acting: ask | project | never (default: ask)
 --effort <level>  Anthropic models only: low | medium | high | xhigh | max
 --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
---status <list>   status line parts, comma-separated: lead,context,tokens,cost,mode,errors
+--status <list>   status line parts, comma-separated: lead,context,tokens,cost,mode,errors,project,time,tools
 -p, --print <prompt>  run without the interface
 --json            with -p, print every event as one JSON line
 --raw             with -p, print the answer exactly as written, control codes and all
@@ -91,7 +98,8 @@ tachi logout chatgpt                               sign out of ChatGPT
 
 In a session, `/lead <provider:model>` switches the lead model, `/model` picks it from a list,
 `/login chatgpt` and `/logout chatgpt` sign in and out, `/errors` summarises the error log and
-`/exit` quits; commands ignore case. Ctrl-C stops the current turn, or quits when idle.
+`/exit` quits; commands ignore case. Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears
+the prompt, and pressed twice on an empty prompt it quits. `?` on an empty prompt lists every key.
 
 ## Using your ChatGPT plan
 
@@ -214,21 +222,35 @@ Each is fixed in a later release, unless it says otherwise.
 - **On Windows, PowerShell error messages repeat the whole command**, including the line Tachikoma
   puts first to make the output UTF-8. The ways around it that were tried either lost the exit code or
   turned error messages into XML.
+- **Windows Terminal sends Shift+Enter as Enter,** as tested on 2026-10-25: it does not answer for
+  the kitty keyboard protocol that tells them apart. A backslash then Enter, or Ctrl+J, makes a new
+  line in every terminal (not planned to change).
+- **Ctrl+O prints the last turn's tool calls below the conversation** instead of opening them in
+  place, which needs the full screen (release 5).
 
 ## What comes next
 
 1. Core (done): the agent loop, local file and shell tools, Anthropic and OpenAI-format providers
    with lead switching, the terminal interface with status line, the error log.
-2. Sign in with ChatGPT (this release), so an OpenAI model can lead on your ChatGPT plan instead of
-   an API key; the `/model` picker.
-3. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is
+2. Sign in with ChatGPT (done), so an OpenAI model can lead on your ChatGPT plan instead of an API
+   key; the `/model` picker.
+3. Claude Code's keys and screen (this release): stopping, editing, multi-line prompts, history,
+   typing while it works, the `/` menu, `@` paths, Shift+Tab modes, the working line and a fuller
+   status line.
+4. Read-only subagents, with a panel under the prompt, and the to-do list; reading the project's and
+   your own instruction files (AGENTS.md, CLAUDE.md).
+5. Key extras: vim mode, image paste, an external editor, stash, rebinding keys in a file, full
+   screen.
+6. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is
    applied).
-4. MCP tools and long-term memory (MemPalace); transcripts saved to disk; shortening the history.
-5. Skills: the loader, the bundled superpowers skills, and Tachikoma's own.
-6. Search of the codebase by meaning, with EmbeddingGemma 2.
-7. A budget controller, then handing work to the `claude`, `codex` and `kimi` command-line tools.
-8. Loops: on a timer, and until a task is done.
-9. `tachi setup` and `tachi doctor`, and testing a fresh install in CI.
+7. MCP tools and long-term memory (MemPalace); transcripts saved to disk; shortening the history.
+8. Skills: the loader, the bundled superpowers skills, and Tachikoma's own.
+9. Search of the codebase by meaning, with EmbeddingGemma 2.
+10. A budget controller, then handing work to the `claude`, `codex` and `kimi` command-line tools.
+11. Loops: on a timer, and until a task is done.
+12. `tachi setup` and `tachi doctor`, with a first-run import of settings, skills, MCP servers and
+    key bindings from the tools you already use; testing a fresh install in CI.
+13. More providers, and bring-your-own keys.
 
 ## Licence
 

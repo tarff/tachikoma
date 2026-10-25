@@ -245,3 +245,16 @@ line.
 - Vim mode, image paste, external editor, stash, rebinding keys in a file, full screen: release 5.
 - Claude Code's rewind menu, Alt+Y, the `/` menu in the middle of a prompt, and `@` searching the
   whole project.
+
+**As built (2026-10-25).** Where the code differs from this design, the reason is below. Each was
+the user's choice.
+- **Undo is Ctrl+Z as well as Ctrl+_.** In the user's terminal Ctrl+Shift+- sends Esc and Ctrl+-
+  zooms, so Ctrl+_ cannot be typed there (the key probes, main design item 18).
+- **The word before the cursor goes with Alt+Backspace.** Ctrl+Backspace sends the same byte as
+  Ctrl+H, which Ink reports as Backspace, so it acts as Backspace. Ctrl+W still deletes back to a
+  space.
+- **The git branch is read from `.git/HEAD`, without the `*` for changes.** Running `git status`
+  would be a way round the approval checks: in `project` mode the model can write `.git/config`,
+  whose settings can make git run programs.
+- **The spinner moves every 80 ms,** the rate of the frames it uses (cli-spinners' "dots"); once a
+  second looked too slow. The time still counts in seconds.
