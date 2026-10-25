@@ -13,6 +13,7 @@ export interface ToolContext {
 export interface Tool {
   spec: ToolSpec;
   run(input: unknown, ctx: ToolContext): Promise<string>;
+  parallel?: boolean; // a reply's calls of it start together (delegate); other calls run one after another
 }
 
 // A tool whose input is checked against its schema before it runs. Model output is untrusted.

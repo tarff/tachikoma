@@ -1,7 +1,9 @@
 // The conversation format Tachikoma stores. No provider owns it; each adapter converts to and from it.
 
 export type Part =
-  | { type: "text"; text: string }
+  // `from: "tasks"`: text the session added for the lead, such as a background subagent's answer, not
+  // something the user typed.
+  | { type: "text"; text: string; from?: "tasks" }
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; callId: string; output: string; isError: boolean };
 

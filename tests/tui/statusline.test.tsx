@@ -129,6 +129,10 @@ describe("describe", () => {
     expect(shown("shell", { command: 5 })).toBe('● shell {"command":5}'); // nothing it can summarise
   });
 
+  it("does not show text a background task added for the lead", () => {
+    expect(describeMessage({ role: "user", parts: [{ type: "text", text: "go" }, { type: "text", text: "t3 finished: x", from: "tasks" }] })).toEqual([{ text: "> go", color: "cyan" }]);
+  });
+
   it("does not show an unknown kind of part as a tool result", () => {
     expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] })).toEqual([]);
   });
@@ -159,6 +163,17 @@ describe("lastTurn", () => {
       { text: '● read_file {\n  "path": "a"\n}\n  ⎿ line 1\nline 2', color: "gray" },
       { text: '● shell {\n  "command": "npm test"\n}\n  ⎿ (not finished)', color: "gray" }, // the turn is still running
     ]);
+  });
+
+  it("counts a turn started by a background task's answer as a turn, but not its answers after tool results", () => {
+    const lines = lastTurn([
+      { role: "user", parts: [{ type: "text", text: "one" }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c0", name: "shell", input: {} }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c0", output: "ok", isError: false }, { type: "text", text: "t2 finished", from: "tasks" }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "shell", input: {} }] },
+    ]);
+    expect(lines[0]).toEqual({ text: "Last turn: 2 tool calls", color: "gray" });
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "t3 finished", from: "tasks" }] }])[0]).toEqual({ text: "Last turn: 0 tool calls", color: "gray" });
   });
 
   it("is cleaned of escape codes when shown, like every scrollback line", () => {

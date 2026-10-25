@@ -319,3 +319,53 @@ describe("Session tool events", () => {
     expect(seen).toEqual([]);
   });
 });
+
+describe("Session, for subagents", () => {
+  const calls = (...c: [string, string, unknown][]) => ({ parts: c.map(([id, name, input]) => ({ type: "tool_call" as const, id, name, input })), usage });
+  const note = (text: string) => ({ type: "text" as const, text, from: "tasks" as const });
+
+  it("puts text waiting for the lead after the next request's tool results, each once", async () => {
+    const box: string[] = [];
+    const finish = defineTool("finish", "A background task finishes while this runs", z.object({}), async () => (box.push("t3 finished: found it"), "ok"));
+    const lead = new FakeProvider("a", [callTool("c1", "finish", {}), callTool("c2", "echo", { text: "x" }), reply("done")]);
+    const session = new Session({ lead, tools: [finish, echo], system: "t", ctx: await tempContext(), bus: new Bus(), inbox: () => box.splice(0) });
+    await session.send("go");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "go" }]);
+    expect(session.messages[2]!.parts).toEqual([{ type: "tool_result", callId: "c1", output: "ok", isError: false }, note("t3 finished: found it")]);
+    expect(session.messages[4]!.parts).toEqual([{ type: "tool_result", callId: "c2", output: "x", isError: false }]);
+    expect(lead.seen[1]!.at(-1)!.parts.at(-1)).toEqual(note("t3 finished: found it"));
+  });
+
+  it("puts text already waiting after the user's prompt, and starts a turn with only waiting text", async () => {
+    const box = ["t3 was stopped by the user"];
+    const lead = new FakeProvider("a", [reply("ok"), reply("read it")]);
+    const session = new Session({ lead, tools: [], system: "t", ctx: await tempContext(), bus: new Bus(), inbox: () => box.splice(0) });
+    await session.send("go");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "go" }, note("t3 was stopped by the user")]);
+    box.push("t4 finished: x");
+    await session.send("");
+    expect(session.messages[2]!.parts).toEqual([note("t4 finished: x")]);
+    await session.send(""); // nothing typed and nothing waiting: no request
+    expect(lead.seen).toHaveLength(2);
+  });
+
+  it("starts a reply's calls of a side-by-side tool together, the others one after another, results in order", async () => {
+    const started: string[] = [];
+    let release!: () => void;
+    const both = new Promise<void>((r) => (release = r));
+    // Each waits for the other to start, so run one after another they would never finish.
+    const together = {
+      ...defineTool("together", "Runs beside its kind", z.object({ n: z.number() }), async ({ n }) => {
+        started.push(`together ${n}`);
+        if (started.filter((s) => s.startsWith("together")).length === 2) release();
+        await both;
+        return `t${n}`;
+      }),
+      parallel: true,
+    };
+    const lead = new FakeProvider("a", [calls(["c1", "together", { n: 1 }], ["c2", "echo", { text: "e" }], ["c3", "together", { n: 2 }]), reply("done")]);
+    const session = new Session({ lead, tools: [together, echo], system: "t", ctx: await tempContext(), bus: new Bus() });
+    await session.send("go");
+    expect(session.messages[2]!.parts.map((p) => (p.type === "tool_result" ? p.output : ""))).toEqual(["t1", "e", "t2"]);
+  });
+});

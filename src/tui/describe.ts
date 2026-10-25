@@ -33,6 +33,7 @@ export function screen(l: Line): Line {
 export function describe(m: Message): Line[] {
   const lines: Line[] = [];
   for (const p of m.parts) {
+    if (p.type === "text" && p.from === "tasks") continue; // shown when it arrived, as "t3 finished"
     if (p.type === "text") lines.push(m.role === "user" ? { text: `> ${p.text}`, color: "cyan" } : { text: p.text });
     else if (p.type === "tool_call") lines.push({ text: `● ${p.name} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
     else if (p.type === "tool_result") lines.push({ text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, color: p.isError ? "red" : "gray", oneLine: true });
@@ -44,9 +45,10 @@ export function describe(m: Message): Line[] {
 }
 
 // Ctrl+O: every tool call of the latest turn, from its prompt on, with its full input and result,
-// under a heading. A call of a turn still running may have no result yet.
+// under a heading. A call of a turn still running may have no result yet. A turn starts with a user
+// message that is not tool results: a prompt, or background answers alone.
 export function lastTurn(messages: Message[]): Line[] {
-  const start = messages.findLastIndex((m) => m.role === "user" && m.parts.some((p) => p.type === "text"));
+  const start = messages.findLastIndex((m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result"));
   if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }];
   const parts = messages.slice(start).flatMap((m) => m.parts);
   const calls = parts.filter((p) => p.type === "tool_call");

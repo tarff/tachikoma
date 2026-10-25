@@ -2,7 +2,7 @@ import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { Declined } from "./permissions.js";
-import { errorText, type Message, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
+import { errorText, type Message, type Part, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
 
 function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
@@ -15,6 +15,9 @@ export interface SessionOptions {
   system: string; // fixed for the whole session: prompt caching and Anthropic thinking blocks need it unchanged
   ctx: Omit<ToolContext, "signal">;
   bus: Bus;
+  // Takes the text waiting for the lead, such as background subagents' answers, so each goes into
+  // exactly one request (release 4 design, "Background subagents").
+  inbox?: () => string[];
 }
 
 export class Session {
@@ -36,6 +39,7 @@ export class Session {
     this.opts.bus.emit("lead", provider.id);
   }
 
+  // An empty `text` starts a turn with only the waiting text, when there is any.
   async send(text: string, signal?: AbortSignal): Promise<void> {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
@@ -49,7 +53,9 @@ export class Session {
 
   async #turn(text: string, signal?: AbortSignal): Promise<void> {
     const { bus } = this.opts;
-    this.#push({ role: "user", parts: [{ type: "text", text }] });
+    const parts: Part[] = [...(text ? [{ type: "text" as const, text }] : []), ...this.#waiting()];
+    if (!parts.length) return;
+    this.#push({ role: "user", parts });
 
     for (;;) {
       const lead = this.#lead;
@@ -90,9 +96,14 @@ export class Session {
       }
       if (calls.length === 0) return;
 
-      const results: ToolResult[] = [];
-      for (const call of calls) results.push(await this.#runTool(call, signal));
-      this.#push({ role: "user", parts: results });
+      // Calls of a side-by-side tool (delegate) all start first, together; the rest run one after
+      // another. The results go back in the reply's order, then whatever is waiting for the lead,
+      // after the last tool result, as the providers want it.
+      const results: ToolResult[] = new Array(calls.length);
+      const together = calls.map((c, i) => (this.opts.tools.find((t) => t.spec.name === c.name)?.parallel ? this.#runTool(c, signal).then((r) => (results[i] = r)) : null));
+      for (const [i, call] of calls.entries()) if (!together[i]) results[i] = await this.#runTool(call, signal);
+      await Promise.all(together);
+      this.#push({ role: "user", parts: [...results, ...this.#waiting()] });
       if (signal?.aborted) return;
     }
   }
@@ -136,6 +147,10 @@ export class Session {
       if (signal?.aborted) return [result(call, "Cancelled by the user.", true), "cancelled"]; // not a failure, so not logged
       return fail(truncate(errorText(err)));
     }
+  }
+
+  #waiting(): Part[] {
+    return (this.opts.inbox?.() ?? []).map((text) => ({ type: "text", text, from: "tasks" }));
   }
 
   #push(message: Message): void {
