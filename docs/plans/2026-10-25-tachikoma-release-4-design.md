@@ -278,6 +278,28 @@ user's own files.
   and Ctrl+T, the `tasks` part, and model text in all of them cleaned.
 - **Then the user's terminal checklist,** after the last task.
 
+## As built
+
+Where the code differs from the design above, or settles what it left open, and why. The plan
+(`2026-10-26-tachikoma-release-4.md`) lists every choice it makes, each marked in its task.
+
+- **Node 22.20 or later.** `find_files` and `search_files`' `glob` use Node's own glob matching
+  (`path.matchesGlob`), which Node marks stable from 22.20 and 24.8 and experimental before (Node's
+  path docs, read 2026-10-26).
+- **A name starting with a dot matches only a pattern that names the dot,** as in a shell and in
+  Node's matching: `**/*.yml` misses `.github/workflows/ci.yml`. The tool's description says so.
+- **Only `.gitignore` files are read,** not `.git/info/exclude` or git's global ignore file: the
+  design names `.gitignore`, and reading git's settings for the global one would mean reading
+  `.git/config`, which the model can write in `project` mode.
+- **`TACHI_INSTRUCTIONS_TOP`** moves where the walk for instruction files starts, as
+  `TACHI_DATA_DIR` moves the data folder, so the CLI's tests never read the user's files: every
+  temporary folder on Windows is inside the user's profile, whose `.claude/CLAUDE.md` the walk from
+  the top of the drive would find.
+- **The search tools read the disk directly,** as `resolveIn` already does, not through the
+  executor, which has no way to list a folder. The sandbox (release 6) must give them one.
+- **The question about instruction files outside the project comes before the screen starts:** the
+  files go into the system prompt, which is fixed before the first turn.
+
 ## Not in this release
 
 - Subagents that edit or run commands, and CLI workers (`claude -p`, `codex exec`): release 10,

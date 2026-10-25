@@ -1,6 +1,6 @@
 # Tachikoma
 
-> **Work in progress.** Release 3 of 13 is done; the rest is being built. Expect missing
+> **Work in progress.** Release 4 of 13 is done; the rest is being built. Expect missing
 > features and changes that break things, and don't rely on it for real work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
@@ -8,8 +8,8 @@ providers can lead a session. Later releases add handing work to other models an
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, a Docker
 sandbox, and lessons learned from its own error log.
 
-This is release 3 of 13: the core, signing in with ChatGPT, and Claude Code's keys and screen. The
-command is `tachi`.
+This is release 4 of 13: the core, signing in with ChatGPT, Claude Code's keys and screen, and
+subagents that read, with a to-do list and your instruction files. The command is `tachi`.
 
 ## What it does
 
@@ -31,6 +31,24 @@ command is `tachi`.
   - `never`: never asks. It is meant for the Docker sandbox, which arrives in release 6. Without the
     sandbox it means no checks at all, apart from keeping the keys and the data folder from the
     tools.
+- **Search tools:** `find_files` lists files by a pattern such as `src/**/*.ts`, and `search_files`
+  searches their contents with a regular expression. Both skip `.git` and what the project's
+  `.gitignore` files list, follow no links, and run no program.
+- **Subagents that read:** the lead can hand searching and reading to subagents with its `delegate`
+  tool. Each has `read_file`, `find_files` and `search_files` and reports what it found with file
+  paths and line numbers. Several run side by side, or in the background while the lead goes on; a
+  background answer that arrives while the lead is idle starts a turn by itself. A panel under the
+  prompt shows each one's task, model, time, tokens, cost and latest tool call. `--worker
+  <provider:model>` (or `TACHI_WORKER`) picks their model, the lead's by default, and `--max-tasks`
+  how many run at once (8 by default). `/tasks` lists them, `/tasks t3` shows one in full and
+  `/tasks stop` stops them. A subagent's read outside the project asks first, naming the subagent.
+- **A to-do list** the lead keeps above the prompt while any item is unfinished. Ctrl+T hides or
+  shows it.
+- **Your instruction files:** each session reads `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` (or
+  `CODEX_HOME`'s), and the `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md` of
+  every folder from the top of the drive down to the project, with their `@` imports. A grey line at
+  the start lists them. A file they lead to outside the project asks first, once, unless it is your
+  own; Tachikoma's data folder is never read.
 - **Your keys and login are kept from the model's tools, against accidents:** shell commands do not
   get the API keys, and the file tools refuse Tachikoma's own data folder, where the ChatGPT login
   is kept. A shell command can still read the login; see [Known limits](#known-limits).
@@ -39,9 +57,9 @@ command is `tachi`.
   type while it works waits its turn. `/` lists the commands, `@` the project's files, Shift+Tab
   switches the permission mode and `?` lists every key.
 - **A status line** showing the lead, how much of the context window is left (with a bar), tokens,
-  cost (or "ChatGPT plan"), mode, error count, the project folder and git branch, and how long the
-  session has run; a line under it counts the turn's tool calls. `--status` picks which parts to
-  show.
+  cost (or "ChatGPT plan"), mode, error count, the project folder and git branch, how long the
+  session has run, and how many subagents run; a line under it counts the turn's tool calls.
+  `--status` picks which parts to show. Subagents' tokens and cost count in the totals.
 - **Headless runs:** `-p "<prompt>"` runs one prompt, prints the answer and exits. Add `--json` to
   get every event as one JSON line. Details below.
 - **An error log:** every failure, and every refusal another model answered, is written to
@@ -53,7 +71,7 @@ command is `tachi`.
 
 ## Running from source
 
-You need Node 22 or later.
+You need Node 22.20 or later.
 
 ```bash
 npm install
@@ -92,7 +110,9 @@ tachi logout chatgpt                               sign out of ChatGPT
 --mode <mode>     when to ask before acting: ask | project | never (default: ask)
 --effort <level>  Anthropic models only: low | medium | high | xhigh | max
 --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
---status <list>   status line parts, comma-separated: lead,context,tokens,cost,mode,errors,project,time,tools
+--worker <spec>   the model subagents run on (or set TACHI_WORKER); the lead's model unless set
+--max-tasks <n>   how many subagents run at once (default: 8)
+--status <list>   status line parts, comma-separated: lead,context,tokens,cost,mode,errors,project,time,tasks,tools
 -p, --print <prompt>  run without the interface
 --json            with -p, print every event as one JSON line
 --raw             with -p, print the answer exactly as written, control codes and all
@@ -100,9 +120,11 @@ tachi logout chatgpt                               sign out of ChatGPT
 ```
 
 In a session, `/lead <provider:model>` switches the lead model, `/model` picks it from a list,
-`/login chatgpt` and `/logout chatgpt` sign in and out, `/errors` summarises the error log and
-`/exit` quits; commands ignore case. Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears
-the prompt, and pressed twice on an empty prompt it quits. `?` on an empty prompt lists every key.
+`/login chatgpt` and `/logout chatgpt` sign in and out, `/tasks` lists the subagents, `/errors`
+summarises the error log and `/exit` quits; commands ignore case. Esc or Ctrl-C stops the current
+turn and the subagents it waits for; background subagents go on until `/tasks stop` or you quit.
+When idle, Ctrl-C clears the prompt, and pressed twice on an empty prompt it quits. Ctrl+T hides or
+shows the to-do list. `?` on an empty prompt lists every key.
 
 ## Using your ChatGPT plan
 
@@ -144,7 +166,9 @@ a session with an OpenAI model, billed to the plan instead of an API key.
 ## Headless runs
 
 `tachi -p "<prompt>"` prints the answer and exits. Nobody is there to approve an action, so anything
-the permission mode would ask about is refused, and the model is told so.
+the permission mode would ask about is refused, and the model is told so. For the same reason,
+instruction files outside the project are left out, and a line on stderr names them. A background
+subagent runs in the foreground, since there is no later turn to read its answer in.
 
 - **The output is made safe for a terminal**, wherever it goes: control characters, escape codes and
   marks that reorder text, in the answer and in error messages, are printed as text such as
@@ -229,7 +253,15 @@ Each is fixed in a later release, unless it says otherwise.
   the kitty keyboard protocol that tells them apart. A backslash then Enter, or Ctrl+J, makes a new
   line in every terminal (not planned to change).
 - **Ctrl+O prints the last turn's tool calls below the conversation** instead of opening them in
-  place, which needs the full screen (release 5).
+  place, which needs the full screen (release 5). So does `/tasks t3`.
+- **Subagents only read.** Ones that edit or run commands come with the budget controller (release
+  10), after the sandbox (release 6) gives each writer its own copy of the project.
+- **`find_files` patterns skip names that start with a dot** unless the pattern names the dot, as a
+  shell's do: `**/*.yml` misses `.github/workflows/ci.yml`, and `.github/**/*.yml` finds it (not
+  planned to change).
+- **Instruction files are read once, at the start.** A file edited during a session counts from the
+  next, and files in subfolders, which Claude Code reads as it works there, are not read: both need
+  the system prompt to change during a session, which prompt caching rules out (no release is set).
 
 ## What comes next
 
@@ -237,11 +269,11 @@ Each is fixed in a later release, unless it says otherwise.
    with lead switching, the terminal interface with status line, the error log.
 2. Sign in with ChatGPT (done), so an OpenAI model can lead on your ChatGPT plan instead of an API
    key; the `/model` picker.
-3. Claude Code's keys and screen (this release): stopping, editing, multi-line prompts, history,
-   typing while it works, the `/` menu, `@` paths, Shift+Tab modes, the working line and a fuller
-   status line.
+3. Claude Code's keys and screen (done): stopping, editing, multi-line prompts, history, typing
+   while it works, the `/` menu, `@` paths, Shift+Tab modes, the working line and a fuller status
+   line.
 4. Read-only subagents, with a panel under the prompt, and the to-do list; reading the project's and
-   your own instruction files (AGENTS.md, CLAUDE.md).
+   your own instruction files (AGENTS.md, CLAUDE.md) (this release).
 5. Key extras: vim mode, image paste, an external editor, stash, rebinding keys in a file, full
    screen.
 6. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is

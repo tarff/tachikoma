@@ -56,9 +56,10 @@ Options:
   -h, --help        show this help
 
 In a session: /lead <provider:model> switches the lead model, /model picks it from a list,
-/login chatgpt and /logout chatgpt sign in and out, /errors summarises the error log, /exit quits.
-Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty
-prompt quits. ? on an empty prompt lists every key.`;
+/login chatgpt and /logout chatgpt sign in and out, /tasks lists the subagents (/tasks t1 shows one,
+/tasks stop stops them), /errors summarises the error log, /exit quits. Esc or Ctrl-C stops the
+current turn. When idle, Ctrl-C clears the prompt, and twice on an empty prompt quits. Ctrl+T hides
+or shows the to-do list. ? on an empty prompt lists every key.`;
 
 function fail(message: string): never {
   console.error(message);
