@@ -188,6 +188,9 @@ if (parsed.print !== undefined) {
       bus={bus}
       stats={stats}
       mode={mode}
+      onMode={(m) => {
+        gate.mode = m;
+      }}
       project={path.basename(root) || root}
       root={root}
       gitBranch={() => gitBranch(root)}

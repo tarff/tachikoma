@@ -5,7 +5,7 @@ import path from "node:path";
 import { render } from "ink-testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
-import { PermissionGate } from "../../src/core/permissions.js";
+import { type Mode, PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import type { Provider } from "../../src/core/types.js";
@@ -61,13 +61,14 @@ async function mount(
     past?: string[]; // the project's prompts from earlier sessions
     newLead?: Provider; // what /lead and the picker make
     rows?: number; // the terminal's height
+    mode?: Mode; // the mode the session starts in
   } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
   let ask: (s: string, d?: string) => Promise<boolean> = async () => false;
-  const gate = new PermissionGate("ask", (s, d) => ask(s, d));
+  const gate = new PermissionGate(opts.mode ?? "ask", (s, d) => ask(s, d));
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const session = new Session({ lead, tools: TOOLS, system: "t", ctx: { ...ctx, gate }, bus });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
@@ -77,7 +78,10 @@ async function mount(
       session={session}
       bus={bus}
       stats={stats}
-      mode="ask"
+      mode={opts.mode ?? "ask"}
+      onMode={(m) => {
+        gate.mode = m;
+      }}
       project="proj"
       root={ctx.root}
       gitBranch={() => opts.branches?.shift() ?? null}
@@ -1111,5 +1115,83 @@ describe("App's menus", () => {
     expect(app.lastFrame()).toMatch(/^› @a\n {2}a1\n {2}a2\n {2}a3\n {2}↓ 3 more\n↑↓ choose[^\n]*\n[^\n]*$/);
     await press(app, "\u001b[B", "\u001b[B", "\u001b[B");
     expect(app.lastFrame()).toMatch(/^› @a\n {2}↑ 2 more\n {2}a3\n {2}a4\n {2}↓ 2 more\n/);
+  });
+});
+
+describe("App's keys for the modes, the model list and the last turn", () => {
+  it("prints the key list, grey, on ? at an empty prompt; with a space first, ? is typed", async () => {
+    const { app } = await mount([]);
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("Keys:\n");
+    expect(app.lastFrame()).toContain("Shift+Enter, \\ then Enter, or Ctrl+J  new line");
+    expect(app.lastFrame()).toContain("Ctrl+O  the last turn's tool calls in full");
+    // Keys that work in Windows Terminal, where Ctrl+Backspace is Backspace and Ctrl+_ cannot be typed.
+    expect(app.lastFrame()).toContain("Alt+Backspace  the word before");
+    expect(app.lastFrame()).toContain("Ctrl+Z  undo");
+    expect(app.lastFrame()).not.toContain("Ctrl+Backspace");
+    expect(app.lastFrame()).toContain("\n›\n"); // the prompt stays empty
+    await press(app, " ?");
+    expect(app.lastFrame()).toContain("›  ?\n");
+  });
+
+  it("switches between ask and project on Shift+Tab, saying so, and the check uses the new mode from the next action", async () => {
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
+    await press(app, "\u001b[Z");
+    expect(app.lastFrame()).toContain("mode is now project");
+    expect(app.lastFrame()).toContain("perm project");
+    await type(app, "go");
+    await until(app, "written"); // not asked: project mode allows writes inside the project
+    expect(existsSync(path.join(ctx.root, "a.txt"))).toBe(true);
+    await press(app, "\u001b[Z");
+    expect(app.lastFrame()).toContain("mode is now ask");
+    expect(app.lastFrame()).toContain("perm ask");
+  });
+
+  it("takes never into the cycle only when the session started in it", async () => {
+    const { app } = await mount([], { mode: "never" });
+    await press(app, "\u001b[Z", "\u001b[Z", "\u001b[Z");
+    expect(app.lastFrame()).toContain("mode is now ask\nmode is now project\nmode is now never\n");
+  });
+
+  it("does nothing on Shift+Tab while a question is showing", async () => {
+    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
+    await type(app, "go");
+    await until(app, "Allow");
+    await press(app, "\u001b[Z");
+    expect(app.lastFrame()).not.toContain("mode is now");
+    expect(app.lastFrame()).toContain("perm ask");
+    await press(app, "n");
+    await until(app, "written");
+  });
+
+  it("opens the model list on Alt+P, keeping what was typed", async () => {
+    const { app } = await mount([], { models: [{ provider: "fake", models: ["a", "b"] }] });
+    await press(app, "draft", "\u001bp");
+    await until(app, "fake:b");
+    await tick(); // the picker starts reading keys just after it first appears
+    await press(app, "\u001b");
+    await until(app, "› draft");
+  });
+
+  it("queues the model list on Alt+P during a turn, as /model typed then", async () => {
+    const { app } = await mount([], { lead: hanging(), models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "hi");
+    await until(app, "working");
+    await press(app, "\u001bp");
+    expect(app.lastFrame()).toContain("/model\n");
+    await press(app, "\u001b"); // stops the turn; the queue goes on
+    await until(app, "fake:b");
+  });
+
+  it("prints the last turn's tool calls on Ctrl+O, and before any turn says there is none", async () => {
+    const { app, ctx } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")]);
+    await press(app, "\u000f");
+    expect(app.lastFrame()).toContain("No turn yet, so no tool calls to show.");
+    await writeFile(path.join(ctx.root, "a.txt"), "hello there");
+    await type(app, "go");
+    await until(app, "done");
+    await press(app, "\u000f");
+    expect(app.lastFrame()).toContain('Last turn: 1 tool call\n● read_file {\n  "path": "a.txt"\n}\n  ⎿ ');
+    expect(app.lastFrame()).toMatch(/⎿ [^\n]*hello there/);
   });
 });

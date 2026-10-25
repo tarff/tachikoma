@@ -7,10 +7,10 @@ import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
-import { describe, type Line, screen } from "./describe.js";
+import { describe, lastTurn, type Line, screen } from "./describe.js";
 import { apply, type Editor, empty, load, move, replace } from "./editor.js";
 import { History, matches } from "./history.js";
-import { type Command, commands } from "./keys.js";
+import { type Command, commands, KEY_LIST } from "./keys.js";
 import { layout, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
@@ -24,7 +24,8 @@ export interface AppProps {
   session: Session;
   bus: Bus;
   stats: Stats;
-  mode: Mode;
+  mode: Mode; // the mode the session started in
+  onMode: (mode: Mode) => void; // Shift+Tab: the mode the permission check uses from the next action
   project: string; // the project folder's name, for the status line
   root: string; // the project folder, where `@` paths start
   gitBranch: () => string | null; // read at the start and after each turn: the model may switch branches
@@ -48,7 +49,7 @@ const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (
 const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
-export function App({ session, bus, stats, mode, project, root, gitBranch, historyFile, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
+export function App({ session, bus, stats, mode, onMode, project, root, gitBranch, historyFile, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
@@ -68,6 +69,10 @@ export function App({ session, bus, stats, mode, project, root, gitBranch, histo
   const [busy, setBusy] = useState(false);
   const working = useRef(false); // busy, for keys read before the screen is drawn again
   const queue = useRef<string[]>([]); // what Enter added during a turn, in order
+  // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a
+  // session started with.
+  const perm = useRef(mode);
+  const cycle: Mode[] = mode === "never" ? ["ask", "project", "never"] : ["ask", "project"];
   const [question, setQuestion] = useState<Question | null>(null);
   const [contextWindow, setContextWindow] = useState<number | null>(null);
   const [picker, setPicker] = useState<ModelGroup[] | null>(null);
@@ -299,6 +304,16 @@ export function App({ session, bus, stats, mode, project, root, gitBranch, histo
       return;
     }
     if (menu && c === "submit") return menu.kind === "command" ? send(load(e, menu.entries[chosenIn(e, menu)]!.run!)) : fill(menu, e);
+    if (c === "mode") {
+      perm.current = cycle[(cycle.indexOf(perm.current) + 1) % cycle.length]!;
+      onMode(perm.current);
+      return say({ text: `mode is now ${perm.current}`, color: "gray" });
+    }
+    // Alt+P is `/model` typed then: during a turn it waits in the queue.
+    if (c === "models") return working.current ? void queue.current.push("/model") : void submit("/model");
+    if (c === "lastTurn") return say(...lastTurn(session.messages));
+    // A message starting with `?` needs a space typed first.
+    if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return say(...KEY_LIST.map((text) => ({ text, color: "gray" })));
     if (c === "up" && !e.text && queue.current.length) return restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);
@@ -490,7 +505,7 @@ export function App({ session, bus, stats, mode, project, root, gitBranch, histo
           output: stats.output,
           cost: stats.cost,
           costUnknown: stats.costUnknown,
-          mode,
+          mode: perm.current,
           errors: stats.errors,
           project,
           branch,

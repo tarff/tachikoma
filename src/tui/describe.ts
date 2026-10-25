@@ -31,3 +31,17 @@ export function describe(m: Message): Line[] {
   }
   return lines;
 }
+
+// Ctrl+O: every tool call of the latest turn, from its prompt on, with its full input and result,
+// under a heading. A call of a turn still running may have no result yet.
+export function lastTurn(messages: Message[]): Line[] {
+  const start = messages.findLastIndex((m) => m.role === "user" && m.parts.some((p) => p.type === "text"));
+  if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }];
+  const parts = messages.slice(start).flatMap((m) => m.parts);
+  const calls = parts.filter((p) => p.type === "tool_call");
+  const results = new Map(parts.flatMap((p) => (p.type === "tool_result" ? [[p.callId, p.output] as const] : [])));
+  return [
+    { text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "gray" },
+    ...calls.map((c) => ({ text: `● ${c.name} ${JSON.stringify(c.input, null, 2)}\n  ⎿ ${results.get(c.id) ?? "(not finished)"}`, color: "gray" })),
+  ];
+}
