@@ -28,7 +28,7 @@ function frame(i: StatusInfo, segments: Segment[]) {
 
 describe("StatusLine", () => {
   it("shows every part by default", () => {
-    expect(SEGMENTS).toEqual(["lead", "context", "tokens", "cost", "mode", "errors", "project", "time"]);
+    expect(SEGMENTS).toEqual(["lead", "context", "tokens", "cost", "mode", "errors", "project", "time", "tools"]);
     // In two parts: all of them are wider than the test terminal's 100 columns.
     const shown = frame(info, SEGMENTS.slice(0, 4));
     expect(shown).toContain("lead anthropic:claude-opus-5-5");
@@ -117,6 +117,16 @@ describe("describe", () => {
   it("shows tool calls and failed results on one line each", () => {
     const lines = describeMessage({ role: "user", parts: [{ type: "tool_result", callId: "c", output: "exit code: 1\r\nlots more", isError: true }] });
     expect(lines.map(screen)).toEqual([{ text: "  ⎿ exit code: 1", color: "red", oneLine: true }]);
+  });
+
+  it("shows a call's main detail: the path for the file tools, the command's first line for shell", () => {
+    const shown = (name: string, input: unknown) => describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name, input }] })[0]!.text;
+    expect(shown("read_file", { path: "src/x.ts", offset: 5 })).toBe("● read_file src/x.ts");
+    expect(shown("write_file", { path: "src/x.ts", content: "a" })).toBe("● write_file src/x.ts");
+    expect(shown("edit_file", { path: "src/x.ts", old_text: "a", new_text: "b" })).toBe("● edit_file src/x.ts");
+    expect(shown("shell", { command: "npm test\necho done" })).toBe("● shell npm test");
+    expect(shown("x", { s: 1 })).toBe('● x {"s":1}'); // a tool without its own summary
+    expect(shown("shell", { command: 5 })).toBe('● shell {"command":5}'); // nothing it can summarise
   });
 
   it("does not show an unknown kind of part as a tool result", () => {

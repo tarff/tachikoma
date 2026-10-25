@@ -1,13 +1,13 @@
 import { type Key, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
-import type { Bus, ErrorEvent } from "../core/bus.js";
+import type { Bus, ErrorEvent, Events } from "../core/bus.js";
 import { summarize } from "../core/errorlog.js";
 import { type Mode, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
-import { describe, lastTurn, type Line, screen } from "./describe.js";
+import { brief, describe, lastTurn, type Line, screen } from "./describe.js";
 import { apply, type Editor, empty, load, move, replace } from "./editor.js";
 import { History, matches } from "./history.js";
 import { type Command, commands, KEY_LIST } from "./keys.js";
@@ -17,6 +17,8 @@ import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu 
 import { ModelPicker } from "./ModelPicker.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
+import { type Call, ToolLine } from "./ToolLine.js";
+import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 type Question = { text: string; answer: (ok: boolean, how: string) => void };
 
@@ -69,6 +71,10 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
   const [busy, setBusy] = useState(false);
   const working = useRef(false); // busy, for keys read before the screen is drawn again
   const queue = useRef<string[]>([]); // what Enter added during a turn, in order
+  // What is running, since when, and for a turn the totals it started from; and the turn's tool calls,
+  // kept after it until the next turn starts.
+  const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
+  const calls = useRef<Call[]>([]);
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a
   // session started with.
   const perm = useRef(mode);
@@ -137,10 +143,21 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
       say({ text: `lead is now ${id}`, color: "magenta" });
       lookUpWindow();
     };
+    const onToolStart = ({ id, name, input }: Events["tool-start"][0]) => {
+      calls.current.push({ id, name, target: brief(name, input) });
+      rerender((n) => n + 1);
+    };
+    const onToolEnd = ({ id, outcome }: Events["tool-end"][0]) => {
+      const call = calls.current.find((c) => c.id === id);
+      if (call) call.outcome = outcome;
+      rerender((n) => n + 1);
+    };
     bus.on("message", onMessage);
     bus.on("error", onError);
     bus.on("usage", onUsage);
     bus.on("lead", onLead);
+    bus.on("tool-start", onToolStart);
+    bus.on("tool-end", onToolEnd);
     history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
@@ -151,8 +168,17 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
       bus.off("error", onError);
       bus.off("usage", onUsage);
       bus.off("lead", onLead);
+      bus.off("tool-start", onToolStart);
+      bus.off("tool-end", onToolEnd);
     };
   }, []);
+
+  // The working line's spinner and time, while something runs.
+  useEffect(() => {
+    if (!busy) return;
+    const spin = setInterval(() => setNow(Date.now()), SPIN_MS);
+    return () => clearInterval(spin);
+  }, [busy]);
 
   // Called without await, so nothing may escape: an unhandled rejection ends the program. The queue
   // goes on after a turn, however it ended, and after `/model` once the list is closed.
@@ -192,6 +218,11 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
       if (!account && !alone("/model") && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
       if (words.length && ["/exit", "/errors", "/model"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
       abort.current = new AbortController();
+      const turn = !account && !alone("/model");
+      const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : turn ? "Working" : "Reading the model lists";
+      doing.current = { label, at: Date.now(), from: turn ? { output: stats.output, cost: stats.cost, unpriced: stats.unpriced } : null };
+      if (turn) calls.current = [];
+      setNow(doing.current.at);
       setBusy(true);
       working.current = true;
       try {
@@ -452,10 +483,14 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
 
   // The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since
   // at full height Ink draws the whole scrollback again each time. First the status line and the
-  // working line, and the hint line when there is room for it and the cursor's row; then an open menu,
-  // with the prompt cut to the cursor's row; then the prompt; then the queue, the last row saying how
-  // many more there are when they do not all fit.
-  const room = height - 1 - 1 - (busy ? 1 : 0);
+  // working line; the tool line when there is room for it, the hint line and the cursor's row; the hint
+  // line when there is room for it and the cursor's row; then an open menu, with the prompt cut to the
+  // cursor's row; then the prompt; then the queue, the last row saying how many more there are when
+  // they do not all fit. The model list fills the rows above the status line itself, so it has no
+  // tool line under it.
+  const base = height - 1 - 1 - (busy ? 1 : 0);
+  const tooled = !picker && segments.includes("tools") && calls.current.length > 0 && base >= 2 + (hintFor(1) !== null ? 1 : 0);
+  const room = base - (tooled ? 1 : 0);
   const hinted = hintFor(1) !== null && room >= 2;
   const space = Math.max(1, room - (hinted ? 1 : 0));
   const menuRows = menu ? Math.min(menu.entries.length, Math.max(1, space - 1)) : 0;
@@ -480,7 +515,13 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
         <Text color="yellow">Allow {question.text}? [y/n] · Esc to decline</Text>
       ) : (
         <>
-          {busy && <Text wrap="truncate-end">… working (Ctrl-C to stop)</Text>}
+          {busy && (
+            <WorkingLine
+              label={doing.current.label}
+              ms={Math.max(0, now - doing.current.at)}
+              spend={doing.current.from && { lead: session.lead.id, output: stats.output - doing.current.from.output, cost: stats.cost - doing.current.from.cost, costUnknown: stats.unpriced > doing.current.from.unpriced }}
+            />
+          )}
           {queued.map((row, i) => (
             <Text key={i} color="gray" wrap="truncate-end">
               {row}
@@ -512,6 +553,7 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
           elapsed: now - started.current,
         }}
       />
+      {tooled && <ToolLine calls={calls.current} />}
     </>
   );
 }

@@ -129,6 +129,16 @@ describe("Stats", () => {
     expect(stats.costUnknown).toBe(true);
   });
 
+  it("counts the calls without a known price, so a turn can tell its own", () => {
+    const bus = new Bus();
+    const stats = new Stats(bus);
+    const usage = { input: 10, output: 0, cacheRead: 0, cacheWrite: 0 };
+    bus.emit("usage", { provider: "openai:unknown", usage });
+    bus.emit("usage", { provider: "anthropic:claude-opus-5-5", usage, priceKnown: false });
+    bus.emit("usage", { provider: "anthropic:claude-opus-5-5", usage });
+    expect(stats.unpriced).toBe(2);
+  });
+
   it("does not count a rescued refusal as an error", () => {
     const bus = new Bus();
     const stats = new Stats(bus);

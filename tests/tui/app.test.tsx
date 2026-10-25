@@ -177,7 +177,7 @@ describe("App", () => {
     await until(app, `Allow write ${target}? [y/n]`);
     app.stdin.write("\u0003");
     await until(app, `write ${target}: declined (cancelled)`);
-    await gone(app, "working");
+    await gone(app, "Esc to stop");
     expect(app.lastFrame()).not.toContain("[y/n]");
     expect(app.lastFrame()).not.toContain("written");
     expect(existsSync(target)).toBe(false);
@@ -186,9 +186,9 @@ describe("App", () => {
   it("says no at once, without a prompt, when asked after the turn was cancelled", async () => {
     const { app, ask } = await mount([], { lead: hanging() });
     await type(app, "hi");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     app.stdin.write("\u0003");
-    await gone(app, "working");
+    await gone(app, "Esc to stop");
     const answer = await Promise.race([ask("write x"), tick().then(() => "still waiting")]);
     expect(answer).toBe(false);
     expect(app.lastFrame()).not.toContain("[y/n]");
@@ -288,10 +288,10 @@ describe("App", () => {
     const login: Login = (_verb, _words, _say, signal) => new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("Sign-in was cancelled"))));
     const { app } = await mount([], { login });
     await type(app, "/login chatgpt");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     app.stdin.write("\u0003");
     await until(app, "Sign-in was cancelled");
-    await gone(app, "working");
+    await gone(app, "Esc to stop");
   });
 
   const models: ModelGroup[] = [
@@ -420,9 +420,9 @@ describe("App", () => {
   it("stops reading the lists on Ctrl-C, without opening the picker", async () => {
     const { app } = await mount([], { models, slow: true });
     await type(app, "/model");
-    await until(app, "Ctrl-C to stop");
+    await until(app, "Esc to stop");
     app.stdin.write("\u0003");
-    await gone(app, "Ctrl-C to stop");
+    await gone(app, "Esc to stop");
     await tick();
     expect(app.lastFrame()).not.toContain("fake:c");
     expect(app.lastFrame()).not.toContain("Filter:");
@@ -665,9 +665,9 @@ describe("App's keys for stopping and exiting", () => {
   it("stops a turn on Esc, keeping what was done so far", async () => {
     const { app } = await mount([], { lead: hanging() });
     await type(app, "hi");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "\u001b");
-    await gone(app, "working");
+    await gone(app, "Esc to stop");
     expect(app.lastFrame()).toContain("> hi");
   });
 
@@ -748,7 +748,7 @@ describe("App's keys for stopping and exiting", () => {
     const { app } = await mount([], { lead: hanging() });
     expect(app.lastFrame()).toContain("? for shortcuts");
     await type(app, "hi");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     expect(app.lastFrame()).not.toContain("? for shortcuts");
   });
 });
@@ -871,9 +871,9 @@ describe("App's queue", () => {
     const { lead, release } = gated([reply("r1"), reply("r2")]);
     const { app, session, historyFile } = await mount([], { lead });
     await type(app, "one");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "two", "\r", "three", "\r", "fo");
-    expect(app.lastFrame()).toMatch(/working[^\n]*\ntwo\nthree\n› fo\n↑ to edit queued messages\n/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\ntwo\nthree\n› fo\n↑ to edit queued messages\n/);
     release();
     await until(app, "r2");
     expect(prompts(session)).toEqual(["one", "two\n\nthree"]);
@@ -886,8 +886,8 @@ describe("App's queue", () => {
     const { lead, release } = gated([reply("r1"), reply("r2")]);
     const { app, session } = await mount([], { lead });
     app.stdin.write("one\rtwo\r");
-    await until(app, "working");
-    expect(app.lastFrame()).toMatch(/working[^\n]*\ntwo\n›/);
+    await until(app, "Esc to stop");
+    expect(app.lastFrame()).toMatch(/Esc to stop\ntwo\n›/);
     release();
     await until(app, "r2");
     expect(prompts(session)).toEqual(["one", "two"]);
@@ -909,7 +909,7 @@ describe("App's queue", () => {
     const b = new FakeProvider("b", [reply("from b")]);
     const { app, session } = await mount([], { lead, newLead: b });
     await type(app, "one");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "two", "\r", "/lead fake:b", "\r", "three", "\r");
     release();
     await until(app, "from b");
@@ -923,7 +923,7 @@ describe("App's queue", () => {
     const { lead, release } = gated([new Error("boom"), reply("last")]);
     const { app, session } = await mount([], { lead });
     await type(app, "one");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "two", "\r", "/lead", "\r", "three", "\r", "\u001b");
     await until(app, "last");
     release();
@@ -934,9 +934,9 @@ describe("App's queue", () => {
   it("brings the queue back into the prompt on Ctrl-C, after what is typed, one entry a line, and sends nothing more", async () => {
     const { app, session } = await mount([], { lead: hanging() });
     await type(app, "one");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "two", "\r", "three", "\r", "draft", "\u0003");
-    await gone(app, "working");
+    await gone(app, "Esc to stop");
     expect(app.lastFrame()).toContain("› draft\n  two\n  three\n? for shortcuts");
     await tick();
     expect(prompts(session)).toEqual(["one"]);
@@ -946,12 +946,12 @@ describe("App's queue", () => {
     const { lead, release } = gated([callTool("c1", "write_file", { path: "a.txt", content: "x" })]);
     const { app, ctx } = await mount([], { lead });
     await type(app, "make a file");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "two", "\r");
     release();
     await until(app, `Allow write ${path.join(ctx.root, "a.txt")}?`);
     await press(app, "\u0003");
-    await gone(app, "working");
+    await gone(app, "Esc to stop");
     expect(app.lastFrame()).toContain("› two\n? for shortcuts");
   });
 
@@ -959,7 +959,7 @@ describe("App's queue", () => {
     const { lead, release } = gated([reply("r1"), reply("r2")]);
     const { app, session } = await mount([], { lead });
     await type(app, "one");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "/exit", "\r", "two", "\r");
     release();
     await vi.waitFor(() => expect(session.messages.at(-1)?.role).toBe("assistant")); // the screen is gone once it exits
@@ -972,7 +972,7 @@ describe("App's queue", () => {
     const { lead, release } = gated([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("done")]);
     const { app } = await mount([], { lead });
     await type(app, "make a file");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "two", "\r");
     expect(app.lastFrame()).toContain("↑ to edit queued messages");
     release();
@@ -984,7 +984,7 @@ describe("App's queue", () => {
     const { lead, release } = gated([reply("r1"), reply("r2")]);
     const { app, session } = await mount([], { lead, models: [{ provider: "fake", models: ["a", "c"] }] });
     await type(app, "one");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "/model", "\r", "two", "\r");
     release();
     await until(app, "fake:c");
@@ -998,7 +998,7 @@ describe("App's queue", () => {
   it("takes the queue back on Up from an empty prompt", async () => {
     const { app } = await mount([], { lead: hanging(), past: ["old"] });
     await type(app, "one");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "two", "\r", "three", "\r", "\u001b[A");
     expect(app.lastFrame()).toContain("› two\n  three\n");
     expect(app.lastFrame()).not.toContain("queued");
@@ -1026,11 +1026,11 @@ describe("App's space on screen", () => {
   it("gives the queue the rows the prompt leaves, the last saying how many more, or the hint line the count", async () => {
     const { app } = await mount([], { lead: hanging(), rows: 8 });
     await type(app, "one");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     for (const q of ["q1", "q2", "q3", "q4", "q5"]) await press(app, q, "\r");
-    expect(app.lastFrame()).toMatch(/working[^\n]*\nq1\nq2\n\+3 more\n›\n↑ to edit queued messages\n[^\n]*$/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\nq1\nq2\n\+3 more\n›\n↑ to edit queued messages\n[^\n]*$/);
     await press(app, "a", "\n", "b", "\n", "c", "\n", "d"); // four rows: none left for the queue
-    expect(app.lastFrame()).toMatch(/working[^\n]*\n› a\n  b\n  c\n  d\n5 queued\n[^\n]*$/);
+    expect(app.lastFrame()).toMatch(/Esc to stop\n› a\n  b\n  c\n  d\n5 queued\n[^\n]*$/);
   });
 
   it("drops the hint line when the terminal is too short for it and the cursor's row", async () => {
@@ -1176,7 +1176,7 @@ describe("App's keys for the modes, the model list and the last turn", () => {
   it("queues the model list on Alt+P during a turn, as /model typed then", async () => {
     const { app } = await mount([], { lead: hanging(), models: [{ provider: "fake", models: ["a", "b"] }] });
     await type(app, "hi");
-    await until(app, "working");
+    await until(app, "Esc to stop");
     await press(app, "\u001bp");
     expect(app.lastFrame()).toContain("/model\n");
     await press(app, "\u001b"); // stops the turn; the queue goes on
@@ -1193,5 +1193,91 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     await press(app, "\u000f");
     expect(app.lastFrame()).toContain('Last turn: 1 tool call\n● read_file {\n  "path": "a.txt"\n}\n  ⎿ ');
     expect(app.lastFrame()).toMatch(/⎿ [^\n]*hello there/);
+  });
+});
+
+describe("App's working line and tool lines", () => {
+  it("shows what is running, for how long, and the turn's tokens and cost, the spinner moving", async () => {
+    const { app } = await mount([], { lead: hanging() });
+    await type(app, "hi");
+    await until(app, "Esc to stop");
+    expect(app.lastFrame()).toMatch(/\n. Working · 0s · ↓ 0 tokens · \$0\.00 · Esc to stop\n/);
+    const spinners = new Set<string>();
+    for (let i = 0; i < 6; i++, await tick()) spinners.add(/\n(.) Working/.exec(app.lastFrame()!)![1]!);
+    expect(spinners.size).toBeGreaterThan(1); // 300 ms: a few of its 80 ms steps
+    await until(app, " Working · 1s · ");
+  });
+
+  it("names what it waits for: the browser for /login, signing out for /logout, the model lists for /model", async () => {
+    const login: Login = (_verb, _words, _say, signal) => new Promise((resolve) => signal.addEventListener("abort", () => resolve()));
+    const { app } = await mount([], { login, slow: true });
+    await type(app, "/login chatgpt");
+    await until(app, "Waiting for the browser");
+    expect(app.lastFrame()).toMatch(/Waiting for the browser · \d+s · Esc to stop/);
+    await press(app, "\u001b");
+    await gone(app, "Esc to stop");
+    await type(app, "/logout chatgpt");
+    await until(app, "Signing out");
+    expect(app.lastFrame()).toMatch(/Signing out · \d+s · Esc to stop/);
+    await press(app, "\u001b");
+    await gone(app, "Esc to stop");
+    await type(app, "/model");
+    await until(app, "Reading the model lists");
+    expect(app.lastFrame()).toMatch(/Reading the model lists · \d+s · Esc to stop/);
+  });
+
+  it("shows a call's main detail, and counts the turn's calls under the status line until the next turn starts", async () => {
+    const { app, ctx } = await mount([callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "a.txt" }), reply("done"), reply("again")]);
+    await writeFile(path.join(ctx.root, "a.txt"), "x");
+    await type(app, "go");
+    await until(app, "done");
+    expect(app.lastFrame()).toContain("● read_file a.txt\n");
+    expect(app.lastFrame()).toMatch(/⏱[^\n]*\n✓ read_file ×2$/);
+    await type(app, "more");
+    await until(app, "again");
+    expect(app.lastFrame()).not.toContain("✓ read_file");
+  });
+
+  it("shows the running call with its target, and a declined one under ⊘", async () => {
+    const { app } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
+    await type(app, "go");
+    await until(app, "Allow");
+    expect(app.lastFrame()).toMatch(/\n◐ write_file a\.txt$/);
+    await press(app, "n");
+    await until(app, "written");
+    expect(app.lastFrame()).toMatch(/\n⊘ write_file ×1$/);
+  });
+
+  it("has no tool line when --status leaves tools out", async () => {
+    const { app, ctx } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { segments: SEGMENTS.filter((s) => s !== "tools") });
+    await writeFile(path.join(ctx.root, "a.txt"), "x");
+    await type(app, "go");
+    await until(app, "done");
+    expect(app.lastFrame()).not.toContain("✓ read_file");
+  });
+
+  it("hides the tool line while the model list is open, which fills the rows above the status line", async () => {
+    const { app, ctx } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { rows: 8, models: [{ provider: "fake", models: ["a", "b", "c", "d", "e", "f"] }] });
+    await writeFile(path.join(ctx.root, "a.txt"), "x");
+    await type(app, "go");
+    await until(app, "done");
+    expect(app.lastFrame()).toContain("✓ read_file ×1");
+    await type(app, "/model");
+    await until(app, "fake:a");
+    expect(app.lastFrame()).not.toContain("✓ read_file");
+    await tick(); // the picker starts reading keys just after it first appears
+    await press(app, "\u001b");
+    await until(app, "✓ read_file ×1");
+  });
+
+  it("drops the tool line first when the terminal is too short", async () => {
+    for (const [rows, shown] of [[4, false], [5, true]] as const) {
+      const { app, ctx } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { rows });
+      await writeFile(path.join(ctx.root, "a.txt"), "x");
+      await type(app, "go");
+      await until(app, "done");
+      expect(app.lastFrame()!.includes("✓ read_file ×1")).toBe(shown);
+      expect(app.lastFrame()).toContain("? for shortcuts");
+    }
   });
 });
