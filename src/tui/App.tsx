@@ -11,7 +11,7 @@ import { describe, type Line, screen } from "./describe.js";
 import { apply, type Editor, empty, load, move } from "./editor.js";
 import { History, matches } from "./history.js";
 import { type Command, commands } from "./keys.js";
-import { vertical } from "./layout.js";
+import { layout, vertical } from "./layout.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -56,7 +56,7 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
   const step = useRef<{ at: number; draft: string } | null>(null); // where Up has gone in the history, and what was typed before
   // Ctrl+R: what is searched for, how many older matches Ctrl+R has passed, and the prompt to give back.
   const search = useRef<{ query: string; skip: number; before: Editor } | null>(null);
-  const { columns } = useWindowSize();
+  const { columns, rows: height } = useWindowSize();
   const [busy, setBusy] = useState(false);
   const working = useRef(false); // busy, for keys read before the screen is drawn again
   const queue = useRef<string[]>([]); // what Enter added during a turn, in order
@@ -371,20 +371,37 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
     }
   };
 
-  // The hint line, under the prompt (release 3 design, "On screen"): whichever applies.
+  // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the
+  // rows left for the queue.
   const exitKey = first.current?.name === "Esc" ? undefined : first.current?.name;
   const searching = search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
-  const hint = searching
-    ? `${searching} · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel`
-    : exitKey
-      ? `Press ${exitKey} again to exit`
-      : picker || question
-        ? null
-        : queue.current.length
-          ? "↑ to edit queued messages"
-          : busy
-            ? null
-            : "? for shortcuts";
+  const hintFor = (left: number) =>
+    searching
+      ? `${searching} · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel`
+      : exitKey
+        ? `Press ${exitKey} again to exit`
+        : picker || question
+          ? null
+          : queue.current.length
+            ? left > 0
+              ? "↑ to edit queued messages"
+              : `${queue.current.length} queued`
+            : busy
+              ? null
+              : "? for shortcuts";
+
+  // The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since
+  // at full height Ink draws the whole scrollback again each time. First the status line and the
+  // working line, and the hint line when there is room for it and the cursor's row; then the prompt;
+  // then the queue, the last row saying how many more there are when they do not all fit.
+  const room = height - 1 - 1 - (busy ? 1 : 0);
+  const hinted = hintFor(1) !== null && room >= 2;
+  const space = Math.max(1, room - (hinted ? 1 : 0));
+  const prompt = search.current ? shown() : editor.current;
+  const left = space - Math.min(layout(prompt.text, promptWidth(columns)).rows.length, space);
+  const q = queue.current.map((e) => visible(e));
+  const queued = q.length <= left ? q : left > 0 ? [...q.slice(0, left - 1), `+${q.length - left + 1} more`] : [];
+  const hint = hinted ? hintFor(left) : null;
 
   return (
     <>
@@ -401,16 +418,20 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
         <Text color="yellow">Allow {question.text}? [y/n] · Esc to decline</Text>
       ) : (
         <>
-          {busy && <Text>… working (Ctrl-C to stop)</Text>}
-          {queue.current.map((q, i) => (
+          {busy && <Text wrap="truncate-end">… working (Ctrl-C to stop)</Text>}
+          {queued.map((row, i) => (
             <Text key={i} color="gray" wrap="truncate-end">
-              {visible(q)}
+              {row}
             </Text>
           ))}
-          <Prompt editor={search.current ? shown() : editor.current} columns={columns} offset={(busy ? 1 : 0) + queue.current.length} />
+          <Prompt editor={prompt} columns={columns} offset={(busy ? 1 : 0) + queued.length} space={space} />
         </>
       )}
-      {hint && <Text dimColor>{hint}</Text>}
+      {hint && (
+        <Text dimColor wrap="truncate-end">
+          {hint}
+        </Text>
+      )}
       <StatusLine
         segments={segments}
         info={{

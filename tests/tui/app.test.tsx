@@ -60,6 +60,7 @@ async function mount(
     historyFile?: string;
     past?: string[]; // the project's prompts from earlier sessions
     newLead?: Provider; // what /lead and the picker make
+    rows?: number; // the terminal's height
   } = {},
 ) {
   const bus = new Bus();
@@ -98,6 +99,9 @@ async function mount(
     />,
   );
   mounted.push(app);
+  // ink-testing-library's terminal has no height; 24 rows is Ink's own default size (getWindowSize).
+  Object.assign(app.stdout, { rows: opts.rows ?? 24 });
+  app.stdout.emit("resize");
   await tick();
   return { app, session, ctx, bus, historyFile, ask: (s: string) => ask(s) };
 }
@@ -708,7 +712,11 @@ describe("App's keys for stopping and exiting", () => {
     const { app } = await mount([]);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const wait = (ms: number) => vi.advanceTimersByTimeAsync(ms);
+      // Then one turn of the event loop (setImmediate is not faked), in which the screen is drawn again.
+      const wait = async (ms: number) => {
+        await vi.advanceTimersByTimeAsync(ms);
+        await new Promise((resolve) => setImmediate(resolve));
+      };
       app.stdin.write("\u0003");
       await wait(799);
       expect(app.lastFrame()).toContain("Press Ctrl-C again to exit");
@@ -988,5 +996,41 @@ describe("App's queue", () => {
     expect(app.lastFrame()).not.toContain("queued");
     await press(app, "\u001b[A", "\u001b[A"); // the prompt has text now: Up moves up its rows, then into the history
     expect(app.lastFrame()).toContain("› three");
+  });
+});
+
+describe("App's space on screen", () => {
+  const lines = (n: number) => [...Array(n).keys()].map((i) => `l${i}`).join("\r");
+
+  it("keeps the live part a row shorter than the terminal, showing a tall paste around the cursor", async () => {
+    const { app } = await mount([], { rows: 10 });
+    await press(app, `\u001b[200~${lines(20)}\u001b[201~`);
+    const frame = app.lastFrame()!;
+    expect(frame.split("\n")).toHaveLength(9);
+    expect(frame).toContain("› ↑ 14 rows above\n  l14\n");
+    expect(frame).toContain("  l19\n? for shortcuts\n");
+    await press(app, ...Array<string>(6).fill("\u001b[A")); // up to l13, past the window's top
+    expect(app.lastFrame()!.split("\n")).toHaveLength(9);
+    expect(app.lastFrame()).toContain("› ↑ 13 rows above\n  l13\n");
+    expect(app.lastFrame()).toContain("  ↓ 2 rows below\n");
+  });
+
+  it("gives the queue the rows the prompt leaves, the last saying how many more, or the hint line the count", async () => {
+    const { app } = await mount([], { lead: hanging(), rows: 8 });
+    await type(app, "one");
+    await until(app, "working");
+    for (const q of ["q1", "q2", "q3", "q4", "q5"]) await press(app, q, "\r");
+    expect(app.lastFrame()).toMatch(/working[^\n]*\nq1\nq2\n\+3 more\n›\n↑ to edit queued messages\n[^\n]*$/);
+    await press(app, "a", "\n", "b", "\n", "c", "\n", "d"); // four rows: none left for the queue
+    expect(app.lastFrame()).toMatch(/working[^\n]*\n› a\n  b\n  c\n  d\n5 queued\n[^\n]*$/);
+  });
+
+  it("drops the hint line when the terminal is too short for it and the cursor's row", async () => {
+    const { app } = await mount([], { rows: 3 });
+    expect(app.lastFrame()).toMatch(/^›\n[^\n]*$/);
+    Object.assign(app.stdout, { rows: 4 });
+    app.stdout.emit("resize");
+    await tick();
+    expect(app.lastFrame()).toMatch(/^›\n\? for shortcuts\n[^\n]*$/);
   });
 });
