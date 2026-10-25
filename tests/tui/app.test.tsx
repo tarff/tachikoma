@@ -5,7 +5,7 @@ import path from "node:path";
 import { render } from "ink-testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
-import { type Mode, PermissionGate } from "../../src/core/permissions.js";
+import { type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import type { Provider } from "../../src/core/types.js";
@@ -69,8 +69,8 @@ async function mount(
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
-  let ask: (s: string, d?: string) => Promise<boolean> = async () => false;
-  const gate = new PermissionGate(opts.mode ?? "ask", (s, d) => ask(s, d));
+  let ask: (s: string, d?: string, o?: Owner) => Promise<boolean> = async () => false;
+  const gate = new PermissionGate(opts.mode ?? "ask", (s, d, o) => ask(s, d, o));
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const session = new Session({ lead, tools: TOOLS, system: "t", ctx: { ...ctx, gate }, bus });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
@@ -111,7 +111,7 @@ async function mount(
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
   await tick();
-  return { app, session, ctx, bus, historyFile, ask: (s: string) => ask(s) };
+  return { app, session, ctx, bus, historyFile, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -1048,6 +1048,78 @@ describe("App's space on screen", () => {
     app.stdout.emit("resize");
     await tick();
     expect(app.lastFrame()).toMatch(/^›\n\? for shortcuts\n[^\n]*$/);
+  });
+});
+
+// A subagent that asks: its name, its stop signal, and whether it was stopped.
+function asker(name: string) {
+  const stop = new AbortController();
+  const a: { stopped: boolean; owner: Owner } = {
+    stopped: false,
+    owner: {
+      name,
+      signal: stop.signal,
+      stop: () => {
+        a.stopped = true;
+        stop.abort();
+      },
+    },
+  };
+  return a;
+}
+
+describe("App's questions", () => {
+  it("shows the lead's and the subagents' questions one at a time, in order, each naming who asks", async () => {
+    const { app, ask } = await mount([]);
+    const t2 = asker("t2 (find the login code)");
+    const t3 = asker("t3 (read\rthe tests)");
+    const answers = [ask("read /a"), ask("read /b", undefined, t2.owner), ask("read /c", undefined, t3.owner)];
+    await until(app, "Allow read /a? [y/n]");
+    await press(app, "y");
+    await until(app, "Allow t2 (find the login code) to read /b? [y/n]");
+    await press(app, "n");
+    await until(app, "Allow t3 (read␍the tests) to read /c? [y/n]");
+    await press(app, "\u001b");
+    expect(await Promise.all(answers)).toEqual([true, false, false]);
+    expect(app.lastFrame()).toContain("t2 (find the login code) to read /b: declined");
+  });
+
+  it("on Ctrl-C at a subagent's question, stops that subagent, not the lead's turn", async () => {
+    const { app, ask } = await mount([], { lead: hanging() });
+    await type(app, "one");
+    await until(app, "Esc to stop");
+    const t2 = asker("t2 (find the login code)");
+    const answer = ask("read /b", undefined, t2.owner);
+    await until(app, "Allow t2");
+    await press(app, "\u0003");
+    expect(await answer).toBe(false);
+    expect(t2.stopped).toBe(true);
+    await until(app, "Esc to stop");
+  });
+
+  it("takes away a stopped subagent's questions, the one on screen included, and shows the next", async () => {
+    const { app, ask } = await mount([]);
+    const t2 = asker("t2 (x)");
+    const t3 = asker("t3 (y)");
+    const answers = [ask("read /b", undefined, t2.owner), ask("read /b2", undefined, t2.owner), ask("read /c", undefined, t3.owner)];
+    await until(app, "Allow t2 (x) to read /b?");
+    t2.owner.stop();
+    await until(app, "Allow t3 (y) to read /c?");
+    expect(await Promise.all(answers.slice(0, 2))).toEqual([false, false]);
+    expect(app.lastFrame()).toContain("t2 (x) to read /b: cancelled");
+  });
+
+  it("on Ctrl-C at the lead's question, stops the turn and takes away its questions only", async () => {
+    const { app, ask } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
+    await type(app, "make a file");
+    await until(app, "Allow write");
+    const t3 = asker("t3 (y)");
+    const answer = ask("read /c", undefined, t3.owner);
+    await press(app, "\u0003");
+    await until(app, "Allow t3 (y) to read /c?");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    expect(t3.stopped).toBe(false);
   });
 });
 

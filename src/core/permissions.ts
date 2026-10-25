@@ -35,12 +35,42 @@ export function visible(text: string, opts: { tabs?: boolean } = {}): string {
 // Thrown when the user says no. The model is told; it is not logged as an error.
 export class Declined extends Error {}
 
+// Who asks a question, when it is not the lead's turn: a subagent's name, its stop signal, and how to
+// stop it (release 4 design, "One line of questions, each with its owner").
+export interface Owner {
+  name: string;
+  signal: AbortSignal;
+  stop: () => void;
+}
+
+export type Ask = (summary: string, detail?: string, owner?: Owner) => Promise<boolean>;
+
 export class PermissionGate {
+  #mode: Mode;
+  #parent?: PermissionGate;
+
   constructor(
-    public mode: Mode, // read at each check: Shift+Tab changes it during a session
-    private readonly ask: (summary: string, detail?: string) => Promise<boolean>,
+    mode: Mode,
+    private readonly ask: Ask,
     private readonly refusal = "The user declined", // what the model is told; in -p mode nobody was asked
-  ) {}
+  ) {
+    this.#mode = mode;
+  }
+
+  // Read at each check: Shift+Tab changes it during a session. A subagent's gate reads the lead's.
+  get mode(): Mode {
+    return this.#parent?.mode ?? this.#mode;
+  }
+  set mode(mode: Mode) {
+    this.#mode = mode;
+  }
+
+  // A subagent's gate: the lead's mode, and questions that name the subagent.
+  for(owner: Owner): PermissionGate {
+    const gate = new PermissionGate(this.#mode, (summary, detail) => this.ask(summary, detail, owner), this.refusal);
+    gate.#parent = this;
+    return gate;
+  }
 
   async require(action: Action): Promise<void> {
     if (!needsApproval(this.mode, action)) return;

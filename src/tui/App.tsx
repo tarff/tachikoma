@@ -2,7 +2,7 @@ import { type Key, Static, Text, useApp, useInput, usePaste, useWindowSize } fro
 import { useEffect, useRef, useState } from "react";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
 import { summarize } from "../core/errorlog.js";
-import { type Mode, visible } from "../core/permissions.js";
+import { type Ask, type Mode, type Owner, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
@@ -22,7 +22,8 @@ import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
-type Question = { text: string; answer: (ok: boolean, how: string) => void };
+// A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn.
+type Question = { text: string; owner?: Owner; answer: (ok: boolean, how: string) => void };
 
 export interface AppProps {
   session: Session;
@@ -38,7 +39,7 @@ export interface AppProps {
   errorFile: string;
   segments: Segment[];
   makeProvider: (spec: string) => Provider;
-  bindAsk: (ask: (summary: string, detail?: string) => Promise<boolean>) => void;
+  bindAsk: (ask: Ask) => void;
   // `/login …` and `/logout …`: the words after the command, where to show what it says, a signal
   // Ctrl-C aborts, and how a command is typed here ("/").
   login: (verb: "login" | "logout", words: string[], say: (line: string) => void, signal: AbortSignal, prefix: string) => Promise<void>;
@@ -84,7 +85,9 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
   // session started with.
   const perm = useRef(mode);
   const cycle: Mode[] = mode === "never" ? ["ask", "project", "never"] : ["ask", "project"];
-  const [question, setQuestion] = useState<Question | null>(null);
+  // The lead's and every subagent's questions, shown one at a time, so none replaces the one on screen.
+  const questions = useRef<Question[]>([]);
+  const question = questions.current[0] ?? null;
   const [contextWindow, setContextWindow] = useState<number | null>(null);
   const [picker, setPicker] = useState<ModelGroup[] | null>(null);
   const [, rerender] = useState(0);
@@ -111,9 +114,11 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
   };
 
   useEffect(() => {
-    bindAsk((text, detail) => {
-      // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped.
-      if (abort.current?.signal.aborted) return Promise.resolve(false);
+    bindAsk((text, detail, owner) => {
+      // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped, nor a
+      // stopped subagent about anything.
+      const signal = owner ? owner.signal : abort.current?.signal;
+      if (signal?.aborted) return Promise.resolve(false);
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface.
       if (detail !== undefined) {
@@ -122,16 +127,25 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
       }
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
-        setQuestion({
-          text,
+        // When its owner stops (Esc or Ctrl-C for the lead's turn, /tasks stop, a failure), the
+        // question goes from the line, on screen or not, answered as cancelled.
+        const cancel = () => q.answer(false, "cancelled");
+        const q: Question = {
+          text: owner ? `${visible(owner.name)} to ${text}` : text,
+          ...(owner ? { owner } : {}),
           answer: (ok, how) => {
             if (!open) return;
             open = false;
-            say({ text: `${text}: ${how}`, color: "gray" });
+            signal?.removeEventListener("abort", cancel);
+            questions.current = questions.current.filter((x) => x !== q);
+            say({ text: `${q.text}: ${how}`, color: "gray" });
             resolve(ok);
-            setQuestion(null);
+            rerender((n) => n + 1);
           },
-        });
+        };
+        signal?.addEventListener("abort", cancel, { once: true });
+        questions.current.push(q);
+        rerender((n) => n + 1);
       });
     });
     const onMessage = (m: Message) => say(...describe(m));
@@ -276,10 +290,14 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
   useInput((ch, key) => {
     if (picker) return; // the picker reads the keys while it is open
     if (question) {
+      // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent.
       if (key.ctrl && ch === "c") {
         question.answer(false, "declined (cancelled)");
-        abort.current?.abort();
-        restore();
+        if (question.owner) question.owner.stop();
+        else {
+          abort.current?.abort();
+          restore();
+        }
       } else if (key.escape) question.answer(false, "declined"); // that action only; the turn goes on
       else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
       return;

@@ -64,6 +64,20 @@ describe("PermissionGate", () => {
   });
 });
 
+describe("a subagent's gate", () => {
+  it("reads the lead's mode at each check, and names the subagent when it asks", async () => {
+    const asked: [string, string | undefined][] = [];
+    const gate = new PermissionGate("never", async (summary, _detail, owner) => (asked.push([summary, owner?.name]), false), "Not allowed");
+    const child = gate.for({ name: "t2 (find the login code)", signal: new AbortController().signal, stop: () => {} });
+    await child.require({ kind: "read", outside: true, summary: "read /x" });
+    expect(asked).toEqual([]);
+    gate.mode = "ask";
+    expect(child.mode).toBe("ask");
+    await expect(child.require({ kind: "read", outside: true, summary: "read /x" })).rejects.toThrow("Not allowed: read /x");
+    expect(asked).toEqual([["read /x", "t2 (find the login code)"]]);
+  });
+});
+
 describe("visible", () => {
   it.each([
     ["an escape code", "echo \u001b[8mhidden", "echo \\u001b[8mhidden"],

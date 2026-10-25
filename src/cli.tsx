@@ -9,7 +9,7 @@ import { approvalQuestion, endOnEpipe, headlessAnswer, headlessExit, headlessLef
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
-import { MODES, type Mode, PermissionGate } from "./core/permissions.js";
+import { type Ask, MODES, type Mode, PermissionGate } from "./core/permissions.js";
 import { systemPrompt } from "./core/prompt.js";
 import { Session } from "./core/session.js";
 import { Stats } from "./core/stats.js";
@@ -172,14 +172,14 @@ const instructions = await readInstructions({ root, codexHome: process.env.CODEX
 const system = [systemPrompt(root), instructions.text].filter(Boolean).join("\n\n");
 
 let declined = false;
-let ask: (summary: string, detail?: string) => Promise<boolean> = async (summary) => {
+let ask: Ask = async (summary, _detail, owner) => {
   declined = true;
   console.error(
-    `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused; --mode never means no checks at all): ${summary}`,
+    `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused; --mode never means no checks at all): ${owner ? `${prose(owner.name)}: ` : ""}${summary}`,
   );
   return false;
 };
-const gate = new PermissionGate(mode, (summary, detail) => ask(summary, detail), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it");
+const gate = new PermissionGate(mode, (summary, detail, owner) => ask(summary, detail, owner), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it");
 // The to-do list is the lead's alone; the screen shows it from the bus.
 const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items))];
 const session = new Session({ lead, fallback, tools, system, ctx: { root, executor: new LocalExecutor(), gate }, bus });
