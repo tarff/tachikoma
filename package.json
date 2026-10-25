@@ -12,7 +12,7 @@
     "dist"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.20"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -23,6 +23,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "0.132.0",
     "@napi-rs/keyring": "2.1.0",
+    "ignore": "7.0.12",
     "ink": "7.1.1",
     "openai": "7.30.0",
     "react": "19.3.0",
