@@ -1,6 +1,6 @@
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
-import { describe as describeMessage, screen } from "../../src/tui/describe.js";
+import { describe as describeMessage, lastTurn, screen } from "../../src/tui/describe.js";
 import { contextBar, duration, formatSegment, type Segment, SEGMENTS, type StatusInfo, StatusLine } from "../../src/tui/StatusLine.js";
 
 const info: StatusInfo = {
@@ -126,6 +126,38 @@ describe("describe", () => {
   it("escapes a one-line entry's line breaks too, so it stays one line", () => {
     const [line] = describeMessage({ role: "assistant", parts: [{ type: "tool_call", id: "c", name: "a\nb", input: 1 }] });
     expect(screen(line!).text).toBe("● a⏎b 1");
+  });
+});
+
+describe("lastTurn", () => {
+  it("says there is none before any turn", () => {
+    expect(lastTurn([])).toEqual([{ text: "No turn yet, so no tool calls to show.", color: "gray" }]);
+  });
+
+  it("shows the latest turn's tool calls only, each with its full input and result, grey", () => {
+    const lines = lastTurn([
+      { role: "user", parts: [{ type: "text", text: "one" }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c0", name: "shell", input: { command: "old" } }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c0", output: "old", isError: false }] },
+      { role: "user", parts: [{ type: "text", text: "two" }] },
+      { role: "assistant", parts: [{ type: "text", text: "reading" }, { type: "tool_call", id: "c1", name: "read_file", input: { path: "a" } }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "line 1\nline 2", isError: false }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c2", name: "shell", input: { command: "npm test" } }] },
+    ]);
+    expect(lines).toEqual([
+      { text: "Last turn: 2 tool calls", color: "gray" },
+      { text: '● read_file {\n  "path": "a"\n}\n  ⎿ line 1\nline 2', color: "gray" },
+      { text: '● shell {\n  "command": "npm test"\n}\n  ⎿ (not finished)', color: "gray" }, // the turn is still running
+    ]);
+  });
+
+  it("is cleaned of escape codes when shown, like every scrollback line", () => {
+    const [, call] = lastTurn([
+      { role: "user", parts: [{ type: "text", text: "go" }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c", name: "shell", input: {} }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c", output: "a\u001b]52;c;eA==\u0007", isError: true }] },
+    ]);
+    expect(screen(call!).text).toBe("● shell {}\n  ⎿ a\\u001b]52;c;eA==\\u0007");
   });
 });
 

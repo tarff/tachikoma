@@ -47,6 +47,15 @@ describe("PermissionGate", () => {
     await expect(gate.require(act("shell"))).rejects.toThrow("Not allowed in -p mode: shell");
   });
 
+  it("reads its mode at each check, so a change applies from the next action", async () => {
+    let asked = 0;
+    const gate = new PermissionGate("ask", async () => (asked++, true));
+    await gate.require(act("write"));
+    gate.mode = "project";
+    await gate.require(act("write"));
+    expect(asked).toBe(1);
+  });
+
   it("does not ask when no approval is needed", async () => {
     let asked = false;
     const gate = new PermissionGate("ask", async () => (asked = true));

@@ -89,3 +89,15 @@ describe("commands", () => {
     expect(commands("a\u0007b", key())).toEqual([{ type: "insert", text: "ab" }]);
   });
 });
+
+describe("commands for the modes, the model list and the last turn", () => {
+  it("switches the permission mode on Shift+Tab, which arrives as Tab with Shift", () => {
+    expect(commands("", key({ tab: true, shift: true }))).toEqual(["mode"]);
+    expect(commands("", key({ tab: true }))).toEqual([]); // Tab alone is the menus'
+  });
+
+  it("opens the model list on Alt+P, and shows the last turn's tool calls on Ctrl+O", () => {
+    expect(commands("p", key({ meta: true }))).toEqual(["models"]);
+    expect(commands("o", key({ ctrl: true }))).toEqual(["lastTurn"]);
+  });
+});

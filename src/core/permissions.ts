@@ -37,7 +37,7 @@ export class Declined extends Error {}
 
 export class PermissionGate {
   constructor(
-    readonly mode: Mode,
+    public mode: Mode, // read at each check: Shift+Tab changes it during a session
     private readonly ask: (summary: string, detail?: string) => Promise<boolean>,
     private readonly refusal = "The user declined", // what the model is told; in -p mode nobody was asked
   ) {}
