@@ -40,6 +40,7 @@ learn from experience. The command is `tachi`.
 | Release 3, status line | Adds claude-hud's context bar and colours, the project folder and git branch, the session's length and a tool line | User, 2026-10-25 (asked what claude-hud shows; chose all four parts offered) |
 | Release 3, as built | Undo on Ctrl+Z as well as Ctrl+_; the word before the cursor on Alt+Backspace, with Ctrl+Backspace acting as Backspace; the git branch read from `.git/HEAD`, without the `*` for changes; the spinner moving every 80 ms | User, 2026-10-25 (after the key probes in their terminal, and at the build; [release 3 design](2026-10-25-tachikoma-release-3-design.md), "As built") |
 | Instruction files, and importing from other tools | Release 4 reads a project's AGENTS.md or CLAUDE.md, and the user's own, into each session. `tachi setup` (release 12) offers on its first run to import settings, skills, MCP servers and key bindings from Claude Code, Codex and other tools | User, 2026-10-25 ("a first boot import setup to bring over existing Claude and agents Md files and other setting and skills from other programs"; chose both places from options offered) |
+| Release 4, choices | Subagents use `--worker`'s model, else the lead's; they may run in the background, and one finishing while the lead is idle starts a turn; Esc stops only the subagents a turn waits for; a subagent's read outside the project asks, naming it; no subagent starts another; the lead and subagents get `find_files` and `search_files`, which follow `.gitignore`; the to-do list shows while any item is open; instruction files from `~/.claude`, `~/.codex` and every folder down to the project, CLAUDE.md and AGENTS.md both, with `@` imports; an import leaving the project, or a found file linked to another folder, asks first unless it is the user's own; with `-p`, background subagents run in the foreground | User, 2026-10-25 (chose each from options offered; [release 4 design](2026-10-25-tachikoma-release-4-design.md)) |
 
 ## 1. Overall shape
 
@@ -780,6 +781,8 @@ whose results are recorded.
 2. Whether `google/embeddinggemma-2` needs a Hugging Face login or licence acceptance, and how big
    the download is.
 3. How many workers can run at once within each provider's rate limits. Sets the default cap.
+   Measured first for release 4's subagents, on the user's account, before that build (release 4
+   design, "Before the build").
 4. Which transcript formats MemPalace 3.11's conversation miner reads. Decides whether Tachikoma
    writes transcripts it can read or files memories through MCP tools directly.
 5. How superpowers v7 maps tool names for other harnesses.
@@ -848,6 +851,7 @@ Each release works on its own and can be shown.
    ([release 3 design](2026-10-25-tachikoma-release-3-design.md))
 4. Read-only subagents (read and search only) with a panel under the prompt, and the to-do list;
    reading the project's and the user's instruction files (AGENTS.md, CLAUDE.md) into each session
+   ([release 4 design](2026-10-25-tachikoma-release-4-design.md))
 5. Key extras: vim mode, image paste, external editor, stash, rebinding keys in a file, full screen
 6. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
 7. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
