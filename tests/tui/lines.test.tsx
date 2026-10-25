@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ToolOutcome } from "../../src/core/bus.js";
+import type { TodoItem } from "../../src/tools/todo.js";
+import { todoRows } from "../../src/tui/TodoList.js";
 import { toolParts } from "../../src/tui/ToolLine.js";
 import { workingText } from "../../src/tui/WorkingLine.js";
 
@@ -45,5 +47,35 @@ describe("toolParts", () => {
   it("escapes what the model named, and has nothing to show with no calls", () => {
     expect(shown([call("x\u001b[2J", undefined, "a\rb")])).toEqual(["◐ x\\u001b[2J a␍b"]);
     expect(toolParts([])).toEqual([]);
+  });
+});
+
+describe("todoRows", () => {
+  const list = (...statuses: TodoItem["status"][]): TodoItem[] => statuses.map((status, n) => ({ text: `item ${n}`, status }));
+  const shown = (items: TodoItem[], rows: number) => todoRows(items, rows).map((r) => `${r.mark} ${r.text}`.trim());
+
+  it("marks each item: to do, doing in yellow, done in grey", () => {
+    expect(todoRows(list("done", "in_progress", "pending"), 5)).toEqual([
+      { mark: "☑", text: "item 0", color: "gray" },
+      { mark: "◐", text: "item 1", color: "yellow" },
+      { mark: "☐", text: "item 2" },
+    ]);
+  });
+
+  it("when short of rows, shows the item in progress and those next to it, then how many more", () => {
+    const items = list("done", "done", "done", "in_progress", "pending", "pending", "pending");
+    expect(shown(items, 4)).toEqual(["☑ item 2", "◐ item 3", "☐ item 4", "+4 more"]);
+    expect(shown(items, 2)).toEqual(["◐ item 3", "+6 more"]);
+    expect(shown(items, 1)).toEqual(["◐ item 3"]);
+    expect(shown(items, 0)).toEqual([]);
+  });
+
+  it("with nothing in progress, centres on the first item not done; near an end, keeps the rows full", () => {
+    expect(shown(list("done", "pending", "pending", "pending", "pending"), 3)).toEqual(["☑ item 0", "☐ item 1", "+3 more"]);
+    expect(shown(list("done", "done", "done", "done", "in_progress"), 3)).toEqual(["☑ item 3", "◐ item 4", "+3 more"]);
+  });
+
+  it("escapes what the model wrote", () => {
+    expect(shown([{ text: "a\u001b[2Jb\rc", status: "pending" }], 1)).toEqual(["☐ a\\u001b[2Jb␍c"]);
   });
 });

@@ -9,6 +9,7 @@ import { type Mode, PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import type { Provider } from "../../src/core/types.js";
+import type { TodoItem } from "../../src/tools/todo.js";
 import { TOOLS } from "../../src/tools/index.js";
 import { History } from "../../src/tui/history.js";
 import type { ModelGroup } from "../../src/providers/models.js";
@@ -1043,6 +1044,57 @@ describe("App's space on screen", () => {
   });
 });
 
+describe("App's to-do list", () => {
+  const items: TodoItem[] = [
+    { text: "read the login code", status: "done" },
+    { text: "find where the token is saved", status: "in_progress" },
+    { text: "write the fix", status: "pending" },
+  ];
+
+  it("shows the lead's list above the prompt while any item is not done", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("todo", items);
+    await tick();
+    expect(app.lastFrame()).toContain("☑ read the login code\n◐ find where the token is saved\n☐ write the fix\n›");
+    bus.emit("todo", items.map((i) => ({ ...i, status: "done" as const })));
+    await tick();
+    expect(app.lastFrame()).not.toContain("☑");
+  });
+
+  it("hides and shows it on Ctrl+T, and shows a new list", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("todo", items);
+    await tick();
+    await press(app, "\u0014");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    await press(app, "\u0014");
+    expect(app.lastFrame()).toContain("write the fix");
+    await press(app, "\u0014");
+    bus.emit("todo", [...items, { text: "test it", status: "pending" }]);
+    await tick();
+    expect(app.lastFrame()).toContain("☐ test it");
+  });
+
+  it("sits under the working line, above the queue, and gives way before the prompt", async () => {
+    const { app, bus } = await mount([], { lead: hanging(), rows: 10 });
+    await type(app, "one");
+    await until(app, "Esc to stop");
+    bus.emit("todo", [...items, { text: "test it", status: "pending" }]);
+    await press(app, "q1", "\r");
+    expect(app.lastFrame()).toMatch(/Esc to stop\n☑ read the login code\n◐ find where the token is saved\n☐ write the fix\n☐ test it\nq1\n›\n/);
+    await press(app, "a", "\n", "b", "\n", "c", "\n", "d"); // four rows for the prompt: two left for the list, none for the queue
+    expect(app.lastFrame()).toMatch(/Esc to stop\n◐ find where the token is saved\n\+3 more\n› a\n  b\n  c\n  d\n1 queued\n/);
+  });
+
+  it("escapes what the model wrote in it", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("todo", [{ text: `look ${OSC52}`, status: "pending" }]);
+    await tick();
+    expect(app.lastFrame()).toContain(`☐ look ${OSC52_SHOWN}`);
+    expectNoRawControls(app.lastFrame());
+  });
+});
+
 describe("App's menus", () => {
   it("lists the commands for / at the start of an empty prompt, narrowing as the command is typed", async () => {
     const { app } = await mount([]);
@@ -1125,6 +1177,7 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     expect(app.lastFrame()).toContain("Keys:\n");
     expect(app.lastFrame()).toContain("Shift+Enter, \\ then Enter, or Ctrl+J  new line");
     expect(app.lastFrame()).toContain("Ctrl+O  the last turn's tool calls in full");
+    expect(app.lastFrame()).toContain("Ctrl+T  show or hide the to-do list");
     // Keys that work in Windows Terminal, where Ctrl+Backspace is Backspace and Ctrl+_ cannot be typed.
     expect(app.lastFrame()).toContain("Alt+Backspace  the word before");
     expect(app.lastFrame()).toContain("Ctrl+Z  undo");

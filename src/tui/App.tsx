@@ -7,6 +7,7 @@ import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
+import type { TodoItem } from "../tools/todo.js";
 import { brief, describe, lastTurn, type Line, screen } from "./describe.js";
 import { apply, type Editor, empty, load, move, replace } from "./editor.js";
 import { History, matches } from "./history.js";
@@ -17,6 +18,7 @@ import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu 
 import { ModelPicker } from "./ModelPicker.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
+import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
@@ -75,6 +77,8 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
   // kept after it until the next turn starts.
   const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
   const calls = useRef<Call[]>([]);
+  // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
+  const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a
   // session started with.
   const perm = useRef(mode);
@@ -152,12 +156,17 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
       if (call) call.outcome = outcome;
       rerender((n) => n + 1);
     };
+    const onTodo = (items: TodoItem[]) => {
+      todos.current = { items, hidden: false };
+      rerender((n) => n + 1);
+    };
     bus.on("message", onMessage);
     bus.on("error", onError);
     bus.on("usage", onUsage);
     bus.on("lead", onLead);
     bus.on("tool-start", onToolStart);
     bus.on("tool-end", onToolEnd);
+    bus.on("todo", onTodo);
     history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
@@ -170,6 +179,7 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
       bus.off("lead", onLead);
       bus.off("tool-start", onToolStart);
       bus.off("tool-end", onToolEnd);
+      bus.off("todo", onTodo);
     };
   }, []);
 
@@ -343,6 +353,7 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
     // Alt+P is `/model` typed then: during a turn it waits in the queue.
     if (c === "models") return working.current ? void queue.current.push("/model") : void submit("/model");
     if (c === "lastTurn") return say(...lastTurn(session.messages));
+    if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
     // A message starting with `?` needs a space typed first.
     if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return say(...KEY_LIST.map((text) => ({ text, color: "gray" })));
     if (c === "up" && !e.text && queue.current.length) return restore();
@@ -485,9 +496,10 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
   // at full height Ink draws the whole scrollback again each time. First the status line and the
   // working line; the tool line when there is room for it, the hint line and the cursor's row; the hint
   // line when there is room for it and the cursor's row; then an open menu, with the prompt cut to the
-  // cursor's row; then the prompt; then the queue, the last row saying how many more there are when
-  // they do not all fit. The model list fills the rows above the status line itself, so it has no
-  // tool line under it.
+  // cursor's row; then the prompt; then the to-do list, which gives way before the prompt does (release
+  // 4 design, "On screen"); then the queue, the last row saying how many more there are when they do
+  // not all fit. The model list fills the rows above the status line itself, so it has no tool line
+  // under it.
   const base = height - 1 - 1 - (busy ? 1 : 0);
   const tooled = !picker && segments.includes("tools") && calls.current.length > 0 && base >= 2 + (hintFor(1) !== null ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
@@ -495,7 +507,9 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
   const space = Math.max(1, room - (hinted ? 1 : 0));
   const menuRows = menu ? Math.min(menu.entries.length, Math.max(1, space - 1)) : 0;
   const promptSpace = menu ? 1 : space;
-  const left = space - menuRows - Math.min(layout(prompt.text, promptWidth(columns)).rows.length, promptSpace);
+  const promptLeft = space - menuRows - Math.min(layout(prompt.text, promptWidth(columns)).rows.length, promptSpace);
+  const todoShown = !todos.current.hidden && unfinished(todos.current.items) ? todoRows(todos.current.items, promptLeft) : [];
+  const left = promptLeft - todoShown.length;
   const q = queue.current.map((e) => visible(e));
   const queued = q.length <= left ? q : left > 0 ? [...q.slice(0, left - 1), `+${q.length - left + 1} more`] : [];
   const hint = hinted ? hintFor(left) : null;
@@ -522,12 +536,13 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
               spend={doing.current.from && { lead: session.lead.id, output: stats.output - doing.current.from.output, cost: stats.cost - doing.current.from.cost, costUnknown: stats.unpriced > doing.current.from.unpriced }}
             />
           )}
+          <TodoList rows={todoShown} />
           {queued.map((row, i) => (
             <Text key={i} color="gray" wrap="truncate-end">
               {row}
             </Text>
           ))}
-          <Prompt editor={prompt} columns={columns} offset={(busy ? 1 : 0) + queued.length} space={promptSpace} />
+          <Prompt editor={prompt} columns={columns} offset={(busy ? 1 : 0) + todoShown.length + queued.length} space={promptSpace} />
           {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} />}
         </>
       )}

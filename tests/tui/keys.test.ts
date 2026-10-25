@@ -54,6 +54,10 @@ describe("commands", () => {
     expect(commands("n", key({ ctrl: true }))).toEqual(["down"]);
   });
 
+  it("shows or hides the to-do list with Ctrl+T", () => {
+    expect(commands("t", key({ ctrl: true }))).toEqual(["todos"]);
+  });
+
   it("searches the history with Ctrl+R", () => {
     expect(commands("r", key({ ctrl: true }))).toEqual(["search"]);
   });

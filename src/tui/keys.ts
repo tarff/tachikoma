@@ -4,12 +4,13 @@ import type { Action } from "./editor.js";
 // What a key means in the prompt (release 3 design, "Editing" and "Multi-line"), for the codes the
 // user's terminal was seen to send on 2026-10-25. Enter sends; Up and Down move by screen row, which
 // needs the screen's width, so App does them, and the rest of these App's own: Ctrl+R's search,
-// Shift+Tab's permission mode, Alt+P's model list and Ctrl+O's last turn ("Menus and modes").
-export type Command = Action | "submit" | "up" | "down" | "search" | "mode" | "models" | "lastTurn";
+// Shift+Tab's permission mode, Alt+P's model list and Ctrl+O's last turn ("Menus and modes"), and
+// Ctrl+T's to-do list (release 4 design, "On screen").
+export type Command = Action | "submit" | "up" | "down" | "search" | "mode" | "models" | "lastTurn" | "todos";
 
 // Ink names a key held with Ctrl or Alt by its letter.
 // Ctrl+P and Ctrl+N are Up and Down, as in Claude Code.
-const CTRL: Record<string, Command> = { a: "home", e: "end", d: "delete", w: "deleteToSpace", k: "deleteToEnd", u: "deleteToStart", y: "yank", z: "undo", p: "up", n: "down", r: "search", o: "lastTurn" };
+const CTRL: Record<string, Command> = { a: "home", e: "end", d: "delete", w: "deleteToSpace", k: "deleteToEnd", u: "deleteToStart", y: "yank", z: "undo", p: "up", n: "down", r: "search", o: "lastTurn", t: "todos" };
 const ALT: Record<string, Command> = { b: "wordLeft", f: "wordRight", d: "deleteWordAfter", p: "models" };
 
 // What `?` on an empty prompt prints, grey, in the scrollback.
@@ -25,6 +26,7 @@ export const KEY_LIST = [
   "  Ctrl+K  delete to the line's end · Ctrl+U  to its start · Ctrl+Y  put it back · Ctrl+Z  undo",
   "  /  commands · @  project paths · Shift+Tab  permission mode · Alt+P  pick the model",
   "  Ctrl+O  the last turn's tool calls in full · a space first starts a message with ?",
+  "  Ctrl+T  show or hide the to-do list",
 ];
 
 export function commands(input: string, key: Key): Command[] {
