@@ -18,6 +18,7 @@ import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
 import { TOOLS } from "./tools/index.js";
+import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
 import { gitBranch } from "./tui/git.js";
 import { historyFile } from "./tui/history.js";
@@ -144,7 +145,9 @@ let ask: (summary: string, detail?: string) => Promise<boolean> = async (summary
   return false;
 };
 const gate = new PermissionGate(mode, (summary, detail) => ask(summary, detail), parsed.print === undefined ? undefined : "Not allowed in -p mode, where nobody can approve it");
-const session = new Session({ lead, fallback, tools: TOOLS, system: systemPrompt(root), ctx: { root, executor: new LocalExecutor(), gate }, bus });
+// The to-do list is the lead's alone; the screen shows it from the bus.
+const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items))];
+const session = new Session({ lead, fallback, tools, system: systemPrompt(root), ctx: { root, executor: new LocalExecutor(), gate }, bus });
 
 // The executor stops running commands from an "exit" handler, which dying by a signal skips.
 for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => process.exit(128 + constants.signals[sig]));

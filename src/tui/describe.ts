@@ -14,6 +14,8 @@ const firstLine = (s: string) => s.split(/\r?\n/)[0] ?? "";
 // which is shown with its whole input.
 const DETAIL: Record<string, string> = { read_file: "path", write_file: "path", edit_file: "path", shell: "command", find_files: "pattern", search_files: "pattern" };
 export function brief(name: string, input: unknown): string | null {
+  const items = name === "todo" && typeof input === "object" && input !== null ? (input as { items?: unknown }).items : undefined;
+  if (Array.isArray(items)) return `${items.length} item${items.length === 1 ? "" : "s"}`; // the list itself is on screen
   const value = Object.hasOwn(DETAIL, name) && typeof input === "object" && input !== null ? (input as Record<string, unknown>)[DETAIL[name]!] : undefined;
   return typeof value === "string" ? firstLine(value) : null;
 }
