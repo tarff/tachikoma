@@ -189,6 +189,7 @@ if (parsed.print !== undefined) {
       stats={stats}
       mode={mode}
       project={path.basename(root) || root}
+      root={root}
       gitBranch={() => gitBranch(root)}
       historyFile={historyFile(root)}
       errorFile={errorFile}

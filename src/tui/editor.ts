@@ -89,6 +89,9 @@ function change(e: Editor, from: number, to: number, insert: string, how: { typi
   };
 }
 
+// `insert` in place of the text from `from` to the cursor, as one step: a menu's choice.
+export const replace = (e: Editor, from: number, insert: string): Editor => change(e, from, e.cursor, insert);
+
 // The cursor somewhere else, which ends a run of typing. App moves it up and down by screen row.
 export const move = (e: Editor, cursor: number): Editor => ({ ...e, cursor, typing: false });
 

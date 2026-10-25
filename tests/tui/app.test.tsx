@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { render } from "ink-testing-library";
@@ -79,6 +79,7 @@ async function mount(
       stats={stats}
       mode="ask"
       project="proj"
+      root={ctx.root}
       gitBranch={() => opts.branches?.shift() ?? null}
       historyFile={historyFile}
       errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
@@ -246,9 +247,12 @@ describe("App", () => {
     await until(app, "login done 1");
     await type(app, "/logout chatgpt");
     await until(app, "logout done 2");
-    await type(app, "/login"); // shown how to use it, not called an unknown command
+    // With the `/` menu closed, the command as typed: shown how to use it, not called an unknown command.
+    await press(app, "/login", "\u001b", "\r");
     await until(app, "login done 3");
-    expect(calls).toEqual(["/login chatgpt --new", "/logout chatgpt", "/login"]);
+    await type(app, "/login"); // with the menu open, Enter runs what it has chosen
+    await until(app, "login done 4");
+    expect(calls).toEqual(["/login chatgpt --new", "/logout chatgpt", "/login", "/login chatgpt"]);
     expect(lead.seen).toEqual([]);
   });
 
@@ -1032,5 +1036,80 @@ describe("App's space on screen", () => {
     app.stdout.emit("resize");
     await tick();
     expect(app.lastFrame()).toMatch(/^›\n\? for shortcuts\n[^\n]*$/);
+  });
+});
+
+describe("App's menus", () => {
+  it("lists the commands for / at the start of an empty prompt, narrowing as the command is typed", async () => {
+    const { app } = await mount([]);
+    await press(app, "/");
+    expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model\n  /model  Pick the lead model from a list\n");
+    expect(app.lastFrame()).toContain("↑↓ choose · Tab fill · Enter run · Esc close");
+    await press(app, "e");
+    expect(app.lastFrame()).toContain("› /e\n  /errors  Summarise the error log\n  /exit  Quit\n");
+    expect(app.lastFrame()).not.toContain("/model");
+  });
+
+  it("runs the chosen command on Enter, Down choosing the next", async () => {
+    const { app } = await mount([]);
+    await press(app, "/", "e", "\u001b[B", "\r");
+    await expectExited(app);
+  });
+
+  it("puts the command in the prompt on Tab, to add to it", async () => {
+    const made: string[] = [];
+    const { app } = await mount([], { made });
+    await press(app, "/", "l", "\t");
+    expect(app.lastFrame()).toContain("› /lead\n"); // the space after it is there, though not drawn
+    expect(app.lastFrame()).not.toContain("Switch the lead model");
+    await press(app, "fake:b", "\r");
+    await until(app, "lead is now fake:b");
+    expect(made).toEqual(["fake:b"]);
+  });
+
+  it("closes on Esc until the text changes, and a message starting with a slash is sent as typed", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, "/", "\u001b");
+    expect(app.lastFrame()).not.toContain("/model");
+    expect(app.lastFrame()).toContain("› /\n");
+    await press(app, "m");
+    expect(app.lastFrame()).toContain("/model  Pick the lead model from a list");
+    await press(app, "\u007f"); // back at the text Esc closed it at, after a change: open
+    expect(app.lastFrame()).toContain("/model  Pick the lead model from a list");
+    await press(app, "\u007f", "/tmp is full", "\r");
+    await until(app, "ok");
+    expect(sent(session)).toEqual({ type: "text", text: "/tmp is full" });
+  });
+
+  it("lists the project folder for @, goes into a folder on Tab, and completes a file's path on Enter; only the path is sent", async () => {
+    const { app, session, ctx } = await mount([reply("ok")]);
+    await mkdir(path.join(ctx.root, "src"));
+    await writeFile(path.join(ctx.root, "src", "x.ts"), "secret");
+    await writeFile(path.join(ctx.root, "a.txt"), "");
+    await press(app, "read @");
+    expect(app.lastFrame()).toContain("› read @\n  src/\n  a.txt\n↑↓ choose · Tab or Enter fill · Esc close");
+    await press(app, "s", "\t");
+    expect(app.lastFrame()).toContain("› read @src/\n  src/x.ts\n");
+    await press(app, "\r");
+    expect(app.lastFrame()).toContain("› read @src/x.ts\n");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(sent(session)).toEqual({ type: "text", text: "read @src/x.ts" });
+  });
+
+  it("says in the menu why a folder cannot be listed", async () => {
+    const { app } = await mount([]);
+    await press(app, "@nope/");
+    expect(app.lastFrame()).toMatch(/› @nope\/\n {2}Cannot list nope\/: ENOENT/);
+  });
+
+  it("cuts the prompt to the cursor's row while a menu is open, and fits the menu in the rows left", async () => {
+    const { app, ctx } = await mount([], { rows: 8 });
+    for (const name of ["a1", "a2", "a3", "a4", "a5", "a6"]) await writeFile(path.join(ctx.root, name), "");
+    await press(app, "one", "\n", "two", "\n", "@a");
+    // Seven rows: the prompt's cursor row, four for the menu, the hint line and the status line.
+    expect(app.lastFrame()).toMatch(/^› @a\n {2}a1\n {2}a2\n {2}a3\n {2}↓ 3 more\n↑↓ choose[^\n]*\n[^\n]*$/);
+    await press(app, "\u001b[B", "\u001b[B", "\u001b[B");
+    expect(app.lastFrame()).toMatch(/^› @a\n {2}↑ 2 more\n {2}a3\n {2}a4\n {2}↓ 2 more\n/);
   });
 });
