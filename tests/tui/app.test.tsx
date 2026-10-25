@@ -24,6 +24,12 @@ async function until(app: ReturnType<typeof render>, text: string) {
   expect(app.lastFrame()).toContain(text);
 }
 
+// Wait until the screen no longer shows `text`.
+async function gone(app: ReturnType<typeof render>, text: string) {
+  for (let i = 0; i < 40 && app.lastFrame()?.includes(text); i++) await tick();
+  expect(app.lastFrame()).not.toContain(text);
+}
+
 const mounted: ReturnType<typeof render>[] = [];
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount();
@@ -53,6 +59,7 @@ async function mount(
     branches?: string[];
     historyFile?: string;
     past?: string[]; // the project's prompts from earlier sessions
+    newLead?: Provider; // what /lead and the picker make
   } = {},
 ) {
   const bus = new Bus();
@@ -77,7 +84,7 @@ async function mount(
       segments={opts.segments ?? SEGMENTS}
       makeProvider={(spec) => {
         opts.made?.push(spec);
-        return new FakeProvider("b", []);
+        return opts.newLead ?? new FakeProvider("b", []);
       }}
       login={opts.login ?? (async () => {})}
       listModels={async (signal, warn) => {
@@ -161,8 +168,7 @@ describe("App", () => {
     await until(app, `Allow write ${target}? [y/n]`);
     app.stdin.write("\u0003");
     await until(app, `write ${target}: declined (cancelled)`);
-    await until(app, "›");
-    expect(app.lastFrame()).not.toContain("working");
+    await gone(app, "working");
     expect(app.lastFrame()).not.toContain("[y/n]");
     expect(app.lastFrame()).not.toContain("written");
     expect(existsSync(target)).toBe(false);
@@ -173,8 +179,7 @@ describe("App", () => {
     await type(app, "hi");
     await until(app, "working");
     app.stdin.write("\u0003");
-    await until(app, "›");
-    expect(app.lastFrame()).not.toContain("working");
+    await gone(app, "working");
     const answer = await Promise.race([ask("write x"), tick().then(() => "still waiting")]);
     expect(answer).toBe(false);
     expect(app.lastFrame()).not.toContain("[y/n]");
@@ -274,7 +279,7 @@ describe("App", () => {
     await until(app, "working");
     app.stdin.write("\u0003");
     await until(app, "Sign-in was cancelled");
-    await until(app, "›");
+    await gone(app, "working");
   });
 
   const models: ModelGroup[] = [
@@ -405,7 +410,7 @@ describe("App", () => {
     await type(app, "/model");
     await until(app, "Ctrl-C to stop");
     app.stdin.write("\u0003");
-    await until(app, "›");
+    await gone(app, "Ctrl-C to stop");
     await tick();
     expect(app.lastFrame()).not.toContain("fake:c");
     expect(app.lastFrame()).not.toContain("Filter:");
@@ -650,8 +655,7 @@ describe("App's keys for stopping and exiting", () => {
     await type(app, "hi");
     await until(app, "working");
     await press(app, "\u001b");
-    await until(app, "›");
-    expect(app.lastFrame()).not.toContain("working");
+    await gone(app, "working");
     expect(app.lastFrame()).toContain("> hi");
   });
 
@@ -818,5 +822,171 @@ describe("App's history", () => {
     await press(app, "\u007f", "\u007f");
     expect(app.lastFrame()).toContain("› draft");
     expect(app.lastFrame()).not.toContain("search:");
+  });
+});
+
+// A lead that answers in turn, the first request only once `release` is called (or Esc stops it).
+function gated(turns: ConstructorParameters<typeof FakeProvider>[1]) {
+  const fake = new FakeProvider("a", turns);
+  let release!: () => void;
+  const open = new Promise<void>((resolve) => (release = resolve));
+  let first = true;
+  const lead: Provider = {
+    id: fake.id,
+    complete: async (req) => {
+      if (first) {
+        first = false;
+        await new Promise<void>((resolve, reject) => {
+          void open.then(resolve);
+          req.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+        });
+      }
+      return fake.complete(req);
+    },
+  };
+  return { lead, fake, release };
+}
+
+// The user's messages, in the order the model was sent them.
+const prompts = (session: Session) => session.messages.filter((m) => m.role === "user").flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])));
+
+describe("App's queue", () => {
+  it("keeps the prompt open during a turn, queues each Enter under the working line, and sends prompts next to each other as one", async () => {
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session, historyFile } = await mount([], { lead });
+    await type(app, "one");
+    await until(app, "working");
+    await press(app, "two", "\r", "three", "\r", "fo");
+    expect(app.lastFrame()).toMatch(/working[^\n]*\ntwo\nthree\n› fo\n↑ to edit queued messages\n/);
+    release();
+    await until(app, "r2");
+    expect(prompts(session)).toEqual(["one", "two\n\nthree"]);
+    expect(app.lastFrame()).toContain("› fo");
+    expect(app.lastFrame()).not.toContain("queued");
+    expect(new History(historyFile, () => {}).load()).toEqual(["one", "two", "three"]); // saved as each was added
+  });
+
+  it("queues a prompt typed straight after another, in one read of the terminal", async () => {
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session } = await mount([], { lead });
+    app.stdin.write("one\rtwo\r");
+    await until(app, "working");
+    expect(app.lastFrame()).toMatch(/working[^\n]*\ntwo\n›/);
+    release();
+    await until(app, "r2");
+    expect(prompts(session)).toEqual(["one", "two"]);
+  });
+
+  it("keeps the queue waiting for a turn started straight after a command, in one read of the terminal", async () => {
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session } = await mount([], { lead, newLead: lead });
+    app.stdin.write("/lead fake:b\rone\rtwo\r");
+    await tick(); // the command is done, and its turn-end would take the queue on
+    expect(app.lastFrame()).toMatch(/\ntwo\n›/); // still queued: one is running
+    release();
+    await until(app, "r2");
+    expect(prompts(session)).toEqual(["one", "two"]);
+  });
+
+  it("takes a /command alone, as if typed then, and the prompts after it wait until it is done", async () => {
+    const { lead, fake, release } = gated([reply("r1"), reply("r2")]);
+    const b = new FakeProvider("b", [reply("from b")]);
+    const { app, session } = await mount([], { lead, newLead: b });
+    await type(app, "one");
+    await until(app, "working");
+    await press(app, "two", "\r", "/lead fake:b", "\r", "three", "\r");
+    release();
+    await until(app, "from b");
+    expect(prompts(session)).toEqual(["one", "two", "three"]);
+    expect(fake.seen).toHaveLength(2);
+    expect(b.seen).toHaveLength(1);
+    expect(app.lastFrame()).toMatch(/r2[\s\S]*lead is now fake:b[\s\S]*> three/);
+  });
+
+  it("goes on with the queue after Esc stops a turn, and after a turn that ends in an error", async () => {
+    const { lead, release } = gated([new Error("boom"), reply("last")]);
+    const { app, session } = await mount([], { lead });
+    await type(app, "one");
+    await until(app, "working");
+    await press(app, "two", "\r", "/lead", "\r", "three", "\r", "\u001b");
+    await until(app, "last");
+    release();
+    expect(prompts(session)).toEqual(["one", "two", "three"]);
+    expect(app.lastFrame()).toMatch(/boom[\s\S]*Usage: \/lead[\s\S]*> three/);
+  });
+
+  it("brings the queue back into the prompt on Ctrl-C, after what is typed, one entry a line, and sends nothing more", async () => {
+    const { app, session } = await mount([], { lead: hanging() });
+    await type(app, "one");
+    await until(app, "working");
+    await press(app, "two", "\r", "three", "\r", "draft", "\u0003");
+    await gone(app, "working");
+    expect(app.lastFrame()).toContain("› draft\n  two\n  three\n? for shortcuts");
+    await tick();
+    expect(prompts(session)).toEqual(["one"]);
+  });
+
+  it("brings the queue back on Ctrl-C at a question too", async () => {
+    const { lead, release } = gated([callTool("c1", "write_file", { path: "a.txt", content: "x" })]);
+    const { app, ctx } = await mount([], { lead });
+    await type(app, "make a file");
+    await until(app, "working");
+    await press(app, "two", "\r");
+    release();
+    await until(app, `Allow write ${path.join(ctx.root, "a.txt")}?`);
+    await press(app, "\u0003");
+    await gone(app, "working");
+    expect(app.lastFrame()).toContain("› two\n? for shortcuts");
+  });
+
+  it("exits on a queued /exit, sending nothing after it", async () => {
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session } = await mount([], { lead });
+    await type(app, "one");
+    await until(app, "working");
+    await press(app, "/exit", "\r", "two", "\r");
+    release();
+    await vi.waitFor(() => expect(session.messages.at(-1)?.role).toBe("assistant")); // the screen is gone once it exits
+    await tick();
+    expect(prompts(session)).toEqual(["one"]);
+    await expectExited(app);
+  });
+
+  it("shows the queue's hint only while the prompt has the keys", async () => {
+    const { lead, release } = gated([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("done")]);
+    const { app } = await mount([], { lead });
+    await type(app, "make a file");
+    await until(app, "working");
+    await press(app, "two", "\r");
+    expect(app.lastFrame()).toContain("↑ to edit queued messages");
+    release();
+    await until(app, "[y/n]");
+    expect(app.lastFrame()).not.toContain("queued");
+  });
+
+  it("waits after a queued /model until the list is closed", async () => {
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session } = await mount([], { lead, models: [{ provider: "fake", models: ["a", "c"] }] });
+    await type(app, "one");
+    await until(app, "working");
+    await press(app, "/model", "\r", "two", "\r");
+    release();
+    await until(app, "fake:c");
+    await tick();
+    expect(prompts(session)).toEqual(["one"]);
+    await press(app, "\u001b");
+    await until(app, "r2");
+    expect(prompts(session)).toEqual(["one", "two"]);
+  });
+
+  it("takes the queue back on Up from an empty prompt", async () => {
+    const { app } = await mount([], { lead: hanging(), past: ["old"] });
+    await type(app, "one");
+    await until(app, "working");
+    await press(app, "two", "\r", "three", "\r", "\u001b[A");
+    expect(app.lastFrame()).toContain("› two\n  three\n");
+    expect(app.lastFrame()).not.toContain("queued");
+    await press(app, "\u001b[A", "\u001b[A"); // the prompt has text now: Up moves up its rows, then into the history
+    expect(app.lastFrame()).toContain("› three");
   });
 });
