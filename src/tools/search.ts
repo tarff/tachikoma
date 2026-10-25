@@ -1,11 +1,12 @@
 import type { BigIntStats } from "node:fs";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import { Worker } from "node:worker_threads";
 import ignore from "ignore";
 import { z } from "zod";
 import { dataDir } from "../core/datadir.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
-import { resolveIn } from "./files.js";
+import { programEnvironment, resolveIn } from "./files.js";
 import { defineTool, type ToolContext } from "./tool.js";
 
 type Rules = { base: string; rules: ReturnType<typeof ignore> }[];
@@ -74,14 +75,15 @@ async function* files(start: string, ctx: ToolContext, verb: string): AsyncGener
   yield* walk(real, rules, await id(dataDir()), ctx.signal);
 }
 
-// Lines up to the size every tool's output is cut at, leaving room for the note of how many more.
-function capped(lines: string[], noun: string): string {
+// Lines up to the size every tool's output is cut at, leaving room for the note of how many more;
+// `beyond` counts more that were never collected.
+function capped(lines: string[], noun: string, beyond = 0): string {
   const note = (n: number) => `(${n} more ${noun} not shown)`;
-  const room = MAX_TOOL_OUTPUT - note(lines.length).length - 1;
+  const room = MAX_TOOL_OUTPUT - note(lines.length + beyond).length - 1;
   let size = 0;
   let n = 0;
   while (n < lines.length && size + lines[n]!.length + 1 <= room) size += lines[n++]!.length + 1;
-  return n === lines.length ? lines.join("\n") : [...lines.slice(0, n), note(lines.length - n)].join("\n");
+  return n === lines.length && !beyond ? lines.join("\n") : [...lines.slice(0, n), note(lines.length - n + beyond)].join("\n");
 }
 
 // Paths inside the project are shown relative to it, with forward slashes, as the model gives them to
@@ -105,5 +107,101 @@ export const findFilesTool = defineTool(
     }
     if (!found.length) return `No files match ${pattern}`;
     return capped(found.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), "files");
+  },
+);
+
+// git's test for a binary file: a zero byte in the first 8,000 (`buffer_is_binary`, xdiff-interface.c).
+const BINARY_TEST_BYTES = 8000;
+// A matching line is cut at 1,000 characters, so one minified line cannot fill the output. Measured
+// 2026-10-26: 0.13% of the lines in this project's installed packages and 0.015% of Python's library
+// are longer, most of them source maps; this project's own longest is 404.
+const LINE_CUT = 1000;
+
+// The search itself, in a worker thread: a regular expression can take practically forever on some
+// text, and only a thread can be stopped in the middle of one. Plain JavaScript, so it works the same
+// from the built files and in the tests; it takes Node's modules with process.getBuiltinModule, which
+// works whether Node runs it as a script or as a module. It collects lines, each cut at `lineCut`
+// characters, up to the output cap, and counts the rest.
+const GREP = String.raw`
+const { parentPort, workerData } = process.getBuiltinModule("node:worker_threads");
+const { readFileSync } = process.getBuiltinModule("node:fs");
+const { pattern, files, cap, binaryBytes, lineCut } = workerData;
+const regex = new RegExp(pattern);
+const lines = [];
+let size = 0;
+let beyond = 0;
+for (const f of files) {
+  let buf;
+  try {
+    buf = readFileSync(f.abs);
+  } catch {
+    continue;
+  }
+  if (buf.subarray(0, binaryBytes).includes(0)) continue;
+  buf.toString("utf8").split(/\r?\n/).forEach((text, i) => {
+    if (!regex.test(text)) return;
+    const shown = text.length > lineCut ? text.slice(0, lineCut) + " [cut: " + (text.length - lineCut) + " more characters]" : text;
+    const line = f.shown + ":" + (i + 1) + ": " + shown;
+    if (!beyond && size + line.length + 1 <= cap) {
+      lines.push(line);
+      size += line.length + 1;
+    } else beyond++;
+  });
+}
+parentPort.postMessage({ lines, beyond });
+`;
+
+function grep(pattern: string, files: { abs: string; shown: string }[], signal?: AbortSignal): Promise<{ lines: string[]; beyond: number }> {
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    const worker = new Worker(GREP, { eval: true, workerData: { pattern, files, cap: MAX_TOOL_OUTPUT, binaryBytes: BINARY_TEST_BYTES, lineCut: LINE_CUT } });
+    const stop = () => {
+      void worker.terminate();
+      reject(signal!.reason);
+    };
+    signal?.addEventListener("abort", stop, { once: true });
+    worker.once("message", (found) => {
+      signal?.removeEventListener("abort", stop);
+      resolve(found);
+    });
+    worker.once("error", (err) => {
+      signal?.removeEventListener("abort", stop);
+      reject(err);
+    });
+  });
+}
+
+export const searchFilesTool = defineTool(
+  "search_files",
+  "Search file contents with a regular expression (JavaScript syntax), giving path:line: text for each matching line. path narrows the search to a folder or one file (the project by default); glob narrows it by name, as in *.ts, or by path when it has a slash. Skips binary files, .git and what the .gitignore files list.",
+  z.object({ pattern: z.string().min(1), path: z.string().optional(), glob: z.string().optional() }),
+  async ({ pattern, path: start = ".", glob }, ctx) => {
+    try {
+      new RegExp(pattern);
+    } catch {
+      throw new Error(`${pattern} is not a regular expression`);
+    }
+    const name = glob?.replaceAll("\\", "/");
+    const base = await realpath(ctx.root);
+    const found: { abs: string; shown: string }[] = [];
+    for await (const f of files(start, ctx, "search")) {
+      const shown = shownPath(base, f);
+      if (name && !path.posix.matchesGlob(name.includes("/") ? shown : path.basename(f), name)) continue;
+      if (programEnvironment(f)) continue;
+      // A hard link can be another name for a file in the data folder, which the walk, going by folders,
+      // cannot see. So a file with more than one name is checked as read_file checks a path. Only those:
+      // the check took about 1.5 ms a file on Windows (measured 2026-10-26).
+      if (((await id(f))?.nlink ?? 0n) > 1n) {
+        try {
+          resolveIn(ctx.root, f);
+        } catch {
+          continue;
+        }
+      }
+      found.push({ abs: f, shown });
+    }
+    const { lines, beyond } = await grep(pattern, found, ctx.signal);
+    if (!lines.length) return `No lines match ${pattern}`;
+    return capped(lines, "matching lines", beyond);
   },
 );

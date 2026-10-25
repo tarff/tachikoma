@@ -12,7 +12,7 @@ const firstLine = (s: string) => s.split(/\r?\n/)[0] ?? "";
 // A call's main detail (release 3 design, "On screen"): the path for the file tools, the command's
 // first line for shell, the pattern for the search tools; null for a tool without its own summary,
 // which is shown with its whole input.
-const DETAIL: Record<string, string> = { read_file: "path", write_file: "path", edit_file: "path", shell: "command", find_files: "pattern" };
+const DETAIL: Record<string, string> = { read_file: "path", write_file: "path", edit_file: "path", shell: "command", find_files: "pattern", search_files: "pattern" };
 export function brief(name: string, input: unknown): string | null {
   const value = Object.hasOwn(DETAIL, name) && typeof input === "object" && input !== null ? (input as Record<string, unknown>)[DETAIL[name]!] : undefined;
   return typeof value === "string" ? firstLine(value) : null;
