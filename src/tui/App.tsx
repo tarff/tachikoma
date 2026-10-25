@@ -19,6 +19,7 @@ import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu 
 import { ModelPicker } from "./ModelPicker.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
+import { TaskPanel, taskRows } from "./TaskPanel.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
@@ -220,12 +221,14 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     };
   }, []);
 
-  // The working line's spinner and time, while something runs.
+  // The working line's spinner and time, while something runs; the panel's times, once a second, while
+  // only subagents do.
+  const running = tasks.running > 0;
   useEffect(() => {
-    if (!busy) return;
-    const spin = setInterval(() => setNow(Date.now()), SPIN_MS);
+    if (!busy && !running) return;
+    const spin = setInterval(() => setNow(Date.now()), busy ? SPIN_MS : 1000);
     return () => clearInterval(spin);
-  }, [busy]);
+  }, [busy, running]);
 
   // Called without await, so nothing may escape: an unhandled rejection ends the program. The queue
   // goes on after a turn, however it ended, and after `/model` once the list is closed. `answers`: a
@@ -547,8 +550,8 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   // at full height Ink draws the whole scrollback again each time. First the status line and the
   // working line; the tool line when there is room for it, the hint line and the cursor's row; the hint
   // line when there is room for it and the cursor's row; then an open menu, with the prompt cut to the
-  // cursor's row; then the prompt; then the to-do list, which gives way before the prompt does (release
-  // 4 design, "On screen"); then the queue, the last row saying how many more there are when they do
+  // cursor's row; then the task panel (release 4 design, "On screen"); then the prompt; then the to-do
+  // list, which gives way before the prompt does; then the queue, the last row saying how many more there are when they do
   // not all fit. The model list fills the rows above the status line itself, so it has no tool line
   // under it.
   const base = height - 1 - 1 - (busy ? 1 : 0);
@@ -557,8 +560,9 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   const hinted = hintFor(1) !== null && room >= 2;
   const space = Math.max(1, room - (hinted ? 1 : 0));
   const menuRows = menu ? Math.min(menu.entries.length, Math.max(1, space - 1)) : 0;
-  const promptSpace = menu ? 1 : space;
-  const promptLeft = space - menuRows - Math.min(layout(prompt.text, promptWidth(columns)).rows.length, promptSpace);
+  const panel = taskRows(tasks.all, Math.max(0, space - 1 - menuRows), now);
+  const promptSpace = menu ? 1 : space - panel.length;
+  const promptLeft = space - menuRows - panel.length - Math.min(layout(prompt.text, promptWidth(columns)).rows.length, promptSpace);
   const todoShown = !todos.current.hidden && unfinished(todos.current.items) ? todoRows(todos.current.items, promptLeft) : [];
   const left = promptLeft - todoShown.length;
   const q = queue.current.map((e) => visible(e));
@@ -595,6 +599,7 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
           ))}
           <Prompt editor={prompt} columns={columns} offset={(busy ? 1 : 0) + todoShown.length + queued.length} space={promptSpace} />
           {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} />}
+          <TaskPanel rows={panel} />
         </>
       )}
       {hint && (
@@ -617,6 +622,7 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
           project,
           branch,
           elapsed: now - started.current,
+          running: tasks.running,
         }}
       />
       {tooled && <ToolLine calls={calls.current} />}

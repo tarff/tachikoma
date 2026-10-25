@@ -1148,6 +1148,21 @@ describe("App's background subagents", () => {
     expect(tasks.all[0]!.state).toBe("running");
   });
 
+  it("shows each subagent in a panel under the prompt, a finished row staying until the user's next turn", async () => {
+    const worker = new Held("fake:w");
+    const lead = new FakeProvider("a", [bg("c1", "find x"), reply("started it"), reply("read it"), reply("next")]);
+    const { app } = await mount([], { lead, worker, segments: ["tasks"] });
+    await type(app, "go");
+    await until(app, "started it");
+    expect(app.lastFrame()).toMatch(/›\n◐ t1 find x · w · \d+s · ↓ 0 tokens · \$0\.00\n\? for shortcuts\n 1 running$/);
+    worker.answer("found");
+    await until(app, "read it");
+    expect(app.lastFrame()).toMatch(/›\n✓ t1 find x · w · /);
+    await type(app, "more");
+    await until(app, "next");
+    expect(app.lastFrame()).not.toContain("t1 find x ·");
+  });
+
   for (const [way, keys] of [
     ["/exit", ["/exit", "\r"]],
     ["Ctrl-C twice", ["\u0003", "\u0003"]],

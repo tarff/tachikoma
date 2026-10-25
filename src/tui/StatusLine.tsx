@@ -1,9 +1,10 @@
 import { Text } from "ink";
 import { visible } from "../core/permissions.js";
 
-// The status line's parts, and `tools`, the line under it (release 3 design, "On screen").
-export type Segment = "lead" | "context" | "tokens" | "cost" | "mode" | "errors" | "project" | "time" | "tools";
-export const SEGMENTS: Segment[] = ["lead", "context", "tokens", "cost", "mode", "errors", "project", "time", "tools"];
+// The status line's parts, and `tools`, the line under it (release 3 design, "On screen"); `tasks`,
+// how many subagents run (release 4 design, "On screen").
+export type Segment = "lead" | "context" | "tokens" | "cost" | "mode" | "errors" | "project" | "time" | "tasks" | "tools";
+export const SEGMENTS: Segment[] = ["lead", "context", "tokens", "cost", "mode", "errors", "project", "time", "tasks", "tools"];
 type LineSegment = Exclude<Segment, "tools">;
 
 export interface StatusInfo {
@@ -19,6 +20,7 @@ export interface StatusInfo {
   project: string; // the project folder's name
   branch: string | null; // the git branch; null outside a repository (see git.ts)
   elapsed: number; // ms since the session started
+  running: number; // subagents running or waiting for a place
 }
 
 // The unit is picked after rounding, so 999,999 shows as 1.0M, not 1000.0k.
@@ -77,13 +79,16 @@ export function formatSegment(s: LineSegment, i: StatusInfo): string {
       return visible(i.branch === null ? i.project : `${i.project} git:(${i.branch})`);
     case "time":
       return `⏱ ${duration(i.elapsed)}`;
+    case "tasks":
+      return `${i.running} running`;
   }
 }
 
 // One line, cut at the end to the terminal's width (Ink measures it in columns) instead of wrapping.
 // The text is inverse; the context bar is not, so its filled cells show in their colour.
 export function StatusLine({ info, segments }: { info: StatusInfo; segments: Segment[] }) {
-  const shown = segments.filter((s): s is LineSegment => s !== "tools");
+  // `tasks` shows only while a subagent runs.
+  const shown = segments.filter((s): s is LineSegment => s !== "tools" && (s !== "tasks" || info.running > 0));
   return (
     <Text wrap="truncate-end">
       {shown.map((s, n) => {

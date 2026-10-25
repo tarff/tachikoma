@@ -16,6 +16,7 @@ const info: StatusInfo = {
   project: "Agent Harness",
   branch: "main",
   elapsed: 14 * 60_000,
+  running: 0,
 };
 
 // Renders once and unmounts, so Ink instances do not pile up.
@@ -26,9 +27,16 @@ function frame(i: StatusInfo, segments: Segment[]) {
   return shown;
 }
 
+describe("StatusLine's tasks part", () => {
+  it("says how many subagents run, only while any does", () => {
+    expect(frame({ ...info, running: 2 }, ["errors", "tasks"])).toBe(" 2 errors | 2 running");
+    expect(frame(info, ["errors", "tasks"])).toBe(" 2 errors");
+  });
+});
+
 describe("StatusLine", () => {
   it("shows every part by default", () => {
-    expect(SEGMENTS).toEqual(["lead", "context", "tokens", "cost", "mode", "errors", "project", "time", "tools"]);
+    expect(SEGMENTS).toEqual(["lead", "context", "tokens", "cost", "mode", "errors", "project", "time", "tasks", "tools"]);
     // In two parts: all of them are wider than the test terminal's 100 columns.
     const shown = frame(info, SEGMENTS.slice(0, 4));
     expect(shown).toContain("lead anthropic:claude-opus-5-5");

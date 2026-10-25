@@ -13,11 +13,16 @@ export interface Spend {
   costUnknown: boolean;
 }
 
+// How long something has run, in seconds, then minutes and seconds.
+export function elapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
 // The line over the prompt while something runs (release 3 design, "On screen"): what it is, for how
 // long, and for a turn its tokens and cost so far, which change after each model reply.
 export function workingText(label: string, ms: number, spend: Spend | null): string {
-  const s = Math.floor(ms / 1000);
-  const time = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  const time = elapsed(ms);
   const turn = spend ? ` · ↓ ${k(spend.output)} tokens · ${costText(spend.lead, spend.cost, spend.costUnknown)}` : "";
   return `${FRAMES[Math.floor(ms / SPIN_MS) % FRAMES.length]} ${label} · ${time}${turn} · Esc to stop`;
 }
