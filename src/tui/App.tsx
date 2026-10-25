@@ -8,10 +8,12 @@ import type { Stats } from "../core/stats.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
 import { describe, type Line, screen } from "./describe.js";
-import { apply, type Editor, empty, load, move } from "./editor.js";
+import { apply, type Editor, empty, load, move, replace } from "./editor.js";
 import { History, matches } from "./history.js";
 import { type Command, commands } from "./keys.js";
 import { layout, vertical } from "./layout.js";
+import { Menu } from "./Menu.js";
+import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -24,6 +26,7 @@ export interface AppProps {
   stats: Stats;
   mode: Mode;
   project: string; // the project folder's name, for the status line
+  root: string; // the project folder, where `@` paths start
   gitBranch: () => string | null; // read at the start and after each turn: the model may switch branches
   historyFile: string; // this project's past prompts
   errorFile: string;
@@ -45,7 +48,7 @@ const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (
 const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
-export function App({ session, bus, stats, mode, project, gitBranch, historyFile, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
+export function App({ session, bus, stats, mode, project, root, gitBranch, historyFile, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
@@ -56,6 +59,11 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
   const step = useRef<{ at: number; draft: string } | null>(null); // where Up has gone in the history, and what was typed before
   // Ctrl+R: what is searched for, how many older matches Ctrl+R has passed, and the prompt to give back.
   const search = useRef<{ query: string; skip: number; before: Editor } | null>(null);
+  // The menus: the entry chosen, for the text it was chosen at; the text Esc closed one at, which
+  // keeps it closed until the text changes; and the folder `@` listed last.
+  const chosen = useRef({ text: "", at: 0 });
+  const closed = useRef<string | null>(null);
+  const listed = useRef<{ folder: string; listing: Listing } | null>(null);
   const { columns, rows: height } = useWindowSize();
   const [busy, setBusy] = useState(false);
   const working = useRef(false); // busy, for keys read before the screen is drawn again
@@ -233,6 +241,13 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
       return rerender((n) => n + 1);
     }
     const e = editor.current;
+    const menu = menuFor(e);
+    if (menu && ((key.tab && !key.shift) || key.escape)) {
+      if (key.escape) closed.current = e.text;
+      else fill(menu, e);
+      forget();
+      return rerender((n) => n + 1);
+    }
     const name = key.escape ? "Esc" : key.ctrl && ch === "c" ? "Ctrl-C" : key.ctrl && ch === "d" && !e.text ? "Ctrl-D" : null;
     // During a turn the prompt still edits; Esc stops the turn and the queue goes on, Ctrl-C stops it
     // and the queue comes back. Ctrl-D does not exit while a turn is running.
@@ -278,6 +293,12 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
 
   const run = (c: Command) => {
     const e = editor.current;
+    const menu = menuFor(e);
+    if (menu && (c === "up" || c === "down")) {
+      chosen.current = { text: e.text, at: Math.max(0, Math.min(menu.entries.length - 1, chosenIn(e, menu) + (c === "up" ? -1 : 1))) };
+      return;
+    }
+    if (menu && c === "submit") return menu.kind === "command" ? send(load(e, menu.entries[chosenIn(e, menu)]!.run!)) : fill(menu, e);
     if (c === "up" && !e.text && queue.current.length) return restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);
@@ -340,6 +361,24 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
     }
   };
 
+  // The `/` or `@` menu for the prompt as it is, unless Esc closed it at this text. A folder is listed
+  // again when the menu opens again, so it shows what is there then.
+  const menuFor = (e: Editor): MenuData | null => {
+    if (closed.current !== e.text) closed.current = null;
+    if (search.current || closed.current !== null) return null;
+    return commandMenu(e.text, e.cursor) ?? pathMenu(e.text, e.cursor, list);
+  };
+  const list = (folder: string) => {
+    if (listed.current?.folder !== folder) listed.current = { folder, listing: listFolder(root, folder) };
+    return listed.current.listing;
+  };
+  const chosenIn = (e: Editor, m: MenuData) => Math.min(chosen.current.text === e.text ? chosen.current.at : 0, m.entries.length - 1);
+  // Tab, and Enter on a path: the chosen entry in place of what it completes.
+  const fill = (m: MenuData, e: Editor) => {
+    const entry = m.entries[chosenIn(e, m)]!;
+    if (!entry.error) editor.current = replace(e, m.from, entry.fill);
+  };
+
   // What the search shows in the prompt: the match, with the cursor at its end, or, with no match,
   // the prompt as it was.
   const shown = (): Editor => {
@@ -371,6 +410,10 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
     }
   };
 
+  const prompt = search.current ? shown() : editor.current;
+  const menu = picker || question ? null : menuFor(prompt);
+  if (menu?.kind !== "path") listed.current = null;
+
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the
   // rows left for the queue.
   const exitKey = first.current?.name === "Esc" ? undefined : first.current?.name;
@@ -382,7 +425,9 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
         ? `Press ${exitKey} again to exit`
         : picker || question
           ? null
-          : queue.current.length
+          : menu
+            ? `↑↓ choose · ${menu.kind === "command" ? "Tab fill · Enter run" : "Tab or Enter fill"} · Esc close`
+            : queue.current.length
             ? left > 0
               ? "↑ to edit queued messages"
               : `${queue.current.length} queued`
@@ -392,13 +437,15 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
 
   // The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since
   // at full height Ink draws the whole scrollback again each time. First the status line and the
-  // working line, and the hint line when there is room for it and the cursor's row; then the prompt;
-  // then the queue, the last row saying how many more there are when they do not all fit.
+  // working line, and the hint line when there is room for it and the cursor's row; then an open menu,
+  // with the prompt cut to the cursor's row; then the prompt; then the queue, the last row saying how
+  // many more there are when they do not all fit.
   const room = height - 1 - 1 - (busy ? 1 : 0);
   const hinted = hintFor(1) !== null && room >= 2;
   const space = Math.max(1, room - (hinted ? 1 : 0));
-  const prompt = search.current ? shown() : editor.current;
-  const left = space - Math.min(layout(prompt.text, promptWidth(columns)).rows.length, space);
+  const menuRows = menu ? Math.min(menu.entries.length, Math.max(1, space - 1)) : 0;
+  const promptSpace = menu ? 1 : space;
+  const left = space - menuRows - Math.min(layout(prompt.text, promptWidth(columns)).rows.length, promptSpace);
   const q = queue.current.map((e) => visible(e));
   const queued = q.length <= left ? q : left > 0 ? [...q.slice(0, left - 1), `+${q.length - left + 1} more`] : [];
   const hint = hinted ? hintFor(left) : null;
@@ -424,7 +471,8 @@ export function App({ session, bus, stats, mode, project, gitBranch, historyFile
               {row}
             </Text>
           ))}
-          <Prompt editor={prompt} columns={columns} offset={(busy ? 1 : 0) + queued.length} space={space} />
+          <Prompt editor={prompt} columns={columns} offset={(busy ? 1 : 0) + queued.length} space={promptSpace} />
+          {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} />}
         </>
       )}
       {hint && (

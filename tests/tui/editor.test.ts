@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Action, apply, type Editor, empty, load } from "../../src/tui/editor.js";
+import { type Action, apply, type Editor, empty, load, replace } from "../../src/tui/editor.js";
 
 // The text with the cursor shown as "|".
 const show = (e: Editor) => `${e.text.slice(0, e.cursor)}|${e.text.slice(e.cursor)}`;
@@ -95,5 +95,13 @@ describe("editor", () => {
     expect(show(e)).toBe("two\nlines|");
     expect(show(run(e, "undo"))).toBe("two\nlines|");
     expect(show(run(e, "yank"))).toBe("two\nlinesyz|");
+  });
+});
+
+describe("replace", () => {
+  it("puts text in place of what is before the cursor from a place, as one step to undo", () => {
+    const e = replace(run(at("|"), typed("read @s")), 5, "@src/");
+    expect(show(e)).toBe("read @src/|");
+    expect(show(run(e, "undo"))).toBe("read @s|");
   });
 });
