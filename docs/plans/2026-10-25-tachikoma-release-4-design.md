@@ -79,8 +79,9 @@ replies cut off, costs and stopping work for subagents as they do for the lead, 
     shows.
 - **Side by side:** several `delegate` calls in one reply start together. The reply's other tool
   calls still run one after another, as now.
-- **How many at once:** a setting, `--max-tasks`, whose default comes from measuring (see "Before
-  the build"). Past the limit, a subagent waits for a free place, and its row says "waiting".
+- **How many at once:** a setting, `--max-tasks`, whose default, 8, comes from measuring (see
+  "Before the build"). Past the limit, a subagent waits for a free place, and its row says
+  "waiting".
 
 ## Background subagents
 
@@ -229,6 +230,18 @@ Both are run by the user, in their terminal, as release 3's key probes were.
    records the result and the account it was measured on. It spends a few cents.
 2. **Ctrl+T:** whether it arrives as a key of its own in Windows Terminal with PowerShell 5.1. If it
    does not, another key is chosen then.
+
+Results, 2026-10-26, in the user's terminal (Windows Terminal, PowerShell 5.1, Node 24.22.1):
+1. **Eight at once, none refused,** on `anthropic:claude-haiku-5-5` and the user's API account.
+   Each subagent read two of the project's files with read_file and answered: 2 at once took 3.4 s,
+   4 took 10.8 s and 8 took 3.9 s, with no refusals in any round and $0.0069 in all. The account's
+   limits, from Anthropic's headers, are 10,000 requests, 10M input tokens and 2M output tokens a
+   minute; the round of eight used 16 requests and about 38,000 input tokens. **`--max-tasks`
+   defaults to 8,** the largest number tried. It is the most tried, not a limit found: this account
+   had room for far more, and an account with lower limits may see refusals sooner. The script
+   (`tasksprobe.mjs`) and its results were kept outside the repository, as release 3's key probes
+   were.
+2. **Ctrl+T arrives** as the byte 0x14, which Ink reads as Ctrl+T. It stays the key.
 
 ## Testing
 

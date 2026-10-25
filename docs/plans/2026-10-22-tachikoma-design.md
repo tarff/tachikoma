@@ -782,7 +782,8 @@ whose results are recorded.
    the download is.
 3. How many workers can run at once within each provider's rate limits. Sets the default cap.
    Measured first for release 4's subagents, on the user's account, before that build (release 4
-   design, "Before the build").
+   design, "Before the build"): 8 Claude Haiku 5.5 subagents at once, none refused, on 2026-10-26.
+   Other providers, and more than 8, are still to measure.
 4. Which transcript formats MemPalace 3.11's conversation miner reads. Decides whether Tachikoma
    writes transcripts it can read or files memories through MCP tools directly.
 5. How superpowers v7 maps tool names for other harnesses.
