@@ -62,6 +62,7 @@ async function mount(
     past?: string[]; // the project's prompts from earlier sessions
     newLead?: Provider; // what /lead and the picker make
     rows?: number; // the terminal's height
+    intro?: AppProps["intro"]; // the start line
     mode?: Mode; // the mode the session starts in
   } = {},
 ) {
@@ -87,6 +88,7 @@ async function mount(
       root={ctx.root}
       gitBranch={() => opts.branches?.shift() ?? null}
       historyFile={historyFile}
+      intro={opts.intro ?? []}
       errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
       segments={opts.segments ?? SEGMENTS}
       makeProvider={(spec) => {
@@ -153,6 +155,11 @@ describe("App", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("shows the start line, grey, first", async () => {
+    const { app } = await mount([], { intro: [{ text: "Instructions: CLAUDE.md (12 bytes)", color: "gray" }] });
+    expect(app.lastFrame()).toMatch(/^Instructions: CLAUDE.md \(12 bytes\)\n/);
   });
 
   it("sends what the user types and shows the reply", async () => {

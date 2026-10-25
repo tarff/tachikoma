@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { constants } from "node:os";
+import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { render } from "ink";
 import { accountCommand } from "./auth/chatgpt.js";
-import { endOnEpipe, headlessAnswer, headlessExit, jsonLine, prose, statusSegments } from "./clilib.js";
+import { approvalQuestion, endOnEpipe, headlessAnswer, headlessExit, headlessLeftOut, instructionsLine, jsonLine, prose, statusSegments } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
+import { readInstructions } from "./core/instructions.js";
 import { MODES, type Mode, PermissionGate } from "./core/permissions.js";
 import { systemPrompt } from "./core/prompt.js";
 import { Session } from "./core/session.js";
@@ -54,6 +55,24 @@ prompt quits. ? on an empty prompt lists every key.`;
 function fail(message: string): never {
   console.error(message);
   process.exit(1);
+}
+
+// The question at the start, before the screen is drawn (release 4 design, "Files that lead elsewhere
+// ask first"): y reads the files, any other key leaves them out, and Ctrl-C quits.
+function askAtStart(question: string): Promise<boolean> {
+  process.stdout.write(`${question} `);
+  process.stdin.setRawMode(true);
+  return new Promise((resolve) => {
+    process.stdin.once("data", (data) => {
+      process.stdin.setRawMode(false);
+      process.stdin.pause();
+      const key = String(data);
+      if (key === "\u0003") process.exit(128 + constants.signals.SIGINT);
+      const yes = key.toLowerCase() === "y";
+      process.stdout.write(`${yes ? "y" : "n"}\n`);
+      resolve(yes);
+    });
+  });
 }
 
 function oneOf<T extends string>(name: string, value: string | undefined, allowed: readonly T[]): T | undefined {
@@ -136,6 +155,22 @@ try {
   fail(`--fallback: ${errorText(err)}`); // otherwise it reads like a bad lead
 }
 
+const interactive = parsed.print === undefined;
+// Before the instruction files are read, so nothing is asked with no terminal to answer.
+if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
+
+// Read once, at the start (release 4 design, "Instruction files"). TACHI_INSTRUCTIONS_TOP moves where
+// the walk down to the project starts, so tests never read the user's files.
+const instructions = await readInstructions({ root, codexHome: process.env.CODEX_HOME || undefined, top: process.env.TACHI_INSTRUCTIONS_TOP || undefined }, async (reached) => {
+  if (mode === "never") return true; // as read_file reads outside the project then
+  if (!interactive) {
+    console.error(headlessLeftOut(reached));
+    return false;
+  }
+  return askAtStart(approvalQuestion(reached));
+});
+const system = [systemPrompt(root), instructions.text].filter(Boolean).join("\n\n");
+
 let declined = false;
 let ask: (summary: string, detail?: string) => Promise<boolean> = async (summary) => {
   declined = true;
@@ -144,10 +179,10 @@ let ask: (summary: string, detail?: string) => Promise<boolean> = async (summary
   );
   return false;
 };
-const gate = new PermissionGate(mode, (summary, detail) => ask(summary, detail), parsed.print === undefined ? undefined : "Not allowed in -p mode, where nobody can approve it");
+const gate = new PermissionGate(mode, (summary, detail) => ask(summary, detail), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it");
 // The to-do list is the lead's alone; the screen shows it from the bus.
 const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items))];
-const session = new Session({ lead, fallback, tools, system: systemPrompt(root), ctx: { root, executor: new LocalExecutor(), gate }, bus });
+const session = new Session({ lead, fallback, tools, system, ctx: { root, executor: new LocalExecutor(), gate }, bus });
 
 // The executor stops running commands from an "exit" handler, which dying by a signal skips.
 for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => process.exit(128 + constants.signals[sig]));
@@ -183,7 +218,6 @@ if (parsed.print !== undefined) {
   }
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
-  if (!process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
   // Ctrl-C reaches the interface as a key; a SIGINT here came from outside (`kill -INT`).
   process.on("SIGINT", () => process.exit(128 + constants.signals.SIGINT));
   render(
@@ -199,6 +233,7 @@ if (parsed.print !== undefined) {
       root={root}
       gitBranch={() => gitBranch(root)}
       historyFile={historyFile(root)}
+      intro={[instructionsLine(instructions, os.homedir())].flatMap((text) => (text === null ? [] : [{ text, color: "gray" }]))}
       errorFile={errorFile}
       segments={segments}
       makeProvider={makeProvider}

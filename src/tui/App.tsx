@@ -34,6 +34,7 @@ export interface AppProps {
   root: string; // the project folder, where `@` paths start
   gitBranch: () => string | null; // read at the start and after each turn: the model may switch branches
   historyFile: string; // this project's past prompts
+  intro: Line[]; // shown first: the instruction files read
   errorFile: string;
   segments: Segment[];
   makeProvider: (spec: string) => Provider;
@@ -53,7 +54,7 @@ const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (
 const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
-export function App({ session, bus, stats, mode, onMode, project, root, gitBranch, historyFile, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
+export function App({ session, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
@@ -167,6 +168,7 @@ export function App({ session, bus, stats, mode, onMode, project, root, gitBranc
     bus.on("tool-start", onToolStart);
     bus.on("tool-end", onToolEnd);
     bus.on("todo", onTodo);
+    say(...intro);
     history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes

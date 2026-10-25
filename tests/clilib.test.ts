@@ -1,8 +1,50 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describe, expect, it } from "vitest";
-import { headlessAnswer, headlessExit, jsonLine, prose, statusSegments } from "../src/clilib.js";
+import path from "node:path";
+import { approvalQuestion, headlessAnswer, headlessExit, headlessLeftOut, instructionsLine, jsonLine, prose, statusSegments } from "../src/clilib.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
+
+describe("the instruction files on screen", () => {
+  const home = path.resolve("/home/me");
+  const proj = path.resolve("/work/proj");
+  const r = {
+    text: "...",
+    read: [
+      { path: path.join(home, ".claude", "CLAUDE.md"), size: 1200 },
+      { path: path.join(proj, "AGENTS.md"), size: 3100 },
+    ],
+    left: [{ path: path.resolve("/elsewhere/x.md"), why: "not allowed" }],
+  };
+
+  it("lists the files read, the user's folder as ~, their total size, and those left out", () => {
+    expect(instructionsLine(r, home)).toBe(`Instructions: ${path.join("~", ".claude", "CLAUDE.md")}, ${path.join(proj, "AGENTS.md")} (4.3k bytes); left out: ${path.resolve("/elsewhere/x.md")} (not allowed)`);
+    expect(instructionsLine({ text: "", read: [], left: [] }, home)).toBeNull();
+    expect(instructionsLine({ ...r, read: [] }, home)).toBe(`Instructions: none read; left out: ${path.resolve("/elsewhere/x.md")} (not allowed)`);
+  });
+
+  it("asks once about the files outside the project, each with how it was reached, escaped", () => {
+    const reached = [
+      { path: path.resolve("/elsewhere/x.md"), how: `imported by ${path.join(proj, "CLAUDE.md")}` },
+      { path: path.resolve("/elsewhere/a\u001b[2Jb.md"), how: `found as ${path.join(proj, "AGENTS.md")}` },
+    ];
+    expect(approvalQuestion(reached)).toBe(
+      [
+        "Read 2 files from outside the project, reached by the instruction files?",
+        `  ${path.resolve("/elsewhere/x.md")}, imported by ${path.join(proj, "CLAUDE.md")}`,
+        `  ${path.resolve("/elsewhere/a\\u001b[2Jb.md")}, found as ${path.join(proj, "AGENTS.md")}`,
+        "[y/n]",
+      ].join("\n"),
+    );
+    expect(approvalQuestion(reached.slice(0, 1))).toContain("Read 1 file from outside the project");
+  });
+
+  it("says with -p which were left out, since nobody can approve them", () => {
+    expect(headlessLeftOut([{ path: path.resolve("/elsewhere/x.md"), how: "imported by CLAUDE.md" }])).toBe(
+      `note: 1 instruction file from outside the project left out, since nobody can approve it in -p mode: ${path.resolve("/elsewhere/x.md")}, imported by CLAUDE.md`,
+    );
+  });
+});
 
 describe("headlessExit", () => {
   const run = { aborted: false, failed: false, declined: false };

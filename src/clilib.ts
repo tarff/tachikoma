@@ -1,7 +1,9 @@
 import { constants } from "node:os";
+import path from "node:path";
+import type { Instructions, Reached } from "./core/instructions.js";
 import { visible } from "./core/permissions.js";
 import { screen } from "./tui/describe.js";
-import { type Segment, SEGMENTS } from "./tui/StatusLine.js";
+import { k, type Segment, SEGMENTS } from "./tui/StatusLine.js";
 
 // Headless output reaches the terminal too, so model and provider text gets the scrollback's escaping.
 export const prose = (text: string) => screen({ text }).text;
@@ -47,4 +49,29 @@ export function statusSegments(value: string | undefined): Segment[] {
 export function endOnEpipe(err: NodeJS.ErrnoException): void {
   if (err.code !== "EPIPE") throw err;
   process.exit();
+}
+
+// The grey line at the start of a session (release 4 design, "Instruction files"): the files read,
+// the user's folder written as ~, their total size, and any left out and why. Paths come from the disk,
+// so they are escaped.
+export function instructionsLine(r: Instructions, home: string): string | null {
+  if (!r.read.length && !r.left.length) return null;
+  const short = (p: string) => visible(p === home || p.startsWith(home + path.sep) ? `~${p.slice(home.length)}` : p);
+  const size = r.read.reduce((n, f) => n + f.size, 0);
+  const read = r.read.length ? `${r.read.map((f) => short(f.path)).join(", ")} (${k(size)} bytes)` : "none read";
+  const left = r.left.length ? `; left out: ${r.left.map((l) => `${short(l.path)} (${visible(l.why)})`).join(", ")}` : "";
+  return `Instructions: ${read}${left}`;
+}
+
+const files = (n: number) => `${n} file${n === 1 ? "" : "s"}`;
+
+// The one question at the start about files the instruction files lead to outside the project.
+export function approvalQuestion(reached: Reached[]): string {
+  return [`Read ${files(reached.length)} from outside the project, reached by the instruction files?`, ...reached.map((r) => `  ${visible(r.path)}, ${visible(r.how)}`), "[y/n]"].join("\n");
+}
+
+// With -p nobody can approve them, so they are left out, and stderr names them.
+export function headlessLeftOut(reached: Reached[]): string {
+  const n = reached.length;
+  return `note: ${n} instruction file${n === 1 ? "" : "s"} from outside the project left out, since nobody can approve ${n === 1 ? "it" : "them"} in -p mode: ${reached.map((r) => `${visible(r.path)}, ${visible(r.how)}`).join("; ")}`;
 }

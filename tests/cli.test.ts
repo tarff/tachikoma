@@ -1,17 +1,24 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// Runs the real command through tsx. Every case here stops before any model is called.
+// Runs the real command through tsx, in a fresh project folder with a pretend home folder, and with
+// the walk for instruction files starting at a fresh folder of its own, so no case reads the user's
+// files. Every case here stops before any model answers.
 function tachi(...args: (string | Record<string, string>)[]) {
   const env = args.find((a) => typeof a === "object") ?? {};
   const words = args.filter((a) => typeof a === "string");
-  const r = spawnSync(process.execPath, ["--import", "tsx", path.resolve("src/cli.tsx"), ...words], {
+  const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+  const home = path.join(top, "home");
+  mkdirSync(home);
+  const r = spawnSync(process.execPath, ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, path.resolve("src/cli.tsx"), ...words], {
+    cwd: env.cwd ?? top,
     input: "x\n",
     encoding: "utf8",
-    env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", ...env },
+    env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "", ...env },
   });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
@@ -64,6 +71,17 @@ describe("tachi", { timeout: 15_000 }, () => {
     const r = tachi("login", "chatgpt", "--account", "x");
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("Usage: tachi login chatgpt [--new | --account <number>]");
+  });
+
+  it("with -p, leaves out instruction files from outside the project and says which, printing nothing about the rest", () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    writeFileSync(path.join(top, "secret.md"), "secret");
+    writeFileSync(path.join(proj, "CLAUDE.md"), `@${path.join(top, "secret.md")}`);
+    const r = tachi("--lead", "ollama:none", "-p", "hi", { cwd: proj, TACHI_INSTRUCTIONS_TOP: top });
+    expect(r.stderr).toContain(`note: 1 instruction file from outside the project left out, since nobody can approve it in -p mode: ${path.join(top, "secret.md")}, imported by ${path.join(proj, "CLAUDE.md")}`);
+    expect(r.stderr).not.toContain("Instructions:");
   });
 
   it("refuses interactive mode without a terminal, before starting the interface", () => {
