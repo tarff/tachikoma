@@ -1,6 +1,8 @@
 // The terminal's second screen and mouse reports (release 5 design, "The two modes" and "The mouse"). Ink's own
 // alternate-screen option is set only at the start, so Tachikoma writes the switches itself, and remembers what is on so
 // every way out can undo it (design, "When something goes wrong").
+import { writeSync } from "node:fs";
+import { errorText } from "../core/types.js";
 
 export const SECOND_SCREEN = "\u001b[?1049h";
 export const FIRST_SCREEN = "\u001b[?1049l";
@@ -76,13 +78,25 @@ export class Screen {
 // `uncaughtExceptionMonitor` before Node prints the error, so the error shows on the normal screen (the plan's choice 18).
 // Ink unmounts first: its own exit handler (signal-exit, in ink.js) runs after every `exit` listener and draws the frame
 // its frame-rate limit held back, which after leaving would move up over the shell's lines and draw over them.
+// An unmount that throws is caught: thrown from uncaughtExceptionMonitor, Node would take it for its own handler failing,
+// exit with 7 and never report the crash (found at Task 6's review). It is told on stderr once the terminal is back, and
+// only once: a crash's `exit` comes after its monitor.
 export function restoreOnExit(screen: Screen, unmount: () => void, proc: Pick<NodeJS.EventEmitter, "on"> = process): void {
+  let done = false;
   const out = () => {
+    if (done) return;
+    done = true;
+    let failed = false;
+    let error: unknown;
     try {
       unmount();
-    } finally {
-      screen.restore();
+    } catch (err) {
+      failed = true;
+      error = err;
     }
+    screen.restore();
+    // writeSync, as the process may end right after.
+    if (failed) writeSync(2, `The interface failed while closing: ${errorText(error)}\n`);
   };
   proc.on("exit", out);
   proc.on("uncaughtExceptionMonitor", out);

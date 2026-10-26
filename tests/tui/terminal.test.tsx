@@ -10,6 +10,8 @@ import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, restoreOnExit, SECOND_SCREEN, SHOW_CURSOR, Screen } from "../../src/tui/terminal.js";
 
+const ESC = String.fromCharCode(27);
+
 // A stand-in terminal and keyboard, as in prompt.test.tsx: Ink draws to them as to real ones.
 class Terminal extends EventEmitter {
   isTTY = true;
@@ -117,10 +119,7 @@ describe("restoreOnExit", () => {
     for (const event of ["exit", "uncaughtExceptionMonitor"]) {
       const proc = new EventEmitter();
       let out = "";
-      const screen = new Screen(
-        (s) => (out += s),
-        (s) => (out += s),
-      );
+      const screen = new Screen((s) => (out += s), (s) => (out += s));
       restoreOnExit(screen, () => (out += "last frame"), proc);
       screen.enter();
       proc.emit(event, new Error("boom"));
@@ -132,7 +131,7 @@ describe("restoreOnExit", () => {
   // for its frame-rate limit, then the way out. Ink's own exit handler (signal-exit, which ink.js registers) would draw
   // that held frame after every `exit` listener, so on the normal screen, if restoreOnExit didn't unmount Ink first. The
   // output and the errors go to one file, to keep their order. SIGTERM and SIGHUP end through process.exit in cli.tsx.
-  function run(end: string) {
+  function run(end: string, unmount = "() => ink?.unmount()") {
     const dir = mkdtempSync(path.join(tmpdir(), "tachi-terminal-"));
     const url = (p: string) => JSON.stringify(pathToFileURL(path.resolve(p)).href);
     const script = path.join(dir, "script.mjs");
@@ -144,7 +143,7 @@ import { render, Text } from ${url("node_modules/ink/build/index.js")};
 import { restoreOnExit, Screen } from ${url("src/tui/terminal.ts")};
 const screen = new Screen((s) => process.stdout.write(s), (s) => writeSync(1, s));
 let ink;
-restoreOnExit(screen, () => ink?.unmount());
+restoreOnExit(screen, ${unmount});
 screen.enter();
 ink = render(React.createElement(Text, null, "frame one"), { interactive: true, patchConsole: false, exitOnCtrlC: false });
 ink.rerender(React.createElement(Text, null, "frame two"));
@@ -178,7 +177,18 @@ ${end}
     expect(r.before).toContain("frame two");
     expect(r.after.startsWith(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR)).toBe(true);
     expect(r.after).toContain("Error: boom at the end");
-    expect(r.after).not.toContain("frame");
+    // Node's report has no colour codes off a terminal, so any escape code here would be one written after the restore.
+    expect(r.after.slice((MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR).length)).not.toContain(ESC);
+  });
+
+  // A throw inside uncaughtExceptionMonitor would count as Node's own handler failing: exit code 7, and the crash's report
+  // lost (found at Task 6's review).
+  it("still reports a crash when Ink's unmount fails too, and says so once after putting the terminal back", { timeout: 15_000 }, () => {
+    const r = run('throw new Error("original boom");', '() => { throw new Error("unmount broke"); }');
+    expect(r.code).toBe(1);
+    expect(r.after.startsWith(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR)).toBe(true);
+    expect(r.after).toContain("Error: original boom");
+    expect(r.after.split("The interface failed while closing: unmount broke")).toHaveLength(2);
   });
 });
 
