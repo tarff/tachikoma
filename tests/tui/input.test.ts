@@ -1,0 +1,229 @@
+import { EventEmitter } from "node:events";
+import { render, useInput } from "ink";
+import { createElement } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { InputFilter, type Mouse, type Piece, split } from "../../src/tui/input.js";
+
+const ESC = "\u001b";
+const none = { shift: false, alt: false, ctrl: false };
+const left = (kind: Mouse["kind"], x: number, y: number): Mouse => ({ kind, button: "left", x, y, ...none });
+
+// Each read through split in turn, as the filter does, with every piece in order.
+function run(...chunks: string[]) {
+  let state = { held: "", pasting: false, tail: "" };
+  const pieces: Piece[] = [];
+  for (const chunk of chunks) {
+    const out = split(state, chunk);
+    pieces.push(...out.pieces);
+    state = out.state;
+  }
+  return { pieces, state };
+}
+
+// A stand-in for process.stdin that records what reaches it.
+class Source extends EventEmitter {
+  calls: string[] = [];
+  setRawMode(on: boolean) {
+    this.calls.push(`setRawMode(${on})`);
+    return this;
+  }
+  setEncoding(e: string) {
+    this.calls.push(`setEncoding(${e})`);
+    return this;
+  }
+  ref() {
+    this.calls.push("ref");
+    return this;
+  }
+  unref() {
+    this.calls.push("unref");
+    return this;
+  }
+}
+
+// A filter on a stand-in, read as Ink reads it: every `readable` is read until null.
+function filtered() {
+  const source = new Source();
+  const filter = new InputFilter(source as never);
+  const reads: string[] = [];
+  const mice: Mouse[] = [];
+  filter.on("readable", () => {
+    let s: string | null;
+    while ((s = filter.read()) !== null) reads.push(s);
+  });
+  filter.on("mouse", (m: Mouse) => mice.push(m));
+  return { source, filter, reads, mice, feed: (s: string) => source.emit("data", s) };
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("split", () => {
+  it("takes out each report from the probe", () => {
+    const one = (report: string) => run(report).pieces;
+    expect(one(`${ESC}[<64;10;5M`)).toEqual([{ mouse: { kind: "wheel", button: "none", wheel: "up", x: 9, y: 4, ...none } }]);
+    expect(one(`${ESC}[<65;10;5M`)).toEqual([{ mouse: { kind: "wheel", button: "none", wheel: "down", x: 9, y: 4, ...none } }]);
+    expect(one(`${ESC}[<0;10;6M`)).toEqual([{ mouse: left("press", 9, 5) }]);
+    expect(one(`${ESC}[<32;11;6M`)).toEqual([{ mouse: left("drag", 10, 5) }]);
+    expect(one(`${ESC}[<0;40;9m`)).toEqual([{ mouse: left("release", 39, 8) }]);
+    expect(one(`${ESC}[<2;5;5M`)).toEqual([{ mouse: { kind: "press", button: "right", x: 4, y: 4, ...none } }]);
+    expect(one(`${ESC}[<20;1;1M`)).toEqual([{ mouse: { kind: "press", button: "left", x: 0, y: 0, shift: true, alt: false, ctrl: true } }]);
+  });
+
+  it("joins a report split over two reads into one press, with nothing for Ink", () => {
+    const first = run(`${ESC}[<0;1`);
+    expect(first.pieces).toEqual([]);
+    expect(first.state.held).toBe(`${ESC}[<0;1`);
+    expect(run(`${ESC}[<0;1`, "2;5M").pieces).toEqual([{ mouse: left("press", 11, 4) }]);
+  });
+
+  it("keeps keys and reports in order", () => {
+    expect(run(`a${ESC}[<0;1;1Mb`).pieces).toEqual([{ keys: "a" }, { mouse: left("press", 0, 0) }, { keys: "b" }]);
+  });
+
+  it("takes nothing out of a paste, so a report's shape inside one reaches Ink whole", () => {
+    const paste = `${ESC}[200~x${ESC}[<0;1;1My${ESC}[201~`;
+    expect(run(paste)).toEqual({ pieces: [{ keys: paste }], state: { held: "", pasting: false, tail: "" } });
+  });
+
+  it("finds a paste's markers split across reads, and takes out a report after the end", () => {
+    const { pieces, state } = run(`${ESC}[20`, `0~x${ESC}[<0;1;1My`, `${ESC}[2`, `01~${ESC}[<0;3;4M`);
+    const keys = pieces.flatMap((p) => ("keys" in p ? [p.keys] : []));
+    expect(keys.join("")).toBe(`${ESC}[200~x${ESC}[<0;1;1My${ESC}[201~`);
+    expect(pieces.filter((p) => "mouse" in p)).toEqual([{ mouse: left("press", 2, 3) }]);
+    expect(pieces.at(-1)).toEqual({ mouse: left("press", 2, 3) });
+    expect(state).toEqual({ held: "", pasting: false, tail: "" });
+  });
+
+  it("holds nothing back while pasting", () => {
+    const { pieces, state } = run(`${ESC}[200~x${ESC}`);
+    expect(pieces).toEqual([{ keys: `${ESC}[200~x${ESC}` }]);
+    expect([state.held, state.pasting]).toEqual(["", true]);
+  });
+
+  // The choices where the spec is silent: what can never become a named report goes to Ink as it was.
+  it("passes to Ink a report with a bit the format doesn't name, a sideways wheel and a malformed report", () => {
+    for (const odd of [`${ESC}[<128;1;1M`, `${ESC}[<66;1;1M`, `${ESC}[<0;1x`]) expect(run(odd).pieces).toEqual([{ keys: odd }]);
+  });
+});
+
+describe("InputFilter", () => {
+  it("passes a lone Escape to Ink after 20 ms, not at 19", () => {
+    vi.useFakeTimers();
+    const { reads, feed } = filtered();
+    feed(ESC);
+    vi.advanceTimersByTime(19);
+    expect(reads).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(reads).toEqual([ESC]);
+  });
+
+  it("passes the start of a report with nothing after to Ink, as it was, after 20 ms", () => {
+    vi.useFakeTimers();
+    const { reads, mice, feed } = filtered();
+    feed(`${ESC}[<0;12`);
+    vi.advanceTimersByTime(19);
+    expect(reads).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(reads).toEqual([`${ESC}[<0;12`]);
+    expect(mice).toEqual([]);
+  });
+
+  it("gives Ink an Escape and the rest of Up that comes within 20 ms as one read", () => {
+    vi.useFakeTimers();
+    const { reads, feed } = filtered();
+    feed(ESC);
+    vi.advanceTimersByTime(10);
+    feed("[A");
+    expect(reads).toEqual([`${ESC}[A`]);
+    vi.advanceTimersByTime(20);
+    expect(reads).toEqual([`${ESC}[A`]);
+  });
+
+  it("gives what is waiting to read(), then null", () => {
+    const source = new Source();
+    const filter = new InputFilter(source as never);
+    source.emit("data", `a${ESC}[<0;1;1Mb`);
+    expect([filter.read(), filter.read(), filter.read()]).toEqual(["a", "b", null]);
+  });
+
+  it("sets the source to utf8, then passes the stream calls on", () => {
+    const source = new Source();
+    const filter = new InputFilter(source as never);
+    expect(filter.isTTY).toBe(true);
+    filter.setRawMode(true).setEncoding("utf8").ref().unref();
+    filter.setRawMode(false);
+    expect(source.calls).toEqual(["setEncoding(utf8)", "setRawMode(true)", "setEncoding(utf8)", "ref", "unref", "setRawMode(false)"]);
+  });
+
+  it("while held, keeps raw mode off and unref from the source, and passes everything after", () => {
+    const source = new Source();
+    const filter = new InputFilter(source as never);
+    source.calls = [];
+    filter.hold(true);
+    filter.setRawMode(false).unref().setRawMode(true).ref();
+    expect(source.calls).toEqual(["setRawMode(true)", "ref"]);
+    filter.hold(false);
+    filter.setRawMode(false).unref();
+    expect(source.calls).toEqual(["setRawMode(true)", "ref", "setRawMode(false)", "unref"]);
+  });
+
+  it("sends keys elsewhere and drops reports while diverted, then returns to Ink", () => {
+    const { filter, reads, mice, feed } = filtered();
+    const elsewhere: string[] = [];
+    filter.divert((keys) => elsewhere.push(keys));
+    feed(`q${ESC}[<64;1;1Mw`);
+    expect([elsewhere, reads, mice]).toEqual([["q", "w"], [], []]);
+    filter.divert(null);
+    feed(`e${ESC}[<64;1;1M`);
+    expect(elsewhere).toEqual(["q", "w"]);
+    expect(reads).toEqual(["e"]);
+    expect(mice).toHaveLength(1);
+  });
+});
+
+describe("InputFilter with Ink", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 50)); // prompt.test.tsx's wait for Ink to draw
+
+  // A stand-in terminal, as in prompt.test.tsx.
+  class Terminal extends EventEmitter {
+    isTTY = true;
+    columns = 20;
+    rows = 10;
+    write = () => true;
+  }
+
+  it("lets useInput see the keys and nothing of a wheel report, which comes out as one mouse event", async () => {
+    const source = new Source();
+    const filter = new InputFilter(source as never);
+    const mice: Mouse[] = [];
+    filter.on("mouse", (m: Mouse) => mice.push(m));
+    const seen: string[] = [];
+    function Keys() {
+      useInput((input) => {
+        seen.push(input);
+      });
+      return null;
+    }
+    const app = render(createElement(Keys), {
+      stdout: new Terminal() as never,
+      stdin: filter as never,
+      debug: false,
+      patchConsole: false,
+      exitOnCtrlC: false,
+      interactive: true,
+    });
+    try {
+      await tick();
+      for (const s of ["x", `${ESC}[<64;10;5M`, "y"]) {
+        source.emit("data", s);
+        await tick();
+      }
+      expect(seen).toEqual(["x", "y"]);
+      expect(mice).toEqual([{ kind: "wheel", button: "none", wheel: "up", x: 9, y: 4, ...none }]);
+    } finally {
+      app.unmount();
+    }
+  });
+});
