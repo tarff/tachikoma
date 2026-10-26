@@ -805,12 +805,14 @@ Added on 2026-10-27 at the user's request, after Task 5 (design, "The status lin
   `export interface Piece { text: string; color?: "cyan" | "green" | "yellow" | "red" | "magenta"; dim?: boolean }`
   and `export function pieces(s: LineSegment, i: StatusInfo): Piece[]` (`LineSegment` exported),
   whose texts joined are exactly `formatSegment(s, i)`, so the words cannot drift from it.
+- `formatSegment("context", ...)` with a known window is `72% left`, without `ctx` (the user's
+  choice, 2026-10-27); with no known window it stays `ctx 45.2k`.
 - The colours, from the design's table:
 
 | Part | Release 4 (all inverse) | Release 5 |
 |---|---|---|
 | Lead | `lead anthropic:claude-opus-5-5` | `lead` grey, the lead cyan |
-| Context | the bar, `ctx 72% left` | the bar as now; `ctx` grey, `72% left` in the bar's colour (green, yellow from 70% used, red from 85%); with no known window, `ctx` grey and the count plain |
+| Context | the bar, `ctx 72% left` | the bar as now, then `72% left` in the bar's colour (green, yellow from 70% used, red from 85%), no `ctx`; with no known window, no bar, so `ctx` stays, grey, and the count plain |
 | Tokens | `12.3k in / 4.1k out` | the numbers plain, `in` and `out` grey |
 | Cost | `$0.42`, "ChatGPT plan" | green, the whole text |
 | Mode | `perm ask` | `perm` grey; `ask` green, `project` yellow, `never` red |
@@ -831,7 +833,7 @@ Added on 2026-10-27 at the user's request, after Task 5 (design, "The status lin
    bar and the text alike; `0 errors` grey, `1 error` red; each mode's colour; no branch, the
    folder yellow alone.
 3. The drawn `StatusLine` has no `inverse` element (checked on the elements it returns, as
-   `conversation.test.tsx` does, the test terminal drawing no colour codes); the existing frame
-   tests pass unchanged.
+   `conversation.test.tsx` does, the test terminal drawing no colour codes); the existing tests
+   pass, those expecting `ctx N% left` changed to `N% left` and nothing else.
 
 Commit: `feat: the status line in claude-hud's colours`.

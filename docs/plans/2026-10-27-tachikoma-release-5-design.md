@@ -250,13 +250,15 @@ release 6; it does not touch full screen.
 
 The inverse band goes: the line is drawn on the terminal's own background, its parts split by a
 grey ` | `. What each part says, their order, `--status` and the cut at the screen's edge stay as in
-release 4. The colours are claude-hud 0.0.4's (`src/render/session-line.ts`, `agents-line.ts` and
-`colors.ts`) where it has the part, and by risk where it does not (cost, mode, errors):
+release 4, but for one change of words: `ctx` goes where the bar shows, the bar saying what the
+part is, as in claude-hud (the user, 2026-10-27: "it looks better without it"). The colours are
+claude-hud 0.0.4's (`src/render/session-line.ts`, `agents-line.ts` and `colors.ts`) where it has
+the part, and by risk where it does not (cost, mode, errors):
 
 | Part | Release 4 (all inverse) | Release 5 |
 |---|---|---|
 | Lead | `lead anthropic:claude-opus-5-5` | `lead` grey, the lead cyan |
-| Context | the bar, `ctx 72% left` | the bar as now; `ctx` grey, `72% left` in the bar's colour (green, yellow from 70% used, red from 85%); with no known window, `ctx` grey and the count plain |
+| Context | the bar, `ctx 72% left` | the bar as now, then `72% left` in the bar's colour (green, yellow from 70% used, red from 85%), no `ctx`; with no known window, no bar, so `ctx` stays, grey, and the count plain |
 | Tokens | `12.3k in / 4.1k out` | the numbers plain, `in` and `out` grey |
 | Cost | `$0.42`, "ChatGPT plan" | green, the whole text |
 | Mode | `perm ask` | `perm` grey; `ask` green, `project` yellow, `never` red |
@@ -264,9 +266,6 @@ release 4. The colours are claude-hud 0.0.4's (`src/render/session-line.ts`, `ag
 | Project | `Agent Harness git:(release-5)` | the folder yellow, `git:(` and `)` magenta, the branch cyan |
 | Time | `⏱ 12m` | grey |
 | Subagents | `2 running` | yellow |
-
-The table shown to the user dropped the grey `ctx` while promising that the words stay; `ctx` is
-kept, so they do.
 
 ## When something goes wrong
 
