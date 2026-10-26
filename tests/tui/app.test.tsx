@@ -18,6 +18,7 @@ import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import { History } from "../../src/tui/history.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { App, type AppProps } from "../../src/tui/App.js";
+import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { Screen } from "../../src/tui/terminal.js";
 import { Bus, FakeProvider, Held, callTool, reply, tempContext, usage } from "../helpers.js";
@@ -77,6 +78,8 @@ async function mount(
     worker?: Provider; // the subagents' model
     mode?: Mode; // the mode the session starts in
     full?: boolean; // full screen; classic when not given
+    scrollSpeed?: number; // rows a wheel notch scrolls; 3 when not given, the session's default
+    leadFails?: string; // what /lead and the picker throw, in place of making a lead
   } = {},
 ) {
   const bus = new Bus();
@@ -94,6 +97,7 @@ async function mount(
     () => {},
   );
   if (opts.full) screen.enter();
+  const mouse = new EventEmitter(); // stands in for the InputFilter, which hands the App the terminal's mouse reports
   const app = render(
     <App
       session={session}
@@ -113,6 +117,7 @@ async function mount(
       segments={opts.segments ?? SEGMENTS}
       makeProvider={(spec) => {
         opts.made?.push(spec);
+        if (opts.leadFails) throw new Error(opts.leadFails);
         return opts.newLead ?? new FakeProvider("b", []);
       }}
       login={opts.login ?? (async () => {})}
@@ -125,6 +130,8 @@ async function mount(
         ask = fn;
       }}
       screen={screen}
+      mouse={mouse}
+      scrollSpeed={opts.scrollSpeed ?? 3}
     />,
   );
   mounted.push(app);
@@ -132,7 +139,7 @@ async function mount(
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
+  return { app, session, ctx, bus, tasks, historyFile, mouse, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -1686,6 +1693,7 @@ describe("App in full screen", () => {
         listModels={async () => []}
         bindAsk={() => {}}
         screen={screen}
+        scrollSpeed={3}
       />,
       { stdout: stdout as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
     );
@@ -1873,7 +1881,159 @@ describe("App in full screen", () => {
   });
 });
 
+// The mouse as the InputFilter reports it (src/tui/input.ts): 0-based cells. The scroll bar is the last of
+// ink-testing-library's 100 columns.
+const BAR = 99;
+const at = (kind: Mouse["kind"], x: number, y: number, more: Partial<Mouse> = {}): Mouse => ({
+  kind,
+  button: "left",
+  x,
+  y,
+  shift: false,
+  alt: false,
+  ctrl: false,
+  ...more,
+});
+async function wheel(mouse: EventEmitter, dir: "up" | "down", notches = 1) {
+  for (let i = 0; i < notches; i++) mouse.emit("mouse", at("wheel", 10, 5, { button: "none", wheel: dir }));
+  await tick();
+}
+async function pointer(mouse: EventEmitter, ...events: Mouse[]) {
+  for (const m of events) mouse.emit("mouse", m);
+  await tick();
+}
+// The frame's rows that show the scroll bar's thumb.
+const thumb = (app: ReturnType<typeof render>) =>
+  app
+    .lastFrame()!
+    .split("\n")
+    .flatMap((r, i) => ([...r][BAR] === "┃" ? [i] : []));
+
+describe("App's wheel and scroll bar in full screen", () => {
+  // 80 lines in 20 rows of conversation: the newest 20 show, said 60. to said 79.
+  it("scrolls 3 rows a notch of the wheel, wherever the pointer is", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    expect(shown(app)[0]).toBe("said 60.");
+    await wheel(mouse, "up");
+    expect(shown(app)[0]).toBe("said 57.");
+    await wheel(mouse, "up", 2);
+    expect(shown(app)[0]).toBe("said 51.");
+    await wheel(mouse, "down");
+    expect(shown(app)[0]).toBe("said 54.");
+  });
+
+  it("moves one row every second notch at a speed of 0.5", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80), scrollSpeed: 0.5 });
+    const tops = [];
+    for (let i = 0; i < 4; i++) {
+      await wheel(mouse, "up");
+      tops.push(shown(app)[0]);
+    }
+    expect(tops).toEqual(["said 60.", "said 59.", "said 59.", "said 58."]);
+  });
+
+  it("follows again once the wheel reaches the bottom, so a new reply shows at once", async () => {
+    const lead = new Held();
+    const { app, mouse } = await mount([], { full: true, lead, intro: said(80) });
+    await type(app, "go");
+    await until(app, "> go");
+    await wheel(mouse, "up", 2);
+    expect(app.lastFrame()).not.toContain("> go");
+    await wheel(mouse, "down", 5); // past the bottom
+    expect(app.lastFrame()).toContain("> go");
+    lead.answer("fresh");
+    await until(app, "fresh");
+    expect(app.lastFrame()).not.toContain("new lines");
+  });
+
+  it("goes to the first lines on a click on the bar's track near its top", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    expect(thumb(app)).toEqual([15, 16, 17, 18, 19]); // 20 rows of 80 seen: a thumb of 5 rows, at the foot
+    await pointer(mouse, at("press", BAR, 1), at("release", BAR, 1));
+    expect(shown(app)[0]).toBe("said 0.");
+    expect(thumb(app)).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("centres the thumb on the row of the track clicked", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    await pointer(mouse, at("press", BAR, 8), at("release", BAR, 8));
+    expect(thumb(app)).toEqual([6, 7, 8, 9, 10]);
+    expect(shown(app)[0]).toBe("said 24."); // the thumb at 6 of its 15 rows of travel: 6 * 60 / 15
+  });
+
+  it("moves the thumb with the pointer while it is dragged, keeping where on it it was pressed, until the button is let go", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    await press(app, CTRL_HOME);
+    expect(thumb(app)).toEqual([0, 1, 2, 3, 4]);
+    await pointer(mouse, at("press", BAR, 1), at("drag", BAR, 8));
+    expect(thumb(app)).toEqual([7, 8, 9, 10, 11]);
+    expect(shown(app)[0]).toBe("said 28.");
+    await pointer(mouse, at("drag", 40, 30)); // below the conversation, and off the bar: the thumb at its foot
+    expect(shown(app)[19]).toBe("said 79.");
+    await pointer(mouse, at("release", 40, 30), at("drag", BAR, 2));
+    expect(shown(app)[19]).toBe("said 79.");
+  });
+
+  it("follows again when the thumb is dragged to the bottom, so a new reply shows at once", async () => {
+    const lead = new Held();
+    const { app, mouse } = await mount([], { full: true, lead, intro: said(80) });
+    await type(app, "go");
+    await until(app, "> go");
+    await press(app, CTRL_HOME);
+    await pointer(mouse, at("press", BAR, 0), at("drag", BAR, 19), at("release", BAR, 19));
+    expect(shown(app)[19]).toBe("> go");
+    lead.answer("fresh");
+    await until(app, "fresh");
+    expect(app.lastFrame()).not.toContain("new lines");
+  });
+
+  it("moves the thumb as PgUp scrolls", async () => {
+    const { app } = await mount([], { full: true, intro: said(80) });
+    await press(app, PG_UP); // 10 rows up, to row 50 of the 60 the view can start at: the thumb at 12.5 of 15, rounded
+    expect(thumb(app)).toEqual([13, 14, 15, 16, 17]);
+  });
+
+  it("does nothing for a press on the bar's column below the conversation, or with another button", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    const frame = app.lastFrame();
+    await pointer(mouse, at("press", BAR, 21), at("release", BAR, 21), at("press", BAR, 1, { button: "right" }), at("release", BAR, 1, { button: "right" }));
+    expect(app.lastFrame()).toBe(frame);
+  });
+
+  it("scrolls while the model list is open, and picking a model brings the view to the bottom to say so", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80), models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "/model");
+    await until(app, "fake:b");
+    await tick(); // the picker starts reading keys just after it first appears
+    const before = shown(app)[0];
+    await wheel(mouse, "up", 3);
+    expect(shown(app)[0]).not.toBe(before);
+    await press(app, "\u001b[B", "\r"); // down to fake:b, and pick it
+    await until(app, "lead is now fake:b");
+    expect(app.lastFrame()).not.toContain("new lines");
+  });
+
+  it("brings the view to the bottom for a model that cannot be picked, to show why", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80), models: [{ provider: "fake", models: ["a", "b"] }], leadFails: "no such model" });
+    await type(app, "/model");
+    await until(app, "fake:b");
+    await tick();
+    await wheel(mouse, "up", 3);
+    await press(app, "\u001b[B", "\r");
+    await until(app, "no such model");
+    expect(app.lastFrame()).not.toContain("new lines");
+  });
+});
+
 describe("App in classic mode", () => {
+  it("changes nothing on the mouse", async () => {
+    const { app, mouse } = await mount([], { intro: said(80) });
+    const frame = app.lastFrame();
+    await wheel(mouse, "up", 3);
+    await pointer(mouse, at("press", BAR, 0), at("drag", BAR, 10), at("release", BAR, 10));
+    expect(app.lastFrame()).toBe(frame);
+  });
+
   it("takes Shift+Up and Shift+Down as Up and Down, Ctrl+Home and Ctrl+End as Home and End, and does nothing on PgUp and PgDn", async () => {
     const { app } = await mount([], { intro: said(60) });
     await press(app, "a", "\n", "b", SHIFT_UP, "x");

@@ -57,6 +57,18 @@ export function screenMode(classic: boolean | undefined, env: NodeJS.ProcessEnv,
   return classic || (value !== "" && value !== "0") || !tty || ci ? "classic" : "full";
 }
 
+// Rows a wheel notch scrolls (release 5 design, "Scrolling"): 3 unless given, the probe's Windows setting and Claude
+// Code's note that 3 matches vim; up to 20, the range of Claude Code's CLAUDE_CODE_SCROLL_SPEED. Digits with an optional
+// decimal point only (the plan's choice 15): Number() would also take "1e1", " 3" and "0x10". The option wins over the
+// variable, and an empty variable is unset, as TACHI_LEAD and TACHI_WORKER are.
+export function scrollSpeed(option: string | undefined, env: NodeJS.ProcessEnv): number {
+  const [value, name] = option !== undefined ? [option, "--scroll-speed"] : [env.TACHI_SCROLL_SPEED || undefined, "TACHI_SCROLL_SPEED"];
+  if (value === undefined) return 3;
+  const speed = /^\d+(\.\d+)?$|^\.\d+$/.test(value) ? Number(value) : NaN;
+  if (!(speed > 0 && speed <= 20)) throw new Error(`${name} must be a number above 0, up to 20 (got "${value}")`);
+  return speed;
+}
+
 // The signals that end Tachikoma through process.exit, so `exit` handlers run: the executor's, which stops running
 // commands, and the one that puts the terminal back (release 5 design, "When something goes wrong"). Ctrl+Break and
 // SIGQUIT were added at Task 6's review (the user's choice, 2026-10-27): Windows sends SIGBREAK for Ctrl+Break even in

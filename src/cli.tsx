@@ -16,6 +16,7 @@ import {
   jsonLine,
   prose,
   screenMode,
+  scrollSpeed,
   statusSegments,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
@@ -65,6 +66,8 @@ Options:
   --max-tasks <n>   how many subagents run at once (default: ${MAX_TASKS})
   --status <list>   status line parts, comma-separated: ${SEGMENTS.join(",")}
   --classic         use the terminal's own scrollback, not the full screen (or set TACHI_CLASSIC=1)
+  --scroll-speed <n>  lines a wheel notch scrolls in full screen, above 0 and up to 20
+                    (default: 3; or set TACHI_SCROLL_SPEED)
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
   --raw             with -p, print the answer exactly as written, control codes and all
@@ -134,6 +137,7 @@ try {
       "max-tasks": { type: "string" },
       status: { type: "string" },
       classic: { type: "boolean" },
+      "scroll-speed": { type: "string" },
       print: { type: "string", short: "p" },
       json: { type: "boolean" },
       raw: { type: "boolean" },
@@ -159,8 +163,10 @@ const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
 const maxTasks = parsed["max-tasks"] === undefined ? MAX_TASKS : /^\d+$/.test(parsed["max-tasks"]) ? Number(parsed["max-tasks"]) : NaN;
 if (!Number.isInteger(maxTasks) || maxTasks < 1) fail(`--max-tasks must be a whole number from 1 (got "${parsed["max-tasks"]}")`);
 let segments;
+let speed;
 try {
   segments = statusSegments(parsed.status);
+  speed = scrollSpeed(parsed["scroll-speed"], process.env);
 } catch (err) {
   fail(errorText(err));
 }
@@ -273,6 +279,8 @@ if (parsed.print !== undefined) {
   // screen later. tests/tui/terminal.test.tsx ("restoreOnExit") copies this order from here to restoreWhenInkEnds: keep
   // the two in step.
   const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
+  // Ink reads the keys through the filter, which takes the mouse reports out for the App (release 5 design, "The mouse").
+  const keys = new InputFilter(process.stdin);
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true) === "full") screen.enter();
@@ -300,10 +308,11 @@ if (parsed.print !== undefined) {
         ask = fn;
       }}
       screen={screen}
+      mouse={keys}
+      scrollSpeed={speed}
     />,
-    // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. Ink reads the keys through the
-    // filter, which takes the mouse reports out (release 5 design, "The mouse").
-    { stdin: new InputFilter(process.stdin) as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },
+    // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter.
+    { stdin: keys as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },
   );
   restoreWhenInkEnds(screen, ink.waitUntilExit());
 }

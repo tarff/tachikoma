@@ -12,6 +12,7 @@ import {
   jsonLine,
   prose,
   screenMode,
+  scrollSpeed,
   statusSegments,
 } from "../src/clilib.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
@@ -143,6 +144,32 @@ describe("screenMode", () => {
     expect(screenMode(undefined, {}, false)).toBe("classic");
     for (const env of [{ CI: "true" }, { CI: "1" }, { CI: "" }, { CONTINUOUS_INTEGRATION: "yes" }]) expect(screenMode(undefined, env, true)).toBe("classic");
     for (const env of [{ CI: "0" }, { CI: "false" }, { CONTINUOUS_INTEGRATION: "false" }]) expect(screenMode(undefined, env, true)).toBe("full");
+  });
+});
+
+describe("scrollSpeed", () => {
+  it("is 3 rows a notch unless given", () => {
+    expect(scrollSpeed(undefined, {})).toBe(3);
+  });
+
+  it("takes digits with an optional decimal point, above 0 and up to 20", () => {
+    expect(scrollSpeed("0.5", {})).toBe(0.5);
+    expect(scrollSpeed(".5", {})).toBe(0.5);
+    expect(scrollSpeed("20", {})).toBe(20);
+    expect(scrollSpeed(undefined, { TACHI_SCROLL_SPEED: "1.5" })).toBe(1.5);
+  });
+
+  it("refuses anything else, naming where it came from", () => {
+    for (const bad of ["0", "21", "-1", "1e1", "abc", " 3", "", "3.", "20.5"]) {
+      expect(() => scrollSpeed(bad, {})).toThrow(`--scroll-speed must be a number above 0, up to 20 (got "${bad}")`);
+      if (bad === "") continue; // an empty variable is unset (below)
+      expect(() => scrollSpeed(undefined, { TACHI_SCROLL_SPEED: bad })).toThrow(`TACHI_SCROLL_SPEED must be a number above 0, up to 20 (got "${bad}")`);
+    }
+  });
+
+  it("takes the option over the variable, and an empty variable as unset", () => {
+    expect(scrollSpeed("2", { TACHI_SCROLL_SPEED: "abc" })).toBe(2);
+    expect(scrollSpeed(undefined, { TACHI_SCROLL_SPEED: "" })).toBe(3);
   });
 });
 

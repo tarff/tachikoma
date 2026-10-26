@@ -13,6 +13,7 @@ import { Conversation } from "./Conversation.js";
 import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
 import { apply, type Editor, empty, load, move, replace } from "./editor.js";
 import { History, matches } from "./history.js";
+import type { Mouse } from "./input.js";
 import { type Command, commands, isScroll, KEY_LIST, type Scroll } from "./keys.js";
 import { layout, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
@@ -24,7 +25,7 @@ import { TaskPanel, taskRow, taskRows } from "./TaskPanel.js";
 import type { Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
-import { arrived, first as firstRow, FOLLOWING, Rows, scrollBy, scrollTo, type View, wrap } from "./view.js";
+import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, Rows, scrollBy, scrollTo, type View, wrap } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 // A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn.
@@ -52,6 +53,10 @@ export interface AppProps {
   // `/model`: every provider's models, and where to show what reading the saved login says.
   listModels: (signal: AbortSignal, warn: (line: string) => void) => Promise<ModelGroup[]>;
   screen: Screen; // full screen or classic, as the terminal is when the App starts (release 5 design, "The two modes")
+  // The terminal's mouse reports, taken out of the keys by the InputFilter (release 5 design, "The mouse"), and the rows a
+  // wheel notch scrolls (clilib.ts, scrollSpeed).
+  mouse?: { on(e: "mouse", f: (m: Mouse) => void): unknown; off(e: "mouse", f: (m: Mouse) => void): unknown };
+  scrollSpeed: number;
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /exit";
@@ -87,6 +92,8 @@ export function App({
   login,
   listModels,
   screen,
+  mouse,
+  scrollSpeed,
 }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -110,6 +117,12 @@ export function App({
   const [full] = useState(screen.full);
   const [kept] = useState(() => new Rows(columns - 1));
   const view = useRef<View>(FOLLOWING);
+  // The mouse listener is set up once, at mount, so it reads the mode and the frame's shape from here, not from the first
+  // render (found at Task 5's review): Task 14's /screen changes `full`, and keeps this in step with it.
+  const fullNow = useRef(full);
+  const frame = useRef({ columns, viewHeight: 1 });
+  const wheel = useRef(0); // the fraction of a row carried from earlier notches (view.ts, notch)
+  const grab = useRef<number | null>(null); // while the thumb is dragged, the row of the thumb it was pressed on
   // A resize wraps every line again: here, while drawing, so resize events that come together cost one wrapping.
   if (full && kept.width !== columns - 1) kept.setWidth(columns - 1);
   const [busy, setBusy] = useState(false);
@@ -257,7 +270,9 @@ export function App({
     history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
+    mouse?.on("mouse", onMouse);
     return () => {
+      mouse?.off("mouse", onMouse);
       clearInterval(minutes);
       clearTimeout(first.current?.timer);
       bus.off("message", onMessage);
@@ -383,10 +398,12 @@ export function App({
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
   };
 
-  // Picking does what `/lead <provider:model>` does.
+  // Picking does what `/lead <provider:model>` does. What it says ("lead is now ...", from the bus, or why not) is asked-for
+  // output, shown at the bottom (release 5 design, "Scrolling"), as the wheel can scroll the view while the list is open.
   const pick = (spec: string) => {
     listOpen.current = false;
     setPicker(null);
+    view.current = FOLLOWING;
     try {
       session.setLead(makeProvider(spec));
     } catch (err) {
@@ -479,6 +496,41 @@ export function App({
     const by = { pageUp: -half, pageDown: half, lineUp: -1, lineDown: 1, top: 0, bottom: 0 }[c];
     view.current = c === "top" ? scrollTo(kept, view.current, viewHeight, 0) : c === "bottom" ? FOLLOWING : scrollBy(kept, view.current, viewHeight, by);
   };
+  // The wheel and the scroll bar (release 5 design, "Scrolling"), in full screen only. The wheel scrolls the conversation
+  // wherever the pointer is, and while a question or the model list is open (the plan's choice 3). The bar is the last
+  // column of the conversation's rows, which start at the frame's top, the terminal's top row: Ink writes the frame, a
+  // row shorter than the terminal, with a line break after it (ink.js renderInteractiveFrame), so it fills the terminal
+  // and scrolls up to its top wherever the cursor was; later frames go back up by the rows written (log-update.js).
+  // A left press on the thumb grabs it; on the track it centres the thumb on that row (choice 4) and grabs it there, so
+  // a drag can go on from the click. While grabbed, the thumb follows the pointer's row wherever the pointer is, until
+  // the button is let go.
+  const onMouse = (m: Mouse) => {
+    if (!fullNow.current) return;
+    const { columns, viewHeight } = frame.current;
+    const goTo = (to: number) => {
+      view.current = scrollTo(kept, view.current, viewHeight, to);
+      rerender((n) => n + 1);
+    };
+    if (m.kind === "wheel") {
+      const step = notch(wheel.current, scrollSpeed, m.wheel === "up" ? -1 : 1);
+      wheel.current = step.carry;
+      if (step.rows) goTo(firstRow(kept, view.current, viewHeight) + step.rows);
+      return;
+    }
+    if (m.kind === "release") {
+      grab.current = null;
+      return;
+    }
+    const thumb = bar(kept.total, viewHeight, firstRow(kept, view.current, viewHeight));
+    if (!thumb || m.button !== "left") return;
+    const move = (start: number) => goTo(barFirst(kept.total, viewHeight, thumb.size, Math.max(0, Math.min(viewHeight - thumb.size, start))));
+    if (m.kind === "drag" && grab.current !== null) return move(m.y - grab.current);
+    if (m.kind !== "press" || m.x !== columns - 1 || m.y >= viewHeight) return;
+    const on = m.y >= thumb.start && m.y < thumb.start + thumb.size;
+    grab.current = on ? m.y - thumb.start : Math.floor(thumb.size / 2); // the thumb's middle row, the lower of two
+    if (!on) move(m.y - grab.current);
+  };
+
   const scrollKey = (ch: string, key: Key) => {
     const [c] = commands(ch, key);
     if (c === undefined || !isScroll(c)) return false;
@@ -700,6 +752,7 @@ export function App({
     1 +
     (tooled ? 1 : 0);
   const viewHeight = Math.max(1, height - 1 - liveRows);
+  frame.current = { columns, viewHeight };
 
   return (
     <>
