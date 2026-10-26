@@ -1,4 +1,4 @@
-import { readFile, realpath } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { leaves, resolveIn } from "../tools/files.js";
@@ -38,12 +38,15 @@ interface Loaded {
   size: number;
   pieces: (string | { token: string; file: Loaded })[]; // the text, with each import in its place
   ask?: Reached; // set when it needs the user's approval
+  shut?: boolean; // left out: not allowed, or once allowed could not be read
 }
 
-// A file as read: its text, whether it is trusted, and the hops its imports were expanded from.
+// A file reached: its text, none until it is read, whether it is trusted, and the hops its imports
+// were expanded from.
 interface Seen {
   f: Loaded;
-  text: string;
+  real: string;
+  text?: string;
   trusted: boolean;
   hops: number;
 }
@@ -59,9 +62,10 @@ function folders(top: string, root: string): string[] {
 
 // Reads the user's and the project's instruction files once, at the start of a session. The user's
 // own two files, and what they import, are trusted. Any other file that leads out of the project, an
-// import or a found file a link takes to another folder, is read only if `approve` allows the lot,
-// asked once. Tachikoma's data folder and a program's environment are never read, whatever `approve`
-// says: resolveIn refuses them after following links.
+// import or a found file a link takes to another folder, is opened only once `approve` allows it: those
+// reached are asked about together, and then any more that the allowed ones import, so none is opened
+// before the user sees its name. Tachikoma's data folder and a program's environment are never read,
+// whatever `approve` says: resolveIn refuses them after following links.
 export async function readInstructions(where: Where, approve: (reached: Reached[]) => Promise<boolean>): Promise<Instructions> {
   const home = where.home ?? os.homedir();
   const left: Instructions["left"] = [];
@@ -71,11 +75,34 @@ export async function readInstructions(where: Where, approve: (reached: Reached[
   const loaded = new Map<string, Seen | null>();
   // The files whose imports are being expanded, so an import loop back to one stays as text.
   const expanding = new Set<string>();
-  const expand = async (real: string, e: Seen) => {
-    expanding.add(real);
-    e.f.pieces = e.hops < HOPS ? await imports(e.text, e.f.path, e.trusted, e.hops + 1) : [e.text];
-    expanding.delete(real);
+  const expand = async (e: Seen) => {
+    expanding.add(e.real);
+    e.f.pieces = e.hops < HOPS ? await imports(e.text!, e.f.path, e.trusted, e.hops + 1) : [e.text!];
+    expanding.delete(e.real);
   };
+  const waiting: Seen[] = []; // files to ask about, in the order reached
+
+  // Reads a file and expands its imports. False for one that cannot go in, with the reason in `left`
+  // where there is one; an empty file has none.
+  async function open(e: Seen): Promise<boolean> {
+    let buf: Buffer;
+    try {
+      buf = await readFile(e.real);
+    } catch (err) {
+      left.push({ path: e.f.path, why: (err as NodeJS.ErrnoException).code ?? errorText(err) });
+      return false;
+    }
+    if (buf.includes(0)) {
+      left.push({ path: e.f.path, why: "not text" });
+      return false;
+    }
+    const text = buf.toString("utf8");
+    if (!text.trim()) return false;
+    e.text = text;
+    e.f.size = buf.length;
+    await expand(e);
+    return true;
+  }
 
   async function load(abs: string, opts: { trusted: boolean; hops: number; foundIn?: string; by?: string }): Promise<Loaded | null> {
     let outside: boolean;
@@ -93,32 +120,30 @@ export async function readInstructions(where: Where, approve: (reached: Reached[
     if (seen) {
       if (opts.hops < seen.hops) {
         seen.hops = opts.hops;
-        await expand(real, seen);
+        if (seen.text !== undefined) await expand(seen);
       }
       return seen.f;
     }
     loaded.set(real, null);
-    let buf: Buffer;
-    try {
-      buf = await readFile(real);
-    } catch (err) {
-      left.push({ path: abs, why: (err as NodeJS.ErrnoException).code ?? errorText(err) });
+    // Only a file is read: a folder cannot be, a device such as /dev/zero never ends, and a named pipe
+    // waits for a writer.
+    if (!(await stat(real).catch(() => null))?.isFile()) {
+      left.push({ path: abs, why: "not a file" });
       return null;
     }
-    if (buf.includes(0)) {
-      left.push({ path: abs, why: "not text" });
-      return null;
-    }
-    const text = buf.toString("utf8");
-    if (!text.trim()) return null;
     let ask: Reached | undefined;
     if (opts.trusted) ask = undefined;
     else if (opts.foundIn !== undefined) ask = leaves(path.relative(await realpath(opts.foundIn), real)) ? { path: real, how: `found as ${abs}` } : undefined;
     else if (outside) ask = { path: abs, how: `imported by ${opts.by}` };
-    const e = { f: { path: abs, size: buf.length, pieces: [], ...(ask ? { ask } : {}) }, text, trusted: opts.trusted, hops: opts.hops };
+    const e: Seen = { f: { path: abs, size: 0, pieces: [], ...(ask ? { ask } : {}) }, real, trusted: opts.trusted, hops: opts.hops };
     loaded.set(real, e);
-    await expand(real, e);
-    return e.f;
+    if (ask) {
+      waiting.push(e); // opened once allowed
+      return e.f;
+    }
+    if (await open(e)) return e.f;
+    loaded.set(real, null);
+    return null;
   }
 
   // `@path` imports, expanded where they stand: relative to the file they are in, or absolute, or from
@@ -167,15 +192,17 @@ export async function readInstructions(where: Where, approve: (reached: Reached[
     for (const name of NAMES) await add(path.join(folder, name), { trusted: false, hops: 0, foundIn: folder });
   }
 
-  const asking = new Set<Loaded>(); // a file reached twice is asked about once
-  const visit = (f: Loaded) => {
-    if (f.ask) asking.add(f);
-    for (const p of f.pieces) if (typeof p !== "string") visit(p.file);
-  };
-  found.forEach(visit);
-  const allowed = asking.size === 0 || (await approve([...asking].map((f) => f.ask!)));
-  if (!allowed) for (const f of asking) left.push({ path: f.ask!.path, why: "not allowed" });
-  const out = (f: Loaded) => f.ask !== undefined && !allowed;
+  // Each round asks about the files reached since the last, each reached twice asked about once.
+  for (let from = 0; from < waiting.length; ) {
+    const round = waiting.slice(from);
+    from = waiting.length;
+    const allowed = await approve(round.map((e) => e.f.ask!));
+    for (const e of round) {
+      if (!allowed) left.push({ path: e.f.ask!.path, why: "not allowed" });
+      if (!allowed || !(await open(e))) e.f.shut = true;
+    }
+  }
+  const out = (f: Loaded) => f.shut === true;
 
   // Each file goes in once, at its first place that is allowed: a project file that a declined file
   // imports still goes in where the walk found it.

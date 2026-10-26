@@ -107,6 +107,13 @@ describe("readInstructions", () => {
     expect(r.text).toContain(file(m.at("work/proj/b.md"), "b @a.md @CLAUDE.md"));
   });
 
+  it("leaves out what is not a file, such as a folder, without opening it", async () => {
+    const m = await machine({ "work/proj/sub/x.md": "x", "work/proj/CLAUDE.md": "see @sub" });
+    const r = await read(m);
+    expect(r.text).toBe([NOTE, file(m.at("work/proj/CLAUDE.md"), "see @sub")].join("\n\n"));
+    expect(r.left).toEqual([{ path: m.at("work/proj/sub"), why: "not a file" }]);
+  });
+
   it("leaves imports in code blocks and code spans alone", async () => {
     const m = await machine({ "work/proj/x.md": "X", "work/proj/CLAUDE.md": ["```", "@x.md", "```", "`@x.md` and @x.md"].join("\n") });
     const r = await read(m);
@@ -129,6 +136,29 @@ describe("readInstructions, files that lead elsewhere", () => {
       ],
     ]);
     expect(r.text).toContain(file(m.at("elsewhere/one.md"), "one"));
+  });
+
+  it("opens a file outside the project only once it is allowed", async () => {
+    const m = await machine({ "elsewhere/one.md": "before" });
+    await writeFile(m.at("work/proj/CLAUDE.md"), `@${m.at("elsewhere/one.md")}`);
+    // What the file says when the question is answered is what is read.
+    const r = await read(m, async () => (await writeFile(m.at("elsewhere/one.md"), "after"), true));
+    expect(r.text).toContain(file(m.at("elsewhere/one.md"), "after"));
+  });
+
+  it("asks again about files outside the project that an allowed one imports, naming it", async () => {
+    const m = await machine({ "elsewhere/one.md": "one @two.md", "elsewhere/two.md": "two" });
+    await writeFile(m.at("work/proj/CLAUDE.md"), `@${m.at("elsewhere/one.md")}`);
+    const asked: Reached[][] = [];
+    const answers = [true, false];
+    const r = await read(m, async (reached) => (asked.push(reached), answers.shift()!));
+    expect(asked).toEqual([
+      [{ path: m.at("elsewhere/one.md"), how: `imported by ${m.at("work/proj/CLAUDE.md")}` }],
+      [{ path: m.at("elsewhere/two.md"), how: `imported by ${m.at("elsewhere/one.md")}` }],
+    ]);
+    expect(r.text).toContain(file(m.at("elsewhere/one.md"), "one @two.md"));
+    expect(r.left).toEqual([{ path: m.at("elsewhere/two.md"), why: "not allowed" }]);
+    expect((await read(m, async () => true)).text).toContain(file(m.at("elsewhere/two.md"), "two"));
   });
 
   it("leaves them out when declined, the import staying as text, and says so", async () => {
@@ -210,5 +240,12 @@ describe("readInstructions, files that lead elsewhere", () => {
     const r = await read(m, async () => true);
     expect(r.read.map((f) => f.path)).toEqual([m.at("home/.claude/CLAUDE.md")]);
     expect(r.left[0]!.why).toContain("a program's environment");
+  });
+
+  it.runIf(process.platform === "linux")("leaves out a device outside the project without asking or opening it", async () => {
+    // Read, /dev/zero would never end; a named pipe would wait for a writer.
+    const m = await machine({ "work/proj/CLAUDE.md": "@/dev/zero" });
+    const r = await read(m);
+    expect(r.left).toEqual([{ path: "/dev/zero", why: "not a file" }]);
   });
 });

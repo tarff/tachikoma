@@ -48,8 +48,8 @@ subagents that read, with a to-do list and your instruction files. The command i
 - **Your instruction files:** each session reads `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` (or
   `CODEX_HOME`'s), and the `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md` and `AGENTS.md` of
   every folder from the top of the drive down to the project, with their `@` imports. A grey line at
-  the start lists them. A file they lead to outside the project asks first, once, unless it is your
-  own; Tachikoma's data folder is never read.
+  the start lists them. A file they lead to outside the project asks first, before it is opened,
+  unless it is your own; Tachikoma's data folder is never read.
 - **Your keys and login are kept from the model's tools, against accidents:** shell commands do not
   get the API keys, and the file tools refuse Tachikoma's own data folder, where the ChatGPT login
   is kept. A shell command can still read the login; see [Known limits](#known-limits).
