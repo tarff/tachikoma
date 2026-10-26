@@ -96,9 +96,32 @@ and only the rows on screen are drawn. A resize wraps every line again to the ne
 classic mode cannot do for old scrollback; the line at the top of the view stays at the top, or the
 view stays at the bottom if it was following.
 
-**No limit on the lines kept,** for now. Claude Code caps its own; there are no figures yet for
-where a cap would matter. The build measures memory and drawing time at growing session lengths
-first, and a cap goes in only if the measurements call for one, with the figures recorded here.
+**No limit on the lines kept** (the user's choice, 2026-10-27, from the figures below). Claude Code
+caps its own. Measured with release 5's `Rows` (build Task 4, 2026-10-27: i9-12900K, Node 24.22.1,
+default heap limit 4,288 MB; medians of 3 to 7 runs; lines added at width 119, resized to 79, one
+screen of 40 rows drawn with Ink's `renderToString`; the script `measure5.mts` in the session's
+scratchpad). Plain prose is 1 to 300 ASCII characters a line; "em dash" is the same with one `—` in
+every line, the slow path for text outside ASCII; the two bound real prose.
+
+| Kept lines | Memory | A resize | Drawing one screen |
+|---|---|---|---|
+| 10,000 plain prose | 3.5 MB | 0.02 s | 4.6 ms |
+| 10,000 with an em dash | 5.6 MB | 0.17 s | 5.0 ms |
+| 100,000 plain prose | 35 MB | 0.24 s | 4.5 ms |
+| 100,000 with an em dash | 50 MB | 1.6 s | 4.4 ms |
+| 1,000,000 plain prose | 353 MB | 2.5 s | 7.1 ms |
+| 1,000,000 with an em dash | 495 MB | 16 s | 5.2 ms |
+| 1,000,000 tool lines | 110 MB | 0.02 s | 4.6 ms |
+| 1,000,000 lines of 2,000-line file details | 204 MB | 1.8 s | 3.9 ms |
+
+Memory stays far inside Node's limit, and drawing does not grow with the session. What grows is a
+resize, which wraps every line again at once; the screen does not answer while it runs, past a
+second from about 100,000 lines of prose outside ASCII. Each line costs about 80 to 220 bytes
+beside its text.
+
+**Tabs** are drawn as spaces to the next multiple of 8 columns, counted from the start of each
+row (Ink's wrapping counts from the line's start, so a wrapped line's later rows can differ from
+classic mode); copying keeps the tabs (the user's choice, 2026-10-27).
 
 ## Scrolling
 
@@ -118,6 +141,9 @@ first, and a cap goes in only if the measurements call for one, with the figures
 - **Following:** at the bottom, the view follows new lines. Scrolled up, it stays where it was put,
   and a grey row at its foot says how many lines came in since ("↓ 12 new lines · Ctrl+End").
   Coming back to the bottom, by wheel or key, follows again. Sending a prompt goes to the bottom.
+  A view that is put somewhere stays there even when the conversation grows taller or wider (a
+  turn ending, a resize): blank rows show below the last line rather than the view moving (the
+  user's choice, 2026-10-27; a question's detail needs it, below).
 - **A permission question brings its detail into view.** A write's detail (the file's proposed
   text) goes into the conversation under a heading, as in release 1. When the question comes, the
   view moves to that question's own detail and stops following, so lines arriving while it waits
