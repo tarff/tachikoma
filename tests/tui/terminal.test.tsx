@@ -1,9 +1,14 @@
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { closeSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { render, Static, Text, useApp } from "ink";
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
-import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, SECOND_SCREEN, SHOW_CURSOR, Screen } from "../../src/tui/terminal.js";
+import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, restoreOnExit, SECOND_SCREEN, SHOW_CURSOR, Screen } from "../../src/tui/terminal.js";
 
 // A stand-in terminal and keyboard, as in prompt.test.tsx: Ink draws to them as to real ones.
 class Terminal extends EventEmitter {
@@ -104,6 +109,76 @@ describe("Screen", () => {
     left.screen.leave();
     left.screen.restore();
     expect(left.out.now).toBe(SHOW_CURSOR);
+  });
+});
+
+describe("restoreOnExit", () => {
+  it("on exit and on a crash, lets Ink draw its last frame and then puts the terminal back", () => {
+    for (const event of ["exit", "uncaughtExceptionMonitor"]) {
+      const proc = new EventEmitter();
+      let out = "";
+      const screen = new Screen(
+        (s) => (out += s),
+        (s) => (out += s),
+      );
+      restoreOnExit(screen, () => (out += "last frame"), proc);
+      screen.enter();
+      proc.emit(event, new Error("boom"));
+      expect(out).toBe(SECOND_SCREEN + MOUSE_ON + "last frame" + MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR);
+    }
+  });
+
+  // A real process, as cli.tsx sets it up: the screen entered, then Ink drawing a frame and a second one it holds back
+  // for its frame-rate limit, then the way out. Ink's own exit handler (signal-exit, which ink.js registers) would draw
+  // that held frame after every `exit` listener, so on the normal screen, if restoreOnExit didn't unmount Ink first. The
+  // output and the errors go to one file, to keep their order. SIGTERM and SIGHUP end through process.exit in cli.tsx.
+  function run(end: string) {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-terminal-"));
+    const url = (p: string) => JSON.stringify(pathToFileURL(path.resolve(p)).href);
+    const script = path.join(dir, "script.mjs");
+    writeFileSync(
+      script,
+      `import { writeSync } from "node:fs";
+import React from ${url("node_modules/react/index.js")};
+import { render, Text } from ${url("node_modules/ink/build/index.js")};
+import { restoreOnExit, Screen } from ${url("src/tui/terminal.ts")};
+const screen = new Screen((s) => process.stdout.write(s), (s) => writeSync(1, s));
+let ink;
+restoreOnExit(screen, () => ink?.unmount());
+screen.enter();
+ink = render(React.createElement(Text, null, "frame one"), { interactive: true, patchConsole: false, exitOnCtrlC: false });
+ink.rerender(React.createElement(Text, null, "frame two"));
+${end}
+`,
+    );
+    const file = path.join(dir, "out.txt");
+    const fd = openSync(file, "w");
+    const r = spawnSync(process.execPath, ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, script], {
+      stdio: ["ignore", fd, fd],
+    });
+    closeSync(fd);
+    const out = readFileSync(file, "utf8");
+    const back = out.lastIndexOf(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR);
+    return { code: r.status, out, before: out.slice(0, back), after: out.slice(back) };
+  }
+
+  // Each run starts Node with tsx, about a second, longer with the whole suite running: as tests/cli.test.ts allows.
+  it("puts the terminal back when the process exits, after Ink's last frame", { timeout: 15_000 }, () => {
+    const r = run("process.exit(0);");
+    expect(r.code).toBe(0);
+    expect(r.out.startsWith(SECOND_SCREEN + MOUSE_ON)).toBe(true);
+    expect(r.before).toContain("frame two");
+    expect(r.after).toBe(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR);
+  });
+
+  it("puts the terminal back on a crash, after Ink's last frame and before the error", { timeout: 15_000 }, () => {
+    const r = run('throw new Error("boom at the end");');
+    expect(r.code).toBe(1);
+    expect(r.out.startsWith(SECOND_SCREEN + MOUSE_ON)).toBe(true);
+    expect(r.before).toContain("frame two");
+    expect(r.after.startsWith(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR)).toBe(true);
+    expect(r.after).toContain("Error: boom at the end");
+    expect(r.after).not.toContain("frame");
   });
 });
 

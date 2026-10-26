@@ -97,6 +97,18 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.stderr).not.toContain("Instructions:");
   });
 
+  it("lists --classic in the help", () => {
+    expect(tachi("--help").stdout).toMatch(/^ {2}--classic /m);
+  });
+
+  // Port 9 is one fetch refuses to connect to at all, so the run gets as far as asking the model and fails there,
+  // with nothing sent anywhere.
+  it("with -p, writes no screen or mouse codes", () => {
+    const r = tachi("--lead", "openai:none", "-p", "hi", { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });
+    expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
+    expect(r.stdout + r.stderr).not.toContain("\u001b[?"); // how the second screen's, the mouse's and the cursor's codes begin
+  });
+
   it("refuses interactive mode without a terminal, before starting the interface", () => {
     const r = tachi("--lead", "ollama:none");
     expect(r.code).toBe(1);

@@ -2,7 +2,17 @@ import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describe, expect, it } from "vitest";
 import path from "node:path";
-import { approvalQuestion, headlessAnswer, headlessExit, headlessLeftOut, instructionsLine, jsonLine, prose, statusSegments } from "../src/clilib.js";
+import {
+  approvalQuestion,
+  headlessAnswer,
+  headlessExit,
+  headlessLeftOut,
+  instructionsLine,
+  jsonLine,
+  prose,
+  screenMode,
+  statusSegments,
+} from "../src/clilib.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 
 describe("the instruction files on screen", () => {
@@ -114,6 +124,18 @@ describe("statusSegments", () => {
 
   it("names --status when a segment is unknown", () => {
     expect(() => statusSegments("lead,nope")).toThrow('--status must be one of: lead, context, tokens, cost, mode, errors, project, time, tasks, tools (got "nope")');
+  });
+});
+
+describe("screenMode", () => {
+  it("starts in full screen unless --classic is given or TACHI_CLASSIC is set to anything but empty or 0", () => {
+    expect(screenMode(undefined, {})).toBe("full");
+    expect(screenMode(true, {})).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "1" })).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "yes" })).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "0" })).toBe("full");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "" })).toBe("full");
+    expect(screenMode(true, { TACHI_CLASSIC: "0" })).toBe("classic");
   });
 });
 

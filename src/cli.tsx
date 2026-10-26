@@ -4,9 +4,20 @@ import { writeSync } from "node:fs";
 import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { render } from "ink";
+import { type Instance, render } from "ink";
 import { accountCommand } from "./auth/chatgpt.js";
-import { approvalQuestion, endOnEpipe, headlessAnswer, headlessExit, headlessLeftOut, instructionsLine, jsonLine, prose, statusSegments } from "./clilib.js";
+import {
+  approvalQuestion,
+  endOnEpipe,
+  headlessAnswer,
+  headlessExit,
+  headlessLeftOut,
+  instructionsLine,
+  jsonLine,
+  prose,
+  screenMode,
+  statusSegments,
+} from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
@@ -26,8 +37,9 @@ import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
 import { gitBranch } from "./tui/git.js";
 import { historyFile } from "./tui/history.js";
+import { InputFilter } from "./tui/input.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
-import { Screen } from "./tui/terminal.js";
+import { restoreOnExit, Screen } from "./tui/terminal.js";
 
 // Eight Claude Haiku 5.5 subagents ran at once on the user's account with none refused; eight was the
 // most tried (release 4 design, "Before the build", 2026-10-26).
@@ -52,6 +64,7 @@ Options:
   --worker <spec>   the model subagents run on (or set TACHI_WORKER); the lead's model unless set
   --max-tasks <n>   how many subagents run at once (default: ${MAX_TASKS})
   --status <list>   status line parts, comma-separated: ${SEGMENTS.join(",")}
+  --classic         use the terminal's own scrollback, not the full screen (or set TACHI_CLASSIC=1)
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
   --raw             with -p, print the answer exactly as written, control codes and all
@@ -120,6 +133,7 @@ try {
       worker: { type: "string" },
       "max-tasks": { type: "string" },
       status: { type: "string" },
+      classic: { type: "boolean" },
       print: { type: "string", short: "p" },
       json: { type: "boolean" },
       raw: { type: "boolean" },
@@ -254,7 +268,13 @@ if (parsed.print !== undefined) {
 } else {
   // Ctrl-C reaches the interface as a key; a SIGINT here came from outside (`kill -INT`).
   process.on("SIGINT", () => process.exit(128 + constants.signals.SIGINT));
-  render(
+  // After the instruction files' question, which stays on the normal screen, and before Ink's first frame, which goes to
+  // the second (release 5 design, "The two modes").
+  const screen = new Screen((s) => process.stdout.write(s), (s) => writeSync(1, s));
+  let ink: Instance | undefined;
+  restoreOnExit(screen, () => ink?.unmount());
+  if (screenMode(parsed.classic, process.env) === "full") screen.enter();
+  ink = render(
     <App
       session={session}
       tasks={tasks}
@@ -277,10 +297,10 @@ if (parsed.print !== undefined) {
       bindAsk={(fn) => {
         ask = fn;
       }}
-      // Never entered here, so the screen stays classic until starting in full screen is built (release 5 plan, Task 6).
-      screen={new Screen((s) => process.stdout.write(s), (s) => writeSync(1, s))}
+      screen={screen}
     />,
-    // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter.
-    { exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },
+    // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. Ink reads the keys through the
+    // filter, which takes the mouse reports out (release 5 design, "The mouse").
+    { stdin: new InputFilter(process.stdin) as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },
   );
 }

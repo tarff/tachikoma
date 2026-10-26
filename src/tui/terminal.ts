@@ -70,3 +70,20 @@ export class Screen {
     this.#full = false;
   }
 }
+
+// Every way out (release 5 design, "When something goes wrong"): /exit and a double Ctrl-C or Ctrl-D unmount Ink and then
+// end with `exit`; cli.tsx's SIGTERM, SIGHUP and SIGINT handlers call process.exit, so `exit` too. A crash runs
+// `uncaughtExceptionMonitor` before Node prints the error, so the error shows on the normal screen (the plan's choice 18).
+// Ink unmounts first: its own exit handler (signal-exit, in ink.js) runs after every `exit` listener and draws the frame
+// its frame-rate limit held back, which after leaving would move up over the shell's lines and draw over them.
+export function restoreOnExit(screen: Screen, unmount: () => void, proc: Pick<NodeJS.EventEmitter, "on"> = process): void {
+  const out = () => {
+    try {
+      unmount();
+    } finally {
+      screen.restore();
+    }
+  };
+  proc.on("exit", out);
+  proc.on("uncaughtExceptionMonitor", out);
+}

@@ -45,6 +45,13 @@ export function statusSegments(value: string | undefined): Segment[] {
   return [...new Set(names)];
 }
 
+// Full screen unless asked for classic (release 5 design, "The two modes"). An empty TACHI_CLASSIC or 0 reads as unset
+// (the plan's choice 14), so `TACHI_CLASSIC=0` turns it off.
+export function screenMode(classic: boolean | undefined, env: NodeJS.ProcessEnv): "full" | "classic" {
+  const value = env.TACHI_CLASSIC ?? "";
+  return classic || (value !== "" && value !== "0") ? "classic" : "full";
+}
+
 // A reader such as `head` that stops early is a normal end, not a crash.
 export function endOnEpipe(err: NodeJS.ErrnoException): void {
   if (err.code !== "EPIPE") throw err;
