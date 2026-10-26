@@ -1,6 +1,6 @@
 # Tachikoma
 
-> **Work in progress.** Release 4 of 13 is done; the rest is being built. Expect missing
+> **Work in progress.** Release 4 of 14 is done; the rest is being built. Expect missing
 > features and changes that break things, and don't rely on it for real work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
@@ -8,7 +8,7 @@ providers can lead a session. Later releases add handing work to other models an
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, a Docker
 sandbox, and lessons learned from its own error log.
 
-This is release 4 of 13: the core, signing in with ChatGPT, Claude Code's keys and screen, and
+This is release 4 of 14: the core, signing in with ChatGPT, Claude Code's keys and screen, and
 subagents that read, with a to-do list and your instruction files. The command is `tachi`.
 
 ## What it does
@@ -28,7 +28,7 @@ subagents that read, with a to-do list and your instruction files. The command i
     project.
   - `project`: writes inside the project without asking; asks before shell commands and anything
     outside the project.
-  - `never`: never asks. It is meant for the Docker sandbox, which arrives in release 6. Without the
+  - `never`: never asks. It is meant for the Docker sandbox, which arrives in release 7. Without the
     sandbox it means no checks at all, apart from keeping the keys and the data folder from the
     tools.
 - **Search tools:** `find_files` lists files by a pattern such as `src/**/*.ts`, and `search_files`
@@ -213,7 +213,7 @@ Each is fixed in a later release, unless it says otherwise.
 - **An approved shell command can still read your login.** Commands on your own machine run with your
   own access, so one you approve can read files and the system keychain. Keeping keys from commands
   and the data folder from the file tools prevents accidents, not a determined command. The sandbox
-  (release 6) keeps commands away from the login.
+  (release 7) keeps commands away from the login.
 - **On a ChatGPT plan, `--effort` does nothing yet.** Whether the plan accepts a reasoning setting is
   still to be measured, and no release is set for it yet.
 - **The context left is shown only for models whose window is known:** Anthropic models, and
@@ -232,16 +232,16 @@ Each is fixed in a later release, unless it says otherwise.
   yet.
 - **A reply already streaming when you sign out** finishes. The next request is refused (not planned
   to change).
-- **The history is never shortened** (release 7). When the context window is full, the turn ends
+- **The history is never shortened** (release 8). When the context window is full, the turn ends
   with an error. Switching `/lead` to a model with a smaller window can make the next request fail.
-- **No budget limit** (release 10). An interactive session runs until you stop it.
-- **Shell commands have no time limit** (release 10). A command that keeps its output open runs
+- **No budget limit** (release 11). An interactive session runs until you stop it.
+- **Shell commands have no time limit** (release 11). A command that keeps its output open runs
   until you cancel it. Closing the terminal, SIGTERM, and Ctrl-C in headless mode stop running
   commands; a hard kill or a crash of Node does not, and on macOS and Linux the command then keeps
   going.
 - **The file tools check a path, then use it.** Another program that swaps a folder for a link in
   between could redirect a write, and a hard link inside the project to a file outside it looks like
-  an ordinary file. Both need something already running on your machine; the sandbox (release 6) is
+  an ordinary file. Both need something already running on your machine; the sandbox (release 7) is
   the answer.
 - **On Windows, cancelling cannot stop a program whose shell has already exited.** Cancel still
   returns at once. On macOS and Linux it does stop it.
@@ -256,7 +256,7 @@ Each is fixed in a later release, unless it says otherwise.
 - **Ctrl+O prints the last turn's tool calls below the conversation** instead of opening them in
   place, which needs the full screen (release 5). So does `/tasks t3`.
 - **Subagents only read.** Ones that edit or run commands come with the budget controller (release
-  10), after the sandbox (release 6) gives each writer its own copy of the project.
+  11), after the sandbox (release 7) gives each writer its own copy of the project.
 - **`find_files` patterns skip names that start with a dot** unless the pattern names the dot, as a
   shell's do: `**/*.yml` misses `.github/workflows/ci.yml`, and `.github/**/*.yml` finds it (not
   planned to change).
@@ -275,18 +275,19 @@ Each is fixed in a later release, unless it says otherwise.
    line.
 4. Read-only subagents, with a panel under the prompt, and the to-do list; reading the project's and
    your own instruction files (AGENTS.md, CLAUDE.md) (this release).
-5. Key extras: vim mode, image paste, an external editor, stash, rebinding keys in a file, full
-   screen.
-6. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is
+5. Full screen with its own scrolling: a scroll bar, selecting and copying with the mouse, and
+   Ctrl+O and `/tasks t3` opening in place.
+6. Key extras: vim mode, image paste, an external editor, stash, rebinding keys in a file.
+7. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is
    applied).
-7. MCP tools and long-term memory (MemPalace); transcripts saved to disk; shortening the history.
-8. Skills: the loader, the bundled superpowers skills, and Tachikoma's own.
-9. Search of the codebase by meaning, with EmbeddingGemma 2.
-10. A budget controller, then handing work to the `claude`, `codex` and `kimi` command-line tools.
-11. Loops: on a timer, and until a task is done.
-12. `tachi setup` and `tachi doctor`, with a first-run import of settings, skills, MCP servers and
+8. MCP tools and long-term memory (MemPalace); transcripts saved to disk; shortening the history.
+9. Skills: the loader, the bundled superpowers skills, and Tachikoma's own.
+10. Search of the codebase by meaning, with EmbeddingGemma 2.
+11. A budget controller, then handing work to the `claude`, `codex` and `kimi` command-line tools.
+12. Loops: on a timer, and until a task is done.
+13. `tachi setup` and `tachi doctor`, with a first-run import of settings, skills, MCP servers and
     key bindings from the tools you already use; testing a fresh install in CI.
-13. More providers, and bring-your-own keys.
+14. More providers, and bring-your-own keys.
 
 ## Licence
 
