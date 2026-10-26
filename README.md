@@ -1,5 +1,8 @@
 # Tachikoma
 
+> **Work in progress.** Release 3 of 13 is done; the rest is being built. Expect missing
+> features and changes that break things, and don't rely on it for real work yet.
+
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
 providers can lead a session. Later releases add handing work to other models and to the `claude`,
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, a Docker
@@ -254,4 +257,4 @@ Each is fixed in a later release, unless it says otherwise.
 
 ## Licence
 
-MIT. A LICENSE file will be added.
+MIT: see [LICENSE](LICENSE).
