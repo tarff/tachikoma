@@ -487,6 +487,11 @@ Commit: `feat: start in full screen unless --classic, and put the terminal back 
   `--scroll-speed must be a number above 0, up to 20 (got "abc")`, or the same with
   `TACHI_SCROLL_SPEED`. `cli.tsx` adds `--scroll-speed` and passes it on.
 - The mount helper gains a stand-in `mouse` (an `EventEmitter`) and `scrollSpeed` (default 3).
+- Found at Task 5's review: handlers set up once at mount see `full` as it was then. The mouse
+  listener reads `full` (and the view's height) through refs, not from the first render, so
+  Task 14's `/screen` does not leave it acting on the old mode.
+- The wheel scrolls while the model list is open, so picking a model ("lead is now ...", or its
+  error) goes through Task 5's `show`, bringing the view to the bottom as other asked-for output.
 
 **Tests:**
 1. `scrollSpeed`: default 3; `"0.5"`, `".5"`, `"20"` ok; `"0"`, `"21"`, `"-1"`, `"1e1"`, `"abc"`,
@@ -743,6 +748,11 @@ Commit: `feat: [ prints the detail view into the normal scrollback`.
 `tests/tui/menus.test.ts`.
 
 **What it is** (design, "The two modes"):
+- Found at Task 5's review: `say`, the bus listeners, `bindAsk` and History's warning are set up
+  once at mount and keep the first render's `say`, which sees `full` as it was then. Keep `full`
+  in a ref as well as in state, set at the same moment, and have `say` (and Task 7's mouse
+  listener) read the ref, so lines go to `Rows` after a switch to full screen. A test: `/screen`
+  to full, then a reply arriving shows in the conversation view.
 - `/screen` (alone; words after it are refused as for `/exit`) switches, in Task 1's orders:
   - Both ways run between `input.hold(true)` and `input.hold(false)`, so raw mode is never turned
     off (the user's check, "Before you start").

@@ -140,7 +140,12 @@ classic mode); copying keeps the tabs (the user's choice, 2026-10-27).
   one here.)
 - **Following:** at the bottom, the view follows new lines. Scrolled up, it stays where it was put,
   and a grey row at its foot says how many lines came in since ("↓ 12 new lines · Ctrl+End").
-  Coming back to the bottom, by wheel or key, follows again. Sending a prompt goes to the bottom.
+  Coming back to the bottom, by wheel or key, follows again. Sending a prompt goes to the bottom,
+  and so does anything the user asks to be shown (`?`, Shift+Tab's "mode is now", Ctrl+O until
+  the detail view): the user's choice, 2026-10-27, at Task 5's review, where a key list printed
+  out of sight looked like a broken key.
+- **The scroll keys work during Ctrl+R's search** too, scrolling the conversation behind it and
+  leaving the search as it was (the user's choice, 2026-10-27, at Task 5's review).
   A view that is put somewhere stays there even when the conversation grows taller or wider (a
   turn ending, a resize): blank rows show below the last line rather than the view moving (the
   user's choice, 2026-10-27; a question's detail needs it, below).
@@ -277,6 +282,9 @@ the part, and by risk where it does not (cost, mode, errors):
   terminal only; xclip not found"); the OSC 52 was still sent.
 - **The terminal is too small** for the live area: the conversation keeps at least one row, as the
   prompt does in release 3; what does not fit is dropped from the live area in release 3's order.
+  Found at Task 5's review: at 6 rows or fewer the frame can still reach the terminal's height
+  (busy, with the `/` menu open: the menu's and the prompt's least rows and the conversation's
+  row come to more than there is). Classic mode does the same one row lower, from release 3.
 
 ## Building it
 
