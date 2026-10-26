@@ -38,10 +38,11 @@ subagents that read, with a to-do list and your instruction files. The command i
   tool. Each has `read_file`, `find_files` and `search_files` and reports what it found with file
   paths and line numbers. Several run side by side, or in the background while the lead goes on; a
   background answer that arrives while the lead is idle starts a turn by itself. A panel under the
-  prompt shows each one's task, model, time, tokens, cost and latest tool call. `--worker
-  <provider:model>` (or `TACHI_WORKER`) picks their model, the lead's by default, and `--max-tasks`
-  how many run at once (8 by default). `/tasks` lists them, `/tasks t3` shows one in full and
-  `/tasks stop` stops them. A subagent's read outside the project asks first, naming the subagent.
+  prompt shows each one's short description, and under it its model, time, tokens, cost and latest
+  tool call. `--worker <provider:model>` (or `TACHI_WORKER`) picks their model, the lead's by
+  default, and `--max-tasks` how many run at once (8 by default). `/tasks` lists them, `/tasks t3`
+  shows one in full and `/tasks stop` stops them. A subagent's read outside the project asks first,
+  naming the subagent.
 - **A to-do list** the lead keeps above the prompt while any item is unfinished. Ctrl+T hides or
   shows it.
 - **Your instruction files:** each session reads `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` (or

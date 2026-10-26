@@ -22,24 +22,27 @@ const MARKS: Record<TaskState, Omit<TaskRow, "text">> = {
 
 const live = (t: Task) => t.state === "running" || t.state === "waiting";
 
-// The panel under the prompt (release 4 design, "On screen"): a row for each subagent still on it,
-// running ones first, then "+N more" in the last row when not all fit. A running row ends with its
-// latest tool call. What the model wrote is escaped, and a task is kept to its first line. `now` is
-// the screen's clock, which may have last ticked just before a subagent started.
+// The panel under the prompt (release 4 design, "On screen"): two lines for each subagent still on it,
+// running ones first, then "+N more" in the last line when not all fit. What the model wrote is
+// escaped, and a description is kept to its first line. `now` is the screen's clock, which may have
+// last ticked just before a subagent started.
 export function taskRows(tasks: Task[], rows: number, now: number): TaskRow[] {
   const on = tasks.filter((t) => t.shown);
   const ordered = [...on.filter(live), ...on.filter((t) => !live(t))];
-  if (ordered.length <= rows) return ordered.map((t) => taskRow(t, now));
+  if (ordered.length * 2 <= rows) return ordered.flatMap((t) => taskRow(t, now));
   if (rows <= 0) return [];
-  return [...ordered.slice(0, rows - 1).map((t) => taskRow(t, now)), { mark: " ", text: `+${ordered.length - rows + 1} more`, color: "gray" }];
+  const fit = Math.floor((rows - 1) / 2);
+  return [...ordered.slice(0, fit).flatMap((t) => taskRow(t, now)), { mark: " ", text: `+${ordered.length - fit} more`, color: "gray" }];
 }
 
-// One subagent's row, for the panel and for /tasks.
-export function taskRow(t: Task, now: number): TaskRow {
-  const head = `${t.id} ${visible(t.task.split(/\r?\n/)[0] ?? "")} · ${visible(t.model.slice(t.model.indexOf(":") + 1))}`;
-  if (t.state === "waiting") return { ...MARKS.waiting, text: `${head} · waiting` };
+// One subagent's two lines, for the panel and for /tasks: its number and description, then under it
+// its model, time, tokens and cost, and while it runs its latest tool call.
+export function taskRow(t: Task, now: number): TaskRow[] {
+  const head = { ...MARKS[t.state], text: `${t.id} ${visible(t.description.split(/\r?\n/)[0] ?? "")}` };
+  const model = visible(t.model.slice(t.model.indexOf(":") + 1));
+  if (t.state === "waiting") return [head, { mark: " ", text: `⎿ ${model} · waiting`, color: "gray" }];
   const tool = t.state === "running" && t.lastTool ? ` · ${visible([t.lastTool.name, brief(t.lastTool.name, t.lastTool.input)].filter(Boolean).join(" "))}` : "";
-  return { ...MARKS[t.state], text: `${head} · ${elapsed(Math.max(0, (t.ended ?? now) - t.started))} · ↓ ${k(t.output)} tokens · ${costText(t.model, t.cost, t.costUnknown)}${tool}` };
+  return [head, { mark: " ", text: `⎿ ${model} · ${elapsed(Math.max(0, (t.ended ?? now) - t.started))} · ↓ ${k(t.output)} tokens · ${costText(t.model, t.cost, t.costUnknown)}${tool}`, color: "gray" }];
 }
 
 export function TaskPanel({ rows }: { rows: TaskRow[] }) {

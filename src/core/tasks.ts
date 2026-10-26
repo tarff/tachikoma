@@ -16,6 +16,7 @@ export interface Result {
 // One subagent, as the panel and /tasks show it.
 export interface Task {
   id: string; // t1, t2 and so on through the session
+  description: string; // a few words naming the task, for the screen
   task: string; // what it was asked to find out, as the model wrote it
   model: string;
   background: boolean;
@@ -61,14 +62,14 @@ export class Tasks {
   }
 
   // `signal` is the lead's turn, for a subagent it waits for: stopping the turn stops it too.
-  start(task: string, opts: { background: boolean; signal?: AbortSignal }): Task {
+  start(task: string, opts: { description?: string; background: boolean; signal?: AbortSignal }): Task {
     const provider = this.opts.worker();
     const id = `t${this.all.length + 1}`;
     const stop = new AbortController();
     opts.signal?.addEventListener("abort", () => stop.abort(), { once: true });
     this.#stops.set(id, { stop, byUser: false });
     // `done` is set just below, before anything reads it.
-    const t = { id, task, model: provider.id, background: opts.background, state: "waiting", started: Date.now(), output: 0, cost: 0, costUnknown: false, lastTool: null, shown: true, messages: [] } as Omit<Task, "done"> as Task;
+    const t = { id, description: opts.description ?? task, task, model: provider.id, background: opts.background, state: "waiting", started: Date.now(), output: 0, cost: 0, costUnknown: false, lastTool: null, shown: true, messages: [] } as Omit<Task, "done"> as Task;
     this.all.push(t);
     t.done = this.#run(t, provider, stop.signal);
     this.#changed();
@@ -117,7 +118,7 @@ export class Tasks {
     t.state = r.state;
     t.answer = r.text;
     t.ended = Date.now();
-    const name = `Background task ${t.id} (${t.task})`;
+    const name = `Background task ${t.id} (${t.description})`;
     const { id } = t;
     if (t.background && r.state === "done") this.#inbox.push({ id, text: `${name} finished:\n${truncate(r.text)}`, wake: true });
     if (t.background && r.state === "failed") this.#inbox.push({ id, text: `${name} failed: ${r.text}`, wake: true });
@@ -146,7 +147,7 @@ export class Tasks {
       t.lastTool = { name, input };
       this.#changed();
     });
-    const owner: Owner = { name: `${t.id} (${t.task})`, signal, stop: () => this.stop(t.id) };
+    const owner: Owner = { name: `${t.id} (${t.description})`, signal, stop: () => this.stop(t.id) };
     const { ctx } = this.opts;
     const session = new Session({ lead: provider, ...(this.opts.fallback ? { fallback: this.opts.fallback } : {}), tools: this.opts.tools, system: this.opts.system, ctx: { ...ctx, gate: ctx.gate.for(owner) }, bus });
     t.messages = session.messages;

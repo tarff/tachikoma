@@ -314,7 +314,7 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     if (verb === undefined) {
       if (!tasks.all.length) return [gray("No subagents yet.")];
       const now = Date.now();
-      return [gray(`Subagents: ${tasks.all.length}`), ...tasks.all.map((t) => taskRow(t, now)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
+      return [gray(`Subagents: ${tasks.all.length}`), ...tasks.all.flatMap((t) => taskRow(t, now)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
     }
     if (verb === "stop" && !rest.length) {
       if (id === undefined) return [gray(tasks.stop() ? "Stopped every subagent." : "No subagent is running.")];
@@ -326,7 +326,7 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     if (!t) return [none(verb)];
     const calls = callLines(t.messages);
     const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
-    return [gray(`${t.id} (${t.task}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
+    return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
   };
 
   // Picking does what `/lead <provider:model>` does.

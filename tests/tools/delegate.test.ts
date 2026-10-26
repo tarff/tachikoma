@@ -19,32 +19,39 @@ const hanging = (): Provider => ({
 });
 
 describe("delegate", () => {
+  it("names the subagent by its description, and hands it the task", async () => {
+    const { tool, ctx, tasks } = await setup(new FakeProvider("w", [reply("found")]));
+    await tool.run({ description: "find x", task: "In the project, find where x is set." }, ctx);
+    expect(tasks.all[0]).toMatchObject({ description: "find x", task: "In the project, find where x is set." });
+    await expect(tool.run({ task: "find y" }, ctx)).rejects.toThrow("Invalid input for delegate");
+  });
+
   it("waits for the subagent and returns its answer", async () => {
     const { tool, ctx } = await setup(new FakeProvider("w", [reply("It is in src/auth.ts:12")]));
-    expect(await tool.run({ task: "find the login code" }, ctx)).toBe("It is in src/auth.ts:12");
+    expect(await tool.run({ description: "find the login code", task: "find the login code" }, ctx)).toBe("It is in src/auth.ts:12");
   });
 
   it("with background, returns at once, the answer coming in a later message", async () => {
     const { tool, ctx, tasks } = await setup(new FakeProvider("w", [reply("found")]));
-    expect(await tool.run({ task: "find x", background: true }, ctx)).toBe("Started t1 in the background; its answer will come in a later message.");
+    expect(await tool.run({ description: "find x", task: "find x", background: true }, ctx)).toBe("Started t1 in the background; its answer will come in a later message.");
     await tasks.all[0]!.done;
     expect(tasks.take()).toEqual(["Background task t1 (find x) finished:\nfound"]);
   });
 
   it("with -p, runs a background task in the foreground and says why", async () => {
     const { tool, ctx, tasks } = await setup(new FakeProvider("w", [reply("found")]), true);
-    expect(await tool.run({ task: "find x", background: true }, ctx)).toBe("t1 ran in the foreground, since -p has no later turn to read a background answer in.\n\nfound");
+    expect(await tool.run({ description: "find x", task: "find x", background: true }, ctx)).toBe("t1 ran in the foreground, since -p has no later turn to read a background answer in.\n\nfound");
     expect(tasks.take()).toEqual([]);
   });
 
   it("gives a failure, with its reason, as the answer, so the lead knows", async () => {
     const { tool, ctx } = await setup(new FakeProvider("w", [new Error("rate limited")]));
-    expect(await tool.run({ task: "find x" }, ctx)).toBe("t1 failed: rate limited");
+    expect(await tool.run({ description: "find x", task: "find x" }, ctx)).toBe("t1 failed: rate limited");
   });
 
   it("says when the user stopped the subagent", async () => {
     const { tool, ctx, tasks } = await setup(hanging());
-    const answer = tool.run({ task: "find x" }, ctx);
+    const answer = tool.run({ description: "find x", task: "find x" }, ctx);
     await new Promise((r) => setTimeout(r, 20));
     tasks.stop("t1");
     expect(await answer).toBe("t1 was stopped by the user before it finished.");
@@ -53,7 +60,7 @@ describe("delegate", () => {
   it("stops the subagent when the turn waiting for it stops", async () => {
     const { tool, ctx, tasks } = await setup(hanging());
     const turn = new AbortController();
-    const answer = tool.run({ task: "find x" }, { ...ctx, signal: turn.signal });
+    const answer = tool.run({ description: "find x", task: "find x" }, { ...ctx, signal: turn.signal });
     await new Promise((r) => setTimeout(r, 20));
     turn.abort();
     await answer;

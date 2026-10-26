@@ -1063,7 +1063,7 @@ describe("App's space on screen", () => {
 });
 
 describe("App's background subagents", () => {
-  const bg = (id: string, task: string) => callTool(id, "delegate", { task, background: true });
+  const bg = (id: string, task: string) => callTool(id, "delegate", { description: task, task, background: true });
   const note = (text: string) => ({ type: "text", text, from: "tasks" });
 
   it("reads an answer that finishes while the lead is idle in a turn of its own, saying it finished", async () => {
@@ -1139,7 +1139,7 @@ describe("App's background subagents", () => {
   });
 
   it("on Esc, stops the turn and the subagents it waits for, not background ones", async () => {
-    const lead = new FakeProvider("a", [{ parts: [...bg("c1", "a").parts, ...callTool("c2", "delegate", { task: "b" }).parts], usage }]);
+    const lead = new FakeProvider("a", [{ parts: [...bg("c1", "a").parts, ...callTool("c2", "delegate", { description: "b", task: "b" }).parts], usage }]);
     const { app, tasks } = await mount([], { lead, worker: new Held("fake:w") });
     await type(app, "go");
     await waitFor(() => tasks.all.length === 2 && tasks.all.every((t) => t.state === "running"));
@@ -1154,13 +1154,13 @@ describe("App's background subagents", () => {
     const { app } = await mount([], { lead, worker, segments: ["tasks"] });
     await type(app, "go");
     await until(app, "started it");
-    expect(app.lastFrame()).toMatch(/›\n◐ t1 find x · w · \d+s · ↓ 0 tokens · \$0\.00\n\? for shortcuts\n 1 running$/);
+    expect(app.lastFrame()).toMatch(/›\n◐ t1 find x\n  ⎿ w · \d+s · ↓ 0 tokens · \$0\.00\n\? for shortcuts\n 1 running$/);
     worker.answer("found");
     await until(app, "read it");
-    expect(app.lastFrame()).toMatch(/›\n✓ t1 find x · w · /);
+    expect(app.lastFrame()).toMatch(/›\n✓ t1 find x\n  ⎿ w · /);
     await type(app, "more");
     await until(app, "next");
-    expect(app.lastFrame()).not.toContain("t1 find x ·");
+    expect(app.lastFrame()).not.toContain("✓ t1 find x");
   });
 
   it("lists the session's subagents with /tasks, finished ones taken off the panel included", async () => {
@@ -1174,12 +1174,12 @@ describe("App's background subagents", () => {
     await until(app, "next");
     await type(app, "/tasks");
     await until(app, "Subagents: 1");
-    expect(app.lastFrame()).toMatch(/Subagents: 1\n✓ t1 find x · w · \d+s · ↓ 5 tokens · \$0\.00 \+ \?\n/);
+    expect(app.lastFrame()).toMatch(/Subagents: 1\n✓ t1 find x\n  ⎿ w · \d+s · ↓ 5 tokens · \$0\.00 \+ \?\n/);
   });
 
   it("prints a subagent's tool calls and answer in full with /tasks t1", async () => {
     const worker = new FakeProvider("w", [callTool("w1", "find_files", { pattern: "*.ts" }), reply("It is in a.ts")]);
-    const { app } = await mount([callTool("c1", "delegate", { task: "find x" }), reply("done")], { worker });
+    const { app } = await mount([callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")], { worker });
     await type(app, "go");
     await until(app, "done");
     await type(app, "/tasks t1");
