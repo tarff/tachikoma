@@ -139,7 +139,8 @@ if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works
 if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
 const mode: Mode = oneOf("mode", parsed.mode, MODES) ?? "ask"; // the safest mode is the default
 const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
-const maxTasks = parsed["max-tasks"] === undefined ? MAX_TASKS : Number(parsed["max-tasks"]);
+// Digits only: Number() would also take "1e1", " 8 " and "0x10".
+const maxTasks = parsed["max-tasks"] === undefined ? MAX_TASKS : /^\d+$/.test(parsed["max-tasks"]) ? Number(parsed["max-tasks"]) : NaN;
 if (!Number.isInteger(maxTasks) || maxTasks < 1) fail(`--max-tasks must be a whole number from 1 (got "${parsed["max-tasks"]}")`);
 let segments;
 try {

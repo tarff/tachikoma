@@ -38,7 +38,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   });
 
   it("takes --max-tasks only as a whole number from 1", () => {
-    for (const bad of ["0", "x", "1.5"]) {
+    for (const bad of ["0", "x", "1.5", "1e1", " 8 ", "0x10"]) {
       const r = tachi("--lead", "ollama:none", "--max-tasks", bad, "-p", "hi");
       expect(r.code).toBe(1);
       expect(r.stderr).toContain(`--max-tasks must be a whole number from 1 (got "${bad}")`);
