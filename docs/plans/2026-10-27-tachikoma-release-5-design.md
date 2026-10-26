@@ -15,7 +15,9 @@ editor, stash and rebinding keys in a file are release 6. Every later release mo
 14 in all. Each part below was chosen by the user on 2026-10-26 or 2026-10-27, from options offered.
 An outside review of this design (2026-10-27) added four rules: a question brings its detail into
 view, the newest copy wins, the input filter's rules for pastes and Escape, and who owns the
-terminal while `[` has printed the view out.
+terminal while `[` has printed the view out. A review of the build plan the same day sharpened two
+of them (a question keeps to its own detail; an older clipboard run is followed by the newest OSC 52
+again) and added the drive's colon to words.
 
 Sources:
 - **Claude Code's full screen:** code.claude.com/docs/en/fullscreen.md, read on 2026-10-26 and
@@ -77,8 +79,10 @@ the view with everything so far. Both modes keep every line.
 failure is not well defined, and `--classic` covers it. `-p` runs have no screen and do not change.
 
 **Switching during a session** cannot use Ink's option, which is set only at the start: Tachikoma
-writes the switch itself and has Ink draw everything again. The build tries this first (see
-"Building it").
+writes the switch itself and has Ink draw everything again. The build tried this first (see
+"Building it"). Ink's suspend and resume turn raw mode off and on again within about 15 ms, which
+left the console reading whole lines after a few switches; so raw mode is held on through every
+switch and through `[`, and Ink's "off" is not passed on then.
 
 ## The screen
 
@@ -116,10 +120,12 @@ first, and a cap goes in only if the measurements call for one, with the figures
   Coming back to the bottom, by wheel or key, follows again. Sending a prompt goes to the bottom.
 - **A permission question brings its detail into view.** A write's detail (the file's proposed
   text) goes into the conversation under a heading, as in release 1. When the question comes, the
-  view moves to it: if the detail is taller than the view, its heading goes to the top and following
-  stops until the user comes back to the bottom; otherwise the view goes to the bottom and follows.
-  While the question waits, the wheel, the scroll keys and the scroll bar still scroll, so a long
-  file can be read before answering; y, n, Esc and Ctrl-C answer it as in release 3.
+  view moves to that question's own detail and stops following, so lines arriving while it waits
+  (another subagent's question and its detail, a reply) do not move it: a detail that fits goes at
+  the foot of the view, above the row kept for "new lines"; a taller one has its heading at the
+  top. Once answered, the view follows again if it was following before. While the question waits,
+  the wheel, the scroll keys and the scroll bar still scroll, so a long file can be read before
+  answering; y, n, Esc and Ctrl-C answer it as in release 3.
 
 ## The mouse
 
@@ -147,10 +153,10 @@ input, with these rules:
   can be longer than the screen; the wheel scrolls during one too.
 - The selection belongs to the lines, not the screen rows, so it stays on its text as the view
   moves.
-- **Double-click** selects a word: letters, digits and iTerm2's `/-+\~_.`, so a path is one word; a
-  URL (`http://` or `https://` to the next space) is selected whole. **Triple-click** selects the
-  line. Clicks count as a double or triple when each lands on the same cell within 500 ms of the
-  last (Windows' default).
+- **Double-click** selects a word: letters, digits and iTerm2's `/-+\~_.`, so a path is one word,
+  and a drive's colon (`C:\`, `C:/`), so a Windows path is too; a URL (`http://` or `https://` to
+  the next space) is selected whole. **Triple-click** selects the line. Clicks count as a double or
+  triple when each lands on the same cell within 500 ms of the last (Windows' default).
 - A click without a drag clears the selection. Only the conversation and the detail view can be
   selected, not the prompt or the status line.
 
@@ -162,8 +168,9 @@ input, with these rules:
   took the OSC 52, and the probe found both work here.
 - **The newest copy wins.** OSC 52 is written at once, so the terminal gets copies in order. The
   system's tool runs one copy at a time: a copy made while one is running waits, and when it
-  finishes only the newest waiting copy runs, so an older copy never lands after a newer one. A
-  failure is reported only for the newest copy.
+  finishes only the newest waiting copy runs. An older run that ends after a newer copy was made
+  has just put the older text on the clipboard, so the newest copy's OSC 52 is sent again at once,
+  before its own run. A failure is reported only for the newest copy.
 - The hint row says "Copied 312 characters" until the next key or click; the conversation does not
   get a line for it.
 - **Shift+drag** still gives the terminal's own selection, as the probe found.
@@ -189,10 +196,11 @@ is hidden while it is open; the status line stays, and a grey row at the bottom 
 - **`[`** prints the view into the normal scrollback, for the terminal's own search, selection and
   scrolling. While the view is printed out:
   - **Going out:** Tachikoma turns mouse reports off, suspends Ink (`suspendTerminal()`: Ink stops
-    drawing and stops reading keys, and turns raw mode off), leaves the second screen itself, since
-    it entered it itself, and prints the view.
-  - **Keys:** a small reader of Tachikoma's own takes them, in raw mode: q, Esc or Ctrl-C come back,
-    and other keys are ignored. Nothing reaches Ink.
+    drawing and stops reading keys, and asks for raw mode off, which is not passed on: see
+    "Switching during a session"), leaves the second screen itself, since it entered it itself,
+    and prints the view.
+  - **Keys:** a small reader of Tachikoma's own takes them, still in raw mode: q, Esc or Ctrl-C
+    come back, and other keys are ignored. Nothing reaches Ink.
   - **Coming back** undoes each step in reverse: the second screen, mouse reports, then Ink
     resumed, drawing everything again.
   - **Work goes on:** turns and subagents keep running and their lines are kept, but nothing is
@@ -221,7 +229,13 @@ In classic mode, Ctrl+O and `/tasks t3` print below, as in releases 3 and 4.
 
 1. **First, a check:** switching screens in the middle of a session, with Ink drawing everything
    again cleanly, on the stand-in terminal and in the user's. If it cannot be made to work, the user
-   is asked before anything is built on it.
+   is asked before anything is built on it. **Done 2026-10-27** in the user's Windows Terminal (Node
+   24.22.1, 120 by 30), with a probe kept outside the repository: each switch took about 30 ms,
+   going to classic printed every line, and no frame cleared the terminal. Two flashes went once
+   React committed before Ink resumed and nothing was drawn before leaving full screen. The
+   keyboard stopped after the third switch until raw mode was held on through switches; then eleven
+   switches kept it. The user's answers: full screen clean, no flicker, classic printed and tidy,
+   the terminal as before after quitting.
 2. **Then a measurement:** memory and drawing time at growing session lengths, to settle whether
    the kept lines need a cap. The figures go into this design.
 3. **Then the rest,** each task's tests seen failing before its code, as in releases 2 to 4.
