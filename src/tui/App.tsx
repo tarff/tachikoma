@@ -105,7 +105,8 @@ export function App({
   const listed = useRef<{ folder: string; listing: Listing } | null>(null);
   const { columns, rows: height } = useWindowSize();
   // Full screen (release 5 design, "The screen"): every line is kept, wrapped one column short, leaving the last column
-  // for the scroll bar (release 5 plan, choice 1), and the view is where the user put it. Keys read and change the view at once, as above.
+  // for the scroll bar (release 5 plan, choice 1), and the view is where the user put it. Keys read and change the view
+  // at once, as above.
   const [full] = useState(screen.full);
   const [kept] = useState(() => new Rows(columns - 1));
   const view = useRef<View>(FOLLOWING);
