@@ -60,7 +60,8 @@ export function screenMode(classic: boolean | undefined, env: NodeJS.ProcessEnv,
 // The signals that end Tachikoma through process.exit, so `exit` handlers run: the executor's, which stops running
 // commands, and the one that puts the terminal back (release 5 design, "When something goes wrong"). Ctrl+Break and
 // SIGQUIT were added at Task 6's review (the user's choice, 2026-10-27): Windows sends SIGBREAK for Ctrl+Break even in
-// raw mode. signal-exit (node_modules/signal-exit/signals.js) knows neither on Windows; elsewhere it catches SIGQUIT, but
+// raw mode ("CTRL+BREAK is always treated as a signal", Microsoft's "CTRL+C and CTRL+BREAK Signals", read 2026-10-27;
+// raw mode turns off only Ctrl+C's). signal-exit (node_modules/signal-exit/signals.js) knows neither on Windows; elsewhere it catches SIGQUIT, but
 // only to unmount Ink and send the signal again, so the process dies with no `exit` event, on the second screen.
 export function exitSignals(platform: NodeJS.Platform): NodeJS.Signals[] {
   return ["SIGTERM", "SIGHUP", platform === "win32" ? "SIGBREAK" : "SIGQUIT"];
