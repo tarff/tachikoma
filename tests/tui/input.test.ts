@@ -102,9 +102,14 @@ describe("split", () => {
     expect([state.held, state.pasting]).toEqual(["", true]);
   });
 
-  // The choices where the spec is silent: what can never become a named report goes to Ink as it was.
-  it("passes to Ink a report with a bit the format doesn't name, a sideways wheel and a malformed report", () => {
-    for (const odd of [`${ESC}[<128;1;1M`, `${ESC}[<66;1;1M`, `${ESC}[<0;1x`]) expect(run(odd).pieces).toEqual([{ keys: odd }]);
+  // Every whole report is taken out (design, "Reading it"); one the screen doesn't use is dropped, as Ink would type it.
+  it("drops a whole report with a bit the format doesn't name, or a sideways wheel, keeping the keys around it", () => {
+    for (const odd of [`${ESC}[<128;1;1M`, `${ESC}[<66;1;1M`]) expect(run(odd).pieces).toEqual([]);
+    expect(run(`a${ESC}[<67;1;1Mb`).pieces).toEqual([{ keys: "a" }, { keys: "b" }]);
+  });
+
+  it("passes a malformed report, which can never become one, to Ink as it was", () => {
+    expect(run(`${ESC}[<0;1x`).pieces).toEqual([{ keys: `${ESC}[<0;1x` }]);
   });
 });
 
@@ -128,6 +133,18 @@ describe("InputFilter", () => {
     vi.advanceTimersByTime(1);
     expect(reads).toEqual([`${ESC}[<0;12`]);
     expect(mice).toEqual([]);
+  });
+
+  it("starts the 20 ms again with each read that still could be a report", () => {
+    vi.useFakeTimers();
+    const { reads, feed } = filtered();
+    feed(ESC);
+    vi.advanceTimersByTime(15);
+    feed("[<");
+    vi.advanceTimersByTime(19);
+    expect(reads).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(reads).toEqual([`${ESC}[<`]);
   });
 
   it("gives Ink an Escape and the rest of Up that comes within 20 ms as one read", () => {
@@ -167,6 +184,26 @@ describe("InputFilter", () => {
     filter.hold(false);
     filter.setRawMode(false).unref();
     expect(source.calls).toEqual(["setRawMode(true)", "ref", "setRawMode(false)", "unref"]);
+  });
+
+  it("passes on, when the hold ends, an off and an unref that were Ink's last word while held", () => {
+    const source = new Source();
+    const filter = new InputFilter(source as never);
+    source.calls = [];
+    filter.hold(true);
+    filter.setRawMode(false).unref();
+    filter.hold(false);
+    expect(source.calls).toEqual(["setRawMode(false)", "unref"]);
+  });
+
+  it("passes no off when the hold ends if Ink turned raw mode back on while held", () => {
+    const source = new Source();
+    const filter = new InputFilter(source as never);
+    source.calls = [];
+    filter.hold(true);
+    filter.setRawMode(false).setRawMode(true);
+    filter.hold(false);
+    expect(source.calls).toEqual(["setRawMode(true)"]);
   });
 
   it("emits each piece of keys as data, as a stream does, but not reports nor diverted keys", () => {
@@ -284,6 +321,22 @@ describe("InputFilter with Ink", () => {
       source.emit("data", `${ESC}[?1u`);
       await tick();
       expect(terminal.out).toMatch(/\u001b\[>\d+u/);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  // A key typed during the check reaches useInput twice: Ink reads it, and the check also hears it as "data" and hands it
+  // back with unshift. Ink 7.1.1 does the same with a plain stream; this records what Ink does today, not what it should.
+  it("gets a key typed during Ink's unanswered kitty check through unshift, which Ink 7.1.1 delivers twice", async () => {
+    const { source, seen, app } = inked(true);
+    try {
+      await tick();
+      source.emit("data", "a");
+      await tick();
+      expect(seen).toEqual(["a"]);
+      await new Promise((r) => setTimeout(r, 200)); // past the check's 200 ms (setTimeout(cleanup, 200) in Ink's ink.js)
+      expect(seen).toEqual(["a", "a"]);
     } finally {
       app.unmount();
     }

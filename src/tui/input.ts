@@ -28,8 +28,8 @@ const PARTIAL = /^\u001b(\[(<(\d+;){0,2}\d*)?)?$/;
 const NAMED = 64 | 32 | 16 | 8 | 4 | 3;
 const BUTTONS = ["left", "middle", "right", "none"] as const; // b & 3: 0 left, 1 middle, 2 right, 3 none
 
-// A report with a bit the format doesn't name, or a wheel with 2 or 32 also set (the probe never sent one), is not taken
-// out: it goes to Ink as it was, as before this filter.
+// A report with a bit the format doesn't name, or a wheel with 2 or 32 also set (the probe never sent one), is not one the
+// screen uses: it is still taken out (design, "Reading it"), and dropped, since Ink would type it into the prompt.
 function decode(report: RegExpExecArray): Mouse | null {
   const b = Number(report[1]);
   const wheel = (b & 64) !== 0;
@@ -75,11 +75,11 @@ export function split(state: State, chunk: string): { pieces: Piece[]; state: St
     keys += text.slice(i, esc);
     const rest = text.slice(esc);
     const report = REPORT.exec(rest);
-    const mouse = report && decode(report);
-    if (report && mouse) {
+    if (report) {
       if (keys) pieces.push({ keys });
       keys = "";
-      pieces.push({ mouse });
+      const mouse = decode(report);
+      if (mouse) pieces.push({ mouse });
       i = esc + report[0].length;
     } else if (rest.startsWith(PASTE_START)) {
       keys += PASTE_START;
@@ -107,6 +107,9 @@ export class InputFilter extends EventEmitter {
   #waiting: string[] = [];
   #timer: NodeJS.Timeout | undefined;
   #holding = false;
+  // Ink's last word on raw mode and ref, for when a hold ends.
+  #rawOff = false;
+  #unrefd = false;
   #divert: ((keys: string) => void) | null = null;
 
   // wait: 20 ms by default, Ink's own wait for the rest of a key (`pendingInputFlushDelayMilliseconds` in Ink's
@@ -133,6 +136,7 @@ export class InputFilter extends EventEmitter {
   }
 
   setRawMode(on: boolean): this {
+    this.#rawOff = !on;
     if (on || !this.#holding) this.#source.setRawMode(on);
     return this;
   }
@@ -143,27 +147,37 @@ export class InputFilter extends EventEmitter {
   }
 
   ref(): this {
+    this.#unrefd = false;
     this.#source.ref();
     return this;
   }
 
   unref(): this {
+    this.#unrefd = true;
     if (!this.#holding) this.#source.unref();
     return this;
   }
 
   // While held, Ink's setRawMode(false) and unref() are not passed on: a switch's suspend and resume would turn raw mode
   // off and on within about 15 ms, which after a few switches left the Windows console reading whole lines (release 5
-  // design, "Switching during a session"). Held around every switch and through `[`.
+  // design, "Switching during a session"). Held around every switch and through `[`. If off or unref was still Ink's
+  // last word when the hold ends (Ink unmounted meanwhile), it is passed on then, so the terminal isn't left raw and the
+  // process can exit.
   hold(on: boolean): void {
     this.#holding = on;
+    if (on) return;
+    if (this.#rawOff) this.#source.setRawMode(false);
+    if (this.#unrefd) this.#source.unref();
   }
 
   read(): string | null {
     return this.#waiting.shift() ?? null;
   }
 
-  // For `[` (release 5 design, "The detail view"): keys go to `to` and reports are dropped, until divert(null).
+  // For `[` (release 5 design, "The detail view"): keys go to `to` and reports are dropped, until divert(null). Keys come
+  // as they were read, so one call can hold several keys ("qx", or Escape with more after it): look at each key in it,
+  // not the whole string. Text held for the rest of a report goes, when its wait ends, to whoever has the keys then; and
+  // after a divert(null) made during one read, that read's later pieces go to Ink and the App.
   divert(to: ((keys: string) => void) | null): void {
     this.#divert = to;
   }
