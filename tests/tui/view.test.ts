@@ -53,7 +53,7 @@ describe("wrap", () => {
   });
 
   it("breaks after a space that a combining mark, ZWJ or FE0F joins into one character", () => {
-    for (const mark of ["́", "‍", "️"]) {
+    for (const mark of ["\u0301", "\u200d", "\ufe0f"]) {
       expect(wrap(`ab ${mark}cd`, 4, false)).toEqual([
         { start: 0, end: 4, text: `ab ${mark}` },
         { start: 4, end: 6, text: "cd" },
@@ -263,6 +263,11 @@ describe("bar", () => {
     expect(end.start + end.size).toBe(10);
     expect(bar(20, 10, 5)).toEqual({ start: 3, size: 5 }); // half its travel of 5, rounded up: Math.round(2.5)
     expect(bar(10_000, 10, 0)!.size).toBe(1);
+  });
+
+  it("keeps the thumb on the bar for a view held past the bottom", () => {
+    const past = bar(20, 10, 12)!;
+    expect(past.start + past.size).toBe(10);
   });
 
   it("turns a thumb's start back into a first row", () => {

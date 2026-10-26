@@ -28,8 +28,8 @@ export interface KeptLine {
 // (output.js) and string-width counts it as 0 columns, so the terminal's own jump to the next stop would push the rest
 // of the row past its end. So the row's text carries spaces, and Ink draws exactly what was measured. Stops every 8
 // columns, as wrap-ansi's TAB_SIZE (Ink's wrapping in classic mode) and terminals' default. They count from the row's
-// start, so each row stands on its own; classic counts from the line's start, which differs only on a wrapped line's
-// later rows. A tab cut at a row's end does not carry its spaces to the next row either: "abcdefghi\tx" at 10 columns
+// start, so each row stands on its own; classic counts from the line's start, which differs on a wrapped line's later
+// rows. A tab cut at a row's end does not carry its spaces to the next row either: "abcdefghi\tx" at 10 columns
 // has "      x" as its second row in classic, and "x" here.
 const TAB = 8;
 
@@ -39,8 +39,9 @@ const TAB = 8;
 const ASCII = /^[ -~]*$/;
 
 // Outside ASCII, string-width takes about 1 µs a character (3 million graphemes: 3.1 s, against 0.2 s from this cache,
-// measured for release 5's Task 3 review), so each character's columns are kept once found, as Ink keeps its own
-// (OutputCaches in output.js). The characters a session uses are few, so the cache stays small.
+// measured for release 5's Task 3 review), so each character's columns are kept once found. Ink keeps its own for one
+// frame (OutputCaches belongs to one Output, and renderer.js makes a new Output each frame); this one lasts one pass,
+// cleared at each add and setWidth, so text with endless different characters cannot grow it without limit.
 const known = new Map<string, number>();
 function columnsOf(g: string): number {
   let w = known.get(g);
@@ -157,6 +158,7 @@ export class Rows {
 
   // Each Line split at its line breaks into lines of its own, the same colour, so a place is a line and an offset.
   add(lines: Line[]): void {
+    known.clear();
     for (const l of lines) {
       for (const text of l.text.split("\n")) {
         const kept: KeptLine = { text, ...(l.color === undefined ? {} : { color: l.color }), ...(l.oneLine ? { oneLine: true } : {}) };
@@ -183,6 +185,7 @@ export class Rows {
 
   // A resize wraps every line again (release 5 design, "The screen").
   setWidth(width: number): void {
+    known.clear();
     this.#width = width;
     this.#starts = [];
     this.#before = [];
@@ -238,7 +241,9 @@ export function first(rows: Rows, v: View, height: number): number {
 }
 
 // Scrolling to the bottom, or past it, follows again with nothing unseen, so scrolling never parks a view past the
-// bottom; above the top is the top.
+// bottom; above the top is the top. Moving down from a view held past the bottom therefore reaches the bottom and
+// follows, and the text moves up by as much as a screen: on purpose, as reaching the bottom follows (release 5 design,
+// "Scrolling").
 export function scrollTo(rows: Rows, v: View, height: number, row: number): View {
   const to = Math.max(0, row);
   if (to >= bottom(rows, height)) return FOLLOWING;
@@ -273,7 +278,8 @@ export function notch(carry: number, speed: number, dir: -1 | 1): { rows: number
 export function bar(total: number, height: number, first: number): { start: number; size: number } | null {
   if (total <= height) return null;
   const size = Math.max(1, Math.round((height * height) / total));
-  return { start: Math.round((first * (height - size)) / (total - height)), size };
+  // A view held past the bottom (see first) shows the thumb at the bar's foot, not past it.
+  return { start: Math.round((Math.min(first, total - height) * (height - size)) / (total - height)), size };
 }
 
 // The thumb's start back to a first row, for clicks and drags on the bar. A thumb row can stand for several first rows,
