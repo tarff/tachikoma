@@ -310,6 +310,16 @@ Where the code differs from the design above, or settles what it left open, and 
   first run a subagent's `(?i)` was the session's one error.
 - **"1 error",** not "1 errors", in the status line.
 - **`--max-tasks` takes digits only:** `Number()` alone took `1e1`, ` 8 ` and `0x10`.
+- **From the review of the pull request,** three more:
+  - **A `.gitignore` that is a link gives no rules,** as git does not follow one (gitignore(5), git
+    2.41), and one that is a hard link to a file in the data folder gives none either.
+  - **An instruction file outside the project is opened only once allowed,** not read first and
+    asked about after. One allowed may import more from outside, whose names are known only once it
+    is read: a second question lists those (the user's choice, over leaving them out or reading them
+    unasked). Only files are read: a folder, a device such as `/dev/zero` or a named pipe is left
+    out with "not a file", where reading it could fail, never end or wait forever.
+  - **A file first reached at the import limit** has its imports expanded once it is reached higher
+    up, as by the walk, instead of keeping the first copy.
 
 ## The user's checklist
 
