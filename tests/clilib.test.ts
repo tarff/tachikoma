@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import path from "node:path";
 import {
   approvalQuestion,
+  exitSignals,
   headlessAnswer,
   headlessExit,
   headlessLeftOut,
@@ -142,6 +143,14 @@ describe("screenMode", () => {
     expect(screenMode(undefined, {}, false)).toBe("classic");
     for (const env of [{ CI: "true" }, { CI: "1" }, { CI: "" }, { CONTINUOUS_INTEGRATION: "yes" }]) expect(screenMode(undefined, env, true)).toBe("classic");
     for (const env of [{ CI: "0" }, { CI: "false" }, { CONTINUOUS_INTEGRATION: "false" }]) expect(screenMode(undefined, env, true)).toBe("full");
+  });
+});
+
+describe("exitSignals", () => {
+  it("ends on Ctrl+Break on Windows and on SIGQUIT elsewhere, besides SIGTERM and SIGHUP", () => {
+    expect(exitSignals("win32")).toEqual(["SIGTERM", "SIGHUP", "SIGBREAK"]);
+    expect(exitSignals("linux")).toEqual(["SIGTERM", "SIGHUP", "SIGQUIT"]);
+    expect(exitSignals("darwin")).toEqual(["SIGTERM", "SIGHUP", "SIGQUIT"]);
   });
 });
 

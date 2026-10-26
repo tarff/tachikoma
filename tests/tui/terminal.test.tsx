@@ -1,14 +1,24 @@
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { closeSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { constants, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { render, Static, Text, useApp } from "ink";
 import { useState } from "react";
 import { afterEach, describe, expect, it } from "vitest";
-import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, restoreOnExit, SECOND_SCREEN, SHOW_CURSOR, Screen } from "../../src/tui/terminal.js";
+import {
+  FIRST_SCREEN,
+  MOUSE_OFF,
+  MOUSE_ON,
+  restoreOnExit,
+  restoreWhenInkEnds,
+  SECOND_SCREEN,
+  SHOW_CURSOR,
+  Screen,
+  writeBestEffort,
+} from "../../src/tui/terminal.js";
 
 const ESC = String.fromCharCode(27);
 
@@ -112,6 +122,55 @@ describe("Screen", () => {
     left.screen.restore();
     expect(left.out.now).toBe(SHOW_CURSOR);
   });
+
+  it("writes nothing when put back if it never turned anything on, so classic mode stays as release 4 left it", () => {
+    const { out, screen } = recorded();
+    screen.restore();
+    expect(out).toEqual({ write: "", now: "" });
+  });
+});
+
+describe("writeBestEffort", () => {
+  it("writes at once, and does not throw when the write fails", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-terminal-"));
+    try {
+      const file = path.join(dir, "out.txt");
+      const fd = openSync(file, "w");
+      writeBestEffort(fd, "written");
+      closeSync(fd);
+      expect(readFileSync(file, "utf8")).toBe("written");
+      // A descriptor nothing has open: writeSync throws for it, as it does for a pipe whose reader has gone (EPIPE).
+      expect(() => writeSync(2 ** 30, "lost")).toThrow();
+      expect(() => writeBestEffort(2 ** 30, "lost")).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("restoreWhenInkEnds", () => {
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it("puts the terminal back as soon as Ink ends, not when the process does", async () => {
+    const { out, screen } = recorded();
+    screen.enter();
+    restoreWhenInkEnds(screen, Promise.resolve());
+    await settle();
+    expect(out.now).toBe(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR);
+  });
+
+  it("in classic, leaves a render error to Ink's own report on screen and exits with 1", async () => {
+    const { out, screen } = recorded();
+    const code = process.exitCode;
+    try {
+      restoreWhenInkEnds(screen, Promise.reject(new Error("render broke")));
+      await settle();
+      expect(out).toEqual({ write: "", now: "" });
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = code; // the test runner's own process
+    }
+  });
 });
 
 describe("restoreOnExit", () => {
@@ -127,43 +186,49 @@ describe("restoreOnExit", () => {
     }
   });
 
-  // A real process, as cli.tsx sets it up: the screen entered, then Ink drawing a frame and a second one it holds back
+  // A real process, set up in cli.tsx's order: the screen entered, then Ink drawing a frame and a second one it holds back
   // for its frame-rate limit, then the way out. Ink's own exit handler (signal-exit, which ink.js registers) would draw
   // that held frame after every `exit` listener, so on the normal screen, if restoreOnExit didn't unmount Ink first. The
   // output and the errors go to one file, to keep their order. SIGTERM and SIGHUP end through process.exit in cli.tsx.
-  function run(end: string, unmount = "() => ink?.unmount()") {
+  const TWO = 'ink.rerender(React.createElement(Text, null, "frame two"));';
+  const url = (p: string) => JSON.stringify(pathToFileURL(path.resolve(p)).href);
+  function run(end: string, { unmount = "() => ink?.unmount()", app = 'React.createElement(Text, null, "frame one")' } = {}) {
     const dir = mkdtempSync(path.join(tmpdir(), "tachi-terminal-"));
-    const url = (p: string) => JSON.stringify(pathToFileURL(path.resolve(p)).href);
-    const script = path.join(dir, "script.mjs");
-    writeFileSync(
-      script,
-      `import { writeSync } from "node:fs";
-import React from ${url("node_modules/react/index.js")};
+    try {
+      const script = path.join(dir, "script.mjs");
+      writeFileSync(
+        script,
+        `import React from ${url("node_modules/react/index.js")};
 import { render, Text } from ${url("node_modules/ink/build/index.js")};
-import { restoreOnExit, Screen } from ${url("src/tui/terminal.ts")};
-const screen = new Screen((s) => process.stdout.write(s), (s) => writeSync(1, s));
+import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from ${url("src/tui/terminal.ts")};
+const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
 let ink;
 restoreOnExit(screen, ${unmount});
 screen.enter();
-ink = render(React.createElement(Text, null, "frame one"), { interactive: true, patchConsole: false, exitOnCtrlC: false });
-ink.rerender(React.createElement(Text, null, "frame two"));
+ink = render(${app}, { interactive: true, patchConsole: false, exitOnCtrlC: false });
+restoreWhenInkEnds(screen, ink.waitUntilExit());
 ${end}
 `,
-    );
-    const file = path.join(dir, "out.txt");
-    const fd = openSync(file, "w");
-    const r = spawnSync(process.execPath, ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, script], {
-      stdio: ["ignore", fd, fd],
-    });
-    closeSync(fd);
-    const out = readFileSync(file, "utf8");
-    const back = out.lastIndexOf(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR);
-    return { code: r.status, out, before: out.slice(0, back), after: out.slice(back) };
+      );
+      const file = path.join(dir, "out.txt");
+      const fd = openSync(file, "w");
+      // 10 s, under the 15 s each of these tests allows, so a child that hangs fails its test instead of holding up the run.
+      const r = spawnSync(process.execPath, ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, script], {
+        stdio: ["ignore", fd, fd],
+        timeout: 10_000,
+      });
+      closeSync(fd);
+      const out = readFileSync(file, "utf8");
+      const back = out.lastIndexOf(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR);
+      return { code: r.status, out, before: out.slice(0, back), after: out.slice(back) };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 
   // Each run starts Node with tsx, about a second, longer with the whole suite running: as tests/cli.test.ts allows.
   it("puts the terminal back when the process exits, after Ink's last frame", { timeout: 15_000 }, () => {
-    const r = run("process.exit(0);");
+    const r = run(`${TWO} process.exit(0);`);
     expect(r.code).toBe(0);
     expect(r.out.startsWith(SECOND_SCREEN + MOUSE_ON)).toBe(true);
     expect(r.before).toContain("frame two");
@@ -171,7 +236,7 @@ ${end}
   });
 
   it("puts the terminal back on a crash, after Ink's last frame and before the error", { timeout: 15_000 }, () => {
-    const r = run('throw new Error("boom at the end");');
+    const r = run(`${TWO} throw new Error("boom at the end");`);
     expect(r.code).toBe(1);
     expect(r.out.startsWith(SECOND_SCREEN + MOUSE_ON)).toBe(true);
     expect(r.before).toContain("frame two");
@@ -184,11 +249,33 @@ ${end}
   // A throw inside uncaughtExceptionMonitor would count as Node's own handler failing: exit code 7, and the crash's report
   // lost (found at Task 6's review).
   it("still reports a crash when Ink's unmount fails too, and says so once after putting the terminal back", { timeout: 15_000 }, () => {
-    const r = run('throw new Error("original boom");', '() => { throw new Error("unmount broke"); }');
+    const r = run(`${TWO} throw new Error("original boom");`, { unmount: '() => { throw new Error("unmount broke"); }' });
     expect(r.code).toBe(1);
     expect(r.after.startsWith(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR)).toBe(true);
     expect(r.after).toContain("Error: original boom");
     expect(r.after.split("The interface failed while closing: unmount broke")).toHaveLength(2);
+  });
+
+  // Ink's ErrorBoundary draws a render error on the second screen and ends with it, and nothing else reports it: Ink
+  // swallows its own rejected exit promise (ink.js:277). Found at Task 6's review.
+  it("in full screen, says what broke the interface once the terminal is back, and exits with 1", { timeout: 15_000 }, () => {
+    const r = run("", { app: 'React.createElement(() => { throw new Error("render broke"); })' });
+    expect(r.code).toBe(1);
+    expect(r.out.startsWith(SECOND_SCREEN + MOUSE_ON)).toBe(true);
+    expect(r.after).toBe(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR + "The interface stopped on an error: render broke\n");
+  });
+
+  // cli.tsx's signal handlers, from exitSignals. Windows cannot send a process SIGBREAK from Node (process.kill gives
+  // ENOSYS), so this runs elsewhere only; the timer keeps the child alive until the signal comes.
+  it.skipIf(process.platform === "win32")("puts the terminal back on SIGQUIT, and exits with 128 + its number", { timeout: 15_000 }, () => {
+    const r = run(`import { constants } from "node:os";
+import { exitSignals } from ${url("src/clilib.ts")};
+for (const sig of exitSignals(process.platform)) process.on(sig, () => process.exit(128 + constants.signals[sig]));
+setTimeout(() => {}, 5000);
+process.kill(process.pid, "SIGQUIT");`);
+    expect(r.code).toBe(128 + constants.signals.SIGQUIT);
+    expect(r.out.startsWith(SECOND_SCREEN + MOUSE_ON)).toBe(true);
+    expect(r.after).toBe(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR);
   });
 });
 

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { writeSync } from "node:fs";
 import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -9,6 +8,7 @@ import { accountCommand } from "./auth/chatgpt.js";
 import {
   approvalQuestion,
   endOnEpipe,
+  exitSignals,
   headlessAnswer,
   headlessExit,
   headlessLeftOut,
@@ -39,7 +39,7 @@ import { gitBranch } from "./tui/git.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
-import { restoreOnExit, Screen } from "./tui/terminal.js";
+import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
 
 // Eight Claude Haiku 5.5 subagents ran at once on the user's account with none refused; eight was the
 // most tried (release 4 design, "Before the build", 2026-10-26).
@@ -233,7 +233,7 @@ const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items)), delegateT
 const session: Session = new Session({ lead, fallback, tools, system, ctx: { root, executor, gate }, bus, inbox: () => tasks.take() });
 
 // The executor stops running commands from an "exit" handler, which dying by a signal skips.
-for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => process.exit(128 + constants.signals[sig]));
+for (const sig of exitSignals(process.platform)) process.on(sig, () => process.exit(128 + constants.signals[sig]));
 
 if (parsed.print !== undefined) {
   let failed = false;
@@ -269,8 +269,10 @@ if (parsed.print !== undefined) {
   // Ctrl-C reaches the interface as a key; a SIGINT here came from outside (`kill -INT`).
   process.on("SIGINT", () => process.exit(128 + constants.signals.SIGINT));
   // After the instruction files' question, which stays on the normal screen, and before Ink's first frame, which goes to
-  // the second (release 5 design, "The two modes").
-  const screen = new Screen((s) => process.stdout.write(s), (s) => writeSync(1, s));
+  // the second (release 5 design, "The two modes"). restoreOnExit is set up in every mode, as /screen can enter full
+  // screen later. tests/tui/terminal.test.tsx ("restoreOnExit") copies this order from here to restoreWhenInkEnds: keep
+  // the two in step.
+  const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true) === "full") screen.enter();
@@ -303,4 +305,5 @@ if (parsed.print !== undefined) {
     // filter, which takes the mouse reports out (release 5 design, "The mouse").
     { stdin: new InputFilter(process.stdin) as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },
   );
+  restoreWhenInkEnds(screen, ink.waitUntilExit());
 }

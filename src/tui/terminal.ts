@@ -15,10 +15,12 @@ export class Screen {
   #full = false;
   #mouse = false;
   #restored = false;
+  #used = false; // anything ever turned on, so there is anything to undo
   readonly #write: (s: string) => void;
   readonly #writeNow: (s: string) => void;
 
-  // `writeNow` must finish before it returns: the exit handlers use it, and the process may end right after.
+  // `writeNow` must finish before it returns, and never throw (writeBestEffort below): the exit handlers use it, and the
+  // process may end right after.
   constructor(write: (s: string) => void, writeNow: (s: string) => void) {
     this.#write = write;
     this.#writeNow = writeNow;
@@ -48,12 +50,14 @@ export class Screen {
   setMouse(on: boolean): void {
     if (on === this.#mouse) return;
     this.#mouse = on;
+    this.#used ||= on;
     this.#write(on ? MOUSE_ON : MOUSE_OFF);
   }
 
   setSecond(on: boolean): void {
     if (on === this.#full) return;
     this.#full = on;
+    this.#used ||= on;
     this.#write(on ? SECOND_SCREEN : FIRST_SCREEN);
   }
 
@@ -63,9 +67,10 @@ export class Screen {
   }
 
   // Every way out ends here, some more than once (a crash and then the exit it causes): only the first writes. The cursor
-  // is always shown, as Ink hides it while drawing (release 5 design, "When something goes wrong").
+  // is always shown, as Ink hides it while drawing (release 5 design, "When something goes wrong"). A screen never switched
+  // writes nothing, so classic mode, and output sent to a file, stay exactly as in release 4 (found at Task 6's review).
   restore(): void {
-    if (this.#restored) return;
+    if (this.#restored || !this.#used) return;
     this.#restored = true;
     this.#writeNow((this.#mouse ? MOUSE_OFF : "") + (this.#full ? FIRST_SCREEN : "") + SHOW_CURSOR);
     this.#mouse = false;
@@ -95,9 +100,35 @@ export function restoreOnExit(screen: Screen, unmount: () => void, proc: Pick<No
       error = err;
     }
     screen.restore();
-    // writeSync, as the process may end right after.
-    if (failed) writeSync(2, `The interface failed while closing: ${errorText(error)}\n`);
+    if (failed) writeBestEffort(2, `The interface failed while closing: ${errorText(error)}\n`);
   };
   proc.on("exit", out);
   proc.on("uncaughtExceptionMonitor", out);
+}
+
+// When Ink ends (found at Task 6's review). After /exit or a double Ctrl-C or Ctrl-D, the terminal goes back at once, not
+// when the process ends, which can be a while later. A render error is drawn by Ink's ErrorBoundary on the second screen,
+// which leaving would take away, and Ink swallows the rejected exit promise (ink.js:277): so in full screen it is said
+// again on stderr once the terminal is back. Ink rejects before the event loop drains, so before `exit`. In classic Ink's
+// report stays on screen, as in release 4. Either way the exit code is 1 (the user's choice, 2026-10-27, at Task 6's
+// review; release 4 exited 0).
+export function restoreWhenInkEnds(screen: Screen, exited: Promise<unknown>): void {
+  exited.then(
+    () => screen.restore(),
+    (err: unknown) => {
+      process.exitCode = 1;
+      if (!screen.full) return;
+      screen.restore();
+      writeBestEffort(2, `The interface stopped on an error: ${errorText(err)}\n`);
+    },
+  );
+}
+
+// Writes before returning, and never throws, as Ink's own writeBestEffort: the exit handlers use it, and writeSync throws
+// EPIPE when the reader of a pipe has gone, which would turn a quiet exit into a crash, or, from uncaughtExceptionMonitor,
+// a crash into Node's exit 7 with its report lost (found at Task 6's review).
+export function writeBestEffort(fd: number, s: string): void {
+  try {
+    writeSync(fd, s);
+  } catch {}
 }
