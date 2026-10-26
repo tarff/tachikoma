@@ -27,7 +27,19 @@ function view(groups: ModelGroup[], filter: string, chosen: number) {
   return { shown, models, at: Math.min(chosen, Math.max(0, models.length - 1)) };
 }
 
-export function ModelPicker({ groups, current, onPick, onClose, maxRows }: { groups: ModelGroup[]; current: string; onPick: (spec: string) => void; onClose: () => void; maxRows?: number }) {
+export function ModelPicker({
+  groups,
+  current,
+  onPick,
+  onClose,
+  maxRows,
+}: {
+  groups: ModelGroup[];
+  current: string;
+  onPick: (spec: string) => void;
+  onClose: () => void;
+  maxRows?: number;
+}) {
   // Each key reads and changes this at once: Ink can pass on several keys from one read of the
   // terminal before the screen is drawn again, and each must see what the one before it did.
   const state = useRef<{ filter: string; chosen: number } | null>(null);

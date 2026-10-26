@@ -1738,6 +1738,7 @@ describe("App in full screen", () => {
     const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")], { full: true, intro: said(60) });
     await type(app, "make a file");
     await until(app, "[y/n]");
+    expect(shown(app)).toHaveLength(23);
     const before = shown(app)[0]!;
     await press(app, PG_UP);
     const after = shown(app)[0]!;
@@ -1748,6 +1749,110 @@ describe("App in full screen", () => {
     await waitFor(() => existsSync(path.join(ctx.root, "a.txt")));
     await press(app, CTRL_END);
     await until(app, "written");
+  });
+
+  it("goes to the bottom, following, when a queued prompt starts", async () => {
+    const lead = new Held();
+    const { app } = await mount([], { full: true, lead, intro: said(60) });
+    await type(app, "go");
+    await type(app, "next"); // queued: a turn is running
+    await until(app, "↑ to edit queued messages");
+    await press(app, PG_UP);
+    expect(app.lastFrame()).not.toContain("> go");
+    lead.answer("first reply");
+    await until(app, "> next");
+    expect(app.lastFrame()).toContain("first reply");
+    expect(app.lastFrame()).not.toContain("new lines");
+    lead.answer("second reply"); // following: it shows as it comes
+    await until(app, "second reply");
+  });
+
+  // What the user asks to see brings the view to the bottom (the user's choice, 2026-10-27, at Task 5's review).
+  it.each([
+    { name: "? (the key list)", key: "?", shows: "Ctrl+T  show or hide the to-do list" },
+    { name: "Shift+Tab (the mode)", key: "\u001b[Z", shows: "mode is now project" },
+    { name: "Ctrl+O (the last turn)", key: "\u000f", shows: "No turn yet, so no tool calls to show." },
+    { name: "Alt+P (the model list, with what reading the login says)", key: "\u001bp", shows: "a note on the login" },
+  ])("goes to the bottom, following, on $name", async ({ key, shows }) => {
+    const { app } = await mount([], { full: true, intro: said(60), note: "a note on the login", models: [{ provider: "fake", models: ["a"] }] });
+    await press(app, PG_UP);
+    expect(shown(app)[0]).toBe("said 30.");
+    await press(app, key);
+    await until(app, shows);
+    expect(app.lastFrame()).not.toContain("new lines");
+  });
+
+  it("scrolls with the scroll keys during Ctrl+R's search, leaving the search open as it was", async () => {
+    const { app } = await mount([], { full: true, intro: said(60), past: ["about"] });
+    await press(app, "\u0012", "ab");
+    await until(app, "search: ab ·");
+    expect(shown(app)[0]).toBe("said 40.");
+    await press(app, PG_UP);
+    expect(shown(app)[0]).toBe("said 30.");
+    await press(app, SHIFT_DOWN, CTRL_HOME);
+    expect(shown(app)[0]).toBe("said 0.");
+    expect(app.lastFrame()).toContain("search: ab ·");
+    expect(app.lastFrame()).toContain("› about");
+  });
+
+  // The live area's rows are counted by hand (App.tsx, liveRows): a count off by one would make the frame as tall as the
+  // terminal, which Ink clears whole before drawing (release 5 plan, "Before you start").
+  const bg = (id: string, task: string) => callTool(id, "delegate", { description: task, task, background: true });
+  it.each([
+    { name: "the / menu open", turns: [], last: "lead fake:a", setup: async (app: ReturnType<typeof render>) => press(app, "/") },
+    { name: "Ctrl-D pressed once", turns: [], last: "lead fake:a", setup: async (app: ReturnType<typeof render>) => press(app, "\u0004") },
+    { name: "Ctrl+R's search", turns: [], last: "lead fake:a", setup: async (app: ReturnType<typeof render>) => press(app, "\u0012") },
+    {
+      name: "a question, with the tool line under the status line",
+      turns: [callTool("c1", "write_file", { path: "a.txt", content: "x" })],
+      last: "write_file",
+      setup: async (app: ReturnType<typeof render>) => {
+        await type(app, "make a file");
+        await until(app, "[y/n]");
+      },
+    },
+    {
+      name: "the subagent panel, and the tool line for its delegate call",
+      turns: [bg("c1", "find x"), reply("started it")],
+      last: "delegate",
+      setup: async (app: ReturnType<typeof render>) => {
+        await type(app, "go");
+        await until(app, "started it");
+        expect(app.lastFrame()).toContain("◐ t1 find x");
+      },
+    },
+  ])("keeps the frame a row short of the terminal, the status line at its foot, with $name", async ({ turns, last, setup }) => {
+    const { app } = await mount(turns, { full: true, intro: said(60), worker: new Held("fake:w") });
+    await setup(app);
+    await tick();
+    const rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows.at(-1)).toContain(last);
+    if (last !== "lead fake:a") expect(rows.at(-2)).toContain("lead fake:a");
+  });
+
+  it("keeps the frame a row short of the terminal, the status line at its foot, while busy with to-dos and a queue", async () => {
+    const { app, bus } = await mount([], { full: true, intro: said(60), lead: hanging() });
+    await type(app, "go");
+    bus.emit("todo", [
+      { text: "one", status: "in_progress" },
+      { text: "two", status: "pending" },
+    ]);
+    for (const text of ["q1", "q2", "q3"]) await type(app, text);
+    await until(app, "Esc to stop");
+    const rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows.slice(-9)).toEqual([
+      expect.stringContaining("Esc to stop"),
+      "◐ one",
+      "☐ two",
+      "q1",
+      "q2",
+      "q3",
+      "›",
+      "↑ to edit queued messages",
+      expect.stringContaining("lead fake:hang"),
+    ]);
   });
 
   it("gives the model list the rows it needs and the conversation the rest, the status line staying at the bottom as the list is filtered", async () => {
@@ -1777,6 +1882,15 @@ describe("App in classic mode", () => {
     expect(app.lastFrame()).toContain("› ax\n  >b<");
     const frame = app.lastFrame();
     await press(app, PG_UP, PG_DOWN);
+    expect(app.lastFrame()).toBe(frame);
+  });
+
+  it("does nothing on the scroll keys during Ctrl+R's search, as release 4 did", async () => {
+    const { app } = await mount([], { intro: said(60), past: ["about"] });
+    await press(app, "\u0012", "ab");
+    await until(app, "search: ab ·");
+    const frame = app.lastFrame();
+    await press(app, PG_UP, PG_DOWN, SHIFT_UP, SHIFT_DOWN, CTRL_HOME, CTRL_END);
     expect(app.lastFrame()).toBe(frame);
   });
 });

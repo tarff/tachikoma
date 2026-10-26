@@ -68,7 +68,26 @@ const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLower
 // Down, Ctrl+Home and Ctrl+End are Home and End, and PgUp and PgDn do nothing.
 const CLASSIC: Record<Scroll, Command | null> = { lineUp: "up", lineDown: "down", top: "home", bottom: "end", pageUp: null, pageDown: null };
 
-export function App({ session, tasks, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments, makeProvider, bindAsk, login, listModels, screen }: AppProps) {
+export function App({
+  session,
+  tasks,
+  bus,
+  stats,
+  mode,
+  onMode,
+  project,
+  root,
+  gitBranch,
+  historyFile,
+  intro,
+  errorFile,
+  segments,
+  makeProvider,
+  bindAsk,
+  login,
+  listModels,
+  screen,
+}: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
@@ -85,8 +104,8 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   const closed = useRef<string | null>(null);
   const listed = useRef<{ folder: string; listing: Listing } | null>(null);
   const { columns, rows: height } = useWindowSize();
-  // Full screen (release 5 design, "The screen"): every line is kept, wrapped one column short, the scroll bar's
-  // (release 5 plan, choice 1), and the view is where the user put it. Keys read and change the view at once, as above.
+  // Full screen (release 5 design, "The screen"): every line is kept, wrapped one column short, leaving the last column
+  // for the scroll bar (release 5 plan, choice 1), and the view is where the user put it. Keys read and change the view at once, as above.
   const [full] = useState(screen.full);
   const [kept] = useState(() => new Rows(columns - 1));
   const view = useRef<View>(FOLLOWING);
@@ -130,6 +149,13 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
       view.current = arrived(view.current, kept.lines.length - before);
     }
     setLines((l) => [...l, ...shown.map((x) => ({ ...x, id: nextId.current++ }))]);
+  };
+  // What the user asks to see (the key list, the mode, the last turn, `/model`) brings the view to the bottom, following,
+  // so it is seen; output arriving on its own leaves a held view where it is (the user's choice, 2026-10-27, at Task 5's
+  // review).
+  const show = (...add: Line[]) => {
+    view.current = FOLLOWING;
+    say(...add);
   };
   const history = useRef<History | null>(null);
   history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
@@ -476,14 +502,18 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     if (c === "mode") {
       perm.current = cycle[(cycle.indexOf(perm.current) + 1) % cycle.length]!;
       onMode(perm.current);
-      return say({ text: `mode is now ${perm.current}`, color: "gray" });
+      return show({ text: `mode is now ${perm.current}`, color: "gray" });
     }
-    // Alt+P is `/model` typed then: during a turn it waits in the queue.
-    if (c === "models") return working.current ? void queue.current.push("/model") : void submit("/model");
-    if (c === "lastTurn") return say(...lastTurn(session.messages));
+    // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom.
+    if (c === "models" && working.current) return void queue.current.push("/model");
+    if (c === "models") {
+      view.current = FOLLOWING;
+      return void submit("/model");
+    }
+    if (c === "lastTurn") return show(...lastTurn(session.messages));
     if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
     // A message starting with `?` needs a space typed first.
-    if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return say(...KEY_LIST.map((text) => ({ text, color: "gray" })));
+    if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return show(...KEY_LIST.map((text) => ({ text, color: "gray" })));
     if (c === "up" && !e.text && queue.current.length) return restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);
@@ -585,6 +615,9 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     if (key.tab || key.escape) return endSearch(shown());
     for (const c of commands(ch, key)) {
       if (typeof c === "object") Object.assign(s, { query: s.query + c.text, skip: 0 });
+      // In full screen the conversation behind the search scrolls (the user's choice, 2026-10-27, at Task 5's review);
+      // in classic mode the scroll keys do nothing here, as in release 4.
+      else if (full && isScroll(c)) scroll(c);
       else if (c === "search") s.skip = Math.max(0, Math.min(s.skip + 1, matches(history.current!.entries, s.query).length - 1));
       else if (c === "backspace" && !s.query) return endSearch(s.before);
       else if (c === "backspace") Object.assign(s, { query: [...s.query].slice(0, -1).join(""), skip: 0 });
