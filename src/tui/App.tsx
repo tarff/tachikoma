@@ -501,9 +501,10 @@ export function App({
   // column of the conversation's rows, which start at the frame's top, the terminal's top row: Ink writes the frame, a
   // row shorter than the terminal, with a line break after it (ink.js renderInteractiveFrame), so it fills the terminal
   // and scrolls up to its top wherever the cursor was; later frames go back up by the rows written (log-update.js).
-  // A left press on the thumb grabs it; on the track it centres the thumb on that row (choice 4) and grabs it there, so
-  // a drag can go on from the click. While grabbed, the thumb follows the pointer's row wherever the pointer is, until
-  // the button is let go.
+  // A left press on the thumb grabs it; on the track it centres the thumb on that row (choice 4), as far as the bar's
+  // ends let it, and grabs it where the pointer is on it, so a drag can go on from the click. While grabbed, the thumb
+  // follows the pointer's row wherever the pointer is, until the button is let go; a move that would leave the thumb
+  // where it is does nothing, as one thumb row stands for several first rows. Any press ends an earlier grab.
   const onMouse = (m: Mouse) => {
     if (!fullNow.current) return;
     const { columns, viewHeight } = frame.current;
@@ -514,7 +515,8 @@ export function App({
     if (m.kind === "wheel") {
       const step = notch(wheel.current, scrollSpeed, m.wheel === "up" ? -1 : 1);
       wheel.current = step.carry;
-      if (step.rows) goTo(firstRow(kept, view.current, viewHeight) + step.rows);
+      const from = firstRow(kept, view.current, viewHeight);
+      if (step.rows && (step.rows < 0 ? from > 0 : view.current.at !== null)) goTo(from + step.rows); // not up at the top, nor down following
       return;
     }
     if (m.kind === "release") {
@@ -522,13 +524,16 @@ export function App({
       return;
     }
     const thumb = bar(kept.total, viewHeight, firstRow(kept, view.current, viewHeight));
+    if (m.kind === "press") grab.current = null;
     if (!thumb || m.button !== "left") return;
-    const move = (start: number) => goTo(barFirst(kept.total, viewHeight, thumb.size, Math.max(0, Math.min(viewHeight - thumb.size, start))));
-    if (m.kind === "drag" && grab.current !== null) return move(m.y - grab.current);
+    const clamp = (start: number) => Math.max(0, Math.min(viewHeight - thumb.size, start));
+    const move = (start: number) => start !== thumb.start && goTo(barFirst(kept.total, viewHeight, thumb.size, start));
+    if (m.kind === "drag" && grab.current !== null) return void move(clamp(m.y - grab.current));
     if (m.kind !== "press" || m.x !== columns - 1 || m.y >= viewHeight) return;
     const on = m.y >= thumb.start && m.y < thumb.start + thumb.size;
-    grab.current = on ? m.y - thumb.start : Math.floor(thumb.size / 2); // the thumb's middle row, the lower of two
-    if (!on) move(m.y - grab.current);
+    const start = on ? thumb.start : clamp(m.y - Math.floor(thumb.size / 2)); // centred on its middle row, the lower of two
+    grab.current = m.y - start;
+    move(start);
   };
 
   const scrollKey = (ch: string, key: Key) => {

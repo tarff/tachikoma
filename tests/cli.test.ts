@@ -101,14 +101,21 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(tachi("--help").stdout).toMatch(/^ {2}--classic /m);
   });
 
-  it("lists --scroll-speed in the help, and stops on a bad one, from the option or TACHI_SCROLL_SPEED", () => {
+  it("lists --scroll-speed in the help, and stops on a bad one, from the option or, in interactive mode, TACHI_SCROLL_SPEED", () => {
     expect(tachi("--help").stdout).toMatch(/^ {2}--scroll-speed <n> /m);
     let r = tachi("--lead", "ollama:none", "--scroll-speed", "abc", "-p", "hi");
     expect(r.code).toBe(1);
     expect(r.stderr).toContain('--scroll-speed must be a number above 0, up to 20 (got "abc")');
-    r = tachi("--lead", "ollama:none", "-p", "hi", { TACHI_SCROLL_SPEED: "21" });
+    r = tachi("--lead", "ollama:none", { TACHI_SCROLL_SPEED: "21" });
     expect(r.code).toBe(1);
     expect(r.stderr).toContain('TACHI_SCROLL_SPEED must be a number above 0, up to 20 (got "21")');
+  });
+
+  // Port 9, as below: the run gets as far as asking the model and fails there, with nothing sent anywhere.
+  it("with -p, ignores TACHI_SCROLL_SPEED, as it does TACHI_CLASSIC", () => {
+    const r = tachi("--lead", "openai:none", "-p", "hi", { TACHI_SCROLL_SPEED: "abc", OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });
+    expect(r.stderr).not.toContain("TACHI_SCROLL_SPEED");
+    expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
   });
 
   // Port 9 is one fetch refuses to connect to at all, so the run gets as far as asking the model and fails there,

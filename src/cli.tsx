@@ -67,7 +67,7 @@ Options:
   --status <list>   status line parts, comma-separated: ${SEGMENTS.join(",")}
   --classic         use the terminal's own scrollback, not the full screen (or set TACHI_CLASSIC=1)
   --scroll-speed <n>  lines a wheel notch scrolls in full screen, above 0 and up to 20
-                    (default: 3; or set TACHI_SCROLL_SPEED)
+                      (default: 3; or set TACHI_SCROLL_SPEED)
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
   --raw             with -p, print the answer exactly as written, control codes and all
@@ -166,7 +166,9 @@ let segments;
 let speed;
 try {
   segments = statusSegments(parsed.status);
-  speed = scrollSpeed(parsed["scroll-speed"], process.env);
+  // -p has no screen to scroll, so it ignores TACHI_SCROLL_SPEED as it does TACHI_CLASSIC; a bad --scroll-speed, typed
+  // for this run, still stops it (the user's choice, 2026-10-27, at Task 7's review).
+  speed = scrollSpeed(parsed["scroll-speed"], parsed.print === undefined ? process.env : {});
 } catch (err) {
   fail(errorText(err));
 }

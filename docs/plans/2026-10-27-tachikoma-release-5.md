@@ -492,6 +492,7 @@ Commit: `feat: start in full screen unless --classic, and put the terminal back 
   Task 14's `/screen` does not leave it acting on the old mode.
 - The wheel scrolls while the model list is open, so picking a model ("lead is now ...", or its
   error) goes through Task 5's `show`, bringing the view to the bottom as other asked-for output.
+- -p ignores `TACHI_SCROLL_SPEED`, not `--scroll-speed` (the user's choice at review, 2026-10-27).
 
 **Tests:**
 1. `scrollSpeed`: default 3; `"0.5"`, `".5"`, `"20"` ok; `"0"`, `"21"`, `"-1"`, `"1e1"`, `"abc"`,

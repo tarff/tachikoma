@@ -1993,11 +1993,55 @@ describe("App's wheel and scroll bar in full screen", () => {
     expect(thumb(app)).toEqual([13, 14, 15, 16, 17]);
   });
 
-  it("does nothing for a press on the bar's column below the conversation, or with another button", async () => {
+  it("does nothing for a press on the bar's column below the conversation, one column left of the bar, or with another button", async () => {
     const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    await press(app, CTRL_HOME); // the thumb at the top, so a press taken as on the track would move it
     const frame = app.lastFrame();
-    await pointer(mouse, at("press", BAR, 21), at("release", BAR, 21), at("press", BAR, 1, { button: "right" }), at("release", BAR, 1, { button: "right" }));
+    await pointer(mouse, at("press", BAR, 21), at("release", BAR, 21), at("press", BAR - 1, 10), at("release", BAR - 1, 10));
+    await pointer(mouse, at("press", BAR, 10, { button: "right" }), at("release", BAR, 10, { button: "right" }));
     expect(app.lastFrame()).toBe(frame);
+  });
+
+  it("keeps the view where it is when the grabbed thumb moves sideways on its row, and draws nothing new", async () => {
+    let { app, mouse } = await mount([], { full: true, intro: said(80) });
+    await press(app, PG_UP);
+    expect(thumb(app)).toEqual([13, 14, 15, 16, 17]);
+    await pointer(mouse, at("press", BAR, 15), at("drag", BAR - 1, 15));
+    expect(shown(app)[0]).toBe("said 50.");
+    const frames = app.frames.length;
+    for (let i = 0; i < 10; i++) await pointer(mouse, at("drag", BAR - 1, 15));
+    expect(app.frames.length).toBe(frames);
+    // 1,000 lines: a thumb of one row, which stands for many first rows
+    ({ app, mouse } = await mount([], { full: true, intro: said(1000) }));
+    await press(app, PG_UP, PG_UP);
+    expect(shown(app)[0]).toBe("said 960.");
+    await pointer(mouse, at("press", BAR, 19), at("drag", BAR - 1, 19));
+    expect(shown(app)[0]).toBe("said 960.");
+  });
+
+  it("ends an earlier grab on a new press, as when its release was lost", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    await pointer(mouse, at("press", BAR, 17), at("press", 10, 5), at("drag", 10, 12));
+    expect(shown(app)[0]).toBe("said 60.");
+  });
+
+  it("grabs a thumb held at the bar's end by a track click where the pointer is on it", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    await pointer(mouse, at("press", BAR, 1));
+    expect(thumb(app)).toEqual([0, 1, 2, 3, 4]); // centred on row 1 it would start above the bar, so it starts at 0
+    await pointer(mouse, at("drag", BAR, 5)); // 4 rows down
+    expect(thumb(app)).toEqual([4, 5, 6, 7, 8]);
+  });
+
+  it("draws nothing new for a wheel notch that cannot move", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    let frames = app.frames.length;
+    await wheel(mouse, "down", 5); // following already
+    expect(app.frames.length).toBe(frames);
+    await press(app, CTRL_HOME);
+    frames = app.frames.length;
+    await wheel(mouse, "up", 5); // at the top already
+    expect(app.frames.length).toBe(frames);
   });
 
   it("scrolls while the model list is open, and picking a model brings the view to the bottom to say so", async () => {
