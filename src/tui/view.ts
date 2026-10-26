@@ -43,10 +43,16 @@ const ASCII = /^[ -~]*$/;
 // frame (OutputCaches belongs to one Output, and renderer.js makes a new Output each frame); this one lasts one pass,
 // cleared at each add and setWidth, so text with endless different characters cannot grow it without limit.
 const known = new Map<string, number>();
-function columnsOf(g: string): number {
+export function columnsOf(g: string): number {
   let w = known.get(g);
   if (w === undefined) known.set(g, (w = stringWidth(g)));
   return w;
+}
+
+// The columns a character starting at column `col` of a row `width` wide is drawn in: a tab to its stop, never past the
+// row's end. Exported so a click finds the character under it by the same rule (select.ts, placeAt).
+export function columnsAt(g: string, col: number, width: number): number {
+  return g === "\t" ? Math.min(TAB - (col % TAB), width - col) : columnsOf(g);
 }
 
 // Where each of one line's rows starts at `width` columns, the first at 0 (release 5 plan, choice 1). The rows break as
@@ -103,14 +109,9 @@ function draw(text: string, start: number, end: number, width: number): string {
   let shown = "";
   let col = 0;
   for (const { segment } of segmenter.segment(part)) {
-    if (segment === "\t") {
-      const w = Math.min(TAB - (col % TAB), width - col);
-      shown += " ".repeat(w);
-      col += w;
-    } else {
-      shown += segment;
-      col += columnsOf(segment);
-    }
+    const w = columnsAt(segment, col, width);
+    shown += segment === "\t" ? " ".repeat(w) : segment;
+    col += w;
   }
   return shown;
 }
