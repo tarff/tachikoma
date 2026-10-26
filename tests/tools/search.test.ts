@@ -81,6 +81,29 @@ describe("find_files", () => {
     expect(await findFilesTool.run({ pattern: "**/*" }, ctx)).toBe(["[", "b.txt"].join("\n"));
   });
 
+  it("takes no rules from a .gitignore that is a hard link to one of the data folder's files", async () => {
+    const ctx = await tempContext();
+    await files(ctx.root, { "data/chatgpt.json": "*.txt\n", "a.txt": "" });
+    vi.stubEnv("TACHI_DATA_DIR", path.join(ctx.root, "data"));
+    linkSync(path.join(ctx.root, "data", "chatgpt.json"), path.join(ctx.root, ".gitignore"));
+    expect(await findFilesTool.run({ pattern: "**/*.txt" }, ctx)).toBe("a.txt");
+  });
+
+  it("does not follow a .gitignore that is a symbolic link, as git does not", async ({ skip }) => {
+    const ctx = await tempContext();
+    await files(ctx.root, { rules: "*.txt\n", "a.txt": "" });
+    // Windows makes a file symlink only with Developer Mode or as an administrator.
+    const made = await symlink("rules", path.join(ctx.root, ".gitignore"), "file").then(
+      () => true,
+      (err: NodeJS.ErrnoException) => {
+        if (err.code !== "EPERM") throw err;
+        return false;
+      },
+    );
+    if (!made) skip("this system cannot make a file symlink without more rights");
+    expect(await findFilesTool.run({ pattern: "**/*.txt" }, ctx)).toBe("a.txt");
+  });
+
   it("follows no links or junctions", async () => {
     const ctx = await tempContext();
     const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));

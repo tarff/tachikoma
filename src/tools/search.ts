@@ -1,5 +1,5 @@
 import type { BigIntStats } from "node:fs";
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import ignore from "ignore";
@@ -15,9 +15,21 @@ type Rules = { base: string; rules: ReturnType<typeof ignore> }[];
 const posix = (p: string) => p.split(path.sep).join("/");
 
 // The .gitignore in `folder`, read with the `ignore` library, which skips a line that does not parse
-// as git does. No git is run: a repository's own settings can make git run programs.
+// as git does. No git is run: a repository's own settings can make git run programs. One that is a
+// link is not followed, as git does not (gitignore(5), git 2.41), and one with more than one name is
+// checked as read_file checks a path, since it may be a hard link to a file in the data folder.
 async function rulesIn(folder: string): Promise<Rules> {
-  const text = await readFile(path.join(folder, ".gitignore"), "utf8").catch(() => null);
+  const file = path.join(folder, ".gitignore");
+  const kind = await lstat(file, { bigint: true }).catch(() => null);
+  if (!kind?.isFile()) return [];
+  if (kind.nlink > 1n) {
+    try {
+      resolveIn(folder, file);
+    } catch {
+      return [];
+    }
+  }
+  const text = await readFile(file, "utf8").catch(() => null);
   return text === null ? [] : [{ base: folder, rules: ignore().add(text) }];
 }
 
