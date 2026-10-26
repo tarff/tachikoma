@@ -91,6 +91,15 @@ describe("readInstructions", () => {
     expect(r.text).toContain(file(m.at("work/proj/4.md"), "4 @5.md"));
   });
 
+  it("expands a file's imports from where it has the most levels left, when reached again higher up", async () => {
+    // AGENTS.md is first reached as the fourth import, whose own imports are not followed; the walk then
+    // finds it in the project, where they are.
+    const m = await machine({ "work/proj/CLAUDE.md": "@a.md", "work/proj/a.md": "@b.md", "work/proj/b.md": "@c.md", "work/proj/c.md": "@AGENTS.md", "work/proj/AGENTS.md": "agents @rules.md", "work/proj/rules.md": "rules" });
+    const r = await read(m);
+    expect(r.read.map((f) => path.basename(f.path))).toEqual(["CLAUDE.md", "a.md", "b.md", "c.md", "AGENTS.md", "rules.md"]);
+    expect(r.text).toContain(file(m.at("work/proj/AGENTS.md"), `agents ${file(m.at("work/proj/rules.md"), "rules")}`));
+  });
+
   it("reads each file once, so an import loop ends", async () => {
     const m = await machine({ "work/proj/CLAUDE.md": "@a.md", "work/proj/a.md": "a @b.md", "work/proj/b.md": "b @a.md @CLAUDE.md" });
     const r = await read(m);

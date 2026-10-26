@@ -40,6 +40,14 @@ interface Loaded {
   ask?: Reached; // set when it needs the user's approval
 }
 
+// A file as read: its text, whether it is trusted, and the hops its imports were expanded from.
+interface Seen {
+  f: Loaded;
+  text: string;
+  trusted: boolean;
+  hops: number;
+}
+
 // The folders from `top` down to `root`, both included.
 function folders(top: string, root: string): string[] {
   const rel = path.relative(top, root);
@@ -57,9 +65,17 @@ function folders(top: string, root: string): string[] {
 export async function readInstructions(where: Where, approve: (reached: Reached[]) => Promise<boolean>): Promise<Instructions> {
   const home = where.home ?? os.homedir();
   const left: Instructions["left"] = [];
-  // By real path, so a file reached twice, by a link, an import or the walk, is read once. Null while
-  // it is read, so an import loop back to it stays as text, and for one that is not read.
-  const loaded = new Map<string, Loaded | null>();
+  // By real path, so a file reached twice, by a link, an import or the walk, is read once: its text,
+  // and the hops its imports were expanded from, so one reached again with more hops left is expanded
+  // again from there. Null for one that is not read.
+  const loaded = new Map<string, Seen | null>();
+  // The files whose imports are being expanded, so an import loop back to one stays as text.
+  const expanding = new Set<string>();
+  const expand = async (real: string, e: Seen) => {
+    expanding.add(real);
+    e.f.pieces = e.hops < HOPS ? await imports(e.text, e.f.path, e.trusted, e.hops + 1) : [e.text];
+    expanding.delete(real);
+  };
 
   async function load(abs: string, opts: { trusted: boolean; hops: number; foundIn?: string; by?: string }): Promise<Loaded | null> {
     let outside: boolean;
@@ -71,7 +87,16 @@ export async function readInstructions(where: Where, approve: (reached: Reached[
     }
     const real = await realpath(abs).catch(() => null);
     if (real === null) return null; // nothing there
-    if (loaded.has(real)) return loaded.get(real)!;
+    if (expanding.has(real)) return null;
+    const seen = loaded.get(real);
+    if (seen === null) return null;
+    if (seen) {
+      if (opts.hops < seen.hops) {
+        seen.hops = opts.hops;
+        await expand(real, seen);
+      }
+      return seen.f;
+    }
     loaded.set(real, null);
     let buf: Buffer;
     try {
@@ -90,10 +115,10 @@ export async function readInstructions(where: Where, approve: (reached: Reached[
     if (opts.trusted) ask = undefined;
     else if (opts.foundIn !== undefined) ask = leaves(path.relative(await realpath(opts.foundIn), real)) ? { path: real, how: `found as ${abs}` } : undefined;
     else if (outside) ask = { path: abs, how: `imported by ${opts.by}` };
-    const pieces = opts.hops < HOPS ? await imports(text, abs, opts.trusted, opts.hops + 1) : [text];
-    const f: Loaded = { path: abs, size: buf.length, pieces, ...(ask ? { ask } : {}) };
-    loaded.set(real, f);
-    return f;
+    const e = { f: { path: abs, size: buf.length, pieces: [], ...(ask ? { ask } : {}) }, text, trusted: opts.trusted, hops: opts.hops };
+    loaded.set(real, e);
+    await expand(real, e);
+    return e.f;
   }
 
   // `@path` imports, expanded where they stand: relative to the file they are in, or absolute, or from
