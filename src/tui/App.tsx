@@ -1,4 +1,4 @@
-import { type Key, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
+import { Box, type Key, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
 import { summarize } from "../core/errorlog.js";
@@ -9,19 +9,22 @@ import type { Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { TodoItem } from "../tools/todo.js";
-import { brief, callLines, describe, lastTurn, type Line, screen } from "./describe.js";
+import { Conversation } from "./Conversation.js";
+import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
 import { apply, type Editor, empty, load, move, replace } from "./editor.js";
 import { History, matches } from "./history.js";
-import { type Command, commands, KEY_LIST } from "./keys.js";
+import { type Command, commands, isScroll, KEY_LIST, type Scroll } from "./keys.js";
 import { layout, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
-import { ModelPicker } from "./ModelPicker.js";
+import { ModelPicker, rows as listRows } from "./ModelPicker.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
 import { TaskPanel, taskRow, taskRows } from "./TaskPanel.js";
+import type { Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
+import { arrived, first as firstRow, FOLLOWING, Rows, scrollBy, scrollTo, type View, wrap } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 // A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn.
@@ -48,6 +51,7 @@ export interface AppProps {
   login: (verb: "login" | "logout", words: string[], say: (line: string) => void, signal: AbortSignal, prefix: string) => Promise<void>;
   // `/model`: every provider's models, and where to show what reading the saved login says.
   listModels: (signal: AbortSignal, warn: (line: string) => void) => Promise<ModelGroup[]>;
+  screen: Screen; // full screen or classic, as the terminal is when the App starts (release 5 design, "The two modes")
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /exit";
@@ -60,7 +64,11 @@ const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (
 const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
-export function App({ session, tasks, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
+// In classic mode the scroll keys are release 4's keys (release 5 plan, choice 16): Shift+Up and Shift+Down are Up and
+// Down, Ctrl+Home and Ctrl+End are Home and End, and PgUp and PgDn do nothing.
+const CLASSIC: Record<Scroll, Command | null> = { lineUp: "up", lineDown: "down", top: "home", bottom: "end", pageUp: null, pageDown: null };
+
+export function App({ session, tasks, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments, makeProvider, bindAsk, login, listModels, screen }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
@@ -77,6 +85,13 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   const closed = useRef<string | null>(null);
   const listed = useRef<{ folder: string; listing: Listing } | null>(null);
   const { columns, rows: height } = useWindowSize();
+  // Full screen (release 5 design, "The screen"): every line is kept, wrapped one column short, the scroll bar's
+  // (release 5 plan, choice 1), and the view is where the user put it. Keys read and change the view at once, as above.
+  const [full] = useState(screen.full);
+  const [kept] = useState(() => new Rows(columns - 1));
+  const view = useRef<View>(FOLLOWING);
+  // A resize wraps every line again: here, while drawing, so resize events that come together cost one wrapping.
+  if (full && kept.width !== columns - 1) kept.setWidth(columns - 1);
   const [busy, setBusy] = useState(false);
   const working = useRef(false); // busy, for keys read before the screen is drawn again
   const queue = useRef<string[]>([]); // what Enter added during a turn, in order
@@ -105,7 +120,17 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   const nextId = useRef(0);
   const lookups = useRef(0);
 
-  const say = (...add: Line[]) => setLines((l) => [...l, ...add.map((x) => ({ ...screen(x), id: nextId.current++ }))]);
+  // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
+  // design, "Scrolling"); setting `lines` draws them either way.
+  const say = (...add: Line[]) => {
+    const shown = add.map(escaped);
+    if (full) {
+      const before = kept.lines.length;
+      kept.add(shown);
+      view.current = arrived(view.current, kept.lines.length - before);
+    }
+    setLines((l) => [...l, ...shown.map((x) => ({ ...x, id: nextId.current++ }))]);
+  };
   const history = useRef<History | null>(null);
   history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
 
@@ -247,7 +272,9 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     if (tasks.wakes()) return void submit("", true);
     const q = queue.current;
     const command = q.findIndex(isCommand);
-    if (q.length) void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
+    if (!q.length) return;
+    view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
+    void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
   };
 
   // True when it opened the model list.
@@ -358,6 +385,7 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
           restore();
         }
       } else if (key.escape) question.answer(false, "declined"); // that action only; the turn goes on
+      else if (full && scrollKey(ch, key)) rerender((n) => n + 1); // a long detail can be read before answering
       else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
       return;
     }
@@ -416,7 +444,28 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     { isActive: !picker },
   );
 
+  // The scroll keys move the conversation (release 5 design, "Scrolling"): PgUp and PgDn by half its height, at least a
+  // row; Ctrl+Home to the top; Ctrl+End to the bottom, following again; Shift+Up and Shift+Down by a row. They work
+  // during a turn and while a question waits.
+  const scroll = (c: Scroll) => {
+    const half = Math.max(1, Math.floor(viewHeight / 2));
+    const by = { pageUp: -half, pageDown: half, lineUp: -1, lineDown: 1, top: 0, bottom: 0 }[c];
+    view.current = c === "top" ? scrollTo(kept, view.current, viewHeight, 0) : c === "bottom" ? FOLLOWING : scrollBy(kept, view.current, viewHeight, by);
+  };
+  const scrollKey = (ch: string, key: Key) => {
+    const [c] = commands(ch, key);
+    if (c === undefined || !isScroll(c)) return false;
+    scroll(c);
+    return true;
+  };
+
   const run = (c: Command) => {
+    if (isScroll(c)) {
+      if (full) return scroll(c);
+      const as = CLASSIC[c];
+      if (as) run(as);
+      return;
+    }
     const e = editor.current;
     const menu = menuFor(e);
     if (menu && (c === "up" || c === "down")) {
@@ -455,6 +504,7 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   };
 
   const send = (e: Editor) => {
+    view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     keep(e.text);
     editor.current = load(e, "");
     if (!working.current) void submit(e.text);
@@ -578,8 +628,9 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   // cursor's row; then the task panel (release 4 design, "On screen"); then the prompt; then the to-do
   // list, which gives way before the prompt does; then the queue, the last row saying how many more there are when they do
   // not all fit. The model list fills the rows above the status line itself, so it has no tool line
-  // under it.
-  const base = height - 1 - 1 - (busy ? 1 : 0);
+  // under it. In full screen a row fewer is given out: the conversation's, the least it has (release 5
+  // design, "The screen").
+  const base = height - 1 - 1 - (busy ? 1 : 0) - (full ? 1 : 0);
   const tooled = !picker && segments.includes("tools") && calls.current.length > 0 && base >= 2 + (hintFor(1) !== null ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
   const hinted = hintFor(1) !== null && room >= 2;
@@ -587,26 +638,72 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   const menuRows = menu ? Math.min(menu.entries.length, Math.max(1, space - 1)) : 0;
   const panel = taskRows(tasks.all, Math.max(0, space - 1 - menuRows), now);
   const promptSpace = menu ? 1 : space - panel.length;
-  const promptLeft = space - menuRows - panel.length - Math.min(layout(prompt.text, promptWidth(columns)).rows.length, promptSpace);
+  const promptRows = layout(prompt.text, promptWidth(columns)).rows.length;
+  const promptLeft = space - menuRows - panel.length - Math.min(promptRows, promptSpace);
   const todoShown = !todos.current.hidden && unfinished(todos.current.items) ? todoRows(todos.current.items, promptLeft) : [];
   const left = promptLeft - todoShown.length;
   const q = queue.current.map((e) => visible(e));
   const queued = q.length <= left ? q : left > 0 ? [...q.slice(0, left - 1), `+${q.length - left + 1} more`] : [];
   const hint = hinted ? hintFor(left) : null;
 
+  // Full screen (release 5 design, "The screen"): the frame is a row shorter than the terminal, as above, and the
+  // conversation takes every row of it the live area does not draw, at least one. The live area's rows are counted as
+  // they are drawn. A question is wrapped here and drawn a row a Text, so its rows are known. The model list takes the
+  // rows it needs, up to all but the conversation's least row, its filter line and the status line (release 5 plan,
+  // choice 19), in a box that tall, so the status line stays put while typing filters the list: the list unfiltered
+  // is the longest it gets, with its "No models" line when it has no models.
+  const asked = full && question && !picker ? wrap(`Allow ${question.text}? [y/n] · Esc to decline`, columns, false) : [];
+  const offered = full && picker ? listRows(picker, "") : [];
+  const needed = offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1);
+  const pickerRows = Math.max(1, Math.min(needed, height - 1 - 1 - 1 - 1 - (hint ? 1 : 0))); // the frame's row short, the conversation's, filter, status
+  const liveRows =
+    (picker
+      ? pickerRows + 1
+      : question
+        ? asked.length
+        : (busy ? 1 : 0) + todoShown.length + queued.length + Math.min(promptRows, Math.max(1, promptSpace)) + menuRows + panel.length) +
+    (hint ? 1 : 0) +
+    1 +
+    (tooled ? 1 : 0);
+  const viewHeight = Math.max(1, height - 1 - liveRows);
+
   return (
     <>
-      <Static items={lines}>
-        {(l) => (
-          <Text key={l.id} color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
-            {l.text}
-          </Text>
-        )}
-      </Static>
+      {full ? (
+        <Conversation
+          rows={kept}
+          first={firstRow(kept, view.current, viewHeight)}
+          height={viewHeight}
+          unseen={view.current.unseen}
+          following={view.current.at === null}
+        />
+      ) : (
+        <Static items={lines}>
+          {(l) => (
+            <Text key={l.id} color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
+              {l.text}
+            </Text>
+          )}
+        </Static>
+      )}
       {picker ? (
-        <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} />
+        full ? (
+          <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
+            <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} maxRows={pickerRows} />
+          </Box>
+        ) : (
+          <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} />
+        )
       ) : question ? (
-        <Text color="yellow">Allow {question.text}? [y/n] · Esc to decline</Text>
+        full ? (
+          asked.map((r, i) => (
+            <Text key={i} color="yellow" wrap="truncate-end">
+              {r.text}
+            </Text>
+          ))
+        ) : (
+          <Text color="yellow">Allow {question.text}? [y/n] · Esc to decline</Text>
+        )
       ) : (
         <>
           {busy && (
@@ -622,7 +719,7 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
               {row}
             </Text>
           ))}
-          <Prompt editor={prompt} columns={columns} offset={(busy ? 1 : 0) + todoShown.length + queued.length} space={promptSpace} />
+          <Prompt editor={prompt} columns={columns} offset={(full ? viewHeight : 0) + (busy ? 1 : 0) + todoShown.length + queued.length} space={promptSpace} />
           {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} />}
           <TaskPanel rows={panel} />
         </>

@@ -27,7 +27,7 @@ function view(groups: ModelGroup[], filter: string, chosen: number) {
   return { shown, models, at: Math.min(chosen, Math.max(0, models.length - 1)) };
 }
 
-export function ModelPicker({ groups, current, onPick, onClose }: { groups: ModelGroup[]; current: string; onPick: (spec: string) => void; onClose: () => void }) {
+export function ModelPicker({ groups, current, onPick, onClose, maxRows }: { groups: ModelGroup[]; current: string; onPick: (spec: string) => void; onClose: () => void; maxRows?: number }) {
   // Each key reads and changes this at once: Ink can pass on several keys from one read of the
   // terminal before the screen is drawn again, and each must see what the one before it did.
   const state = useRef<{ filter: string; chosen: number } | null>(null);
@@ -35,8 +35,10 @@ export function ModelPicker({ groups, current, onPick, onClose }: { groups: Mode
   const [, redraw] = useState(0);
   const { filter } = state.current;
   const { shown, models, at } = view(groups, filter, state.current.chosen);
-  // Fits the terminal: the help line, the status line and the line Ink ends with take three rows.
-  const height = Math.max(1, (useStdout().stdout.rows || shown.length + 3) - 3);
+  // Fits the terminal: the help line, the status line and the line Ink ends with take three rows. In full screen the App
+  // gives the rows for the list and its "No models" line together (release 5 plan, choice 19).
+  const { stdout } = useStdout();
+  const height = maxRows === undefined ? Math.max(1, (stdout.rows || shown.length + 3) - 3) : models.length ? Math.max(1, maxRows) : Math.max(0, maxRows - 1);
   const focus = shown.findIndex((r) => r.kind === "model" && r.spec === models[at]);
   const top = Math.min(Math.max(0, focus - Math.floor(height / 2)), Math.max(0, shown.length - height));
 

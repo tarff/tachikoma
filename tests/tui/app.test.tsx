@@ -1,7 +1,9 @@
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { render as renderInk } from "ink";
 import { render } from "ink-testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
@@ -17,6 +19,7 @@ import { History } from "../../src/tui/history.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
+import { Screen } from "../../src/tui/terminal.js";
 import { Bus, FakeProvider, Held, callTool, reply, tempContext, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
@@ -73,6 +76,7 @@ async function mount(
     intro?: AppProps["intro"]; // the start line
     worker?: Provider; // the subagents' model
     mode?: Mode; // the mode the session starts in
+    full?: boolean; // full screen; classic when not given
   } = {},
 ) {
   const bus = new Bus();
@@ -85,6 +89,11 @@ async function mount(
   const session = new Session({ lead, tools: [...TOOLS, delegateTool(tasks, { headless: false })], system: "t", ctx: { ...ctx, gate }, bus, inbox: () => tasks.take() });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
   if (opts.past) writeFileSync(historyFile, opts.past.map((p) => `${JSON.stringify(p)}\n`).join(""));
+  const screen = new Screen(
+    () => {},
+    () => {},
+  );
+  if (opts.full) screen.enter();
   const app = render(
     <App
       session={session}
@@ -115,6 +124,7 @@ async function mount(
       bindAsk={(fn) => {
         ask = fn;
       }}
+      screen={screen}
     />,
   );
   mounted.push(app);
@@ -1583,5 +1593,190 @@ describe("App's working line and tool lines", () => {
       expect(app.lastFrame()!.includes("✓ read_file ×1")).toBe(shown);
       expect(app.lastFrame()).toContain("? for shortcuts");
     }
+  });
+});
+
+// The scroll keys as the terminal sends them (release 5 plan, "Before you start").
+const PG_UP = "\u001b[5~";
+const PG_DOWN = "\u001b[6~";
+const CTRL_HOME = "\u001b[1;5H";
+const CTRL_END = "\u001b[1;5F";
+const SHIFT_UP = "\u001b[1;2A";
+const SHIFT_DOWN = "\u001b[1;2B";
+
+// `n` lines for the start, "said 0." and on: the full stop keeps "said 1." from matching "said 10.".
+const said = (n: number, text = (i: number) => `said ${i}.`) => Array.from({ length: n }, (_, i) => ({ text: text(i) }));
+// Each row of the frame, without the scroll bar's column (the last of ink-testing-library's 100) and the spaces before it.
+const shown = (app: ReturnType<typeof render>, columns = 100) => app.lastFrame()!.split("\n").map((r) => r.slice(0, columns - 1).trimEnd());
+
+describe("App in full screen", () => {
+  it("draws the conversation at the top and the status line at the bottom, in a frame a row shorter than the terminal", async () => {
+    const { app } = await mount([reply("hello there")], { full: true, intro: [{ text: "Instructions: CLAUDE.md (12 bytes)", color: "gray" }] });
+    await type(app, "hi");
+    await until(app, "hello there");
+    const rows = shown(app);
+    expect(rows).toHaveLength(23); // 24 rows: Ink clears the whole terminal for a frame as tall as it
+    expect(rows.slice(0, 4)).toEqual(["Instructions: CLAUDE.md (12 bytes)", "> hi", "hello there", ""]);
+    expect(rows.at(-1)).toContain("lead fake:a");
+  });
+
+  it("shows the newest lines, earlier ones on PgUp, holds the view while a reply arrives, and goes back to the newest on Ctrl+End", async () => {
+    const lead = new Held();
+    const { app } = await mount([], { full: true, lead, intro: said(60) });
+    // 20 rows of conversation: 23 less the prompt, the hint and the status line.
+    expect(shown(app).slice(0, 20)).toEqual(said(60).slice(40).map((l) => l.text));
+    await press(app, PG_UP); // half of 20
+    expect(shown(app)[0]).toBe("said 30.");
+    expect(shown(app)[19]).toBe("said 49.");
+    await type(app, "hi"); // sending goes to the bottom
+    await until(app, "> hi");
+    expect(shown(app)[19]).toBe("> hi"); // the working line takes the hint's row
+    await press(app, PG_UP); // from row 41 of 61
+    expect(shown(app)[0]).toBe("said 31.");
+    lead.answer("a\nb");
+    await until(app, "↓ 2 new lines · Ctrl+End");
+    await gone(app, "Esc to stop");
+    expect(shown(app)[0]).toBe("said 31.");
+    expect(app.lastFrame()).not.toContain("> hi");
+    await press(app, CTRL_END);
+    expect(shown(app).slice(17, 20)).toEqual(["> hi", "a", "b"]);
+    expect(app.lastFrame()).not.toContain("new lines");
+  });
+
+  it("puts the terminal's cursor in the prompt, counting the conversation's rows above it", async () => {
+    // Ink's own drawing to a stand-in terminal, as in prompt.test.tsx: ink-testing-library's leaves the cursor out.
+    const terminal = Object.assign(new EventEmitter(), { isTTY: true, columns: 100, rows: 24, out: "" });
+    const stdout = Object.assign(terminal, { write: (s: string) => ((terminal.out += s), true) });
+    const keyboard = Object.assign(new EventEmitter(), {
+      isTTY: true,
+      setRawMode() {},
+      setEncoding() {},
+      resume() {},
+      pause() {},
+      ref() {},
+      unref() {},
+      read: () => null,
+    });
+    const bus = new Bus();
+    const ctx = await tempContext();
+    const tasks = new Tasks({ bus, max: 8, worker: () => new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx });
+    const session = new Session({ lead: new FakeProvider("a", []), tools: TOOLS, system: "t", ctx, bus });
+    const screen = new Screen(
+      () => {},
+      () => {},
+    );
+    screen.enter();
+    const app = renderInk(
+      <App
+        session={session}
+        tasks={tasks}
+        bus={bus}
+        stats={new Stats(bus)}
+        mode="ask"
+        onMode={() => {}}
+        project="proj"
+        root={ctx.root}
+        gitBranch={() => null}
+        historyFile={path.join(histories, `${nextHistory++}.jsonl`)}
+        intro={said(60)}
+        errorFile={path.join(ctx.root, "errors.jsonl")}
+        segments={SEGMENTS}
+        makeProvider={() => new FakeProvider("b", [])}
+        login={async () => {}}
+        listModels={async () => []}
+        bindAsk={() => {}}
+        screen={screen}
+      />,
+      { stdout: stdout as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
+    );
+    try {
+      await tick();
+      // The prompt's row is under 20 of conversation, in a frame of 23: up 3 from the frame's foot, then to after "› ".
+      expect(terminal.out).toContain("\u001b[3A\u001b[3G\u001b[?25h");
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it("moves a row on Shift+Up and Shift+Down, goes to the top on Ctrl+Home, and stays at the bottom on PgDn", async () => {
+    const { app } = await mount([], { full: true, intro: said(60) });
+    await press(app, PG_DOWN);
+    expect(shown(app)[0]).toBe("said 40.");
+    await press(app, SHIFT_UP);
+    expect(shown(app)[0]).toBe("said 39.");
+    await press(app, SHIFT_DOWN);
+    expect(shown(app)[0]).toBe("said 40.");
+    await press(app, CTRL_HOME);
+    expect(shown(app)[0]).toBe("said 0.");
+  });
+
+  it("wraps the lines again on a resize, keeping the line at the view's top at its top", async () => {
+    const long = (i: number) => `said ${i}. ${"word ".repeat(14).trimEnd()}`; // under 80 columns: one row at 99, two at 59
+    const { app } = await mount([], { full: true, intro: said(60, long) });
+    await press(app, PG_UP);
+    expect(shown(app)[0]).toBe(long(30));
+    Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
+    app.stdout.emit("resize");
+    await tick();
+    const rows = shown(app, 60);
+    expect(rows[0]).toMatch(/^said 30\. word/);
+    expect(rows[1]).toMatch(/^word/);
+    expect(rows[2]).toMatch(/^said 31\. word/);
+    expect(rows).toHaveLength(23);
+  });
+
+  it("leaves the conversation a row however tall the prompt grows, and the frame a row short of the terminal", async () => {
+    const { app } = await mount([], { full: true, intro: said(60) });
+    await press(app, Array.from({ length: 20 }, (_, i) => `p${i}`).join("\n")); // Ctrl+J between them
+    const rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows[0]).toBe("said 59.");
+    expect(rows[1]).toBe("› p0");
+  });
+
+  it("scrolls with PgUp while a question waits, and still answers it with y", async () => {
+    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")], { full: true, intro: said(60) });
+    await type(app, "make a file");
+    await until(app, "[y/n]");
+    const before = shown(app)[0]!;
+    await press(app, PG_UP);
+    const after = shown(app)[0]!;
+    expect(after).toMatch(/^said \d+\.$/);
+    expect(Number(after.slice(5, -1))).toBeLessThan(Number(before.slice(5, -1)));
+    await press(app, "y");
+    await gone(app, "[y/n]");
+    await waitFor(() => existsSync(path.join(ctx.root, "a.txt")));
+    await press(app, CTRL_END);
+    await until(app, "written");
+  });
+
+  it("gives the model list the rows it needs and the conversation the rest, the status line staying at the bottom as the list is filtered", async () => {
+    const { app } = await mount([], { full: true, intro: said(60), models: [{ provider: "fake", models: ["a", "b", "c"] }] });
+    await type(app, "/model");
+    await until(app, "fake:a");
+    await tick(); // the picker starts reading keys just after it first appears
+    // The heading and three models, the filter line and the status line: 17 rows of conversation.
+    let rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows.slice(16, 18)).toEqual(["said 59.", "fake"]);
+    await press(app, "c");
+    rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows[16]).toBe("said 59.");
+    expect(rows.slice(19)).toEqual(["fake", "  fake:c", "Filter: c · ↑↓ move · Enter picks · Esc closes", rows[22]]);
+    expect(rows[22]).toContain("lead fake:a");
+  });
+});
+
+describe("App in classic mode", () => {
+  it("takes Shift+Up and Shift+Down as Up and Down, Ctrl+Home and Ctrl+End as Home and End, and does nothing on PgUp and PgDn", async () => {
+    const { app } = await mount([], { intro: said(60) });
+    await press(app, "a", "\n", "b", SHIFT_UP, "x");
+    expect(app.lastFrame()).toContain("› ax\n  b");
+    await press(app, SHIFT_DOWN, CTRL_HOME, ">", CTRL_END, "<");
+    expect(app.lastFrame()).toContain("› ax\n  >b<");
+    const frame = app.lastFrame();
+    await press(app, PG_UP, PG_DOWN);
+    expect(app.lastFrame()).toBe(frame);
   });
 });

@@ -5,8 +5,11 @@ import type { Action } from "./editor.js";
 // user's terminal was seen to send on 2026-10-25. Enter sends; Up and Down move by screen row, which
 // needs the screen's width, so App does them, and the rest of these App's own: Ctrl+R's search,
 // Shift+Tab's permission mode, Alt+P's model list and Ctrl+O's last turn ("Menus and modes"), and
-// Ctrl+T's to-do list (release 4 design, "On screen").
-export type Command = Action | "submit" | "up" | "down" | "search" | "mode" | "models" | "lastTurn" | "todos";
+// Ctrl+T's to-do list (release 4 design, "On screen"); and scrolling the conversation (release 5 design, "Scrolling").
+export type Command = Action | "submit" | "up" | "down" | "search" | "mode" | "models" | "lastTurn" | "todos" | Scroll;
+export type Scroll = "pageUp" | "pageDown" | "top" | "bottom" | "lineUp" | "lineDown";
+const SCROLLS = new Set<Command>(["pageUp", "pageDown", "top", "bottom", "lineUp", "lineDown"]);
+export const isScroll = (c: Command): c is Scroll => SCROLLS.has(c);
 
 // Ink names a key held with Ctrl or Alt by its letter.
 // Ctrl+P and Ctrl+N are Up and Down, as in Claude Code.
@@ -27,10 +30,18 @@ export const KEY_LIST = [
   "  /  commands · @  project paths · Shift+Tab  permission mode · Alt+P  pick the model",
   "  Ctrl+O  the last turn's tool calls in full · a space first starts a message with ?",
   "  Ctrl+T  show or hide the to-do list",
+  "  PgUp PgDn  half a screen · Ctrl+Home Ctrl+End  top, latest · Shift+↑ Shift+↓  a line (full screen)",
 ];
 
 export function commands(input: string, key: Key): Command[] {
   if (key.return) return [key.shift ? "newline" : "submit"]; // Shift+Enter only where the terminal tells it apart
+  // Before the plain arrows and Home and End, which come with the same names and Shift or Ctrl held.
+  if (key.pageUp) return ["pageUp"];
+  if (key.pageDown) return ["pageDown"];
+  if (key.home && key.ctrl) return ["top"];
+  if (key.end && key.ctrl) return ["bottom"];
+  if (key.upArrow && key.shift) return ["lineUp"];
+  if (key.downArrow && key.shift) return ["lineDown"];
   if (key.upArrow) return ["up"];
   if (key.downArrow) return ["down"];
   if (key.leftArrow) return [key.ctrl ? "wordLeft" : "left"];

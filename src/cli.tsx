@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
 import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -26,6 +27,7 @@ import { App } from "./tui/App.js";
 import { gitBranch } from "./tui/git.js";
 import { historyFile } from "./tui/history.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
+import { Screen } from "./tui/terminal.js";
 
 // Eight Claude Haiku 5.5 subagents ran at once on the user's account with none refused; eight was the
 // most tried (release 4 design, "Before the build", 2026-10-26).
@@ -275,6 +277,8 @@ if (parsed.print !== undefined) {
       bindAsk={(fn) => {
         ask = fn;
       }}
+      // Never entered here, so the screen stays classic until starting in full screen is built (release 5 plan, Task 6).
+      screen={new Screen((s) => process.stdout.write(s), (s) => writeSync(1, s))}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter.
     { exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },
