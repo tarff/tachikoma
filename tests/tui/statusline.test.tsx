@@ -31,6 +31,7 @@ describe("StatusLine's tasks part", () => {
   it("says how many subagents run, only while any does", () => {
     expect(frame({ ...info, running: 2 }, ["errors", "tasks"])).toBe(" 2 errors | 2 running");
     expect(frame(info, ["errors", "tasks"])).toBe(" 2 errors");
+    expect(frame({ ...info, errors: 1 }, ["errors"])).toBe(" 1 error");
   });
 });
 

@@ -73,7 +73,7 @@ export function formatSegment(s: LineSegment, i: StatusInfo): string {
     case "mode":
       return `perm ${i.mode}`;
     case "errors":
-      return `${i.errors} errors`;
+      return `${i.errors} error${i.errors === 1 ? "" : "s"}`;
     case "project":
       // Folder and branch names come from the disk, so they are escaped like everything else on screen.
       return visible(i.branch === null ? i.project : `${i.project} git:(${i.branch})`);
