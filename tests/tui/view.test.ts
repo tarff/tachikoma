@@ -1,7 +1,7 @@
 import stringWidth from "string-width";
 import { describe, expect, it } from "vitest";
 import type { Line } from "../../src/tui/describe.js";
-import { arrived, bar, barFirst, first, FOLLOWING, notch, Rows, scrollBy, scrollTo, wrap, type View } from "../../src/tui/view.js";
+import { arrived, bar, barFirst, first, FOLLOWING, notch, Rows, scrollBy, scrollTo, wrap, type KeptLine, type View } from "../../src/tui/view.js";
 
 const texts = (rows: { text: string }[]) => rows.map((r) => r.text);
 const lines = (n: number, from = 0): Line[] => Array.from({ length: n }, (_, i) => ({ text: `line ${from + i}` }));
@@ -51,6 +51,15 @@ describe("wrap", () => {
       expect(stringWidth(r.text)).toBeLessThanOrEqual(12);
     }
   });
+
+  it("breaks after a space that a combining mark, ZWJ or FE0F joins into one character", () => {
+    for (const mark of ["́", "‍", "️"]) {
+      expect(wrap(`ab ${mark}cd`, 4, false)).toEqual([
+        { start: 0, end: 4, text: `ab ${mark}` },
+        { start: 4, end: 6, text: "cd" },
+      ]);
+    }
+  });
 });
 
 // Lines of mixed lengths, the same each run: words of 1 to 12 letters, some wide characters, some empty lines and
@@ -58,7 +67,7 @@ describe("wrap", () => {
 function mixed(n: number): Line[] {
   let seed = 1;
   const next = (m: number) => {
-    seed = (seed * 1103515245 + 12345) % 2147483648; // the C library's rand(), for a fixed sequence
+    seed = (seed * 48271) % 2147483647; // Park and Miller's generator (1988, revised 1993): every product stays exact
     return seed % m;
   };
   return Array.from({ length: n }, () => {
@@ -71,9 +80,25 @@ describe("Rows", () => {
   it("splits each line at its line breaks into lines of their own, the same colour", () => {
     const rows = new Rows(10);
     rows.add([{ text: "a\nb", color: "red" }, { text: "c" }]);
-    expect(rows.lines).toEqual([{ text: "a", color: "red" }, { text: "b", color: "red" }, { text: "c" }]);
+    const kept: KeptLine[] = [{ text: "a", color: "red" }, { text: "b", color: "red" }, { text: "c" }];
+    expect(rows.lines).toEqual(kept);
     expect(rows.total).toBe(3);
     expect(rows.row(1)).toEqual({ line: 1, start: 0, end: 1, text: "b", color: "red" });
+  });
+
+  it("draws each row's text when asked: a tab as spaces, a one-line entry cut", () => {
+    const rows = new Rows(10);
+    rows.add([{ text: "abcdefghi\tx" }, { text: "x".repeat(30), oneLine: true }]);
+    expect(rows.row(0)).toEqual({ line: 0, start: 0, end: 10, text: "abcdefghi " });
+    expect(rows.row(1)).toEqual({ line: 0, start: 10, end: 11, text: "x" });
+    expect(rows.row(2)).toEqual({ line: 1, start: 0, end: 30, text: `${"x".repeat(9)}…` });
+  });
+
+  it("has no row before the first or after the last", () => {
+    const rows = new Rows(10);
+    rows.add(lines(3));
+    expect(() => rows.row(-1)).toThrow(RangeError);
+    expect(() => rows.row(3)).toThrow(RangeError);
   });
 
   it("agrees on total, row and rowOf across 1,000 lines of mixed lengths", () => {
@@ -81,6 +106,7 @@ describe("Rows", () => {
     const all = mixed(1000);
     rows.add(all.slice(0, 400));
     rows.add(all.slice(400));
+    expect(all.filter((l) => wrap(l.text, 30, l.oneLine ?? false).length > 1).length).toBeGreaterThan(1000 / 3); // a third or more wrap, so the rows are tested
     expect(rows.total).toBe(all.reduce((n, l) => n + wrap(l.text, 30, l.oneLine ?? false).length, 0));
     for (let i = 0; i < rows.total; i++) {
       const r = rows.row(i);
@@ -147,6 +173,23 @@ describe("View", () => {
     expect(rows.row(first(rows, v, 10)).line).toBe(line);
   });
 
+  it("keeps a held view where it was put when the height grows and as lines arrive, even past the bottom", () => {
+    const rows = new Rows(20);
+    rows.add(lines(30));
+    const v = scrollBy(rows, FOLLOWING, 10, -2);
+    expect(first(rows, v, 10)).toBe(18);
+    expect(first(rows, v, 15)).toBe(18);
+    rows.add(lines(5, 30));
+    expect(first(rows, v, 15)).toBe(18);
+
+    const other = new Rows(20);
+    other.add(lines(30));
+    const held: View = { at: { line: 21, offset: 0 }, unseen: 0 }; // row total - height + 1, as a question's detail puts it (Task 11)
+    expect(first(other, held, 10)).toBe(21);
+    other.add(lines(3, 30));
+    expect(first(other, held, 10)).toBe(21);
+  });
+
   it("counts lines that arrive only while scrolled up", () => {
     const rows = new Rows(20);
     rows.add(lines(30));
@@ -198,6 +241,14 @@ describe("notch", () => {
     expect(run(0.5, [1, -1, 1, -1])).toEqual([0, 0, 0, 0]);
     expect(run(2.5, [1, -1])).toEqual([2, -2]);
   });
+
+  it("loses no row to rounding: 1,000 notches at 0.1, 0.3 and 0.7 move exactly 100, 300 and 700 rows", () => {
+    for (const [speed, moved] of [[0.1, 100], [0.3, 300], [0.7, 700]] as const) {
+      const sum = (dir: -1 | 1) => run(speed, Array.from({ length: 1000 }, () => dir)).reduce((a, b) => a + b, 0);
+      expect(sum(1)).toBe(moved);
+      expect(sum(-1)).toBe(-moved);
+    }
+  });
 });
 
 describe("bar", () => {
@@ -218,5 +269,9 @@ describe("bar", () => {
     const back = [0, 1, 2, 3, 4, 5].map((s) => barFirst(20, 10, 5, s));
     expect(back).toEqual([0, 2, 4, 6, 8, 10]);
     for (const [s, f] of back.entries()) expect(bar(20, 10, f)!.start).toBe(s);
+  });
+
+  it("gives the top for a thumb as tall as the bar, which has nowhere to move", () => {
+    expect(barFirst(5, 1, 1, 0)).toBe(0);
   });
 });
