@@ -326,6 +326,8 @@ As before: Vitest, no test contacting a real provider, no test reading the user'
 ## Not in this release
 
 - Vim mode, image paste, an external editor, stash and rebinding keys in a file: release 6.
+- The context bar for OpenAI API leads, whose window OpenAI's API does not report: release 6, from
+  a dated table of OpenAI's model pages (the user, 2026-10-27).
 - The `--resume` line at quit: with transcripts on disk (release 8).
 - Claude Code's `/scroll-speed` dialog, which saves to a settings file Tachikoma does not have, and
   its faster scrolling when the wheel spins quickly.

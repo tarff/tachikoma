@@ -34,7 +34,7 @@ learn from experience. The command is `tachi`.
 | ChatGPT sign-in, after review | On Windows, an explicit permission that lets in only the user; if plan use is not granted, the account's record is kept but the plan is not used; records keyed by OpenAI's client ID and account, not email | User, 2026-10-22 (approved the design review's changes: "Yes"), after checking OpenAI's sign-in and accounts pages |
 | Hardening | The file tools refuse the data folder; shell commands do not get API keys | User, 2026-10-22 (chose both) |
 | Model picker | `/model` lists the models of every provider that is set up | User, 2026-10-22 (asked for a list "like Claude code"; chose every provider) |
-| Context window | The model list's own figure, otherwise the tokens in use; the status line shows how much is left | User, 2026-10-22 (chose this; "Codes cli at least shows me how much context is left as a %"); no model-pages table, user, 2026-10-23 (release 2 design, "As built") |
+| Context window | The model list's own figure, otherwise the tokens in use; the status line shows how much is left | User, 2026-10-22 (chose this; "Codes cli at least shows me how much context is left as a %"); no model-pages table, user, 2026-10-23 (release 2 design, "As built"); for OpenAI API leads only, a dated table from OpenAI's model pages after all, in release 6, user, 2026-10-27 (option chosen: "2"; OpenAI's API model entry has no window field, its reference read 2026-10-27, and the 2026-10-23 reason was the plan's smaller window, which the API does not share) |
 | Releases 3 to 5 | Claude Code's keys and screen (3), read-only subagents and the to-do list (4), key extras (5); every later release moves down three | User, 2026-10-23 ("We need all sorts of keyboard commands like Claude code", "It should have subagents. It was in the initial brief."; chose each part) |
 | Release 3, choices | History in a private file per project in the data folder; Shift+Tab reaches `never` only when started with `--mode never`; Ctrl+O prints the last turn's tools in full; `@` lists one folder at a time and sends only the path; after Esc the queue goes on, after Ctrl-C it comes back into the prompt | User, 2026-10-25 (chose each option; [release 3 design](2026-10-25-tachikoma-release-3-design.md)) |
 | Release 3, status line | Adds claude-hud's context bar and colours, the project folder and git branch, the session's length and a tool line | User, 2026-10-25 (asked what claude-hud shows; chose all four parts offered) |
@@ -857,7 +857,8 @@ Each release works on its own and can be shown.
    ([release 4 design](2026-10-25-tachikoma-release-4-design.md))
 5. Full screen with its own scrolling, a scroll bar, mouse selection and copying, and a detail
    view for Ctrl+O and `/tasks t3` ([release 5 design](2026-10-27-tachikoma-release-5-design.md))
-6. Key extras: vim mode, image paste, external editor, stash, rebinding keys in a file
+6. Key extras: vim mode, image paste, external editor, stash, rebinding keys in a file; the
+   context window of OpenAI API models, from a dated table of OpenAI's model pages
 7. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
 8. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
    disk; shortening the history
