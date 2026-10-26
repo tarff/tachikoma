@@ -41,7 +41,8 @@ export class Screen {
     this.setSecond(false);
   }
 
-  // Alone, for `[`: it prints the view on the normal screen with the mouse off, then comes back.
+  // setMouse and setSecond each switch one thing alone, for `[`: it prints the view on the normal screen with the mouse off,
+  // then comes back (release 5 design, "The detail view").
   setMouse(on: boolean): void {
     if (on === this.#mouse) return;
     this.#mouse = on;
@@ -59,10 +60,13 @@ export class Screen {
     this.#write(s);
   }
 
-  // Every way out ends here, some more than once (a crash and then the exit it causes): only the first writes.
+  // Every way out ends here, some more than once (a crash and then the exit it causes): only the first writes. The cursor
+  // is always shown, as Ink hides it while drawing (release 5 design, "When something goes wrong").
   restore(): void {
     if (this.#restored) return;
     this.#restored = true;
     this.#writeNow((this.#mouse ? MOUSE_OFF : "") + (this.#full ? FIRST_SCREEN : "") + SHOW_CURSOR);
+    this.#mouse = false;
+    this.#full = false;
   }
 }

@@ -95,6 +95,7 @@ describe("Screen", () => {
     after.screen.restore();
     expect(after.out.now).toBe(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR);
     expect(after.out.write).toBe("");
+    expect([after.screen.full, after.screen.mouse]).toEqual([false, false]);
     after.screen.restore();
     expect(after.out.now).toBe(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR);
 
@@ -201,7 +202,9 @@ describe("switching in the middle of a session", () => {
 
 describe("the full-screen frame's height", () => {
   // A frame `height` rows tall drawn ten times (the plan's Task 1), a counter in it so each frame differs. ESC[2J starts
-  // Ink's clear (ansi-escapes `clearTerminal`, which `shouldClearTerminalForFrame` in ink.js calls for).
+  // Ink's clear (ansi-escapes `clearTerminal`, which `shouldClearTerminalForFrame` in ink.js calls for). On Windows Ink
+  // clears for any frame as tall as the terminal; elsewhere only when a frame overflows, shrinks from full height, or
+  // unmounts. So the control test, a frame as tall as the terminal, runs on Windows only.
   async function draw(height: number) {
     const terminal = new Terminal();
     const frame = (n: number) => (
@@ -226,7 +229,7 @@ describe("the full-screen frame's height", () => {
     expect(await draw(new Terminal().rows - 1)).not.toContain("\u001b[2J");
   });
 
-  it("as tall as the terminal does, so the check above can catch a clear", async () => {
+  it.runIf(process.platform === "win32")("as tall as the terminal does on Windows, so the check above can catch a clear", async () => {
     expect(await draw(new Terminal().rows)).toContain("\u001b[2J");
   });
 });
