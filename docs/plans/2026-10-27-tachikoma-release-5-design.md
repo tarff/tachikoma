@@ -240,6 +240,34 @@ is hidden while it is open; the status line stays, and a grey row at the bottom 
 
 In classic mode, Ctrl+O and `/tasks t3` print below, as in releases 3 and 4.
 
+## The status line's colours
+
+Added on 2026-10-27 at the user's request ("can we add some colour and stuff to the status line
+like claude-hud so it isnt so boring?"), from a preview of two versions run in the user's own
+terminal (`statuspreview.mjs` in the session's scratchpad; option chosen: "A", claude-hud's style,
+over coloured blocks). The user put it in release 5 as the build's last task (Task 16), over
+release 6; it does not touch full screen.
+
+The inverse band goes: the line is drawn on the terminal's own background, its parts split by a
+grey ` | `. What each part says, their order, `--status` and the cut at the screen's edge stay as in
+release 4. The colours are claude-hud 0.0.4's (`src/render/session-line.ts`, `agents-line.ts` and
+`colors.ts`) where it has the part, and by risk where it does not (cost, mode, errors):
+
+| Part | Release 4 (all inverse) | Release 5 |
+|---|---|---|
+| Lead | `lead anthropic:claude-opus-5-5` | `lead` grey, the lead cyan |
+| Context | the bar, `ctx 72% left` | the bar as now; `ctx` grey, `72% left` in the bar's colour (green, yellow from 70% used, red from 85%); with no known window, `ctx` grey and the count plain |
+| Tokens | `12.3k in / 4.1k out` | the numbers plain, `in` and `out` grey |
+| Cost | `$0.42`, "ChatGPT plan" | green, the whole text |
+| Mode | `perm ask` | `perm` grey; `ask` green, `project` yellow, `never` red |
+| Errors | red only when above 0 | `0 errors` grey, red from 1 |
+| Project | `Agent Harness git:(release-5)` | the folder yellow, `git:(` and `)` magenta, the branch cyan |
+| Time | `⏱ 12m` | grey |
+| Subagents | `2 running` | yellow |
+
+The table shown to the user dropped the grey `ctx` while promising that the words stay; `ctx` is
+kept, so they do.
+
 ## When something goes wrong
 
 - **Putting the terminal back:** every way out (`/exit`, a double Ctrl-C or Ctrl-D, a crash, a

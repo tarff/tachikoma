@@ -5,7 +5,8 @@
 
 **Goal:** Tachikoma draws on the terminal's second screen, with its own scrolling, a scroll bar,
 mouse selection and copying, clicks in the prompt and menus, and a detail view for Ctrl+O and
-`/tasks t3`; `--classic` keeps release 4's screen, and `/screen` switches between the two.
+`/tasks t3`; `--classic` keeps release 4's screen, and `/screen` switches between the two. Last,
+the status line takes claude-hud's colours (Task 16, the user's request of 2026-10-27).
 
 **Architecture:** Ink gets a filtered copy of the keyboard (`src/tui/input.ts`), which takes the
 mouse reports out and hands them to the App as events. `src/tui/terminal.ts` writes the screen and
@@ -791,3 +792,46 @@ Commit: `feat: /screen switches between full screen and classic`.
 9. No fragments of old text left on screen.
 
 Commit: `docs: release 5 in the README, the help and the designs`.
+
+## Task 16: The status line's colours
+
+Added on 2026-10-27 at the user's request, after Task 5 (design, "The status line's colours").
+
+**Files:** modify `src/tui/StatusLine.tsx`, `README.md` (the status line bullet), the design's
+"As built"; tests in `tests/tui/statusline.test.tsx`.
+
+**What it is:**
+- `StatusLine` draws nothing `inverse`. Each part is drawn from its pieces:
+  `export interface Piece { text: string; color?: "cyan" | "green" | "yellow" | "red" | "magenta"; dim?: boolean }`
+  and `export function pieces(s: LineSegment, i: StatusInfo): Piece[]` (`LineSegment` exported),
+  whose texts joined are exactly `formatSegment(s, i)`, so the words cannot drift from it.
+- The colours, from the design's table:
+
+| Part | Release 4 (all inverse) | Release 5 |
+|---|---|---|
+| Lead | `lead anthropic:claude-opus-5-5` | `lead` grey, the lead cyan |
+| Context | the bar, `ctx 72% left` | the bar as now; `ctx` grey, `72% left` in the bar's colour (green, yellow from 70% used, red from 85%); with no known window, `ctx` grey and the count plain |
+| Tokens | `12.3k in / 4.1k out` | the numbers plain, `in` and `out` grey |
+| Cost | `$0.42`, "ChatGPT plan" | green, the whole text |
+| Mode | `perm ask` | `perm` grey; `ask` green, `project` yellow, `never` red |
+| Errors | red only when above 0 | `0 errors` grey, red from 1 |
+| Project | `Agent Harness git:(release-5)` | the folder yellow, `git:(` and `)` magenta, the branch cyan |
+| Time | `⏱ 12m` | grey |
+| Subagents | `2 running` | yellow |
+
+- The separators ` | ` are grey; the line's first and last spaces stay, plain. The context bar is
+  drawn as now, before the context part; `72% left` takes `contextBar(used).color`.
+- Folder and branch are each escaped with `visible`, as the whole is now.
+- README: the status line bullet says its parts are coloured as claude-hud's are.
+
+**Tests:**
+1. For every part (with and without a branch, with and without a known window, a `chatgpt:` lead
+   with and without cost), the pieces' texts joined equal `formatSegment`.
+2. Each part's colours from the table: context green at 69% used, yellow at 70%, red at 85%, the
+   bar and the text alike; `0 errors` grey, `1 error` red; each mode's colour; no branch, the
+   folder yellow alone.
+3. The drawn `StatusLine` has no `inverse` element (checked on the elements it returns, as
+   `conversation.test.tsx` does, the test terminal drawing no colour codes); the existing frame
+   tests pass unchanged.
+
+Commit: `feat: the status line in claude-hud's colours`.
