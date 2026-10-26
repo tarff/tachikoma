@@ -299,6 +299,31 @@ Where the code differs from the design above, or settles what it left open, and 
   executor, which has no way to list a folder. The sandbox (release 6) must give them one.
 - **The question about instruction files outside the project comes before the screen starts:** the
   files go into the system prompt, which is fixed before the first turn.
+- **Two lines a subagent, under a short description,** after the user's first terminal run, where
+  the long task the lead wrote filled the row. `delegate` takes a required `description` of a few
+  words, shown in the panel, in `/tasks` and in the call's own line; the subagent is still sent the
+  task. Under it come `⎿` and the model, time, tokens, cost and latest tool call, as Claude Code
+  shows its agents. When not all fit, as many whole subagents are shown as leave a line for
+  "+N more".
+- **A pattern that is not a regular expression says why,** with JavaScript's own message, and for a
+  flag inside it such as `(?i)`, which JavaScript does not have, how to match both cases. In the
+  first run a subagent's `(?i)` was the session's one error.
+- **"1 error",** not "1 errors", in the status line.
+- **`--max-tasks` takes digits only:** `Number()` alone took `1e1`, ` 8 ` and `0x10`.
+
+## The user's checklist
+
+Run 2026-10-26 in the user's terminal (Windows Terminal, PowerShell 5.1), with
+`anthropic:claude-haiku-5-5` as lead and worker, in two rounds: the last four changes under "As
+built" came from the first, and the second ran on the changed build.
+- **Passed:** the start line naming the instruction files read; a waited-on answer; two background
+  subagents, each ending with "t1 finished" or "t2 finished" and a turn started by itself; the
+  panel's two lines and "2 running"; finished rows turning to ✓; `/tasks` and `/tasks t1`; the
+  to-do list and Ctrl+T; Esc stopping a turn; Ctrl-C twice quitting.
+- **Not seen live:** "Reading t1's answer" on the working line, shown only while the lead reads the
+  answer. A test shows it (`tests/tui/app.test.tsx`, "shows that turn as reading the answer").
+- **`$0.00 + ?`** is right: Haiku 5.5 is left out of the price table, since its price changes above
+  100K-token prompts, so its cost shows as unknown.
 
 ## Not in this release
 
