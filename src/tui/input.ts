@@ -117,6 +117,19 @@ export class InputFilter extends EventEmitter {
     this.#wait = wait;
     source.setEncoding("utf8");
     source.on("data", (chunk: string | Buffer) => this.#take(String(chunk)));
+    // A stream tells a readable listener added while data waits, on the next tick. Ink removes its listener in
+    // suspendTerminal() and adds it back on resume, and adds it first when useInput mounts: keys typed meanwhile would
+    // otherwise wait for the next key.
+    this.on("newListener", (event: string | symbol) => {
+      if (event === "readable" && this.#waiting.length > 0) process.nextTick(() => this.emit("readable"));
+    });
+  }
+
+  // Ink's kitty check (confirmKittySupport in Ink's ink.js) hands back, as bytes, what it heard that was not the
+  // terminal's answer.
+  unshift(chunk: string | Uint8Array): void {
+    this.#waiting.unshift(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    this.emit("readable");
   }
 
   setRawMode(on: boolean): this {
@@ -179,6 +192,8 @@ export class InputFilter extends EventEmitter {
       return;
     }
     this.#waiting.push(keys);
+    // "data" as a stream emits it, for Ink's kitty check, which listens for the terminal's answer that way.
+    this.emit("data", keys);
     this.emit("readable");
   }
 }

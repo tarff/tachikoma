@@ -169,6 +169,42 @@ describe("InputFilter", () => {
     expect(source.calls).toEqual(["setRawMode(true)", "ref", "setRawMode(false)", "unref"]);
   });
 
+  it("emits each piece of keys as data, as a stream does, but not reports nor diverted keys", () => {
+    const { filter, feed } = filtered();
+    const data: string[] = [];
+    filter.on("data", (d: string) => data.push(d));
+    feed(`a${ESC}[<64;1;1Mb`);
+    filter.divert(() => {});
+    feed("c");
+    expect(data).toEqual(["a", "b"]);
+  });
+
+  it("puts unshifted text, from bytes or a string, back in front of the waiting keys", () => {
+    const source = new Source();
+    const filter = new InputFilter(source as never);
+    let readable = 0;
+    filter.on("readable", () => readable++);
+    source.emit("data", "z");
+    filter.unshift(new TextEncoder().encode("é1"));
+    filter.unshift("0");
+    expect(readable).toBe(3);
+    expect([filter.read(), filter.read(), filter.read(), filter.read()]).toEqual(["0", "é1", "z", null]);
+  });
+
+  it("tells a readable listener added later that keys are waiting, on the next tick", async () => {
+    const source = new Source();
+    const filter = new InputFilter(source as never);
+    source.emit("data", "k");
+    const reads: string[] = [];
+    filter.on("readable", () => {
+      let s: string | null;
+      while ((s = filter.read()) !== null) reads.push(s);
+    });
+    expect(reads).toEqual([]);
+    await new Promise((r) => process.nextTick(r));
+    expect(reads).toEqual(["k"]);
+  });
+
   it("sends keys elsewhere and drops reports while diverted, then returns to Ink", () => {
     const { filter, reads, mice, feed } = filtered();
     const elsewhere: string[] = [];
@@ -186,19 +222,23 @@ describe("InputFilter", () => {
 describe("InputFilter with Ink", () => {
   const tick = () => new Promise((r) => setTimeout(r, 50)); // prompt.test.tsx's wait for Ink to draw
 
-  // A stand-in terminal, as in prompt.test.tsx.
+  // A stand-in terminal, as in prompt.test.tsx, that records what Ink writes.
   class Terminal extends EventEmitter {
     isTTY = true;
     columns = 20;
     rows = 10;
-    write = () => true;
+    out = "";
+    write = (s: string) => {
+      this.out += s;
+      return true;
+    };
   }
 
-  it("lets useInput see the keys and nothing of a wheel report, which comes out as one mouse event", async () => {
+  // A component that records every key useInput sees, rendered through a filter on a stand-in source.
+  function inked(kitty: boolean) {
     const source = new Source();
     const filter = new InputFilter(source as never);
-    const mice: Mouse[] = [];
-    filter.on("mouse", (m: Mouse) => mice.push(m));
+    const terminal = new Terminal();
     const seen: string[] = [];
     function Keys() {
       useInput((input) => {
@@ -207,13 +247,21 @@ describe("InputFilter with Ink", () => {
       return null;
     }
     const app = render(createElement(Keys), {
-      stdout: new Terminal() as never,
+      stdout: terminal as never,
       stdin: filter as never,
       debug: false,
       patchConsole: false,
       exitOnCtrlC: false,
       interactive: true,
+      ...(kitty ? { kittyKeyboard: { mode: "auto" as const } } : {}),
     });
+    return { source, filter, terminal, seen, app };
+  }
+
+  it("lets useInput see the keys and nothing of a wheel report, which comes out as one mouse event", async () => {
+    const { source, filter, seen, app } = inked(false);
+    const mice: Mouse[] = [];
+    filter.on("mouse", (m: Mouse) => mice.push(m));
     try {
       await tick();
       for (const s of ["x", `${ESC}[<64;10;5M`, "y"]) {
@@ -222,6 +270,35 @@ describe("InputFilter with Ink", () => {
       }
       expect(seen).toEqual(["x", "y"]);
       expect(mice).toEqual([{ kind: "wheel", button: "none", wheel: "up", x: 9, y: 4, ...none }]);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  // Ink's kitty check (confirmKittySupport in Ink's ink.js) listens for "data" after asking with ESC[?u, and turns the
+  // protocol on with ESC[>...u when the terminal answers ESC[?<flags>u.
+  it("lets Ink's kitty check hear the terminal's answer and turn the protocol on", async () => {
+    const { source, terminal, app } = inked(true);
+    try {
+      expect(terminal.out).toContain(`${ESC}[?u`);
+      source.emit("data", `${ESC}[?1u`);
+      await tick();
+      expect(terminal.out).toMatch(/\u001b\[>\d+u/);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  it("loses no keys typed after Ink's kitty check goes unanswered, and gives each once", async () => {
+    const { source, terminal, seen, app } = inked(true);
+    try {
+      await new Promise((r) => setTimeout(r, 250)); // past the check's 200 ms (setTimeout(cleanup, 200) in Ink's ink.js)
+      for (const s of ["x", "y"]) {
+        source.emit("data", s);
+        await tick();
+      }
+      expect(seen).toEqual(["x", "y"]);
+      expect(terminal.out).not.toMatch(/\u001b\[>\d+u/);
     } finally {
       app.unmount();
     }
