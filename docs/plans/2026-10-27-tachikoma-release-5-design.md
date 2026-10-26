@@ -13,6 +13,9 @@ Release 5 was to hold the key extras too. On 2026-10-26 the user chose to split 
 "Split: full screen first"): full screen is release 5, and vim mode, image paste, an external
 editor, stash and rebinding keys in a file are release 6. Every later release moves down one, to
 14 in all. Each part below was chosen by the user on 2026-10-26 or 2026-10-27, from options offered.
+An outside review of this design (2026-10-27) added four rules: a question brings its detail into
+view, the newest copy wins, the input filter's rules for pastes and Escape, and who owns the
+terminal while `[` has printed the view out.
 
 Sources:
 - **Claude Code's full screen:** code.claude.com/docs/en/fullscreen.md, read on 2026-10-26 and
@@ -111,6 +114,12 @@ first, and a cap goes in only if the measurements call for one, with the figures
 - **Following:** at the bottom, the view follows new lines. Scrolled up, it stays where it was put,
   and a grey row at its foot says how many lines came in since ("↓ 12 new lines · Ctrl+End").
   Coming back to the bottom, by wheel or key, follows again. Sending a prompt goes to the bottom.
+- **A permission question brings its detail into view.** A write's detail (the file's proposed
+  text) goes into the conversation under a heading, as in release 1. When the question comes, the
+  view moves to it: if the detail is taller than the view, its heading goes to the top and following
+  stops until the user comes back to the bottom; otherwise the view goes to the bottom and follows.
+  While the question waits, the wheel, the scroll keys and the scroll bar still scroll, so a long
+  file can be read before answering; y, n, Esc and Ctrl-C answer it as in release 3.
 
 ## The mouse
 
@@ -119,8 +128,18 @@ and the wheel, in the probe's format). They are turned off at quit, when `/scree
 and when Tachikoma exits on an error or a signal, so the terminal is not left catching the mouse.
 
 **Reading it.** Ink would take a mouse report for an unknown key, so Ink gets a filtered copy of the
-input: reports are taken out and handled by Tachikoma, everything else (pastes included) goes
-through unchanged, and a report split across two reads waits until it is whole.
+input, with these rules:
+- **A mouse report** (`ESC[<`, three numbers, then `M` or `m`) is taken out and handled by
+  Tachikoma.
+- **Inside a paste** (between `ESC[200~` and `ESC[201~`, the markers Ink reads pastes by) nothing is
+  taken out, so pasted text that looks like a mouse report arrives as text. A marker split across
+  two reads is still found.
+- **A read that stops partway** through what could be a mouse report (`ESC`, `ESC[`, `ESC[<0;12`)
+  is held until the rest comes, for at most 20 ms, Ink's own wait for the rest of a key
+  (`pendingInputFlushDelayMilliseconds` in Ink's `components/App.js`); then it goes to Ink as it
+  was. So a lone Escape reaches Ink at most 20 ms later than now, and Ink then waits its own 20 ms:
+  40 ms at worst, against 20 ms now.
+- **Everything else** goes to Ink unchanged and in order.
 
 **Selecting:**
 - Press the left button in the conversation and drag: the selection shows in reverse colours as it
@@ -141,6 +160,10 @@ through unchanged, and a report split across two reads waits until it is whole.
 - Tachikoma sends OSC 52 and also runs the system's tool in the background: `Set-Clipboard` on
   Windows, `pbcopy` on macOS, `wl-copy` or `xclip` on Linux. It cannot tell whether a terminal
   took the OSC 52, and the probe found both work here.
+- **The newest copy wins.** OSC 52 is written at once, so the terminal gets copies in order. The
+  system's tool runs one copy at a time: a copy made while one is running waits, and when it
+  finishes only the newest waiting copy runs, so an older copy never lands after a newer one. A
+  failure is reported only for the newest copy.
 - The hint row says "Copied 312 characters" until the next key or click; the conversation does not
   get a line for it.
 - **Shift+drag** still gives the terminal's own selection, as the probe found.
@@ -163,8 +186,19 @@ is hidden while it is open; the status line stays, and a grey row at the bottom 
 - **`/` searches:** typing finds and highlights matches, Enter keeps the search, Esc drops it and
   goes back to where the view was; **n/N** go to the next or previous match. Any case, as Ctrl+R's
   history search; plain text, not a pattern.
-- **`[`** leaves full screen and prints the view into the normal scrollback, for the terminal's own
-  search and selection; q or Esc comes back.
+- **`[`** prints the view into the normal scrollback, for the terminal's own search, selection and
+  scrolling. While the view is printed out:
+  - **Going out:** Tachikoma turns mouse reports off, suspends Ink (`suspendTerminal()`: Ink stops
+    drawing and stops reading keys, and turns raw mode off), leaves the second screen itself, since
+    it entered it itself, and prints the view.
+  - **Keys:** a small reader of Tachikoma's own takes them, in raw mode: q, Esc or Ctrl-C come back,
+    and other keys are ignored. Nothing reaches Ink.
+  - **Coming back** undoes each step in reverse: the second screen, mouse reports, then Ink
+    resumed, drawing everything again.
+  - **Work goes on:** turns and subagents keep running and their lines are kept, but nothing is
+    drawn until the view comes back.
+  - **A permission question** brings it back at once, as q would, and the question shows as under
+    "Scrolling".
 - **q, Esc or Ctrl+O** close the view. Ctrl-C does what it does everywhere.
 - **During a turn** the work goes on, and new output goes into the conversation underneath. A
   permission question closes the view: it needs y and n, and n is "next match" here. Ctrl+O opens
@@ -197,16 +231,22 @@ In classic mode, Ctrl+O and `/tasks t3` print below, as in releases 3 and 4.
 As before: Vitest, no test contacting a real provider, no test reading the user's own files.
 
 - **Mouse reports:** each kind from the probe; a report split across two reads; reports taken out
-  while keys and pastes reach Ink unchanged.
+  while keys and pastes reach Ink unchanged; a paste holding text shaped like a mouse report
+  arriving whole, with its markers split across reads; a lone Escape reaching Ink within 20 ms; a
+  held partial report going to Ink as it was after 20 ms.
 - **The view:** wrapping, rewrapping on a resize, drawing only the rows on screen, following and the
   "new lines" row, each scroll key, fractional scroll speeds, and the scroll bar's size, place,
   clicks and drags.
 - **Selecting:** a drag to text (wrapped lines joined, line-end spaces dropped), a drag past the
   edge scrolling, word and line selection (paths and URLs whole), the click timing, and both copy
-  routes with stand-ins for the terminal and the clipboard tool.
+  routes with stand-ins for the terminal and the clipboard tool; overlapping copies with a slow
+  stand-in tool, the newest always ending on the clipboard and only its failure reported.
+- **Questions:** a write's detail brought into view when scrolled up (taller and shorter than the
+  view), and the wheel, the keys and the scroll bar scrolling while the question waits.
 - **Clicking** in the prompt and on menu entries.
-- **The detail view:** opening, keys, search (any case, n/N, Esc going back), `[`, and a permission
-  question closing it.
+- **The detail view:** opening, keys, search (any case, n/N, Esc going back), and a permission
+  question closing it; `[` going out and coming back in order, keys during it reaching only its
+  reader, work going on, and a question bringing it back.
 - **Modes:** `--classic`, `TACHI_CLASSIC`, `/screen` both ways, and the terminal put back on each
   way out.
 - **The App tests** use release 3's stand-in terminal with a height, with mouse reports fed through
