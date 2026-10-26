@@ -273,7 +273,7 @@ if (parsed.print !== undefined) {
   const screen = new Screen((s) => process.stdout.write(s), (s) => writeSync(1, s));
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
-  if (screenMode(parsed.classic, process.env) === "full") screen.enter();
+  if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true) === "full") screen.enter();
   ink = render(
     <App
       session={session}

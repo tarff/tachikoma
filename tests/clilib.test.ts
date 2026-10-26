@@ -129,13 +129,19 @@ describe("statusSegments", () => {
 
 describe("screenMode", () => {
   it("starts in full screen unless --classic is given or TACHI_CLASSIC is set to anything but empty or 0", () => {
-    expect(screenMode(undefined, {})).toBe("full");
-    expect(screenMode(true, {})).toBe("classic");
-    expect(screenMode(undefined, { TACHI_CLASSIC: "1" })).toBe("classic");
-    expect(screenMode(undefined, { TACHI_CLASSIC: "yes" })).toBe("classic");
-    expect(screenMode(undefined, { TACHI_CLASSIC: "0" })).toBe("full");
-    expect(screenMode(undefined, { TACHI_CLASSIC: "" })).toBe("full");
-    expect(screenMode(true, { TACHI_CLASSIC: "0" })).toBe("classic");
+    expect(screenMode(undefined, {}, true)).toBe("full");
+    expect(screenMode(true, {}, true)).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "1" }, true)).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "yes" }, true)).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "0" }, true)).toBe("full");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "" }, true)).toBe("full");
+    expect(screenMode(true, { TACHI_CLASSIC: "0" }, true)).toBe("classic");
+  });
+
+  it("is classic when the output is not a terminal, or in CI, where Ink draws no live frames", () => {
+    expect(screenMode(undefined, {}, false)).toBe("classic");
+    for (const env of [{ CI: "true" }, { CI: "1" }, { CI: "" }, { CONTINUOUS_INTEGRATION: "yes" }]) expect(screenMode(undefined, env, true)).toBe("classic");
+    for (const env of [{ CI: "0" }, { CI: "false" }, { CONTINUOUS_INTEGRATION: "false" }]) expect(screenMode(undefined, env, true)).toBe("full");
   });
 });
 

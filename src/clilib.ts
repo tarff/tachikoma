@@ -47,9 +47,14 @@ export function statusSegments(value: string | undefined): Segment[] {
 
 // Full screen unless asked for classic (release 5 design, "The two modes"). An empty TACHI_CLASSIC or 0 reads as unset
 // (the plan's choice 14), so `TACHI_CLASSIC=0` turns it off.
-export function screenMode(classic: boolean | undefined, env: NodeJS.ProcessEnv): "full" | "classic" {
+// Classic too where Ink would not use its own second screen (the user's choice, 2026-10-27, at Task 6's build): output
+// that is not a terminal, or CI, which Ink counts as not interactive even on a terminal (ink.js, resolveInteractiveOption
+// and resolveAlternateScreenOption, lines 706-713). CI as Ink's is-in-ci reads it: CI or CONTINUOUS_INTEGRATION set to
+// anything but 0 or false (node_modules/is-in-ci/index.js).
+export function screenMode(classic: boolean | undefined, env: NodeJS.ProcessEnv, tty: boolean): "full" | "classic" {
   const value = env.TACHI_CLASSIC ?? "";
-  return classic || (value !== "" && value !== "0") ? "classic" : "full";
+  const ci = ["CI", "CONTINUOUS_INTEGRATION"].some((key) => key in env && env[key] !== "0" && env[key] !== "false");
+  return classic || (value !== "" && value !== "0") || !tty || ci ? "classic" : "full";
 }
 
 // A reader such as `head` that stops early is a normal end, not a crash.
