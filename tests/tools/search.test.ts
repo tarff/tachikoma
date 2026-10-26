@@ -183,7 +183,10 @@ describe("search_files", () => {
 
   it("says when the pattern is not a regular expression", async () => {
     const ctx = await tempContext();
-    await expect(searchFilesTool.run({ pattern: "a(" }, ctx)).rejects.toThrow("a( is not a regular expression");
+    await expect(searchFilesTool.run({ pattern: "a(" }, ctx)).rejects.toThrow("a( is not a regular expression: Invalid regular expression: /a(/: Unterminated group");
+    await expect(searchFilesTool.run({ pattern: "(?i)max" }, ctx)).rejects.toThrow(
+      "(?i)max is not a regular expression: Invalid regular expression: /(?i)max/: Invalid group. JavaScript has no flags inside a pattern, such as (?i); search_files matches case exactly, so give both cases where it matters, as in [Mm]ax",
+    );
   });
 
   it("cuts long output and says how many more lines there were", async () => {

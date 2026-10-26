@@ -5,6 +5,7 @@ import { Worker } from "node:worker_threads";
 import ignore from "ignore";
 import { z } from "zod";
 import { dataDir } from "../core/datadir.js";
+import { errorText } from "../core/types.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { programEnvironment, resolveIn } from "./files.js";
 import { defineTool, type ToolContext } from "./tool.js";
@@ -178,8 +179,11 @@ export const searchFilesTool = defineTool(
   async ({ pattern, path: start = ".", glob }, ctx) => {
     try {
       new RegExp(pattern);
-    } catch {
-      throw new Error(`${pattern} is not a regular expression`);
+    } catch (err) {
+      // The models' commonest slip in the live run: a flag inside the pattern, as other engines allow.
+      const flag = /^\(\?[a-z]+\)/i.exec(pattern);
+      const hint = flag ? `. JavaScript has no flags inside a pattern, such as ${flag[0]}; search_files matches case exactly, so give both cases where it matters, as in [Mm]ax` : "";
+      throw new Error(`${pattern} is not a regular expression: ${errorText(err)}${hint}`);
     }
     const name = glob?.replaceAll("\\", "/");
     const base = await realpath(ctx.root);
