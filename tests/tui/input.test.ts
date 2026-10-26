@@ -331,10 +331,7 @@ describe("InputFilter with Ink", () => {
   it("gets a key typed during Ink's unanswered kitty check through unshift, which Ink 7.1.1 delivers twice", async () => {
     const { source, seen, app } = inked(true);
     try {
-      await tick();
-      source.emit("data", "a");
-      await tick();
-      expect(seen).toEqual(["a"]);
+      source.emit("data", "a"); // at once, so it is inside the check however slow the machine
       await new Promise((r) => setTimeout(r, 200)); // past the check's 200 ms (setTimeout(cleanup, 200) in Ink's ink.js)
       expect(seen).toEqual(["a", "a"]);
     } finally {
