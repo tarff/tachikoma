@@ -98,7 +98,7 @@ export class Clipboard {
   #start(run: (text: string) => Promise<void>, text: string): void {
     const copy = this.#copies;
     this.#running = true;
-    // The next copy runs even when the report throws.
+    // A report that throws still lets the queue move on; the throw itself is left to surface.
     run(text)
       .catch((err: unknown) => {
         if (copy === this.#copies) this.#report(errorText(err));

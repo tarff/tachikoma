@@ -516,8 +516,10 @@ Commit: `feat: the wheel and the scroll bar`.
 // select.ts
 export const CLICK_MS = 500; // Windows' default double-click time (SetDoubleClickTime)
 export function ordered(a: Pos, b: Pos): [Pos, Pos];
-// The text from a up to b (b's character not included: places are between characters), each line's end
-// spaces dropped, lines joined by "\n"; a wrapped line comes whole, as it is one line.
+// The text from a up to b (b's character not included: places are between characters), spaces dropped
+// where a line really ends (a piece stopping mid-line keeps them, so a drag to a wrapped row's end keeps
+// the space where it wrapped: the user's choice, 2026-10-27), lines joined by "\n"; a wrapped line comes
+// whole, as it is one line.
 export function textOf(lines: readonly { text: string }[], a: Pos, b: Pos): string;
 // A selection from the pressed cell to the current one, as places (choice 6: both cells' characters in):
 // forward, from before the pressed cell's character to after the current cell's; backward, from before
@@ -555,8 +557,10 @@ every copy reports `no clipboard tool for this system`.
 Windows' tool: `powershell.exe -NoProfile -NonInteractive -Command <DECODE> | Set-Clipboard`, where
 `DECODE` reads base64 from the input and turns it into text
 (`[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))`),
-exported so a test can run it without touching the clipboard.
-- Spaces drop only at a line's real end; a selection ending mid-line keeps them (user, 2026-10-27).
+exported so a test can run it without touching the clipboard. Found at Task 8's review: the command
+sets `[Console]::OutputEncoding` to UTF-8 and runs `Set-Clipboard -ErrorAction Stop` in a
+`try`/`catch` that writes the error's message alone, as PowerShell's own report repeats the cmdlet's
+name and is cut at the console's width.
 
 **Tests:**
 1. `textOf`: within a line; across three lines with end spaces dropped; backwards (b before a); a
