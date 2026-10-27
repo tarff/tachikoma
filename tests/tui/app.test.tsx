@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { render as renderInk } from "ink";
+import { stripVTControlCharacters } from "node:util";
+import { type Instance, render as renderInk } from "ink";
 import { render } from "ink-testing-library";
 import chalk from "chalk";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -22,7 +23,7 @@ import { App, type AppProps } from "../../src/tui/App.js";
 import { Clipboard } from "../../src/tui/clipboard.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
-import { Screen } from "../../src/tui/terminal.js";
+import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, reply, tempContext, usage } from "../helpers.js";
 
@@ -3374,6 +3375,209 @@ describe("App's detail view in full screen", () => {
     await press(app, "q");
     expect(shown(app)[20]).toBe("›");
     expect(app.lastFrame()).not.toContain("search:");
+  });
+
+  it("takes [ into a search being typed, as any letter", async () => {
+    const { app } = await mount([], { full: true });
+    await press(app, "\u000f", "/", "[");
+    expect(shown(app)[21]).toBe("/[ (no match)");
+  });
+});
+
+// `[` prints the detail view into the normal scrollback (release 5 design, "The detail view"; plan, Task 13). The App is
+// drawn by Ink to a stand-in terminal, as in "puts the terminal's cursor in the prompt": ink-testing-library's Ink is not
+// interactive, so its suspendTerminal() neither erases the frame nor draws it again on resume. What Ink and the Screen
+// write, and each call to the stand-in input, go into `steps` in order.
+describe("App's detail view printed out", () => {
+  const KEYS = "j k ↑ ↓ line · g G Home End top, bottom · / search · [ print · q Esc close";
+  const LAST = "Printed. q, Esc or Ctrl-C to go back.";
+  const inks: Instance[] = [];
+  afterEach(() => {
+    for (const ink of inks.splice(0)) ink.unmount();
+  });
+
+  async function printable(lead: Provider, worker: Provider = new FakeProvider("w", [])) {
+    const steps: string[] = [];
+    const terminal = Object.assign(new EventEmitter(), { isTTY: true, columns: 100, rows: 24, write: (s: string) => (steps.push(s), true) });
+    const typed: string[] = [];
+    const keyboard = Object.assign(new EventEmitter(), {
+      isTTY: true,
+      setRawMode() {},
+      setEncoding() {},
+      resume() {},
+      pause() {},
+      ref() {},
+      unref() {},
+      read: () => typed.shift() ?? null,
+    });
+    let reader: ((keys: string) => void) | null = null;
+    const input = {
+      hold: (on: boolean) => void steps.push(`hold(${on})`),
+      divert: (to: ((keys: string) => void) | null) => {
+        reader = to;
+        steps.push(to ? "divert(reader)" : "divert(null)");
+      },
+    };
+    const bus = new Bus();
+    const ctx = await tempContext();
+    let ask: (s: string, d?: string, o?: Owner) => Promise<boolean> = async () => false;
+    const gate = new PermissionGate("ask", (s, d, o) => ask(s, d, o));
+    const tasks = new Tasks({ bus, max: 8, worker: () => worker, system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
+    const tools = [...TOOLS, delegateTool(tasks, { headless: false })];
+    const session = new Session({ lead, tools, system: "t", ctx: { ...ctx, gate }, bus, inbox: () => tasks.take() });
+    const screen = new Screen(
+      (s) => void steps.push(s),
+      () => {},
+    );
+    screen.enter();
+    const ink = renderInk(
+      <App
+        session={session}
+        tasks={tasks}
+        bus={bus}
+        stats={new Stats(bus)}
+        mode="ask"
+        onMode={() => {}}
+        project="proj"
+        root={ctx.root}
+        gitBranch={() => null}
+        historyFile={path.join(histories, `${nextHistory++}.jsonl`)}
+        intro={[]}
+        errorFile={path.join(ctx.root, "errors.jsonl")}
+        segments={SEGMENTS}
+        makeProvider={() => new FakeProvider("b", [])}
+        login={async () => {}}
+        listModels={async () => []}
+        bindAsk={(fn) => {
+          ask = fn;
+        }}
+        screen={screen}
+        input={input}
+        scrollSpeed={3}
+        clipboard={(report) => new Clipboard(() => {}, null, report)}
+      />,
+      { stdout: terminal as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
+    );
+    inks.push(ink);
+    await tick();
+    return {
+      steps,
+      ink,
+      session,
+      // Each key in its own read, to Ink.
+      key: async (...keys: string[]) => {
+        for (const k of keys) {
+          typed.push(k);
+          keyboard.emit("readable");
+          await tick();
+        }
+      },
+      // A read while the view is printed out, to the reader the App diverted the keys to.
+      out: async (keys: string) => {
+        reader!(keys);
+        await tick();
+      },
+      ask: (s: string, d?: string) => ask(s, d),
+    };
+  }
+  // The steps from the last `mark` on, and what they show with the escape codes taken out.
+  const since = (steps: string[], mark: string) => steps.slice(steps.lastIndexOf(mark));
+  const text = (steps: string[]) => stripVTControlCharacters(steps.join(""));
+  // t1's record open in the view: a turn starts t1, whose answer has a blank line, then /tasks t1.
+  const record = async () => {
+    const p = await printable(
+      new FakeProvider("a", [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")]),
+      new FakeProvider("w", [reply("one\n\nthree")]),
+    );
+    await p.key("go", "\r");
+    await waitFor(() => p.session.messages.at(-1)?.role === "assistant");
+    await p.key("/tasks t1", "\r");
+    await waitFor(() => text(p.steps).includes("t1 (find x), done: 0 tool calls"));
+    return p;
+  };
+
+  it("prints the view on [: keyboard held, mouse off, Ink suspended, the normal screen, the lines and how to go back, keys to a reader", async () => {
+    await inColour(async () => {
+      const { steps, key } = await record();
+      steps.length = 0;
+      await key("[");
+      expect(steps[0]).toBe("hold(true)");
+      expect(steps[1]).toBe(MOUSE_OFF);
+      const first = steps.indexOf(FIRST_SCREEN);
+      expect(steps.slice(2, first)).toContain("\u001b[?2004l"); // Ink suspended: its bracketed paste goes off
+      expect(steps.slice(first + 1)).toHaveLength(2);
+      const printed = steps[first + 1]!;
+      expect(stripVTControlCharacters(printed)).toBe(["t1 (find x), done: 0 tool calls", "Answer:", "one", "", "three", LAST, ""].join("\n"));
+      expect(printed).toContain(`\u001b[90m${LAST}\u001b[39m`); // grey, as the view's own lines are
+      expect(steps[first + 2]).toBe("divert(reader)");
+    });
+  });
+
+  it("comes back on q, not on other keys: the reader let go, the second screen, the mouse on, the view drawn again, then the keyboard", async () => {
+    const { steps, key, out } = await record();
+    await key("[");
+    const before = steps.length;
+    await out("x");
+    await out("\u001b[A"); // an arrow key: its Escape is not Esc
+    expect(steps).toHaveLength(before);
+    await out("q");
+    const back = since(steps, "divert(null)");
+    expect(back.slice(0, 3)).toEqual(["divert(null)", SECOND_SCREEN, MOUSE_ON]);
+    expect(back.at(-1)).toBe("hold(false)");
+    expect(text(back.slice(3, -1))).toContain("t1 (find x), done: 0 tool calls");
+    expect(text(back.slice(3, -1))).toContain(KEYS);
+    await key("q"); // the keys reach Ink again: q closes the view
+    expect(text(since(steps, "hold(false)"))).toContain("›");
+  });
+
+  it.each([
+    { name: "Esc", keys: "\u001b" },
+    { name: "Ctrl-C", keys: "\u0003" },
+    { name: "a q read after another key", keys: "xq" },
+  ])("comes back on $name", async ({ keys }) => {
+    const { steps, key, out } = await record();
+    await key("[");
+    await out(keys);
+    expect(since(steps, "divert(null)").at(-1)).toBe("hold(false)");
+  });
+
+  it("goes on with the turn while printed out, drawing nothing, and the reply is in the conversation after coming back", async () => {
+    const lead = new Held();
+    const { steps, key, out, session } = await printable(lead);
+    await key("hi", "\r");
+    await waitFor(() => text(steps).includes("Esc to stop"));
+    await key("\u000f", "[");
+    const printed = steps.length;
+    lead.answer("the reply");
+    await waitFor(() => session.messages.at(-1)?.role === "assistant");
+    await tick();
+    expect(steps).toHaveLength(printed); // nothing drawn while out
+    await out("q");
+    await key("q");
+    expect(text(since(steps, "hold(false)"))).toContain("the reply");
+  });
+
+  it("comes back at once for a question, which shows", async () => {
+    const { steps, key, ask } = await printable(new FakeProvider("a", []));
+    await key("\u000f", "[");
+    expect(steps.at(-1)).toBe("divert(reader)");
+    const answer = ask("write a.txt", "line 0.\nline 1.");
+    await tick();
+    const back = since(steps, "divert(null)");
+    expect(back.slice(0, 3)).toEqual(["divert(null)", SECOND_SCREEN, MOUSE_ON]);
+    expect(back.at(-1)).toBe("hold(false)");
+    expect(text(back)).toContain("Allow write a.txt? [y/n]");
+    await key("y");
+    expect(await answer).toBe(true);
+  });
+
+  it("lets the keyboard go if Ink ends while printed out", async () => {
+    const { steps, key, ink } = await printable(new FakeProvider("a", []));
+    await key("\u000f", "[");
+    ink.unmount();
+    const end = since(steps, "divert(reader)");
+    expect(end.filter((s) => s.startsWith("divert(") || s.startsWith("hold("))).toEqual(["divert(reader)", "divert(null)", "hold(false)"]);
+    expect(end).not.toContain(SECOND_SCREEN);
   });
 });
 

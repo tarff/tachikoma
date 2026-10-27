@@ -1,4 +1,4 @@
-import { Box, type Key, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
+import { Box, type Key, renderToString, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
 import { summarize } from "../core/errorlog.js";
@@ -79,6 +79,9 @@ export interface AppProps {
   // Copying (release 5 design, "Copying"): the App makes the clipboard with its own report, so a failure shows in the
   // hint row.
   clipboard: (report: (problem: string) => void) => Clipboard;
+  // The InputFilter's hold on raw mode and its diverting of the keys, for `[` (release 5 design, "The detail view"). With
+  // none, `[` does nothing.
+  input?: { divert(to: ((keys: string) => void) | null): void; hold(on: boolean): void };
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /exit";
@@ -121,8 +124,9 @@ export function App({
   mouse,
   scrollSpeed,
   clipboard,
+  input,
 }: AppProps) {
-  const { exit } = useApp();
+  const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
   // screen is drawn again. `goal` is the column Up and Down keep to, until another key moves the cursor.
@@ -148,6 +152,9 @@ export function App({
   // selecting and copying act on whichever is drawn, the pane, with its own rows and view (plan, Task 12).
   const detail = useRef<Detail | null>(null);
   const pane = () => detail.current ?? { rows: kept, view };
+  // While the detail view is printed out (`[`), from the key on, and once Ink is suspended, how to resume it. Kept apart
+  // from the view, which a question closes while it is out.
+  const printed = useRef<{ resume?: () => Promise<void> } | null>(null);
   // The mouse listener is set up once, at mount, so it reads the mode and the frame's shape from here, not from the first
   // render (found at Task 5's review): Task 14's /screen changes `full`, and keeps this in step with it.
   const fullNow = useRef(full);
@@ -304,6 +311,7 @@ export function App({
         closeDetail();
         questions.current.push(q);
         rerender((n) => n + 1);
+        void comeBack(); // printed out, the view comes back at once, as on q, and the question shows (plan, Task 13)
       });
     });
     const onMessage = (m: Message) => say(...describe(m));
@@ -357,6 +365,13 @@ export function App({
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
     mouse?.on("mouse", onMouse);
     return () => {
+      // Ink ending while the view is printed out (a crash) lets the keyboard go, so raw mode goes off and the process can
+      // end (input.ts, hold).
+      if (printed.current) {
+        printed.current = null;
+        input!.divert(null);
+        input!.hold(false);
+      }
       mouse?.off("mouse", onMouse);
       clearInterval(minutes);
       clearTimeout(first.current?.timer);
@@ -531,13 +546,65 @@ export function App({
     detail.current = null;
     unselect();
   };
+  // `[` prints the view into the normal scrollback, for the terminal's own search, selecting and scrolling (release 5
+  // design, "The detail view"; plan, Task 13). Raw mode is held on throughout, as Ink's suspend would turn it off, which
+  // left the Windows console reading whole lines (design, "Switching during a session"). The mouse goes off before Ink is
+  // suspended and the second screen after, as `leave` orders them; the view's lines are drawn by Ink's own renderToString
+  // at the terminal's width, with their colours (plan, choice 13), without the search's or the selection's reverse
+  // colours, and the selection is cleared, as opening and closing clear it. An empty line is drawn as a space, as an empty
+  // Text takes no row, and without a colour, whose codes would keep the space at the line's end. Then the keys go to a
+  // reader of the App's own: q, Esc or Ctrl-C come back, other keys do nothing. Ink's suspend turns the kitty keyboard
+  // protocol off, so q comes as q. Meanwhile the work goes on, and nothing is drawn, as Ink drops every render while
+  // suspended. A question that arrived while going out brings the view back at once.
+  const printOut = async (d: Detail) => {
+    const p: { resume?: () => Promise<void> } = {};
+    printed.current = p;
+    unselect();
+    input!.hold(true);
+    screen.setMouse(false);
+    const { resume } = await suspendTerminal();
+    if (printed.current !== p) return; // Ink ended meanwhile, and the cleanup above let the keyboard go
+    screen.setSecond(false);
+    screen.suspended = true;
+    const page = d.rows.lines.map((l, i) => (
+      <Text key={i} color={l.text ? l.color : undefined} wrap={l.oneLine ? "truncate-end" : "wrap"}>
+        {l.text || " "}
+      </Text>
+    ));
+    screen.write(`${renderToString(<>{page}<Text color="gray">Printed. q, Esc or Ctrl-C to go back.</Text></>, { columns })}\n`);
+    p.resume = resume;
+    input!.divert(reader);
+    if (questions.current.length) await comeBack();
+  };
+  // A read can hold several keys ("xq"), or Escape with the rest of a key after it (an arrow's ESC [ A), so each key in it
+  // is looked at; Esc is an Escape with nothing after it. Keys after the one that comes back are dropped: Ink is not
+  // reading again until it resumes.
+  const reader = (keys: string) => {
+    for (const [k] of keys.matchAll(/\u001b(?:\[[0-?]*[ -/]*[@-~]|O.|[^])?|[^]/gu)) {
+      if (k === "q" || k === "\u001b" || k === "\u0003") return void comeBack();
+    }
+  };
+  // Coming back undoes each step in reverse: the keys back to Ink, the second screen, the mouse, then Ink resumed, which
+  // draws everything again, and the hold let go.
+  const comeBack = async () => {
+    const p = printed.current;
+    if (!p?.resume) return;
+    printed.current = null;
+    input!.divert(null);
+    screen.setSecond(true);
+    screen.setMouse(true);
+    screen.suspended = false;
+    await p.resume();
+    input!.hold(false);
+  };
   // The detail view's keys (release 5 design, "The detail view"; plan, Task 12): the conversation's scroll keys; j and k,
   // or Down and Up, a row; g or Home the top, G or End the bottom; q, Esc and Ctrl+O close it; `/` starts a search, and n
-  // and N go to the next and previous match of one kept. While a search is typed, text goes into it, Backspace edits it,
-  // Enter keeps it, or drops it when nothing matches, and Esc drops it, the view going back to where it was; the other
-  // keys act as above. Backspace takes away a whole character, as the prompt's does. Any other key does nothing: the
-  // prompt is hidden, and Alt+P's model list, Ctrl+R's search and the like wait for the view to close. Ctrl-C is not
-  // taken here (useInput, below). Several keys can come in one read, so each checks the view is still open.
+  // and N go to the next and previous match of one kept; `[` prints it out (Task 13). While a search is typed, text goes
+  // into it, `[` too, Backspace edits it, Enter keeps it, or drops it when nothing matches, and Esc drops it, the view
+  // going back to where it was; the other keys act as above. Backspace takes away a whole character, as the prompt's does.
+  // Any other key does nothing: the prompt is hidden, and Alt+P's model list, Ctrl+R's search and the like wait for the
+  // view to close. Ctrl-C is not taken here (useInput, below). Several keys can come in one read, so each checks the view
+  // is still open and not printed out.
   const detailKey = (d: Detail, ch: string, key: Key) => {
     if (key.escape) {
       if (d.search?.typing) {
@@ -548,7 +615,7 @@ export function App({
     }
     for (const c of commands(ch, key)) {
       const s = d.search;
-      if (detail.current !== d) return;
+      if (detail.current !== d || printed.current) return;
       if (c === "lastTurn") closeDetail();
       else if (typeof c === "object") for (const letter of c.text) detailLetter(d, letter);
       else if (s?.typing && c === "backspace") searchFor(d, s.query.slice(0, [...segmenter.segment(s.query)].at(-1)?.index ?? 0), viewHeight);
@@ -560,15 +627,17 @@ export function App({
   };
   const detailLetter = (d: Detail, letter: string) => {
     const s = d.search;
-    if (detail.current !== d) return;
+    if (detail.current !== d || printed.current) return;
     if (s?.typing) searchFor(d, s.query + letter, viewHeight);
     else if (letter === "q") closeDetail();
+    else if (letter === "[" && input) void printOut(d);
     else if (letter === "/") d.search = { query: "", found: [], at: 0, typing: true, before: d.view.current };
     else if ((letter === "n" || letter === "N") && s) stepMatch(d, letter === "n" ? 1 : -1, viewHeight);
     else if (LETTERS[letter]) scroll(LETTERS[letter]);
   };
 
   useInput((ch, key) => {
+    if (printed.current) return; // a key read with the `[` that printed the view out, which Ink reads before it is out
     clearCopied();
     if (picker) return; // the picker reads the keys while it is open
     if (question) {
@@ -647,6 +716,7 @@ export function App({
   // picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
+      if (printed.current) return; // as for keys, above
       clearCopied();
       // In the detail view a paste goes into a search being typed, up to its first line break, without the control
       // characters typed text loses (keys.ts, commands); otherwise it does nothing there (the user's choice at Task 12's
@@ -710,7 +780,7 @@ export function App({
   // come after a question closed it, belongs to a screen that is gone, and is dropped, as clickAt drops a click read with
   // a key that changed the prompt (found at Task 10's review).
   const onMouse = (m: Mouse) => {
-    if (!fullNow.current) return;
+    if (!fullNow.current || printed.current) return; // printed out: a report read with its `[`, as for keys
     const { columns, viewHeight } = frame.current;
     if (frame.current.detail !== detail.current) return;
     const p = pane();

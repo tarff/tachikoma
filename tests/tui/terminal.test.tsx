@@ -199,7 +199,7 @@ describe("restoreOnExit", () => {
       writeFileSync(
         script,
         `import React from ${url("node_modules/react/index.js")};
-import { render, Text } from ${url("node_modules/ink/build/index.js")};
+import { render, Text, useApp } from ${url("node_modules/ink/build/index.js")};
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from ${url("src/tui/terminal.ts")};
 const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
 let ink;
@@ -263,6 +263,28 @@ ${end}
     expect(r.code).toBe(1);
     expect(r.out.startsWith(SECOND_SCREEN + MOUSE_ON)).toBe(true);
     expect(r.after).toBe(MOUSE_OFF + FIRST_SCREEN + SHOW_CURSOR + "The interface stopped on an error: render broke\n");
+  });
+
+  // While the detail view is printed out (`[`, plan Task 13) the normal screen shows, but Ink is suspended and drops its
+  // error report with every other drawing, so the error is said on stderr as in full screen.
+  it("says what broke the interface when it breaks while the detail view is printed out", { timeout: 15_000 }, () => {
+    const app = `React.createElement(() => {
+  const { suspendTerminal } = useApp();
+  const [broken, setBroken] = React.useState(false);
+  React.useEffect(() => {
+    screen.setMouse(false);
+    void suspendTerminal().then(() => {
+      screen.setSecond(false);
+      screen.suspended = true;
+      setBroken(true);
+    });
+  }, []);
+  if (broken) throw new Error("render broke");
+  return React.createElement(Text, null, "frame one");
+})`;
+    const r = run("", { app });
+    expect(r.code).toBe(1);
+    expect(r.out.endsWith(FIRST_SCREEN + SHOW_CURSOR + "The interface stopped on an error: render broke\n")).toBe(true);
   });
 
   // cli.tsx's signal handlers, from exitSignals. Windows cannot send a process SIGBREAK from Node (process.kill gives

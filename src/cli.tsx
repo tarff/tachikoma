@@ -315,6 +315,7 @@ if (parsed.print !== undefined) {
       }}
       screen={screen}
       mouse={keys}
+      input={keys}
       scrollSpeed={speed}
       clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
     />,
