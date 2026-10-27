@@ -269,7 +269,12 @@ is hidden while it is open; the status line stays, and a grey row at the bottom 
     drawn until the view comes back.
   - **A permission question** brings it back at once, as q would, and the question shows as under
     "Scrolling".
-- **q, Esc or Ctrl+O** close the view. Ctrl-C does what it does everywhere.
+- **q, Esc or Ctrl+O** close the view. Ctrl-C stops a turn that is running, leaving the view open;
+  with nothing running it only closes the view, so the prompt's hidden draft is never cleared
+  unseen (the user's choice at Task 12's review). The working line still says "Esc to stop".
+- **While a search is typed,** a row with no match says so (`/zzz (no match)`, as Ctrl+R's does),
+  and a paste goes into the query up to its first line break; outside a search a paste does
+  nothing in the view (the user's choices at Task 12's review).
 - **During a turn** the work goes on, and new output goes into the conversation underneath. A
   permission question closes the view: it needs y and n, and n is "next match" here. Ctrl+O opens
   it again.

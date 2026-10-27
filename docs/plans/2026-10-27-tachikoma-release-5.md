@@ -745,13 +745,19 @@ Commit: `feat: a permission question brings its detail into view`.
   `j k ↑ ↓ line · g G Home End top, bottom · / search · [ print · q Esc close`.
 - Keys: everything the conversation has (wheel, bar, PgUp/PgDn, Ctrl+Home/End, Shift+Up/Down,
   selecting and copying); j/k and Up/Down a row; g/G and Home/End top and bottom; q, Esc, Ctrl+O
-  close; Ctrl-C does what it does elsewhere (a turn stops; on an idle, empty prompt it counts toward
-  quitting).
+  close; Ctrl-C stops a running turn and leaves the view open, and with nothing running only closes
+  the view, never clearing the hidden draft or counting toward quitting (the user's choice at the
+  spec review, 2026-10-27); the working line keeps "Esc to stop" (the user's choice).
 - `/` opens a search row (`/query`, in place of the key row): typing searches as it goes, the first
   match from the view's top on brought into view (choice 12: a match off screen goes to the top
   row), matches in reverse colours; Backspace edits; Enter keeps it (the row then says
   `"query": 3 of 7 · n next · N previous`); Esc drops it and the view goes back to where it was.
   n/N go to the next and previous match, round from the end (choice 12).
+- Found at the reviews (2026-10-27): typing with no match shows `/query (no match)`, and a paste
+  while typing goes into the query up to its first line break (the user's choices); outside a
+  search pastes and other keys (Alt+P, Ctrl+R, Shift+Tab, Ctrl+T, `?`, text) do nothing. The key
+  row stands in the hint row's place, in its dim style. Only the matches on the rows drawn are
+  passed to the drawing, as walking every match per row cost 23 ms a redraw at 2,000 lines.
 - `find.ts`: `find(lines, query): { line: number; start: number; end: number }[]`, any case, plain
   text, in order.
 - A permission question closes the view (y and n are answers, and n is "next" here).
