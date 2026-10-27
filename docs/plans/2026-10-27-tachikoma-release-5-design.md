@@ -413,6 +413,9 @@ marks what the build decided and told the user.
   - Ctrl+Break on Windows and SIGQUIT elsewhere put the terminal back too (the user's choice at
     Task 6's review): Windows sends Ctrl+Break as a signal even in raw mode, and the library Ink
     uses to catch exits does not put the terminal back for either.
+  - Closing the terminal's window or tab reaches Node as SIGHUP, which is caught and puts the
+    terminal back, so of the hard kills under "When something goes wrong" only ones such as Task
+    Manager's remain.
   - A crash is still reported when Ink's own unmount fails as well, and the writes that put the
     terminal back never throw, so a closed pipe cannot turn an exit into a crash.
 - **The wheel and the scroll bar (Task 7).** `-p` ignores `TACHI_SCROLL_SPEED`, as it ignores
@@ -445,7 +448,9 @@ marks what the build decided and told the user.
     nothing.
   - The build's calls: n and N go on from the last match shown; the key row stands in the hint
     row's place, in its dim style; Ctrl+R's search still ignores pastes, as before.
-  - Enter on a search with no match drops the search, where the design says Enter keeps it.
+  - Enter on a search with no match drops the search, where the design says Enter keeps it (the
+    build's call, told to the user): a kept search with no match would leave n and N nothing to go
+    to.
   - Only the matches on the rows drawn are passed to the drawing: walking every match for every
     row cost 23 ms a redraw at 2,000 lines. The key row fits a short terminal.
 - **`[` (Task 13):**

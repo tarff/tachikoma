@@ -138,9 +138,9 @@ shows the to-do list. `?` on an empty prompt lists every key.
 
 ## Full screen
 
-Tachikoma starts on the terminal's second screen, as `vim` and Claude Code do, and draws the
-conversation there itself, above the prompt and the status line. When you quit, the terminal shows
-what it showed before you started.
+Tachikoma starts on the terminal's second screen, as `vim` and Claude Code's full-screen mode do,
+and draws the conversation there itself, above the prompt and the status line. When you quit, the
+terminal shows what it showed before you started.
 
 - **Scrolling:** the mouse wheel scrolls the conversation wherever the pointer is, 3 lines a notch.
   `--scroll-speed <n>` (or `TACHI_SCROLL_SPEED`) sets any number above 0 and up to 20, fractions
@@ -156,23 +156,24 @@ what it showed before you started.
 - **Selecting and copying:** drag with the left button to select, shown in reverse colours; dragging
   past the top or bottom scrolls. A double-click selects a word, where a file path (a Windows one
   too) or a web link counts as one word; a triple-click selects the line. Letting go copies the
-  text exactly as selected, a line wrapped on screen as one line, and the hint row says
-  `Copied 312 characters`. The selection stays until the next click. A copy goes to the terminal
-  (as OSC 52) and also to the system's own tool: `Set-Clipboard` on Windows, `pbcopy` on macOS,
-  `wl-copy` or `xclip` on Linux. With no tool to run (Linux with no display, as over SSH), the
-  terminal alone copies, and the hint row says so.
+  text exactly as selected, a line wrapped on screen as one line, and, when the hint row shows, it
+  says `Copied 312 characters`. The selection stays until the next click. A copy goes to the
+  terminal (as OSC 52) and also to the system's own tool: `Set-Clipboard` on Windows, `pbcopy` on
+  macOS, `wl-copy` or `xclip` on Linux. With no tool to run (Linux with no display, as over SSH),
+  the terminal alone copies, and the line about the copy says so.
 - **Shift+drag** uses the terminal's own selection instead, where the terminal offers it, as
   Windows Terminal does.
 - **Clicks:** a click in the prompt puts the cursor there. A click on a `/` menu entry runs it, on
   an `@` entry fills it in, and on a model in `/model` picks it.
 - **The detail view:** Ctrl+O (the last turn's tool calls in full) and `/tasks t3` (a subagent's
   full record) open in the conversation's place. The prompt is hidden meanwhile; the status line
-  stays, and a grey row names the keys. j and k or Up and Down move a line, g and G or Home and End
+  stays, and a dim row names the keys. j and k or Up and Down move a line, g and G or Home and End
   go to the top and bottom, and the wheel, the scroll bar, the scroll keys and selecting work as in
-  the conversation. `/` searches as you type, ignoring case; Enter keeps the search, n and N go to
-  the next and previous match, and Esc drops it. q, Esc or Ctrl+O close the view. Ctrl-C stops a
-  turn that is running and leaves the view open; with nothing running it closes the view. A
-  permission question closes it, as y and n answer the question.
+  the conversation. `/` searches as you type, ignoring case; Esc while typing drops the search, and
+  Enter keeps it, after which n and N go to the next and previous match. q, Esc (once a search is
+  kept, too) or Ctrl+O close the view. Ctrl-C stops a turn that is running and leaves the view
+  open; with nothing running it closes the view. A permission question closes it, as y and n answer
+  the question.
 - **`[`** in the detail view prints it into the terminal's normal scrollback, for the terminal's own
   search, selecting and scrolling. The work goes on out of sight. q, Esc or Ctrl-C bring the view
   back, and so does a permission question. A paste does nothing meanwhile.

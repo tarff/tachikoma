@@ -125,7 +125,7 @@ middle of an Ink session the way Task 14 does. Its result goes into the design b
 
 ## Choices this plan makes that the design leaves open
 
-Each is marked in its task. **Not yet approved.**
+Each is marked in its task. Approved by the user on 2026-10-27.
 1. **Wrapping (Task 3):** rows break after a space, as Ink's own wrapping does in classic mode; a
    word longer than a row is cut at the row's end; a character never splits. Text always wraps one
    column short, whether or not the scroll bar shows, so a bar appearing never rewraps.
