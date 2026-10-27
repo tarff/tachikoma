@@ -131,7 +131,9 @@ classic mode); copying keeps the tabs (the user's choice, 2026-10-27).
   every second notch.
 - **PgUp / PgDn:** half a screen. **Ctrl+Home:** the top. **Ctrl+End:** the latest line, and the
   view follows new output again.
-- **Shift+Up / Shift+Down:** one line; during a selection they also extend it, as in Claude Code.
+- **Shift+Up / Shift+Down:** one line, a selection or not. (They were to extend a selection too, as
+  in Claude Code; the user dropped that at Task 9's review, 2026-10-27, as an old selection would
+  be copied again over newer clipboard contents.)
 - **Up and Down stay with the prompt** (history, menus), as in release 3.
 - **The scroll bar:** one column at the right of the conversation, once it is longer than the view.
   The thumb's size and place show how much is seen and where. Clicking the track jumps there;
@@ -181,13 +183,16 @@ input, with these rules:
 **Selecting:**
 - Press the left button in the conversation and drag: the selection shows in reverse colours as it
   grows. Dragging past the top or bottom of the view scrolls it a line for each move, so a selection
-  can be longer than the screen; the wheel scrolls during one too.
+  can be longer than the screen; the wheel scrolls during one too. The pointer cannot go above the
+  frame, so the view's top row stands for past the top, for a drag started lower down; a drag
+  started on the top row selects within it and never scrolls (the user's choice, 2026-10-27).
 - The selection belongs to the lines, not the screen rows, so it stays on its text as the view
   moves.
 - **Double-click** selects a word: letters, digits and iTerm2's `/-+\~_.`, so a path is one word,
   and a drive's colon (`C:\`, `C:/`), so a Windows path is too; a URL (`http://` or `https://` to
   the next space, less the punctuation after it, as most terminals leave it off: the user's choice,
-  2026-10-27) is selected whole. **Triple-click** selects the line. Clicks count as a double or
+  2026-10-27) is selected whole, and a character it leaves off alone (the user's choice,
+  2026-10-27). **Triple-click** selects the line. Clicks count as a double or
   triple when each lands on the same cell within 500 ms of the last (Windows' default).
 - A click without a drag clears the selection. Only the conversation and the detail view can be
   selected, not the prompt or the status line.
@@ -197,16 +202,18 @@ input, with these rules:
   copy is exactly the text selected, spaces and all (the user's choice, 2026-10-27).
 - Tachikoma sends OSC 52 and also runs the system's tool in the background: `Set-Clipboard` on
   Windows, `pbcopy` on macOS, `wl-copy` or `xclip` on Linux. It cannot tell whether a terminal
-  took the OSC 52, and the probe found both work here. Linux with no display (over SSH) has no tool
-  to run: OSC 52 alone copies, and the hint row says "Copied 312 characters with the terminal only"
-  (the user's choice, 2026-10-27).
+  took the OSC 52, and the probe found both work here. Linux with no display (over SSH), or a
+  system with no tool at all, has no tool to run: OSC 52 alone copies, and the hint row says
+  "Copied 312 characters with the terminal only" (the user's choice, 2026-10-27).
 - **The newest copy wins.** OSC 52 is written at once, so the terminal gets copies in order. The
   system's tool runs one copy at a time: a copy made while one is running waits, and when it
   finishes only the newest waiting copy runs. An older run that ends after a newer copy was made
   has just put the older text on the clipboard, so the newest copy's OSC 52 is sent again at once,
   before its own run. A failure is reported only for the newest copy.
 - The hint row says "Copied 312 characters" until the next key or click; the conversation does not
-  get a line for it.
+  get a line for it. It takes the hint row's place only while one shows, never adding a row, so a
+  copy never moves the conversation; Ctrl+R's search and the exit warning keep the row. A failed
+  copy is always shown, even adding the row (the user's choices, 2026-10-27).
 - **Shift+drag** still gives the terminal's own selection, as the probe found.
 
 **Clicking:**
@@ -282,7 +289,9 @@ the part, and by risk where it does not (cost, mode, errors):
   A hard kill (Task Manager, closing the tab) cannot be caught; if one leaves a terminal catching
   the mouse, closing that tab clears it. The README says so.
 - **The system's clipboard tool is missing or fails:** the hint row says so ("Copied with the
-  terminal only; xclip not found"); the OSC 52 was still sent.
+  terminal only; xclip not found"); the OSC 52 was still sent. Where there is no tool to run at all
+  (Linux with no display, or another system), nothing is reported as a failure: the hint says
+  "with the terminal only".
 - **The terminal is too small** for the live area: the conversation keeps at least one row, as the
   prompt does in release 3; what does not fit is dropped from the live area in release 3's order.
   Found at Task 5's review: at 6 rows or fewer the frame can still reach the terminal's height

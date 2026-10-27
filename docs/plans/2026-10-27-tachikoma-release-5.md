@@ -148,7 +148,8 @@ Each is marked in its task. **Not yet approved.**
    Linux `wl-copy` when `WAYLAND_DISPLAY` is set, otherwise `xclip -selection clipboard` when
    `DISPLAY` is, otherwise none (Task 9).
 9. **Shift+Up/Down during a selection (Task 9)** moves the selection's end one row, scrolls one
-   row, and copies the selection again.
+   row, and copies the selection again. Dropped by the user at Task 9's review, 2026-10-27: an old
+   selection would be copied again over newer clipboard contents. They only scroll.
 10. **Clicks (Task 10)** on a "↑ N rows above" or "↓ N more" row, or anywhere while a question or
     the model list is open (except on the list's own entries), do nothing.
 11. **A question without a detail (Task 11),** such as a shell command, whose text is all on the
@@ -528,7 +529,9 @@ export function textOf(lines: readonly { text: string }[], a: Pos, b: Pos): stri
 export function span(rows: Rows, press: { row: number; x: number }, now: { row: number; x: number }): [Pos, Pos];
 // Double-click: letters, digits, marks and iTerm2's /-+\~_. ; a colon too where it follows a single
 // letter starting the word and comes before \ or / (a drive, C:\ or C:/), so a Windows path is one word
-// (choice 6); a URL from http:// or https:// to the next space whole; any other character alone.
+// (choice 6); a URL from http:// or https:// to the next space whole, less its trailing .,;:!?, a
+// closing )]} it has no opener for and an unmatched ' or ", each of which is taken alone (Task 9);
+// any other character alone.
 export function wordAt(text: string, offset: number): { start: number; end: number };
 // Same cell within CLICK_MS of the last press: one more click; after three, one again (choice 6).
 export function clicks(last: { at: number; x: number; y: number; count: number } | null, at: number, x: number, y: number): number;
@@ -544,6 +547,7 @@ export function runTool(tool: Tool): (text: string) => Promise<void>; // rejects
 export class Clipboard {
   constructor(write: (s: string) => void, run: ((text: string) => Promise<void>) | null, report: (problem: string) => void);
   copy(text: string): void;
+  get terminalOnly(): boolean; // no tool: OSC 52 alone copies (Task 9)
 }
 ```
 
@@ -552,7 +556,7 @@ one runs waits, and a newer one replaces it; when a run ends, the newest waiting
 that ends after a newer copy was made has just put older text on the clipboard, so the newest copy's
 OSC 52 is written again at once, before the newest's own tool runs (design, "The newest copy
 wins"). A failure is reported only when its copy is still the newest. With no tool (`run` null)
-every copy reports `no clipboard tool for this system`.
+the copy goes by the terminal alone and nothing is reported (the user's choice, 2026-10-27, Task 9).
 
 Windows' tool: `powershell.exe -NoProfile -NonInteractive -Command <DECODE> | Set-Clipboard`, where
 `DECODE` reads base64 from the input and turns it into text
@@ -563,7 +567,7 @@ sets `[Console]::OutputEncoding` to UTF-8 and runs `Set-Clipboard -ErrorAction S
 name and is cut at the console's width.
 
 **Tests:**
-1. `textOf`: within a line; across three lines with end spaces dropped; backwards (b before a); a
+1. `textOf`: within a line; across three lines with end spaces kept; backwards (b before a); a
    line wrapped on screen comes as one line. `span`: forward and backward drags include both cells'
    characters; a drag ending past a row's text ends at that row's end, not at the next row's first
    character.
@@ -575,7 +579,7 @@ name and is cut at the console's width.
    end (the row's end), on a one-line entry's row past its end (the entry's end).
 5. `osc52("tachikoma é 日本語 🦀")` is `ESC]52;c;` + its UTF-8 base64 + BEL.
 6. `systemTool`: win32 is PowerShell with `Set-Clipboard`; darwin `pbcopy`; linux with
-   `WAYLAND_DISPLAY` `wl-copy`, without `xclip -selection clipboard`.
+   `WAYLAND_DISPLAY` `wl-copy`, with only `DISPLAY` `xclip -selection clipboard`, with neither none.
 7. On Windows only: running PowerShell with `DECODE` alone (no `Set-Clipboard`), with
    `[Console]::OutputEncoding` UTF-8, gives back `tachikoma é 日本語 🦀` from its base64.
 8. `Clipboard` with a slow stand-in tool: copies A, B, C made while A runs: the tool runs A then C,
@@ -595,10 +599,10 @@ Commit: `feat: selection text, words, clicks and the clipboard`.
 `tests/tui/app.test.tsx`.
 
 **What it is** (design, "Selecting", "Copying"):
-- App prop `clipboard: Clipboard` (cli:
-  `new Clipboard((s) => screen.write(s), tool && runTool(tool), report)`, with `report` showing the
-  problem in the hint row; the App builds the report through a ref so it can show it). The mount
-  helper passes one with a stand-in `run` and records writes.
+- App prop `clipboard: (report) => Clipboard`, a factory, so the App hands in the report that shows
+  a problem in its hint row (cli:
+  `(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)`; the App keeps
+  the clipboard in a ref). The mount helper passes one with a stand-in `run` and records writes.
 - A left press in the conversation (not the bar's column) starts a selection at `placeAt`; drags
   extend it; the selection shows in reverse colours (`Conversation` gets `selection: [Pos, Pos] |
   null`), the bar's column never.
@@ -609,13 +613,22 @@ Commit: `feat: selection text, words, clicks and the clipboard`.
   `clipboard.copy`. The hint row says `Copied N characters` (choice 7) until the next key or click,
   or the report's words (`Copied with the terminal only; xclip not found`).
 - A press and release on the same cell with no drag clears the selection, and copies nothing.
-- Shift+Up/Down during a selection: choice 9.
+- Shift+Up/Down during a selection: choice 9, dropped by the user at Task 9's review, 2026-10-27
+  (an old selection would be copied again over newer clipboard contents): they only scroll.
 - Selection holds places, not rows, so it stays on its text when the view moves or rewraps.
 - With no tool (Linux with neither `WAYLAND_DISPLAY` nor `DISPLAY`, as over SSH, or an unknown
   system) OSC 52 alone copies: the hint says `Copied N characters with the terminal only`, not a
   failure (the user's choice, 2026-10-27).
 - A double-clicked link leaves off its trailing `.,;:!?`, a closing `)]}` it has no opener for, and
   an unmatched `'` or `"`, as most terminals do (the user's choice, 2026-10-27).
+- At Task 9's review (the user's choices, 2026-10-27):
+  - The pointer cannot go above the frame, so a drag on the conversation's top row scrolls up, but
+    only for a drag started on a lower row; one started on the top row selects within it.
+  - `Copied N characters` takes the hint row's place only while it shows, never adding a row, so a
+    copy never moves the conversation; Ctrl+R's search and the exit warning keep the row. A failed
+    copy is always shown, even adding the row.
+  - Double-clicking a character a link leaves off (the final `.` of `https://x.dev/a.`) selects
+    that character alone.
 
 **Tests** (each with a stand-in clipboard whose writes are recorded):
 1. A drag over two rows of one wrapped line copies the line's text joined; over two lines, two lines

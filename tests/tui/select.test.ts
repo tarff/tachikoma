@@ -130,9 +130,10 @@ describe("wordAt", () => {
     expect(word("go to https://x.dev/a?b=1 now", "https")).toBe("https://x.dev/a?b=1");
   });
 
-  it("takes a character a link leaves off as it takes it anywhere else", () => {
+  it("takes a character a link leaves off alone (the user's choice at Task 9's review, 2026-10-27)", () => {
     expect(word("(see https://x.dev/a).", ")")).toBe(")");
     expect(word("(see https://x.dev/a).", ".", 20)).toBe(".");
+    expect(word("see https://x.dev/a.", ".", 14)).toBe("."); // the final ., not the word to its left
   });
 
   it("takes a character that is not part of a word alone", () => {

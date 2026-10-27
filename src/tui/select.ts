@@ -75,11 +75,15 @@ function linkEnd(link: string): number {
 }
 
 // Double-click (release 5 design, "Selecting"; plan, choice 6): a URL from http:// or https:// to the next space whole,
-// less the punctuation after it (linkEnd); otherwise the word around the character, with a colon in it where it is a
-// drive's (a single letter starting the word before it, \ or / after it: C:\ or C:/), so a Windows path is one word; any
-// other character alone.
+// less the punctuation after it (linkEnd), which is taken alone (the user's choice at Task 9's review, 2026-10-27);
+// otherwise the word around the character, with a colon in it where it is a drive's (a single letter starting the word
+// before it, \ or / after it: C:\ or C:/), so a Windows path is one word; any other character alone.
 export function wordAt(text: string, offset: number): { start: number; end: number } {
-  for (const m of text.matchAll(LINK)) if (m.index <= offset && offset < m.index + linkEnd(m[0])) return { start: m.index, end: m.index + linkEnd(m[0]) };
+  for (const m of text.matchAll(LINK)) {
+    if (offset < m.index || offset >= m.index + m[0].length) continue;
+    const end = m.index + linkEnd(m[0]);
+    return offset < end ? { start: m.index, end } : { start: offset, end: offset + 1 }; // 1: what linkEnd leaves off is ASCII
+  }
   const segments = segmenter.segment(text);
   const at = (i: number) => segments.containing(i);
   const plain = (s: Intl.SegmentData | undefined) => s !== undefined && WORD.test(s.segment);

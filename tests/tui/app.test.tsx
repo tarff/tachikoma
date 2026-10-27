@@ -2122,7 +2122,7 @@ describe("App's selecting and copying in full screen", () => {
     });
   });
 
-  it("scrolls a row for each drag report below the conversation, or on its top row, and copies lines that were off screen", async () => {
+  it("scrolls a row for each drag report below the conversation, or on its top row for a drag started below it, copying lines off screen", async () => {
     const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
     await press(app, CTRL_HOME);
     await pointer(mouse, at("press", 0, 18), at("drag", 50, 21), at("drag", 50, 22), at("release", 50, 22));
@@ -2187,18 +2187,86 @@ describe("App's selecting and copying in full screen", () => {
     });
   });
 
-  it("moves the selection's end a row on Shift+Down and Shift+Up, scrolling a row, and copies it again", async () => {
+  // Shift+Up and Shift+Down only scroll: moving the selection's end and copying again would put an old selection back
+  // over newer clipboard contents (the user's choice at Task 9's review, 2026-10-27, dropping the plan's choice 9).
+  it("only scrolls on Shift+Up with a selection showing, copying nothing and leaving the selection on its text", async () => {
+    await inColour(async () => {
+      const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+      await press(app, PG_UP);
+      await pointer(mouse, at("press", 0, 2), at("drag", 50, 2), at("release", 50, 2));
+      expect(copies).toEqual(["said 52."]);
+      await press(app, SHIFT_UP);
+      expect(shown(app)[0]).toBe("said 49.");
+      expect(reversed(app)[3]).toBe("said 52.");
+      expect(copies).toEqual(["said 52."]);
+    });
+  });
+
+  it("keeps a double-clicked word and a dragged selection on their text when a resize wraps the line again", async () => {
+    await inColour(async () => {
+      const narrow = async (app: ReturnType<typeof render>) => {
+        Object.defineProperty(app.stdout, "columns", { value: 50, configurable: true });
+        app.stdout.emit("resize");
+        await tick();
+      };
+      let { app, mouse, copies } = await mount([], { full: true, intro: [{ text: long }] });
+      await pointer(mouse, ...click(80, 0), ...click(80, 0)); // the 17th word, at columns 80 to 83
+      expect(copies).toEqual(["word"]);
+      await narrow(app);
+      expect(reversed(app).slice(0, 20).join("")).toBe("word");
+      ({ app, mouse, copies } = await mount([], { full: true, intro: [{ text: long }] }));
+      await pointer(mouse, at("press", 2, 0), at("drag", 80, 0), at("release", 80, 0));
+      expect(copies).toEqual([long.slice(2, 81)]);
+      await narrow(app);
+      expect(reversed(app).slice(0, 20).join("")).toBe(long.slice(2, 81)); // now over two rows
+    });
+  });
+
+  it("never scrolls for a drag that started on the conversation's top row, selecting within it", async () => {
     const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
-    await press(app, CTRL_HOME);
-    await pointer(mouse, at("press", 0, 2), at("drag", 50, 2), at("release", 50, 2));
-    expect(copies).toEqual(["said 2."]);
-    await press(app, SHIFT_DOWN);
-    expect(shown(app)[0]).toBe("said 1.");
-    expect(copies.at(-1)).toBe("said 2.\nsaid 3.");
-    expect(app.lastFrame()).toContain("Copied 15 characters");
-    await press(app, SHIFT_UP);
-    expect(shown(app)[0]).toBe("said 0.");
-    expect(copies).toEqual(["said 2.", "said 2.\nsaid 3.", "said 2."]);
+    await pointer(mouse, at("press", 2, 0), at("drag", 5, 0), at("drag", 3, 2), at("drag", 6, 0), at("release", 6, 0));
+    expect(shown(app)[0]).toBe("said 60.");
+    expect(copies).toEqual(["id 60"]);
+  });
+
+  // The line about a copy takes the hint row's place only when it is showing, so a copy never moves the conversation
+  // (the user's choice at Task 9's review, 2026-10-27).
+  it("says nothing about a copy during a turn, which has no hint row, so the conversation stays where it is", async () => {
+    const { app, mouse, copies } = await mount([], { full: true, intro: said(80), lead: hanging() });
+    await type(app, "go");
+    await until(app, "Esc to stop");
+    const before = shown(app).slice(0, 19);
+    await pointer(mouse, at("press", 0, 5), at("drag", 7, 5), at("release", 7, 5));
+    expect(copies).toHaveLength(1);
+    expect(app.lastFrame()).not.toContain("Copied");
+    expect(shown(app).slice(0, 19)).toEqual(before);
+  });
+
+  it("keeps Ctrl+R's search line in the hint row over the line about a copy", async () => {
+    const { app, mouse, copies } = await mount([], { full: true, intro: said(80), past: ["about"] });
+    await press(app, "\u0012", "ab");
+    await until(app, "search: ab ·");
+    await pointer(mouse, at("press", 0, 5), at("drag", 7, 5), at("release", 7, 5));
+    expect(copies).toHaveLength(1);
+    expect(app.lastFrame()).toContain("search: ab ·");
+    expect(app.lastFrame()).not.toContain("Copied");
+  });
+
+  it("shows a failed copy during a turn, though the turn has no hint row", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80), lead: hanging(), run: async () => Promise.reject(new Error("xclip not found")) });
+    await type(app, "go");
+    await until(app, "Esc to stop");
+    await pointer(mouse, at("press", 0, 5), at("drag", 7, 5), at("release", 7, 5));
+    await until(app, "Copied with the terminal only; xclip not found");
+  });
+
+  it("takes away the line about a copy on a paste, as on a key", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80) });
+    await pointer(mouse, at("press", 0, 5), at("drag", 7, 5), at("release", 7, 5));
+    expect(app.lastFrame()).toContain("Copied 8 characters");
+    await press(app, "\u001b[200~abc\u001b[201~");
+    expect(app.lastFrame()).toContain("› abc");
+    expect(app.lastFrame()).not.toContain("Copied");
   });
 });
 

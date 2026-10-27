@@ -131,13 +131,14 @@ export function App({
   const grab = useRef<number | null>(null); // while the thumb is dragged, the row of the thumb it was pressed on
   // Selecting (release 5 design, "Selecting"): places in the lines, not screen rows, so a selection stays on its text as
   // the view moves or rewraps. `press` is what the press took: the pressed cell's character (select.ts, span), or the word
-  // or line of a double or triple click. `end` is the pointer's cell: its row's start place, and its column.
-  const selection = useRef<{ press: [Pos, Pos]; end: { row: Pos; x: number } } | null>(null);
+  // or line of a double or triple click. `end` is the character under the pointer's cell, as span takes it.
+  const selection = useRef<{ press: [Pos, Pos]; end: [Pos, Pos] } | null>(null);
   // While the left button is held after a press in the conversation; `copy`: a drag, or a double or triple click, made a
-  // selection to copy on release.
-  const held = useRef<{ press: [Pos, Pos]; copy: boolean } | null>(null);
+  // selection to copy on release; `top`: the press was on the conversation's top row.
+  const held = useRef<{ press: [Pos, Pos]; copy: boolean; top: boolean } | null>(null);
   const lastPress = useRef<{ at: number; x: number; y: number; count: number } | null>(null); // for select.ts, clicks
-  const copied = useRef<string | null>(null); // the hint row's line about the last copy, until the next key or click
+  // The hint row's line about the last copy, until the next key or click, and whether it says the copy failed.
+  const copied = useRef<{ text: string; failed: boolean } | null>(null);
   // A resize wraps every line again: here, while drawing, so resize events that come together cost one wrapping.
   if (full && kept.width !== columns - 1) kept.setWidth(columns - 1);
   const [busy, setBusy] = useState(false);
@@ -165,7 +166,7 @@ export function App({
   // "Copying").
   const board = useRef<Clipboard | null>(null);
   board.current ??= clipboard((problem) => {
-    copied.current = `Copied with the terminal only; ${problem}`;
+    copied.current = { text: `Copied with the terminal only; ${problem}`, failed: true };
     rerender((n) => n + 1);
   });
   const started = useRef(Date.now());
@@ -508,6 +509,11 @@ export function App({
   // picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
+      // A paste takes away the line about the last copy, as a key does (release 5 design, "Copying").
+      if (copied.current !== null) {
+        copied.current = null;
+        rerender((n) => n + 1);
+      }
       if (question || search.current) return;
       run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       rerender((n) => n + 1);
@@ -522,12 +528,6 @@ export function App({
     const half = Math.max(1, Math.floor(viewHeight / 2));
     const by = { pageUp: -half, pageDown: half, lineUp: -1, lineDown: 1, top: 0, bottom: 0 }[c];
     view.current = c === "top" ? scrollTo(kept, view.current, viewHeight, 0) : c === "bottom" ? FOLLOWING : scrollBy(kept, view.current, viewHeight, by);
-    // During a selection, Shift+Up and Shift+Down also move its end a row and copy it again (release 5 plan, choice 9).
-    const s = selection.current;
-    if (!s || (c !== "lineUp" && c !== "lineDown")) return;
-    const r = kept.row(Math.max(0, Math.min(kept.total - 1, kept.rowOf(s.end.row) + by)));
-    s.end = { row: { line: r.line, offset: r.start }, x: s.end.x };
-    copy();
   };
   // The selection as two places, from the press to the pointer's cell, both cells' characters in (release 5 plan, choice
   // 6), as span takes them: backward, from the pointer's character to the end of what was pressed; otherwise from the
@@ -535,22 +535,20 @@ export function App({
   const selected = (): [Pos, Pos] | null => {
     const s = selection.current;
     if (!s) return null;
-    const cell = { row: kept.rowOf(s.end.row), x: s.end.x };
-    const [at, atEnd] = span(kept, cell, cell);
+    const [at, atEnd] = s.end;
     const [from, fromEnd] = s.press;
     const before = (a: Pos, b: Pos) => a.line < b.line || (a.line === b.line && a.offset < b.offset);
     return before(at, from) ? [at, fromEnd] : [from, before(fromEnd, atEnd) ? atEnd : fromEnd];
   };
-  // On release, and on Shift+Up or Shift+Down during a selection: its text to the clipboard (release 5 design, "Copying"),
-  // never an empty one, and the hint row says how many characters, counted as a person sees them, as the prompt counts
-  // them (release 5 plan, choice 7).
+  // On release: the selection's text to the clipboard (release 5 design, "Copying"), never an empty one, and the hint row
+  // says how many characters, counted as a person sees them, as the prompt counts them (release 5 plan, choice 7).
   const copy = () => {
     const s = selected();
     const text = s ? textOf(kept.lines, ...s) : "";
     if (!text) return;
     board.current!.copy(text);
     const n = [...segmenter.segment(text)].length;
-    copied.current = `Copied ${n} character${n === 1 ? "" : "s"}${board.current!.terminalOnly ? " with the terminal only" : ""}`;
+    copied.current = { text: `Copied ${n} character${n === 1 ? "" : "s"}${board.current!.terminalOnly ? " with the terminal only" : ""}`, failed: false };
   };
   // The wheel and the scroll bar (release 5 design, "Scrolling"), in full screen only. The wheel scrolls the conversation
   // wherever the pointer is, and while a question or the model list is open (the plan's choice 3). The bar is the last
@@ -614,13 +612,9 @@ export function App({
     move(start);
   };
 
-  // The cell at the conversation's row `row` as select.ts takes it, with its row's start place. A row below the last line,
-  // blank in a view held past the bottom, stands for the last line's end.
-  const cellAt = (row: number, x: number) => {
-    const cell = row < kept.total ? { row, x } : { row: kept.total - 1, x: kept.width }; // kept.width: past any row's text
-    const r = kept.row(cell.row);
-    return { ...cell, start: { line: r.line, offset: r.start } };
-  };
+  // The cell at the conversation's row `row` as select.ts takes it. A row below the last line, blank in a view held past
+  // the bottom, stands for the last line's end.
+  const cellAt = (row: number, x: number) => (row < kept.total ? { row, x } : { row: kept.total - 1, x: kept.width }); // kept.width: past any row's text
   // A left press in the conversation (release 5 design, "Selecting"; plan, choice 6): a click takes the pressed character,
   // which a drag grows from, and clears the selection; a double-click selects the word, a triple-click the line, both
   // copied on release. A double-click past a row's text, or a double or triple click below the last line, clicks nothing:
@@ -644,18 +638,21 @@ export function App({
             : count === 3
               ? [{ line: pos.line, offset: 0 }, { line: pos.line, offset: text.length }]
               : null;
-    selection.current = count > 1 && press ? { press, end: { row: cell.start, x: cell.x } } : null;
-    held.current = press && { press, copy: count > 1 };
+    selection.current = count > 1 && press ? { press, end: span(kept, cell, cell) } : null;
+    held.current = press && { press, copy: count > 1, top: y === 0 };
     rerender((n) => n + 1);
   };
-  // A drag while selecting grows the selection to the pointer's cell. Below the conversation, or on its top row, as the
-  // frame starts at the terminal's top and the pointer cannot go above it, the view first scrolls a row for each report,
-  // so a selection can be longer than the screen (release 5 design, "Selecting").
-  const dragTo = (h: { press: [Pos, Pos]; copy: boolean }, x: number, y: number) => {
+  // A drag while selecting grows the selection to the pointer's cell. Below the conversation the view first scrolls a row
+  // for each report, so a selection can be longer than the screen (release 5 design, "Selecting"). The frame starts at
+  // the terminal's top, so the pointer cannot go above the conversation: its top row stands for above it, for a drag
+  // started lower down; one started on the top row selects within it and never scrolls (the user's choice at Task 9's
+  // review, 2026-10-27).
+  const dragTo = (h: { press: [Pos, Pos]; copy: boolean; top: boolean }, x: number, y: number) => {
     const { viewHeight } = frame.current;
-    if (y >= viewHeight || y <= 0) view.current = scrollBy(kept, view.current, viewHeight, y <= 0 ? -1 : 1);
+    const up = y <= 0 && !h.top;
+    if (y >= viewHeight || up) view.current = scrollBy(kept, view.current, viewHeight, up ? -1 : 1);
     const cell = cellAt(firstRow(kept, view.current, viewHeight) + Math.max(0, Math.min(viewHeight - 1, y)), x);
-    selection.current = { press: h.press, end: { row: cell.start, x: cell.x } };
+    selection.current = { press: h.press, end: span(kept, cell, cell) };
     h.copy = true;
     rerender((n) => n + 1);
   };
@@ -835,8 +832,14 @@ export function App({
             : busy
               ? null
               : "? for shortcuts";
-  // The line about the last copy comes before any other, until the next key or click (release 5 design, "Copying").
-  const hintFor = (left: number) => copied.current ?? usualHint(left);
+  // The line about the last copy, until the next key or click (release 5 design, "Copying"), takes the hint row's place
+  // only while one shows, so a copy never moves the conversation; a failed copy shows anyway, adding the row. Ctrl+R's
+  // search and the exit warning keep the row (the user's choice at Task 9's review, 2026-10-27).
+  const hintFor = (left: number) => {
+    const usual = usualHint(left);
+    const c = copied.current;
+    return c === null || searching || exitKey || (!c.failed && usual === null) ? usual : c.text;
+  };
 
   // The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since
   // at full height Ink draws the whole scrollback again each time. First the status line and the
