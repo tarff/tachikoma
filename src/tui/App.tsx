@@ -85,14 +85,14 @@ export interface AppProps {
   input?: { divert(to: ((keys: string) => void) | null): void; hold(on: boolean): void };
 }
 
-const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /exit";
+const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /exit";
 // "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
 const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
 
 // What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
 // is a message).
-const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks"];
+const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
 // In classic mode the scroll keys are release 4's keys (release 5 plan, choice 16): Shift+Up and Shift+Down are Up and
@@ -146,8 +146,14 @@ export function App({
   // Full screen (release 5 design, "The screen"): every line is kept, wrapped one column short, leaving the last column
   // for the scroll bar (release 5 plan, choice 1), and the view is where the user put it. Keys read and change the view
   // at once, as above.
-  const [full] = useState(screen.full);
+  const [full, setFull] = useState(screen.full);
+  // While /screen goes to classic, nothing is drawn, so Ink's redraw on resuming draws no full-screen frame on the normal
+  // screen (the user's check, release 5 plan, "Before you start").
+  const [switching, setSwitching] = useState(false);
   const [kept] = useState(() => new Rows(columns - 1));
+  // Every line said, in order: `kept` holds only those said in full screen, and going to full screen adds the rest
+  // (/screen, below). `lines` cannot give them then: what is said is in it only once React draws again.
+  const all = useRef<Line[]>([]);
   const view = useRef<View>(FOLLOWING);
   // The detail view, while it is open (DetailView.tsx); it takes the conversation's place. The keys, the wheel, the bar,
   // selecting and copying act on whichever is drawn, the pane, with its own rows and view (plan, Task 12).
@@ -162,8 +168,10 @@ export function App({
   const dropping = useRef<Printed | null>(null);
   const waitingList = useRef<ModelGroup[] | null>(null);
   const ended = useRef(false); // Ink has unmounted the App (the cleanup below)
-  // The mouse listener is set up once, at mount, so it reads the mode and the frame's shape from here, not from the first
-  // render (found at Task 5's review): Task 14's /screen changes `full`, and keeps this in step with it.
+  // What is set up once, at mount (the bus listeners, bindAsk, History's warning, the mouse listener), keeps the first
+  // render's functions, and what they call, `say`, `next` and the rest, reads the mode from here, not from the first
+  // render's `full` (found at Task 5's review); so do the keys' functions, alike. /screen sets it with `full`, at once. The
+  // mouse listener reads the frame's shape from `frame`, below, for the same reason.
   const fullNow = useRef(full);
   // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row and how many it draws, and
   // the menu's under it, no prompt rows while a question, the model list, Ctrl+R's search, whose prompt shows a match, or
@@ -245,7 +253,8 @@ export function App({
   // design, "Scrolling"); setting `lines` draws them either way.
   const say = (...add: Line[]) => {
     const shown = add.map(escaped);
-    if (full) {
+    all.current.push(...shown);
+    if (fullNow.current) {
       const before = kept.lines.length;
       kept.add(shown);
       view.current = arrived(view.current, kept.lines.length - before);
@@ -286,7 +295,7 @@ export function App({
         const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
         const from = kept.lines.length;
         say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
-        if (full) range = [from, kept.lines.length - 1];
+        if (fullNow.current) range = [from, kept.lines.length - 1];
       }
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
@@ -420,21 +429,23 @@ export function App({
   // command that finished after a turn started, both typed in one read of the terminal, leaves the
   // queue to that turn), nor while a question or the model list is open. While the detail view is printed out, a
   // subagent's record waits for it to come back, and what is queued after it, as it would take the printed view's place
-  // unseen; the model list waits in perform, below (the user's choices, 2026-10-28). Messages and other commands go on.
+  // unseen; the model list waits in perform, below (the user's choices, 2026-10-28). So does /screen, which would change
+  // the screen under the printed view, and could not suspend Ink, suspended already. Messages and other commands go on.
+  // Nothing starts once Ink has ended, a turn going on paying with no screen to show it (found at Task 13's round 3).
   const next = () => {
-    if (working.current || listOpen.current || questions.current.length) return;
+    if (ended.current || working.current || listOpen.current || questions.current.length) return;
     if (tasks.wakes()) return void submit("", true);
     const q = queue.current;
     const command = q.findIndex(isCommand);
     if (!q.length) return;
-    if (printed.current && command === 0 && opensRecord(q[0]!)) return;
+    if (printed.current && command === 0 && (opensRecord(q[0]!) || /^\/screen$/i.test(q[0]!))) return;
     view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
   };
   // In full screen, `/tasks t3` with a subagent of that id opens its record in the detail view (perform, below).
   const opensRecord = (text: string) => {
     const [first = "", ...words] = text.split(/\s+/);
-    return full && first.toLowerCase() === "/tasks" && words.length === 1 && tasks.all.some((t) => t.id === words[0]);
+    return fullNow.current && first.toLowerCase() === "/tasks" && words.length === 1 && tasks.all.some((t) => t.id === words[0]);
   };
 
   // True when it opened the model list.
@@ -451,9 +462,10 @@ export function App({
         return exit();
       }
       if (alone("/errors")) return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
+      if (alone("/screen")) return await switchScreen();
       // In full screen a subagent's record opens in the detail view (plan, Task 12); the list, stopping and mistakes print.
       if (command === "/tasks") {
-        const t = full && words.length === 1 ? tasks.all.find((x) => x.id === words[0]) : undefined;
+        const t = fullNow.current && words.length === 1 ? tasks.all.find((x) => x.id === words[0]) : undefined;
         return t ? openDetail(recordOf(t)) : say(...tasksCommand(words));
       }
       if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
@@ -462,7 +474,7 @@ export function App({
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
       if (!account && !alone("/model") && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
-      if (words.length && ["/exit", "/errors", "/model"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
+      if (words.length && ["/exit", "/errors", "/model", "/screen"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
       abort.current = new AbortController();
       const turn = !account && !alone("/model");
       const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(tasks.answering())}` : turn ? "Working" : "Reading the model lists";
@@ -644,6 +656,59 @@ export function App({
     if (list) setPicker(list);
     next();
   };
+  // /screen (release 5 design, "The two modes"; plan, Task 14), in the orders the user's check settled, with raw mode held
+  // on throughout, as Ink's suspend and resume would turn it off and on (plan, "Before you start"). Like a turn, it holds
+  // the queue while it runs, so what is sent meanwhile, another /screen too, waits for it. What the mouse was doing (a
+  // selection, a held button, a grab of the bar, a run of clicks, the wheel's carried fraction) belongs to the screen
+  // before, and goes.
+  // To classic: the detail view closes, as a queued /screen can run while it is open; nothing is drawn, and once React has
+  // drawn that, Ink is suspended, the screen left and Ink resumed, so its redraw draws nothing on the normal screen; then
+  // <Static> mounts and prints the whole conversation (plan, choice 17). The mode is classic from the start, nothing being
+  // drawn meanwhile, so a key read then (Ctrl+O, a scroll key) acts as in classic mode.
+  // To full screen: Ink is suspended, the second screen entered, and the view given the lines said since it last had them,
+  // at the bottom; once React has drawn that, Ink resumes and draws it there, never the classic frame. Ink drops every
+  // render while suspended, so nothing is drawn before.
+  // If Ink ends meanwhile (a render error), nothing more is switched, the terminal being put back as it is then
+  // (terminal.ts, restoreWhenInkEnds), and the keyboard is let go, so raw mode goes off and the process can end. A `[` read
+  // while Ink resumes, before its drawing is done, keeps the hold, as in comeBack.
+  const switchScreen = async () => {
+    const toFull = !fullNow.current;
+    working.current = true;
+    input?.hold(true);
+    unselect();
+    wheel.current = 0;
+    try {
+      if (toFull) {
+        const { resume } = await suspendTerminal();
+        if (ended.current) return;
+        screen.enter();
+        const width = frame.current.columns - 1; // one column short, as above
+        if (kept.width !== width) kept.setWidth(width);
+        kept.add(all.current.slice(kept.lines.length));
+        view.current = FOLLOWING;
+        fullNow.current = true;
+        setFull(true);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (ended.current) return;
+        await resume();
+      } else {
+        closeDetail();
+        fullNow.current = false;
+        setFull(false);
+        setSwitching(true);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (ended.current) return;
+        const { resume } = await suspendTerminal();
+        screen.leave();
+        await resume();
+        setSwitching(false);
+      }
+    } finally {
+      working.current = false;
+      if (!printed.current) input?.hold(false);
+    }
+    if (!ended.current) show({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
+  };
   // The detail view's keys (release 5 design, "The detail view"; plan, Task 12): the conversation's scroll keys; j and k,
   // or Down and Up, a row; g or Home the top, G or End the bottom; q, Esc and Ctrl+O close it; `/` starts a search, and n
   // and N go to the next and previous match of one kept; `[` prints it out (Task 13). While a search is typed, text goes
@@ -697,7 +762,7 @@ export function App({
           restore();
         }
       } else if (key.escape) question.answer(false, "declined"); // that action only; the turn goes on
-      else if (full && scrollKey(ch, key)) rerender((n) => n + 1); // a long detail can be read before answering
+      else if (fullNow.current && scrollKey(ch, key)) rerender((n) => n + 1); // a long detail can be read before answering
       else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
       return;
     }
@@ -971,7 +1036,7 @@ export function App({
 
   const run = (c: Command) => {
     if (isScroll(c)) {
-      if (full) return scroll(c);
+      if (fullNow.current) return scroll(c);
       const as = CLASSIC[c];
       if (as) run(as);
       return;
@@ -994,7 +1059,7 @@ export function App({
       view.current = FOLLOWING;
       return void submit("/model");
     }
-    if (c === "lastTurn") return full ? openDetail(lastTurn(session.messages)) : show(...lastTurn(session.messages)); // plan, Task 12
+    if (c === "lastTurn") return fullNow.current ? openDetail(lastTurn(session.messages)) : show(...lastTurn(session.messages)); // plan, Task 12
     if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
     // A message starting with `?` needs a space typed first.
     if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return show(...KEY_LIST.map((text) => ({ text, color: "gray" })));
@@ -1101,7 +1166,7 @@ export function App({
       if (typeof c === "object") Object.assign(s, { query: s.query + c.text, skip: 0 });
       // In full screen the conversation behind the search scrolls (the user's choice, 2026-10-27, at Task 5's review);
       // in classic mode the scroll keys do nothing here, as in release 4.
-      else if (full && isScroll(c)) scroll(c);
+      else if (fullNow.current && isScroll(c)) scroll(c);
       else if (c === "search") s.skip = Math.max(0, Math.min(s.skip + 1, matches(history.current!.entries, s.query).length - 1));
       else if (c === "backspace" && !s.query) return endSearch(s.before);
       else if (c === "backspace") Object.assign(s, { query: [...s.query].slice(0, -1).join(""), skip: 0 });
@@ -1268,6 +1333,7 @@ export function App({
     />
   );
 
+  if (switching) return null; // going to classic: nothing is drawn until Ink has resumed on the normal screen (/screen)
   return (
     <>
       {full && d ? (
