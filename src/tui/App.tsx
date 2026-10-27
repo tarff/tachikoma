@@ -151,12 +151,10 @@ export function App({
   // screen (the user's check, release 5 plan, "Before you start").
   const [switching, setSwitching] = useState(false);
   const [kept] = useState(() => new Rows(columns - 1));
-  // Every line said, in order, and how many of them `kept` holds: only those said in full screen, so going to full screen
-  // adds the rest (/screen, below). `lines` cannot give them then: what is said is in it only once React draws again. A
-  // count, as `kept` splits a line said at its line breaks (view.ts, Rows.add): a reply is one line said, kept as several
-  // (found at Task 14's spec review).
-  const all = useRef<Line[]>([]);
-  const allKept = useRef(0);
+  // The lines said in classic mode since `kept` last took them: going to full screen adds them (/screen, below), so `kept`
+  // holds every line said, in order, from then on. `lines` cannot give them then: what is said is in it only once React
+  // draws again.
+  const unkept = useRef<Line[]>([]);
   const view = useRef<View>(FOLLOWING);
   // The detail view, while it is open (DetailView.tsx); it takes the conversation's place. The keys, the wheel, the bar,
   // selecting and copying act on whichever is drawn, the pane, with its own rows and view (plan, Task 12).
@@ -173,8 +171,9 @@ export function App({
   const ended = useRef(false); // Ink has unmounted the App (the cleanup below)
   // What is set up once, at mount (the bus listeners, bindAsk, History's warning, the mouse listener), keeps the first
   // render's functions, and what they call, `say`, `next` and the rest, reads the mode from here, not from the first
-  // render's `full` (found at Task 5's review); so do the keys' functions, alike. /screen sets it with `full`, at once. The
-  // mouse listener reads the frame's shape from `frame`, below, for the same reason.
+  // render's `full` (found at Task 5's review); so do the keys' functions, alike. /screen sets it as the switch starts,
+  // `full` following (switchScreen, below). The mouse listener reads the frame's shape from `frame`, below, for the same
+  // reason.
   const fullNow = useRef(full);
   // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row and how many it draws, and
   // the menu's under it, no prompt rows while a question, the model list, Ctrl+R's search, whose prompt shows a match, or
@@ -256,13 +255,11 @@ export function App({
   // design, "Scrolling"); setting `lines` draws them either way.
   const say = (...add: Line[]) => {
     const shown = add.map(escaped);
-    all.current.push(...shown);
     if (fullNow.current) {
       const before = kept.lines.length;
       kept.add(shown);
-      allKept.current = all.current.length;
       view.current = arrived(view.current, kept.lines.length - before);
-    }
+    } else unkept.current.push(...shown);
     setLines((l) => [...l, ...shown.map((x) => ({ ...x, id: nextId.current++ }))]);
   };
   // What the user asks to see (the key list, the mode, `/model`) brings the view to the bottom, following, so it is seen;
@@ -669,17 +666,19 @@ export function App({
   // drawn that, Ink is suspended, the screen left and Ink resumed, so its redraw draws nothing on the normal screen; then
   // <Static> mounts and prints the whole conversation (plan, choice 17). The mode is classic from the start, nothing being
   // drawn meanwhile, so a key read then (Ctrl+O, a scroll key) acts as in classic mode.
-  // To full screen: the view is given the lines said since it last had them, at the bottom, and the mode is full from then
-  // on, so a question asked while the switch runs keeps its detail's place and is brought to it (found at Task 14's spec
-  // review); Ink is suspended, the second screen entered, and once React has drawn the full-screen frame, Ink resumes and
-  // draws it there, never the classic frame. Ink drops every render while suspended, so nothing is drawn before. `full`
-  // follows only once the second screen is on, so React draws no full-screen frame on the normal screen; `fullNow` is set
-  // the few microtasks of the suspend's await earlier, which no key or mouse report can come between.
-  // What it says at the end is said, not shown: the view is at the bottom already, unless a question asked meanwhile holds
-  // it on its detail.
+  // To full screen: the view is given the lines said in classic mode, wrapped at the width it is drawn at, so not wrapped
+  // again at its first drawing, and the mode is full from then on, so a question asked while the switch runs keeps its
+  // detail's place and is brought to it (found at Task 14's spec review); Ink is suspended, the second screen entered, and
+  // once React has drawn the full-screen frame, Ink resumes and draws it there, never the classic frame. Ink drops every
+  // render while suspended, so nothing is drawn before. `full` follows only once the second screen is on, so React draws no
+  // full-screen frame on the normal screen; `fullNow` is set the few microtasks of the suspend's await earlier, which no key
+  // or mouse report can come between. The view follows the bottom: sending /screen, or the queue running it, put it there,
+  // and nothing moves it in classic mode. What the switch says at the end is said, not shown, so a question asked meanwhile
+  // keeps the view on its detail.
   // If Ink ends meanwhile (a render error), nothing more is switched, the terminal being put back as it is then
   // (terminal.ts, restoreWhenInkEnds), and the keyboard is let go, so raw mode goes off and the process can end. A `[` read
-  // while Ink resumes, before its drawing is done, keeps the hold, as in comeBack.
+  // while Ink resumes, before its drawing is done, keeps the hold, as in comeBack. Should a step throw (perform says why),
+  // the mode is put back as the screen is, and something is drawn again (found at Task 14's code review).
   const switchScreen = async () => {
     const toFull = !fullNow.current;
     working.current = true;
@@ -690,9 +689,8 @@ export function App({
       if (toFull) {
         const width = frame.current.columns - 1; // one column short, as above
         if (kept.width !== width) kept.setWidth(width);
-        kept.add(all.current.slice(allKept.current));
-        allKept.current = all.current.length;
-        view.current = FOLLOWING;
+        kept.add(unkept.current);
+        unkept.current = [];
         fullNow.current = true;
         const { resume } = await suspendTerminal();
         if (ended.current) return;
@@ -711,9 +709,10 @@ export function App({
         const { resume } = await suspendTerminal();
         screen.leave();
         await resume();
-        setSwitching(false);
       }
     } finally {
+      if (toFull && !screen.full) fullNow.current = false; // the suspend threw, or Ink ended first
+      setSwitching(false);
       working.current = false;
       if (!printed.current) input?.hold(false);
     }
