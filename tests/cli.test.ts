@@ -100,7 +100,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   it("lists --classic and /screen in the help", () => {
     const help = tachi("--help").stdout;
     expect(help).toMatch(/^ {2}--classic /m);
-    expect(help).toMatch(/\/screen switches between full screen and\s+classic/);
+    expect(help).toMatch(/\/screen switches between full\s+screen\s+and\s+classic/);
   });
 
   it("lists --scroll-speed in the help, and stops on a bad one, from the option or, in interactive mode, TACHI_SCROLL_SPEED", () => {

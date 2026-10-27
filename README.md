@@ -8,8 +8,8 @@ providers can lead a session. Later releases add handing work to other models an
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, a Docker
 sandbox, and lessons learned from its own error log.
 
-This is release 5 of 14: the core, signing in with ChatGPT, Claude Code's keys and screen,
-subagents that read, with a to-do list and your instruction files, and a full screen with its own
+This is release 5 of 14: the core; signing in with ChatGPT; Claude Code's keys and screen;
+subagents that read, with a to-do list and your instruction files; and a full screen with its own
 scrolling and mouse selection. The command is `tachi`.
 
 ## What it does
@@ -59,9 +59,9 @@ scrolling and mouse selection. The command is `tachi`.
   type while it works waits its turn. `/` lists the commands, `@` the project's files, Shift+Tab
   switches the permission mode and `?` lists every key.
 - **A full screen of its own:** the conversation scrolls with the wheel and the keys, with a scroll
-  bar; the mouse selects and copies; Ctrl+O and `/tasks t3` open in place, with a search. Quitting
-  leaves the terminal as it was. `--classic` keeps the terminal's own scrollback instead. See
-  [Full screen](#full-screen).
+  bar; the mouse selects and copies; Ctrl+O (the last turn's tool calls in full) and `/tasks t3`
+  (a subagent's full record) open in place, with a search. Quitting leaves the terminal as it was.
+  `--classic` keeps the terminal's own scrollback instead. See [Full screen](#full-screen).
 - **A status line** showing the lead, how much of the context window is left (with a bar), tokens,
   cost (or "ChatGPT plan"), mode, error count, the project folder and git branch, how long the
   session has run, and how many subagents run; a line under it counts the turn's tool calls.
@@ -138,9 +138,10 @@ shows the to-do list. `?` on an empty prompt lists every key.
 
 ## Full screen
 
-Tachikoma starts on the terminal's second screen, as `vim` and Claude Code's full-screen mode do,
-and draws the conversation there itself, above the prompt and the status line. When you quit, the
-terminal shows what it showed before you started.
+Tachikoma starts on the terminal's alternate screen (a separate screen the terminal keeps, which
+`vim` and Claude Code's full-screen mode also use) and draws the conversation there itself, above
+the prompt and the status line. When you quit, the terminal shows what it showed before you
+started.
 
 - **Scrolling:** the mouse wheel scrolls the conversation wherever the pointer is, 3 lines a notch.
   `--scroll-speed <n>` (or `TACHI_SCROLL_SPEED`) sets any number above 0 and up to 20, fractions
@@ -156,11 +157,12 @@ terminal shows what it showed before you started.
 - **Selecting and copying:** drag with the left button to select, shown in reverse colours; dragging
   past the top or bottom scrolls. A double-click selects a word, where a file path (a Windows one
   too) or a web link counts as one word; a triple-click selects the line. Letting go copies the
-  text exactly as selected, a line wrapped on screen as one line, and, when the hint row shows, it
-  says `Copied 312 characters`. The selection stays until the next click. A copy goes to the
-  terminal (as OSC 52) and also to the system's own tool: `Set-Clipboard` on Windows, `pbcopy` on
-  macOS, `wl-copy` or `xclip` on Linux. With no tool to run (Linux with no display, as over SSH),
-  the terminal alone copies, and the line about the copy says so.
+  text exactly as selected, a line wrapped on screen as one line, and the hint line, just above the
+  status line (where `? for shortcuts` shows), says `Copied 312 characters` when it is showing.
+  The selection stays until the next click. A copy goes to the terminal (as OSC 52) and also to the
+  system's own tool: `Set-Clipboard` on Windows, `pbcopy` on macOS, `wl-copy` or `xclip` on Linux.
+  With no tool to run (Linux with no display, as over SSH), the terminal alone copies, and the hint
+  line says so.
 - **Shift+drag** uses the terminal's own selection instead, where the terminal offers it, as
   Windows Terminal does.
 - **Clicks:** a click in the prompt puts the cursor there. A click on a `/` menu entry runs it, on
@@ -169,22 +171,24 @@ terminal shows what it showed before you started.
   full record) open in the conversation's place. The prompt is hidden meanwhile; the status line
   stays, and a dim row names the keys. j and k or Up and Down move a line, g and G or Home and End
   go to the top and bottom, and the wheel, the scroll bar, the scroll keys and selecting work as in
-  the conversation. `/` searches as you type, ignoring case; Esc while typing drops the search, and
-  Enter keeps it, after which n and N go to the next and previous match. q, Esc (once a search is
-  kept, too) or Ctrl+O close the view. Ctrl-C stops a turn that is running and leaves the view
-  open; with nothing running it closes the view. A permission question closes it, as y and n answer
-  the question.
+  the conversation. q, Esc or Ctrl+O close the view, even with a search kept. Ctrl-C stops a turn
+  that is running and leaves the view open; with nothing running it closes the view. A permission
+  question closes the view, so y and n go to the question.
+- **Searching the detail view:** `/` searches as you type, ignoring case. Esc while typing drops the
+  search, and Enter keeps it, after which n and N go to the next and previous match.
 - **`[`** in the detail view prints it into the terminal's normal scrollback, for the terminal's own
-  search, selecting and scrolling. The work goes on out of sight. q, Esc or Ctrl-C bring the view
-  back, and so does a permission question. A paste does nothing meanwhile.
+  search, selecting and scrolling. A running turn, and any subagents, go on meanwhile, out of
+  sight. q, Esc or Ctrl-C bring the view back, and so does a permission question. A paste does
+  nothing while the view is printed out.
 - **`/screen`** switches between full screen and classic during a session. Going to classic prints
-  the whole conversation into the terminal's scrollback, so lines from an earlier classic stretch
-  show twice; going to full screen shows everything so far.
-- **Classic mode** is release 4's screen, where finished lines go into the terminal's own
-  scrollback. Start with `--classic`, or set `TACHI_CLASSIC` to anything but empty or `0`. It is
-  also used when the output is not a terminal, and under CI. In classic, Ctrl+O and
-  `/tasks t3` print below as before; Shift+Up and Shift+Down act as Up and Down, Ctrl+Home and
-  Ctrl+End as Home and End, and PgUp and PgDn do nothing. `-p` runs have no screen at all.
+  the whole conversation into the terminal's scrollback, so anything already printed there in
+  classic mode earlier in the session shows twice; going to full screen shows everything so far.
+- **Classic mode** is the screen from before release 5: finished lines go into the terminal's own
+  scrollback, as in most command-line programs. Start with `--classic`, or set `TACHI_CLASSIC` to
+  anything but empty or `0`. It is also used when the output is not a terminal, and under CI. In
+  classic, Ctrl+O and `/tasks t3` print below as before; Shift+Up and Shift+Down act as Up and
+  Down, Ctrl+Home and Ctrl+End as Home and End, and PgUp and PgDn do nothing. `-p` runs have no
+  screen at all.
 
 ## Using your ChatGPT plan
 
@@ -313,14 +317,14 @@ Each is fixed in a later release, unless it says otherwise.
   the kitty keyboard protocol that tells them apart. A backslash then Enter, or Ctrl+J, makes a new
   line in every terminal (not planned to change).
 - **A hard kill cannot put the terminal back.** Ending Tachikoma from Task Manager, or anything else
-  that stops it without warning, can leave its tab on the second screen and catching the mouse.
+  that stops it without warning, can leave its tab on the alternate screen, still taking the mouse.
   Closing that tab clears it (not planned to change).
 - **Windows Terminal and other terminals built on Windows' ConPTY can leave fragments of earlier
   output on screen** in full screen, as Claude Code's own documentation warns (no release is set).
 - **Copying cannot check that it worked.** Tachikoma cannot tell whether the terminal took the copy,
   and it says "Copied" before the system's tool has finished; a tool that then fails is reported.
-  Where the terminal alone copies, one that ignores the copy leaves the clipboard as it was, with
-  nothing said (no release is set).
+  Where only the terminal copies, a terminal that ignores the copy leaves the clipboard unchanged,
+  and Tachikoma cannot tell (no release is set).
 - **Subagents only read.** Ones that edit or run commands come with the budget controller (release
   11), after the sandbox (release 7) gives each writer its own copy of the project.
 - **`find_files` patterns skip names that start with a dot** unless the pattern names the dot, as a
