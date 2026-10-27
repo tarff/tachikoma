@@ -64,8 +64,9 @@ scrolling and mouse selection. The command is `tachi`.
   `--classic` keeps the terminal's own scrollback instead. See [Full screen](#full-screen).
 - **A status line** showing the lead, how much of the context window is left (with a bar), tokens,
   cost (or "ChatGPT plan"), mode, error count, the project folder and git branch, how long the
-  session has run, and how many subagents run; a line under it counts the turn's tool calls.
-  `--status` picks which parts to show. Subagents' tokens and cost count in the totals.
+  session has run, and how many subagents run, its parts coloured as
+  [claude-hud](https://github.com/jarrodwatts/claude-hud)'s are; a line under it counts the turn's
+  tool calls. `--status` picks which parts to show. Subagents' tokens and cost count in the totals.
 - **Headless runs:** `-p "<prompt>"` runs one prompt, prints the answer and exits. Add `--json` to
   get every event as one JSON line. Details below.
 - **An error log:** every failure, and every refusal another model answered, is written to

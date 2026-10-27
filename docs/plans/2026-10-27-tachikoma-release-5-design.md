@@ -467,6 +467,11 @@ user. Unmarked items are fixes from the reviews that keep to the design.
     question asked as a switch to full screen starts keeps its detail's place.
   - If Ink ends during a switch, nothing more is switched; if a step throws, the mode is put back
     to match the screen.
+- **The status line's colours (Task 16).** The user's choices (2026-10-27): claude-hud's style,
+  option "A" of the preview, and `72% left` without `ctx` where the bar shows. The build's calls:
+  grey is drawn dim, as claude-hud draws it and as the bar's empty cells already were, not in the
+  terminal's grey of the conversation's grey rows; the spaces between words and the `/` between
+  the token counts stay plain, as in the preview the user chose from.
 
 ## Not in this release
 

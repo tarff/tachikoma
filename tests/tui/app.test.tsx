@@ -498,7 +498,7 @@ describe("App", () => {
     await tick();
     expect(app.lastFrame()).toContain("lead fake:b");
     expect(app.lastFrame()).toContain("ctx 0 ");
-    expect(app.lastFrame()).not.toMatch(/ctx \d+% left/);
+    expect(app.lastFrame()).not.toMatch(/\d+% left/);
   });
 
   it("asks for the context window again after a reply, when only a reply makes it known", async () => {
@@ -507,11 +507,11 @@ describe("App", () => {
     const complete = later.complete.bind(later);
     later.complete = async (req) => ((answered = true), complete(req));
     const { app } = await mount([], { lead: later });
-    expect(app.lastFrame()).not.toMatch(/ctx \d+%/);
+    expect(app.lastFrame()).not.toMatch(/\d+%/);
     await type(app, "hi");
     await until(app, "there");
     await until(app, "% left");
-    expect(app.lastFrame()).toMatch(/ctx \d+% left/);
+    expect(app.lastFrame()).toMatch(/\d+% left/);
   });
 
   it("keeps the window it knows when asking again after a reply fails", async () => {
