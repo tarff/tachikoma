@@ -33,13 +33,14 @@ function bring(d: Detail, i: number, from: View, height: number) {
   d.view.current = row >= top && row < top + height ? from : scrollTo(d.rows, from, height, row);
 }
 
-// Typing searches as it goes: the query's matches, and the first from the top of the view as it was when `/` was pressed
-// on, or, with none below it, the first of all, as n goes round; brought into view from there, so each query's view is
-// the same however it was typed. With no match the view is where it was.
+// Typing searches as it goes: the query's matches, and the first at or below the top row the view had when `/` was
+// pressed, or, with none there, the first of all, as n goes round; brought into view from that view, so each query's
+// view is the same however it was typed. With no match the view is where it was.
 export function searchFor(d: Detail, query: string, height: number) {
   const s = d.search!;
   const top = first(d.rows, s.before, height);
-  Object.assign(s, { query, found: find(d.rows.lines, query) });
+  s.query = query;
+  s.found = find(d.rows.lines, query);
   s.at = Math.max(0, s.found.findIndex((m) => d.rows.rowOf({ line: m.line, offset: m.start }) >= top));
   if (s.found.length) bring(d, s.at, s.before, height);
   else d.view.current = s.before;
@@ -52,25 +53,37 @@ export function step(d: Detail, by: 1 | -1, height: number) {
   bring(d, s.at, d.view.current, height);
 }
 
-// The row under the view: the keys; while typing a search, what is typed; a search kept, which match shows of how many.
+// The row under the view: the keys; while typing a search, what is typed, saying so when nothing matches, as Ctrl+R's
+// row does (the user's choice at Task 12's review); a search kept, which match shows of how many.
 export function keyRow(d: Detail): string {
   const s = d.search;
   if (!s) return KEYS;
-  return s.typing ? `/${visible(s.query)}` : `"${visible(s.query)}": ${s.at + 1} of ${s.found.length} · n next · N previous`;
+  if (s.typing) return `/${visible(s.query)}${s.query && !s.found.length ? " (no match)" : ""}`;
+  return `"${visible(s.query)}": ${s.at + 1} of ${s.found.length} · n next · N previous`;
+}
+
+// The matches on the lines of the `height` rows from `top`, which are all the drawing needs: it looks at each match it is
+// given for every row (found at Task 12's review, where 24,000 matches took 23 ms a frame). `found` is in line order.
+export function onScreen(rows: Rows, found: readonly Found[], top: number, height: number): Found[] {
+  if (!rows.total) return [];
+  const from = rows.row(top).line;
+  const to = rows.row(Math.min(rows.total, top + height) - 1).line;
+  return found.filter((m) => m.line >= from && m.line <= to);
 }
 
 // The view's rows, drawn as the conversation's are, the search's matches and the selection in reverse colours.
 export function DetailView({ detail, height, selection }: { detail: Detail; height: number; selection: [Pos, Pos] | null }) {
   const { rows, view, search } = detail;
+  const top = first(rows, view.current, height);
   return (
     <Conversation
       rows={rows}
-      first={first(rows, view.current, height)}
+      first={top}
       height={height}
       unseen={0}
       following={view.current.at === null}
       selection={selection}
-      found={search?.found}
+      found={search ? onScreen(rows, search.found, top, height) : []}
     />
   );
 }

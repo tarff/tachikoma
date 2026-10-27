@@ -5,7 +5,7 @@ import { summarize } from "../core/errorlog.js";
 import { type Ask, type Mode, type Owner, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
-import type { Tasks } from "../core/tasks.js";
+import type { Task, Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { TodoItem } from "../tools/todo.js";
@@ -420,8 +420,8 @@ export function App({
       if (alone("/errors")) return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
       // In full screen a subagent's record opens in the detail view (plan, Task 12); the list, stopping and mistakes print.
       if (command === "/tasks") {
-        const lines = tasksCommand(words);
-        return full && words.length === 1 && tasks.all.some((t) => t.id === words[0]) ? openDetail(lines) : say(...lines);
+        const t = full && words.length === 1 ? tasks.all.find((x) => x.id === words[0]) : undefined;
+        return t ? openDetail(recordOf(t)) : say(...tasksCommand(words));
       }
       if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
       if (command === "/lead") return session.setLead(makeProvider(words.join(" ")));
@@ -481,7 +481,11 @@ export function App({
     }
     if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "red" }];
     const t = tasks.all.find((x) => x.id === verb);
-    if (!t) return [none(verb)];
+    return t ? recordOf(t) : [none(verb)];
+  };
+  // `/tasks t3`'s record: the subagent's tool calls and answer in full.
+  const recordOf = (t: Task): Line[] => {
+    const gray = (text: string): Line => ({ text, color: "gray" });
     const calls = callLines(t.messages);
     const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
@@ -506,9 +510,10 @@ export function App({
     next();
   };
 
-  // The detail view opens over the conversation, though not over a question, which closes it (bindAsk, above); a key read
-  // before a question is first drawn could otherwise open it there. Opening and closing clear the selection, which
-  // belongs to the other pane's lines, and end a drag, a grab of the bar and a run of clicks.
+  // The detail view opens over the conversation, though not over a question, which closes it (bindAsk, above): what a key
+  // read before a question is first drawn asks for is said in the conversation instead (found at Task 12's review).
+  // Opening and closing clear the selection, which belongs to the other pane's lines, and end a drag, a grab of the bar
+  // and a run of clicks.
   const unselect = () => {
     selection.current = null;
     held.current = null;
@@ -516,7 +521,7 @@ export function App({
     lastPress.current = null;
   };
   const openDetail = (lines: Line[]) => {
-    if (questions.current.length) return;
+    if (questions.current.length) return say(...lines);
     detail.current = opened(lines, columns - 1);
     unselect();
     rerender((n) => n + 1);
@@ -530,9 +535,9 @@ export function App({
   // or Down and Up, a row; g or Home the top, G or End the bottom; q, Esc and Ctrl+O close it; `/` starts a search, and n
   // and N go to the next and previous match of one kept. While a search is typed, text goes into it, Backspace edits it,
   // Enter keeps it, or drops it when nothing matches, and Esc drops it, the view going back to where it was; the other
-  // keys act as above. Any other key does nothing: the prompt is hidden, and Alt+P's model list, Ctrl+R's search and the
-  // like wait for the view to close. Ctrl-C is not taken here (useInput, below). Several keys can come in one read, so each
-  // checks the view is still open.
+  // keys act as above. Backspace takes away a whole character, as the prompt's does. Any other key does nothing: the
+  // prompt is hidden, and Alt+P's model list, Ctrl+R's search and the like wait for the view to close. Ctrl-C is not
+  // taken here (useInput, below). Several keys can come in one read, so each checks the view is still open.
   const detailKey = (d: Detail, ch: string, key: Key) => {
     if (key.escape) {
       if (d.search?.typing) {
@@ -546,7 +551,7 @@ export function App({
       if (detail.current !== d) return;
       if (c === "lastTurn") closeDetail();
       else if (typeof c === "object") for (const letter of c.text) detailLetter(d, letter);
-      else if (s?.typing && c === "backspace") searchFor(d, [...s.query].slice(0, -1).join(""), viewHeight);
+      else if (s?.typing && c === "backspace") searchFor(d, s.query.slice(0, [...segmenter.segment(s.query)].at(-1)?.index ?? 0), viewHeight);
       else if (s?.typing && c === "submit") {
         if (s.found.length) s.typing = false;
         else d.search = null;
@@ -582,9 +587,9 @@ export function App({
     }
     // In the detail view Ctrl-C stops a turn, and its queue comes back into the prompt, as below; with nothing running it
     // only closes the view, never clearing the hidden prompt nor counting toward exiting (the user's choice at Task 12's
-    // review). Any key there starts the press-twice count again.
+    // review). No press-twice count waits while the view is open: the key that opens it is read below, starting the count
+    // again, and a queued `/tasks t3` runs only once a turn ends, when no count was started.
     if (detail.current) {
-      forget();
       if (!(key.ctrl && ch === "c")) detailKey(detail.current, ch, key);
       else if (!working.current) closeDetail();
       else {
@@ -642,7 +647,15 @@ export function App({
   usePaste(
     (text) => {
       clearCopied();
-      if (question || search.current || detail.current) return;
+      // In the detail view a paste goes into a search being typed, up to its first line break, without the control
+      // characters typed text loses (keys.ts, commands); otherwise it does nothing there (the user's choice at Task 12's
+      // review).
+      const d = detail.current;
+      if (d?.search?.typing) {
+        searchFor(d, d.search.query + text.split(/\r\n?|\n/, 1)[0]!.replace(/\p{Cc}/gu, ""), viewHeight);
+        return rerender((n) => n + 1);
+      }
+      if (question || search.current || d) return;
       run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       rerender((n) => n + 1);
     },
@@ -991,11 +1004,11 @@ export function App({
   // rows left for the queue.
   const exitKey = first.current?.name === "Esc" ? undefined : first.current?.name;
   // The detail view's row naming its keys, or its search, stands in the hint row's place (plan, Task 12), as the row over
-  // the status line; the exit warning takes it as it takes the hint, Ctrl+R's search waits under the view, and a model
-  // list queued as `/model` during a turn, which takes the keys, takes the row away while it is open.
+  // the status line; Ctrl+R's search waits under the view, and a model list queued as `/model` during a turn, which takes
+  // the keys, takes the row away while it is open.
   const searching = !d && search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
   const usualHint = (left: number) =>
-    d && !exitKey && !picker
+    d && !picker
       ? keyRow(d)
       : searching
       ? `${searching} · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel`
@@ -1026,17 +1039,18 @@ export function App({
   // The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since
   // at full height Ink draws the whole scrollback again each time. First the status line and the
   // working line; the tool line when there is room for it, the hint line and the cursor's row; the hint
-  // line when there is room for it and the cursor's row, or, under the detail view, which draws no prompt, for it alone
-  // (found at Task 12's review); then an open menu, with the prompt cut to the
+  // line when there is room for it and the cursor's row (under the detail view, which draws no prompt, there is no
+  // cursor's row to keep: found at Task 12's review); then an open menu, with the prompt cut to the
   // cursor's row; then the task panel (release 4 design, "On screen"); then the prompt; then the to-do
   // list, which gives way before the prompt does; then the queue, the last row saying how many more there are when they do
   // not all fit. The model list fills the rows above the status line itself, so it has no tool line
   // under it. In full screen a row fewer is given out: the conversation's, the least it has (release 5
   // design, "The screen").
   const base = height - 1 - 1 - (busy ? 1 : 0) - (full ? 1 : 0);
-  const tooled = !picker && segments.includes("tools") && calls.current.length > 0 && base >= 2 + (hintFor(1) !== null ? 1 : 0);
+  const cursor = d ? 0 : 1; // the cursor's row, kept while the prompt is drawn
+  const tooled = !picker && segments.includes("tools") && calls.current.length > 0 && base >= 1 + cursor + (hintFor(1) !== null ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
-  const hinted = hintFor(1) !== null && room >= (d ? 1 : 2); // the hint's row, and the cursor's while the prompt is drawn
+  const hinted = hintFor(1) !== null && room >= 1 + cursor;
   const space = Math.max(1, room - (hinted ? 1 : 0));
   const menuRows = menu ? Math.min(menu.entries.length, Math.max(1, space - 1)) : 0;
   const panel = taskRows(tasks.all, Math.max(0, space - 1 - menuRows), now);

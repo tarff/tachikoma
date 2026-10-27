@@ -3098,7 +3098,7 @@ describe("App's detail view in full screen", () => {
     await inColour(async () => {
       const { app } = await record(logins());
       await press(app, "j", "/", "loginx");
-      expect(plain(app)[20]).toBe("/loginx");
+      expect(plain(app)[20]).toBe("/loginx (no match)"); // as Ctrl+R's row says it (the user's choice at Task 12's review)
       expect(plain(app)[0]).toBe("Answer:"); // no match: the view stays
       await press(app, "\u007f");
       expect(plain(app)[20]).toBe("/login");
@@ -3251,7 +3251,103 @@ describe("App's detail view in full screen", () => {
     await press(app, "/", "ab");
     rows = shown(app);
     expect(rows).toHaveLength(3);
-    expect(rows[1]).toBe("/ab");
+    expect(rows[1]).toBe("/ab (no match)");
+  });
+
+  // The view needs a row, and its key row and the tool line one each, with the status line: no row is kept for the
+  // prompt's cursor, which the view does not draw (found at Task 12's review).
+  it("keeps the tool line under the view on a terminal five rows tall", async () => {
+    const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { full: true, rows: 5 });
+    await type(app, "go");
+    await until(app, "done");
+    await press(app, "\u000f");
+    const rows = shown(app);
+    expect(rows).toHaveLength(4);
+    expect(rows.slice(0, 2)).toEqual(["Last turn: 1 tool call", KEYS]);
+    expect(rows[2]).toContain("lead fake:a");
+    expect(rows[3]).toContain("read_file");
+  });
+
+  it("brings the queued messages back to the prompt when Ctrl-C in the view stops the turn", async () => {
+    const { app } = await mount([], { full: true, lead: hanging() });
+    await type(app, "hi");
+    await type(app, "next"); // queued: a turn is running
+    await until(app, "↑ to edit queued messages");
+    await press(app, "\u000f", "\u0003");
+    await gone(app, "Esc to stop");
+    await press(app, "q");
+    expect(app.lastFrame()).toContain("› next\n");
+  });
+
+  it("wraps the view's lines again on a resize", async () => {
+    const long = (i: number) => `said ${i}. ${"word ".repeat(14).trimEnd()}`; // under 80 columns: one row at 99, two at 59
+    const { app } = await record(lines(3, long));
+    expect(shown(app)[3]).toBe(long(1));
+    Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
+    app.stdout.emit("resize");
+    await tick();
+    const rows = shown(app, 60);
+    expect(rows[2]).toMatch(/^said 0\. word/);
+    expect(rows[3]).toMatch(/^word/);
+    expect(rows[4]).toMatch(/^said 1\. word/);
+  });
+
+  it("goes round to the first match when every match is above the view", async () => {
+    const { app } = await record(logins());
+    await press(app, "G", "/", "login 30");
+    expect(shown(app)[0]).toBe("the login 30.");
+    await press(app, "\r");
+    expect(shown(app)[20]).toBe('"login 30": 1 of 1 · n next · N previous');
+  });
+
+  it("drops a search on Enter when nothing matches", async () => {
+    const { app } = await record(logins());
+    await press(app, "/", "zzz", "\r");
+    expect(shown(app)[20]).toBe(KEYS);
+    await press(app, "n");
+    expect(shown(app)[0]).toBe("t1 (find x), done: 0 tool calls");
+  });
+
+  it("keeps the search row while a search is typed, not putting the line about a copy in its place", async () => {
+    const { app, mouse, copies } = await record(logins());
+    await press(app, "/", "line 1."); // on screen, on row 3: the view stays
+    await pointer(mouse, at("press", 0, 3), at("drag", 98, 3), at("release", 98, 3));
+    expect(copies).toEqual(["line 1."]);
+    expect(shown(app)[20]).toBe("/line 1.");
+  });
+
+  // The checks that the view is still open, for keys read together.
+  it("leaves the conversation where it is for a G read with the q that closes the view", async () => {
+    const { app } = await mount([], { full: true, intro: said(60) });
+    await press(app, PG_UP);
+    expect(shown(app)[0]).toBe("said 30.");
+    await press(app, "\u000f", "qG");
+    expect(shown(app)[0]).toBe("said 30.");
+  });
+
+  // The user's choice at Task 12's review.
+  it("adds a paste to a search being typed, up to its first line break", async () => {
+    const { app } = await record(logins());
+    await press(app, "/", "\u001b[200~log\nmore\u001b[201~");
+    expect(shown(app)[20]).toBe("/log");
+    expect(shown(app)[0]).toBe("the login 30.");
+  });
+
+  it("takes away the last whole character on Backspace in a search", async () => {
+    const { app } = await record(logins());
+    await press(app, "/", "a🇦🇺", "\u007f");
+    expect(shown(app)[20]).toBe("/a");
+  });
+
+  // Found at Task 12's review: a key read before a question is first drawn cannot open the view over it, so what it asked
+  // for is said in the conversation.
+  it("says the last turn in the conversation for a Ctrl+O read before a waiting question is drawn", async () => {
+    const { app, ask } = await mount([], { full: true });
+    void ask("run: ls");
+    app.stdin.write("\u000f");
+    await until(app, "Allow run: ls? [y/n]");
+    expect(app.lastFrame()).toContain("No turn yet, so no tool calls to show.");
+    expect(app.lastFrame()).not.toContain(KEYS);
   });
 
   it("shows a model list queued during the turn under the view without the key row, and the key row again once it closes", async () => {
