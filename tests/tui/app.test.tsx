@@ -3160,7 +3160,8 @@ describe("App's detail view in full screen", () => {
     expect(copies).toEqual([]);
   });
 
-  it("keeps the working line under the view during a turn, stops the turn on Ctrl-C, and counts Ctrl-C toward exiting when idle", async () => {
+  // The user's choice at Task 12's review: with nothing running, Ctrl-C only closes the view.
+  it("keeps the working line under the view during a turn, stops the turn on Ctrl-C, and with nothing running closes the view on Ctrl-C", async () => {
     const { app } = await mount([], { full: true, lead: hanging() });
     await type(app, "hi");
     await until(app, "Esc to stop");
@@ -3173,9 +3174,84 @@ describe("App's detail view in full screen", () => {
     rows = shown(app);
     expect(rows[21]).toBe(KEYS); // the view stays open, a row taller
     await press(app, "\u0003");
-    expect(shown(app)[21]).toBe("Press Ctrl-C again to exit");
-    await press(app, "j"); // another key starts the count again
+    expect(app.lastFrame()).not.toContain(KEYS);
+    expect(app.lastFrame()).not.toContain("again to exit");
+    expect(shown(app)[20]).toBe("›");
+  });
+
+  it("closes the view on Ctrl-C with nothing running, leaving the prompt's draft as it was and not counting toward exiting", async () => {
+    const { app } = await mount([], { full: true });
+    await press(app, "hello", "\u000f", "\u0003");
+    expect(app.lastFrame()).not.toContain(KEYS);
+    expect(app.lastFrame()).toContain("› hello\n");
+    expect(app.lastFrame()).not.toContain("again to exit");
+    await press(app, "\u0003"); // a first press again, which clears the draft as on any prompt
+    expect(app.lastFrame()).toContain("\n›\n");
+    expect(app.lastFrame()).not.toContain("again to exit");
+  });
+
+  // The frame gives the prompt no rows while the view hides it (plan, Task 10's rule): the key row is where the prompt is
+  // drawn once the view closes.
+  it("does nothing on a click on the key row, where the prompt is once the view closes", async () => {
+    const { app, mouse } = await mount([], { full: true });
+    await press(app, "hello", "\u000f");
     expect(shown(app)[21]).toBe(KEYS);
+    await pointer(mouse, ...click(2, 21));
+    await press(app, "q", "X");
+    expect(app.lastFrame()).toContain("› helloX\n");
+  });
+
+  it("clears a selection in the conversation when the view opens, so none shows on the record's lines", async () => {
+    await inColour(async () => {
+      const worker = new FakeProvider("w", [reply(lines(100))]);
+      const turns = [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")];
+      const { app, mouse } = await mount(turns, { full: true, worker, intro: said(10) });
+      await type(app, "go");
+      await until(app, "done");
+      await press(app, CTRL_HOME);
+      await pointer(mouse, at("press", 0, 2), at("drag", 98, 4), at("release", 98, 4));
+      expect(reversed(app).slice(2, 5)).toEqual(["said 2.", "said 3.", "said 4."]);
+      await type(app, "/tasks t1");
+      await until(app, "t1 (find x), done");
+      expect(reversed(app).slice(0, 20).join("")).toBe("");
+    });
+  });
+
+  it("searches from the view's top, not the record's first line, when the view is scrolled down", async () => {
+    const { app } = await record(logins());
+    await press(app, PG_DOWN, PG_DOWN, PG_DOWN, PG_DOWN); // row 40, past the first login's row 32
+    expect(shown(app)[0]).toBe("line 38.");
+    await press(app, "/", "login", "\r");
+    expect(shown(app)[0]).toBe("the login 60.");
+    expect(shown(app)[20]).toBe('"login": 2 of 3 · n next · N previous');
+  });
+
+  it("leaves the view where it is for a match already on screen", async () => {
+    const { app } = await record(logins());
+    await press(app, "/", "line 5.");
+    expect(shown(app)[0]).toBe("t1 (find x), done: 0 tool calls");
+    expect(shown(app)[7]).toBe("line 5.");
+  });
+
+  it("does nothing on a paste while the view is open", async () => {
+    const { app } = await mount([], { full: true });
+    await press(app, "\u000f", "\u001b[200~pasted\u001b[201~", "q");
+    expect(app.lastFrame()).toContain("\n›\n");
+    expect(app.lastFrame()).not.toContain("pasted");
+  });
+
+  // On a very short terminal the view needs a row and its key row another, with the status line under them; the prompt's
+  // cursor row is not kept, as the prompt is not drawn.
+  it("keeps the key row, and the search typed in it, on a terminal four rows tall", async () => {
+    const { app } = await mount([], { full: true, rows: 4 });
+    await press(app, "\u000f");
+    let rows = shown(app);
+    expect(rows).toHaveLength(3);
+    expect(rows.slice(0, 2)).toEqual(["No turn yet, so no tool calls to show.", KEYS]);
+    await press(app, "/", "ab");
+    rows = shown(app);
+    expect(rows).toHaveLength(3);
+    expect(rows[1]).toBe("/ab");
   });
 
   it("shows a model list queued during the turn under the view without the key row, and the key row again once it closes", async () => {

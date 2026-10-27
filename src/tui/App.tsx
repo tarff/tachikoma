@@ -580,15 +580,20 @@ export function App({
       else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
       return;
     }
-    // Ctrl-C does in the detail view what it does elsewhere, below: it stops a turn, or counts toward exiting (plan, Task
-    // 12). Any other key there starts the press-twice count again.
-    if (detail.current && !(key.ctrl && ch === "c")) {
+    // In the detail view Ctrl-C stops a turn, and its queue comes back into the prompt, as below; with nothing running it
+    // only closes the view, never clearing the hidden prompt nor counting toward exiting (the user's choice at Task 12's
+    // review). Any key there starts the press-twice count again.
+    if (detail.current) {
       forget();
-      detailKey(detail.current, ch, key);
+      if (!(key.ctrl && ch === "c")) detailKey(detail.current, ch, key);
+      else if (!working.current) closeDetail();
+      else {
+        restore();
+        abort.current?.abort();
+      }
       return rerender((n) => n + 1);
     }
-    // Ctrl+R's search waits under a detail view opened by a queued `/tasks t3`.
-    if (search.current && !detail.current) {
+    if (search.current) {
       searchKey(ch, key);
       return rerender((n) => n + 1);
     }
@@ -1021,7 +1026,8 @@ export function App({
   // The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since
   // at full height Ink draws the whole scrollback again each time. First the status line and the
   // working line; the tool line when there is room for it, the hint line and the cursor's row; the hint
-  // line when there is room for it and the cursor's row; then an open menu, with the prompt cut to the
+  // line when there is room for it and the cursor's row, or, under the detail view, which draws no prompt, for it alone
+  // (found at Task 12's review); then an open menu, with the prompt cut to the
   // cursor's row; then the task panel (release 4 design, "On screen"); then the prompt; then the to-do
   // list, which gives way before the prompt does; then the queue, the last row saying how many more there are when they do
   // not all fit. The model list fills the rows above the status line itself, so it has no tool line
@@ -1030,7 +1036,7 @@ export function App({
   const base = height - 1 - 1 - (busy ? 1 : 0) - (full ? 1 : 0);
   const tooled = !picker && segments.includes("tools") && calls.current.length > 0 && base >= 2 + (hintFor(1) !== null ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
-  const hinted = hintFor(1) !== null && room >= 2;
+  const hinted = hintFor(1) !== null && room >= (d ? 1 : 2); // the hint's row, and the cursor's while the prompt is drawn
   const space = Math.max(1, room - (hinted ? 1 : 0));
   const menuRows = menu ? Math.min(menu.entries.length, Math.max(1, space - 1)) : 0;
   const panel = taskRows(tasks.all, Math.max(0, space - 1 - menuRows), now);
