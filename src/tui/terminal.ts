@@ -10,6 +10,9 @@ export const FIRST_SCREEN = "\u001b[?1049l";
 export const MOUSE_ON = "\u001b[?1000h\u001b[?1002h\u001b[?1006h";
 export const MOUSE_OFF = "\u001b[?1006l\u001b[?1002l\u001b[?1000l";
 export const SHOW_CURSOR = "\u001b[?25h";
+// Bracketed paste, which marks a paste's start and end: the codes Ink turns it on and off with (Ink's components/App.js).
+export const PASTE_ON = "\u001b[?2004h";
+export const PASTE_OFF = "\u001b[?2004l";
 
 export class Screen {
   #full = false;

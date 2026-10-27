@@ -18,8 +18,8 @@ type State = { held: string; pasting: boolean; tail: string };
 type Source = Pick<NodeJS.ReadStream, "on" | "off" | "setRawMode" | "setEncoding" | "ref" | "unref">;
 
 // The markers Ink reads pastes by (`pasteStart` and `pasteEnd` in Ink's input-parser.js).
-const PASTE_START = "\u001b[200~";
-const PASTE_END = "\u001b[201~";
+export const PASTE_START = "\u001b[200~";
+export const PASTE_END = "\u001b[201~";
 // A whole SGR report, as the probe got them: ESC [ <, then b, x and y, then M (press, drag, wheel) or m (release).
 const REPORT = /^\u001b\[<(\d+);(\d+);(\d+)([Mm])/;
 // What could still become a report if the rest came: ESC, ESC[, ESC[<, then up to three numbers and the semicolons between.

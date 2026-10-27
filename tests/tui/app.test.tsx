@@ -23,7 +23,7 @@ import { App, type AppProps } from "../../src/tui/App.js";
 import { Clipboard } from "../../src/tui/clipboard.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
-import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
+import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, reply, tempContext, usage } from "../helpers.js";
 
@@ -3472,6 +3472,11 @@ describe("App's detail view printed out", () => {
           await tick();
         }
       },
+      // A key read at once, with nothing else let run before the next step.
+      now: (k: string) => {
+        typed.push(k);
+        keyboard.emit("readable");
+      },
       // A read while the view is printed out, to the reader the App diverted the keys to.
       out: async (keys: string) => {
         reader!(keys);
@@ -3483,11 +3488,13 @@ describe("App's detail view printed out", () => {
   // The steps from the last `mark` on, and what they show with the escape codes taken out.
   const since = (steps: string[], mark: string) => steps.slice(steps.lastIndexOf(mark));
   const text = (steps: string[]) => stripVTControlCharacters(steps.join(""));
-  // t1's record open in the view: a turn starts t1, whose answer has a blank line, then /tasks t1.
+  // t1's record open in the view: a turn starts t1, whose answer has a blank line and a line longer than the terminal's
+  // 100 columns, then /tasks t1.
+  const LONG = "x".repeat(150);
   const record = async () => {
     const p = await printable(
       new FakeProvider("a", [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")]),
-      new FakeProvider("w", [reply("one\n\nthree")]),
+      new FakeProvider("w", [reply(`one\n\nthree\n${LONG}`)]),
     );
     await p.key("go", "\r");
     await waitFor(() => p.session.messages.at(-1)?.role === "assistant");
@@ -3505,11 +3512,15 @@ describe("App's detail view printed out", () => {
       expect(steps[1]).toBe(MOUSE_OFF);
       const first = steps.indexOf(FIRST_SCREEN);
       expect(steps.slice(2, first)).toContain("\u001b[?2004l"); // Ink suspended: its bracketed paste goes off
-      expect(steps.slice(first + 1)).toHaveLength(2);
+      expect(steps.slice(first + 1)).toHaveLength(3);
       const printed = steps[first + 1]!;
-      expect(stripVTControlCharacters(printed)).toBe(["t1 (find x), done: 0 tool calls", "Answer:", "one", "", "three", LAST, ""].join("\n"));
-      expect(printed).toContain(`\u001b[90m${LAST}\u001b[39m`); // grey, as the view's own lines are
-      expect(steps[first + 2]).toBe("divert(reader)");
+      // The long line wrapped at the terminal's 100 columns, not the view's 99 nor renderToString's own 80.
+      const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "one", "", "three", LONG.slice(0, 100), LONG.slice(100), LAST, ""];
+      expect(stripVTControlCharacters(printed)).toBe(lines.join("\n"));
+      expect(printed).toContain("\u001b[90mt1 (find x), done: 0 tool calls\u001b[39m"); // the view's colours: its lines are grey
+      expect(printed).toContain(`\u001b[90m${LAST}\u001b[39m`);
+      expect(steps[first + 2]).toBe(PASTE_ON); // so a paste comes marked, and the reader can drop it
+      expect(steps[first + 3]).toBe("divert(reader)");
     });
   });
 
@@ -3522,10 +3533,11 @@ describe("App's detail view printed out", () => {
     expect(steps).toHaveLength(before);
     await out("q");
     const back = since(steps, "divert(null)");
-    expect(back.slice(0, 3)).toEqual(["divert(null)", SECOND_SCREEN, MOUSE_ON]);
+    expect(back.slice(0, 4)).toEqual(["divert(null)", PASTE_OFF, SECOND_SCREEN, MOUSE_ON]);
     expect(back.at(-1)).toBe("hold(false)");
-    expect(text(back.slice(3, -1))).toContain("t1 (find x), done: 0 tool calls");
-    expect(text(back.slice(3, -1))).toContain(KEYS);
+    expect(back.slice(4, -1)).toContain(PASTE_ON); // Ink's resume turns its bracketed paste on again
+    expect(text(back.slice(4, -1))).toContain("t1 (find x), done: 0 tool calls");
+    expect(text(back.slice(4, -1))).toContain(KEYS);
     await key("q"); // the keys reach Ink again: q closes the view
     expect(text(since(steps, "hold(false)"))).toContain("›");
   });
@@ -3564,11 +3576,64 @@ describe("App's detail view printed out", () => {
     const answer = ask("write a.txt", "line 0.\nline 1.");
     await tick();
     const back = since(steps, "divert(null)");
-    expect(back.slice(0, 3)).toEqual(["divert(null)", SECOND_SCREEN, MOUSE_ON]);
+    expect(back.slice(0, 4)).toEqual(["divert(null)", PASTE_OFF, SECOND_SCREEN, MOUSE_ON]);
     expect(back.at(-1)).toBe("hold(false)");
     expect(text(back)).toContain("Allow write a.txt? [y/n]");
     await key("y");
     expect(await answer).toBe(true);
+  });
+
+  // Found at Task 13's review: a question asked in the moment the view is going out, before Ink is suspended for it.
+  it("prints the view and comes straight back for a question asked while it was going out", async () => {
+    const { steps, key, now, ask } = await printable(new FakeProvider("a", []));
+    await key("\u000f");
+    now("[");
+    const answer = ask("write a.txt", "line 0.\nline 1.");
+    await tick();
+    const marks = since(steps, "hold(true)").filter((s) => s.startsWith("divert(") || s.startsWith("hold("));
+    expect(marks).toEqual(["hold(true)", "divert(reader)", "divert(null)", "hold(false)"]);
+    expect(steps).toContain(FIRST_SCREEN);
+    expect(text(since(steps, "divert(null)"))).toContain("Allow write a.txt? [y/n]");
+    await key("y");
+    expect(await answer).toBe(true);
+  });
+
+  // Found at Task 13's review: a `[` read while coming back, before Ink's redraw has finished, prints the view out again;
+  // the first coming back must not then let the keyboard go while the view is out, which with the InputFilter would turn
+  // raw mode off and leave the console reading whole lines.
+  it("keeps the keyboard held when [ prints the view out again before coming back has finished", async () => {
+    const { steps, key, now, out } = await record();
+    await key("[");
+    const back = out("q");
+    now("[");
+    await back;
+    await tick();
+    const marks = since(steps, "divert(null)").filter((s) => s.startsWith("divert(") || s.startsWith("hold("));
+    expect(marks).toEqual(["divert(null)", "hold(true)", "divert(reader)"]);
+    await out("q");
+    expect(since(steps, "divert(null)").at(-1)).toBe("hold(false)");
+  });
+
+  // The user's choice, 2026-10-28: a paste while printed out does nothing, as Windows Terminal's right-click pastes by
+  // accident when nothing is selected; only a typed q, Esc or Ctrl-C comes back.
+  it("does nothing on a paste holding q, Esc and Ctrl-C while printed out, and comes back on a q typed after it", async () => {
+    const { steps, key, out } = await record();
+    await key("[");
+    const before = steps.length;
+    await out("\u001b[200~a q\u001b\u0003 b\u001b[201~");
+    expect(steps).toHaveLength(before);
+    await out("q");
+    expect(since(steps, "divert(null)").at(-1)).toBe("hold(false)");
+  });
+
+  it("does nothing on a paste over several reads, its end marker split between two, and comes back on a q after it", async () => {
+    const { steps, key, out } = await record();
+    await key("[");
+    const before = steps.length;
+    for (const read of ["\u001b[200~abc", "q", "\u001b", "x q\u001b[20", "1~"]) await out(read);
+    expect(steps).toHaveLength(before);
+    await out("xq");
+    expect(since(steps, "divert(null)").at(-1)).toBe("hold(false)");
   });
 
   it("lets the keyboard go if Ink ends while printed out", async () => {
@@ -3577,6 +3642,7 @@ describe("App's detail view printed out", () => {
     ink.unmount();
     const end = since(steps, "divert(reader)");
     expect(end.filter((s) => s.startsWith("divert(") || s.startsWith("hold("))).toEqual(["divert(reader)", "divert(null)", "hold(false)"]);
+    expect(end).toContain(PASTE_OFF); // which Ink takes as off already, since its suspend
     expect(end).not.toContain(SECOND_SCREEN);
   });
 });

@@ -15,7 +15,7 @@ import { brief, callLines, describe, lastTurn, type Line, screen as escaped } fr
 import { type Detail, DetailView, keyRow, opened, searchFor, step as stepMatch } from "./DetailView.js";
 import { apply, type Editor, empty, load, move, replace, segmenter } from "./editor.js";
 import { History, matches } from "./history.js";
-import type { Mouse } from "./input.js";
+import { type Mouse, PASTE_END, PASTE_START } from "./input.js";
 import { type Command, commands, isScroll, KEY_LIST, type Scroll } from "./keys.js";
 import { layout, placeOn, scroll as windowOf, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
@@ -25,7 +25,7 @@ import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
 import { TaskPanel, taskRow, taskRows } from "./TaskPanel.js";
-import type { Screen } from "./terminal.js";
+import { PASTE_OFF, PASTE_ON, type Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
 import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow, type View, wrap } from "./view.js";
@@ -49,6 +49,7 @@ type Question = {
 // double or triple click's word or line); `copy`: a drag, or a double or triple click, made a selection to copy on release;
 // `top`: the press was on the conversation's top row.
 type Held = { press: [Pos, Pos]; copy: boolean; top: boolean };
+type Printed = { resume?: () => Promise<void>; paste?: string };
 
 export interface AppProps {
   session: Session;
@@ -152,9 +153,10 @@ export function App({
   // selecting and copying act on whichever is drawn, the pane, with its own rows and view (plan, Task 12).
   const detail = useRef<Detail | null>(null);
   const pane = () => detail.current ?? { rows: kept, view };
-  // While the detail view is printed out (`[`), from the key on, and once Ink is suspended, how to resume it. Kept apart
-  // from the view, which a question closes while it is out.
-  const printed = useRef<{ resume?: () => Promise<void> } | null>(null);
+  // While the detail view is printed out (`[`), from the key on, and once Ink is suspended, how to resume it; `paste`,
+  // while a paste comes in, its last characters, which may hold the start of its end marker. Kept apart from the view,
+  // which a question closes while it is out.
+  const printed = useRef<Printed | null>(null);
   // The mouse listener is set up once, at mount, so it reads the mode and the frame's shape from here, not from the first
   // render (found at Task 5's review): Task 14's /screen changes `full`, and keeps this in step with it.
   const fullNow = useRef(full);
@@ -370,6 +372,7 @@ export function App({
       if (printed.current) {
         printed.current = null;
         input!.divert(null);
+        screen.write(PASTE_OFF); // Ink takes bracketed paste as off since its suspend, and leaves it so
         input!.hold(false);
       }
       mouse?.off("mouse", onMouse);
@@ -554,10 +557,11 @@ export function App({
   // colours, and the selection is cleared, as opening and closing clear it. An empty line is drawn as a space, as an empty
   // Text takes no row, and without a colour, whose codes would keep the space at the line's end. Then the keys go to a
   // reader of the App's own: q, Esc or Ctrl-C come back, other keys do nothing. Ink's suspend turns the kitty keyboard
-  // protocol off, so q comes as q. Meanwhile the work goes on, and nothing is drawn, as Ink drops every render while
+  // protocol off, so q comes as q, and bracketed paste, which is turned on again, so a paste comes marked and does nothing
+  // (the user's choice, 2026-10-28). Meanwhile the work goes on, and nothing is drawn, as Ink drops every render while
   // suspended. A question that arrived while going out brings the view back at once.
   const printOut = async (d: Detail) => {
-    const p: { resume?: () => Promise<void> } = {};
+    const p: Printed = {};
     printed.current = p;
     unselect();
     input!.hold(true);
@@ -572,30 +576,51 @@ export function App({
       </Text>
     ));
     screen.write(`${renderToString(<>{page}<Text color="gray">Printed. q, Esc or Ctrl-C to go back.</Text></>, { columns })}\n`);
+    screen.write(PASTE_ON);
     p.resume = resume;
     input!.divert(reader);
     if (questions.current.length) await comeBack();
   };
   // A read can hold several keys ("xq"), or Escape with the rest of a key after it (an arrow's ESC [ A), so each key in it
   // is looked at; Esc is an Escape with nothing after it. Keys after the one that comes back are dropped: Ink is not
-  // reading again until it resumes.
+  // reading again until it resumes. A paste, from its start marker to its end marker, is dropped whole, over as many reads
+  // as it takes; the end marker can be split between two, so a paste's last characters are kept until the next read. The
+  // start marker comes whole: the InputFilter holds a read's end that could be one until the rest comes (input.ts, split).
   const reader = (keys: string) => {
-    for (const [k] of keys.matchAll(/\u001b(?:\[[0-?]*[ -/]*[@-~]|O.|[^])?|[^]/gu)) {
-      if (k === "q" || k === "\u001b" || k === "\u0003") return void comeBack();
+    const p = printed.current;
+    let rest = keys;
+    while (p) {
+      if (p.paste !== undefined) {
+        const pasted = p.paste + rest;
+        const end = pasted.indexOf(PASTE_END);
+        if (end === -1) return void (p.paste = pasted.slice(-(PASTE_END.length - 1))); // one short: a whole one is found
+        rest = pasted.slice(end + PASTE_END.length);
+        p.paste = undefined;
+      }
+      const start = rest.indexOf(PASTE_START);
+      for (const [k] of (start === -1 ? rest : rest.slice(0, start)).matchAll(/\u001b(?:\[[0-?]*[ -/]*[@-~]|O.|[^])?|[^]/gu)) {
+        if (k === "q" || k === "\u001b" || k === "\u0003") return void comeBack();
+      }
+      if (start === -1) return;
+      p.paste = "";
+      rest = rest.slice(start + PASTE_START.length);
     }
   };
-  // Coming back undoes each step in reverse: the keys back to Ink, the second screen, the mouse, then Ink resumed, which
-  // draws everything again, and the hold let go.
+  // Coming back undoes each step in reverse: the keys back to Ink, bracketed paste off as Ink left it, the second screen,
+  // the mouse, then Ink resumed, which draws everything again and turns bracketed paste on, and the hold let go. A `[`
+  // read once Ink reads keys again, before its drawing is done, prints the view out again (found at Task 13's review), and
+  // that print-out keeps the hold.
   const comeBack = async () => {
     const p = printed.current;
     if (!p?.resume) return;
     printed.current = null;
     input!.divert(null);
+    screen.write(PASTE_OFF);
     screen.setSecond(true);
     screen.setMouse(true);
     screen.suspended = false;
     await p.resume();
-    input!.hold(false);
+    if (!printed.current) input!.hold(false);
   };
   // The detail view's keys (release 5 design, "The detail view"; plan, Task 12): the conversation's scroll keys; j and k,
   // or Down and Up, a row; g or Home the top, G or End the bottom; q, Esc and Ctrl+O close it; `/` starts a search, and n

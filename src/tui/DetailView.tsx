@@ -14,7 +14,7 @@ export interface Detail {
   search: { query: string; found: Found[]; at: number; typing: boolean; before: View } | null;
 }
 
-// The grey row under the view naming its keys; `[` is Task 13's.
+// The grey row under the view naming its keys; `[` prints the view out (Task 13).
 export const KEYS = "j k ↑ ↓ line · g G Home End top, bottom · / search · [ print · q Esc close";
 
 // Opened at its top, so a record is read from its heading. The lines are escaped as the conversation's are (App.tsx, say).
