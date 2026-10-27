@@ -157,6 +157,10 @@ export function App({
   // while a paste comes in, its last characters, which may hold the start of its end marker. Kept apart from the view,
   // which a question closes while it is out.
   const printed = useRef<Printed | null>(null);
+  // Once back, a paste that was coming in when a question brought the view back, until its end; and the model list of a
+  // /model that ended while printed out, until the view is back (comeBack, below).
+  const dropping = useRef<Printed | null>(null);
+  const waitingList = useRef<ModelGroup[] | null>(null);
   // The mouse listener is set up once, at mount, so it reads the mode and the frame's shape from here, not from the first
   // render (found at Task 5's review): Task 14's /screen changes `full`, and keeps this in step with it.
   const fullNow = useRef(full);
@@ -367,12 +371,13 @@ export function App({
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
     mouse?.on("mouse", onMouse);
     return () => {
-      // Ink ending while the view is printed out (a crash) lets the keyboard go, so raw mode goes off and the process can
-      // end (input.ts, hold).
-      if (printed.current) {
+      // Ink ending while the view is printed out (a crash), or while the rest of a paste is dropped after it, lets the
+      // keyboard go, so raw mode goes off and the process can end (input.ts, hold). Bracketed paste needs nothing here: Ink's
+      // own cleanups turn it off as they end, suspended or not (Ink's components/App.js).
+      if (printed.current || dropping.current) {
         printed.current = null;
+        dropping.current = null;
         input!.divert(null);
-        screen.write(PASTE_OFF); // Ink takes bracketed paste as off since its suspend, and leaves it so
         input!.hold(false);
       }
       mouse?.off("mouse", onMouse);
@@ -411,15 +416,26 @@ export function App({
   // subagents"). Then the queue's entries, taken from the front: a command alone, as if typed then;
   // prompts next to each other as one message, separated by blank lines. Not while something runs (a
   // command that finished after a turn started, both typed in one read of the terminal, leaves the
-  // queue to that turn), nor while a question or the model list is open.
+  // queue to that turn), nor while a question or the model list is open. While the detail view is printed out, a command
+  // that opens the model list or a subagent's record waits for it to come back, and what is queued after it (the user's
+  // choice, 2026-10-28): the list would end the paste hook (usePaste, below), and Ink would turn bracketed paste off at
+  // once, suspended or not, so a paste would come as keys; a record would take the printed view's place unseen. Messages
+  // and other commands go on.
   const next = () => {
     if (working.current || listOpen.current || questions.current.length) return;
     if (tasks.wakes()) return void submit("", true);
     const q = queue.current;
     const command = q.findIndex(isCommand);
     if (!q.length) return;
+    if (printed.current && command === 0 && opens(q[0]!)) return;
     view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
+  };
+  // A command that opens the model list or, in full screen, a subagent's record in the detail view (perform, below).
+  const opens = (text: string) => {
+    const [first = "", ...words] = text.split(/\s+/);
+    const command = first.toLowerCase();
+    return (command === "/model" && !words.length) || (command === "/tasks" && full && words.length === 1 && tasks.all.some((t) => t.id === words[0]));
   };
 
   // True when it opened the model list.
@@ -467,7 +483,9 @@ export function App({
           const groups = await listModels(signal, (line) => say({ text: line, color: "magenta" }));
           if (!signal.aborted) {
             listOpen.current = true;
-            setPicker(groups);
+            // A list read while the detail view is printed out waits for it to come back, as a queued /model does (next).
+            if (printed.current) waitingList.current = groups;
+            else setPicker(groups);
             return true;
           }
         } else await session.send(text, abort.current.signal);
@@ -584,18 +602,18 @@ export function App({
   // A read can hold several keys ("xq"), or Escape with the rest of a key after it (an arrow's ESC [ A), so each key in it
   // is looked at; Esc is an Escape with nothing after it. Keys after the one that comes back are dropped: Ink is not
   // reading again until it resumes. A paste, from its start marker to its end marker, is dropped whole, over as many reads
-  // as it takes; the end marker can be split between two, so a paste's last characters are kept until the next read. The
-  // start marker comes whole: the InputFilter holds a read's end that could be one until the rest comes (input.ts, split).
+  // as it takes (pastedTo, below). The start marker comes whole: the InputFilter holds a read's end that could be one
+  // until the rest comes (input.ts, split). That hold lasts the filter's 20 ms, the wait Ink's own paste reading has, so a
+  // start marker whose rest comes later is not seen as one; terminals send the marker with the text (a known limit,
+  // accepted at Task 13's review).
   const reader = (keys: string) => {
     const p = printed.current;
     let rest = keys;
     while (p) {
       if (p.paste !== undefined) {
-        const pasted = p.paste + rest;
-        const end = pasted.indexOf(PASTE_END);
-        if (end === -1) return void (p.paste = pasted.slice(-(PASTE_END.length - 1))); // one short: a whole one is found
-        rest = pasted.slice(end + PASTE_END.length);
-        p.paste = undefined;
+        const after = pastedTo(p, rest);
+        if (after === null) return;
+        rest = after;
       }
       const start = rest.indexOf(PASTE_START);
       for (const [k] of (start === -1 ? rest : rest.slice(0, start)).matchAll(/\u001b(?:\[[0-?]*[ -/]*[@-~]|O.|[^])?|[^]/gu)) {
@@ -606,21 +624,49 @@ export function App({
       rest = rest.slice(start + PASTE_START.length);
     }
   };
+  // The rest of a read after the end of the paste coming in, or null while the paste goes on. The end marker can be split
+  // between two reads, so a paste's last characters are kept until the next.
+  const pastedTo = (p: Printed, keys: string): string | null => {
+    const pasted = p.paste + keys;
+    const end = pasted.indexOf(PASTE_END);
+    if (end === -1) {
+      p.paste = pasted.slice(-(PASTE_END.length - 1)); // one short of the marker: a whole one would have been found
+      return null;
+    }
+    p.paste = undefined;
+    return pasted.slice(end + PASTE_END.length);
+  };
   // Coming back undoes each step in reverse: the keys back to Ink, bracketed paste off as Ink left it, the second screen,
-  // the mouse, then Ink resumed, which draws everything again and turns bracketed paste on, and the hold let go. A `[`
-  // read once Ink reads keys again, before its drawing is done, prints the view out again (found at Task 13's review), and
-  // that print-out keeps the hold.
+  // the mouse, then Ink resumed, which draws everything again and turns bracketed paste on, and the hold let go; then a
+  // model list read meanwhile opens, and the queue goes on. A paste still coming in, when a question brings the view back,
+  // is dropped up to its end before keys reach Ink, so a y in it never answers the question (the user's choice,
+  // 2026-10-28); what comes after its end marker in the same read goes with it. A `[` read once Ink reads keys again,
+  // before its drawing is done, prints the view out again (found at Task 13's review), and that print-out keeps the hold
+  // and what waits.
   const comeBack = async () => {
     const p = printed.current;
     if (!p?.resume) return;
     printed.current = null;
-    input!.divert(null);
+    if (p.paste === undefined) input!.divert(null);
+    else {
+      dropping.current = p;
+      input!.divert((keys) => {
+        if (dropping.current !== p || pastedTo(p, keys) === null) return;
+        dropping.current = null;
+        input!.divert(null);
+      });
+    }
     screen.write(PASTE_OFF);
     screen.setSecond(true);
     screen.setMouse(true);
     screen.suspended = false;
     await p.resume();
-    if (!printed.current) input!.hold(false);
+    if (printed.current) return;
+    input!.hold(false);
+    const list = waitingList.current;
+    waitingList.current = null;
+    if (list) setPicker(list);
+    next();
   };
   // The detail view's keys (release 5 design, "The detail view"; plan, Task 12): the conversation's scroll keys; j and k,
   // or Down and Up, a row; g or Home the top, G or End the bottom; q, Esc and Ctrl+O close it; `/` starts a search, and n

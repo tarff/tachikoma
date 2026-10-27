@@ -3396,7 +3396,7 @@ describe("App's detail view printed out", () => {
     for (const ink of inks.splice(0)) ink.unmount();
   });
 
-  async function printable(lead: Provider, worker: Provider = new FakeProvider("w", [])) {
+  async function printable(lead: Provider, worker: Provider = new FakeProvider("w", []), listModels: AppProps["listModels"] = async () => []) {
     const steps: string[] = [];
     const terminal = Object.assign(new EventEmitter(), { isTTY: true, columns: 100, rows: 24, write: (s: string) => (steps.push(s), true) });
     const typed: string[] = [];
@@ -3447,7 +3447,7 @@ describe("App's detail view printed out", () => {
         segments={SEGMENTS}
         makeProvider={() => new FakeProvider("b", [])}
         login={async () => {}}
-        listModels={async () => []}
+        listModels={listModels}
         bindAsk={(fn) => {
           ask = fn;
         }}
@@ -3477,9 +3477,14 @@ describe("App's detail view printed out", () => {
         typed.push(k);
         keyboard.emit("readable");
       },
-      // A read while the view is printed out, to the reader the App diverted the keys to.
+      // A read while the view is printed out, to the reader the App diverted the keys to, or to Ink once it has let them
+      // go, as the InputFilter does.
       out: async (keys: string) => {
-        reader!(keys);
+        if (reader) reader(keys);
+        else {
+          typed.push(keys);
+          keyboard.emit("readable");
+        }
         await tick();
       },
       ask: (s: string, d?: string) => ask(s, d),
@@ -3642,8 +3647,95 @@ describe("App's detail view printed out", () => {
     ink.unmount();
     const end = since(steps, "divert(reader)");
     expect(end.filter((s) => s.startsWith("divert(") || s.startsWith("hold("))).toEqual(["divert(reader)", "divert(null)", "hold(false)"]);
-    expect(end).toContain(PASTE_OFF); // which Ink takes as off already, since its suspend
+    expect(end).toContain(PASTE_OFF); // Ink's own cleanup turns bracketed paste off, suspended or not
     expect(end).not.toContain(SECOND_SCREEN);
+  });
+
+  // The user's choice, 2026-10-28: the model list waits for the view to come back. Opening it while printed out would end
+  // Ink's paste hook, and Ink would turn bracketed paste off at once, suspended or not, so a paste would come as keys.
+  it("keeps a /model queued during the turn waiting while printed out, and opens the list once the view comes back", async () => {
+    const lead = new Held();
+    const { steps, key, out } = await printable(lead);
+    await key("hi", "\r");
+    await waitFor(() => text(steps).includes("Esc to stop"));
+    await key("\u001bp", "\u000f", "["); // Alt+P waits in the queue as /model
+    lead.answer("ok");
+    await tick();
+    await tick();
+    expect(since(steps, "divert(reader)")).not.toContain(PASTE_OFF);
+    await out("q");
+    await waitFor(() => text(since(steps, "divert(null)")).includes("Filter:"));
+  });
+
+  it("keeps the model list of a /model sent before [ waiting while printed out, and opens it once the view comes back", async () => {
+    let lists!: (groups: ModelGroup[]) => void;
+    const { steps, key, out } = await printable(new FakeProvider("a", []), undefined, () => new Promise((resolve) => (lists = resolve)));
+    await key("/model", "\r", "\u000f", "[");
+    lists([{ provider: "fake", models: ["a"] }]);
+    await tick();
+    expect(since(steps, "divert(reader)")).not.toContain(PASTE_OFF);
+    await out("q");
+    await waitFor(() => text(since(steps, "divert(null)")).includes("Filter:"));
+  });
+
+  // A subagent's record would take the printed view's place unseen: it waits too, so the view comes back as printed.
+  it("keeps a /tasks t1 queued during the turn waiting while printed out, and opens the record once the view comes back", async () => {
+    const worker = new Held();
+    const turns = [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")];
+    const { steps, key, out } = await printable(new FakeProvider("a", turns), worker);
+    await key("go", "\r");
+    await waitFor(() => worker.asked.length === 1);
+    await key("/tasks t1", "\r", "\u000f", "[");
+    worker.answer("found");
+    await tick();
+    await tick();
+    await out("q");
+    await waitFor(() => text(since(steps, "divert(null)")).includes("t1 (find x), done"));
+    const back = text(since(steps, "divert(null)"));
+    expect(back.indexOf("Last turn: 1 tool call")).toBeGreaterThan(-1); // the printed view, drawn again first
+    expect(back.indexOf("Last turn: 1 tool call")).toBeLessThan(back.indexOf("t1 (find x), done"));
+  });
+
+  it("goes on with a message queued during the turn while printed out", async () => {
+    const lead = new Held();
+    const { steps, key } = await printable(lead);
+    await key("hi", "\r");
+    await waitFor(() => text(steps).includes("Esc to stop"));
+    await key("next", "\r", "\u000f", "[");
+    lead.answer("ok");
+    await waitFor(() => lead.asked.length === 2);
+    expect(steps.at(-1)).toBe("divert(reader)"); // still printed out
+  });
+
+  // The user's choice, 2026-10-28: a question coming while a paste comes in brings the view back, and the rest of the
+  // paste is dropped up to its end, so a y in it never answers the question.
+  it("drops the rest of a paste still coming when a question brings the view back, and takes keys again after its end", async () => {
+    const { steps, key, out, ask } = await record();
+    await key("[");
+    await out("\u001b[200~abc");
+    let answered: boolean | undefined;
+    void ask("write a.txt", "line 0.").then((ok) => (answered = ok));
+    await tick();
+    expect(text(since(steps, PASTE_OFF))).toContain("Allow write a.txt? [y/n]");
+    expect(since(steps, PASTE_OFF).at(-1)).toBe("hold(false)");
+    await out("y y");
+    await out("y\u001b[20");
+    await out("1~");
+    expect(answered).toBeUndefined();
+    expect(steps.at(-1)).toBe("divert(null)");
+    await out("y");
+    await waitFor(() => answered === true);
+  });
+
+  it("lets the keyboard go if Ink ends while the rest of a paste is dropped", async () => {
+    const { steps, key, out, ask, ink } = await record();
+    await key("[");
+    await out("\u001b[200~abc");
+    void ask("write a.txt", "line 0.");
+    await tick();
+    ink.unmount();
+    expect(steps.filter((s) => s.startsWith("divert(")).at(-1)).toBe("divert(null)");
+    expect(steps.filter((s) => s.startsWith("hold(")).at(-1)).toBe("hold(false)");
   });
 });
 
