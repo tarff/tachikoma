@@ -52,6 +52,9 @@ export function ModelPicker({
   const state = useRef<{ filter: string; chosen: number } | null>(null);
   state.current ??= { filter: "", chosen: Math.max(0, view(groups, "", 0).models.indexOf(current)) };
   const [, redraw] = useState(0);
+  // Set once the list has closed or picked: keys and clicks read with the one that did it come before the list is gone
+  // from the screen, and must not pick (found at Task 10's review).
+  const done = useRef(false);
   const { filter } = state.current;
   const { shown, models, at } = view(groups, filter, state.current.chosen);
   // Fits the terminal: the help line, the status line and the line Ink ends with take three rows. In full screen the App
@@ -65,8 +68,10 @@ export function ModelPicker({
   const pick = () => {
     const { models, at } = view(groups, state.current!.filter, state.current!.chosen);
     const spec = models[at];
-    if (spec) onPick(spec);
-    else redraw((n) => n + 1);
+    if (spec) {
+      done.current = true;
+      onPick(spec);
+    } else redraw((n) => n + 1);
   };
 
   // A left press on a model picks it, as Enter does (release 5 design, "Clicking"); a press anywhere else does nothing
@@ -78,7 +83,8 @@ export function ModelPicker({
     if (!mouse || bottom === undefined) return;
     const onMouse = (m: Mouse) => {
       const r = list[m.y - (bottom - list.length)];
-      if (m.kind !== "press" || m.button !== "left" || r?.kind !== "model") return;
+      if (done.current || m.kind !== "press" || m.button !== "left" || r?.kind !== "model") return;
+      done.current = true;
       onPick(r.spec);
     };
     mouse.on("mouse", onMouse);
@@ -86,9 +92,13 @@ export function ModelPicker({
   });
 
   useInput((ch, key) => {
+    if (done.current) return;
     const s = state.current!;
     const { models, at } = view(groups, s.filter, s.chosen);
-    if (key.escape || (key.ctrl && ch === "c")) return onClose();
+    if (key.escape || (key.ctrl && ch === "c")) {
+      done.current = true;
+      return onClose();
+    }
     if (key.return) return pick();
     if (key.upArrow) s.chosen = Math.max(0, at - 1);
     else if (key.downArrow) s.chosen = Math.max(0, Math.min(models.length - 1, at + 1));

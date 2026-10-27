@@ -2488,6 +2488,54 @@ describe("App's clicks in full screen", () => {
     expect(made).toEqual(["fake:y1"]);
   });
 
+  // A click or key read with the key that closed the list, or with an earlier click that picked, comes before the list is
+  // gone from the screen (found at Task 10's review). Not Esc: Ink waits 20 ms for the rest of a key starting with it
+  // (`pendingInputFlushDelayMilliseconds` in Ink's components/App.js), so a click read with it comes first.
+  it("picks nothing on a click or Enter in /model's list read with Ctrl-C, and picks once on two clicks in one read", async () => {
+    const made: string[] = [];
+    const { app, mouse } = await mount([], { full: true, made, models: [{ provider: "fake", models: ["a", "b"] }] });
+    for (const after of [() => click(4, 20).forEach((m) => mouse.emit("mouse", m)), () => app.stdin.write("\r")]) {
+      await type(app, "/model");
+      await until(app, "fake:b");
+      await tick(); // the picker starts reading keys just after it first appears
+      app.stdin.write("\u0003");
+      after(); // a click on fake:b, or Enter
+      await gone(app, "Filter:");
+      await tick();
+      expect(made).toEqual([]);
+    }
+    await type(app, "/model");
+    await until(app, "fake:b");
+    await tick();
+    for (const m of [...click(4, 20), ...click(4, 19)]) mouse.emit("mouse", m);
+    await waitFor(() => made.length > 0);
+    await tick();
+    expect(made).toEqual(["fake:b"]);
+  });
+
+  // Alt+P is `/model` typed then, which Enter would send, emptying the prompt: a click read with it is dropped as with any
+  // key that changes the prompt.
+  it("drops a click on the prompt or the menu read with Alt+P", async () => {
+    const { app, mouse } = await mount([], { full: true, models: [{ provider: "fake", models: ["a", "b"] }] });
+    await press(app, "hello world");
+    app.stdin.write("\u001bp");
+    for (const m of click(8, 20)) mouse.emit("mouse", m); // the "w"
+    await until(app, "fake:b");
+    await tick(); // the picker starts reading keys just after it first appears
+    await press(app, "\u001b", "X");
+    expect(app.lastFrame()).toContain("› hello worldX\n");
+    await press(app, "\u0003", "/"); // Ctrl-C empties it
+    expect(shown(app)[18]).toBe("  /tasks  List the subagents; /tasks t1 shows one, /tasks stop stops them");
+    app.stdin.write("\u001bp");
+    for (const m of click(4, 18)) mouse.emit("mouse", m); // on /tasks
+    await until(app, "fake:b");
+    await tick();
+    await press(app, "\u001b");
+    await tick();
+    expect(app.lastFrame()).not.toContain("No subagents yet.");
+    expect(app.lastFrame()).toContain("\n› /\n");
+  });
+
   // Release 5 plan, choice 10. The counts start at 2: a count takes the place of a row, and counts it (layout.ts, scroll).
   it("does nothing on a click on a menu's or the prompt's count of the rows cut off", async () => {
     const { app, mouse, ctx } = await mount([], { full: true, rows: 10 });
