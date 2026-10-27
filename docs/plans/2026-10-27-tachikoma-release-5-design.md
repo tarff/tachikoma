@@ -380,6 +380,100 @@ As before: Vitest, no test contacting a real provider, no test reading the user'
   copying, pasted elsewhere to check; clicking in the prompt and on menus; Ctrl+O's search and `[`;
   `/screen` both ways; resizing; and no fragments of old text left on screen.
 
+## As built
+
+Where the code differs from the design above, or settles what it left open, and why. The plan
+(`2026-10-27-tachikoma-release-5.md`) lists the 19 choices it made, each marked in its task; the
+user approved them when the build started (2026-10-27) and dropped one at Task 9's review. Most of
+what the reviews found is already written into the sections above, each marked with its review;
+the rest follows, task by task. "The user's choice" marks what the user chose; "the build's call"
+marks what the build decided and told the user.
+
+- **The filtered keyboard (Task 2).** A mouse report the screen does not use (one with a bit the
+  format does not name, or a wheel report with other bits set) is still taken out and dropped,
+  never typed into the prompt. The filter behaves as a stream for Ink, so Ink's check for the kitty
+  keyboard protocol, and keys typed before Ink starts reading, both reach it. If Ink turns raw mode
+  off while the filter holds it on (Ink ending meanwhile), that is passed on when the hold ends, so
+  the terminal is not left in raw mode and Tachikoma can exit.
+- **The conversation's rows (Tasks 3 and 4).** Rows hold places in the lines, not copies of their
+  text, and the wheel carries exact fractions from notch to notch. A view held past the bottom
+  keeps the scroll bar's thumb on the bar. Kept lines have no cap (the user's choice, from the
+  figures under "The screen").
+- **The full-screen frame (Task 5).** The `?` key list gains a row for the scroll keys. The user's
+  choices at the review (what the user asks to see goes to the bottom, the scroll keys work during
+  Ctrl+R's search, a view put somewhere stays there) are under "Scrolling".
+- **Starting and putting the terminal back (Tasks 1 and 6):**
+  - Classic mode is also used when the output is not a terminal, or under CI (`CI` or
+    `CONTINUOUS_INTEGRATION` set to anything but `0` or `false`), where Ink skips its own second
+    screen (the user's choice at Task 6's build).
+  - The terminal goes back as soon as Ink ends, not at Node's exit. When Ink ends on an error in
+    its drawing, the error is said again on stderr in full screen, where leaving the second screen
+    took it away, and Tachikoma exits with 1; release 4 exited with 0 (the user's choice at Task
+    6's review).
+  - Ctrl+Break on Windows and SIGQUIT elsewhere put the terminal back too (the user's choice at
+    Task 6's review): Windows sends Ctrl+Break as a signal even in raw mode, and the library Ink
+    uses to catch exits does not put the terminal back for either.
+  - A crash is still reported when Ink's own unmount fails as well, and the writes that put the
+    terminal back never throw, so a closed pipe cannot turn an exit into a crash.
+- **The wheel and the scroll bar (Task 7).** `-p` ignores `TACHI_SCROLL_SPEED`, as it ignores
+  `TACHI_CLASSIC`, but a bad `--scroll-speed`, typed on the command line, still stops it (the
+  user's choice at the review). A click on the track near either end grabs the thumb where the
+  pointer is, so a drag can go on from it. A drag that leaves the thumb where it is no longer moves
+  the view, and neither it nor a notch that cannot move redraws the screen.
+- **Selecting and copying (Tasks 8 and 9):**
+  - On Windows the text reaches `Set-Clipboard` through PowerShell's input, base64-encoded
+    (choice 8), PowerShell is named by its full path, and a failure comes back as one readable
+    line, its message alone, where PowerShell's own report is cut at the console's width.
+  - `xclip` and `wl-copy` leave a process behind holding the clipboard. Tachikoma no longer waits
+    for it, which had kept Tachikoma running after its last work until another program took the
+    clipboard.
+  - A selection that stops partway along a line keeps the spaces up to that point.
+  - Shift+Up and Shift+Down only scroll: choice 9, moving a selection's end and copying it again,
+    was dropped by the user at Task 9's review. The user's other choices there are under
+    "Selecting" and "Copying".
+- **Clicking (Task 10).** A click that comes in the same read as a key that changed the screen (a
+  key that changed the prompt or the menu's choice, or Alt+P) is dropped, as the screen it was
+  aimed at is gone; so is one during Ctrl+R's search, including one read with the key that ends
+  it. The model list picks the model clicked, and nothing once it has closed or picked.
+- **A question's detail (Task 11).** The review's findings, the new-lines count and a question too
+  long to fit, are under "Scrolling".
+- **The detail view (Task 12):**
+  - The user's choices at the review: Ctrl-C with nothing running only closes the view, keeping the
+    hidden prompt's text and starting no count toward quitting; while a turn runs it stops the
+    turn and leaves the view open. A search with no match says `/zzz (no match)`. A paste while a
+    search is typed goes into the query up to its first line break; outside a search a paste does
+    nothing.
+  - The build's calls: n and N go on from the last match shown; the key row stands in the hint
+    row's place, in its dim style; Ctrl+R's search still ignores pastes, as before.
+  - Enter on a search with no match drops the search, where the design says Enter keeps it.
+  - Only the matches on the rows drawn are passed to the drawing: walking every match for every
+    row cost 23 ms a redraw at 2,000 lines. The key row fits a short terminal.
+- **`[` (Task 13):**
+  - The user's choices at the reviews (2026-10-28): a paste does nothing while the view is printed
+    out, and one still arriving when the view comes back is dropped to its end. A queued `/model`
+    or `/tasks t3`, and everything queued behind it, waits until the view comes back; a queued
+    `/exit` still runs.
+  - The build's call: an error that ends Ink while the view is printed out is said on stderr, as
+    Ink draws nothing then. Nothing queued starts once Ink has ended.
+  - Coming back keeps the keyboard held when `[` has printed the view out again meanwhile: q and
+    then `[` in quick succession had let raw mode go off while out.
+  - A paste's start marker split across two reads is recognised only within the filter's 20 ms
+    wait, as in Ink; terminals send the marker with the text (accepted at the review).
+- **`/screen` (Task 14):**
+  - The user's choice: going to classic, the mode is classic from the switch's start, so a key read
+    meanwhile (Ctrl+O, a scroll key) acts as in classic mode.
+  - The build's calls: a switch holds the queue as a turn does, and Esc and Ctrl-C during one act
+    as during a turn; a queued `/screen` waits while the view is printed out, as `/model` and
+    `/tasks t3` do.
+  - Going back to full screen takes only the lines said in classic mode since the last switch;
+    counting them against the kept lines had lost some. A question asked as a switch to full
+    screen starts keeps its detail's place.
+  - Both of the switch's waits for React to draw matter: without the one going to full screen, Ink
+    first draws the classic frame on the second screen; without the one going to classic, a
+    `/screen` run from the queue draws the full-screen frame again on the normal screen.
+  - If Ink ends during a switch, nothing more is switched; if a step throws, the mode is put back
+    to match the screen.
+
 ## Not in this release
 
 - Vim mode, image paste, an external editor, stash and rebinding keys in a file: release 6.

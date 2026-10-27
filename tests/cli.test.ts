@@ -97,8 +97,10 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.stderr).not.toContain("Instructions:");
   });
 
-  it("lists --classic in the help", () => {
-    expect(tachi("--help").stdout).toMatch(/^ {2}--classic /m);
+  it("lists --classic and /screen in the help", () => {
+    const help = tachi("--help").stdout;
+    expect(help).toMatch(/^ {2}--classic /m);
+    expect(help).toMatch(/\/screen switches between full screen and\s+classic/);
   });
 
   it("lists --scroll-speed in the help, and stops on a bad one, from the option or, in interactive mode, TACHI_SCROLL_SPEED", () => {
