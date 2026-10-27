@@ -1,7 +1,7 @@
 import stringWidth from "string-width";
 import { describe, expect, it } from "vitest";
 import type { Line } from "../../src/tui/describe.js";
-import { arrived, bar, barFirst, first, FOLLOWING, notch, Rows, scrollBy, scrollTo, wrap, type KeptLine, type View } from "../../src/tui/view.js";
+import { arrived, bar, barFirst, first, FOLLOWING, notch, Rows, scrollBy, scrollTo, unseenBelow, wrap, type KeptLine, type View } from "../../src/tui/view.js";
 
 const texts = (rows: { text: string }[]) => rows.map((r) => r.text);
 const lines = (n: number, from = 0): Line[] => Array.from({ length: n }, (_, i) => ({ text: `line ${from + i}` }));
@@ -196,6 +196,29 @@ describe("View", () => {
     expect(arrived(FOLLOWING, 3)).toEqual({ at: null, unseen: 0 });
     const v = arrived(arrived(scrollBy(rows, FOLLOWING, 10, -5), 3), 2);
     expect(v.unseen).toBe(5);
+  });
+
+  // Found at Task 11's review: a view held at the top of a short conversation counted lines it showed.
+  it("counts as new only the lines that came in and are below the view, never ones on screen", () => {
+    const rows = new Rows(20);
+    rows.add(lines(30));
+    const up = arrived(scrollTo(rows, FOLLOWING, 10, 10), 5); // rows 10 to 19 shown; lines 25 to 29 came in
+    expect(unseenBelow(rows, up, 10)).toBe(5);
+    expect(unseenBelow(rows, FOLLOWING, 10)).toBe(0);
+
+    const top: View = { at: { line: 0, offset: 0 }, unseen: 0 };
+    const short = new Rows(20);
+    short.add(lines(3));
+    short.add(lines(2, 3));
+    expect(unseenBelow(short, arrived(top, 2), 10)).toBe(0); // all 5 lines on screen
+    short.add(lines(1, 5));
+    expect(unseenBelow(short, arrived(top, 3), 6)).toBe(0); // the newest on the last row, which shows it
+    short.add(lines(2, 6));
+    expect(unseenBelow(short, arrived(top, 5), 6)).toBe(3); // 2 below, and the one on the last row the count takes
+
+    const wrapped = new Rows(10);
+    wrapped.add([...lines(3), { text: "abcdefghijklmno" }]); // its second row below a view of 4
+    expect(unseenBelow(wrapped, arrived(top, 1), 4)).toBe(0);
   });
 
   it("follows again, with nothing unseen, once scrolled down to the bottom", () => {

@@ -260,6 +260,22 @@ export function arrived(v: View, lines: number): View {
   return v.at === null ? v : { ...v, unseen: v.unseen + lines };
 }
 
+// The count the "↓ N new lines" row shows (release 5 plan, choice 5): the lines that came in while the view was held and
+// are below it, never ones on screen (found at Task 11's review, where a view held at the top of a short conversation
+// counted the lines it showed). The lines that came in are the last ones, as are the lines below the view, so it is the
+// fewer of the two. A line counts as on screen when its first row is. The row takes the view's last row once it shows, so
+// a line starting there is counted then, and the row shows only when some line starts below the whole view.
+export function unseenBelow(rows: Rows, v: View, height: number): number {
+  if (v.at === null || v.unseen === 0) return 0;
+  const below = (shown: number) => {
+    const at = first(rows, v, height) + shown; // the first row past those shown
+    if (at >= rows.total) return 0;
+    const r = rows.row(at);
+    return Math.min(v.unseen, rows.lines.length - r.line - (r.start === 0 ? 0 : 1));
+  };
+  return below(height) > 0 ? below(height - 1) : 0;
+}
+
 // The wheel (release 5 design, "Scrolling"): rows to move for one notch at `speed`, up negative, with the fraction
 // carried to the next notch, so 0.5 moves a row every second notch. The carry is signed by its direction, and dropped
 // when the wheel turns the other way (release 5 plan, choice 3). It counts whole units of the speed's own decimal

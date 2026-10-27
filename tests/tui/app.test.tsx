@@ -23,6 +23,7 @@ import { Clipboard } from "../../src/tui/clipboard.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { Screen } from "../../src/tui/terminal.js";
+import { wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, reply, tempContext, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
@@ -2706,6 +2707,120 @@ describe("App's questions in full screen", () => {
     await gone(app, "[y/n]");
     expect(shown(app).slice(16, 20)).toEqual(["b 4.", "a reply", "t2 (a) to write a.txt: allowed", "t3 (b) to write b.txt: allowed"]);
     expect(app.lastFrame()).not.toContain("new lines");
+  });
+
+  // Found at Task 11's review: a view held at the top of a short conversation counted the lines it showed as new.
+  it("does not count a line that arrives on screen as new", async () => {
+    const lead = new Held();
+    const { app, ask } = await mount([], { full: true, lead, intro: said(3) });
+    await type(app, "go");
+    await until(app, "> go");
+    const answer = ask("write a.txt", detail(5), asker("t2 (a)").owner);
+    await until(app, "[y/n]");
+    expect(shown(app).slice(3, 10)).toEqual(["> go", ...headed("write a.txt")]);
+    lead.answer("short reply");
+    await until(app, "short reply");
+    expect(shown(app)[10]).toBe("short reply");
+    expect(app.lastFrame()).not.toContain("new line");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+  });
+
+  it("brings the detail of a question that came while the model list was open into view once the list closes", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60), models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "/model");
+    await until(app, "Filter:");
+    await tick(); // the picker starts reading keys just after it first appears
+    const answer = ask("write a.txt", detail(5), asker("t2 (a)").owner);
+    await tick();
+    expect(app.lastFrame()).not.toContain("[y/n]");
+    await press(app, ""); // closes the list
+    await until(app, "Allow t2 (a) to write a.txt? [y/n]");
+    expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt"), ""]);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+  });
+
+  // The user's choices at Task 11's review.
+  it("follows again after the answer when it was following as the question came, though scrolled up while it waited", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    const answer = ask("write a.txt", detail(5));
+    await until(app, "[y/n]");
+    await press(app, PG_UP);
+    expect(app.lastFrame()).not.toContain("line 4.");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    await until(app, "write a.txt: allowed");
+    expect(shown(app)[19]).toBe("write a.txt: allowed");
+    expect(app.lastFrame()).not.toContain("new lines");
+  });
+
+  it("leaves the view where it is when the terminal is resized while a question waits", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    const answer = ask("write a.txt", detail(5));
+    await until(app, "[y/n]");
+    expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt"));
+    Object.assign(app.stdout, { rows: 30 });
+    app.stdout.emit("resize");
+    await tick();
+    const rows = shown(app);
+    expect(rows).toHaveLength(29);
+    expect(rows.slice(14, 20)).toEqual(headed("write a.txt")); // not put again on the taller view's second-last row
+    await press(app, "y");
+    expect(await answer).toBe(true);
+  });
+
+  // A question too long to leave the conversation its one row puts its text in the conversation (the user's choice at
+  // Task 11's review). A command `m` times "echo word " long, its question taking `rows` rows at 100 columns.
+  const command = (m: number) => `run: ${"echo word ".repeat(m)}`;
+  const taking = (rows: number) => {
+    let m = 1;
+    while (wrap(`Allow ${command(m)}? [y/n] · Esc to decline`, 100, false).length < rows) m++;
+    return command(m);
+  };
+
+  it.each([
+    { key: "y", ok: true, how: "allowed" },
+    { key: "n", ok: false, how: "declined" },
+    { key: "", ok: false, how: "declined" },
+  ])("puts all of a question too long to fit in the conversation, and answers it with $key", async ({ key, ok, how }) => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    const long = command(300); // 3,005 characters
+    const answer = ask(long);
+    await until(app, "[y/n]");
+    const rows = shown(app);
+    expect(rows).toHaveLength(23);
+    const n = rows[0]!.match(/^┌ run \((\d+) rows\)$/)![1]!;
+    expect(rows[21]).toBe(`Allow run (shown above, ${n} rows)? [y/n] · Esc to decline`);
+    expect(rows[1]).toMatch(/^run: echo word echo/);
+    // Every row of it: rows 1 to 20 show, and the rest come onto the last row a row at a time.
+    const text = rows.slice(1, 21);
+    while (text.length < Number(n)) {
+      await press(app, SHIFT_DOWN);
+      text.push(shown(app)[20]!);
+    }
+    expect(text.join("").replaceAll(" ", "")).toBe(long.replaceAll(" ", ""));
+    await press(app, key);
+    expect(await answer).toBe(ok);
+    await until(app, `run (shown above, ${n} rows): ${how}`);
+  });
+
+  it("shows a question as before while it leaves the conversation a row, and puts it in the conversation once it would not", async () => {
+    let { app, ask } = await mount([], { full: true, intro: said(60) });
+    const fits = taking(21); // 23 rows less the status line's
+    void ask(fits);
+    await until(app, "[y/n]");
+    let rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows.slice(0, 2)).toEqual(["said 59.", `Allow ${fits.slice(0, 93)}`]);
+    expect(app.lastFrame()).not.toContain("shown above");
+
+    ({ app, ask } = await mount([], { full: true, intro: said(60) }));
+    void ask(taking(22));
+    await until(app, "[y/n]");
+    rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows[21]).toMatch(/^Allow run \(shown above, \d+ rows\)\? \[y\/n\] · Esc to decline$/);
   });
 });
 

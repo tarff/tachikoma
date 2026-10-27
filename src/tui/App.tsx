@@ -27,14 +27,24 @@ import { TaskPanel, taskRow, taskRows } from "./TaskPanel.js";
 import type { Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
-import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, type View, wrap } from "./view.js";
+import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow, type View, wrap } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 // A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn. In full screen, `detail`:
 // the first and last of the conversation's lines its detail went to, the heading's line first; `drawn`: it has been on
 // screen; `following`: for a question with a detail, whether the view was following when it was first drawn (release 5
-// plan, Task 11).
-type Question = { text: string; owner?: Owner; detail?: [number, number]; drawn?: boolean; following?: boolean; answer: (ok: boolean, how: string) => void };
+// plan, Task 11). `label`: who asks and the action's first word ("t2 (x) to run"), and `short`, for a question too long
+// to fit, what its line names in place of its text (the user's choice at Task 11's review).
+type Question = {
+  text: string;
+  label: string;
+  short?: string;
+  owner?: Owner;
+  detail?: [number, number];
+  drawn?: boolean;
+  following?: boolean;
+  answer: (ok: boolean, how: string) => void;
+};
 // While the left button is held after a press in the conversation: what the press took (the pressed character, or a
 // double or triple click's word or line); `copy`: a drag, or a double or triple click, made a selection to copy on release;
 // `top`: the press was on the conversation's top row.
@@ -252,6 +262,7 @@ export function App({
         const cancel = () => q.answer(false, "cancelled");
         const q: Question = {
           text: owner ? `${visible(owner.name)} to ${text}` : text,
+          label: `${owner ? `${visible(owner.name)} to ` : ""}${text.split(/[\s:]/, 1)[0]}`, // "run: …", "write …", "read …"
           ...(owner ? { owner } : {}),
           ...(range ? { detail: range } : {}),
           answer: (ok, how) => {
@@ -260,7 +271,7 @@ export function App({
             signal?.removeEventListener("abort", cancel);
             questions.current = questions.current.filter((x) => x !== q);
             if (q.following) view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
-            say({ text: `${q.text}: ${how}`, color: "gray" });
+            say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
             resolve(ok);
             rerender((n) => n + 1);
             next(); // an answer may have waited for this question to close
@@ -639,7 +650,7 @@ export function App({
   const cellAt = (row: number, x: number) => (row < kept.total ? { row, x } : { row: kept.total - 1, x: kept.width }); // kept.width: past any row's text
   // The conversation's rows that show text: all but the "↓ N new lines" row while it shows, which is not text (plan,
   // choice 10's rule for such rows): a press there starts nothing, and a drag onto it counts as the row above it.
-  const textRows = (viewHeight: number) => viewHeight - (view.current.at !== null && view.current.unseen > 0 ? 1 : 0);
+  const textRows = (viewHeight: number) => viewHeight - (unseenBelow(kept, view.current, viewHeight) > 0 ? 1 : 0);
   // A left press in the conversation's text rows (release 5 design, "Selecting"; plan, choice 6), the selection already
   // cleared: a click takes the pressed character, which a drag grows from; a double-click selects the word, a
   // triple-click the line, both copied on release. A double-click past a row's text, or a double or triple click below
@@ -929,13 +940,29 @@ export function App({
   if (copied.current && !copied.current.failed && hint !== copied.current.text) copied.current = null;
   if (copied.current && hint === copied.current.text) copied.current.shown = true; // from now the next key or click takes it away
 
+  // A question too long to fit, whose rows would leave the conversation less than its one row, puts all of its text in
+  // the conversation, under a heading as a write's detail is, and its line names it instead (the user's choice at Task
+  // 11's review): nothing of a command is ever cut (permissions.ts, visible), and the placement below brings the text
+  // into view, to scroll through before answering. Decided when it is first drawn, from the rows the frame has then; a
+  // question that fits is drawn as before. A detail it already had stays in its range. Said while drawing, as `copied`
+  // above: React draws the App again at once for the lines it adds.
+  const allow = (q: Question) => `Allow ${q.short ?? q.text}? [y/n] · Esc to decline`;
+  const fits = (q: Question) => height - 1 - (wrap(allow(q), columns, false).length + (hint ? 1 : 0) + 1 + (tooled ? 1 : 0)) >= 1; // as viewHeight, below
+  if (full && question && !picker && !question.drawn && !fits(question)) {
+    const n = wrap(question.text, kept.width, false).length; // the rows its text takes in the conversation
+    const rows = `${n} row${n === 1 ? "" : "s"}`;
+    const from = kept.lines.length;
+    say({ text: `┌ ${question.label} (${rows})`, color: "gray" }, { text: question.text, color: "gray" });
+    question.detail = [question.detail?.[0] ?? from, kept.lines.length - 1];
+    question.short = `${question.label} (shown above, ${rows})`;
+  }
   // Full screen (release 5 design, "The screen"): the frame is a row shorter than the terminal, as above, and the
   // conversation takes every row of it the live area does not draw, at least one. The live area's rows are counted as
   // they are drawn. A question is wrapped here and drawn a row a Text, so its rows are known. The model list takes the
   // rows it needs, up to all but the conversation's least row, its filter line and the status line (release 5 plan,
   // choice 19), in a box that tall, so the status line stays put while typing filters the list: the list unfiltered
   // is the longest it gets, with its "No models" line when it has no models.
-  const asked = full && question && !picker ? wrap(`Allow ${question.text}? [y/n] · Esc to decline`, columns, false) : [];
+  const asked = full && question && !picker ? wrap(allow(question), columns, false) : [];
   const offered = full && picker ? listRows(picker, "") : [];
   const needed = offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1);
   const pickerRows = Math.max(1, Math.min(needed, height - 1 - 1 - 1 - 1 - (hint ? 1 : 0))); // the frame's row short, the conversation's, filter, status
@@ -985,7 +1012,7 @@ export function App({
           rows={kept}
           first={firstRow(kept, view.current, viewHeight)}
           height={viewHeight}
-          unseen={view.current.unseen}
+          unseen={unseenBelow(kept, view.current, viewHeight)}
           following={view.current.at === null}
           selection={selected()}
         />
