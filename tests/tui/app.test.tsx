@@ -2876,6 +2876,65 @@ describe("App's questions in full screen", () => {
     expect(rows[1]).toMatch(/^t2 \(word word/); // the full name, in the conversation
   });
 
+  // The rules Task 11's code review found untested.
+  it("leaves the view where it was scrolled after answering a question without a detail, though following when it came", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    const answer = ask("run: ls");
+    await until(app, "[y/n]");
+    await press(app, PG_UP);
+    const top = shown(app)[0];
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    await tick();
+    expect(shown(app)[0]).toBe(top);
+    expect(app.lastFrame()).not.toContain("run: ls: allowed");
+  });
+
+  // Whether the view was following is kept from the question's first draw, not from when a resize moves it into the
+  // conversation.
+  it.each([
+    { name: "following", before: false, after: "run (shown above): allowed" },
+    { name: "scrolled up", before: true, after: "↓ 1 new line · Ctrl+End" },
+  ])("after a question moved into the conversation by a resize, follows again only if it was $name when it came", async ({ before, after }) => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    if (before) await press(app, PG_UP);
+    const answer = ask(taking(15));
+    await until(app, "[y/n]");
+    if (!before) await press(app, PG_UP);
+    Object.defineProperty(app.stdout, "columns", { value: 40, configurable: true });
+    app.stdout.emit("resize");
+    await until(app, "(shown above)");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    await until(app, after);
+    if (!before) expect(app.lastFrame()).not.toContain("new line");
+  });
+
+  // 21 rows of conversation: a detail fits in 20 with its heading, the last kept for "↓ N new lines".
+  it("puts a detail that fits above the last row at the foot of the view, and one a row taller with its heading at the top", async () => {
+    let { app, ask } = await mount([], { full: true, intro: said(60) });
+    void ask("write a.txt", detail(18)); // 19 rows
+    await until(app, "[y/n]");
+    expect(shown(app).slice(19, 21)).toEqual(["line 17.", ""]);
+    expect(shown(app)[1]).toBe("┌ write a.txt (18 lines)");
+    ({ app, ask } = await mount([], { full: true, intro: said(60) }));
+    void ask("write a.txt", detail(20)); // 21 rows
+    await until(app, "[y/n]");
+    expect(shown(app)[0]).toBe("┌ write a.txt (20 lines)");
+  });
+
+  it("counts the hint row when deciding whether a question fits", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60), past: ["hello"] });
+    await press(app, "\u0012"); // Ctrl+R's search keeps the hint row while the question waits
+    await until(app, "search:");
+    void ask(taking(21)); // fits beside one row of conversation only without the hint row
+    await until(app, "[y/n]");
+    const rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows[20]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    expect(rows[21]).toMatch(/^search: /);
+  });
+
   it("moves a question into the conversation once a narrower terminal leaves it too long to fit, and keeps it there", async () => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
     const fits = taking(15);

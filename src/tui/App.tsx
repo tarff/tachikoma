@@ -31,17 +31,16 @@ import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, 
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 // A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn. In full screen, `detail`:
-// the first and last of the conversation's lines its detail went to, the heading's line first; `drawn`: it has been on
-// screen; `following`: whether the view was following when it was first drawn (release 5 plan, Task 11). `label`: who
-// asks, a subagent by its id alone, and the action's first word ("t2 to run"); `short`, for a question too long to fit,
-// what its line names in place of its text (the user's choices at Task 11's reviews).
+// the first and last of the conversation's lines its detail went to, the heading's line first; `following`: whether the
+// view was following when it was first drawn, undefined until then (release 5 plan, Task 11). `label`: who asks, a
+// subagent by its id alone, and the action's first word ("t2 to run"); `short`, for a question too long to fit, what its
+// line names in place of its text (the user's choices at Task 11's reviews).
 type Question = {
   text: string;
   label: string;
   short?: string;
   owner?: Owner;
   detail?: [number, number];
-  drawn?: boolean;
   following?: boolean;
   answer: (ok: boolean, how: string) => void;
 };
@@ -942,46 +941,41 @@ export function App({
   if (copied.current && !copied.current.failed && hint !== copied.current.text) copied.current = null;
   if (copied.current && hint === copied.current.text) copied.current.shown = true; // from now the next key or click takes it away
 
+  // Full screen (release 5 design, "The screen"): the frame is a row shorter than the terminal, as above, and the
+  // conversation takes every row of it the live area does not draw, at least one. The live area's rows are counted as
+  // they are drawn, a question's given as `askedRows`. A question is wrapped here and drawn a row a Text, so its rows are
+  // known. The model list takes the rows it needs, up to all but the conversation's least row, its filter line and the
+  // status line (release 5 plan, choice 19), in a box that tall, so the status line stays put while typing filters the
+  // list: the list unfiltered is the longest it gets, with its "No models" line when it has no models.
+  const allow = (q: Question) => `Allow ${q.short ?? q.text}? [y/n] · Esc to decline`;
+  const offered = full && picker ? listRows(picker, "") : [];
+  const needed = offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1);
+  const pickerRows = Math.max(1, Math.min(needed, height - 1 - 1 - 1 - 1 - (hint ? 1 : 0))); // the frame's row short, the conversation's, filter, status
+  const abovePrompt = (busy ? 1 : 0) + todoShown.length + queued.length; // the live area's rows drawn above the prompt
+  const liveFor = (askedRows: number) =>
+    (picker ? pickerRows + 1 : question ? askedRows : abovePrompt + promptShown + menuRows + panel.length) + (hint ? 1 : 0) + 1 + (tooled ? 1 : 0);
   // A question too long to fit, whose rows would leave the conversation less than its one row, has its line point above
   // instead (the user's choices at Task 11's reviews): at a write's preview, whose heading holds the whole path, or else
   // at all of its text, put in the conversation under a heading as a preview is. Nothing of a command is ever cut
   // (permissions.ts, visible), and the placement below brings it into view, to scroll through before answering. Checked
   // on every draw, as a resize can leave a question too long; once moved it stays, and its heading counts characters, as
   // a copy's line does, which no resize makes wrong. A question that fits is drawn as before. Said while drawing, as
-  // `copied` above: React draws the App again at once for the lines it adds.
-  const allow = (q: Question) => `Allow ${q.short ?? q.text}? [y/n] · Esc to decline`;
-  const fits = (q: Question) => height - 1 - (wrap(allow(q), columns, false).length + (hint ? 1 : 0) + 1 + (tooled ? 1 : 0)) >= 1; // as viewHeight, below
+  // `copied` above: React draws the App again at once for the lines it adds. On a very small terminal (20 by 5, say) the
+  // short line can itself wrap past the frame: the limit any live area has there.
+  const fits = (q: Question) => height - 1 - liveFor(wrap(allow(q), columns, false).length) >= 1; // as viewHeight, below
   const moved = full && question && !picker && !question.short && !fits(question);
   if (moved) {
     if (!question.detail) {
-      const n = [...segmenter.segment(question.text)].length;
+      let n = 0;
+      for (const _character of segmenter.segment(question.text)) n++;
       const from = kept.lines.length;
       say({ text: `┌ ${question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" }, { text: question.text, color: "gray" });
       question.detail = [from, kept.lines.length - 1];
     }
     question.short = `${question.label} (shown above)`;
   }
-  // Full screen (release 5 design, "The screen"): the frame is a row shorter than the terminal, as above, and the
-  // conversation takes every row of it the live area does not draw, at least one. The live area's rows are counted as
-  // they are drawn. A question is wrapped here and drawn a row a Text, so its rows are known. The model list takes the
-  // rows it needs, up to all but the conversation's least row, its filter line and the status line (release 5 plan,
-  // choice 19), in a box that tall, so the status line stays put while typing filters the list: the list unfiltered
-  // is the longest it gets, with its "No models" line when it has no models.
   const asked = full && question && !picker ? wrap(allow(question), columns, false) : [];
-  const offered = full && picker ? listRows(picker, "") : [];
-  const needed = offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1);
-  const pickerRows = Math.max(1, Math.min(needed, height - 1 - 1 - 1 - 1 - (hint ? 1 : 0))); // the frame's row short, the conversation's, filter, status
-  const abovePrompt = (busy ? 1 : 0) + todoShown.length + queued.length; // the live area's rows drawn above the prompt
-  const liveRows =
-    (picker
-      ? pickerRows + 1
-      : question
-        ? asked.length
-        : abovePrompt + promptShown + menuRows + panel.length) +
-    (hint ? 1 : 0) +
-    1 +
-    (tooled ? 1 : 0);
-  const viewHeight = Math.max(1, height - 1 - liveRows);
+  const viewHeight = Math.max(1, height - 1 - liveFor(asked.length));
   // A question brings its own detail into view when it is first drawn (release 5 design, "Scrolling"; plan, Task 11), and
   // when a draw moves it into the conversation, above; here, with the height the conversation has beside it; changed
   // while drawing, as `copied` above. Whether the view was following is kept from the first draw. Its detail's last row
@@ -989,9 +983,8 @@ export function App({
   // heading goes on the top row. The view is held there, never moved to the bottom (view.ts, first), so what arrives while
   // the question waits does not move it, and the lines already below the detail (a reply, an earlier answer) are counted
   // as unseen. A question without a detail leaves the view (plan, choice 11).
-  if (full && question && !picker && (!question.drawn || moved)) {
-    if (!question.drawn) question.following = view.current.at === null;
-    question.drawn = true;
+  if (full && question && !picker && (question.following === undefined || moved)) {
+    if (question.following === undefined) question.following = view.current.at === null;
     if (question.detail) {
       const [from, to] = question.detail;
       const head = kept.rowOf({ line: from, offset: 0 });
