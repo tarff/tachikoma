@@ -3658,13 +3658,15 @@ describe("App's detail view printed out", () => {
     const { steps, key, out } = await printable(lead);
     await key("hi", "\r");
     await waitFor(() => text(steps).includes("Esc to stop"));
-    await key("\u001bp", "\u000f", "["); // Alt+P waits in the queue as /model
+    await key("\u001bp", "later", "\r", "\u000f", "["); // Alt+P waits in the queue as /model, a message behind it
     lead.answer("ok");
     await tick();
     await tick();
     expect(since(steps, "divert(reader)")).not.toContain(PASTE_OFF);
+    expect(lead.asked).toHaveLength(1); // the message waits behind the list
     await out("q");
     await waitFor(() => text(since(steps, "divert(null)")).includes("Filter:"));
+    expect(lead.asked).toHaveLength(1); // and waits while the list is open, as before
   });
 
   it("keeps the model list of a /model sent before [ waiting while printed out, and opens it once the view comes back", async () => {
@@ -3748,6 +3750,20 @@ describe("App's detail view printed out", () => {
     expect(steps.at(-1)).toBe("divert(null)");
     await out("y");
     await waitFor(() => answered === true);
+  });
+
+  // Found at Task 13's code review: a paste starting in the read that comes back is dropped to its end as well, as the
+  // InputFilter, inside that paste, passes the next reads on whole, and Ink would take the pasted q as closing the view.
+  it("drops the rest of a paste that starts in the read that comes back, and takes keys again after its end", async () => {
+    const { steps, key, out } = await record();
+    await key("[");
+    await out("q\u001b[200~ab");
+    expect(since(steps, "divert(reader)").at(-1)).toBe("hold(false)"); // back, the keys still to the App to drop
+    await out("cq\u001b[201~");
+    expect(steps.at(-1)).toBe("divert(null)");
+    expect(text(since(steps, PASTE_OFF))).not.toContain("›"); // the view stays open: no prompt drawn
+    await key("q"); // typed after the paste, it closes the view
+    expect(text(since(steps, "divert(null)"))).toContain("›");
   });
 
   it("lets the keyboard go if Ink ends while the rest of a paste is dropped", async () => {

@@ -18,8 +18,8 @@ type State = { held: string; pasting: boolean; tail: string };
 type Source = Pick<NodeJS.ReadStream, "on" | "off" | "setRawMode" | "setEncoding" | "ref" | "unref">;
 
 // The markers Ink reads pastes by (`pasteStart` and `pasteEnd` in Ink's input-parser.js).
-export const PASTE_START = "\u001b[200~";
-export const PASTE_END = "\u001b[201~";
+const PASTE_START = "\u001b[200~";
+const PASTE_END = "\u001b[201~";
 // A whole SGR report, as the probe got them: ESC [ <, then b, x and y, then M (press, drag, wheel) or m (release).
 const REPORT = /^\u001b\[<(\d+);(\d+);(\d+)([Mm])/;
 // What could still become a report if the rest came: ESC, ESC[, ESC[<, then up to three numbers and the semicolons between.
@@ -95,6 +95,39 @@ export function split(state: State, chunk: string): { pieces: Piece[]; state: St
   }
   if (keys) pieces.push({ keys });
   return { pieces, state: { held, pasting, tail } };
+}
+
+// One key: an Escape with a whole CSI or SS3 sequence after it (an arrow's ESC [ A), or with one other character (Alt
+// and that character), or alone; or any other character. An Escape before another is a key of its own, so two Escapes
+// read together are two Escs.
+const KEY = /\u001b(?:\[[0-?]*[ -/]*[@-~]|O.|[^\u001b])?|[^]/gu;
+
+// A read of the keys while the detail view is printed out (`[`; release 5 design, "The detail view"): whether it holds a
+// q, an Esc or a Ctrl-C, which bring the view back, and where a paste stands after it. A read can hold several keys
+// ("xq"), so each key in it is looked at; Esc is an Escape with nothing after it. A paste, from its start marker to its
+// end marker, is dropped whole, over as many reads as it takes, its keys never coming back (the user's choice,
+// 2026-10-28); `paste` is undefined outside one, and inside one its last characters, one short of the end marker, which
+// can be split between two reads. A paste that starts after the key that comes back is kept too, so its rest is dropped
+// once back. The start marker comes whole: the filter holds a read's end that could be one until the rest comes (split,
+// above). That hold lasts the filter's 20 ms, the wait Ink's own paste reading has, so a start marker whose rest comes
+// later is not seen as one; terminals send the marker with the text (a known limit, accepted at Task 13's review).
+export function readOut(paste: string | undefined, keys: string): { back: boolean; paste: string | undefined } {
+  let back = false;
+  let rest = keys;
+  for (;;) {
+    if (paste !== undefined) {
+      const text = paste + rest;
+      const end = text.indexOf(PASTE_END);
+      if (end === -1) return { back, paste: text.slice(-(PASTE_END.length - 1)) }; // one short: a whole one is found
+      paste = undefined;
+      rest = text.slice(end + PASTE_END.length);
+    }
+    const start = rest.indexOf(PASTE_START);
+    for (const [k] of (start === -1 ? rest : rest.slice(0, start)).matchAll(KEY)) back ||= k === "q" || k === "\u001b" || k === "\u0003";
+    if (start === -1) return { back, paste };
+    paste = "";
+    rest = rest.slice(start + PASTE_START.length);
+  }
 }
 
 // Ink reads it as it reads process.stdin: "readable", then read() until null (Ink's components/App.js). It emits "mouse"

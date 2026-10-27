@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { render, useInput } from "ink";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { InputFilter, type Mouse, type Piece, split } from "../../src/tui/input.js";
+import { InputFilter, type Mouse, type Piece, readOut, split } from "../../src/tui/input.js";
 
 const ESC = "\u001b";
 const none = { shift: false, alt: false, ctrl: false };
@@ -110,6 +110,46 @@ describe("split", () => {
 
   it("passes a malformed report, which can never become one, to Ink as it was", () => {
     expect(run(`${ESC}[<0;1x`).pieces).toEqual([{ keys: `${ESC}[<0;1x` }]);
+  });
+});
+
+// The reads while the detail view is printed out (release 5 design, "The detail view"; plan, Task 13).
+describe("readOut", () => {
+  const START = `${ESC}[200~`;
+  const END = `${ESC}[201~`;
+
+  it("comes back on q, Esc or Ctrl-C anywhere in a read, and not on other keys", () => {
+    for (const keys of ["q", ESC, "\u0003", "xq", "abcq"]) expect(readOut(undefined, keys)).toEqual({ back: true, paste: undefined });
+    for (const keys of ["x", "Q", `${ESC}[A`, `${ESC}OP`]) expect(readOut(undefined, keys)).toEqual({ back: false, paste: undefined });
+  });
+
+  it("takes Escape with a letter after it as Alt and that letter, not Esc and q", () => {
+    expect(readOut(undefined, `${ESC}q`).back).toBe(false);
+  });
+
+  it("takes two Escapes read together as Esc", () => {
+    expect(readOut(undefined, `${ESC}${ESC}`).back).toBe(true);
+  });
+
+  it("drops a paste whole, keeping its last 5 characters, one short of its end marker, until the marker comes", () => {
+    expect(readOut(undefined, `${START}q${ESC}`)).toEqual({ back: false, paste: `q${ESC}` });
+    expect(readOut(undefined, `${START}abcdefgh`)).toEqual({ back: false, paste: "defgh" });
+    expect(readOut("defgh", `q${END}`)).toEqual({ back: false, paste: undefined });
+    expect(readOut("defgh", `q${END}q`)).toEqual({ back: true, paste: undefined });
+  });
+
+  it("finds an end marker split between two reads", () => {
+    const first = readOut(undefined, `${START}ab${ESC}[20`);
+    expect(first).toEqual({ back: false, paste: `b${ESC}[20` });
+    expect(readOut(first.paste, "1~")).toEqual({ back: false, paste: undefined });
+    expect(readOut(first.paste, "1~q")).toEqual({ back: true, paste: undefined });
+  });
+
+  it("keeps a paste that starts after the key coming back, so its rest is dropped too", () => {
+    const first = readOut(undefined, `q${START}ab`);
+    expect(first).toEqual({ back: true, paste: "ab" });
+    expect(readOut(first.paste, `cq${END}`)).toEqual({ back: false, paste: undefined });
+    expect(readOut(undefined, `q${START}ab${END}`)).toEqual({ back: true, paste: undefined });
   });
 });
 
