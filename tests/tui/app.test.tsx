@@ -2260,6 +2260,21 @@ describe("App's selecting and copying in full screen", () => {
     await until(app, "Copied with the terminal only; xclip not found");
   });
 
+  // A failed copy is always reported: one that came while Ctrl+R's search held the row waits until it has been shown.
+  it("keeps a failed copy that came during Ctrl+R's search until the search ends and shows it, through the keys typed meanwhile", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80), past: ["about"], run: async () => Promise.reject(new Error("xclip not found")) });
+    await press(app, "\u0012");
+    await until(app, "search: ");
+    await pointer(mouse, at("press", 0, 5), at("drag", 7, 5), at("release", 7, 5));
+    await press(app, "a", "b");
+    expect(app.lastFrame()).toContain("search: ab ·");
+    expect(app.lastFrame()).not.toContain("Copied");
+    await press(app, "\u001b"); // Esc leaves the search
+    await until(app, "Copied with the terminal only; xclip not found");
+    await press(app, "x"); // shown now, so the next key takes it away
+    expect(app.lastFrame()).not.toContain("Copied");
+  });
+
   it("takes away the line about a copy on a paste, as on a key", async () => {
     const { app, mouse } = await mount([], { full: true, intro: said(80) });
     await pointer(mouse, at("press", 0, 5), at("drag", 7, 5), at("release", 7, 5));

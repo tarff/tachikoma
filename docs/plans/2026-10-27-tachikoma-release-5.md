@@ -626,7 +626,8 @@ Commit: `feat: selection text, words, clicks and the clipboard`.
     only for a drag started on a lower row; one started on the top row selects within it.
   - `Copied N characters` takes the hint row's place only while it shows, never adding a row, so a
     copy never moves the conversation; Ctrl+R's search and the exit warning keep the row. A failed
-    copy is always shown, even adding the row.
+    copy is always shown, even adding the row; one that comes while the search or the warning holds
+    the row waits, shows when they go, and only then goes on the next key or click.
   - Double-clicking a character a link leaves off (the final `.` of `https://x.dev/a.`) selects
     that character alone.
 

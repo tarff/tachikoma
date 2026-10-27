@@ -137,8 +137,9 @@ export function App({
   // selection to copy on release; `top`: the press was on the conversation's top row.
   const held = useRef<{ press: [Pos, Pos]; copy: boolean; top: boolean } | null>(null);
   const lastPress = useRef<{ at: number; x: number; y: number; count: number } | null>(null); // for select.ts, clicks
-  // The hint row's line about the last copy, until the next key or click, and whether it says the copy failed.
-  const copied = useRef<{ text: string; failed: boolean } | null>(null);
+  // The hint row's line about the last copy, until the next key or click, whether it says the copy failed, and whether it
+  // has been on screen.
+  const copied = useRef<{ text: string; failed: boolean; shown?: boolean } | null>(null);
   // A resize wraps every line again: here, while drawing, so resize events that come together cost one wrapping.
   if (full && kept.width !== columns - 1) kept.setWidth(columns - 1);
   const [busy, setBusy] = useState(false);
@@ -169,6 +170,15 @@ export function App({
     copied.current = { text: `Copied with the terminal only; ${problem}`, failed: true };
     rerender((n) => n + 1);
   });
+  // The next key, paste or click takes away the line about the last copy (release 5 design, "Copying"), but a failure only
+  // once it has been on screen: one that came while Ctrl+R's search or the exit warning held the row waits for it, as a
+  // failed copy is always reported (the user's choice at Task 9's review, 2026-10-27).
+  const clearCopied = () => {
+    const c = copied.current;
+    if (c === null || (c.failed && !c.shown)) return;
+    copied.current = null;
+    rerender((n) => n + 1);
+  };
   const started = useRef(Date.now());
   const [now, setNow] = useState(started.current);
   const [branch, setBranch] = useState(gitBranch);
@@ -441,11 +451,7 @@ export function App({
   };
 
   useInput((ch, key) => {
-    // The line about the last copy stays until the next key or click (release 5 design, "Copying").
-    if (copied.current !== null) {
-      copied.current = null;
-      rerender((n) => n + 1);
-    }
+    clearCopied();
     if (picker) return; // the picker reads the keys while it is open
     if (question) {
       // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent.
@@ -509,11 +515,7 @@ export function App({
   // picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
-      // A paste takes away the line about the last copy, as a key does (release 5 design, "Copying").
-      if (copied.current !== null) {
-        copied.current = null;
-        rerender((n) => n + 1);
-      }
+      clearCopied();
       if (question || search.current) return;
       run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       rerender((n) => n + 1);
@@ -590,10 +592,7 @@ export function App({
     if (m.kind === "press") {
       grab.current = null;
       held.current = null;
-      if (copied.current !== null) {
-        copied.current = null; // the line about the last copy stays until the next key or click
-        rerender((n) => n + 1);
-      }
+      clearCopied();
     }
     if (m.button !== "left") return;
     if (m.kind === "drag" && held.current) return dragTo(held.current, m.x, m.y);
@@ -865,6 +864,7 @@ export function App({
   const q = queue.current.map((e) => visible(e));
   const queued = q.length <= left ? q : left > 0 ? [...q.slice(0, left - 1), `+${q.length - left + 1} more`] : [];
   const hint = hinted ? hintFor(left) : null;
+  if (copied.current && hint === copied.current.text) copied.current.shown = true; // from now the next key or click takes it away
 
   // Full screen (release 5 design, "The screen"): the frame is a row shorter than the terminal, as above, and the
   // conversation takes every row of it the live area does not draw, at least one. The live area's rows are counted as

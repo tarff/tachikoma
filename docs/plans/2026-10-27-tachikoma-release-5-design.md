@@ -213,7 +213,9 @@ input, with these rules:
 - The hint row says "Copied 312 characters" until the next key or click; the conversation does not
   get a line for it. It takes the hint row's place only while one shows, never adding a row, so a
   copy never moves the conversation; Ctrl+R's search and the exit warning keep the row. A failed
-  copy is always shown, even adding the row (the user's choices, 2026-10-27).
+  copy is always shown, even adding the row; one that comes while the search or the warning holds
+  the row waits, shows when they go, and only then goes on the next key or click (the user's
+  choices, 2026-10-27).
 - **Shift+drag** still gives the terminal's own selection, as the probe found.
 
 **Clicking:**
