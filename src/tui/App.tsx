@@ -30,8 +30,11 @@ import { type Call, ToolLine } from "./ToolLine.js";
 import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, type View, wrap } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
-// A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn.
-type Question = { text: string; owner?: Owner; answer: (ok: boolean, how: string) => void };
+// A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn. In full screen, `detail`:
+// the first and last of the conversation's lines its detail went to, the heading's line first; `drawn`: it has been on
+// screen; `following`: for a question with a detail, whether the view was following when it was first drawn (release 5
+// plan, Task 11).
+type Question = { text: string; owner?: Owner; detail?: [number, number]; drawn?: boolean; following?: boolean; answer: (ok: boolean, how: string) => void };
 // While the left button is held after a press in the conversation: what the press took (the pressed character, or a
 // double or triple click's word or line); `copy`: a drag, or a double or triple click, made a selection to copy on release;
 // `top`: the press was on the conversation's top row.
@@ -235,9 +238,12 @@ export function App({
       if (signal?.aborted) return Promise.resolve(false);
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface.
+      let range: [number, number] | undefined;
       if (detail !== undefined) {
         const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
+        const from = kept.lines.length;
         say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
+        if (full) range = [from, kept.lines.length - 1];
       }
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
@@ -247,11 +253,13 @@ export function App({
         const q: Question = {
           text: owner ? `${visible(owner.name)} to ${text}` : text,
           ...(owner ? { owner } : {}),
+          ...(range ? { detail: range } : {}),
           answer: (ok, how) => {
             if (!open) return;
             open = false;
             signal?.removeEventListener("abort", cancel);
             questions.current = questions.current.filter((x) => x !== q);
+            if (q.following) view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
             say({ text: `${q.text}: ${how}`, color: "gray" });
             resolve(ok);
             rerender((n) => n + 1);
@@ -942,6 +950,23 @@ export function App({
     1 +
     (tooled ? 1 : 0);
   const viewHeight = Math.max(1, height - 1 - liveRows);
+  // A question brings its own detail into view when it is first drawn (release 5 design, "Scrolling"; plan, Task 11), so
+  // here, with the height the conversation has beside it; changed while drawing, as `copied` above. Its detail's last row
+  // goes on the view's second-last row, the last kept for "↓ N new lines", when its rows fit above that; otherwise its
+  // heading goes on the top row. The view is held there, never moved to the bottom (view.ts, first), so what arrives while
+  // the question waits does not move it, and the lines already below the detail (a reply, an earlier answer) are counted
+  // as unseen. A question without a detail leaves the view (plan, choice 11).
+  if (full && question && !picker && !question.drawn) {
+    question.drawn = true;
+    if (question.detail) {
+      const [from, to] = question.detail;
+      const head = kept.rowOf({ line: from, offset: 0 });
+      const end = kept.rowOf({ line: to, offset: kept.lines[to]!.text.length });
+      const r = kept.row(end - head + 1 <= viewHeight - 1 ? Math.max(0, end - (viewHeight - 2)) : head); // 2: the last two rows
+      question.following = view.current.at === null;
+      view.current = { at: { line: r.line, offset: r.start }, unseen: kept.lines.length - 1 - to };
+    }
+  }
   const promptFirst = (full ? viewHeight : 0) + abovePrompt; // the prompt's first row
   frame.current = {
     columns,

@@ -2620,6 +2620,95 @@ describe("App's clicks in full screen", () => {
   });
 });
 
+// A permission question brings its own detail into view (release 5 design, "Scrolling"; plan, Task 11). While a question
+// waits, the conversation has 21 rows: 23 less the question's row and the status line.
+describe("App's questions in full screen", () => {
+  // A detail of `n` lines, "line 0." and on.
+  const detail = (n: number, name = "line") => Array.from({ length: n }, (_, i) => `${name} ${i}.`).join("\n");
+  const headed = (text: string, name = "line") => [`┌ ${text} (5 lines)`, ...detail(5, name).split("\n")];
+
+  it("brings a short detail into view, its last line on the conversation's second-last row", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    await press(app, PG_UP);
+    expect(shown(app)[0]).toBe("said 30.");
+    const answer = ask("write a.txt", detail(5));
+    await until(app, "Allow write a.txt? [y/n]");
+    expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt"), ""]); // the last row kept for "↓ N new lines"
+    await press(app, "y");
+    expect(await answer).toBe(true);
+  });
+
+  // Not following when the question came, the view stays once it is answered; following, it follows again.
+  it.each([
+    { name: "scrolled up", up: true },
+    { name: "following", up: false },
+  ])("puts a long detail's heading on the top row, $name, and scrolls through it before y", async ({ up }) => {
+    const lead = new Held();
+    const { app, mouse, ask } = await mount([], { full: true, lead, intro: said(60) });
+    await type(app, "go");
+    await until(app, "> go");
+    if (up) await press(app, PG_UP);
+    const answer = ask("write a.txt", detail(100));
+    await until(app, "[y/n]");
+    expect(shown(app)[0]).toBe("┌ write a.txt (100 lines)");
+    await press(app, PG_DOWN); // half of 21
+    expect(shown(app)[0]).toBe("line 9.");
+    await wheel(mouse, "down");
+    expect(shown(app)[0]).toBe("line 12.");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    lead.answer("later reply");
+    if (up) {
+      await gone(app, "Esc to stop");
+      expect(shown(app)[0]).toBe("line 12.");
+      expect(app.lastFrame()).not.toContain("later reply");
+      expect(app.lastFrame()).toContain("↓ 2 new lines · Ctrl+End"); // the answer's line and the reply
+      await press(app, CTRL_END);
+    }
+    await until(app, "later reply");
+    expect(app.lastFrame()).not.toContain("new lines");
+  });
+
+  it("leaves the view where it is for a question without a detail", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    await press(app, PG_UP);
+    const answer = ask("run: ls");
+    await until(app, "Allow run: ls? [y/n]");
+    expect(shown(app)[0]).toBe("said 30.");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    expect(shown(app)[0]).toBe("said 30.");
+  });
+
+  it("holds the view on the shown question's detail while another's and a reply arrive, then goes to the next one's, then follows", async () => {
+    const lead = new Held();
+    const { app, ask } = await mount([], { full: true, lead, intro: said(60) });
+    await type(app, "go");
+    await until(app, "> go");
+    const t2 = asker("t2 (a)");
+    const t3 = asker("t3 (b)");
+    const first = ask("write a.txt", detail(5, "a"), t2.owner);
+    await until(app, "Allow t2 (a) to write a.txt? [y/n]");
+    expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt", "a"), ""]);
+    const second = ask("write b.txt", detail(5, "b"), t3.owner);
+    await until(app, "↓ 6 new lines · Ctrl+End"); // the second's heading and detail, below
+    expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt", "a"));
+    lead.answer("a reply");
+    await until(app, "↓ 7 new lines · Ctrl+End");
+    expect(shown(app).slice(14, 20)).toEqual(headed("write a.txt", "a"));
+    await press(app, "y");
+    expect(await first).toBe(true);
+    await until(app, "Allow t3 (b) to write b.txt? [y/n]");
+    // Below the second's detail: the reply and the first's answer.
+    expect(shown(app).slice(14, 21)).toEqual([...headed("write b.txt", "b"), "↓ 2 new lines · Ctrl+End"]);
+    await press(app, "y");
+    expect(await second).toBe(true);
+    await gone(app, "[y/n]");
+    expect(shown(app).slice(16, 20)).toEqual(["b 4.", "a reply", "t2 (a) to write a.txt: allowed", "t3 (b) to write b.txt: allowed"]);
+    expect(app.lastFrame()).not.toContain("new lines");
+  });
+});
+
 describe("App in classic mode", () => {
   it("changes nothing on the mouse", async () => {
     const { app, mouse } = await mount([], { intro: said(80) });
