@@ -697,16 +697,31 @@ never move it:
 - if the range's rows fit in the conversation's height less one row, its last row goes on the
   view's second-last row (the last is kept for "↓ N new lines");
 - otherwise its heading goes on the view's top row.
-When the question is answered, the view follows again if it was following when the question came,
-and otherwise stays. The next question in line then takes the view to its own detail. A question
-without a detail leaves the view (choice 11). The wheel, scroll keys and bar keep working while it
-waits (Tasks 5 and 7); y, n, Esc and Ctrl-C answer it as in release 3.
+When the question is answered, the view follows again if it was following when the question was
+first shown (not when it arrived: the next question in line arrives while the first holds the view;
+found at the spec review), even if the user scrolled while it waited, and otherwise stays; a resize
+while it waits leaves the view where it is (the user's choices, 2026-10-27). The next question in
+line then takes the view to its own detail. A question without a detail leaves the view (choice
+11). The wheel, scroll keys and bar keep working while it waits (Tasks 5 and 7); y, n, Esc and
+Ctrl-C answer it as in release 3.
+
+Found at the spec review (2026-10-27):
+- "↓ N new lines" counts only the new lines still below the view (`unseenBelow` in view.ts), so a
+  reply drawn on screen under a held detail is not counted.
+- A question too long to fit (the user's choices): when its wrapped rows would leave the
+  conversation less than one row, checked at each drawing, its whole text goes into the
+  conversation as a detail under a grey heading counting its characters, the question line becomes
+  `Allow <task id> to <verb> (shown above)? [y/n] · Esc to decline`, and the answer line uses the
+  short form. Once moved it stays, and the view is brought to it as on first show. A write whose
+  preview holds the path gets no copy; the short line points at the preview. Classic mode is
+  unchanged.
 
 **Tests** (full screen, 24 rows, a write asked through `ask` with a detail):
 1. Scrolled up, a 5-line detail: the heading and detail come on screen, the detail's last line on
    the second-last row.
 2. Scrolled up or not, a 100-line detail: the heading is on the top row; PgDn and the wheel move
-   through it; `y` allows; a later reply does not pull the view (not following) until Ctrl+End.
+   through it; `y` allows; scrolled up, a later reply does not pull the view until Ctrl+End;
+   following, the view follows again.
 3. A shell question (no detail) while scrolled up: the view stays.
 4. Two subagents ask at once, each a write with a 5-line detail: while the first question is shown,
    the second's detail arrives below and the first's heading and detail stay on screen; a reply

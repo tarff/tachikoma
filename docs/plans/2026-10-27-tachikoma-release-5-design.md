@@ -141,7 +141,9 @@ classic mode); copying keeps the tabs (the user's choice, 2026-10-27).
   leaves it out. (Claude Code puts bars on long lists, not on the conversation: the user asked for
   one here.)
 - **Following:** at the bottom, the view follows new lines. Scrolled up, it stays where it was put,
-  and a grey row at its foot says how many lines came in since ("↓ 12 new lines · Ctrl+End").
+  and a grey row at its foot says how many lines came in since ("↓ 12 new lines · Ctrl+End"),
+  counting only those still below the view (found at Task 11's review, where a reply shown on
+  screen was counted as new).
   Coming back to the bottom, by wheel or key, follows again. Sending a prompt goes to the bottom,
   and so does anything the user asks to be shown (`?`, Shift+Tab's "mode is now", Ctrl+O until
   the detail view): the user's choice, 2026-10-27, at Task 5's review, where a key list printed
@@ -156,9 +158,19 @@ classic mode); copying keeps the tabs (the user's choice, 2026-10-27).
   view moves to that question's own detail and stops following, so lines arriving while it waits
   (another subagent's question and its detail, a reply) do not move it: a detail that fits goes at
   the foot of the view, above the row kept for "new lines"; a taller one has its heading at the
-  top. Once answered, the view follows again if it was following before. While the question waits,
+  top. Once answered, the view follows again if it was following before, even when the user
+  scrolled while it waited, as reading a long file means scrolling it; a resize while it waits
+  leaves the view where it is (the user's choices at Task 11's review). While the question waits,
   the wheel, the scroll keys and the scroll bar still scroll, so a long file can be read before
   answering; y, n, Esc and Ctrl-C answer it as in release 3.
+- **A question too long to fit** (a shell command of thousands of characters, which would push the
+  frame past the screen and lose its first rows) puts its whole text into the conversation under a
+  grey heading that counts its characters, which the rule above brings into view, and asks in one
+  short line naming its asker by task id: `Allow t2 to run (shown above)? [y/n] · Esc to decline`.
+  A write whose preview already shows its path gets no second copy: the short line points at the
+  preview. It is too long when its rows would leave the conversation less than one row, checked at
+  each drawing, so a resize that stops it fitting moves it then; once moved it stays. One that fits
+  is asked as before, and nothing of it is ever cut (the user's choices at Task 11's review).
 
 ## The mouse
 
