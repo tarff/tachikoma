@@ -320,8 +320,10 @@ if (parsed.print !== undefined) {
       scrollSpeed={speed}
       clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
     />,
-    // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter.
-    { stdin: keys as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },
+    // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
+    // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
+    // only the lines that changed, Ink's incrementalRendering, made no difference felt).
+    { stdin: keys as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" }, maxFps: 60 },
   );
   restoreWhenInkEnds(screen, ink.waitUntilExit());
 }

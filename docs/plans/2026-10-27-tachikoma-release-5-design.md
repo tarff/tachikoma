@@ -473,6 +473,14 @@ user. Unmarked items are fixes from the reviews that keep to the design.
   grey (`gray`) the conversation's own grey rows use; the spaces between words and the `/` between
   the token counts stay plain, as in the preview the user chose from. The plan's check that the
   pieces' words joined equal `formatSegment` was dropped: `pieces` is the only source of the words.
+- **The user's terminal check (2026-10-28,** Windows Terminal, after Task 16): launching and
+  quitting, every scroll key, the wheel and the scroll bar, following and the new-lines row,
+  selecting and copying, Shift+drag, clicks, Ctrl+O's search and `[`, `/screen` both ways,
+  resizing, the status line's colours, and no fragments left: all as designed. The one finding:
+  the wheel felt jumpy beside Claude Code. A probe build tried Ink's frame cap and its drawing of
+  only the lines that changed (`incrementalRendering`); at 60 frames a second the wheel felt as
+  smooth as Claude Code's, with or without the second, so Ink now draws up to 60 frames a second,
+  not its default 30 (the user's choice), and the whole frame as before.
 
 ## Not in this release
 
