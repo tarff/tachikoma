@@ -84,6 +84,10 @@ writes the switch itself and has Ink draw everything again. The build tried this
 left the console reading whole lines after a few switches; so raw mode is held on through every
 switch and through `[`, and Ink's "off" is not passed on then.
 
+**While a switch runs** (Task 14's reviews): going to classic, the mode is classic from the start,
+so a key read meanwhile acts as in classic mode. A switch holds the queue as a turn does, and Esc
+and Ctrl-C act as during a turn; a queued `/screen` waits while the detail view is printed out.
+
 ## The screen
 
 The conversation fills the top of the screen, every row the rest does not need. Under it is release

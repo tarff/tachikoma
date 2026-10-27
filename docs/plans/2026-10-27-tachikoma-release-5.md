@@ -837,6 +837,20 @@ Commit: `feat: [ prints the detail view into the normal scrollback`.
 - Says `screen is now full` / `screen is now classic`, grey, as Shift+Tab's `mode is now`.
 - The `/` menu, `NAMES`, `COMMANDS` and the Unknown command list gain `/screen`
   ("Switch between full screen and classic").
+- Found at the reviews (2026-10-28):
+  - The user's choice: going to classic, the mode is classic from the start of the switch, so a
+    key read meanwhile (Ctrl+O, a scroll key) acts as in classic mode.
+  - A switch holds the queue as a turn does; Esc and Ctrl-C act as during a turn. A queued
+    `/screen` waits while the view is printed out, as `/model` and `/tasks t3` do.
+  - Going back to full screen, the view takes only the lines said in classic mode (an `unkept`
+    list); counting entries against `Rows`' split lines lost lines.
+  - Going to full, the mode is set before the suspend, so a question asked as the switch starts
+    keeps its detail's place.
+  - Both `setTimeout(0)` waits matter: without the one going to full, Ink first draws the classic
+    frame on the second screen; without the one going to classic, a `/screen` run from the queue
+    draws the full-screen frame again on the normal screen.
+  - Keeping the keyboard held: a `[` read while Ink resumes keeps the hold, as in Task 13; if Ink
+    ends meanwhile, nothing more is switched.
 
 **Tests:**
 1. `/screen` from full: the recording screen got `MOUSE_OFF + FIRST_SCREEN`, the frame shows every
