@@ -864,6 +864,9 @@ export function App({
   const q = queue.current.map((e) => visible(e));
   const queued = q.length <= left ? q : left > 0 ? [...q.slice(0, left - 1), `+${q.length - left + 1} more`] : [];
   const hint = hinted ? hintFor(left) : null;
+  // A successful copy's line that is not on screen is dropped, so it never turns up later, when a hint row comes back; only
+  // a failure waits to be shown (the user's choice at Task 9's review, 2026-10-27).
+  if (copied.current && !copied.current.failed && hint !== copied.current.text) copied.current = null;
   if (copied.current && hint === copied.current.text) copied.current.shown = true; // from now the next key or click takes it away
 
   // Full screen (release 5 design, "The screen"): the frame is a row shorter than the terminal, as above, and the

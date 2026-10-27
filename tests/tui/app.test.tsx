@@ -2275,6 +2275,60 @@ describe("App's selecting and copying in full screen", () => {
     expect(app.lastFrame()).not.toContain("Copied");
   });
 
+  // A successful copy's line that cannot be shown when the copy is made is dropped, so it never turns up later.
+  it("drops the line about a copy made during a turn, so it does not show when the turn ends", async () => {
+    const lead = new Held();
+    const { app, mouse, copies } = await mount([], { full: true, intro: said(80), lead });
+    await type(app, "go");
+    await until(app, "Esc to stop");
+    await pointer(mouse, at("press", 0, 5), at("drag", 7, 5), at("release", 7, 5));
+    expect(copies).toHaveLength(1);
+    lead.answer("done");
+    await until(app, "? for shortcuts");
+    expect(app.lastFrame()).not.toContain("Copied");
+  });
+
+  // The exit warning keeps the hint row (the user's choice at Task 9's review, 2026-10-27). Its 800 ms run on fake timers,
+  // as in "forgets a first press after 800 ms", so the mouse reports are sent without pointer's real wait.
+  async function behindExitWarning(run?: (text: string) => Promise<void>) {
+    const { app, mouse, copies } = await mount([], { full: true, intro: said(80), ...(run ? { run } : {}) });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const wait = async (ms: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    app.stdin.write("\u0004");
+    await wait(10);
+    expect(app.lastFrame()).toContain("Press Ctrl-D again to exit");
+    for (const m of [at("press", 0, 5), at("drag", 7, 5), at("release", 7, 5)]) mouse.emit("mouse", m);
+    await wait(10);
+    expect(copies).toHaveLength(1);
+    expect(app.lastFrame()).toContain("Press Ctrl-D again to exit");
+    expect(app.lastFrame()).not.toContain("Copied");
+    await wait(800);
+    expect(app.lastFrame()).not.toContain("Press Ctrl-D again to exit");
+    return app;
+  }
+
+  it("leaves the exit warning in the hint row over a copy, and drops the copy's line", async () => {
+    try {
+      const app = await behindExitWarning();
+      expect(app.lastFrame()).toContain("? for shortcuts");
+      expect(app.lastFrame()).not.toContain("Copied");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a failed copy that came behind the exit warning once the warning times out", async () => {
+    try {
+      const app = await behindExitWarning(async () => Promise.reject(new Error("xclip not found")));
+      expect(app.lastFrame()).toContain("Copied with the terminal only; xclip not found");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("takes away the line about a copy on a paste, as on a key", async () => {
     const { app, mouse } = await mount([], { full: true, intro: said(80) });
     await pointer(mouse, at("press", 0, 5), at("drag", 7, 5), at("release", 7, 5));

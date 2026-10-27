@@ -194,7 +194,8 @@ input, with these rules:
   2026-10-27) is selected whole, and a character it leaves off alone (the user's choice,
   2026-10-27). **Triple-click** selects the line. Clicks count as a double or
   triple when each lands on the same cell within 500 ms of the last (Windows' default).
-- A click without a drag clears the selection. Only the conversation and the detail view can be
+- A click without a drag clears the selection; it stays until a click, and keys never clear it (the
+  user's choice, 2026-10-27). Only the conversation and the detail view can be
   selected, not the prompt or the status line.
 
 **Copying,** when the button is let go:
@@ -210,9 +211,10 @@ input, with these rules:
   finishes only the newest waiting copy runs. An older run that ends after a newer copy was made
   has just put the older text on the clipboard, so the newest copy's OSC 52 is sent again at once,
   before its own run. A failure is reported only for the newest copy.
-- The hint row says "Copied 312 characters" until the next key or click; the conversation does not
-  get a line for it. It takes the hint row's place only while one shows, never adding a row, so a
-  copy never moves the conversation; Ctrl+R's search and the exit warning keep the row. A failed
+- The hint row says "Copied 312 characters" until the next key, paste or click; the conversation
+  does not get a line for it. It takes the hint row's place only while one shows, never adding a
+  row, so a copy never moves the conversation, and a copy whose line cannot show when it is made
+  drops it; Ctrl+R's search and the exit warning keep the row. A failed
   copy is always shown, even adding the row; one that comes while the search or the warning holds
   the row waits, shows when they go, and only then goes on the next key or click (the user's
   choices, 2026-10-27).

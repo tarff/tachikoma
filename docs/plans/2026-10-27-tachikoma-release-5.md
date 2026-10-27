@@ -624,10 +624,12 @@ Commit: `feat: selection text, words, clicks and the clipboard`.
 - At Task 9's review (the user's choices, 2026-10-27):
   - The pointer cannot go above the frame, so a drag on the conversation's top row scrolls up, but
     only for a drag started on a lower row; one started on the top row selects within it.
-  - `Copied N characters` takes the hint row's place only while it shows, never adding a row, so a
-    copy never moves the conversation; Ctrl+R's search and the exit warning keep the row. A failed
-    copy is always shown, even adding the row; one that comes while the search or the warning holds
-    the row waits, shows when they go, and only then goes on the next key or click.
+  - A selection stays until a click; keys never clear it.
+  - `Copied N characters` goes on the next key, paste or click. It takes the hint row's place only
+    while one shows, never adding a row, so a copy never moves the conversation, and a copy whose
+    line cannot show when it is made drops it; Ctrl+R's search and the exit warning keep the row.
+    A failed copy is always shown, even adding the row; one that comes while the search or the
+    warning holds the row waits, shows when they go, and only then goes on the next key or click.
   - Double-clicking a character a link leaves off (the final `.` of `https://x.dev/a.`) selects
     that character alone.
 
