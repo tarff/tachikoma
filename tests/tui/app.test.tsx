@@ -1785,11 +1785,11 @@ describe("App in full screen", () => {
     await until(app, "second reply");
   });
 
-  // What the user asks to see brings the view to the bottom (the user's choice, 2026-10-27, at Task 5's review).
+  // What the user asks to see brings the view to the bottom (the user's choice, 2026-10-27, at Task 5's review). Ctrl+O
+  // opens the detail view instead (Task 12).
   it.each([
     { name: "? (the key list)", key: "?", shows: "Ctrl+T  show or hide the to-do list" },
     { name: "Shift+Tab (the mode)", key: "\u001b[Z", shows: "mode is now project" },
-    { name: "Ctrl+O (the last turn)", key: "\u000f", shows: "No turn yet, so no tool calls to show." },
     { name: "Alt+P (the model list, with what reading the login says)", key: "\u001bp", shows: "a note on the login" },
   ])("goes to the bottom, following, on $name", async ({ key, shows }) => {
     const { app } = await mount([], { full: true, intro: said(60), note: "a note on the login", models: [{ provider: "fake", models: ["a"] }] });
@@ -2958,6 +2958,250 @@ describe("App's questions in full screen", () => {
     expect(rows[21]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
     await press(app, "y");
     expect(await answer).toBe(true);
+  });
+});
+
+// The detail view (release 5 design, "The detail view"; plan, Task 12): Ctrl+O's last turn and `/tasks t1`'s record in a
+// view of their own, in the conversation's place, the prompt hidden, a grey row naming the keys over the status line.
+describe("App's detail view in full screen", () => {
+  const KEYS = "j k ↑ ↓ line · g G Home End top, bottom · / search · [ print · q Esc close";
+  const UP = "\u001b[A";
+  const DOWN = "\u001b[B";
+  const HOME = "\u001b[H";
+  const END = "\u001b[F";
+  // `n` lines, "line 0." and on.
+  const lines = (n: number, text = (i: number) => `line ${i}.`) => Array.from({ length: n }, (_, i) => text(i)).join("\n");
+  // A turn that starts t1, whose answer is `answer`, then t1's record opened with /tasks t1. The delegate call puts the tool
+  // line under the status line, so the view has 20 rows: 23 less the key row, the status line and the tool line.
+  const record = async (answer: string) => {
+    const worker = new FakeProvider("w", [reply(answer)]);
+    const m = await mount([callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")], { full: true, worker });
+    await type(m.app, "go");
+    await until(m.app, "done");
+    await type(m.app, "/tasks t1");
+    await until(m.app, "t1 (find x), done: 0 tool calls");
+    return m;
+  };
+  // The frame's rows as `shown` gives them, with the colours taken out, for tests that turn colours on.
+  const plain = (app: ReturnType<typeof render>) => app.lastFrame()!.split("\n").map((r) => r.replace(/\u001b\[[\d;]*m/g, "").slice(0, 99).trimEnd());
+
+  it.each([
+    { name: "q", key: "q" },
+    { name: "Esc", key: "\u001b" },
+    { name: "Ctrl+O", key: "\u000f" },
+  ])("opens the last turn's tool calls in a view of their own on Ctrl+O, hiding the prompt, and closes it on $name", async ({ key }) => {
+    const { app, ctx } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { full: true });
+    await writeFile(path.join(ctx.root, "a.txt"), "hello there");
+    await type(app, "go");
+    await until(app, "done");
+    await press(app, "\u000f");
+    let rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows.slice(0, 4)).toEqual(["Last turn: 1 tool call", "● read_file {", '  "path": "a.txt"', "}"]);
+    expect(rows.slice(20)).toEqual([KEYS, expect.stringContaining("lead fake:a"), expect.stringContaining("read_file")]);
+    expect(rows).not.toContain("›");
+    expect(app.lastFrame()).not.toContain("> go");
+    await press(app, key);
+    rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows[19]).toBe("›");
+    expect(app.lastFrame()).toContain("> go");
+    expect(app.lastFrame()).not.toContain("Last turn"); // not put in the conversation
+  });
+
+  it("prints the last turn below on Ctrl+O in classic mode, as before", async () => {
+    const { app } = await mount([]);
+    await press(app, "\u000f");
+    expect(app.lastFrame()).toMatch(/^No turn yet, so no tool calls to show\.\n›/);
+  });
+
+  it("opens a subagent's record in the view with /tasks t1, putting nothing in the conversation, and prints a mistake as before", async () => {
+    const { app } = await record("It is in a.ts");
+    const rows = shown(app);
+    expect(rows.slice(0, 4)).toEqual(["t1 (find x), done: 0 tool calls", "Answer:", "It is in a.ts", ""]);
+    expect(rows[20]).toBe(KEYS);
+    await press(app, "q");
+    expect(app.lastFrame()).not.toContain("t1 (find x), done");
+    await type(app, "/tasks t9");
+    await until(app, "No subagent t9. /tasks lists them.");
+    expect(app.lastFrame()).toContain("›");
+  });
+
+  // 102 rows: the heading, "Answer:", then line 0. to line 99.; 20 on screen, so the last screenful starts at line 80.
+  it("moves a row on j, k, Down and Up, to the top on g and Home, to the bottom on G and End, and scrolls as the conversation does", async () => {
+    const { app, mouse } = await record(lines(100));
+    const top = () => shown(app)[0];
+    expect(top()).toBe("t1 (find x), done: 0 tool calls"); // it opens at its top
+    expect(thumb(app)).toEqual([0, 1, 2, 3]); // 20 rows of 102 seen
+    await press(app, "j", "j");
+    expect(top()).toBe("line 0.");
+    await press(app, "k");
+    expect(top()).toBe("Answer:");
+    await press(app, DOWN, DOWN);
+    expect(top()).toBe("line 1.");
+    await press(app, UP);
+    expect(top()).toBe("line 0.");
+    await press(app, "G");
+    expect(top()).toBe("line 80.");
+    expect(shown(app)[19]).toBe("line 99.");
+    await press(app, "g");
+    expect(top()).toBe("t1 (find x), done: 0 tool calls");
+    await press(app, END);
+    expect(top()).toBe("line 80.");
+    await press(app, HOME);
+    expect(top()).toBe("t1 (find x), done: 0 tool calls");
+    await press(app, PG_DOWN); // half of 20
+    expect(top()).toBe("line 8.");
+    await wheel(mouse, "down"); // 3 rows
+    expect(top()).toBe("line 11.");
+    await press(app, SHIFT_UP);
+    expect(top()).toBe("line 10.");
+    await press(app, CTRL_END);
+    expect(top()).toBe("line 80.");
+    await press(app, CTRL_HOME);
+    expect(top()).toBe("t1 (find x), done: 0 tool calls");
+    await pointer(mouse, ...click(BAR, 18)); // the bar's track near its foot
+    expect(shown(app)[19]).toBe("line 99.");
+  });
+
+  // "login" on lines 30, 60 and 90: rows 32, 62 and 92 of 102.
+  const logins = () => lines(100, (i) => (i > 0 && i % 30 === 0 ? `the login ${i}.` : `line ${i}.`));
+
+  it("searches as the query is typed, in any case, matches in reverse colours, keeps the search on Enter, and goes round with n and N", async () => {
+    await inColour(async () => {
+      const { app } = await record(logins());
+      await press(app, "/");
+      expect(plain(app)[20]).toBe("/");
+      await press(app, "LOGIN"); // G and N are typed, not the keys they are outside the search
+      expect(plain(app)[20]).toBe("/LOGIN");
+      expect(plain(app)[0]).toBe("the login 30."); // the first match from the view's top, off screen: on the top row
+      expect(reversed(app)[0]).toBe("login");
+      await press(app, "\r");
+      expect(plain(app)[20]).toBe('"LOGIN": 1 of 3 · n next · N previous');
+      await press(app, "n");
+      expect(plain(app)[0]).toBe("the login 60.");
+      expect(plain(app)[20]).toBe('"LOGIN": 2 of 3 · n next · N previous');
+      await press(app, "n"); // row 92: the view goes as far as its last screenful, rows 82 to 101
+      expect(plain(app)[10]).toBe("the login 90.");
+      expect(reversed(app)[10]).toBe("login");
+      expect(plain(app)[20]).toBe('"LOGIN": 3 of 3 · n next · N previous');
+      await press(app, "n"); // round to the first
+      expect(plain(app)[0]).toBe("the login 30.");
+      expect(plain(app)[20]).toBe('"LOGIN": 1 of 3 · n next · N previous');
+      await press(app, "N"); // round back to the last
+      expect(plain(app)[10]).toBe("the login 90.");
+      expect(plain(app)[20]).toBe('"LOGIN": 3 of 3 · n next · N previous');
+    });
+  });
+
+  it("edits the query with Backspace, and on Esc while typing drops the search and puts the view back where it was", async () => {
+    await inColour(async () => {
+      const { app } = await record(logins());
+      await press(app, "j", "/", "loginx");
+      expect(plain(app)[20]).toBe("/loginx");
+      expect(plain(app)[0]).toBe("Answer:"); // no match: the view stays
+      await press(app, "\u007f");
+      expect(plain(app)[20]).toBe("/login");
+      expect(plain(app)[0]).toBe("the login 30.");
+      await press(app, "\u001b");
+      expect(plain(app)[0]).toBe("Answer:");
+      expect(plain(app)[20]).toBe(KEYS);
+      expect(reversed(app).slice(0, 20).join("")).toBe("");
+      await press(app, "n"); // no search kept: n does nothing
+      expect(plain(app)[0]).toBe("Answer:");
+    });
+  });
+
+  it("closes the view for a question, which then brings its detail into the conversation's view, and takes n as its answer", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    await press(app, "\u000f");
+    expect(shown(app)[0]).toBe("No turn yet, so no tool calls to show.");
+    const answer = ask("write a.txt", ["line 0.", "line 1.", "line 2.", "line 3.", "line 4."].join("\n"));
+    await until(app, "Allow write a.txt? [y/n]");
+    expect(app.lastFrame()).not.toContain(KEYS);
+    expect(app.lastFrame()).not.toContain("No turn yet");
+    // The conversation's 21 rows beside the question: the detail's last line on the second-last (plan, Task 11).
+    expect(shown(app).slice(14, 21)).toEqual(["┌ write a.txt (5 lines)", "line 0.", "line 1.", "line 2.", "line 3.", "line 4.", ""]);
+    await press(app, "n");
+    expect(await answer).toBe(false);
+    await until(app, "write a.txt: declined");
+  });
+
+  it("selects and copies in the view, saying so in the key row's place until a key, and clears the selection when it closes", async () => {
+    await inColour(async () => {
+      const { app, mouse, copies } = await record(lines(100));
+      await pointer(mouse, at("press", 0, 2), at("drag", 98, 3), at("release", 98, 3));
+      expect(copies).toEqual(["line 0.\nline 1."]);
+      expect(plain(app)[20]).toBe("Copied 15 characters");
+      expect(reversed(app).slice(2, 4)).toEqual(["line 0.", "line 1."]);
+      await press(app, "j");
+      expect(plain(app)[20]).toBe(KEYS);
+      expect(reversed(app).slice(1, 3)).toEqual(["line 0.", "line 1."]); // keys move the view, not the selection
+      await pointer(mouse, ...click(2, 0), ...click(2, 0)); // a double-click on "Answer:"
+      expect(copies.at(-1)).toBe("Answer");
+      await press(app, "q");
+      expect(reversed(app).slice(0, 19).join("")).toBe("");
+    });
+  });
+
+  // Keys and mouse reports in one read of the terminal are handled before the screen is drawn again, so a report read with
+  // the key that opens or closes the view is on the screen from before the key (as at Task 10's review).
+  it("drops a drag read with the Ctrl+O that opens the view, and one read with the q that closes it", async () => {
+    const { app, mouse, copies } = await mount([], { full: true, intro: said(60) });
+    const drag = [at("press", 0, 0), at("drag", 20, 0), at("release", 20, 0)];
+    app.stdin.write("\u000f");
+    for (const m of drag) mouse.emit("mouse", m);
+    await tick();
+    expect(app.lastFrame()).toContain(KEYS);
+    app.stdin.write("q");
+    for (const m of drag) mouse.emit("mouse", m);
+    await tick();
+    expect(app.lastFrame()).not.toContain(KEYS);
+    expect(copies).toEqual([]);
+  });
+
+  it("keeps the working line under the view during a turn, stops the turn on Ctrl-C, and counts Ctrl-C toward exiting when idle", async () => {
+    const { app } = await mount([], { full: true, lead: hanging() });
+    await type(app, "hi");
+    await until(app, "Esc to stop");
+    await press(app, "\u000f");
+    let rows = shown(app);
+    expect(rows[20]).toContain("Working");
+    expect(rows[21]).toBe(KEYS);
+    await press(app, "\u0003");
+    await gone(app, "Working");
+    rows = shown(app);
+    expect(rows[21]).toBe(KEYS); // the view stays open, a row taller
+    await press(app, "\u0003");
+    expect(shown(app)[21]).toBe("Press Ctrl-C again to exit");
+    await press(app, "j"); // another key starts the count again
+    expect(shown(app)[21]).toBe(KEYS);
+  });
+
+  it("shows a model list queued during the turn under the view without the key row, and the key row again once it closes", async () => {
+    const lead = new Held();
+    const { app } = await mount([], { full: true, lead, models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "hi");
+    await until(app, "Esc to stop");
+    await press(app, "\u001bp", "\u000f"); // Alt+P waits in the queue as /model; Ctrl+O opens the view
+    lead.answer("ok");
+    await until(app, "Filter:");
+    await tick(); // the picker starts reading keys just after it first appears
+    expect(app.lastFrame()).not.toContain(KEYS);
+    await press(app, "\u001b"); // closes the list
+    await gone(app, "Filter:");
+    expect(shown(app)[21]).toBe(KEYS);
+  });
+
+  it("leaves the prompt, the model list and Ctrl+R's search alone while the view is open", async () => {
+    const { app } = await mount([], { full: true, models: [{ provider: "fake", models: ["a"] }], past: ["about"] });
+    await press(app, "\u000f", "x", "\u001bp", "\u0012");
+    await tick();
+    expect(shown(app)[21]).toBe(KEYS);
+    expect(app.lastFrame()).not.toContain("Filter:");
+    await press(app, "q");
+    expect(shown(app)[20]).toBe("›");
+    expect(app.lastFrame()).not.toContain("search:");
   });
 });
 
