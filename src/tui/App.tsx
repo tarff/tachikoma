@@ -16,7 +16,7 @@ import { apply, type Editor, empty, load, move, replace, segmenter } from "./edi
 import { History, matches } from "./history.js";
 import type { Mouse } from "./input.js";
 import { type Command, commands, isScroll, KEY_LIST, type Scroll } from "./keys.js";
-import { layout, vertical } from "./layout.js";
+import { layout, placeOn, scroll as windowOf, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
 import { ModelPicker, rows as listRows } from "./ModelPicker.js";
@@ -130,7 +130,11 @@ export function App({
   // The mouse listener is set up once, at mount, so it reads the mode and the frame's shape from here, not from the first
   // render (found at Task 5's review): Task 14's /screen changes `full`, and keeps this in step with it.
   const fullNow = useRef(full);
-  const frame = useRef({ columns, viewHeight: 1 });
+  // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row and how many it draws, and
+  // the menu's under it; none drawn while a question or the model list takes their place.
+  const frame = useRef({ columns, viewHeight: 1, promptFirst: 0, promptRows: 0, menuRows: 0 });
+  const promptTop = useRef(0); // the prompt's and the menu's windows (layout.ts, scroll), as last drawn
+  const menuTop = useRef(0);
   const wheel = useRef(0); // the fraction of a row carried from earlier notches (view.ts, notch)
   const grab = useRef<number | null>(null); // while the thumb is dragged, the row of the thumb it was pressed on
   // Selecting (release 5 design, "Selecting"): places in the lines, not screen rows, so a selection stays on its text as
@@ -567,7 +571,7 @@ export function App({
   // follows the pointer's row wherever the pointer is, until the button is let go; a move that would leave the thumb
   // where it is does nothing, as one thumb row stands for several first rows. Any press ends an earlier grab or
   // selecting, and a release ends either. A left press elsewhere in the conversation selects (release 5 design,
-  // "Selecting"); a press below it does nothing yet (Task 10 adds the prompt's and the menus').
+  // "Selecting"); one below it clicks the prompt or a menu entry (clickAt).
   const onMouse = (m: Mouse) => {
     if (!fullNow.current) return;
     const { columns, viewHeight } = frame.current;
@@ -609,6 +613,7 @@ export function App({
     if (m.button !== "left") return;
     if (m.kind === "drag" && held.current) return dragTo(held.current, m.x, m.y);
     if (m.kind === "press" && m.x !== columns - 1 && m.y < textRows(viewHeight)) return pressAt(top, m.x, m.y);
+    if (m.kind === "press" && m.y >= viewHeight) return clickAt(m.x, m.y);
     if (!thumb) return;
     const clamp = (start: number) => Math.max(0, Math.min(viewHeight - thumb.size, start));
     const move = (start: number) => start !== thumb.start && goTo(barFirst(kept.total, viewHeight, thumb.size, start));
@@ -648,6 +653,32 @@ export function App({
     ];
     selection.current = { press, end: span(kept, cell, cell) };
     held.current = { press, copy: true, top: y === 0 };
+  };
+  // A left press below the conversation (release 5 design, "Clicking"): on a prompt row the cursor goes to the place under
+  // it, after the two columns of "› ", or to the row's end past it; a menu entry is chosen and Enter's path runs it, so a
+  // `/` command runs and an `@` path fills in. The "↑ N rows above" and "↓ N more" rows, and every other row, do nothing
+  // (release 5 plan, choice 10). The prompt during Ctrl+R's search shows a match, not what is typed, so it takes no clicks.
+  const clickAt = (x: number, y: number) => {
+    const { columns, promptFirst, promptRows, menuRows } = frame.current;
+    const row = y - promptFirst; // a row of the prompt, then of the menu
+    const marked = (i: number, shown: number, w: { above: number; below: number }) => (i === 0 && w.above > 0) || (i === shown - 1 && w.below > 0);
+    const e = editor.current;
+    if (row >= 0 && row < promptRows) {
+      const { rows, places } = layout(e.text, promptWidth(columns));
+      const w = windowOf(rows.length, promptRows, places.get(e.cursor)!.row, promptTop.current);
+      if (marked(row, promptRows, w)) return;
+      editor.current = move(e, placeOn(places, w.top + row, x - 2)!);
+      goal.current = null;
+    } else {
+      const menu = menuFor(e);
+      const i = row - promptRows;
+      if (!menu || i < 0 || i >= menuRows) return;
+      const w = windowOf(menu.entries.length, menuRows, chosenIn(e, menu), menuTop.current);
+      if (marked(i, menuRows, w)) return;
+      chosen.current = { text: e.text, at: w.top + i };
+      run("submit");
+    }
+    rerender((n) => n + 1);
   };
   // A drag while selecting grows the selection to the pointer's cell. Below the conversation the view first scrolls a row
   // for each report, so a selection can be longer than the screen (release 5 design, "Selecting"). The frame starts at
@@ -867,6 +898,7 @@ export function App({
   const panel = taskRows(tasks.all, Math.max(0, space - 1 - menuRows), now);
   const promptSpace = menu ? 1 : space - panel.length;
   const promptRows = layout(prompt.text, promptWidth(columns)).rows.length;
+  const promptShown = Math.min(promptRows, Math.max(1, promptSpace));
   const promptLeft = space - menuRows - panel.length - Math.min(promptRows, promptSpace);
   const todoShown = !todos.current.hidden && unfinished(todos.current.items) ? todoRows(todos.current.items, promptLeft) : [];
   const left = promptLeft - todoShown.length;
@@ -895,12 +927,13 @@ export function App({
       ? pickerRows + 1
       : question
         ? asked.length
-        : (busy ? 1 : 0) + todoShown.length + queued.length + Math.min(promptRows, Math.max(1, promptSpace)) + menuRows + panel.length) +
+        : (busy ? 1 : 0) + todoShown.length + queued.length + promptShown + menuRows + panel.length) +
     (hint ? 1 : 0) +
     1 +
     (tooled ? 1 : 0);
   const viewHeight = Math.max(1, height - 1 - liveRows);
-  frame.current = { columns, viewHeight };
+  const promptFirst = (full ? viewHeight : 0) + (busy ? 1 : 0) + todoShown.length + queued.length; // the rows drawn above the prompt
+  frame.current = { columns, viewHeight, promptFirst, promptRows: picker || question || search.current ? 0 : promptShown, menuRows };
 
   return (
     <>
@@ -925,7 +958,15 @@ export function App({
       {picker ? (
         full ? (
           <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
-            <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} maxRows={pickerRows} />
+            <ModelPicker
+              groups={picker}
+              current={session.lead.id}
+              onPick={pick}
+              onClose={closePicker}
+              maxRows={pickerRows}
+              mouse={mouse}
+              bottom={viewHeight + pickerRows} // the box's last row
+            />
           </Box>
         ) : (
           <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} />
@@ -955,8 +996,8 @@ export function App({
               {row}
             </Text>
           ))}
-          <Prompt editor={prompt} columns={columns} offset={(full ? viewHeight : 0) + (busy ? 1 : 0) + todoShown.length + queued.length} space={promptSpace} />
-          {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} />}
+          <Prompt editor={prompt} columns={columns} offset={promptFirst} space={promptSpace} top={promptTop} />
+          {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} top={menuTop} />}
           <TaskPanel rows={panel} />
         </>
       )}

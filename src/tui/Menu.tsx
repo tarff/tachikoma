@@ -6,9 +6,12 @@ import type { Entry } from "./menus.js";
 
 // An open `/` or `@` menu, under the prompt, in `rows` rows: past that it scrolls with the chosen
 // entry, as the prompt does with the cursor, the first and last rows counting the entries cut off.
-export function Menu({ entries, chosen, rows }: { entries: Entry[]; chosen: number; rows: number }) {
+// `top` is the window's first entry: the App passes its own, to map a click to an entry (release 5
+// design, "Clicking").
+export function Menu({ entries, chosen, rows, top: given }: { entries: Entry[]; chosen: number; rows: number; top?: { current: number } }) {
   const shown = Math.min(entries.length, Math.max(1, rows));
-  const top = useRef(0);
+  const own = useRef(0);
+  const top = given ?? own;
   const w = scroll(entries.length, shown, chosen, top.current);
   top.current = w.top;
   return (

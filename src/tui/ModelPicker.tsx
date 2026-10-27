@@ -1,7 +1,8 @@
 import { Text, useInput, useStdout } from "ink";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { visible } from "../core/permissions.js";
 import type { ModelGroup } from "../providers/models.js";
+import type { Mouse } from "./input.js";
 
 // `/model`: every model of every provider that is set up (release 2 design, "The model picker").
 // Arrow keys move, Enter picks, Esc (or Ctrl-C) closes, and typing filters, since OpenRouter alone
@@ -33,12 +34,18 @@ export function ModelPicker({
   onPick,
   onClose,
   maxRows,
+  mouse,
+  bottom,
 }: {
   groups: ModelGroup[];
   current: string;
   onPick: (spec: string) => void;
   onClose: () => void;
   maxRows?: number;
+  // In full screen, the mouse reports, and the frame row of the list's last line, the filter line: the App draws the list
+  // at the foot of its rows, so where its first row is depends on the filter.
+  mouse?: { on(e: "mouse", f: (m: Mouse) => void): unknown; off(e: "mouse", f: (m: Mouse) => void): unknown };
+  bottom?: number;
 }) {
   // Each key reads and changes this at once: Ink can pass on several keys from one read of the
   // terminal before the screen is drawn again, and each must see what the one before it did.
@@ -62,6 +69,22 @@ export function ModelPicker({
     else redraw((n) => n + 1);
   };
 
+  // A left press on a model picks it, as Enter does (release 5 design, "Clicking"); a press anywhere else does nothing
+  // (release 5 plan, choice 10). Set up again at each drawing, so a row is mapped as it is drawn. The models' rows end on
+  // the row above the filter line: the "No models" line under them shows only when there are none to press.
+  const list = shown.slice(top, top + height);
+  useEffect(() => {
+    if (!mouse || bottom === undefined) return;
+    const onMouse = (m: Mouse) => {
+      const r = list[m.y - (bottom - list.length)];
+      if (m.kind !== "press" || m.button !== "left" || r?.kind !== "model") return;
+      state.current!.chosen = models.indexOf(r.spec);
+      pick();
+    };
+    mouse.on("mouse", onMouse);
+    return () => void mouse.off("mouse", onMouse);
+  });
+
   useInput((ch, key) => {
     const s = state.current!;
     const { models, at } = view(groups, s.filter, s.chosen);
@@ -83,7 +106,7 @@ export function ModelPicker({
 
   return (
     <>
-      {shown.slice(top, top + height).map((r, i) =>
+      {list.map((r, i) =>
         r.kind === "heading" ? (
           <Text key={`h${top + i}`} bold wrap="truncate-end">
             {visible(r.text)}
