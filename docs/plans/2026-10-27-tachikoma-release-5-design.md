@@ -425,7 +425,7 @@ user. Unmarked items are fixes from the reviews that keep to the design.
     (choice 8). PowerShell is named by its full path, and a failure comes back as one readable
     line, its message alone, where PowerShell's own report is cut at the console's width.
   - Tachikoma does not wait for the process `xclip` and `wl-copy` leave holding the clipboard, or
-    it would keep running until another program took it.
+    it would keep running until another program took the clipboard.
   - A selection that stops partway along a line keeps the spaces up to that point.
   - Shift+Up and Shift+Down only scroll: choice 9, moving a selection's end and copying it again,
     was dropped by the user at Task 9's review.
@@ -445,8 +445,8 @@ user. Unmarked items are fixes from the reviews that keep to the design.
   - Enter on a search with no match drops the search, where the design says Enter keeps it (the
     build's call, told to the user): a kept search with no match would leave n and N nothing to go
     to.
-  - The drawing is given only the matches on the rows it draws, not all of them. The key row fits
-    a short terminal.
+  - The drawing is given only the matches on the rows it draws, as passing every match slowed
+    each redraw on a long record. The key row fits a short terminal.
 - **`[` (Task 13):**
   - The user's choices at the reviews (2026-10-28): a paste does nothing while the view is printed
     out, and one still arriving when the view comes back is dropped to its end. A queued `/model`

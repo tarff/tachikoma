@@ -171,11 +171,12 @@ started.
   full record) open in the conversation's place. The prompt is hidden meanwhile; the status line
   stays, and a dim row names the keys. j and k or Up and Down move a line, g and G or Home and End
   go to the top and bottom, and the wheel, the scroll bar, the scroll keys and selecting work as in
-  the conversation. q, Esc or Ctrl+O close the view, even with a search kept. Ctrl-C stops a turn
-  that is running and leaves the view open; with nothing running it closes the view. A permission
-  question closes the view, so y and n go to the question.
+  the conversation. q, Esc or Ctrl+O close the view. Ctrl-C stops a turn that is running and
+  leaves the view open; with nothing running it closes the view. A permission question closes the
+  view, so y and n go to the question.
 - **Searching the detail view:** `/` searches as you type, ignoring case. Esc while typing drops the
-  search, and Enter keeps it, after which n and N go to the next and previous match.
+  search, and Enter keeps it, after which n and N go to the next and previous match. With a search
+  kept, q, Esc and Ctrl+O still close the view.
 - **`[`** in the detail view prints it into the terminal's normal scrollback, for the terminal's own
   search, selecting and scrolling. A running turn, and any subagents, go on meanwhile, out of
   sight. q, Esc or Ctrl-C bring the view back, and so does a permission question. A paste does
