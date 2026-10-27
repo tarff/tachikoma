@@ -2488,10 +2488,10 @@ describe("App's clicks in full screen", () => {
     expect(made).toEqual(["fake:y1"]);
   });
 
-  // A click or key read with the key that closed the list, or with an earlier click that picked, comes before the list is
-  // gone from the screen (found at Task 10's review). Not Esc: Ink waits 20 ms for the rest of a key starting with it
-  // (`pendingInputFlushDelayMilliseconds` in Ink's components/App.js), so a click read with it comes first.
-  it("picks nothing on a click or Enter in /model's list read with Ctrl-C, and picks once on two clicks in one read", async () => {
+  // A click or key read with the key that closed the list, or with an earlier click or Enter that picked, comes before the
+  // list is gone from the screen (found at Task 10's review). Not Esc: Ink waits 20 ms for the rest of a key starting with
+  // it (`pendingInputFlushDelayMilliseconds` in Ink's components/App.js), so a click read with it comes first.
+  it("picks nothing on a click or Enter in /model's list read with Ctrl-C, and once on two picks in one read", async () => {
     const made: string[] = [];
     const { app, mouse } = await mount([], { full: true, made, models: [{ provider: "fake", models: ["a", "b"] }] });
     for (const after of [() => click(4, 20).forEach((m) => mouse.emit("mouse", m)), () => app.stdin.write("\r")]) {
@@ -2511,29 +2511,14 @@ describe("App's clicks in full screen", () => {
     await waitFor(() => made.length > 0);
     await tick();
     expect(made).toEqual(["fake:b"]);
-  });
-
-  // Alt+P is `/model` typed then, which Enter would send, emptying the prompt: a click read with it is dropped as with any
-  // key that changes the prompt.
-  it("drops a click on the prompt or the menu read with Alt+P", async () => {
-    const { app, mouse } = await mount([], { full: true, models: [{ provider: "fake", models: ["a", "b"] }] });
-    await press(app, "hello world");
-    app.stdin.write("\u001bp");
-    for (const m of click(8, 20)) mouse.emit("mouse", m); // the "w"
-    await until(app, "fake:b");
-    await tick(); // the picker starts reading keys just after it first appears
-    await press(app, "\u001b", "X");
-    expect(app.lastFrame()).toContain("› hello worldX\n");
-    await press(app, "\u0003", "/"); // Ctrl-C empties it
-    expect(shown(app)[18]).toBe("  /tasks  List the subagents; /tasks t1 shows one, /tasks stop stops them");
-    app.stdin.write("\u001bp");
-    for (const m of click(4, 18)) mouse.emit("mouse", m); // on /tasks
+    await type(app, "/model");
     await until(app, "fake:b");
     await tick();
-    await press(app, "\u001b");
+    app.stdin.write("\r"); // Enter picks fake:b, the lead now, so chosen when the list opens
+    for (const m of click(4, 19)) mouse.emit("mouse", m); // on fake:a
+    await waitFor(() => made.length > 1);
     await tick();
-    expect(app.lastFrame()).not.toContain("No subagents yet.");
-    expect(app.lastFrame()).toContain("\n› /\n");
+    expect(made).toEqual(["fake:b", "fake:b"]);
   });
 
   // Release 5 plan, choice 10. The counts start at 2: a count takes the place of a row, and counts it (layout.ts, scroll).
@@ -2606,6 +2591,20 @@ describe("App's clicks in full screen", () => {
     await pointer(mouse, ...click(4, row)); // a frame drawn between: a click on the prompt as typed would have moved it
     expect(app.lastFrame()).toBe(frame);
     await press(app, "\u0003", "X"); // Ctrl-C gives back what was typed
+    expect(app.lastFrame()).toContain("› dX\n");
+  });
+
+  // Ctrl-C gives back the very prompt the frame was drawn with, so only the frame's rows can tell that the match's rows
+  // were not the prompt's (found at Task 10's re-review).
+  it("does nothing on a click on the match's rows read with the Ctrl-C that ends Ctrl+R's search", async () => {
+    const { app, mouse } = await mount([], { full: true, past: ["one\ntwo\nthree"] });
+    await press(app, "d", "\u0012", "t");
+    await until(app, "search: t ·");
+    const row = shown(app).indexOf("  three");
+    app.stdin.write("\u0003");
+    for (const m of click(4, row)) mouse.emit("mouse", m);
+    await tick();
+    await press(app, "X");
     expect(app.lastFrame()).toContain("› dX\n");
   });
 

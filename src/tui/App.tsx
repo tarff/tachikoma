@@ -131,10 +131,9 @@ export function App({
   // render (found at Task 5's review): Task 14's /screen changes `full`, and keeps this in step with it.
   const fullNow = useRef(full);
   // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row and how many it draws, and
-  // the menu's under it, none while a question or the model list takes their place; and the prompt as typed and the menu's
-  // choice when they were drawn, which keys replace, never change, and how many times Alt+P had been pressed.
-  const altP = useRef(0);
-  const frame = useRef({ columns, viewHeight: 1, promptFirst: 0, promptRows: 0, menuRows: 0, editor: empty, chosen: chosen.current, altP: 0 });
+  // the menu's under it, no prompt rows while a question, the model list or Ctrl+R's search, whose prompt shows a match,
+  // takes their place; and the prompt as typed and the menu's choice when they were drawn, which keys replace, never change.
+  const frame = useRef({ columns, viewHeight: 1, promptFirst: 0, promptRows: 0, menuRows: 0, editor: empty, chosen: chosen.current });
   const promptTop = useRef(0); // the prompt's and the menu's windows (layout.ts, scroll), as last drawn
   const menuTop = useRef(0);
   const wheel = useRef(0); // the fraction of a row carried from earlier notches (view.ts, notch)
@@ -660,14 +659,13 @@ export function App({
   // it, after the two columns of "› ", or to the row's end past it; a menu entry is chosen and Enter's path runs it, so a
   // `/` command runs and an `@` path fills in. The prompt's "↑ N rows above" and "↓ N rows below" rows, the menu's
   // "↑ N more" and "↓ N more", and every other row do nothing (release 5 plan, choice 10). The prompt during Ctrl+R's
-  // search shows a match, not what is typed, so it takes no clicks. A click read with a key that replaced the prompt or
-  // the menu's choice, or with Alt+P, is dropped: React draws nothing between them, so the screen is still the one from
-  // before the key (found at Task 10's review). A click that acts starts the press-twice count again, as a key between
-  // the presses does.
+  // search shows a match, not what is typed, so the frame gives it no prompt rows then. A click read with a key that
+  // replaced the prompt or the menu's choice is dropped: React draws nothing between them, so the screen is still the one
+  // from before the key (found at Task 10's review). A click that acts starts the press-twice count again, as a key
+  // between the presses does.
   const clickAt = (x: number, y: number) => {
-    if (search.current) return;
     const f = frame.current;
-    if (editor.current !== f.editor || chosen.current !== f.chosen || altP.current !== f.altP) return;
+    if (editor.current !== f.editor || chosen.current !== f.chosen) return;
     const { columns, promptFirst, promptRows, menuRows } = f;
     const row = y - promptFirst; // a row of the prompt, then of the menu
     const marked = (i: number, shown: number, w: { above: number; below: number }) => (i === 0 && w.above > 0) || (i === shown - 1 && w.below > 0);
@@ -732,9 +730,7 @@ export function App({
       onMode(perm.current);
       return show({ text: `mode is now ${perm.current}`, color: "gray" });
     }
-    // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom. It leaves the
-    // prompt as it is, so it is counted for clickAt, which drops a click read with it as with Enter.
-    if (c === "models") altP.current++;
+    // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom.
     if (c === "models" && working.current) return void queue.current.push("/model");
     if (c === "models") {
       view.current = FOLLOWING;
@@ -951,11 +947,10 @@ export function App({
     columns,
     viewHeight,
     promptFirst,
-    promptRows: picker || question ? 0 : promptShown,
+    promptRows: picker || question || search.current ? 0 : promptShown,
     menuRows,
     editor: editor.current,
     chosen: chosen.current,
-    altP: altP.current,
   };
 
   return (
