@@ -150,8 +150,10 @@ Each is marked in its task. **Not yet approved.**
 9. **Shift+Up/Down during a selection (Task 9)** moves the selection's end one row, scrolls one
    row, and copies the selection again. Dropped by the user at Task 9's review, 2026-10-27: an old
    selection would be copied again over newer clipboard contents. They only scroll.
-10. **Clicks (Task 10)** on a "↑ N rows above" or "↓ N more" row, or anywhere while a question or
-    the model list is open (except on the list's own entries), do nothing.
+10. **Clicks (Task 10)** on the prompt's "↑ N rows above" or "↓ N rows below" row or a menu's
+    "↑ N more" or "↓ N more" row, anywhere while a question or the model list is open (except on
+    the list's own entries), or during Ctrl+R's search, do nothing. A click that acts starts the
+    press-twice count again, as a key between the presses does.
 11. **A question without a detail (Task 11),** such as a shell command, whose text is all on the
     question line, leaves the view where it is.
 12. **The detail view (Task 12):**
@@ -662,8 +664,13 @@ Commit: `feat: selecting with the mouse and copying on release`.
 - A left press on a prompt row puts the cursor at the place under it (the layout's `places`, the row
   starting after the two columns of `› `); past the row's end, at its end.
 - A left press on a menu entry: a `/` command runs, an `@` path fills in (as Enter does each).
-- In the model list a left press on a model picks it (ModelPicker takes `mouse` and its first row).
-- Choice 10: clicks on "↑ N rows above" / "↓ N more" rows, and while a question waits, do nothing.
+- In the model list a left press on a model picks it (ModelPicker takes `mouse` and `bottom`, the
+  frame row of its filter line, as the list sits at the foot of its box and its first row moves
+  while filtering).
+- Choice 10: clicks on the prompt's "↑ N rows above" / "↓ N rows below" rows and a menu's
+  "↑ N more" / "↓ N more" rows, anywhere while a question or the model list is open (except on the
+  list's own entries), or during Ctrl+R's search, do nothing; a click that acts restarts the
+  press-twice count.
 
 **Tests:**
 1. Typed `hello world`, a click on the `w` puts the cursor before it (typing `X` gives
@@ -671,7 +678,8 @@ Commit: `feat: selecting with the mouse and copying on release`.
 2. `/` then a click on `/tasks` runs it (shows "No subagents yet.").
 3. `@` with a folder of two files, a click on the second fills it.
 4. `/model` open with two models, a click on the second picks it (`made` gets its spec).
-5. A click on a menu's "↑ 1 more" row changes nothing.
+5. A click on a menu's "↑ 2 more" row changes nothing (the counts start at 2: a count takes a
+   row's place and counts it).
 
 Commit: `feat: clicking in the prompt and on menu entries`.
 

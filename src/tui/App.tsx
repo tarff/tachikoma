@@ -656,8 +656,10 @@ export function App({
   };
   // A left press below the conversation (release 5 design, "Clicking"): on a prompt row the cursor goes to the place under
   // it, after the two columns of "› ", or to the row's end past it; a menu entry is chosen and Enter's path runs it, so a
-  // `/` command runs and an `@` path fills in. The "↑ N rows above" and "↓ N more" rows, and every other row, do nothing
-  // (release 5 plan, choice 10). The prompt during Ctrl+R's search shows a match, not what is typed, so it takes no clicks.
+  // `/` command runs and an `@` path fills in. The prompt's "↑ N rows above" and "↓ N rows below" rows, the menu's
+  // "↑ N more" and "↓ N more", and every other row do nothing (release 5 plan, choice 10). The prompt during Ctrl+R's
+  // search shows a match, not what is typed, so it takes no clicks. A click that acts starts the press-twice count again,
+  // as a key between the presses does.
   const clickAt = (x: number, y: number) => {
     const { columns, promptFirst, promptRows, menuRows } = frame.current;
     const row = y - promptFirst; // a row of the prompt, then of the menu
@@ -678,6 +680,7 @@ export function App({
       chosen.current = { text: e.text, at: w.top + i };
       run("submit");
     }
+    forget();
     rerender((n) => n + 1);
   };
   // A drag while selecting grows the selection to the pointer's cell. Below the conversation the view first scrolls a row

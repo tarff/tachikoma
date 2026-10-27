@@ -2439,10 +2439,15 @@ describe("App's clicks in full screen", () => {
     const { app, mouse, ctx } = await mount([], { full: true, rows: 10 });
     try {
       for (const name of ["a1", "a2", "a3", "a4", "a5", "a6"]) await writeFile(path.join(ctx.root, name), "");
-      await press(app, "@a", ...Array(4).fill("\u001b[B")); // a5 chosen
+      await press(app, "@a");
       // Nine rows: one of conversation, the prompt, five of the menu, the hint and the status line.
+      expect(shown(app).slice(1, 7)).toEqual(["› @a", "  a1", "  a2", "  a3", "  a4", "  ↓ 2 more"]);
+      let frame = app.lastFrame();
+      await pointer(mouse, ...click(4, 6));
+      expect(app.lastFrame()).toBe(frame);
+      await press(app, ...Array(4).fill("\u001b[B")); // a5 chosen
       expect(shown(app).slice(1, 7)).toEqual(["› @a", "  ↑ 2 more", "  a3", "  a4", "  a5", "  a6"]);
-      const frame = app.lastFrame();
+      frame = app.lastFrame();
       await pointer(mouse, ...click(4, 2));
       expect(app.lastFrame()).toBe(frame);
       await press(app, "\u0015", "a", ..."bcdefghij".split("").flatMap((c) => ["\n", c])); // Ctrl+U empties it; ten lines
@@ -2450,9 +2455,65 @@ describe("App's clicks in full screen", () => {
       await pointer(mouse, ...click(4, 1));
       await press(app, "X");
       expect(shown(app)[6]).toBe("  jX");
+      await press(app, "\u007f", ...Array(9).fill("\u001b[A")); // Backspace, then up to the first row
+      expect(shown(app).slice(1, 7)).toEqual(["› a", "  b", "  c", "  d", "  e", "  ↓ 5 rows below"]);
+      await pointer(mouse, ...click(4, 6));
+      await press(app, "Y");
+      expect(shown(app)[1]).toBe("› aY");
     } finally {
       await rm(ctx.root, { recursive: true, force: true });
     }
+  });
+
+  // Release 5 plan, choice 10: the list's own models take clicks, nothing else in it does.
+  it("picks nothing on a click on the model list's heading or its filter line", async () => {
+    const made: string[] = [];
+    const { app, mouse } = await mount([], { full: true, made, models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "/model");
+    await until(app, "fake:b");
+    await tick(); // the picker starts reading keys just after it first appears
+    expect(shown(app).slice(18, 22)).toEqual(["fake", "● fake:a", "  fake:b", "Filter: (type to filter) · ↑↓ move · Enter picks · Esc closes"]);
+    await pointer(mouse, ...click(4, 18), ...click(4, 21));
+    expect(made).toEqual([]);
+    expect(app.lastFrame()).toContain("Filter: (type to filter)");
+  });
+
+  it("does nothing on a click while a question is open", async () => {
+    const { app, mouse, ask } = await mount([], { full: true });
+    await press(app, "hello world");
+    const answer = ask("write x");
+    await until(app, "Allow write x? [y/n]");
+    const row = shown(app).findIndex((r) => r.startsWith("Allow write x?"));
+    const frame = app.lastFrame();
+    await pointer(mouse, ...click(8, row)); // where the prompt's "w" is when no question is open
+    expect(app.lastFrame()).toBe(frame);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    await press(app, "X");
+    expect(app.lastFrame()).toContain("› hello worldX\n");
+  });
+
+  // The prompt during the search shows a match, not what is typed (release 5 plan, choice 10).
+  it("does nothing on a click during Ctrl+R's search", async () => {
+    const { app, mouse } = await mount([], { full: true, past: ["about"] });
+    await press(app, "draft", "\u0012", "ab");
+    await until(app, "search: ab ·");
+    const frame = app.lastFrame();
+    await pointer(mouse, ...click(3, 20));
+    expect(app.lastFrame()).toBe(frame);
+    await press(app, "\u0003", "X"); // Ctrl-C gives back what was typed
+    expect(app.lastFrame()).toContain("› draftX\n");
+  });
+
+  // As a key between two presses does (the rule at App.tsx's `remember`).
+  it("starts the press-twice count again on a click", async () => {
+    const { app, mouse } = await mount([], { full: true });
+    await press(app, "abc", "\u001b");
+    await pointer(mouse, ...click(3, 20));
+    await press(app, "\u001b"); // within 800 ms of the first: a first press again
+    expect(app.lastFrame()).toContain("› abc\n");
+    await press(app, "\u001b"); // the second
+    expect(app.lastFrame()).not.toContain("abc");
   });
 });
 
