@@ -70,7 +70,8 @@ export function ModelPicker({
   };
 
   // A left press on a model picks it, as Enter does (release 5 design, "Clicking"); a press anywhere else does nothing
-  // (release 5 plan, choice 10). Set up again at each drawing, so a row is mapped as it is drawn. The models' rows end on
+  // (release 5 plan, choice 10). Set up again at each drawing, so a row is mapped as it is drawn, and the model pressed is
+  // picked though a key read with the press changed the filter (found at Task 10's review). The models' rows end on
   // the row above the filter line: the "No models" line under them shows only when there are none to press.
   const list = shown.slice(top, top + height);
   useEffect(() => {
@@ -78,8 +79,7 @@ export function ModelPicker({
     const onMouse = (m: Mouse) => {
       const r = list[m.y - (bottom - list.length)];
       if (m.kind !== "press" || m.button !== "left" || r?.kind !== "model") return;
-      state.current!.chosen = models.indexOf(r.spec);
-      pick();
+      onPick(r.spec);
     };
     mouse.on("mouse", onMouse);
     return () => void mouse.off("mouse", onMouse);

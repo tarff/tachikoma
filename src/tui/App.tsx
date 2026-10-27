@@ -131,8 +131,9 @@ export function App({
   // render (found at Task 5's review): Task 14's /screen changes `full`, and keeps this in step with it.
   const fullNow = useRef(full);
   // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row and how many it draws, and
-  // the menu's under it; none drawn while a question or the model list takes their place.
-  const frame = useRef({ columns, viewHeight: 1, promptFirst: 0, promptRows: 0, menuRows: 0 });
+  // the menu's under it, none while a question or the model list takes their place; and the prompt as typed and the menu's
+  // choice when they were drawn, which keys replace, never change.
+  const frame = useRef({ columns, viewHeight: 1, promptFirst: 0, promptRows: 0, menuRows: 0, editor: empty, chosen: chosen.current });
   const promptTop = useRef(0); // the prompt's and the menu's windows (layout.ts, scroll), as last drawn
   const menuTop = useRef(0);
   const wheel = useRef(0); // the fraction of a row carried from earlier notches (view.ts, notch)
@@ -658,10 +659,14 @@ export function App({
   // it, after the two columns of "› ", or to the row's end past it; a menu entry is chosen and Enter's path runs it, so a
   // `/` command runs and an `@` path fills in. The prompt's "↑ N rows above" and "↓ N rows below" rows, the menu's
   // "↑ N more" and "↓ N more", and every other row do nothing (release 5 plan, choice 10). The prompt during Ctrl+R's
-  // search shows a match, not what is typed, so it takes no clicks. A click that acts starts the press-twice count again,
-  // as a key between the presses does.
+  // search shows a match, not what is typed, so it takes no clicks. A click read with a key that replaced the prompt or
+  // the menu's choice is dropped: React draws nothing between them, so the screen is still the one from before the key
+  // (found at Task 10's review). A click that acts starts the press-twice count again, as a key between the presses does.
   const clickAt = (x: number, y: number) => {
-    const { columns, promptFirst, promptRows, menuRows } = frame.current;
+    if (search.current) return;
+    const f = frame.current;
+    if (editor.current !== f.editor || chosen.current !== f.chosen) return;
+    const { columns, promptFirst, promptRows, menuRows } = f;
     const row = y - promptFirst; // a row of the prompt, then of the menu
     const marked = (i: number, shown: number, w: { above: number; below: number }) => (i === 0 && w.above > 0) || (i === shown - 1 && w.below > 0);
     const e = editor.current;
@@ -672,9 +677,10 @@ export function App({
       editor.current = move(e, placeOn(places, w.top + row, x - 2)!);
       goal.current = null;
     } else {
-      const menu = menuFor(e);
       const i = row - promptRows;
-      if (!menu || i < 0 || i >= menuRows) return;
+      if (i < 0 || i >= menuRows) return;
+      const menu = menuFor(e); // after the rows are checked: for an `@` path it can list a folder again
+      if (!menu) return;
       const w = windowOf(menu.entries.length, menuRows, chosenIn(e, menu), menuTop.current);
       if (marked(i, menuRows, w)) return;
       chosen.current = { text: e.text, at: w.top + i };
@@ -925,18 +931,20 @@ export function App({
   const offered = full && picker ? listRows(picker, "") : [];
   const needed = offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1);
   const pickerRows = Math.max(1, Math.min(needed, height - 1 - 1 - 1 - 1 - (hint ? 1 : 0))); // the frame's row short, the conversation's, filter, status
+  const abovePrompt = (busy ? 1 : 0) + todoShown.length + queued.length; // the live area's rows drawn above the prompt
   const liveRows =
     (picker
       ? pickerRows + 1
       : question
         ? asked.length
-        : (busy ? 1 : 0) + todoShown.length + queued.length + promptShown + menuRows + panel.length) +
+        : abovePrompt + promptShown + menuRows + panel.length) +
     (hint ? 1 : 0) +
     1 +
     (tooled ? 1 : 0);
   const viewHeight = Math.max(1, height - 1 - liveRows);
-  const promptFirst = (full ? viewHeight : 0) + (busy ? 1 : 0) + todoShown.length + queued.length; // the rows drawn above the prompt
-  frame.current = { columns, viewHeight, promptFirst, promptRows: picker || question || search.current ? 0 : promptShown, menuRows };
+  const promptFirst = (full ? viewHeight : 0) + abovePrompt; // the prompt's first row
+  const promptRowsShown = picker || question ? 0 : promptShown;
+  frame.current = { columns, viewHeight, promptFirst, promptRows: promptRowsShown, menuRows, editor: editor.current, chosen: chosen.current };
 
   return (
     <>

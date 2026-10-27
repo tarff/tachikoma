@@ -2398,6 +2398,45 @@ describe("App's clicks in full screen", () => {
     expect(app.lastFrame()).toContain(`› ${"a".repeat(97)}\n  bXcd\n`);
   });
 
+  it("puts the prompt's cursor at a row's start on a click in the row's first two columns", async () => {
+    const { app, mouse } = await mount([], { full: true });
+    await press(app, "ab", "\n", "cd");
+    expect(shown(app).slice(19, 21)).toEqual(["› ab", "  cd"]);
+    await pointer(mouse, ...click(1, 19)); // on the "›"'s space
+    await press(app, "X");
+    expect(shown(app).slice(19, 21)).toEqual(["› Xab", "  cd"]);
+    await pointer(mouse, ...click(0, 20)); // a continuation row
+    await press(app, "Y");
+    expect(shown(app).slice(19, 21)).toEqual(["› Xab", "  Ycd"]);
+  });
+
+  // React draws no frame between a key and a mouse report from the same read of the terminal, so a click there would be
+  // mapped onto the screen from before the key (found at Task 10's review).
+  it("drops a click that comes in the same read as a key that changes the prompt", async () => {
+    const { app, mouse } = await mount([], { full: true });
+    await press(app, "ab", "\n", "cd", "\n", "ef");
+    expect(shown(app).slice(18, 21)).toEqual(["› ab", "  cd", "  ef"]);
+    app.stdin.write("\u0003"); // Ctrl-C empties the prompt to one row
+    for (const m of click(3, 20)) mouse.emit("mouse", m); // on "ef", drawn before the key
+    await tick();
+    expect(app.lastFrame()).toContain("\n›\n");
+    await press(app, "X");
+    expect(app.lastFrame()).toContain("\n› X\n");
+  });
+
+  it("drops a click on a menu entry that comes in the same read as a key that changes the menu", async () => {
+    const { app, mouse } = await mount([], { full: true });
+    await press(app, "/");
+    expect(shown(app)[18]).toBe("  /tasks  List the subagents; /tasks t1 shows one, /tasks stop stops them");
+    app.stdin.write("m");
+    for (const m of click(4, 18)) mouse.emit("mouse", m); // on /tasks, drawn before the key
+    await tick();
+    await tick();
+    expect(app.lastFrame()).toContain("\n› /m\n");
+    expect(app.lastFrame()).not.toContain("No models");
+    expect(app.lastFrame()).not.toContain("No subagents yet.");
+  });
+
   it("runs a / command clicked in the menu, as Enter does", async () => {
     const { app, mouse } = await mount([], { full: true });
     await press(app, "/");
@@ -2432,6 +2471,21 @@ describe("App's clicks in full screen", () => {
     await pointer(mouse, ...click(4, 20));
     await until(app, "lead is now fake:b");
     expect(made).toEqual(["fake:b"]);
+  });
+
+  // The list is mapped as it was drawn; a key in the same read of the terminal can change the filter first (found at
+  // Task 10's review).
+  it("picks the model clicked in /model's list when a key in the same read changed the filter", async () => {
+    const made: string[] = [];
+    const { app, mouse } = await mount([], { full: true, made, models: [{ provider: "fake", models: ["x1", "x2", "y1"] }] });
+    await type(app, "/model");
+    await until(app, "fake:y1");
+    await tick(); // the picker starts reading keys just after it first appears
+    expect(shown(app).slice(17, 21)).toEqual(["fake", "  fake:x1", "  fake:x2", "  fake:y1"]);
+    app.stdin.write("x");
+    for (const m of click(4, 20)) mouse.emit("mouse", m); // on fake:y1, drawn before the key
+    await waitFor(() => made.length > 0);
+    expect(made).toEqual(["fake:y1"]);
   });
 
   // Release 5 plan, choice 10. The counts start at 2: a count takes the place of a row, and counts it (layout.ts, scroll).
@@ -2495,14 +2549,16 @@ describe("App's clicks in full screen", () => {
 
   // The prompt during the search shows a match, not what is typed (release 5 plan, choice 10).
   it("does nothing on a click during Ctrl+R's search", async () => {
-    const { app, mouse } = await mount([], { full: true, past: ["about"] });
-    await press(app, "draft", "\u0012", "ab");
-    await until(app, "search: ab ·");
+    const { app, mouse } = await mount([], { full: true, past: ["one\ntwo\nthree"] });
+    await press(app, "d", "\u0012", "t");
+    await until(app, "search: t ·");
+    const row = shown(app).indexOf("  three"); // a row the prompt as typed, one row, does not have
     const frame = app.lastFrame();
-    await pointer(mouse, ...click(3, 20));
+    await pointer(mouse, ...click(4, row));
+    await pointer(mouse, ...click(4, row)); // a frame drawn between: a click on the prompt as typed would have moved it
     expect(app.lastFrame()).toBe(frame);
     await press(app, "\u0003", "X"); // Ctrl-C gives back what was typed
-    expect(app.lastFrame()).toContain("› draftX\n");
+    expect(app.lastFrame()).toContain("› dX\n");
   });
 
   // As a key between two presses does (the rule at App.tsx's `remember`).
