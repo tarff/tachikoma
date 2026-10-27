@@ -792,6 +792,17 @@ Commit: `feat: the detail view for Ctrl+O and /tasks t3`.
 - Work goes on meanwhile; nothing is drawn (Ink drops renders while suspended).
 - A permission question arriving while printed out comes back at once, as q would, and the
   question shows (Task 11's rules).
+- Found at the reviews (2026-10-28):
+  - Coming back lets go of the keyboard only if `[` has not printed the view out again meanwhile
+    (q then `[` quickly let raw mode go off while out).
+  - The user's choices: a paste does nothing while out (bracketed paste on while out, the reader
+    drops `ESC[200~` ... `ESC[201~`); a paste still arriving when the view comes back is dropped
+    to its end; a queued `/model` (the list waits through `perform`) or `/tasks t3`, and what is
+    queued behind it, waits until the view comes back; a queued `/exit` still runs.
+  - The reader's parsing is `readOut` in `src/tui/input.ts`; a paste start marker split across
+    reads is recognised only within the filter's 20 ms hold, as in Ink.
+  - A render error while out is said on stderr (`Screen.suspended`), and nothing queued starts
+    once Ink has ended.
 
 **Tests** (a stand-in `input` and a recording `screen` whose writes are kept with the steps):
 1. `[` writes, in order: `MOUSE_OFF`, (suspend), `FIRST_SCREEN`, the view's lines, the last line;

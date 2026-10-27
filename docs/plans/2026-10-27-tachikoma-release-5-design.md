@@ -269,6 +269,13 @@ is hidden while it is open; the status line stays, and a grey row at the bottom 
     drawn until the view comes back.
   - **A permission question** brings it back at once, as q would, and the question shows as under
     "Scrolling".
+  - **A paste does nothing** while the view is printed out, and a paste still arriving when the
+    view comes back (for a question, or in the same read as the q) is dropped to its end, so a
+    pasted y can never answer a question (the user's choices at Task 13's reviews, 2026-10-28).
+  - **The queue:** messages and other commands queued during a turn still run while the view is
+    printed out, `/exit` included; a queued `/model` or `/tasks t3`, and everything queued behind
+    it, waits until the view comes back, since either would open over it unseen (the user's
+    choice at Task 13's review).
 - **q, Esc or Ctrl+O** close the view. Ctrl-C stops a turn that is running, leaving the view open;
   with nothing running it only closes the view, so the prompt's hidden draft is never cleared
   unseen (the user's choice at Task 12's review). The working line still says "Esc to stop".
