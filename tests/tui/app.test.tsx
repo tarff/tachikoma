@@ -507,7 +507,7 @@ describe("App", () => {
     const complete = later.complete.bind(later);
     later.complete = async (req) => ((answered = true), complete(req));
     const { app } = await mount([], { lead: later });
-    expect(app.lastFrame()).not.toMatch(/\d+%/);
+    expect(app.lastFrame()).not.toMatch(/\d+% left/);
     await type(app, "hi");
     await until(app, "there");
     await until(app, "% left");

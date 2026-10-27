@@ -470,8 +470,9 @@ user. Unmarked items are fixes from the reviews that keep to the design.
 - **The status line's colours (Task 16).** The user's choices (2026-10-27): claude-hud's style,
   option "A" of the preview, and `72% left` without `ctx` where the bar shows. The build's calls:
   grey is drawn dim, as claude-hud draws it and as the bar's empty cells already were, not in the
-  terminal's grey of the conversation's grey rows; the spaces between words and the `/` between
-  the token counts stay plain, as in the preview the user chose from.
+  grey (`gray`) the conversation's own grey rows use; the spaces between words and the `/` between
+  the token counts stay plain, as in the preview the user chose from. The plan's check that the
+  pieces' words joined equal `formatSegment` was dropped: `pieces` is the only source of the words.
 
 ## Not in this release
 

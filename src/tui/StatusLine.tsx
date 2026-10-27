@@ -15,7 +15,7 @@ export interface StatusInfo {
   output: number;
   cost: number;
   costUnknown: boolean;
-  mode: string;
+  mode: Mode;
   errors: number;
   project: string; // the project folder's name
   branch: string | null; // the git branch; null outside a repository (see git.ts)
@@ -69,24 +69,24 @@ export interface Piece {
 // The mode by risk, as claude-hud has no such part (release 5 design, "The status line's colours").
 const MODE_COLOR: Record<Mode, Piece["color"]> = { ask: "green", project: "yellow", never: "red" };
 
-// Each part's words in their colours (release 5 design, "The status line's colours"); `formatSegment` joins them, so
-// the words and the colours cannot drift apart.
+// The one place each part's words and colours are written (release 5 design, "The status line's colours").
 export function pieces(s: LineSegment, i: StatusInfo): Piece[] {
   switch (s) {
     case "lead":
       return [{ text: "lead", dim: true }, { text: " " }, { text: i.lead, color: "cyan" }];
-    case "context":
+    case "context": {
       // How much is left, as Codex shows it (main design, "Status line"), in the bar's colour, the bar saying what
       // the part is (the user's choice, 2026-10-27); the tokens in use when the window is not known.
-      return i.contextWindow
-        ? [{ text: `${Math.max(0, 100 - used(i))}% left`, color: contextBar(used(i)).color }]
-        : [{ text: "ctx", dim: true }, { text: ` ${k(i.context)}` }];
+      if (!i.contextWindow) return [{ text: "ctx", dim: true }, { text: ` ${k(i.context)}` }];
+      const u = used(i);
+      return [{ text: `${Math.max(0, 100 - u)}% left`, color: contextBar(u).color }];
+    }
     case "tokens":
       return [{ text: `${k(i.input)} ` }, { text: "in", dim: true }, { text: ` / ${k(i.output)} ` }, { text: "out", dim: true }];
     case "cost":
       return [{ text: costText(i.lead, i.cost, i.costUnknown), color: "green" }];
     case "mode":
-      return [{ text: "perm", dim: true }, { text: " " }, { text: i.mode, color: MODE_COLOR[i.mode as Mode] }];
+      return [{ text: "perm", dim: true }, { text: " " }, { text: i.mode, color: MODE_COLOR[i.mode] }];
     case "errors": {
       const text = `${i.errors} error${i.errors === 1 ? "" : "s"}`;
       return [i.errors > 0 ? { text, color: "red" } : { text, dim: true }];
@@ -102,10 +102,6 @@ export function pieces(s: LineSegment, i: StatusInfo): Piece[] {
     case "tasks":
       return [{ text: `${i.running} running`, color: "yellow" }];
   }
-}
-
-export function formatSegment(s: LineSegment, i: StatusInfo): string {
-  return pieces(s, i).map((p) => p.text).join("");
 }
 
 // One line, cut at the end to the terminal's width (Ink measures it in columns) instead of wrapping.

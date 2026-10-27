@@ -7,7 +7,6 @@ import { describe as describeMessage, lastTurn, screen } from "../../src/tui/des
 import {
   contextBar,
   duration,
-  formatSegment,
   type LineSegment,
   pieces,
   type Segment,
@@ -48,22 +47,13 @@ function drawn(node: ReactNode): Record<string, unknown>[] {
   return [props, ...drawn(props.children)];
 }
 
-describe("StatusLine's pieces", () => {
-  it("say exactly what each part says", () => {
-    const plan = { ...info, lead: "chatgpt:gpt-6.1-sol", cost: 0 };
-    const cases: StatusInfo[] = [
-      info,
-      { ...info, branch: null },
-      { ...info, contextWindow: null },
-      plan,
-      { ...plan, cost: 0.42, costUnknown: true },
-      { ...info, errors: 0, running: 2 },
-    ];
-    for (const i of cases)
-      for (const s of SEGMENTS.filter((s): s is LineSegment => s !== "tools"))
-        expect(pieces(s, i).map((p) => p.text).join("")).toBe(formatSegment(s, i));
-  });
+// What a part says: its pieces' words, which are written nowhere else.
+const formatSegment = (s: LineSegment, i: StatusInfo) => pieces(s, i).map((p) => p.text).join("");
 
+// The line's elements: a Text per part, each holding its separator, its bar and its pieces' Texts.
+type Line = ReactElement<{ children: ReactElement<{ children: ReactNode[] }>[] }>;
+
+describe("StatusLine's pieces", () => {
   // The colours are claude-hud's, by risk where it has no such part (release 5 design, "The status line's colours").
   it("colour each part as the design's table says", () => {
     expect(pieces("lead", info)).toEqual([{ text: "lead", dim: true }, { text: " " }, { text: "anthropic:claude-opus-5-5", color: "cyan" }]);
@@ -119,9 +109,23 @@ describe("StatusLine's pieces", () => {
     expect(all.filter((p) => p.inverse)).toEqual([]);
     // Nine parts on the line (every one but `tools`), so eight separators.
     expect(all.filter((p) => p.children === " | ").map((p) => p.dimColor)).toEqual(Array(8).fill(true));
-    const parts = (line as ReactElement<{ children: ReactElement<{ children: ReactNode[] }>[] }>).props.children;
+    const parts = (line as Line).props.children;
     expect(parts[0]!.props.children[0]).toBe(" ");
     expect(parts.at(-1)!.props.children.at(-1)).toBe(" ");
+  });
+
+  it("are each drawn in their own colour, every piece of every part", () => {
+    const shown = SEGMENTS.filter((s): s is LineSegment => s !== "tools");
+    for (const i of [
+      { ...info, running: 1 },
+      { ...info, contextWindow: null, errors: 0, mode: "never", branch: null, running: 1 },
+    ] satisfies StatusInfo[]) {
+      const parts = (StatusLine({ info: i, segments: shown }) as Line).props.children;
+      shown.forEach((s, n) => {
+        const texts = (parts[n]!.props.children.find(Array.isArray) as ReactElement[]).map((t) => t.props);
+        expect(texts).toEqual(pieces(s, i).map((p) => ({ children: p.text, color: p.color, dimColor: p.dim })));
+      });
+    }
   });
 });
 
@@ -139,7 +143,7 @@ describe("StatusLine", () => {
     // In two parts: all of them are wider than the test terminal's 100 columns.
     const shown = frame(info, SEGMENTS.slice(0, 4));
     expect(shown).toContain("lead anthropic:claude-opus-5-5");
-    expect(shown).toContain("50% left");
+    expect(shown).toContain("█████░░░░░ 50% left");
     expect(shown).toContain("12.3k in / 678 out");
     expect(shown).toContain("$0.42");
     expect(frame(info, SEGMENTS.slice(4))).toBe(" perm ask | 2 errors | Agent Harness git:(main) | ⏱ 14m");
