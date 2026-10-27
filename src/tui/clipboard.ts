@@ -19,13 +19,16 @@ export const DECODE = "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64Stri
 
 // The system's tool (release 5 plan, choice 8). On Windows the text goes to Set-Clipboard through PowerShell's input,
 // base64-encoded, so no command line limit applies and no console code page can change it; PowerShell is named by its
-// full path, so a program of the same name earlier on PATH is not run instead (exec/env.ts, system32).
+// full path, so a program of the same name earlier on PATH is not run instead (exec/env.ts, system32). A failure is
+// written as its message alone: PowerShell's own report starts with the cmdlet's name and is cut at the console's
+// width. It is written in UTF-8, as runTool reads stderr, so a message in another language stays readable.
 export function systemTool(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Tool | null {
   const text = (t: string) => t;
   if (platform === "win32") {
+    const set = `try { ${DECODE} | Set-Clipboard -ErrorAction Stop } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
     return {
       command: system32("WindowsPowerShell/v1.0/powershell.exe"),
-      args: ["-NoProfile", "-NonInteractive", "-Command", `${DECODE} | Set-Clipboard`],
+      args: ["-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding = [Text.Encoding]::UTF8; ${set}`],
       input: (t) => Buffer.from(t, "utf8").toString("base64"),
       name: "Set-Clipboard",
     };
@@ -39,8 +42,9 @@ export function systemTool(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): T
 }
 
 // One run of the tool with the text on its input. It is done when the tool exits with 0, without waiting for its output
-// to close: xclip and wl-copy leave a process of their own behind holding the clipboard, which can keep it open. A tool
-// that fails has not left one, so its stderr is read to the end for the reason.
+// to close: xclip and wl-copy leave a process of their own behind holding the clipboard, which keeps their stderr open,
+// so it is closed on Tachikoma's side, or the open pipe would keep Tachikoma running after its last work until another
+// program took the clipboard. A tool that fails has not left one, so its stderr is read to the end for the reason.
 export function runTool(tool: Tool): (text: string) => Promise<void> {
   return (text) =>
     new Promise((resolve, reject) => {
@@ -50,7 +54,11 @@ export function runTool(tool: Tool): (text: string) => Promise<void> {
       child.on("error", (err: NodeJS.ErrnoException) => {
         reject(new Error(err.code === "ENOENT" ? `${tool.name} not found` : `${tool.name} failed: ${err.message}`));
       });
-      child.on("exit", (code) => code === 0 && resolve());
+      child.on("exit", (code) => {
+        if (code !== 0) return;
+        child.stderr!.destroy();
+        resolve();
+      });
       child.on("close", (code, signal) => {
         const why = stderr.trim().split(/\r?\n/)[0] || (code === null ? `stopped by ${signal}` : `exit code ${code}`);
         if (code !== 0) reject(new Error(`${tool.name} failed: ${why}`));
@@ -90,13 +98,12 @@ export class Clipboard {
   #start(run: (text: string) => Promise<void>, text: string): void {
     const copy = this.#copies;
     this.#running = true;
-    run(text).then(
-      () => this.#ended(run),
-      (err: unknown) => {
+    // The next copy runs even when the report throws.
+    run(text)
+      .catch((err: unknown) => {
         if (copy === this.#copies) this.#report(errorText(err));
-        this.#ended(run);
-      },
-    );
+      })
+      .finally(() => this.#ended(run));
   }
 
   #ended(run: (text: string) => Promise<void>): void {

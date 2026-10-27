@@ -556,6 +556,7 @@ Windows' tool: `powershell.exe -NoProfile -NonInteractive -Command <DECODE> | Se
 `DECODE` reads base64 from the input and turns it into text
 (`[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))`),
 exported so a test can run it without touching the clipboard.
+- Spaces drop only at a line's real end; a selection ending mid-line keeps them (user, 2026-10-27).
 
 **Tests:**
 1. `textOf`: within a line; across three lines with end spaces dropped; backwards (b before a); a

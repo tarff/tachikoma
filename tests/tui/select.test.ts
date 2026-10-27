@@ -31,6 +31,19 @@ describe("textOf", () => {
     expect(textOf(lines, { line: 2, offset: 3 }, { line: 0, offset: 1 })).toBe("ne\ntwo\nthr");
   });
 
+  it("keeps the spaces of a piece that stops before its line's end, and drops them at a line's real end", () => {
+    expect(textOf([{ text: "foo bar" }], { line: 0, offset: 0 }, { line: 0, offset: 4 })).toBe("foo ");
+    expect(textOf([{ text: "see now" }], { line: 0, offset: 3 }, { line: 0, offset: 4 })).toBe(" ");
+    expect(textOf(lines, { line: 0, offset: 0 }, { line: 1, offset: 4 })).toBe("one\ntwo ");
+    expect(textOf(lines, { line: 0, offset: 0 }, { line: 1, offset: 6 })).toBe("one\ntwo");
+  });
+
+  it("takes an empty line as an empty line, and a place at a line's end as its end", () => {
+    const three = [{ text: "a" }, { text: "" }, { text: "b" }];
+    expect(textOf(three, { line: 0, offset: 0 }, { line: 2, offset: 1 })).toBe("a\n\nb");
+    expect(textOf(three, { line: 0, offset: 1 }, { line: 2, offset: 0 })).toBe("\n\n");
+  });
+
   it("gives a line wrapped over several rows as one line", () => {
     const rows = rowsOf(10, [{ text: "the quick brown fox" }, { text: "end" }]);
     expect(rows.total).toBe(3);
@@ -56,12 +69,23 @@ describe("span", () => {
     const wrapped = rowsOf(12, [{ text: "the quick brown fox" }]);
     expect(wrapped.row(0)).toMatchObject({ start: 0, end: 10 }); // "the quick ", then "brown fox"
     expect(span(wrapped, { row: 0, x: 0 }, { row: 0, x: 11 })).toEqual([{ line: 0, offset: 0 }, { line: 0, offset: 10 }]);
-    expect(textOf(wrapped.lines, ...span(wrapped, { row: 0, x: 0 }, { row: 0, x: 11 }))).toBe("the quick");
+    expect(textOf(wrapped.lines, ...span(wrapped, { row: 0, x: 0 }, { row: 0, x: 11 }))).toBe("the quick "); // mid-line: the space stays
   });
 
   it("takes a wide character whole from either of its columns", () => {
     const wide = rowsOf(20, [{ text: "a日本b" }]);
     expect(textOf(wide.lines, ...span(wide, { row: 0, x: 2 }, { row: 0, x: 3 }))).toBe("日本");
+  });
+
+  it("takes a letter with combining marks whole", () => {
+    const marked = rowsOf(20, [{ text: "aé̂b" }]);
+    expect(span(marked, { row: 0, x: 1 }, { row: 0, x: 1 })).toEqual([{ line: 0, offset: 1 }, { line: 0, offset: 4 }]);
+  });
+
+  it("ends a backward drag across rows that starts past a row's text at that row's end", () => {
+    const two = rowsOf(20, [{ text: "abc" }, { text: "defgh" }]);
+    expect(span(two, { row: 1, x: 2 }, { row: 0, x: 9 })).toEqual([{ line: 0, offset: 3 }, { line: 1, offset: 3 }]);
+    expect(textOf(two.lines, ...span(two, { row: 1, x: 2 }, { row: 0, x: 9 }))).toBe("\ndef");
   });
 });
 
@@ -102,6 +126,18 @@ describe("wordAt", () => {
 
   it("takes letters of any script as letters", () => {
     expect(word("日本 語", "本")).toBe("日本");
+    expect(word("x a\u{1d4b3}b y", "\u{1d4b3}")).toBe("a\u{1d4b3}b"); // a letter outside the basic plane, two UTF-16 units
+    expect(word("x cafés y", "f")).toBe("cafés"); // a combining mark
+  });
+
+  it("takes an emoji alone", () => {
+    expect(word("a 🦀 b", "🦀")).toBe("🦀");
+    expect(word("ab🦀cd", "🦀")).toBe("🦀");
+  });
+
+  it("takes nothing at a line's end or on an empty line", () => {
+    expect(wordAt("abc", 3)).toEqual({ start: 3, end: 3 });
+    expect(wordAt("", 0)).toEqual({ start: 0, end: 0 });
   });
 });
 
@@ -138,6 +174,10 @@ describe("placeAt", () => {
     const wrapped = rowsOf(12, [{ text: "the quick brown fox" }]);
     expect(placeAt(wrapped, 0, 11)).toEqual({ pos: { line: 0, offset: 10 }, past: true });
     expect(placeAt(wrapped, 1, 0)).toEqual({ pos: { line: 0, offset: 10 }, past: false });
+  });
+
+  it("gives an empty line's only place, past its text", () => {
+    expect(placeAt(rowsOf(20, [{ text: "a" }, { text: "" }]), 1, 0)).toEqual({ pos: { line: 1, offset: 0 }, past: true });
   });
 
   it("gives a one-line entry's end past its row's text, and on the … that cuts it", () => {

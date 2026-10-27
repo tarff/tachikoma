@@ -78,7 +78,7 @@ function starts(text: string, width: number): number[] {
   for (let k = 0; k < n; ) {
     if (blank(k)) {
       if (col > 0 && col >= width) breakAt(at(k));
-      col += text[at(k)] === "\t" ? Math.min(TAB - (col % TAB), width - col) : columns(k);
+      col += text[at(k)] === "\t" ? columnsAt("\t", col, width) : columns(k);
       k++;
       continue;
     }

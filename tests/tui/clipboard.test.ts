@@ -1,7 +1,17 @@
-import { execFileSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import { Clipboard, DECODE, osc52, runTool, systemTool, type Tool } from "../../src/tui/clipboard.js";
 import { system32 } from "../../src/exec/env.js";
+
+// Each tool's process, so a test can see what runTool left open.
+vi.mock("node:child_process", async (importOriginal) => {
+  const cp = await importOriginal<typeof import("node:child_process")>();
+  return { ...cp, spawn: vi.fn(cp.spawn) };
+});
+const lastChild = () => vi.mocked(spawn).mock.results.at(-1)!.value as ChildProcess;
 
 const TEXT = "tachikoma é 日本語 🦀";
 const base64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
@@ -16,7 +26,13 @@ describe("systemTool", () => {
   it("on Windows, hands base64 to PowerShell's input, decoded and given to Set-Clipboard", () => {
     const tool = systemTool("win32", {})!;
     expect(tool.command.toLowerCase()).toMatch(/powershell\.exe$/);
-    expect(tool.args).toEqual(["-NoProfile", "-NonInteractive", "-Command", `${DECODE} | Set-Clipboard`]);
+    expect(tool.args).toEqual([
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `[Console]::OutputEncoding = [Text.Encoding]::UTF8; try { ${DECODE} | Set-Clipboard -ErrorAction Stop } ` +
+        "catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }",
+    ]);
     expect(tool.input(TEXT)).toBe(base64(TEXT));
     expect(tool.name).toBe("Set-Clipboard");
   });
@@ -41,6 +57,21 @@ describe("systemTool", () => {
     });
     expect(out.replace(/\r?\n$/, "")).toBe(TEXT);
   });
+
+  // The tool's own script with Get-Item where Set-Clipboard is, failing on a path that does not exist, so the failure
+  // path runs without touching the user's clipboard.
+  it.runIf(process.platform === "win32")("on Windows, reports a failure in one line, in UTF-8, without the cmdlet's name", { timeout: 15_000 }, async () => {
+    const tool = systemTool("win32", {})!;
+    const stand = { ...tool, args: tool.args.map((a) => a.replace("Set-Clipboard", "Get-Item")) };
+    expect(stand.args.join(" ")).not.toContain("Set-Clipboard");
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-clipboard-"));
+    try {
+      const missing = path.join(dir, "missing é 日本");
+      await expect(runTool(stand)(missing)).rejects.toThrow(`Set-Clipboard failed: Cannot find path '${missing}' because it does not exist.`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("runTool", () => {
@@ -60,6 +91,37 @@ describe("runTool", () => {
     await expect(runTool(node(check))("other")).rejects.toThrow(/^stand-in failed: got /);
     const fails = node(`process.stdin.resume();console.error("no display\\nmore");process.exit(2)`);
     await expect(runTool(fails)("x")).rejects.toThrow(/^stand-in failed: no display$/);
+  });
+
+  // 4 MB: far more than a pipe holds (64 KB on Linux, pipe(7)), so the write is still going when the tool exits.
+  const big = "x".repeat(4 * 1024 * 1024);
+
+  it("is done when a tool exits with 0 without reading its input", async () => {
+    await expect(runTool(node("process.exit(0)"))(big)).resolves.toBeUndefined();
+  });
+
+  it("reports a tool that fails without reading its input by its stderr", async () => {
+    await expect(runTool(node(`process.stderr.write("boom\\n",()=>process.exit(3))`))(big)).rejects.toThrow(/^stand-in failed: boom$/);
+  });
+
+  // xclip and wl-copy leave a process behind that holds the clipboard and keeps the tool's stderr open; that pipe would
+  // keep Tachikoma running after its last work until another program took the clipboard.
+  it("leaves nothing open when a tool exits with 0 and leaves a process of its own behind", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-clipboard-"));
+    const pidFile = path.join(dir, "helper.pid");
+    // 30 s: longer than the test, so only the kill below ends the helper.
+    const script =
+      `const h=require("node:child_process").spawn(process.execPath,["-e","setTimeout(()=>{},30000)"],` +
+      `{detached:true,stdio:["ignore","ignore","inherit"]});require("node:fs").writeFileSync(${JSON.stringify(pidFile)},String(h.pid));h.unref()`;
+    try {
+      await runTool(node(script))("x");
+      expect(lastChild().stderr!.destroyed).toBe(true);
+    } finally {
+      try {
+        process.kill(Number(readFileSync(pidFile, "utf8")));
+      } catch {} // the helper did not start, or has gone
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
