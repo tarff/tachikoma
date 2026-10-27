@@ -198,6 +198,9 @@ input, with these rules:
   user's choice, 2026-10-27): any press clears it, on the prompt or the status line too, but one on
   the scroll bar, which scrolls as the wheel does. Only the conversation and the detail view can be
   selected, not the prompt or the status line.
+- The "↓ N new lines" row is not text while it shows (found at Task 9's review, where a drag along
+  it copied a line hidden under it): a press there starts no selection, and a drag onto it counts
+  as the row above it, without scrolling.
 
 **Copying,** when the button is let go:
 - A line wrapped over several rows copies as one line; lines are joined by line breaks, and the

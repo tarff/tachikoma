@@ -626,6 +626,8 @@ Commit: `feat: selection text, words, clicks and the clipboard`.
     only for a drag started on a lower row; one started on the top row selects within it.
   - A selection stays until a click; keys never clear it. Any press clears it, on the prompt or the
     status line too, but one on the scroll bar, which scrolls as the wheel does.
+  - The "↓ N new lines" row is not text: a press there starts no selection, and a drag onto it
+    counts as the row above it, without scrolling (found at the code review).
   - `Copied N characters` goes on the next key, paste or click. It takes the hint row's place only
     while one shows, never adding a row, so a copy never moves the conversation, and a copy whose
     line cannot show when it is made drops it; Ctrl+R's search and the exit warning keep the row.
