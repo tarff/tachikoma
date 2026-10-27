@@ -2,7 +2,7 @@
 // and the text between two places. A selection is two places in the lines, not screen rows, so it stays on its text
 // as the view moves or rewraps.
 import { segmenter } from "./editor.js";
-import { columnsAt, columnsOf, type Pos, type Rows } from "./view.js";
+import { columnsAt, columnsOf, type Pos, type Row, type Rows } from "./view.js";
 
 export const CLICK_MS = 500; // Windows' default double-click time (Microsoft, SetDoubleClickTime)
 
@@ -23,20 +23,33 @@ export function textOf(lines: readonly { text: string }[], a: Pos, b: Pos): stri
   return out.join("\n");
 }
 
-// The place before the character under column x of the row, or the row's end past its text, with `past` saying which.
-// The columns are counted as view.ts draws the row: a tab as spaces to its stop, and a one-line entry, which is drawn
-// cut (view.ts, cut), by string-width alone. Where "…" cuts a one-line entry, it and past it stand for the entry's end,
-// so selecting to the row's end takes the whole entry (release 5 plan, choice 2).
-export function placeAt(rows: Rows, row: number, x: number): { pos: Pos; past: boolean } {
-  const r = rows.row(row);
+// A row's characters as view.ts draws them, for placeAt and the selection's highlight (Conversation.tsx) alike, so what
+// is copied and what is shown cannot drift apart: each one's place in its line, the column it starts at, its columns and
+// what is drawn for it. A tab is drawn as spaces to its stop; a one-line entry, which is drawn cut (view.ts, cut), is
+// counted by string-width alone. Where "…" cuts a one-line entry, the "…" comes last, marked `cut`, standing for the rest.
+export function* drawn(rows: Rows, r: Row): Generator<{ offset: number; col: number; width: number; text: string; cut: boolean }> {
   const l = rows.lines[r.line]!;
   const room = l.oneLine && r.text !== l.text ? rows.width - 1 : Infinity; // 1: the column "…" takes
   let col = 0;
   for (const { segment, index } of segmenter.segment(l.text.slice(r.start, r.end))) {
     const w = l.oneLine ? columnsOf(segment) : columnsAt(segment, col, rows.width);
-    if (col + w > room) break;
-    if (x < col + w) return { pos: { line: r.line, offset: r.start + index }, past: false };
+    if (col + w > room) {
+      yield { offset: r.start + index, col, width: 1, text: "…", cut: true };
+      return;
+    }
+    yield { offset: r.start + index, col, width: w, text: !l.oneLine && segment === "\t" ? " ".repeat(w) : segment, cut: false };
     col += w;
+  }
+}
+
+// The place before the character under column x of the row, or the row's end past its text, with `past` saying which,
+// the characters as drawn says. The "…" that cuts a one-line entry, and past it, stand for the entry's end, so selecting
+// to the row's end takes the whole entry (release 5 plan, choice 2).
+export function placeAt(rows: Rows, row: number, x: number): { pos: Pos; past: boolean } {
+  const r = rows.row(row);
+  for (const c of drawn(rows, r)) {
+    if (c.cut) break;
+    if (x < c.col + c.width) return { pos: { line: r.line, offset: c.offset }, past: false };
   }
   return { pos: { line: r.line, offset: r.end }, past: true };
 }

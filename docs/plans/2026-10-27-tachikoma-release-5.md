@@ -624,7 +624,8 @@ Commit: `feat: selection text, words, clicks and the clipboard`.
 - At Task 9's review (the user's choices, 2026-10-27):
   - The pointer cannot go above the frame, so a drag on the conversation's top row scrolls up, but
     only for a drag started on a lower row; one started on the top row selects within it.
-  - A selection stays until a click; keys never clear it.
+  - A selection stays until a click; keys never clear it. Any press clears it, on the prompt or the
+    status line too, but one on the scroll bar, which scrolls as the wheel does.
   - `Copied N characters` goes on the next key, paste or click. It takes the hint row's place only
     while one shows, never adding a row, so a copy never moves the conversation, and a copy whose
     line cannot show when it is made drops it; Ctrl+R's search and the exit warning keep the row.

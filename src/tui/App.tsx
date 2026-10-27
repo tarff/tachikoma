@@ -32,6 +32,10 @@ import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 // A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn.
 type Question = { text: string; owner?: Owner; answer: (ok: boolean, how: string) => void };
+// While the left button is held after a press in the conversation: what the press took (the pressed character, or a
+// double or triple click's word or line); `copy`: a drag, or a double or triple click, made a selection to copy on release;
+// `top`: the press was on the conversation's top row.
+type Held = { press: [Pos, Pos]; copy: boolean; top: boolean };
 
 export interface AppProps {
   session: Session;
@@ -133,9 +137,7 @@ export function App({
   // the view moves or rewraps. `press` is what the press took: the pressed cell's character (select.ts, span), or the word
   // or line of a double or triple click. `end` is the character under the pointer's cell, as span takes it.
   const selection = useRef<{ press: [Pos, Pos]; end: [Pos, Pos] } | null>(null);
-  // While the left button is held after a press in the conversation; `copy`: a drag, or a double or triple click, made a
-  // selection to copy on release; `top`: the press was on the conversation's top row.
-  const held = useRef<{ press: [Pos, Pos]; copy: boolean; top: boolean } | null>(null);
+  const held = useRef<Held | null>(null);
   const lastPress = useRef<{ at: number; x: number; y: number; count: number } | null>(null); // for select.ts, clicks
   // The hint row's line about the last copy, until the next key or click, whether it says the copy failed, and whether it
   // has been on screen.
@@ -166,6 +168,8 @@ export function App({
   // A failure of the system's tool comes after the copy, and replaces its line in the hint row (release 5 design,
   // "Copying").
   const board = useRef<Clipboard | null>(null);
+  // Made once, while drawing: safe with Ink's non-concurrent root (ink.js, `concurrent` defaults to false), which never
+  // throws a render away; a concurrent root could make one clipboard for a render it drops.
   board.current ??= clipboard((problem) => {
     copied.current = { text: `Copied with the terminal only; ${problem}`, failed: true };
     rerender((n) => n + 1);
@@ -549,7 +553,8 @@ export function App({
     const text = s ? textOf(kept.lines, ...s) : "";
     if (!text) return;
     board.current!.copy(text);
-    const n = [...segmenter.segment(text)].length;
+    let n = 0;
+    for (const _character of segmenter.segment(text)) n++;
     copied.current = { text: `Copied ${n} character${n === 1 ? "" : "s"}${board.current!.terminalOnly ? " with the terminal only" : ""}`, failed: false };
   };
   // The wheel and the scroll bar (release 5 design, "Scrolling"), in full screen only. The wheel scrolls the conversation
@@ -589,22 +594,26 @@ export function App({
     }
     const top = firstRow(kept, view.current, viewHeight);
     const thumb = bar(kept.total, viewHeight, top);
+    const onBar = thumb !== null && m.x === columns - 1 && m.y < viewHeight;
     if (m.kind === "press") {
       grab.current = null;
       held.current = null;
       clearCopied();
+      // A selection stays until a click: any press but one on the scroll bar, which scrolls as the wheel does (the user's
+      // choice at Task 9's review, 2026-10-27).
+      if (!onBar && selection.current) {
+        selection.current = null;
+        rerender((n) => n + 1);
+      }
     }
     if (m.button !== "left") return;
     if (m.kind === "drag" && held.current) return dragTo(held.current, m.x, m.y);
-    if (!thumb) {
-      if (m.kind === "press" && m.x !== columns - 1 && m.y < viewHeight) pressAt(top, m.x, m.y);
-      return;
-    }
+    if (m.kind === "press" && m.x !== columns - 1 && m.y < textRows(viewHeight)) return pressAt(top, m.x, m.y);
+    if (!thumb) return;
     const clamp = (start: number) => Math.max(0, Math.min(viewHeight - thumb.size, start));
     const move = (start: number) => start !== thumb.start && goTo(barFirst(kept.total, viewHeight, thumb.size, start));
     if (m.kind === "drag" && grab.current !== null) return void move(clamp(m.y - grab.current));
-    if (m.kind !== "press" || m.y >= viewHeight) return;
-    if (m.x !== columns - 1) return pressAt(top, m.x, m.y);
+    if (m.kind !== "press" || !onBar) return;
     const on = m.y >= thumb.start && m.y < thumb.start + thumb.size;
     const start = on ? thumb.start : clamp(m.y - Math.floor(thumb.size / 2)); // centred on its middle row, the lower of two
     grab.current = m.y - start;
@@ -614,43 +623,42 @@ export function App({
   // The cell at the conversation's row `row` as select.ts takes it. A row below the last line, blank in a view held past
   // the bottom, stands for the last line's end.
   const cellAt = (row: number, x: number) => (row < kept.total ? { row, x } : { row: kept.total - 1, x: kept.width }); // kept.width: past any row's text
-  // A left press in the conversation (release 5 design, "Selecting"; plan, choice 6): a click takes the pressed character,
-  // which a drag grows from, and clears the selection; a double-click selects the word, a triple-click the line, both
-  // copied on release. A double-click past a row's text, or a double or triple click below the last line, clicks nothing:
-  // placeAt gives the row's end there, which on a wrapped row is the next row's start.
+  // The conversation's rows that show text: all but the "↓ N new lines" row while it shows, which is not text (plan,
+  // choice 10's rule for such rows): a press there starts nothing, and a drag onto it counts as the row above it.
+  const textRows = (viewHeight: number) => viewHeight - (view.current.at !== null && view.current.unseen > 0 ? 1 : 0);
+  // A left press in the conversation's text rows (release 5 design, "Selecting"; plan, choice 6), the selection already
+  // cleared: a click takes the pressed character, which a drag grows from; a double-click selects the word, a
+  // triple-click the line, both copied on release. A double-click past a row's text, or a double or triple click below
+  // the last line, clicks nothing: placeAt gives the row's end there, which on a wrapped row is the next row's start.
   const pressAt = (top: number, x: number, y: number) => {
     if (!kept.total) return;
     const at = Date.now();
     const count = clicks(lastPress.current, at, x, y);
     lastPress.current = { at, x, y, count };
     const cell = cellAt(top + y, x);
-    const { pos, past } = placeAt(kept, cell.row, cell.x);
-    const text = kept.lines[pos.line]!.text;
-    const word = count === 2 && !past && wordAt(text, pos.offset);
-    const press: [Pos, Pos] | null =
-      count === 1
-        ? span(kept, cell, cell)
-        : top + y >= kept.total
-          ? null
-          : word
-            ? [{ line: pos.line, offset: word.start }, { line: pos.line, offset: word.end }]
-            : count === 3
-              ? [{ line: pos.line, offset: 0 }, { line: pos.line, offset: text.length }]
-              : null;
-    selection.current = count > 1 && press ? { press, end: span(kept, cell, cell) } : null;
-    held.current = press && { press, copy: count > 1, top: y === 0 };
     rerender((n) => n + 1);
+    if (count === 1) return void (held.current = { press: span(kept, cell, cell), copy: false, top: y === 0 });
+    const { pos, past } = placeAt(kept, cell.row, cell.x);
+    if (top + y >= kept.total || (count === 2 && past)) return;
+    const text = kept.lines[pos.line]!.text;
+    const { start, end } = count === 2 ? wordAt(text, pos.offset) : { start: 0, end: text.length };
+    const press: [Pos, Pos] = [
+      { line: pos.line, offset: start },
+      { line: pos.line, offset: end },
+    ];
+    selection.current = { press, end: span(kept, cell, cell) };
+    held.current = { press, copy: true, top: y === 0 };
   };
   // A drag while selecting grows the selection to the pointer's cell. Below the conversation the view first scrolls a row
   // for each report, so a selection can be longer than the screen (release 5 design, "Selecting"). The frame starts at
   // the terminal's top, so the pointer cannot go above the conversation: its top row stands for above it, for a drag
   // started lower down; one started on the top row selects within it and never scrolls (the user's choice at Task 9's
   // review, 2026-10-27).
-  const dragTo = (h: { press: [Pos, Pos]; copy: boolean; top: boolean }, x: number, y: number) => {
+  const dragTo = (h: Held, x: number, y: number) => {
     const { viewHeight } = frame.current;
     const up = y <= 0 && !h.top;
     if (y >= viewHeight || up) view.current = scrollBy(kept, view.current, viewHeight, up ? -1 : 1);
-    const cell = cellAt(firstRow(kept, view.current, viewHeight) + Math.max(0, Math.min(viewHeight - 1, y)), x);
+    const cell = cellAt(firstRow(kept, view.current, viewHeight) + Math.max(0, Math.min(textRows(viewHeight) - 1, y)), x);
     selection.current = { press: h.press, end: span(kept, cell, cell) };
     h.copy = true;
     rerender((n) => n + 1);
@@ -833,7 +841,8 @@ export function App({
               : "? for shortcuts";
   // The line about the last copy, until the next key or click (release 5 design, "Copying"), takes the hint row's place
   // only while one shows, so a copy never moves the conversation; a failed copy shows anyway, adding the row. Ctrl+R's
-  // search and the exit warning keep the row (the user's choice at Task 9's review, 2026-10-27).
+  // search and the exit warning keep the row (the user's choice at Task 9's review, 2026-10-27). A failure on a terminal
+  // too short for a hint row waits until one fits (accepted at Task 9's review).
   const hintFor = (left: number) => {
     const usual = usualHint(left);
     const c = copied.current;
@@ -865,7 +874,9 @@ export function App({
   const queued = q.length <= left ? q : left > 0 ? [...q.slice(0, left - 1), `+${q.length - left + 1} more`] : [];
   const hint = hinted ? hintFor(left) : null;
   // A successful copy's line that is not on screen is dropped, so it never turns up later, when a hint row comes back; only
-  // a failure waits to be shown (the user's choice at Task 9's review, 2026-10-27).
+  // a failure waits to be shown (the user's choice at Task 9's review, 2026-10-27). Changed while drawing, which is safe as
+  // Ink renders with React's non-concurrent root (ink.js, `concurrent` defaults to false); a concurrent root could drop
+  // or mark shown a line it never drew.
   if (copied.current && !copied.current.failed && hint !== copied.current.text) copied.current = null;
   if (copied.current && hint === copied.current.text) copied.current.shown = true; // from now the next key or click takes it away
 

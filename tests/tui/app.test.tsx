@@ -2079,7 +2079,9 @@ describe("App's wheel and scroll bar in full screen", () => {
 });
 
 // The frame with its colours: Ink colours through chalk, which finds no colour in a test's output, so a test that looks
-// for reverse colours turns them on for itself and back off after.
+// for reverse colours turns them on for itself and back off after. chalk is Ink's dependency, not ours, reached through
+// Ink's install; that is acceptable, as were it ever to move, the import fails loudly rather than a test passing
+// silently.
 async function inColour(test: () => Promise<void>) {
   const level = chalk.level;
   chalk.level = 1; // 1: chalk's basic 16 colours, enough for reverse (\u001b[7m)
@@ -2327,6 +2329,44 @@ describe("App's selecting and copying in full screen", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // A selection stays until a click: any press but one on the scroll bar, which scrolls as the wheel does (the user's
+  // choice at Task 9's review, 2026-10-27).
+  it("clears a selection on a press on the prompt, on the status line, or with another button, copying nothing", async () => {
+    await inColour(async () => {
+      const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+      for (const [i, press] of [at("press", 5, 20), at("press", 5, 22), at("press", 10, 10, { button: "right" })].entries()) {
+        await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
+        expect(reversed(app)[3]).toBe("said 63.");
+        await pointer(mouse, press, { ...press, kind: "release" }); // the prompt's row, the status line's, a right click
+        expect(reversed(app).slice(0, 20).join("")).toBe("");
+        expect(copies).toHaveLength(i + 1);
+      }
+    });
+  });
+
+  it("keeps a selection while the scroll bar's thumb is dragged", async () => {
+    await inColour(async () => {
+      const { app, mouse } = await mount([], { full: true, intro: said(80) });
+      await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
+      await pointer(mouse, at("press", BAR, 17), at("drag", BAR, 15), at("release", BAR, 15));
+      expect(shown(app)[0]).not.toBe("said 60.");
+      expect(reversed(app).slice(0, 20)).toContain("said 63.");
+    });
+  });
+
+  // The "↓ N new lines" row is not text: a press there starts nothing, and a drag onto it counts as the row above it.
+  it("never selects or copies the line hidden under the new-lines row", async () => {
+    const { app, mouse, bus, copies } = await mount([], { full: true, intro: said(80) });
+    await press(app, PG_UP); // said 50. to said 69.
+    bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
+    await until(app, "↓ 1 new line");
+    await pointer(mouse, at("press", 0, 17), at("drag", 3, 19), at("drag", 50, 19), at("release", 50, 19));
+    expect(copies).toEqual(["said 67.\nsaid 68."]);
+    await pointer(mouse, ...click(2, 19), ...click(2, 19)); // a double-click on the row
+    expect(copies).toHaveLength(1);
+    expect(shown(app)[0]).toBe("said 50.");
   });
 
   it("takes away the line about a copy on a paste, as on a key", async () => {

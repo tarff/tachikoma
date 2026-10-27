@@ -82,7 +82,8 @@ describe("Conversation", () => {
     expect(draw({ rows: wide, first: 10, height: 10, unseen: 3, following: true }).at(-1)!.slice(0, 40).trimEnd()).toBe("line 19");
   });
 
-  // Ink colours through chalk, which finds no colour in a test's output, so this test turns it on for itself.
+  // Ink colours through chalk, which finds no colour in a test's output, so this test turns it on for itself. chalk is
+  // Ink's dependency, not ours, reached through Ink's install: were it ever to move, the import fails loudly.
   it("draws the selection in reverse colours as the row is drawn: a tab as its spaces, and the … that cuts a one-line entry", () => {
     const level = chalk.level;
     chalk.level = 1; // 1: chalk's basic 16 colours, enough for reverse (\u001b[7m)

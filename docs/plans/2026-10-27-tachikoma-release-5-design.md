@@ -195,7 +195,8 @@ input, with these rules:
   2026-10-27). **Triple-click** selects the line. Clicks count as a double or
   triple when each lands on the same cell within 500 ms of the last (Windows' default).
 - A click without a drag clears the selection; it stays until a click, and keys never clear it (the
-  user's choice, 2026-10-27). Only the conversation and the detail view can be
+  user's choice, 2026-10-27): any press clears it, on the prompt or the status line too, but one on
+  the scroll bar, which scrolls as the wheel does. Only the conversation and the detail view can be
   selected, not the prompt or the status line.
 
 **Copying,** when the button is let go:
