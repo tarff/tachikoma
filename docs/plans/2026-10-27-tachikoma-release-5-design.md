@@ -226,7 +226,8 @@ input, with these rules:
 
 **Clicking:**
 - **In the prompt:** the cursor moves to the character clicked; past the end of a row, to the row's
-  end.
+  end. On a row that wraps onto the next, that is before its last character, as Up and Down put it,
+  since the place after it is the next row's start (the user's choice at Task 10's review).
 - **On a menu entry:** as choosing it and pressing Enter: a `/` command runs, an `@` path fills in,
   a model in `/model` is picked.
 

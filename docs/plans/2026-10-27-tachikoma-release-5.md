@@ -662,7 +662,9 @@ Commit: `feat: selecting with the mouse and copying on release`.
 - `Prompt` and `Menu` keep their window's top in a ref; let the App pass the ref in (a `top` prop of
   type `{ current: number }`, defaulting to their own) so it can map a row to a prompt row or entry.
 - A left press on a prompt row puts the cursor at the place under it (the layout's `places`, the row
-  starting after the two columns of `› `); past the row's end, at its end.
+  starting after the two columns of `› `); past the row's end, at its end, which on a row that wraps
+  onto the next is before its last character, as `vertical` does (the user's choice at the code
+  review, 2026-10-27).
 - A left press on a menu entry: a `/` command runs, an `@` path fills in (as Enter does each).
 - In the model list a left press on a model picks it (ModelPicker takes `mouse` and `bottom`, the
   frame row of its filter line, as the list sits at the foot of its box and its first row moves
