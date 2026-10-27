@@ -9,9 +9,10 @@ import type { Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { TodoItem } from "../tools/todo.js";
+import type { Clipboard } from "./clipboard.js";
 import { Conversation } from "./Conversation.js";
 import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
-import { apply, type Editor, empty, load, move, replace } from "./editor.js";
+import { apply, type Editor, empty, load, move, replace, segmenter } from "./editor.js";
 import { History, matches } from "./history.js";
 import type { Mouse } from "./input.js";
 import { type Command, commands, isScroll, KEY_LIST, type Scroll } from "./keys.js";
@@ -20,12 +21,13 @@ import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
 import { ModelPicker, rows as listRows } from "./ModelPicker.js";
 import { Prompt, promptWidth } from "./Prompt.js";
+import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
 import { TaskPanel, taskRow, taskRows } from "./TaskPanel.js";
 import type { Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
-import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, Rows, scrollBy, scrollTo, type View, wrap } from "./view.js";
+import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, type View, wrap } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 // A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn.
@@ -57,6 +59,9 @@ export interface AppProps {
   // wheel notch scrolls (clilib.ts, scrollSpeed).
   mouse?: { on(e: "mouse", f: (m: Mouse) => void): unknown; off(e: "mouse", f: (m: Mouse) => void): unknown };
   scrollSpeed: number;
+  // Copying (release 5 design, "Copying"): the App makes the clipboard with its own report, so a failure shows in the
+  // hint row.
+  clipboard: (report: (problem: string) => void) => Clipboard;
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /exit";
@@ -94,6 +99,7 @@ export function App({
   screen,
   mouse,
   scrollSpeed,
+  clipboard,
 }: AppProps) {
   const { exit } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -123,6 +129,15 @@ export function App({
   const frame = useRef({ columns, viewHeight: 1 });
   const wheel = useRef(0); // the fraction of a row carried from earlier notches (view.ts, notch)
   const grab = useRef<number | null>(null); // while the thumb is dragged, the row of the thumb it was pressed on
+  // Selecting (release 5 design, "Selecting"): places in the lines, not screen rows, so a selection stays on its text as
+  // the view moves or rewraps. `press` is what the press took: the pressed cell's character (select.ts, span), or the word
+  // or line of a double or triple click. `end` is the pointer's cell: its row's start place, and its column.
+  const selection = useRef<{ press: [Pos, Pos]; end: { row: Pos; x: number } } | null>(null);
+  // While the left button is held after a press in the conversation; `copy`: a drag, or a double or triple click, made a
+  // selection to copy on release.
+  const held = useRef<{ press: [Pos, Pos]; copy: boolean } | null>(null);
+  const lastPress = useRef<{ at: number; x: number; y: number; count: number } | null>(null); // for select.ts, clicks
+  const copied = useRef<string | null>(null); // the hint row's line about the last copy, until the next key or click
   // A resize wraps every line again: here, while drawing, so resize events that come together cost one wrapping.
   if (full && kept.width !== columns - 1) kept.setWidth(columns - 1);
   const [busy, setBusy] = useState(false);
@@ -146,6 +161,13 @@ export function App({
   const listOpen = useRef(false); // the picker, for keys and answers read before the screen is drawn again
   const announced = useRef(new Set<string>()); // background subagents whose ending has been shown
   const [, rerender] = useState(0);
+  // A failure of the system's tool comes after the copy, and replaces its line in the hint row (release 5 design,
+  // "Copying").
+  const board = useRef<Clipboard | null>(null);
+  board.current ??= clipboard((problem) => {
+    copied.current = `Copied with the terminal only; ${problem}`;
+    rerender((n) => n + 1);
+  });
   const started = useRef(Date.now());
   const [now, setNow] = useState(started.current);
   const [branch, setBranch] = useState(gitBranch);
@@ -418,6 +440,11 @@ export function App({
   };
 
   useInput((ch, key) => {
+    // The line about the last copy stays until the next key or click (release 5 design, "Copying").
+    if (copied.current !== null) {
+      copied.current = null;
+      rerender((n) => n + 1);
+    }
     if (picker) return; // the picker reads the keys while it is open
     if (question) {
       // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent.
@@ -495,6 +522,35 @@ export function App({
     const half = Math.max(1, Math.floor(viewHeight / 2));
     const by = { pageUp: -half, pageDown: half, lineUp: -1, lineDown: 1, top: 0, bottom: 0 }[c];
     view.current = c === "top" ? scrollTo(kept, view.current, viewHeight, 0) : c === "bottom" ? FOLLOWING : scrollBy(kept, view.current, viewHeight, by);
+    // During a selection, Shift+Up and Shift+Down also move its end a row and copy it again (release 5 plan, choice 9).
+    const s = selection.current;
+    if (!s || (c !== "lineUp" && c !== "lineDown")) return;
+    const r = kept.row(Math.max(0, Math.min(kept.total - 1, kept.rowOf(s.end.row) + by)));
+    s.end = { row: { line: r.line, offset: r.start }, x: s.end.x };
+    copy();
+  };
+  // The selection as two places, from the press to the pointer's cell, both cells' characters in (release 5 plan, choice
+  // 6), as span takes them: backward, from the pointer's character to the end of what was pressed; otherwise from the
+  // start of what was pressed to whichever ends later.
+  const selected = (): [Pos, Pos] | null => {
+    const s = selection.current;
+    if (!s) return null;
+    const cell = { row: kept.rowOf(s.end.row), x: s.end.x };
+    const [at, atEnd] = span(kept, cell, cell);
+    const [from, fromEnd] = s.press;
+    const before = (a: Pos, b: Pos) => a.line < b.line || (a.line === b.line && a.offset < b.offset);
+    return before(at, from) ? [at, fromEnd] : [from, before(fromEnd, atEnd) ? atEnd : fromEnd];
+  };
+  // On release, and on Shift+Up or Shift+Down during a selection: its text to the clipboard (release 5 design, "Copying"),
+  // never an empty one, and the hint row says how many characters, counted as a person sees them, as the prompt counts
+  // them (release 5 plan, choice 7).
+  const copy = () => {
+    const s = selected();
+    const text = s ? textOf(kept.lines, ...s) : "";
+    if (!text) return;
+    board.current!.copy(text);
+    const n = [...segmenter.segment(text)].length;
+    copied.current = `Copied ${n} character${n === 1 ? "" : "s"}${board.current!.terminalOnly ? " with the terminal only" : ""}`;
   };
   // The wheel and the scroll bar (release 5 design, "Scrolling"), in full screen only. The wheel scrolls the conversation
   // wherever the pointer is, and while a question or the model list is open (the plan's choice 3). The bar is the last
@@ -504,7 +560,9 @@ export function App({
   // A left press on the thumb grabs it; on the track it centres the thumb on that row (choice 4), as far as the bar's
   // ends let it, and grabs it where the pointer is on it, so a drag can go on from the click. While grabbed, the thumb
   // follows the pointer's row wherever the pointer is, until the button is let go; a move that would leave the thumb
-  // where it is does nothing, as one thumb row stands for several first rows. Any press ends an earlier grab.
+  // where it is does nothing, as one thumb row stands for several first rows. Any press ends an earlier grab or
+  // selecting, and a release ends either. A left press elsewhere in the conversation selects (release 5 design,
+  // "Selecting"); a press below it does nothing yet (Task 10 adds the prompt's and the menus').
   const onMouse = (m: Mouse) => {
     if (!fullNow.current) return;
     const { columns, viewHeight } = frame.current;
@@ -521,19 +579,85 @@ export function App({
     }
     if (m.kind === "release") {
       grab.current = null;
+      const h = held.current;
+      held.current = null;
+      if (h?.copy) {
+        copy();
+        rerender((n) => n + 1);
+      }
       return;
     }
-    const thumb = bar(kept.total, viewHeight, firstRow(kept, view.current, viewHeight));
-    if (m.kind === "press") grab.current = null;
-    if (!thumb || m.button !== "left") return;
+    const top = firstRow(kept, view.current, viewHeight);
+    const thumb = bar(kept.total, viewHeight, top);
+    if (m.kind === "press") {
+      grab.current = null;
+      held.current = null;
+      if (copied.current !== null) {
+        copied.current = null; // the line about the last copy stays until the next key or click
+        rerender((n) => n + 1);
+      }
+    }
+    if (m.button !== "left") return;
+    if (m.kind === "drag" && held.current) return dragTo(held.current, m.x, m.y);
+    if (!thumb) {
+      if (m.kind === "press" && m.x !== columns - 1 && m.y < viewHeight) pressAt(top, m.x, m.y);
+      return;
+    }
     const clamp = (start: number) => Math.max(0, Math.min(viewHeight - thumb.size, start));
     const move = (start: number) => start !== thumb.start && goTo(barFirst(kept.total, viewHeight, thumb.size, start));
     if (m.kind === "drag" && grab.current !== null) return void move(clamp(m.y - grab.current));
-    if (m.kind !== "press" || m.x !== columns - 1 || m.y >= viewHeight) return;
+    if (m.kind !== "press" || m.y >= viewHeight) return;
+    if (m.x !== columns - 1) return pressAt(top, m.x, m.y);
     const on = m.y >= thumb.start && m.y < thumb.start + thumb.size;
     const start = on ? thumb.start : clamp(m.y - Math.floor(thumb.size / 2)); // centred on its middle row, the lower of two
     grab.current = m.y - start;
     move(start);
+  };
+
+  // The cell at the conversation's row `row` as select.ts takes it, with its row's start place. A row below the last line,
+  // blank in a view held past the bottom, stands for the last line's end.
+  const cellAt = (row: number, x: number) => {
+    const cell = row < kept.total ? { row, x } : { row: kept.total - 1, x: kept.width }; // kept.width: past any row's text
+    const r = kept.row(cell.row);
+    return { ...cell, start: { line: r.line, offset: r.start } };
+  };
+  // A left press in the conversation (release 5 design, "Selecting"; plan, choice 6): a click takes the pressed character,
+  // which a drag grows from, and clears the selection; a double-click selects the word, a triple-click the line, both
+  // copied on release. A double-click past a row's text, or a double or triple click below the last line, clicks nothing:
+  // placeAt gives the row's end there, which on a wrapped row is the next row's start.
+  const pressAt = (top: number, x: number, y: number) => {
+    if (!kept.total) return;
+    const at = Date.now();
+    const count = clicks(lastPress.current, at, x, y);
+    lastPress.current = { at, x, y, count };
+    const cell = cellAt(top + y, x);
+    const { pos, past } = placeAt(kept, cell.row, cell.x);
+    const text = kept.lines[pos.line]!.text;
+    const word = count === 2 && !past && wordAt(text, pos.offset);
+    const press: [Pos, Pos] | null =
+      count === 1
+        ? span(kept, cell, cell)
+        : top + y >= kept.total
+          ? null
+          : word
+            ? [{ line: pos.line, offset: word.start }, { line: pos.line, offset: word.end }]
+            : count === 3
+              ? [{ line: pos.line, offset: 0 }, { line: pos.line, offset: text.length }]
+              : null;
+    selection.current = count > 1 && press ? { press, end: { row: cell.start, x: cell.x } } : null;
+    held.current = press && { press, copy: count > 1 };
+    rerender((n) => n + 1);
+  };
+  // A drag while selecting grows the selection to the pointer's cell. Below the conversation, or on its top row, as the
+  // frame starts at the terminal's top and the pointer cannot go above it, the view first scrolls a row for each report,
+  // so a selection can be longer than the screen (release 5 design, "Selecting").
+  const dragTo = (h: { press: [Pos, Pos]; copy: boolean }, x: number, y: number) => {
+    const { viewHeight } = frame.current;
+    if (y >= viewHeight || y <= 0) view.current = scrollBy(kept, view.current, viewHeight, y <= 0 ? -1 : 1);
+    const cell = cellAt(firstRow(kept, view.current, viewHeight) + Math.max(0, Math.min(viewHeight - 1, y)), x);
+    selection.current = { press: h.press, end: { row: cell.start, x: cell.x } };
+    h.copy = true;
+    rerender((n) => n + 1);
   };
 
   const scrollKey = (ch: string, key: Key) => {
@@ -695,7 +819,7 @@ export function App({
   // rows left for the queue.
   const exitKey = first.current?.name === "Esc" ? undefined : first.current?.name;
   const searching = search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
-  const hintFor = (left: number) =>
+  const usualHint = (left: number) =>
     searching
       ? `${searching} · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel`
       : exitKey
@@ -711,6 +835,8 @@ export function App({
             : busy
               ? null
               : "? for shortcuts";
+  // The line about the last copy comes before any other, until the next key or click (release 5 design, "Copying").
+  const hintFor = (left: number) => copied.current ?? usualHint(left);
 
   // The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since
   // at full height Ink draws the whole scrollback again each time. First the status line and the
@@ -768,6 +894,7 @@ export function App({
           height={viewHeight}
           unseen={view.current.unseen}
           following={view.current.at === null}
+          selection={selected()}
         />
       ) : (
         <Static items={lines}>

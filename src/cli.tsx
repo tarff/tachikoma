@@ -36,6 +36,7 @@ import { delegateTool } from "./tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
+import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
 import { gitBranch } from "./tui/git.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
@@ -283,6 +284,9 @@ if (parsed.print !== undefined) {
   const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
   // Ink reads the keys through the filter, which takes the mouse reports out for the App (release 5 design, "The mouse").
   const keys = new InputFilter(process.stdin);
+  // Copies go to the terminal as OSC 52, in order with the screen's own codes, and to the system's tool where it has one
+  // (release 5 design, "Copying").
+  const tool = systemTool(process.platform, process.env);
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true) === "full") screen.enter();
@@ -312,6 +316,7 @@ if (parsed.print !== undefined) {
       screen={screen}
       mouse={keys}
       scrollSpeed={speed}
+      clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter.
     { stdin: keys as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },

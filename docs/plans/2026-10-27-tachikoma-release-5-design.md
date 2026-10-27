@@ -186,17 +186,20 @@ input, with these rules:
   moves.
 - **Double-click** selects a word: letters, digits and iTerm2's `/-+\~_.`, so a path is one word,
   and a drive's colon (`C:\`, `C:/`), so a Windows path is too; a URL (`http://` or `https://` to
-  the next space) is selected whole. **Triple-click** selects the line. Clicks count as a double or
+  the next space, less the punctuation after it, as most terminals leave it off: the user's choice,
+  2026-10-27) is selected whole. **Triple-click** selects the line. Clicks count as a double or
   triple when each lands on the same cell within 500 ms of the last (Windows' default).
 - A click without a drag clears the selection. Only the conversation and the detail view can be
   selected, not the prompt or the status line.
 
 **Copying,** when the button is let go:
-- A line wrapped over several rows copies as one line; lines are joined by line breaks, and spaces
-  at line ends are dropped.
+- A line wrapped over several rows copies as one line; lines are joined by line breaks, and the
+  copy is exactly the text selected, spaces and all (the user's choice, 2026-10-27).
 - Tachikoma sends OSC 52 and also runs the system's tool in the background: `Set-Clipboard` on
   Windows, `pbcopy` on macOS, `wl-copy` or `xclip` on Linux. It cannot tell whether a terminal
-  took the OSC 52, and the probe found both work here.
+  took the OSC 52, and the probe found both work here. Linux with no display (over SSH) has no tool
+  to run: OSC 52 alone copies, and the hint row says "Copied 312 characters with the terminal only"
+  (the user's choice, 2026-10-27).
 - **The newest copy wins.** OSC 52 is written at once, so the terminal gets copies in order. The
   system's tool runs one copy at a time: a copy made while one is running waits, and when it
   finishes only the newest waiting copy runs. An older run that ends after a newer copy was made
@@ -312,7 +315,7 @@ As before: Vitest, no test contacting a real provider, no test reading the user'
 - **The view:** wrapping, rewrapping on a resize, drawing only the rows on screen, following and the
   "new lines" row, each scroll key, fractional scroll speeds, and the scroll bar's size, place,
   clicks and drags.
-- **Selecting:** a drag to text (wrapped lines joined, line-end spaces dropped), a drag past the
+- **Selecting:** a drag to text (wrapped lines joined, spaces kept), a drag past the
   edge scrolling, word and line selection (paths and URLs whole), the click timing, and both copy
   routes with stand-ins for the terminal and the clipboard tool; overlapping copies with a slow
   stand-in tool, the newest always ending on the clipboard and only its failure reported.

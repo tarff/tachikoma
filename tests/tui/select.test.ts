@@ -23,19 +23,19 @@ describe("textOf", () => {
     expect(textOf([{ text: "hello world" }], { line: 0, offset: 0 }, { line: 0, offset: 5 })).toBe("hello");
   });
 
-  it("joins lines with line breaks and drops the spaces at their ends", () => {
-    expect(textOf(lines, { line: 0, offset: 1 }, { line: 2, offset: 3 })).toBe("ne\ntwo\nthr");
+  it("joins lines with line breaks, keeping the spaces at their ends", () => {
+    expect(textOf(lines, { line: 0, offset: 1 }, { line: 2, offset: 3 })).toBe("ne  \ntwo   \nthr");
   });
 
   it("takes the same text when the end place is before the start", () => {
-    expect(textOf(lines, { line: 2, offset: 3 }, { line: 0, offset: 1 })).toBe("ne\ntwo\nthr");
+    expect(textOf(lines, { line: 2, offset: 3 }, { line: 0, offset: 1 })).toBe("ne  \ntwo   \nthr");
   });
 
-  it("keeps the spaces of a piece that stops before its line's end, and drops them at a line's real end", () => {
+  it("takes exactly the text selected, its spaces kept mid-line and at a line's real end", () => {
     expect(textOf([{ text: "foo bar" }], { line: 0, offset: 0 }, { line: 0, offset: 4 })).toBe("foo ");
     expect(textOf([{ text: "see now" }], { line: 0, offset: 3 }, { line: 0, offset: 4 })).toBe(" ");
-    expect(textOf(lines, { line: 0, offset: 0 }, { line: 1, offset: 4 })).toBe("one\ntwo ");
-    expect(textOf(lines, { line: 0, offset: 0 }, { line: 1, offset: 6 })).toBe("one\ntwo");
+    expect(textOf(lines, { line: 0, offset: 0 }, { line: 1, offset: 4 })).toBe("one  \ntwo ");
+    expect(textOf(lines, { line: 0, offset: 0 }, { line: 1, offset: 6 })).toBe("one  \ntwo   ");
   });
 
   it("takes an empty line as an empty line, and a place at a line's end as its end", () => {
@@ -117,6 +117,22 @@ describe("wordAt", () => {
     const text = "go to https://x.dev/a?b=1 now";
     expect(word(text, "https")).toBe("https://x.dev/a?b=1");
     expect(word(text, "=")).toBe("https://x.dev/a?b=1");
+  });
+
+  it("leaves off a link's trailing punctuation, and a closing bracket or quote the link does not open", () => {
+    expect(word("(see https://x.dev/a).", "https")).toBe("https://x.dev/a");
+    expect(word("at https://en.wikipedia.org/wiki/Foo_(bar) now", "https")).toBe("https://en.wikipedia.org/wiki/Foo_(bar)");
+    expect(word("at https://en.wikipedia.org/wiki/Foo_(bar).", "wiki")).toBe("https://en.wikipedia.org/wiki/Foo_(bar)");
+    expect(word('"https://x.dev/a?", she said', "x.dev")).toBe("https://x.dev/a");
+    expect(word("[https://x.dev/a]: and https://x.dev/b'.", "https")).toBe("https://x.dev/a");
+    expect(word("[https://x.dev/a]: and https://x.dev/b'.", "x.dev/b")).toBe("https://x.dev/b");
+    expect(word("it's https://x.dev/'a' ok", "https")).toBe("https://x.dev/'a'");
+    expect(word("go to https://x.dev/a?b=1 now", "https")).toBe("https://x.dev/a?b=1");
+  });
+
+  it("takes a character a link leaves off as it takes it anywhere else", () => {
+    expect(word("(see https://x.dev/a).", ")")).toBe(")");
+    expect(word("(see https://x.dev/a).", ".", 20)).toBe(".");
   });
 
   it("takes a character that is not part of a word alone", () => {

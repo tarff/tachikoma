@@ -11,17 +11,14 @@ export function ordered(a: Pos, b: Pos): [Pos, Pos] {
 }
 
 // The text from a up to b (b's character not included: places are between characters), lines joined by "\n"; a wrapped
-// line comes whole, as it is one line (release 5 design, "Copying"). Spaces are dropped only where a line really ends: a
-// piece that stops mid-line keeps them, so a double-clicked space copies as a space (the user's choice at review,
-// 2026-10-27).
+// line comes whole, as it is one line (release 5 design, "Copying"). It is exactly the text selected, spaces and all,
+// at a line's end too (the user's choice, 2026-10-27).
 export function textOf(lines: readonly { text: string }[], a: Pos, b: Pos): string {
   const [from, to] = ordered(a, b);
   const out: string[] = [];
   for (let i = from.line; i <= to.line; i++) {
     const text = lines[i]!.text;
-    const end = i === to.line ? to.offset : text.length;
-    const piece = text.slice(i === from.line ? from.offset : 0, end);
-    out.push(end === text.length ? piece.replace(/ +$/, "") : piece);
+    out.push(text.slice(i === from.line ? from.offset : 0, i === to.line ? to.offset : text.length));
   }
   return out.join("\n");
 }
@@ -62,11 +59,27 @@ export function span(rows: Rows, press: { row: number; x: number }, now: { row: 
 const WORD = /^[\p{L}\p{N}\p{M}/\-+\\~_.]/u;
 const LINK = /https?:\/\/\S*/g;
 
-// Double-click (release 5 design, "Selecting"; plan, choice 6): a URL from http:// or https:// to the next space whole;
-// otherwise the word around the character, with a colon in it where it is a drive's (a single letter starting the word
-// before it, \ or / after it: C:\ or C:/), so a Windows path is one word; any other character alone.
+// A link without the punctuation after it, as most terminals leave it off (the user's choice, 2026-10-27): a final
+// . , ; : ! ? , a closing bracket the link has fewer openers for, and a quote the link has an odd number of, again and
+// again while the end is one of these. So "(see https://x.dev/a)." gives https://x.dev/a, and a Wikipedia link ending
+// in "_(bar)" keeps its ")".
+const OPENER: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+const count = (s: string, c: string) => s.split(c).length - 1;
+function linkEnd(link: string): number {
+  for (;;) {
+    const c = link.at(-1)!;
+    const loose = ".,;:!?".includes(c) || (c in OPENER && count(link, c) > count(link, OPENER[c]!)) || ((c === "'" || c === '"') && count(link, c) % 2 === 1);
+    if (!loose) return link.length;
+    link = link.slice(0, -1);
+  }
+}
+
+// Double-click (release 5 design, "Selecting"; plan, choice 6): a URL from http:// or https:// to the next space whole,
+// less the punctuation after it (linkEnd); otherwise the word around the character, with a colon in it where it is a
+// drive's (a single letter starting the word before it, \ or / after it: C:\ or C:/), so a Windows path is one word; any
+// other character alone.
 export function wordAt(text: string, offset: number): { start: number; end: number } {
-  for (const m of text.matchAll(LINK)) if (m.index <= offset && offset < m.index + m[0].length) return { start: m.index, end: m.index + m[0].length };
+  for (const m of text.matchAll(LINK)) if (m.index <= offset && offset < m.index + linkEnd(m[0])) return { start: m.index, end: m.index + linkEnd(m[0]) };
   const segments = segmenter.segment(text);
   const at = (i: number) => segments.containing(i);
   const plain = (s: Intl.SegmentData | undefined) => s !== undefined && WORD.test(s.segment);

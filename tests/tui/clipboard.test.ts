@@ -37,11 +37,15 @@ describe("systemTool", () => {
     expect(tool.name).toBe("Set-Clipboard");
   });
 
-  it("on macOS is pbcopy, and on Linux wl-copy with Wayland, otherwise xclip, each given the text itself", () => {
+  it("on macOS is pbcopy, and on Linux wl-copy with Wayland, otherwise xclip with X, each given the text itself", () => {
     expect(systemTool("darwin", {})).toMatchObject({ command: "pbcopy", args: [], name: "pbcopy" });
-    expect(systemTool("linux", { WAYLAND_DISPLAY: "wayland-0" })).toMatchObject({ command: "wl-copy", args: [], name: "wl-copy" });
-    expect(systemTool("linux", {})).toMatchObject({ command: "xclip", args: ["-selection", "clipboard"], name: "xclip" });
+    expect(systemTool("linux", { WAYLAND_DISPLAY: "wayland-0", DISPLAY: ":0" })).toMatchObject({ command: "wl-copy", args: [], name: "wl-copy" });
+    expect(systemTool("linux", { DISPLAY: ":0" })).toMatchObject({ command: "xclip", args: ["-selection", "clipboard"], name: "xclip" });
     expect(systemTool("darwin", {})!.input(TEXT)).toBe(TEXT);
+  });
+
+  it("is none on Linux with no display, as over SSH", () => {
+    expect(systemTool("linux", {})).toBeNull();
   });
 
   it("is none elsewhere", () => {
@@ -196,13 +200,15 @@ describe("Clipboard", () => {
     expect(log.filter((l) => l.startsWith("write")).at(-1)).toBe("write B"); // a terminal that takes OSC 52 holds B
   });
 
-  it("with no tool, writes OSC 52 and reports each copy", () => {
+  it("with no tool, writes OSC 52 alone, reports nothing, and says it copies with the terminal only", () => {
     const writes: string[] = [];
     const reports: string[] = [];
     const clipboard = new Clipboard((s) => writes.push(s), null, (p) => reports.push(p));
     clipboard.copy("A");
     clipboard.copy("B");
     expect(writes).toEqual([osc52("A"), osc52("B")]);
-    expect(reports).toEqual(["no clipboard tool for this system", "no clipboard tool for this system"]);
+    expect(reports).toEqual([]);
+    expect(clipboard.terminalOnly).toBe(true);
+    expect(standIn().clipboard.terminalOnly).toBe(false);
   });
 });

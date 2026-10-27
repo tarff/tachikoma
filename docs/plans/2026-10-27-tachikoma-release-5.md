@@ -145,7 +145,8 @@ Each is marked in its task. **Not yet approved.**
    graphemes, as the prompt counts them).
 8. **The clipboard tool (Task 8):** on Windows the text goes to `Set-Clipboard` through PowerShell's
    input, base64-encoded, so no command line limit applies (the probe put it in the command); on
-   Linux `wl-copy` when `WAYLAND_DISPLAY` is set, otherwise `xclip -selection clipboard`.
+   Linux `wl-copy` when `WAYLAND_DISPLAY` is set, otherwise `xclip -selection clipboard` when
+   `DISPLAY` is, otherwise none (Task 9).
 9. **Shift+Up/Down during a selection (Task 9)** moves the selection's end one row, scrolls one
    row, and copies the selection again.
 10. **Clicks (Task 10)** on a "↑ N rows above" or "↓ N more" row, or anywhere while a question or
@@ -516,10 +517,9 @@ Commit: `feat: the wheel and the scroll bar`.
 // select.ts
 export const CLICK_MS = 500; // Windows' default double-click time (SetDoubleClickTime)
 export function ordered(a: Pos, b: Pos): [Pos, Pos];
-// The text from a up to b (b's character not included: places are between characters), spaces dropped
-// where a line really ends (a piece stopping mid-line keeps them, so a drag to a wrapped row's end keeps
-// the space where it wrapped: the user's choice, 2026-10-27), lines joined by "\n"; a wrapped line comes
-// whole, as it is one line.
+// The text from a up to b (b's character not included: places are between characters), exactly
+// the text selected, spaces and all (the user's choice, 2026-10-27), lines joined by "\n"; a
+// wrapped line comes whole, as it is one line.
 export function textOf(lines: readonly { text: string }[], a: Pos, b: Pos): string;
 // A selection from the pressed cell to the current one, as places (choice 6: both cells' characters in):
 // forward, from before the pressed cell's character to after the current cell's; backward, from before
@@ -611,6 +611,11 @@ Commit: `feat: selection text, words, clicks and the clipboard`.
 - A press and release on the same cell with no drag clears the selection, and copies nothing.
 - Shift+Up/Down during a selection: choice 9.
 - Selection holds places, not rows, so it stays on its text when the view moves or rewraps.
+- With no tool (Linux with neither `WAYLAND_DISPLAY` nor `DISPLAY`, as over SSH, or an unknown
+  system) OSC 52 alone copies: the hint says `Copied N characters with the terminal only`, not a
+  failure (the user's choice, 2026-10-27).
+- A double-clicked link leaves off its trailing `.,;:!?`, a closing `)]}` it has no opener for, and
+  an unmatched `'` or `"`, as most terminals do (the user's choice, 2026-10-27).
 
 **Tests** (each with a stand-in clipboard whose writes are recorded):
 1. A drag over two rows of one wrapped line copies the line's text joined; over two lines, two lines

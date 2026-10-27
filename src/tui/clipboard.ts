@@ -34,10 +34,10 @@ export function systemTool(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): T
     };
   }
   if (platform === "darwin") return { command: "pbcopy", args: [], input: text, name: "pbcopy" };
-  if (platform === "linux") {
-    if (env.WAYLAND_DISPLAY) return { command: "wl-copy", args: [], input: text, name: "wl-copy" };
-    return { command: "xclip", args: ["-selection", "clipboard"], input: text, name: "xclip" };
-  }
+  // Linux with no display, as over SSH, has no clipboard of its own to set: the terminal's OSC 52 alone copies (the
+  // user's choice, 2026-10-27).
+  if (platform === "linux" && env.WAYLAND_DISPLAY) return { command: "wl-copy", args: [], input: text, name: "wl-copy" };
+  if (platform === "linux" && env.DISPLAY) return { command: "xclip", args: ["-selection", "clipboard"], input: text, name: "xclip" };
   return null;
 }
 
@@ -87,9 +87,15 @@ export class Clipboard {
     this.#report = report;
   }
 
+  // With no tool for this system, OSC 52 alone copies, which is not a problem to report: the App says so in its own words
+  // (the user's choice, 2026-10-27).
+  get terminalOnly(): boolean {
+    return this.#run === null;
+  }
+
   copy(text: string): void {
     this.#write(osc52(text));
-    if (this.#run === null) return this.#report("no clipboard tool for this system");
+    if (this.#run === null) return;
     this.#copies++;
     if (this.#running) this.#waiting = text;
     else this.#start(this.#run, text);

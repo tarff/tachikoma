@@ -1,9 +1,10 @@
+import chalk from "chalk";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { isValidElement, type ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { Conversation } from "../../src/tui/Conversation.js";
-import { Rows } from "../../src/tui/view.js";
+import { type Pos, Rows } from "../../src/tui/view.js";
 
 const mounted: ReturnType<typeof render>[] = [];
 afterEach(() => {
@@ -79,5 +80,22 @@ describe("Conversation", () => {
     expect(draw({ rows: wide, first: 2, height: 10, unseen: 1, following: false }).at(-1)!.trimEnd().slice(0, 40).trimEnd()).toBe("↓ 1 new line · Ctrl+End");
     expect(draw({ rows: wide, first: 2, height: 10, unseen: 0, following: false }).at(-1)!.slice(0, 40).trimEnd()).toBe("line 11");
     expect(draw({ rows: wide, first: 10, height: 10, unseen: 3, following: true }).at(-1)!.slice(0, 40).trimEnd()).toBe("line 19");
+  });
+
+  // Ink colours through chalk, which finds no colour in a test's output, so this test turns it on for itself.
+  it("draws the selection in reverse colours as the row is drawn: a tab as its spaces, and the … that cuts a one-line entry", () => {
+    const level = chalk.level;
+    chalk.level = 1; // 1: chalk's basic 16 colours, enough for reverse (\u001b[7m)
+    try {
+      const rows = new Rows(20);
+      rows.add([{ text: "a\tbc" }, { text: "x".repeat(30), oneLine: true }]);
+      const reverse = (row: string) => [...row.matchAll(/\u001b\[7m(.*?)\u001b\[27m/g)].map((m) => m[1]).join("");
+      const reversed = (selection: [Pos, Pos]) => draw({ rows, first: 0, height: 2, unseen: 0, following: true, selection }).map(reverse);
+      expect(reversed([{ line: 0, offset: 1 }, { line: 0, offset: 3 }])).toEqual(["       b", ""]); // the tab to column 8
+      expect(reversed([{ line: 1, offset: 30 }, { line: 0, offset: 3 }])).toEqual(["c", "x".repeat(19) + "…"]);
+      expect(reversed([{ line: 1, offset: 25 }, { line: 1, offset: 30 }])).toEqual(["", "…"]); // past the cut: the … stands for it
+    } finally {
+      chalk.level = level;
+    }
   });
 });

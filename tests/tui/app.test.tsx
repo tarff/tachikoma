@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { render as renderInk } from "ink";
 import { render } from "ink-testing-library";
+import chalk from "chalk";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import { type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
@@ -18,6 +19,7 @@ import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import { History } from "../../src/tui/history.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { App, type AppProps } from "../../src/tui/App.js";
+import { Clipboard } from "../../src/tui/clipboard.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { Screen } from "../../src/tui/terminal.js";
@@ -80,6 +82,7 @@ async function mount(
     full?: boolean; // full screen; classic when not given
     scrollSpeed?: number; // rows a wheel notch scrolls; 3 when not given, the session's default
     leadFails?: string; // what /lead and the picker throw, in place of making a lead
+    run?: ((text: string) => Promise<void>) | null; // the clipboard's stand-in tool; null for none, as on Linux over SSH
   } = {},
 ) {
   const bus = new Bus();
@@ -98,6 +101,10 @@ async function mount(
   );
   if (opts.full) screen.enter();
   const mouse = new EventEmitter(); // stands in for the InputFilter, which hands the App the terminal's mouse reports
+  // What each copy's OSC 52 carries, decoded. The tool is a stand-in, so no test touches the user's clipboard.
+  const copies: string[] = [];
+  const write = (s: string) => copies.push(Buffer.from(s.slice(7, -1), "base64").toString("utf8")); // 7: ESC ] 52 ; c ;
+  const run = opts.run === undefined ? async () => {} : opts.run;
   const app = render(
     <App
       session={session}
@@ -132,6 +139,7 @@ async function mount(
       screen={screen}
       mouse={mouse}
       scrollSpeed={opts.scrollSpeed ?? 3}
+      clipboard={(report) => new Clipboard(write, run, report)}
     />,
   );
   mounted.push(app);
@@ -139,7 +147,7 @@ async function mount(
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, mouse, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
+  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -1694,6 +1702,7 @@ describe("App in full screen", () => {
         bindAsk={() => {}}
         screen={screen}
         scrollSpeed={3}
+        clipboard={(report) => new Clipboard(() => {}, null, report)}
       />,
       { stdout: stdout as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
     );
@@ -2066,6 +2075,130 @@ describe("App's wheel and scroll bar in full screen", () => {
     await press(app, "\u001b[B", "\r");
     await until(app, "no such model");
     expect(app.lastFrame()).not.toContain("new lines");
+  });
+});
+
+// The frame with its colours: Ink colours through chalk, which finds no colour in a test's output, so a test that looks
+// for reverse colours turns them on for itself and back off after.
+async function inColour(test: () => Promise<void>) {
+  const level = chalk.level;
+  chalk.level = 1; // 1: chalk's basic 16 colours, enough for reverse (\u001b[7m)
+  try {
+    await test();
+  } finally {
+    chalk.level = level;
+  }
+}
+// The text drawn in reverse colours on each row of the frame; the status line has some of its own.
+const reverse = (row: string) => [...row.matchAll(/\u001b\[7m(.*?)\u001b\[27m/g)].map((m) => m[1]).join("");
+const reversed = (app: ReturnType<typeof render>) => app.lastFrame()!.split("\n").map(reverse);
+const click = (x: number, y: number) => [at("press", x, y), at("release", x, y)];
+
+describe("App's selecting and copying in full screen", () => {
+  // 149 columns of words: a row of 99, then the rest.
+  const long = "word ".repeat(30).trimEnd();
+
+  it("copies a drag over a wrapped line's rows as one line, and over two lines joined by a line break, saying how many characters until a key", async () => {
+    const { app, mouse, copies } = await mount([], { full: true, intro: [{ text: long }, { text: "second line" }, { text: "third 🦀" }] });
+    await pointer(mouse, at("press", 0, 0), at("drag", 40, 1), at("drag", 98, 1), at("release", 98, 1));
+    expect(copies).toEqual([long]);
+    expect(app.lastFrame()).toContain("Copied 149 characters");
+    await pointer(mouse, at("press", 0, 2), at("drag", 98, 3), at("release", 98, 3));
+    expect(copies.at(-1)).toBe("second line\nthird 🦀");
+    expect(app.lastFrame()).toContain("Copied 19 characters"); // the crab is one character as a person sees it, two in UTF-16
+    await press(app, "x");
+    expect(app.lastFrame()).not.toContain("Copied");
+    expect(app.lastFrame()).toContain("› x");
+  });
+
+  it("shows the selection in reverse colours as it grows, never on the scroll bar's column", async () => {
+    await inColour(async () => {
+      const { app, mouse } = await mount([], { full: true, intro: said(80) });
+      await pointer(mouse, at("press", 2, 5), at("drag", 3, 6));
+      expect(reversed(app).slice(4, 8)).toEqual(["", "id 65.", "said", ""]);
+      await pointer(mouse, at("drag", BAR, 6));
+      expect(reversed(app).slice(4, 8)).toEqual(["", "id 65.", "said 66.", ""]);
+      expect(app.lastFrame()!.split("\n")[6]).toMatch(/\u001b\[27m[^\u001b]*\u001b\[90m│/); // the bar's column after the reverse ends
+    });
+  });
+
+  it("scrolls a row for each drag report below the conversation, or on its top row, and copies lines that were off screen", async () => {
+    const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+    await press(app, CTRL_HOME);
+    await pointer(mouse, at("press", 0, 18), at("drag", 50, 21), at("drag", 50, 22), at("release", 50, 22));
+    expect(shown(app)[0]).toBe("said 2.");
+    expect(copies).toEqual(["said 18.\nsaid 19.\nsaid 20.\nsaid 21."]);
+    await press(app, CTRL_END);
+    await pointer(mouse, at("press", 0, 2), at("drag", 0, 0), at("drag", 0, 0), at("release", 0, 0));
+    expect(shown(app)[0]).toBe("said 58.");
+    expect(copies.at(-1)).toBe("said 58.\nsaid 59.\nsaid 60.\nsaid 61.\ns");
+  });
+
+  it("copies a path whole on a double-click and the line on a triple-click, and nothing for a double-click past a row's text", async () => {
+    const { app, mouse, copies } = await mount([], { full: true, intro: [{ text: "see C:\\src\\a-b_c.ts now" }, { text: "" }, { text: "next" }] });
+    await pointer(mouse, ...click(7, 0), ...click(7, 0));
+    expect(copies).toEqual(["C:\\src\\a-b_c.ts"]);
+    await pointer(mouse, ...click(7, 0));
+    expect(copies).toEqual(["C:\\src\\a-b_c.ts", "see C:\\src\\a-b_c.ts now"]);
+    await pointer(mouse, ...click(60, 2), ...click(60, 2)); // past "next"
+    await pointer(mouse, ...click(3, 1), ...click(3, 1), ...click(3, 1)); // an empty line, double and triple
+    expect(copies).toHaveLength(2);
+    expect(app.lastFrame()).not.toContain("Copied");
+  });
+
+  it("clears a selection on a click without a drag, copying nothing", async () => {
+    await inColour(async () => {
+      const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+      await pointer(mouse, at("press", 0, 3), at("drag", 4, 3), at("release", 4, 3));
+      expect(reversed(app)[3]).toBe("said ");
+      expect(app.lastFrame()).toContain("Copied 5 characters");
+      await pointer(mouse, ...click(2, 10));
+      expect(reversed(app).slice(0, 20).join("")).toBe("");
+      expect(copies).toEqual(["said "]);
+      expect(app.lastFrame()).not.toContain("Copied");
+    });
+  });
+
+  it("says when the clipboard tool fails that the terminal alone copied", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80), run: async () => Promise.reject(new Error("xclip not found")) });
+    await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
+    await until(app, "Copied with the terminal only; xclip not found");
+  });
+
+  it("says the terminal alone copied, with no failure, where there is no tool, as on Linux over SSH", async () => {
+    const { app, mouse, copies } = await mount([], { full: true, intro: said(80), run: null });
+    await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
+    expect(copies).toEqual(["said 63."]);
+    expect(app.lastFrame()).toContain("Copied 8 characters with the terminal only");
+  });
+
+  it("keeps the selection on its text as new output moves the view, and as the wheel scrolls it", async () => {
+    await inColour(async () => {
+      const { app, mouse, bus } = await mount([], { full: true, intro: said(80) });
+      await pointer(mouse, at("press", 0, 19), at("drag", 98, 19)); // said 79., the button still held
+      expect(reversed(app)[19]).toBe("said 79.");
+      bus.emit("error", { kind: "fallback", attempted: "x", message: "moved on", lead: "fake:a" });
+      await until(app, "↪ moved on");
+      expect(reversed(app)[18]).toBe("said 79.");
+      await wheel(mouse, "up"); // 3 rows: said 79. goes below the view
+      expect(reversed(app).slice(0, 20).join("")).toBe("");
+      await wheel(mouse, "down");
+      expect(reversed(app)[18]).toBe("said 79.");
+    });
+  });
+
+  it("moves the selection's end a row on Shift+Down and Shift+Up, scrolling a row, and copies it again", async () => {
+    const { app, mouse, copies } = await mount([], { full: true, intro: said(80) });
+    await press(app, CTRL_HOME);
+    await pointer(mouse, at("press", 0, 2), at("drag", 50, 2), at("release", 50, 2));
+    expect(copies).toEqual(["said 2."]);
+    await press(app, SHIFT_DOWN);
+    expect(shown(app)[0]).toBe("said 1.");
+    expect(copies.at(-1)).toBe("said 2.\nsaid 3.");
+    expect(app.lastFrame()).toContain("Copied 15 characters");
+    await press(app, SHIFT_UP);
+    expect(shown(app)[0]).toBe("said 0.");
+    expect(copies).toEqual(["said 2.", "said 2.\nsaid 3.", "said 2."]);
   });
 });
 
