@@ -2370,6 +2370,22 @@ describe("App's selecting and copying in full screen", () => {
     expect(shown(app)[0]).toBe("said 50.");
   });
 
+  // Clicks and the drawing agree on that row (found at Task 11's re-review): lines that came in on screen draw no row, so
+  // the last row is text.
+  it("selects on the conversation's last row when every line that came in shows", async () => {
+    const { app, mouse, bus, copies } = await mount([], { full: true, intro: said(22) });
+    await press(app, PG_UP); // held at said 0.
+    Object.assign(app.stdout, { rows: 30 }); // 26 rows of conversation: said 0. to said 21., then 4 blank
+    app.stdout.emit("resize");
+    await tick();
+    bus.emit("message", { role: "assistant", parts: [{ type: "text", text: "one\ntwo\nthree\nfour" }] });
+    await until(app, "four");
+    expect(shown(app)[25]).toBe("four");
+    expect(app.lastFrame()).not.toContain("new line");
+    await pointer(mouse, ...click(1, 25), ...click(1, 25));
+    expect(copies).toEqual(["four"]);
+  });
+
   it("takes away the line about a copy on a paste, as on a key", async () => {
     const { app, mouse } = await mount([], { full: true, intro: said(80) });
     await pointer(mouse, at("press", 0, 5), at("drag", 7, 5), at("release", 7, 5));
@@ -2734,7 +2750,7 @@ describe("App's questions in full screen", () => {
     const answer = ask("write a.txt", detail(5), asker("t2 (a)").owner);
     await tick();
     expect(app.lastFrame()).not.toContain("[y/n]");
-    await press(app, ""); // closes the list
+    await press(app, "\u001b"); // closes the list
     await until(app, "Allow t2 (a) to write a.txt? [y/n]");
     expect(shown(app).slice(14, 21)).toEqual([...headed("write a.txt"), ""]);
     await press(app, "y");
@@ -2782,7 +2798,7 @@ describe("App's questions in full screen", () => {
   it.each([
     { key: "y", ok: true, how: "allowed" },
     { key: "n", ok: false, how: "declined" },
-    { key: "", ok: false, how: "declined" },
+    { key: "\u001b", ok: false, how: "declined" },
   ])("puts all of a question too long to fit in the conversation, and answers it with $key", async ({ key, ok, how }) => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
     const long = command(300); // 3,005 characters
@@ -2790,19 +2806,19 @@ describe("App's questions in full screen", () => {
     await until(app, "[y/n]");
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    const n = rows[0]!.match(/^┌ run \((\d+) rows\)$/)![1]!;
-    expect(rows[21]).toBe(`Allow run (shown above, ${n} rows)? [y/n] · Esc to decline`);
+    expect(rows[0]).toBe("┌ run (3005 characters)");
+    expect(rows[21]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
     expect(rows[1]).toMatch(/^run: echo word echo/);
     // Every row of it: rows 1 to 20 show, and the rest come onto the last row a row at a time.
     const text = rows.slice(1, 21);
-    while (text.length < Number(n)) {
+    while (text.length < wrap(long, 99, false).length) {
       await press(app, SHIFT_DOWN);
       text.push(shown(app)[20]!);
     }
     expect(text.join("").replaceAll(" ", "")).toBe(long.replaceAll(" ", ""));
     await press(app, key);
     expect(await answer).toBe(ok);
-    await until(app, `run (shown above, ${n} rows): ${how}`);
+    await until(app, `run (shown above): ${how}`);
   });
 
   it("shows a question as before while it leaves the conversation a row, and puts it in the conversation once it would not", async () => {
@@ -2820,7 +2836,69 @@ describe("App's questions in full screen", () => {
     await until(app, "[y/n]");
     rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[21]).toMatch(/^Allow run \(shown above, \d+ rows\)\? \[y\/n\] · Esc to decline$/);
+    expect(rows[21]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+  });
+
+  // The user's choices at Task 11's re-review: a question with a write's preview points at it, adding no copy; the line
+  // names a subagent by its id; and a question is moved into the conversation on any draw where it no longer fits.
+  it("points a long write's question at its preview, adding no copy, and brings the preview into view when it is shown", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    const path = "dir/".repeat(550); // 2,200 characters
+    const first = ask("run: ls", undefined, asker("t2 (a)").owner);
+    await until(app, "Allow t2 (a) to run: ls? [y/n]");
+    const second = ask(`write ${path}`, detail(5, "b"), asker("t3 (b)").owner);
+    const third = ask("write c.txt", detail(30, "c"), asker("t4 (c)").owner);
+    await tick();
+    await press(app, "y");
+    expect(await first).toBe(true);
+    await until(app, "Allow t3 to write (shown above)? [y/n] · Esc to decline");
+    expect(shown(app)).toHaveLength(23);
+    expect(shown(app)[0]).toBe(`┌ write ${path.slice(0, 91)}`); // the preview's heading, its path cut at the row's 99 columns
+    await press(app, PG_DOWN, PG_DOWN); // past the heading's rows, to its preview's lines
+    expect(shown(app)).toEqual(expect.arrayContaining(detail(5, "b").split("\n")));
+    await press(app, CTRL_END);
+    expect(shown(app).slice(19, 21)).toEqual(["c 29.", "t2 (a) to run: ls: allowed"]); // the newest lines: no copy of the path
+    await press(app, "y");
+    expect(await second).toBe(true);
+    await until(app, "Allow t4 (c) to write c.txt? [y/n]");
+    await press(app, "y");
+    expect(await third).toBe(true);
+  });
+
+  it("names a subagent by its id alone in the line of a question too long to fit, however long its description", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    void ask(command(300), undefined, asker(`t2 (${"word ".repeat(510)})`).owner); // a 2,550-character description
+    await until(app, "[y/n]");
+    const rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows[21]).toBe("Allow t2 to run (shown above)? [y/n] · Esc to decline");
+    expect(rows[0]).toMatch(/^┌ t2 to run \(\d+ characters\)$/);
+    expect(rows[1]).toMatch(/^t2 \(word word/); // the full name, in the conversation
+  });
+
+  it("moves a question into the conversation once a narrower terminal leaves it too long to fit, and keeps it there", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60) });
+    const fits = taking(15);
+    const answer = ask(fits);
+    await until(app, "[y/n]");
+    expect(shown(app)[7]).toBe(`Allow ${fits.slice(0, 93)}`); // under 7 rows of conversation
+    Object.defineProperty(app.stdout, "columns", { value: 40, configurable: true });
+    app.stdout.emit("resize");
+    await tick();
+    let rows = shown(app, 40);
+    expect(rows).toHaveLength(23);
+    expect(rows[0]).toBe(`┌ run (${fits.length} characters)`);
+    expect(rows[1]).toMatch(/^run: echo word/);
+    expect(`${rows[20]} ${rows[21]}`).toBe("Allow run (shown above)? [y/n] · Esc to decline"); // two rows at 40 columns
+    Object.defineProperty(app.stdout, "columns", { value: 100, configurable: true });
+    app.stdout.emit("resize");
+    await tick();
+    rows = shown(app);
+    expect(rows).toHaveLength(23);
+    expect(rows[0]).toBe(`┌ run (${fits.length} characters)`);
+    expect(rows[21]).toBe("Allow run (shown above)? [y/n] · Esc to decline");
+    await press(app, "y");
+    expect(await answer).toBe(true);
   });
 });
 
