@@ -3696,6 +3696,29 @@ describe("App's detail view printed out", () => {
     expect(back.indexOf("Last turn: 1 tool call")).toBeLessThan(back.indexOf("t1 (find x), done"));
   });
 
+  // Found at round 3's check: Ink ending as the view comes back (a crash in its redraw, say) must not start what waited,
+  // a paid turn with no screen to show it.
+  it("starts nothing that waited when Ink ends as the view comes back, and lets the keyboard go", async () => {
+    const lead = new Held();
+    const worker = new Held();
+    const { steps, key, out, ink } = await printable(lead, worker);
+    await key("go", "\r");
+    lead.answer(callTool("c1", "delegate", { description: "find x", task: "find x" }));
+    await waitFor(() => worker.asked.length === 1);
+    await key("/tasks t1", "\r", "later", "\r", "\u000f", "[");
+    worker.answer("found");
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("done");
+    await tick();
+    expect(lead.asked).toHaveLength(2); // the queue waits behind /tasks t1 while printed out
+    const back = out("q");
+    ink.unmount();
+    await back;
+    await tick();
+    expect(lead.asked).toHaveLength(2);
+    expect(steps.filter((s) => s.startsWith("hold(")).at(-1)).toBe("hold(false)");
+  });
+
   it("goes on with a message queued during the turn while printed out", async () => {
     const lead = new Held();
     const { steps, key } = await printable(lead);

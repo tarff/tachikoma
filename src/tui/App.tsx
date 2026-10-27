@@ -161,6 +161,7 @@ export function App({
   // /model that ended while printed out, until the view is back (comeBack, below).
   const dropping = useRef<Printed | null>(null);
   const waitingList = useRef<ModelGroup[] | null>(null);
+  const ended = useRef(false); // Ink has unmounted the App (the cleanup below)
   // The mouse listener is set up once, at mount, so it reads the mode and the frame's shape from here, not from the first
   // render (found at Task 5's review): Task 14's /screen changes `full`, and keeps this in step with it.
   const fullNow = useRef(full);
@@ -371,6 +372,7 @@ export function App({
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
     mouse?.on("mouse", onMouse);
     return () => {
+      ended.current = true;
       // Ink ending while the view is printed out (a crash), or while the rest of a paste is dropped after it, lets the
       // keyboard go, so raw mode goes off and the process can end (input.ts, hold). Bracketed paste needs nothing here: Ink's
       // own cleanups turn it off as they end, suspended or not (Ink's components/App.js).
@@ -662,7 +664,10 @@ export function App({
     screen.suspended = false;
     await p.resume();
     if (printed.current) return;
-    input!.hold(false);
+    input!.hold(false); // also when Ink ended meanwhile: its cleanup found nothing printed out to let go
+    // Ink ending during the resume (a crash in its redraw) starts nothing that waited: no screen would show it, and a
+    // turn would go on paying with none (found at round 3's check of Task 13).
+    if (ended.current) return;
     const list = waitingList.current;
     waitingList.current = null;
     if (list) setPicker(list);
