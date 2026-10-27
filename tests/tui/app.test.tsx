@@ -4012,6 +4012,52 @@ describe("App's /screen", () => {
     expect(s).not.toContain(PASTE_ON); // never resumed
     expect(lead.asked).toHaveLength(1);
   });
+
+  // Found at Task 14's spec review: a reply of several lines is one line said but several kept, and going back to full
+  // screen must still find every line said in classic mode (release 5 design, "The two modes": both modes keep every line).
+  it("keeps every line, once and in order, going full to classic and back, with a reply of several lines", async () => {
+    const { app } = await mount([reply("alpha\nbeta")], { full: true });
+    await type(app, "hi");
+    await until(app, "beta");
+    await type(app, "/screen");
+    await until(app, "screen is now classic");
+    await type(app, "/tasks");
+    await until(app, "No subagents yet.");
+    await type(app, "/screen");
+    await until(app, "screen is now full");
+    expect(shown(app).slice(0, 8)).toEqual(["> hi", "alpha", "beta", "screen is now classic", "No subagents yet.", "screen is now full", "", ""]);
+  });
+
+  // Found at Task 14's spec review: a switch holds the queue as a turn does. What is sent while it runs waits for it, and a
+  // second /screen then switches back, rather than suspending Ink while it is suspended already.
+  it("runs what is sent during a switch after it, a second /screen too", async () => {
+    const { app } = await mount([reply("ok")], { full: true });
+    await press(app, "/screen");
+    for (const keys of ["\r", "hi", "\r", "/screen", "\r"]) app.stdin.write(keys); // one after another, the switch running
+    await until(app, "screen is now full");
+    const frame = app.lastFrame()!;
+    expect(frame).not.toContain("suspended");
+    const order = ["screen is now classic", "> hi", "ok", "screen is now full"].map((s) => frame.indexOf(s));
+    expect(order.every((n, i) => n >= 0 && (i === 0 || n > order[i - 1]!))).toBe(true);
+  });
+
+  // Found at Task 14's spec review: a question asked as the switch to full screen starts has its detail kept and brought
+  // into view (plan, Task 11), as one asked in full screen has.
+  it("brings into view the detail of a question asked as the switch to full screen starts", async () => {
+    let question: (() => void) | null = null;
+    const { app, ask } = await mount([], { intro: said(60), written: (s) => s === SECOND_SCREEN && question?.() });
+    let answer: Promise<boolean> | undefined;
+    question = () => {
+      question = null;
+      answer = ask("write a.txt", Array.from({ length: 100 }, (_, i) => `line ${i}.`).join("\n"));
+    };
+    await type(app, "/screen");
+    await until(app, "Allow write a.txt? [y/n]");
+    await waitFor(() => app.lastFrame()!.includes("screen is now full") || shown(app)[0] === "┌ write a.txt (100 lines)");
+    expect(shown(app)[0]).toBe("┌ write a.txt (100 lines)");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+  });
 });
 
 describe("App in classic mode", () => {

@@ -151,9 +151,12 @@ export function App({
   // screen (the user's check, release 5 plan, "Before you start").
   const [switching, setSwitching] = useState(false);
   const [kept] = useState(() => new Rows(columns - 1));
-  // Every line said, in order: `kept` holds only those said in full screen, and going to full screen adds the rest
-  // (/screen, below). `lines` cannot give them then: what is said is in it only once React draws again.
+  // Every line said, in order, and how many of them `kept` holds: only those said in full screen, so going to full screen
+  // adds the rest (/screen, below). `lines` cannot give them then: what is said is in it only once React draws again. A
+  // count, as `kept` splits a line said at its line breaks (view.ts, Rows.add): a reply is one line said, kept as several
+  // (found at Task 14's spec review).
   const all = useRef<Line[]>([]);
+  const allKept = useRef(0);
   const view = useRef<View>(FOLLOWING);
   // The detail view, while it is open (DetailView.tsx); it takes the conversation's place. The keys, the wheel, the bar,
   // selecting and copying act on whichever is drawn, the pane, with its own rows and view (plan, Task 12).
@@ -257,6 +260,7 @@ export function App({
     if (fullNow.current) {
       const before = kept.lines.length;
       kept.add(shown);
+      allKept.current = all.current.length;
       view.current = arrived(view.current, kept.lines.length - before);
     }
     setLines((l) => [...l, ...shown.map((x) => ({ ...x, id: nextId.current++ }))]);
@@ -665,9 +669,14 @@ export function App({
   // drawn that, Ink is suspended, the screen left and Ink resumed, so its redraw draws nothing on the normal screen; then
   // <Static> mounts and prints the whole conversation (plan, choice 17). The mode is classic from the start, nothing being
   // drawn meanwhile, so a key read then (Ctrl+O, a scroll key) acts as in classic mode.
-  // To full screen: Ink is suspended, the second screen entered, and the view given the lines said since it last had them,
-  // at the bottom; once React has drawn that, Ink resumes and draws it there, never the classic frame. Ink drops every
-  // render while suspended, so nothing is drawn before.
+  // To full screen: the view is given the lines said since it last had them, at the bottom, and the mode is full from then
+  // on, so a question asked while the switch runs keeps its detail's place and is brought to it (found at Task 14's spec
+  // review); Ink is suspended, the second screen entered, and once React has drawn the full-screen frame, Ink resumes and
+  // draws it there, never the classic frame. Ink drops every render while suspended, so nothing is drawn before. `full`
+  // follows only once the second screen is on, so React draws no full-screen frame on the normal screen; `fullNow` is set
+  // the few microtasks of the suspend's await earlier, which no key or mouse report can come between.
+  // What it says at the end is said, not shown: the view is at the bottom already, unless a question asked meanwhile holds
+  // it on its detail.
   // If Ink ends meanwhile (a render error), nothing more is switched, the terminal being put back as it is then
   // (terminal.ts, restoreWhenInkEnds), and the keyboard is let go, so raw mode goes off and the process can end. A `[` read
   // while Ink resumes, before its drawing is done, keeps the hold, as in comeBack.
@@ -679,14 +688,15 @@ export function App({
     wheel.current = 0;
     try {
       if (toFull) {
+        const width = frame.current.columns - 1; // one column short, as above
+        if (kept.width !== width) kept.setWidth(width);
+        kept.add(all.current.slice(allKept.current));
+        allKept.current = all.current.length;
+        view.current = FOLLOWING;
+        fullNow.current = true;
         const { resume } = await suspendTerminal();
         if (ended.current) return;
         screen.enter();
-        const width = frame.current.columns - 1; // one column short, as above
-        if (kept.width !== width) kept.setWidth(width);
-        kept.add(all.current.slice(kept.lines.length));
-        view.current = FOLLOWING;
-        fullNow.current = true;
         setFull(true);
         await new Promise((resolve) => setTimeout(resolve, 0));
         if (ended.current) return;
@@ -707,7 +717,7 @@ export function App({
       working.current = false;
       if (!printed.current) input?.hold(false);
     }
-    if (!ended.current) show({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
+    if (!ended.current) say({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
   };
   // The detail view's keys (release 5 design, "The detail view"; plan, Task 12): the conversation's scroll keys; j and k,
   // or Down and Up, a row; g or Home the top, G or End the bottom; q, Esc and Ctrl+O close it; `/` starts a search, and n
