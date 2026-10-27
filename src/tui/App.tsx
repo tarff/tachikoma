@@ -665,7 +665,9 @@ export function App({
   // To classic: the detail view closes, as a queued /screen can run while it is open; nothing is drawn, and once React has
   // drawn that, Ink is suspended, the screen left and Ink resumed, so its redraw draws nothing on the normal screen; then
   // <Static> mounts and prints the whole conversation (plan, choice 17). The mode is classic from the start, nothing being
-  // drawn meanwhile, so a key read then (Ctrl+O, a scroll key) acts as in classic mode.
+  // drawn meanwhile, so a key read then (Ctrl+O, a scroll key) acts as in classic mode. The wait matters for a /screen run
+  // from the queue: set outside any key, its state is drawn only later, by React's scheduler, and without the wait Ink's
+  // resume would draw the full-screen frame again on the normal screen (found at Task 14's re-review).
   // To full screen: the view is given the lines said in classic mode, wrapped at the width it is drawn at, so not wrapped
   // again at its first drawing, and the mode is full from then on, so a question asked while the switch runs keeps its
   // detail's place and is brought to it (found at Task 14's spec review); Ink is suspended, the second screen entered, and
@@ -677,8 +679,9 @@ export function App({
   // keeps the view on its detail.
   // If Ink ends meanwhile (a render error), nothing more is switched, the terminal being put back as it is then
   // (terminal.ts, restoreWhenInkEnds), and the keyboard is let go, so raw mode goes off and the process can end. A `[` read
-  // while Ink resumes, before its drawing is done, keeps the hold, as in comeBack. Should a step throw (perform says why),
-  // the mode is put back as the screen is, and something is drawn again (found at Task 14's code review).
+  // while Ink resumes, before its drawing is done, keeps the hold, as in comeBack. Should the suspend throw going to full
+  // screen, the mode goes back to classic, as the screen is (perform says why); `switching` ends however the switch does
+  // (found at Task 14's code review).
   const switchScreen = async () => {
     const toFull = !fullNow.current;
     working.current = true;

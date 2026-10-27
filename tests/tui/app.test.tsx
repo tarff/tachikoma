@@ -3824,6 +3824,21 @@ describe("App's /screen", () => {
     expect(inOrder(...intro.map((l) => printed.indexOf(l.text)), printed.indexOf("screen is now classic"), printed.indexOf("proj"))).toBe(true);
   });
 
+  // Found at Task 14's re-review: a /screen run from the queue sets its state outside any key, so React draws it only later,
+  // by its scheduler; without the wait, Ink's resume would draw the full-screen frame again on the normal screen.
+  it("draws no full-screen frame on the normal screen for a /screen run from the queue", async () => {
+    const lead = new Held();
+    const { steps, key } = await onTerminal(lead, { intro });
+    await key("hi", "\r");
+    await waitFor(() => text(steps).includes("Esc to stop"));
+    await key("/screen", "\r");
+    lead.answer("ok");
+    await waitFor(() => text(steps).includes("screen is now classic"));
+    const s = since(steps, "hold(true)");
+    const after = text(s.slice(s.indexOf(FIRST_SCREEN)));
+    expect(after.split("line 1.")).toHaveLength(2); // printed once, by <Static>, with no frame drawn again first
+  });
+
   it("goes back to full: keyboard held, Ink suspended, the second screen, mouse on, the view with every line drawn on resuming, keyboard let go", async () => {
     const { steps, key } = await onTerminal(new FakeProvider("a", []), { intro });
     await switched(key, steps, "classic");
