@@ -588,7 +588,8 @@ export function App({
     // In the detail view Ctrl-C stops a turn, and its queue comes back into the prompt, as below; with nothing running it
     // only closes the view, never clearing the hidden prompt nor counting toward exiting (the user's choice at Task 12's
     // review). No press-twice count waits while the view is open: the key that opens it is read below, starting the count
-    // again, and a queued `/tasks t3` runs only once a turn ends, when no count was started.
+    // again, and a queued `/tasks t3` runs only from `next()`, after a turn, an answer or the model list, when no count
+    // was started.
     if (detail.current) {
       if (!(key.ctrl && ch === "c")) detailKey(detail.current, ch, key);
       else if (!working.current) closeDetail();
