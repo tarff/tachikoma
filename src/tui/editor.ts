@@ -20,10 +20,12 @@ export interface Editor {
   readonly spans: readonly Span[]; // the pictures' markers, in the text's order
   readonly undo: readonly State[]; // the states before each step, newest last
   readonly typing: boolean; // the last step was typing, so more typing joins it
-  readonly killed: string; // what the last word or line delete took, for Ctrl+Y
+  // What the last word or line delete took, for Ctrl+Y, with its pictures' spans counted from its start, as vim's
+  // register keeps them, so a marker put back still carries its picture (found at the final review).
+  readonly killed: { readonly text: string; readonly spans: readonly Span[] };
 }
 
-export const empty: Editor = { text: "", cursor: 0, spans: [], undo: [], typing: false, killed: "" };
+export const empty: Editor = { text: "", cursor: 0, spans: [], undo: [], typing: false, killed: { text: "", spans: [] } };
 const state = (e: Editor): State => ({ text: e.text, cursor: e.cursor, spans: e.spans });
 
 export type Action =
@@ -108,7 +110,9 @@ export function change(e: Editor, from: number, to: number, insert: string, how:
     spans: e.spans.flatMap((s) => (s.to <= from ? [s] : s.from >= to ? [{ ...s, from: s.from + moved, to: s.to + moved }] : [])),
     undo: joins ? e.undo : [...e.undo, state(e)],
     typing: how.typing === true,
-    killed: how.kill ? e.text.slice(from, to) : e.killed,
+    killed: how.kill
+      ? { text: e.text.slice(from, to), spans: e.spans.filter((s) => s.from >= from && s.to <= to).map((s) => ({ ...s, from: s.from - from, to: s.to - from })) }
+      : e.killed,
   };
 }
 
@@ -179,8 +183,11 @@ export function apply(e: Editor, a: Action): Editor {
       const start = lineStart(text, c);
       return change(e, start === c ? Math.max(0, c - 1) : start, c, "", { kill: true });
     }
-    case "yank":
-      return change(e, c, c, e.killed);
+    case "yank": {
+      const d = change(e, c, c, e.killed.text);
+      const back = e.killed.spans.map((s) => ({ ...s, from: s.from + c, to: s.to + c }));
+      return back.length ? { ...d, spans: [...d.spans, ...back].sort((a, b) => a.from - b.from) } : d;
+    }
     case "undo": {
       const last = e.undo.at(-1);
       return last ? { ...e, ...last, undo: e.undo.slice(0, -1), typing: false } : { ...e, typing: false };

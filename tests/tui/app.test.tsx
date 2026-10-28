@@ -5391,6 +5391,18 @@ describe("App's picture reads", () => {
     expect(userParts(session)).toEqual([[{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }]]);
   });
 
+  // Final review: Ctrl+K then Ctrl+Y put the marker back as text only, and the message went without the picture.
+  it("sends the picture of a marker Ctrl+K took and Ctrl+Y put back", async () => {
+    const { app, session } = await mount([reply("seen")], { readPicture: async () => PNG });
+    await press(app, "look ", PICTURE);
+    await gone(app, READING);
+    await press(app, "\u0001", "\u000b"); // Ctrl+A, Ctrl+K
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    await press(app, "\u0019", "\r"); // Ctrl+Y, Enter
+    await until(app, "seen");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }]]);
+  });
+
   it("keeps two pictures in the order asked for when the later read ends first, saying it is reading until both end", async () => {
     const { read, answers } = answered();
     const { app, session } = await mount([reply("ok")], { readPicture: read });

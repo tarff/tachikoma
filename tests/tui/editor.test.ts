@@ -130,10 +130,21 @@ describe("pictures", () => {
     const e = insertPicture(at("x |"), 1);
     expect(show(run(e, "deleteWord"))).toBe("x |"); // Alt+Backspace takes "1]", a word and what follows it
     expect(show(run(e, "deleteToSpace"))).toBe("x |"); // Ctrl+W takes "#1]"
-    expect(run(e, "deleteWord").killed).toBe("[Image #1]");
+    expect(run(e, "deleteWord").killed).toEqual({ text: "[Image #1]", spans: [{ id: 1, from: 0, to: 10 }] });
     const ranged = change(e, 0, 4, ""); // a selection's delete from the start into "[Im"
     expect(show(ranged)).toBe("|");
     expect(ranged.spans).toEqual([]);
+  });
+
+  // Final review: Ctrl+Y put a cut marker back as text only, so the message went without its picture. What a delete
+  // takes keeps its spans, as vim's register does.
+  it("puts back a marker a word or line delete took with its span, each time", () => {
+    const e = run(insertPicture(at("look |"), 1), "home", "deleteToEnd");
+    expect(show(e)).toBe("|");
+    const back = run(e, "yank");
+    expect(show(back)).toBe("look [Image #1]|");
+    expect(spans(back)).toEqual(["1:[Image #1]@5"]);
+    expect(spans(run(back, "yank"))).toEqual(["1:[Image #1]@5", "1:[Image #1]@20"]);
   });
 
   it("drops the span, keeping the text, when something is typed inside the marker", () => {
