@@ -15,24 +15,25 @@ import {
   headlessLeftOut,
   instructionsLine,
   jsonLine,
+  MAX_TASKS,
   prose,
+  resolve,
   screenMode,
-  scrollSpeed,
-  statusSegments,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
-import { type Ask, MODES, type Mode, PermissionGate } from "./core/permissions.js";
+import { type Ask, MODES, PermissionGate } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { Session } from "./core/session.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
 import { errorText, type Provider } from "./core/types.js";
 import { LocalExecutor } from "./exec/local.js";
-import { EFFORTS, type Effort } from "./providers/anthropic.js";
+import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
+import { loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { delegateTool } from "./tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { todoTool } from "./tools/todo.js";
@@ -43,10 +44,6 @@ import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
-
-// Eight Claude Haiku 5.5 subagents ran at once on the user's account with none refused; eight was the
-// most tried (release 4 design, "Before the build", 2026-10-26).
-const MAX_TASKS = 8;
 
 const HELP = `tachi: a coding agent for your terminal
 
@@ -105,12 +102,6 @@ function askAtStart(question: string): Promise<boolean> {
   });
 }
 
-function oneOf<T extends string>(name: string, value: string | undefined, allowed: readonly T[]): T | undefined {
-  if (value === undefined) return undefined;
-  if (!(allowed as readonly string[]).includes(value)) fail(`--${name} must be one of: ${allowed.join(", ")} (got "${value}")`);
-  return value as T;
-}
-
 process.stdout.on("error", endOnEpipe);
 process.stderr.on("error", endOnEpipe); // `tachi -p … 2>&1 | head -1`
 
@@ -155,26 +146,21 @@ if (parsed.help) {
   process.exit(0);
 }
 
-const leadSpec = parsed.lead ?? process.env.TACHI_LEAD;
-if (!leadSpec) fail(`No lead model given. Pass --lead or set TACHI_LEAD.\n\n${HELP}`);
-if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
-if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works only with -p, and not with --json, which is already exact");
-if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
-const mode: Mode = oneOf("mode", parsed.mode, MODES) ?? "ask"; // the safest mode is the default
-const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
-// Digits only: Number() would also take "1e1", " 8 " and "0x10".
-const maxTasks = parsed["max-tasks"] === undefined ? MAX_TASKS : /^\d+$/.test(parsed["max-tasks"]) ? Number(parsed["max-tasks"]) : NaN;
-if (!Number.isInteger(maxTasks) || maxTasks < 1) fail(`--max-tasks must be a whole number from 1 (got "${parsed["max-tasks"]}")`);
-let segments;
-let speed;
+// Release 6 design, "The settings file": a broken file stops the launch as a bad flag does; its warnings come first.
+const loaded = loadSettings();
+if ("problem" in loaded) fail(loaded.problem);
+for (const warning of loaded.warnings) console.error(warning);
+let options;
 try {
-  segments = statusSegments(parsed.status);
-  // -p has no screen to scroll, so it ignores TACHI_SCROLL_SPEED as it does TACHI_CLASSIC; a bad --scroll-speed, typed
-  // for this run, still stops it (the user's choice, 2026-10-27, at Task 7's review).
-  speed = scrollSpeed(parsed["scroll-speed"], parsed.print === undefined ? process.env : {});
+  options = resolve(parsed, process.env, loaded.settings);
 } catch (err) {
   fail(errorText(err));
 }
+const { lead: leadSpec, mode, effort, maxTasks, segments, speed } = options;
+if (!leadSpec) fail(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${shownFile()}.\n\n${HELP}`);
+if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
+if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works only with -p, and not with --json, which is already exact");
+if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
 
 const root = process.cwd();
 const errorFile = path.join(root, ".tachikoma", "errors.jsonl");
@@ -183,25 +169,26 @@ attachErrorLog(bus, errorFile, randomUUID());
 const stats = new Stats(bus);
 
 const makeProvider = (spec: string): Provider => createProvider(spec, { effort });
+// A spec the settings file gave names its entry, as one from a flag or variable names the flag (the plan's choice 8).
+const named = (entry: string, flag: string, given: string | undefined) => (given === undefined ? `${SETTINGS}: "${entry}": ` : flag);
 let lead: Provider;
 let fallback: Provider | undefined;
 try {
   lead = makeProvider(leadSpec);
 } catch (err) {
-  fail(errorText(err));
+  fail(`${named("lead", "", parsed.lead ?? (process.env.TACHI_LEAD || undefined))}${errorText(err)}`);
 }
 try {
-  if (parsed.fallback) fallback = makeProvider(parsed.fallback);
+  if (options.fallback) fallback = makeProvider(options.fallback);
 } catch (err) {
-  fail(`--fallback: ${errorText(err)}`); // otherwise it reads like a bad lead
+  fail(`${named("fallback", "--fallback: ", parsed.fallback)}${errorText(err)}`); // otherwise it reads like a bad lead
 }
 // Without --worker, a subagent uses the model leading when it starts.
-const workerSpec = parsed.worker ?? process.env.TACHI_WORKER;
 let worker: Provider | undefined;
 try {
-  if (workerSpec) worker = makeProvider(workerSpec);
+  if (options.worker) worker = makeProvider(options.worker);
 } catch (err) {
-  fail(`--worker: ${errorText(err)}`);
+  fail(`${named("worker", "--worker: ", parsed.worker ?? (process.env.TACHI_WORKER || undefined))}${errorText(err)}`);
 }
 
 const interactive = parsed.print === undefined;
@@ -291,7 +278,7 @@ if (parsed.print !== undefined) {
   const tool = systemTool(process.platform, process.env);
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
-  if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true) === "full") screen.enter();
+  if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
   ink = render(
     <App
       session={session}

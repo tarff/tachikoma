@@ -23,6 +23,14 @@ function tachi(...args: (string | Record<string, string>)[]) {
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
+// A pretend home folder holding ~/.tachikoma/settings.json, given to tachi() as its HOME and USERPROFILE.
+function homeWith(settings: string) {
+  const home = mkdtempSync(path.join(tmpdir(), "tachi-cli-home-"));
+  mkdirSync(path.join(home, ".tachikoma"));
+  writeFileSync(path.join(home, ".tachikoma", "settings.json"), settings);
+  return { USERPROFILE: home, HOME: home };
+}
+
 // Each start takes about a second; with the whole suite running, two starts took up to 5 s (2026-10-23),
 // past Vitest's default. 15 s, as for the other tests that start processes (tests/exec/local.test.ts).
 describe("tachi", { timeout: 15_000 }, () => {
@@ -133,5 +141,51 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
     expect(r.stderr).not.toContain("    at "); // no stack trace
+  });
+
+  // Release 6 design, "The settings file". The stand-in terminal stops an interactive start, as above, once the lead is made.
+  it("takes the lead from the settings file when no flag gives one", () => {
+    const r = tachi(homeWith('{"lead": "ollama:none"}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+  });
+
+  it("with no lead anywhere, says how to set one in the settings file", () => {
+    const r = tachi();
+    expect(r.code).toBe(1);
+    const file = path.join("~", ".tachikoma", "settings.json"); // this machine's separator
+    expect(r.stderr).toContain(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${file}.`);
+  });
+
+  it("stops on a broken settings file, with its problem", () => {
+    let r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"mode": "x"}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^settings\.json: "mode" must be one of: ask, project, never \(got "x"\)/);
+    r = tachi("--lead", "ollama:none", "-p", "hi", homeWith("{"));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^settings\.json is not valid JSON: /);
+  });
+
+  it("warns of an unknown settings entry on stderr, and starts", () => {
+    const r = tachi(homeWith('{"lead": "ollama:none", "leed": "x"}'));
+    expect(r.stderr).toContain('settings.json: "leed" is not a setting; it was left out\n');
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+  });
+
+  it("lets a flag win over the settings file", () => {
+    const r = tachi("--lead", "ollama:none", "--mode", "project", homeWith('{"lead": "nope", "mode": "never"}'));
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+  });
+
+  it("names the settings entry when a model it gives is bad", () => {
+    expect(tachi("-p", "hi", homeWith('{"lead": "nope"}')).stderr).toMatch(/^settings\.json: "lead": Expected <provider>:<model>/);
+    expect(tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"fallback": "nope"}')).stderr).toMatch(/^settings\.json: "fallback": Expected/);
+    expect(tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"worker": "nope"}')).stderr).toMatch(/^settings\.json: "worker": Expected/);
+  });
+
+  // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.
+  it("with -p, runs on the settings file's lead", () => {
+    const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });
+    expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
   });
 });

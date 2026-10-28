@@ -12,6 +12,7 @@ import {
   instructionsLine,
   jsonLine,
   prose,
+  resolve,
   screenMode,
   scrollSpeed,
   statusSegments,
@@ -146,6 +147,17 @@ describe("screenMode", () => {
     for (const env of [{ CI: "true" }, { CI: "1" }, { CI: "" }, { CONTINUOUS_INTEGRATION: "yes" }]) expect(screenMode(undefined, env, true)).toBe("classic");
     for (const env of [{ CI: "0" }, { CI: "false" }, { CONTINUOUS_INTEGRATION: "false" }]) expect(screenMode(undefined, env, true)).toBe("full");
   });
+
+  // Release 6 design, "Which wins": --classic, then TACHI_CLASSIC, then the settings file's "screen". Neither the flag nor
+  // the variable can ask for full screen, so the file's "full" holds only where neither asks for classic.
+  it("takes the settings file's screen after --classic and TACHI_CLASSIC", () => {
+    expect(screenMode(undefined, {}, true, "classic")).toBe("classic");
+    expect(screenMode(undefined, {}, true, "full")).toBe("full");
+    expect(screenMode(true, {}, true, "full")).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "1" }, true, "full")).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "0" }, true, "classic")).toBe("classic"); // 0 is unset, so the file's applies
+    expect(screenMode(undefined, {}, false, "full")).toBe("classic");
+  });
 });
 
 describe("fullPossible", () => {
@@ -204,5 +216,67 @@ describe("endOnEpipe", () => {
     const code = await new Promise((resolve) => child.on("close", resolve));
     expect(stderr).toBe("");
     expect(code).toBe(0);
+  });
+});
+
+// Release 6 design, "Which wins": a flag, then a TACHI_ variable, then the settings file, then the default.
+describe("resolve", () => {
+  it("takes the lead from --lead, then TACHI_LEAD, then the file, an empty variable being unset", () => {
+    expect(resolve({ lead: "a:1" }, { TACHI_LEAD: "a:2" }, { lead: "a:3" }).lead).toBe("a:1");
+    expect(resolve({}, { TACHI_LEAD: "a:2" }, { lead: "a:3" }).lead).toBe("a:2");
+    expect(resolve({}, { TACHI_LEAD: "" }, { lead: "a:3" }).lead).toBe("a:3");
+    expect(resolve({}, {}, {}).lead).toBeUndefined();
+  });
+
+  it("takes the worker from --worker, then TACHI_WORKER, then the file", () => {
+    expect(resolve({ worker: "w:1" }, { TACHI_WORKER: "w:2" }, { worker: "w:3" }).worker).toBe("w:1");
+    expect(resolve({}, { TACHI_WORKER: "w:2" }, { worker: "w:3" }).worker).toBe("w:2");
+    expect(resolve({}, { TACHI_WORKER: "" }, { worker: "w:3" }).worker).toBe("w:3");
+    expect(resolve({}, {}, {}).worker).toBeUndefined();
+  });
+
+  it("takes mode, effort and fallback from the flag, then the file, then the default", () => {
+    expect(resolve({ mode: "project" }, {}, { mode: "never" }).mode).toBe("project");
+    expect(resolve({}, {}, { mode: "never" }).mode).toBe("never");
+    expect(resolve({}, {}, {}).mode).toBe("ask");
+    expect(resolve({ effort: "low" }, {}, { effort: "max" }).effort).toBe("low");
+    expect(resolve({}, {}, { effort: "max" }).effort).toBe("max");
+    expect(resolve({}, {}, {}).effort).toBeUndefined();
+    expect(resolve({ fallback: "f:1" }, {}, { fallback: "f:2" }).fallback).toBe("f:1");
+    expect(resolve({ fallback: "" }, {}, { fallback: "f:2" }).fallback).toBe(""); // an empty --fallback turns the file's off
+    expect(resolve({}, {}, { fallback: "f:2" }).fallback).toBe("f:2");
+    expect(resolve({}, {}, {}).fallback).toBeUndefined();
+  });
+
+  it("takes max tasks and the status parts from the flag, then the file, then the default", () => {
+    expect(resolve({ "max-tasks": "4" }, {}, { maxTasks: 6 }).maxTasks).toBe(4);
+    expect(resolve({}, {}, { maxTasks: 6 }).maxTasks).toBe(6);
+    expect(resolve({}, {}, {}).maxTasks).toBe(8);
+    expect(resolve({ status: "cost" }, {}, { status: ["lead"] }).segments).toEqual(["cost"]);
+    expect(resolve({}, {}, { status: ["lead"] }).segments).toEqual(["lead"]);
+    expect(resolve({}, {}, {}).segments).toEqual(SEGMENTS);
+  });
+
+  it("takes the scroll speed from --scroll-speed, then TACHI_SCROLL_SPEED, then the file, then 3", () => {
+    expect(resolve({ "scroll-speed": "2" }, { TACHI_SCROLL_SPEED: "4" }, { scrollSpeed: 5 }).speed).toBe(2);
+    expect(resolve({}, { TACHI_SCROLL_SPEED: "4" }, { scrollSpeed: 5 }).speed).toBe(4);
+    expect(resolve({}, { TACHI_SCROLL_SPEED: "" }, { scrollSpeed: 5 }).speed).toBe(5);
+    expect(resolve({}, {}, {}).speed).toBe(3);
+  });
+
+  // Release 5's rule: -p has no screen to scroll, so it ignores TACHI_SCROLL_SPEED, and so the file's scrollSpeed too.
+  it("with -p, ignores TACHI_SCROLL_SPEED and the file's scrollSpeed, but not --scroll-speed", () => {
+    expect(resolve({ print: "hi" }, { TACHI_SCROLL_SPEED: "abc" }, { scrollSpeed: 5 }).speed).toBe(3);
+    expect(resolve({ print: "hi", "scroll-speed": "2" }, {}, { scrollSpeed: 5 }).speed).toBe(2);
+  });
+
+  it("still checks a flag given over the file, in the flag's words", () => {
+    expect(() => resolve({ mode: "x" }, {}, { mode: "ask" })).toThrow('--mode must be one of: ask, project, never (got "x")');
+    expect(() => resolve({ effort: "x" }, {}, {})).toThrow('--effort must be one of: low, medium, high, xhigh, max (got "x")');
+    expect(() => resolve({ "max-tasks": "1e1" }, {}, { maxTasks: 2 })).toThrow('--max-tasks must be a whole number from 1 (got "1e1")');
+    expect(() => resolve({ status: "nope" }, {}, { status: ["lead"] })).toThrow(
+      '--status must be one of: lead, context, tokens, cost, mode, errors, project, time, tasks, tools (got "nope")',
+    );
+    expect(() => resolve({ "scroll-speed": "21" }, {}, { scrollSpeed: 2 })).toThrow('--scroll-speed must be a number above 0, up to 20 (got "21")');
   });
 });
