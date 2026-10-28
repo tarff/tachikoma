@@ -5160,7 +5160,8 @@ describe("App's pictures", () => {
 
   it("ends the reads as stopped when the detail view's Ctrl-C stops the turn during the wait, and the turn stops", async () => {
     const pictures = new Pictures();
-    // A lead that refuses a request already stopped, as the SDKs do.
+    // A lead that refuses a request already stopped, as the real leads do: the Anthropic and OpenAI SDKs refuse a signal
+    // already aborted, and fetch (ChatGPT) rejects at once.
     const lead: Provider = {
       id: "fake:a",
       complete: async ({ signal }) => {
