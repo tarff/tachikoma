@@ -141,6 +141,7 @@ Every entry is optional; one that is absent keeps today's default.
   lose nothing. If the file cannot be written, the change holds for the session and one line says
   so. Shift+Tab's mode changes are not saved, since they are often for one task (my call, told to
   the user).
+  **Replaced by the plan's choice 26 (the user's answers, 2026-10-29): nothing is saved.**
 - **Live edits** (user: "Yes, live, like Claude Code"): Tachikoma watches the file, and each
   changed entry applies as the table below says, with one line naming what changed. A setting given
   by a flag or variable at launch stays as given for that session, and the line saying so names

@@ -116,7 +116,7 @@ function numberOf(entry: string, value: unknown): number {
 
 // Release 6 design, "Vim mode": two printable characters typed together go to NORMAL, and <Esc> is the only target. Other
 // entries are left out with a warning, and the rest kept. The two are keys typed in turn, so each must be one a
-// user can type alone: a letter, digit, punctuation mark or symbol, and for now no space (release 6 plan, choice 24).
+// user can type alone: a letter, digit, punctuation mark or symbol, and no space (release 6 plan, choice 24).
 // Two such code points can still be one character on screen, as a flag or a thumb with a skin tone is, so the two
 // must also be two characters as the screen shows them.
 function remaps(entry: string, value: unknown, warnings: string[]): Record<string, "<Esc>"> {

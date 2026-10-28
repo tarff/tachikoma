@@ -226,8 +226,8 @@ Each is marked in its task. None approved yet.
     even at one pixel, is sent as it is, never cached as a failure, so the provider decides and a
     refusal there goes to Task 18's question (found at Task 17's build, spec review and code
     review; the coordinator's call, for the user to review).
-24. **Remap pairs are two letters, digits, punctuation or symbols; a space is not accepted for now**
-    (found at Task 7's code review; the coordinator's call pending the user's answer on spaces).
+24. **Remap pairs are two letters, digits, punctuation or symbols, with no space** (found at Task
+    7's code review; the user's answer, 2026-10-29: no spaces).
 25. **Task 18's question, beyond its text.** A request "carries pictures" when the conversation
     has picture parts and the provider is not yet marked, so the question can come even when
     Task 17 already turned every picture into a note; y then sends it once more and a second
@@ -235,6 +235,20 @@ Each is marked in its task. None approved yet.
     fallback is the one asked about and marked; the lead keeps getting pictures. The question
     shows plainly, without "Allow " in front, though it uses the permission question's line
     (found at Task 18's build and spec review; the coordinator's call, for the user to review).
+26. **A missing settings file is skipped, and `/lead`, a `/model` pick and `/screen` change this
+    window only (Tasks 8 and 9; the user's answers, 2026-10-29).** A settings file found missing
+    while the session watches it is skipped, as an empty one is (choice 3), so the settings in
+    force stay: an editor that saves by renaming a new file over the old one leaves none for a
+    moment, which used to reset every setting and set it again. Deleting the file on purpose keeps the
+    settings until a restart; a removed keys file is still the default keys. `/lead`, a `/model`
+    pick and `/screen` change only the window they are typed in and save nothing, since every open
+    window watches the file and would follow a save; to make a change last, the user edits the file
+    (`/settings` opens it). A later edit of the file's `lead` or `screen` applies as any edit does.
+    This replaces all of Task 8 (`saveSetting`, its lock and private write, the failed save's line,
+    its tests and commit), and with it choice 2 except for the blank file `/settings` makes, and the
+    design's "Saving" bullet. In Task 9 and the design's "Live edits", the watcher no longer passes
+    over Tachikoma's own save (Task 9's test 6 goes), and a removed settings file is no longer `{}`,
+    nor is it in choice 3. `/vim` (choice 6, Task 21) changes this window only too.
 
 ---
 
@@ -588,6 +602,8 @@ this machine, `~` for the home folder). `-p` reads the file too; `-p` still igno
 Commit: `feat: a settings file supplies every launch option, flags still winning`.
 
 ## Task 8: Saving to the settings file
+
+**Replaced by choice 26 (the user's answers, 2026-10-29): nothing is saved.**
 
 **Files:** modify `src/settings.ts`, `src/tui/App.tsx`, `src/cli.tsx`; tests in
 `tests/settings.test.ts`, `tests/tui/app.test.tsx`.
@@ -1033,7 +1049,7 @@ or VISUAL goes to NORMAL and is not `chat:cancel`; in NORMAL it is. The hint row
 --`, `-- NORMAL --`, `-- VISUAL --` or `-- VISUAL LINE --` whenever no other hint takes the row
 (choice 15). The mode and cursor are kept when the detail view, a menu or the model list opens
 and closes. `/vim` (choice 6) and the live
-`editorMode` entry switch it; `/vim` saves.
+`editorMode` entry switch it; `/vim` changes this window only (choice 26).
 A live edit of `vimInsertModeRemaps` applies from the next key and says its line, as `editorMode`
 does (found at Task 9's spec review).
 App passes `press` the remaps as `{ pairs, now }`: `pairs` the settings file's
@@ -1047,7 +1063,7 @@ spec review).
 Claude Code leaves VISUAL on any Ctrl or Meta key, which then does its own action; this task settles
 what Tachikoma does (found at Task 20's spec review).
 
-**Tests:** `/vim` on and off with the line and the saved entry; `dw` written in one read deletes a
+**Tests:** `/vim` on and off with the line, in this window only; `dw` written in one read deletes a
 word; a paste in NORMAL inserts; Esc in INSERT during a turn goes to NORMAL and the turn goes on;
 Esc in NORMAL during a turn stops it; Enter in NORMAL sends; `/` in NORMAL opens Ctrl+R's search;
 the mode kept across Ctrl+O; the live setting switching it; `d` then Ctrl+T toggles the to-do
@@ -1097,7 +1113,7 @@ at Task 6's spec review).
 **The terminal checklist** (the user runs it once, in Windows Terminal, PowerShell):
 1. `tachi` with only `"lead"` in `~/.tachikoma/settings.json` starts; `/settings`, change
    `"status"` in Notepad, save: the status line changes.
-2. `/lead`, quit, `tachi`: the new lead.
+2. `/lead`, quit, `tachi`: the file's lead again, as `/lead` changes this window only (choice 26).
 3. `/keybindings`, bind `ctrl+e` to `chat:externalEditor`: Ctrl+E opens Notepad; `?` shows it.
 4. Ctrl+G on a two-line prompt, with another Notepad window already open (Windows 11's tabbed
    Notepad may hand the file to the open window and exit at once; found at Task 12's code review):
