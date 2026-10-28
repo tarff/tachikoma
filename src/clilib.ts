@@ -45,6 +45,45 @@ export function statusSegments(value: string | undefined): Segment[] {
   return [...new Set(names)];
 }
 
+// Full screen unless asked for classic (release 5 design, "The two modes"). An empty TACHI_CLASSIC or 0 reads as unset
+// (the plan's choice 14), so `TACHI_CLASSIC=0` turns it off. Classic too where full screen can't draw (fullPossible).
+export function screenMode(classic: boolean | undefined, env: NodeJS.ProcessEnv, tty: boolean): "full" | "classic" {
+  const value = env.TACHI_CLASSIC ?? "";
+  return classic || (value !== "" && value !== "0") || !fullPossible(env, tty) ? "classic" : "full";
+}
+
+// Where Ink would not use its own second screen (the user's choice, 2026-10-27, at Task 6's build), full screen can't
+// draw: output that is not a terminal, or CI, which Ink counts as not interactive even on a terminal (ink.js,
+// resolveInteractiveOption and resolveAlternateScreenOption, lines 706-713). CI as Ink's is-in-ci reads it: CI or
+// CONTINUOUS_INTEGRATION set to anything but 0 or false (node_modules/is-in-ci/index.js). /screen asks it too (found at
+// the final review).
+export function fullPossible(env: NodeJS.ProcessEnv, tty: boolean): boolean {
+  const ci = ["CI", "CONTINUOUS_INTEGRATION"].some((key) => key in env && env[key] !== "0" && env[key] !== "false");
+  return tty && !ci;
+}
+
+// Rows a wheel notch scrolls (release 5 design, "Scrolling"): 3 unless given, the probe's Windows setting and Claude
+// Code's note that 3 matches vim; up to 20, the range of Claude Code's CLAUDE_CODE_SCROLL_SPEED. Digits with an optional
+// decimal point only (the plan's choice 15): Number() would also take "1e1", " 3" and "0x10". The option wins over the
+// variable, and an empty variable is unset, as TACHI_LEAD and TACHI_WORKER are.
+export function scrollSpeed(option: string | undefined, env: NodeJS.ProcessEnv): number {
+  const [value, name] = option !== undefined ? [option, "--scroll-speed"] : [env.TACHI_SCROLL_SPEED || undefined, "TACHI_SCROLL_SPEED"];
+  if (value === undefined) return 3;
+  const speed = /^\d+(\.\d+)?$|^\.\d+$/.test(value) ? Number(value) : NaN;
+  if (!(speed > 0 && speed <= 20)) throw new Error(`${name} must be a number above 0, up to 20 (got "${value}")`);
+  return speed;
+}
+
+// The signals that end Tachikoma through process.exit, so `exit` handlers run: the executor's, which stops running
+// commands, and the one that puts the terminal back (release 5 design, "When something goes wrong"). Ctrl+Break and
+// SIGQUIT were added at Task 6's review (the user's choice, 2026-10-27): Windows sends SIGBREAK for Ctrl+Break even in
+// raw mode ("CTRL+BREAK is always treated as a signal", Microsoft's "CTRL+C and CTRL+BREAK Signals", read 2026-10-27;
+// raw mode turns off only Ctrl+C's). signal-exit (node_modules/signal-exit/signals.js) knows neither on Windows; elsewhere it catches SIGQUIT, but
+// only to unmount Ink and send the signal again, so the process dies with no `exit` event, on the second screen.
+export function exitSignals(platform: NodeJS.Platform): NodeJS.Signals[] {
+  return ["SIGTERM", "SIGHUP", platform === "win32" ? "SIGBREAK" : "SIGQUIT"];
+}
+
 // A reader such as `head` that stops early is a normal end, not a crash.
 export function endOnEpipe(err: NodeJS.ErrnoException): void {
   if (err.code !== "EPIPE") throw err;

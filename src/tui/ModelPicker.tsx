@@ -1,7 +1,8 @@
 import { Text, useInput, useStdout } from "ink";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { visible } from "../core/permissions.js";
 import type { ModelGroup } from "../providers/models.js";
+import type { Mouse } from "./input.js";
 
 // `/model`: every model of every provider that is set up (release 2 design, "The model picker").
 // Arrow keys move, Enter picks, Esc (or Ctrl-C) closes, and typing filters, since OpenRouter alone
@@ -27,16 +28,39 @@ function view(groups: ModelGroup[], filter: string, chosen: number) {
   return { shown, models, at: Math.min(chosen, Math.max(0, models.length - 1)) };
 }
 
-export function ModelPicker({ groups, current, onPick, onClose }: { groups: ModelGroup[]; current: string; onPick: (spec: string) => void; onClose: () => void }) {
+export function ModelPicker({
+  groups,
+  current,
+  onPick,
+  onClose,
+  maxRows,
+  mouse,
+  bottom,
+}: {
+  groups: ModelGroup[];
+  current: string;
+  onPick: (spec: string) => void;
+  onClose: () => void;
+  maxRows?: number;
+  // In full screen, the mouse reports, and the frame row of the list's last line, the filter line: the App draws the list
+  // at the foot of its rows, so where its first row is depends on the filter.
+  mouse?: { on(e: "mouse", f: (m: Mouse) => void): unknown; off(e: "mouse", f: (m: Mouse) => void): unknown };
+  bottom?: number;
+}) {
   // Each key reads and changes this at once: Ink can pass on several keys from one read of the
   // terminal before the screen is drawn again, and each must see what the one before it did.
   const state = useRef<{ filter: string; chosen: number } | null>(null);
   state.current ??= { filter: "", chosen: Math.max(0, view(groups, "", 0).models.indexOf(current)) };
   const [, redraw] = useState(0);
+  // Set once the list has closed or picked: keys and clicks read with the one that did it come before the list is gone
+  // from the screen, and must not pick (found at Task 10's review).
+  const done = useRef(false);
   const { filter } = state.current;
   const { shown, models, at } = view(groups, filter, state.current.chosen);
-  // Fits the terminal: the help line, the status line and the line Ink ends with take three rows.
-  const height = Math.max(1, (useStdout().stdout.rows || shown.length + 3) - 3);
+  // Fits the terminal: the help line, the status line and the line Ink ends with take three rows. In full screen the App
+  // gives the rows for the list and its "No models" line together (release 5 plan, choice 19).
+  const { stdout } = useStdout();
+  const height = maxRows === undefined ? Math.max(1, (stdout.rows || shown.length + 3) - 3) : models.length ? Math.max(1, maxRows) : Math.max(0, maxRows - 1);
   const focus = shown.findIndex((r) => r.kind === "model" && r.spec === models[at]);
   const top = Math.min(Math.max(0, focus - Math.floor(height / 2)), Math.max(0, shown.length - height));
 
@@ -44,14 +68,37 @@ export function ModelPicker({ groups, current, onPick, onClose }: { groups: Mode
   const pick = () => {
     const { models, at } = view(groups, state.current!.filter, state.current!.chosen);
     const spec = models[at];
-    if (spec) onPick(spec);
-    else redraw((n) => n + 1);
+    if (spec) {
+      done.current = true;
+      onPick(spec);
+    } else redraw((n) => n + 1);
   };
 
+  // A left press on a model picks it, as Enter does (release 5 design, "Clicking"); a press anywhere else does nothing
+  // (release 5 plan, choice 10). Set up again at each drawing, so a row is mapped as it is drawn, and the model pressed is
+  // picked though a key read with the press changed the filter (found at Task 10's review). The models' rows end on
+  // the row above the filter line: the "No models" line under them shows only when there are none to press.
+  const list = shown.slice(top, top + height);
+  useEffect(() => {
+    if (!mouse || bottom === undefined) return;
+    const onMouse = (m: Mouse) => {
+      const r = list[m.y - (bottom - list.length)];
+      if (done.current || m.kind !== "press" || m.button !== "left" || r?.kind !== "model") return;
+      done.current = true;
+      onPick(r.spec);
+    };
+    mouse.on("mouse", onMouse);
+    return () => void mouse.off("mouse", onMouse);
+  });
+
   useInput((ch, key) => {
+    if (done.current) return;
     const s = state.current!;
     const { models, at } = view(groups, s.filter, s.chosen);
-    if (key.escape || (key.ctrl && ch === "c")) return onClose();
+    if (key.escape || (key.ctrl && ch === "c")) {
+      done.current = true;
+      return onClose();
+    }
     if (key.return) return pick();
     if (key.upArrow) s.chosen = Math.max(0, at - 1);
     else if (key.downArrow) s.chosen = Math.max(0, Math.min(models.length - 1, at + 1));
@@ -69,7 +116,7 @@ export function ModelPicker({ groups, current, onPick, onClose }: { groups: Mode
 
   return (
     <>
-      {shown.slice(top, top + height).map((r, i) =>
+      {list.map((r, i) =>
         r.kind === "heading" ? (
           <Text key={`h${top + i}`} bold wrap="truncate-end">
             {visible(r.text)}

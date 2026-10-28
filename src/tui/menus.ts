@@ -29,6 +29,7 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/logout chatgpt", run: "/logout chatgpt", note: "Sign out of ChatGPT" },
   { label: "/tasks", run: "/tasks", note: "List the subagents; /tasks t1 shows one, /tasks stop stops them" },
   { label: "/errors", run: "/errors", note: "Summarise the error log" },
+  { label: "/screen", run: "/screen", note: "Switch between full screen and classic" },
   { label: "/exit", run: "/exit", note: "Quit" },
 ];
 

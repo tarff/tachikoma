@@ -28,20 +28,22 @@ learn from experience. The command is `tachi`.
 | Licence | MIT | User, 2026-10-22 ("portfolio only, go with MIT") |
 | Refusals | Keep Anthropic's fallback, show every rescue, and add an optional fallback to a model from another provider | User, 2026-10-22 ("keep it with the notice and maybe add an option for it to try another model from a different provider") |
 | Subscriptions | Claude plans only through the real `claude` CLI as a worker; ChatGPT plans through OpenAI's own sign-in flow for open-source tools, in release 2 | User, 2026-10-22 ("yes use the subscription for OpenAI", "Release 2"), after checking each company's terms |
-| More providers | More providers and bring-your-own keys, as release 13 | User, 2026-10-22 ("byo keys like openrouter etc", "at a later" date); placed last, user, 2026-10-25 (option chosen: `tachi setup` builds key entry first) |
+| More providers | More providers and bring-your-own keys, as release 14 | User, 2026-10-22 ("byo keys like openrouter etc", "at a later" date); placed last, user, 2026-10-25 (option chosen: `tachi setup` builds key entry first) |
 | ChatGPT sign-in, how it works | A `chatgpt:` lead name; `tachi login`/`logout` and `/login`/`/logout`; Tachikoma's own adapter calling OpenAI directly (not through Codex) | User, 2026-10-22 (chose each option; "Both" for the commands; asked "why no logout", so it was added) |
 | ChatGPT sign-in, the saved login | A private file, with an optional OS keychain; one account at a time. As built, the keychain keeps a key and the tokens stay in the file, sealed with it | User, 2026-10-22 (chose each option, and every hardening step offered); the key, user, 2026-10-23 (release 2 design, "As built") |
 | ChatGPT sign-in, after review | On Windows, an explicit permission that lets in only the user; if plan use is not granted, the account's record is kept but the plan is not used; records keyed by OpenAI's client ID and account, not email | User, 2026-10-22 (approved the design review's changes: "Yes"), after checking OpenAI's sign-in and accounts pages |
 | Hardening | The file tools refuse the data folder; shell commands do not get API keys | User, 2026-10-22 (chose both) |
 | Model picker | `/model` lists the models of every provider that is set up | User, 2026-10-22 (asked for a list "like Claude code"; chose every provider) |
-| Context window | The model list's own figure, otherwise the tokens in use; the status line shows how much is left | User, 2026-10-22 (chose this; "Codes cli at least shows me how much context is left as a %"); no model-pages table, user, 2026-10-23 (release 2 design, "As built") |
+| Context window | The model list's own figure, otherwise the tokens in use; the status line shows how much is left | User, 2026-10-22 (chose this; "Codes cli at least shows me how much context is left as a %"); no model-pages table, user, 2026-10-23 (release 2 design, "As built"); for OpenAI API leads only, a dated table from OpenAI's model pages after all, in release 6, user, 2026-10-27 (option chosen: "2"; OpenAI's API model entry has no window field, its reference read 2026-10-27, and the 2026-10-23 reason was the plan's smaller window, which the API does not share) |
 | Releases 3 to 5 | Claude Code's keys and screen (3), read-only subagents and the to-do list (4), key extras (5); every later release moves down three | User, 2026-10-23 ("We need all sorts of keyboard commands like Claude code", "It should have subagents. It was in the initial brief."; chose each part) |
 | Release 3, choices | History in a private file per project in the data folder; Shift+Tab reaches `never` only when started with `--mode never`; Ctrl+O prints the last turn's tools in full; `@` lists one folder at a time and sends only the path; after Esc the queue goes on, after Ctrl-C it comes back into the prompt | User, 2026-10-25 (chose each option; [release 3 design](2026-10-25-tachikoma-release-3-design.md)) |
 | Release 3, status line | Adds claude-hud's context bar and colours, the project folder and git branch, the session's length and a tool line | User, 2026-10-25 (asked what claude-hud shows; chose all four parts offered) |
 | Release 3, as built | Undo on Ctrl+Z as well as Ctrl+_; the word before the cursor on Alt+Backspace, with Ctrl+Backspace acting as Backspace; the git branch read from `.git/HEAD`, without the `*` for changes; the spinner moving every 80 ms | User, 2026-10-25 (after the key probes in their terminal, and at the build; [release 3 design](2026-10-25-tachikoma-release-3-design.md), "As built") |
-| Instruction files, and importing from other tools | Release 4 reads a project's AGENTS.md or CLAUDE.md, and the user's own, into each session. `tachi setup` (release 12) offers on its first run to import settings, skills, MCP servers and key bindings from Claude Code, Codex and other tools | User, 2026-10-25 ("a first boot import setup to bring over existing Claude and agents Md files and other setting and skills from other programs"; chose both places from options offered) |
-| Release 4, as built | Node 22.20 or later, for its glob matching; `find_files` patterns skip names starting with a dot unless they name the dot; only `.gitignore` files are read, not git's other ignore lists; `TACHI_INSTRUCTIONS_TOP` moves where the walk for instruction files starts, for tests; the search tools read the disk directly, so the sandbox (release 6) must give them a way in | User, at the review of the [release 4 plan](2026-10-26-tachikoma-release-4.md) ([release 4 design](2026-10-25-tachikoma-release-4-design.md), "As built") |
+| Instruction files, and importing from other tools | Release 4 reads a project's AGENTS.md or CLAUDE.md, and the user's own, into each session. `tachi setup` (release 13) offers on its first run to import settings, skills, MCP servers and key bindings from Claude Code, Codex and other tools | User, 2026-10-25 ("a first boot import setup to bring over existing Claude and agents Md files and other setting and skills from other programs"; chose both places from options offered) |
+| Release 4, as built | Node 22.20 or later, for its glob matching; `find_files` patterns skip names starting with a dot unless they name the dot; only `.gitignore` files are read, not git's other ignore lists; `TACHI_INSTRUCTIONS_TOP` moves where the walk for instruction files starts, for tests; the search tools read the disk directly, so the sandbox (release 7) must give them a way in | User, at the review of the [release 4 plan](2026-10-26-tachikoma-release-4.md) ([release 4 design](2026-10-25-tachikoma-release-4-design.md), "As built") |
 | Release 4, choices | Subagents use `--worker`'s model, else the lead's; they may run in the background, and one finishing while the lead is idle starts a turn; Esc stops only the subagents a turn waits for; a subagent's read outside the project asks, naming it; no subagent starts another; the lead and subagents get `find_files` and `search_files`, which follow `.gitignore`; the to-do list shows while any item is open; instruction files from `~/.claude`, `~/.codex` and every folder down to the project, CLAUDE.md and AGENTS.md both, with `@` imports; an import leaving the project, or a found file linked to another folder, asks first unless it is the user's own; with `-p`, background subagents run in the foreground | User, 2026-10-25 (chose each from options offered; [release 4 design](2026-10-25-tachikoma-release-4-design.md)) |
+| Releases 5 and 6 | Full screen with its own scrolling (5); vim mode, image paste, an external editor, stash and rebinding keys in a file (6); every later release moves down one, to 14 | User, 2026-10-26 (option chosen: "Split: full screen first"; [release 5 design](2026-10-27-tachikoma-release-5-design.md)) |
+| Release 5, as built | Classic mode also when the output is not a terminal or under CI; an error that ends the screen exits with 1; Ctrl+Break and SIGQUIT put the terminal back too; `-p` ignores `TACHI_SCROLL_SPEED`; no cap on kept lines; Shift+Up/Down only scroll; in the detail view Ctrl-C with nothing running only closes it, and a paste goes only into a search being typed; while `[` has the view printed out, pastes do nothing and a queued `/model` or `/tasks t3` waits; `/screen` to classic is classic from its start | User, 2026-10-27 and 2026-10-28, at the build and its reviews ([release 5 design](2026-10-27-tachikoma-release-5-design.md), "As built") |
 
 ## 1. Overall shape
 
@@ -153,7 +155,7 @@ everything, and the alternative is a session that cannot continue. The failure i
   other.
 - **A failed summary changes nothing.** The history stays as it was, and the waiting turn ends, or
   the lead switch is refused.
-- **Before shortening ships** (release 7), a request that is too long ends with an error.
+- **Before shortening ships** (release 8), a request that is too long ends with an error.
 
 ### When a model refuses
 
@@ -656,7 +658,7 @@ it.
   - the author's engineering rules: no assumptions without data, simplicity first, surgical
     changes
 - A user's skills from Claude Code and other tools are copied by `tachi setup`'s first-run import
-  (release 12), after checking each licence.
+  (release 13), after checking each licence.
 
 ### Status line
 
@@ -706,7 +708,7 @@ tachi setup
   (`ANTHROPIC_API_KEY`, etc.)
 - on its first run, offers to import from the tools it finds (Claude Code, Codex and others):
   settings, skills (each licence checked first), MCP servers and key bindings. Nothing is imported
-  without asking. Which tools, and how each setting maps, are for release 12's design.
+  without asking. Which tools, and how each setting maps, are for release 13's design.
 
 Keys are stored in Tachikoma's config folder, readable only by the user. `tachi doctor` checks
 everything again and says what is broken and how to fix it.
@@ -854,15 +856,18 @@ Each release works on its own and can be shown.
 4. Read-only subagents (read and search only) with a panel under the prompt, and the to-do list;
    reading the project's and the user's instruction files (AGENTS.md, CLAUDE.md) into each session
    ([release 4 design](2026-10-25-tachikoma-release-4-design.md))
-5. Key extras: vim mode, image paste, external editor, stash, rebinding keys in a file, full screen
-6. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
-7. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
+5. Full screen with its own scrolling, a scroll bar, mouse selection and copying, and a detail
+   view for Ctrl+O and `/tasks t3` ([release 5 design](2026-10-27-tachikoma-release-5-design.md))
+6. Key extras: vim mode, image paste, external editor, stash, rebinding keys in a file; the
+   context window of OpenAI API models, from a dated table of OpenAI's model pages
+7. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
+8. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
    disk; shortening the history
-8. Skills: the loader, vendored superpowers, Tachikoma's own skills
-9. Codebase search with EmbeddingGemma 2
-10. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
+9. Skills: the loader, vendored superpowers, Tachikoma's own skills
+10. Codebase search with EmbeddingGemma 2
+11. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
     refusal rules. The controller comes first because workers have to be cancellable as a group.
-11. Loops: on a timer, and until done
-12. `tachi setup` / `tachi doctor`, with a first-run import from other tools, and the fresh-install
+12. Loops: on a timer, and until done
+13. `tachi setup` / `tachi doctor`, with a first-run import from other tools, and the fresh-install
     CI
-13. More providers and bring-your-own keys
+14. More providers and bring-your-own keys

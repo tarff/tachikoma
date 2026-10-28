@@ -1,31 +1,55 @@
-import { type Key, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
+import { Box, type Key, renderToString, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
 import { summarize } from "../core/errorlog.js";
 import { type Ask, type Mode, type Owner, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
-import type { Tasks } from "../core/tasks.js";
+import type { Task, Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { TodoItem } from "../tools/todo.js";
-import { brief, callLines, describe, lastTurn, type Line, screen } from "./describe.js";
-import { apply, type Editor, empty, load, move, replace } from "./editor.js";
+import type { Clipboard } from "./clipboard.js";
+import { Conversation } from "./Conversation.js";
+import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
+import { type Detail, DetailView, keyRow, opened, searchFor, step as stepMatch } from "./DetailView.js";
+import { apply, type Editor, empty, load, move, replace, segmenter } from "./editor.js";
 import { History, matches } from "./history.js";
-import { type Command, commands, KEY_LIST } from "./keys.js";
-import { layout, vertical } from "./layout.js";
+import { type Mouse, readOut } from "./input.js";
+import { type Command, commands, isScroll, KEY_LIST, type Scroll } from "./keys.js";
+import { layout, placeOn, scroll as windowOf, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
-import { ModelPicker } from "./ModelPicker.js";
+import { ModelPicker, rows as listRows } from "./ModelPicker.js";
 import { Prompt, promptWidth } from "./Prompt.js";
+import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
 import { TaskPanel, taskRow, taskRows } from "./TaskPanel.js";
+import { PASTE_OFF, PASTE_ON, type Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
+import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow, type View, wrap } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
-// A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn.
-type Question = { text: string; owner?: Owner; answer: (ok: boolean, how: string) => void };
+// A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn. In full screen, `detail`:
+// the first and last of the conversation's lines its detail went to, the heading's line first; `following`: whether the
+// view was following when it was first drawn, undefined until then (release 5 plan, Task 11). `label`: who asks, a
+// subagent by its id alone, and the action's first word ("t2 to run"); `short`, for a question too long to fit, what its
+// line names in place of its text (the user's choices at Task 11's reviews).
+type Question = {
+  text: string;
+  label: string;
+  short?: string;
+  owner?: Owner;
+  detail?: [number, number];
+  following?: boolean;
+  answer: (ok: boolean, how: string) => void;
+};
+// While the left button is held after a press in the conversation: what the press took (the pressed character, or a
+// double or triple click's word or line); `copy`: a drag, or a double or triple click, made a selection to copy on release;
+// `top`: the press was on the conversation's top row.
+type Held = { press: [Pos, Pos]; copy: boolean; top: boolean };
+type Printed = { resume?: () => Promise<void>; paste?: string };
 
 export interface AppProps {
   session: Session;
@@ -48,20 +72,69 @@ export interface AppProps {
   login: (verb: "login" | "logout", words: string[], say: (line: string) => void, signal: AbortSignal, prefix: string) => Promise<void>;
   // `/model`: every provider's models, and where to show what reading the saved login says.
   listModels: (signal: AbortSignal, warn: (line: string) => void) => Promise<ModelGroup[]>;
+  screen: Screen; // full screen or classic, as the terminal is when the App starts (release 5 design, "The two modes")
+  // Whether full screen can draw here, for /screen: not where the output is not a terminal, or in CI (clilib.ts,
+  // fullPossible).
+  fullPossible: boolean;
+  // The terminal's mouse reports, taken out of the keys by the InputFilter (release 5 design, "The mouse"), and the rows a
+  // wheel notch scrolls (clilib.ts, scrollSpeed).
+  mouse?: { on(e: "mouse", f: (m: Mouse) => void): unknown; off(e: "mouse", f: (m: Mouse) => void): unknown };
+  scrollSpeed: number;
+  // Copying (release 5 design, "Copying"): the App makes the clipboard with its own report, so a failure shows in the
+  // hint row.
+  clipboard: (report: (problem: string) => void) => Clipboard;
+  // The InputFilter's hold on raw mode and its diverting of the keys, for `[` (release 5 design, "The detail view"); /screen
+  // holds raw mode too. With none, `[` does nothing.
+  input?: { divert(to: ((keys: string) => void) | null): void; hold(on: boolean): void };
 }
 
-const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /exit";
+const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /exit";
 // "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
 const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
+const gray = (text: string): Line => ({ text, color: "gray" });
+// Characters as a person sees them, as the prompt counts them (release 5 plan, choice 7).
+const characters = (text: string) => [...segmenter.segment(text)].length;
 
 // What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
 // is a message).
-const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks"];
+const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
-export function App({ session, tasks, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments, makeProvider, bindAsk, login, listModels }: AppProps) {
-  const { exit } = useApp();
+// In classic mode the scroll keys are release 4's keys (release 5 plan, choice 16): Shift+Up and Shift+Down are Up and
+// Down, Ctrl+Home and Ctrl+End are Home and End, and PgUp and PgDn do nothing.
+const CLASSIC: Record<Scroll, Command | null> = { lineUp: "up", lineDown: "down", top: "home", bottom: "end", pageUp: null, pageDown: null };
+
+// The detail view's own keys for moving, beside the scroll keys (release 5 design, "The detail view").
+const LETTERS: Record<string, Scroll> = { j: "lineDown", k: "lineUp", g: "top", G: "bottom" };
+const MOVES: Record<string, Scroll> = { down: "lineDown", up: "lineUp", home: "top", end: "bottom" };
+
+export function App({
+  session,
+  tasks,
+  bus,
+  stats,
+  mode,
+  onMode,
+  project,
+  root,
+  gitBranch,
+  historyFile,
+  intro,
+  errorFile,
+  segments,
+  makeProvider,
+  bindAsk,
+  login,
+  listModels,
+  screen,
+  fullPossible,
+  mouse,
+  scrollSpeed,
+  clipboard,
+  input,
+}: AppProps) {
+  const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
   // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
   // screen is drawn again. `goal` is the column Up and Down keep to, until another key moves the cursor.
@@ -77,6 +150,70 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   const closed = useRef<string | null>(null);
   const listed = useRef<{ folder: string; listing: Listing } | null>(null);
   const { columns, rows: height } = useWindowSize();
+  // Full screen (release 5 design, "The screen"): every line is kept, wrapped one column short, leaving the last column
+  // for the scroll bar (release 5 plan, choice 1), and the view is where the user put it. Keys read and change the view
+  // at once, as above.
+  const [full, setFull] = useState(screen.full);
+  // While /screen goes to classic, nothing is drawn, so Ink's redraw on resuming draws no full-screen frame on the normal
+  // screen (the user's check, release 5 plan, "Before you start").
+  const [switching, setSwitching] = useState(false);
+  const [kept] = useState(() => new Rows(columns - 1));
+  // The lines said in classic mode since `kept` last took them: going to full screen adds them (/screen, below), so `kept`
+  // holds every line said, in order, from then on. `lines` cannot give them then: what is said is in it only once React
+  // draws again.
+  const unkept = useRef<Line[]>([]);
+  const view = useRef<View>(FOLLOWING);
+  // The detail view, while it is open (DetailView.tsx); it takes the conversation's place. The keys, the wheel, the bar,
+  // selecting and copying act on whichever is drawn, the pane, with its own rows and view (plan, Task 12).
+  const detail = useRef<Detail | null>(null);
+  const pane = () => detail.current ?? { rows: kept, view };
+  // While the detail view is printed out (`[`), from the key on, and once Ink is suspended, how to resume it; `paste`,
+  // while a paste comes in, its last characters, which may hold the start of its end marker. Kept apart from the view,
+  // which a question closes while it is out.
+  const printed = useRef<Printed | null>(null);
+  // Once back, a paste that was coming in when a question brought the view back, until its end; and the model list of a
+  // /model that ended while printed out, until the view is back (comeBack, below).
+  const dropping = useRef<Printed | null>(null);
+  const waitingList = useRef<ModelGroup[] | null>(null);
+  const ended = useRef(false); // Ink has unmounted the App (the cleanup below)
+  const suspending = useRef(false); // /screen is suspending Ink, or has, and has not yet resumed it (switchScreen, below)
+  const switchRunning = useRef(false); // from switchScreen's start to its end, for comeBack, below
+  // What is set up once, at mount (the bus listeners, bindAsk, History's warning, the mouse listener), keeps the first
+  // render's functions, and what they call, `say`, `next` and the rest, reads the mode from here, not from the first
+  // render's `full` (found at Task 5's review); so do the keys' functions, alike. /screen sets it as the switch starts,
+  // `full` following (switchScreen, below). The mouse listener reads the frame's shape from `frame`, below, for the same
+  // reason.
+  const fullNow = useRef(full);
+  // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row and how many it draws, and
+  // the menu's under it, no prompt rows while a question, the model list, Ctrl+R's search, whose prompt shows a match, or
+  // the detail view takes their place; the prompt as typed and the menu's choice when they were drawn, which keys
+  // replace, never change; and the detail view drawn, if any.
+  const frame = useRef({
+    columns,
+    viewHeight: 1,
+    promptFirst: 0,
+    promptRows: 0,
+    menuRows: 0,
+    editor: empty,
+    chosen: chosen.current,
+    detail: null as Detail | null,
+  });
+  const promptTop = useRef(0); // the prompt's and the menu's windows (layout.ts, scroll), as last drawn
+  const menuTop = useRef(0);
+  const wheel = useRef(0); // the fraction of a row carried from earlier notches (view.ts, notch)
+  const grab = useRef<number | null>(null); // while the thumb is dragged, the row of the thumb it was pressed on
+  // Selecting (release 5 design, "Selecting"): places in the lines, not screen rows, so a selection stays on its text as
+  // the view moves or rewraps. `press` is what the press took: the pressed cell's character (select.ts, span), or the word
+  // or line of a double or triple click. `end` is the character under the pointer's cell, as span takes it.
+  const selection = useRef<{ press: [Pos, Pos]; end: [Pos, Pos] } | null>(null);
+  const held = useRef<Held | null>(null);
+  const lastPress = useRef<{ at: number; x: number; y: number; count: number } | null>(null); // for select.ts, clicks
+  // The hint row's line about the last copy, until the next key or click, whether it says the copy failed, and whether it
+  // has been on screen.
+  const copied = useRef<{ text: string; failed: boolean; shown?: boolean } | null>(null);
+  // A resize wraps every line again: here, while drawing, so resize events that come together cost one wrapping.
+  if (full && kept.width !== columns - 1) kept.setWidth(columns - 1);
+  if (detail.current && detail.current.rows.width !== columns - 1) detail.current.rows.setWidth(columns - 1);
   const [busy, setBusy] = useState(false);
   const working = useRef(false); // busy, for keys read before the screen is drawn again
   const queue = useRef<string[]>([]); // what Enter added during a turn, in order
@@ -98,6 +235,24 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   const listOpen = useRef(false); // the picker, for keys and answers read before the screen is drawn again
   const announced = useRef(new Set<string>()); // background subagents whose ending has been shown
   const [, rerender] = useState(0);
+  // A failure of the system's tool comes after the copy, and replaces its line in the hint row (release 5 design,
+  // "Copying").
+  const board = useRef<Clipboard | null>(null);
+  // Made once, while drawing: safe with Ink's non-concurrent root (ink.js, `concurrent` defaults to false), which never
+  // throws a render away; a concurrent root could make one clipboard for a render it drops.
+  board.current ??= clipboard((problem) => {
+    copied.current = { text: `Copied with the terminal only; ${visible(problem)}`, failed: true }; // the tool's own output (clipboard.ts, runTool)
+    rerender((n) => n + 1);
+  });
+  // The next key, paste or click takes away the line about the last copy (release 5 design, "Copying"), but a failure only
+  // once it has been on screen: one that came while Ctrl+R's search or the exit warning held the row waits for it, as a
+  // failed copy is always reported (the user's choice at Task 9's review, 2026-10-27).
+  const clearCopied = () => {
+    const c = copied.current;
+    if (c === null || (c.failed && !c.shown)) return;
+    copied.current = null;
+    rerender((n) => n + 1);
+  };
   const started = useRef(Date.now());
   const [now, setNow] = useState(started.current);
   const [branch, setBranch] = useState(gitBranch);
@@ -105,7 +260,24 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   const nextId = useRef(0);
   const lookups = useRef(0);
 
-  const say = (...add: Line[]) => setLines((l) => [...l, ...add.map((x) => ({ ...screen(x), id: nextId.current++ }))]);
+  // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
+  // design, "Scrolling"); setting `lines` draws them either way.
+  const say = (...add: Line[]) => {
+    const shown = add.map(escaped);
+    if (fullNow.current) {
+      const before = kept.lines.length;
+      kept.add(shown);
+      view.current = arrived(view.current, kept.lines.length - before);
+    } else unkept.current.push(...shown);
+    setLines((l) => [...l, ...shown.map((x) => ({ ...x, id: nextId.current++ }))]);
+  };
+  // What the user asks to see (the key list, the mode, `/model`) brings the view to the bottom, following, so it is seen;
+  // output arriving on its own leaves a held view where it is (the user's choice, 2026-10-27, at Task 5's review). The
+  // last turn opens the detail view instead (plan, Task 12).
+  const show = (...add: Line[]) => {
+    view.current = FOLLOWING;
+    say(...add);
+  };
   const history = useRef<History | null>(null);
   history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
 
@@ -128,9 +300,12 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
       if (signal?.aborted) return Promise.resolve(false);
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface.
+      let range: [number, number] | undefined;
       if (detail !== undefined) {
         const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
+        const from = kept.lines.length;
         say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
+        if (fullNow.current) range = [from, kept.lines.length - 1];
       }
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
@@ -139,21 +314,30 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
         const cancel = () => q.answer(false, "cancelled");
         const q: Question = {
           text: owner ? `${visible(owner.name)} to ${text}` : text,
+          // A subagent's name is its id, then its description in brackets (tasks.ts); a summary starts with its action:
+          // "run: …", "write …", "read …".
+          label: `${owner ? `${visible(owner.name.split(" ", 1)[0]!)} to ` : ""}${text.split(/[\s:]/, 1)[0]}`,
           ...(owner ? { owner } : {}),
+          ...(range ? { detail: range } : {}),
           answer: (ok, how) => {
             if (!open) return;
             open = false;
             signal?.removeEventListener("abort", cancel);
             questions.current = questions.current.filter((x) => x !== q);
-            say({ text: `${q.text}: ${how}`, color: "gray" });
+            if (q.detail && q.following) view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
+            say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
             resolve(ok);
             rerender((n) => n + 1);
             next(); // an answer may have waited for this question to close
           },
         };
         signal?.addEventListener("abort", cancel, { once: true });
+        // A question closes the detail view: y and n answer it, and n is "next match" there (release 5 design, "The detail
+        // view"). Closed here, before it is drawn, so its first drawing places the conversation's view (Task 11).
+        closeDetail();
         questions.current.push(q);
         rerender((n) => n + 1);
+        void comeBack(); // printed out, the view comes back at once, as on q, and the question shows (plan, Task 13)
       });
     });
     const onMessage = (m: Message) => say(...describe(m));
@@ -205,7 +389,19 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
+    mouse?.on("mouse", onMouse);
     return () => {
+      ended.current = true;
+      // Ink ending (a crash, or a signal) lets the keyboard go, so raw mode goes off and the process can end (input.ts,
+      // hold), whatever held it: the view printed out, the rest of a paste dropped after it, or a switch, whose own ending
+      // a signal never lets come (found at the final review). Letting go again later, as a switch or comeBack does, is
+      // harmless. Bracketed paste needs nothing here: Ink's own cleanups turn it off as they end, suspended or not (Ink's
+      // components/App.js).
+      printed.current = null;
+      dropping.current = null;
+      input?.divert(null);
+      input?.hold(false);
+      mouse?.off("mouse", onMouse);
       clearInterval(minutes);
       clearTimeout(first.current?.timer);
       bus.off("message", onMessage);
@@ -216,8 +412,10 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
       bus.off("tool-end", onToolEnd);
       bus.off("todo", onTodo);
       bus.off("tasks", onTasks);
-      // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending.
+      // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
+      // Ink ending on a drawing error would leave with nothing on screen (found at the final review).
       tasks.stop();
+      abort.current?.abort();
     };
   }, []);
 
@@ -241,13 +439,26 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   // subagents"). Then the queue's entries, taken from the front: a command alone, as if typed then;
   // prompts next to each other as one message, separated by blank lines. Not while something runs (a
   // command that finished after a turn started, both typed in one read of the terminal, leaves the
-  // queue to that turn), nor while a question or the model list is open.
+  // queue to that turn), nor while a question or the model list is open. While the detail view is printed out, a
+  // subagent's record waits for it to come back, and what is queued after it, as it would take the printed view's place
+  // unseen; the model list waits in perform, below (the user's choices, 2026-10-28). So does /screen, which would change
+  // the screen under the printed view, and could not suspend Ink, suspended already. Messages and other commands go on.
+  // Nothing starts once Ink has ended, a turn going on paying with no screen to show it (found at Task 13's round 3).
   const next = () => {
-    if (working.current || listOpen.current || questions.current.length) return;
+    if (ended.current || working.current || listOpen.current || questions.current.length) return;
     if (tasks.wakes()) return void submit("", true);
     const q = queue.current;
     const command = q.findIndex(isCommand);
-    if (q.length) void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
+    if (!q.length) return;
+    if (printed.current && command === 0 && (recordToOpen(q[0]!) || /^\/screen$/i.test(q[0]!))) return;
+    view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
+    void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
+  };
+  // The subagent whose record `text` opens in the detail view: in full screen, `/tasks t3` with a subagent of that id
+  // (perform, below).
+  const recordToOpen = (text: string) => {
+    const [first = "", ...words] = text.split(/\s+/);
+    return fullNow.current && first.toLowerCase() === "/tasks" && words.length === 1 ? tasks.all.find((t) => t.id === words[0]) : undefined;
   };
 
   // True when it opened the model list.
@@ -264,14 +475,22 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
         return exit();
       }
       if (alone("/errors")) return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
-      if (command === "/tasks") return say(...tasksCommand(words));
+      // Not to full screen where it can't draw (found at the final review): classic, as at the start (clilib.ts, screenMode).
+      if (alone("/screen") && !fullNow.current && !fullPossible)
+        return say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
+      if (alone("/screen")) return await switchScreen();
+      // In full screen a subagent's record opens in the detail view (plan, Task 12); the list, stopping and mistakes print.
+      if (command === "/tasks") {
+        const t = recordToOpen(text);
+        return t ? openDetail(recordOf(t)) : say(...tasksCommand(words));
+      }
       if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
       if (command === "/lead") return session.setLead(makeProvider(words.join(" ")));
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
       if (!account && !alone("/model") && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
-      if (words.length && ["/exit", "/errors", "/model"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
+      if (words.length && ["/exit", "/errors", "/model", "/screen"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
       abort.current = new AbortController();
       const turn = !account && !alone("/model");
       const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(tasks.answering())}` : turn ? "Working" : "Reading the model lists";
@@ -291,7 +510,11 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
           const groups = await listModels(signal, (line) => say({ text: line, color: "magenta" }));
           if (!signal.aborted) {
             listOpen.current = true;
-            setPicker(groups);
+            // A list read while the detail view is printed out, sent before `[` or from the queue, waits for it to come back
+            // (the user's choice, 2026-10-28): opening, it would end the paste hook (usePaste, below), and Ink would turn
+            // bracketed paste off at once, suspended or not, so a paste would come as keys. listOpen holds the queue meanwhile.
+            if (printed.current) waitingList.current = groups;
+            else setPicker(groups);
             return true;
           }
         } else await session.send(text, abort.current.signal);
@@ -308,7 +531,6 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   // `/tasks` lists the session's subagents, `/tasks t3` prints one's tool calls and answer in full,
   // and `/tasks stop` stops all of them, or with a number one (release 4 design, "Background subagents").
   const tasksCommand = (words: string[]): Line[] => {
-    const gray = (text: string): Line => ({ text, color: "gray" });
     const none = (id: string): Line => ({ text: `No subagent ${id}. /tasks lists them.`, color: "red" });
     const [verb, id, ...rest] = words;
     if (verb === undefined) {
@@ -323,16 +545,21 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     }
     if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "red" }];
     const t = tasks.all.find((x) => x.id === verb);
-    if (!t) return [none(verb)];
+    return t ? recordOf(t) : [none(verb)];
+  };
+  // `/tasks t3`'s record: the subagent's tool calls and answer in full.
+  const recordOf = (t: Task): Line[] => {
     const calls = callLines(t.messages);
     const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
   };
 
-  // Picking does what `/lead <provider:model>` does.
+  // Picking does what `/lead <provider:model>` does. What it says ("lead is now ...", from the bus, or why not) is asked-for
+  // output, shown at the bottom (release 5 design, "Scrolling"), as the wheel can scroll the view while the list is open.
   const pick = (spec: string) => {
     listOpen.current = false;
     setPicker(null);
+    view.current = FOLLOWING;
     try {
       session.setLead(makeProvider(spec));
     } catch (err) {
@@ -346,7 +573,219 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     next();
   };
 
+  // The detail view opens over the conversation, though not over a question, which closes it (bindAsk, above): what a key
+  // read before a question is first drawn asks for is said in the conversation instead (found at Task 12's review).
+  // Opening and closing clear the selection, which belongs to the other pane's lines, and end a drag, a grab of the bar
+  // and a run of clicks.
+  const unselect = () => {
+    selection.current = null;
+    held.current = null;
+    grab.current = null;
+    lastPress.current = null;
+  };
+  const openDetail = (lines: Line[]) => {
+    if (questions.current.length) return say(...lines);
+    detail.current = opened(lines, columns - 1);
+    unselect();
+    rerender((n) => n + 1);
+  };
+  const closeDetail = () => {
+    if (!detail.current) return;
+    detail.current = null;
+    unselect();
+  };
+  // `[` prints the view into the normal scrollback, for the terminal's own search, selecting and scrolling (release 5
+  // design, "The detail view"; plan, Task 13). Raw mode is held on throughout, as Ink's suspend would turn it off, which
+  // left the Windows console reading whole lines (design, "Switching during a session"). The mouse goes off before Ink is
+  // suspended and the second screen after, as `leave` orders them; the view's lines are drawn by Ink's own renderToString
+  // at the terminal's width, with their colours (plan, choice 13), without the search's or the selection's reverse
+  // colours, and the selection is cleared, as opening and closing clear it. An empty line is drawn as a space, as an empty
+  // Text takes no row, and without a colour, whose codes would keep the space at the line's end. Then the keys go to a
+  // reader of the App's own: q, Esc or Ctrl-C come back, other keys do nothing. Ink's suspend turns the kitty keyboard
+  // protocol off, so q comes as q, and bracketed paste, which is turned on again, so a paste comes marked and does nothing
+  // (the user's choice, 2026-10-28). Meanwhile the work goes on, and nothing is drawn, as Ink drops every render while
+  // suspended. A question that arrived while going out brings the view back at once.
+  const printOut = async (d: Detail) => {
+    const p: Printed = {};
+    printed.current = p;
+    unselect();
+    input!.hold(true);
+    screen.setMouse(false);
+    const { resume } = await suspendTerminal();
+    if (printed.current !== p) return; // Ink ended meanwhile, and the cleanup above let the keyboard go
+    screen.setSecond(false);
+    screen.suspended = true;
+    const page = d.rows.lines.map((l, i) => (
+      <Text key={i} color={l.text ? l.color : undefined} wrap={l.oneLine ? "truncate-end" : "wrap"}>
+        {l.text || " "}
+      </Text>
+    ));
+    screen.write(`${renderToString(<>{page}<Text color="gray">Printed. q, Esc or Ctrl-C to go back.</Text></>, { columns })}\n`);
+    screen.write(PASTE_ON);
+    p.resume = resume;
+    input!.divert(reader);
+    if (questions.current.length) await comeBack();
+  };
+  // What a read does is readOut's (input.ts). Keys after the one that comes back are dropped: Ink is not reading again
+  // until it resumes.
+  const reader = (keys: string) => {
+    const p = printed.current;
+    if (!p) return;
+    const read = readOut(p.paste, keys);
+    p.paste = read.paste;
+    if (read.back) void comeBack();
+  };
+  // Coming back undoes going out in reverse; bracketed paste goes off as Ink's suspend left it, and Ink's resume turns it on
+  // again. A paste still coming in, when a question or the key coming back brought the view back, is dropped up to its
+  // end before keys reach Ink, so a y in it never answers a question, nor a pasted q closes the view (the user's choice,
+  // 2026-10-28); what follows its end marker in the same read goes with it. A `[` read once Ink reads keys again, before
+  // its drawing is done, prints the view out again (found at Task 13's review), and that print-out keeps the hold and
+  // what waits. So does a switch a /screen sent then started (Ctrl+O closing the view, then the prompt, in one read): its
+  // own ending lets go, as letting go in its middle would let Ink's suspend turn raw mode off (found at the final review).
+  const comeBack = async () => {
+    const p = printed.current;
+    if (!p?.resume) return;
+    printed.current = null;
+    if (p.paste === undefined) input!.divert(null);
+    else {
+      dropping.current = p;
+      input!.divert((keys) => {
+        p.paste = readOut(p.paste, keys).paste;
+        if (p.paste !== undefined) return;
+        dropping.current = null;
+        input!.divert(null);
+      });
+    }
+    screen.write(PASTE_OFF);
+    screen.setSecond(true);
+    screen.setMouse(true);
+    screen.suspended = false;
+    await p.resume();
+    if (printed.current) return;
+    if (!switchRunning.current) input!.hold(false); // also when Ink ended meanwhile, after its cleanup let go: again is harmless (input.ts, hold)
+    // Ink ending during the resume (a crash in its redraw) starts nothing that waited: no screen would show it, and a
+    // turn would go on paying with none (found at round 3's check of Task 13).
+    if (ended.current) return;
+    const list = waitingList.current;
+    waitingList.current = null;
+    if (list) setPicker(list);
+    next();
+  };
+  // /screen (release 5 design, "The two modes"; plan, Task 14), in the orders the user's check settled, with raw mode held
+  // on throughout, as Ink's suspend and resume would turn it off and on (plan, "Before you start"). Like a turn, it holds
+  // the queue while it runs, so what is sent meanwhile, another /screen too, waits for it. What the mouse was doing (a
+  // selection, a held button, a grab of the bar, a run of clicks, the wheel's carried fraction) belongs to the screen
+  // before, and goes.
+  // To classic: the detail view closes, as a queued /screen can run while it is open; nothing is drawn, and once React has
+  // drawn that, Ink is suspended, the screen left and Ink resumed, so its redraw draws nothing on the normal screen; then
+  // <Static> mounts and prints the whole conversation (plan, choice 17). The mode is classic from the start, nothing being
+  // drawn meanwhile, so a key read then (Ctrl+O, a scroll key) acts as in classic mode. The wait matters for a /screen run
+  // from the queue: set outside any key, its state is drawn only later, by React's scheduler, and without the wait Ink's
+  // resume would draw the full-screen frame again on the normal screen (found at Task 14's re-review).
+  // To full screen: the view is given the lines said in classic mode, wrapped at the width it is drawn at, so not wrapped
+  // again at its first drawing, and the mode is full from then on, so a question asked while the switch runs keeps its
+  // detail's place and is brought to it (found at Task 14's spec review); Ink is suspended, the second screen entered, and
+  // once React has drawn the full-screen frame, Ink resumes and draws it there, never the classic frame. Ink drops every
+  // render while suspended, so nothing is drawn before. `full` follows only once the second screen is on, so React draws no
+  // full-screen frame on the normal screen; `fullNow` is set just before the suspend, so the keys Ink read with the Enter
+  // that sent /screen, which it handles next, act as in full screen: a Ctrl+O among them opens the detail view (found at
+  // the final review). A `[` does nothing while `suspending` is set, from the suspend to the resume, either way, as it
+  // would suspend Ink again, which throws. The view follows the bottom: sending /screen, or the queue running it, put it
+  // there, and nothing moves it in classic mode. What the switch says at the end is said, not shown, so a question asked
+  // meanwhile keeps the view on its detail.
+  // If Ink ends meanwhile (a render error), nothing more is switched, the terminal being put back as it is then
+  // (terminal.ts, restoreWhenInkEnds), and the keyboard is let go, so raw mode goes off and the process can end. A `[` read
+  // while Ink resumes, before its drawing is done, keeps the hold, as in comeBack. Should the suspend throw going to full
+  // screen, the mode goes back to classic, as the screen is (perform says why); `switching` ends however the switch does
+  // (found at Task 14's code review).
+  const switchScreen = async () => {
+    const toFull = !fullNow.current;
+    working.current = true;
+    switchRunning.current = true;
+    input?.hold(true);
+    unselect();
+    wheel.current = 0;
+    try {
+      if (toFull) {
+        const width = frame.current.columns - 1; // one column short, as above
+        if (kept.width !== width) kept.setWidth(width);
+        kept.add(unkept.current);
+        unkept.current = [];
+        fullNow.current = true;
+        suspending.current = true;
+        const { resume } = await suspendTerminal();
+        if (ended.current) return;
+        screen.enter();
+        setFull(true);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (ended.current) return;
+        suspending.current = false; // resume() ends the suspension before its first await (Ink's ink.js, endSuspend)
+        await resume();
+      } else {
+        closeDetail();
+        fullNow.current = false;
+        setFull(false);
+        setSwitching(true);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        if (ended.current) return;
+        suspending.current = true;
+        const { resume } = await suspendTerminal();
+        screen.leave();
+        suspending.current = false;
+        await resume();
+      }
+    } finally {
+      if (toFull && !screen.full) fullNow.current = false; // the suspend threw, or Ink ended first
+      suspending.current = false;
+      setSwitching(false);
+      working.current = false;
+      switchRunning.current = false;
+      if (!printed.current) input?.hold(false); // also for a comeBack that ended during the switch (comeBack, above)
+    }
+    if (!ended.current) say({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
+  };
+  // The detail view's keys (release 5 design, "The detail view"; plan, Task 12): the conversation's scroll keys; j and k,
+  // or Down and Up, a row; g or Home the top, G or End the bottom; q, Esc and Ctrl+O close it; `/` starts a search, and n
+  // and N go to the next and previous match of one kept; `[` prints it out (Task 13). While a search is typed, text goes
+  // into it, `[` too, Backspace edits it, Enter keeps it, or drops it when nothing matches, and Esc drops it, the view
+  // going back to where it was; the other keys act as above. Backspace takes away a whole character, as the prompt's does.
+  // Any other key does nothing: the prompt is hidden, and Alt+P's model list, Ctrl+R's search and the like wait for the
+  // view to close. Ctrl-C is not taken here (useInput, below). Several keys can come in one read, so each checks the view
+  // is still open and not printed out.
+  const detailKey = (d: Detail, ch: string, key: Key) => {
+    if (key.escape) {
+      if (d.search?.typing) {
+        d.view.current = d.search.before;
+        d.search = null;
+      } else closeDetail();
+      return;
+    }
+    for (const c of commands(ch, key)) {
+      const s = d.search;
+      if (detail.current !== d || printed.current) return;
+      if (c === "lastTurn") closeDetail();
+      else if (typeof c === "object") for (const letter of c.text) detailLetter(d, letter);
+      else if (s?.typing && c === "backspace") searchFor(d, s.query.slice(0, [...segmenter.segment(s.query)].at(-1)?.index ?? 0), viewHeight);
+      else if (s?.typing && c === "submit") {
+        if (s.found.length) s.typing = false;
+        else d.search = null;
+      } else if (typeof c === "string" && (isScroll(c) || MOVES[c])) scroll(isScroll(c) ? c : MOVES[c]!);
+    }
+  };
+  const detailLetter = (d: Detail, letter: string) => {
+    const s = d.search;
+    if (detail.current !== d || printed.current) return;
+    if (s?.typing) searchFor(d, s.query + letter, viewHeight);
+    else if (letter === "q") closeDetail();
+    else if (letter === "[" && input && !suspending.current) void printOut(d); // switchScreen says why
+    else if (letter === "/") d.search = { query: "", found: [], at: 0, typing: true, before: d.view.current };
+    else if ((letter === "n" || letter === "N") && s) stepMatch(d, letter === "n" ? 1 : -1, viewHeight);
+    else if (LETTERS[letter]) scroll(LETTERS[letter]);
+  };
+
   useInput((ch, key) => {
+    if (printed.current) return; // a key read with the `[` that printed the view out, which Ink reads before it is out
+    clearCopied();
     if (picker) return; // the picker reads the keys while it is open
     if (question) {
       // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent.
@@ -358,8 +797,23 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
           restore();
         }
       } else if (key.escape) question.answer(false, "declined"); // that action only; the turn goes on
+      else if (fullNow.current && scrollKey(ch, key)) rerender((n) => n + 1); // a long detail can be read before answering
       else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
       return;
+    }
+    // In the detail view Ctrl-C stops a turn, and its queue comes back into the prompt, as below; with nothing running it
+    // only closes the view, never clearing the hidden prompt nor counting toward exiting (the user's choice at Task 12's
+    // review). No press-twice count waits while the view is open: the key that opens it is read below, starting the count
+    // again, and a queued `/tasks t3` runs only from `next()`, after a turn, an answer or the model list, when no count
+    // was started.
+    if (detail.current) {
+      if (!(key.ctrl && ch === "c")) detailKey(detail.current, ch, key);
+      else if (!working.current) closeDetail();
+      else {
+        restore();
+        abort.current?.abort();
+      }
+      return rerender((n) => n + 1);
     }
     if (search.current) {
       searchKey(ch, key);
@@ -409,14 +863,218 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   // picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
-      if (question || search.current) return;
+      if (printed.current) return; // as for keys, above
+      clearCopied();
+      // In the detail view a paste goes into a search being typed, up to its first line break, without the control
+      // characters typed text loses (keys.ts, commands); otherwise it does nothing there (the user's choice at Task 12's
+      // review).
+      const d = detail.current;
+      if (d?.search?.typing) {
+        searchFor(d, d.search.query + text.split(/\r\n?|\n/, 1)[0]!.replace(/\p{Cc}/gu, ""), viewHeight);
+        return rerender((n) => n + 1);
+      }
+      if (question || search.current || d) return;
       run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       rerender((n) => n + 1);
     },
     { isActive: !picker },
   );
 
+  // The scroll keys move the conversation (release 5 design, "Scrolling"): PgUp and PgDn by half its height, at least a
+  // row; Ctrl+Home to the top; Ctrl+End to the bottom, following again; Shift+Up and Shift+Down by a row. They work
+  // during a turn and while a question waits, and move the detail view while it is open (plan, Task 12).
+  const scroll = (c: Scroll) => {
+    const p = pane();
+    const half = Math.max(1, Math.floor(viewHeight / 2));
+    const by = { pageUp: -half, pageDown: half, lineUp: -1, lineDown: 1, top: 0, bottom: 0 }[c];
+    p.view.current =
+      c === "top" ? scrollTo(p.rows, p.view.current, viewHeight, 0) : c === "bottom" ? FOLLOWING : scrollBy(p.rows, p.view.current, viewHeight, by);
+  };
+  // The selection as two places, from the press to the pointer's cell, both cells' characters in (release 5 plan, choice
+  // 6), as span takes them: backward, from the pointer's character to the end of what was pressed; otherwise from the
+  // start of what was pressed to whichever ends later.
+  const selected = (): [Pos, Pos] | null => {
+    const s = selection.current;
+    if (!s) return null;
+    const [at, atEnd] = s.end;
+    const [from, fromEnd] = s.press;
+    const before = (a: Pos, b: Pos) => a.line < b.line || (a.line === b.line && a.offset < b.offset);
+    return before(at, from) ? [at, fromEnd] : [from, before(fromEnd, atEnd) ? atEnd : fromEnd];
+  };
+  // On release: the selection's text to the clipboard (release 5 design, "Copying"), never an empty one, and the hint row
+  // says how many characters, counted as a person sees them, as the prompt counts them (release 5 plan, choice 7).
+  const copy = () => {
+    const s = selected();
+    const text = s ? textOf(pane().rows.lines, ...s) : "";
+    if (!text) return;
+    board.current!.copy(text);
+    const n = characters(text);
+    copied.current = { text: `Copied ${n} character${n === 1 ? "" : "s"}${board.current!.terminalOnly ? " with the terminal only" : ""}`, failed: false };
+  };
+  // The wheel and the scroll bar (release 5 design, "Scrolling"), in full screen only. The wheel scrolls the conversation
+  // wherever the pointer is, and while a question or the model list is open (the plan's choice 3). The bar is the last
+  // column of the conversation's rows, which start at the frame's top, the terminal's top row: Ink writes the frame, a
+  // row shorter than the terminal, with a line break after it (ink.js renderInteractiveFrame), so it fills the terminal
+  // and scrolls up to its top wherever the cursor was; later frames go back up by the rows written (log-update.js).
+  // A left press on the thumb grabs it; on the track it centres the thumb on that row (choice 4), as far as the bar's
+  // ends let it, and grabs it where the pointer is on it, so a drag can go on from the click. While grabbed, the thumb
+  // follows the pointer's row wherever the pointer is, until the button is let go; a move that would leave the thumb
+  // where it is does nothing, as one thumb row stands for several first rows. Any press ends an earlier grab or
+  // selecting, and a release ends either. A left press elsewhere in the conversation selects (release 5 design,
+  // "Selecting"); one below it clicks the prompt or a menu entry (clickAt). All of it acts on the detail view in the
+  // conversation's place while it is open (plan, Task 12). A report read with a key that opened or closed the view, or
+  // come after a question closed it, belongs to a screen that is gone, and is dropped, as clickAt drops a click read with
+  // a key that changed the prompt (found at Task 10's review).
+  const onMouse = (m: Mouse) => {
+    if (!fullNow.current || printed.current) return; // printed out: a report read with its `[`, as for keys
+    const { columns, viewHeight } = frame.current;
+    if (frame.current.detail !== detail.current) return;
+    const p = pane();
+    const goTo = (to: number) => {
+      p.view.current = scrollTo(p.rows, p.view.current, viewHeight, to);
+      rerender((n) => n + 1);
+    };
+    if (m.kind === "wheel") {
+      const step = notch(wheel.current, scrollSpeed, m.wheel === "up" ? -1 : 1);
+      wheel.current = step.carry;
+      const from = firstRow(p.rows, p.view.current, viewHeight);
+      if (step.rows && (step.rows < 0 ? from > 0 : p.view.current.at !== null)) goTo(from + step.rows); // not up at the top, nor down following
+      return;
+    }
+    if (m.kind === "release") {
+      grab.current = null;
+      const h = held.current;
+      held.current = null;
+      if (h?.copy) {
+        copy();
+        rerender((n) => n + 1);
+      }
+      return;
+    }
+    const top = firstRow(p.rows, p.view.current, viewHeight);
+    const thumb = bar(p.rows.total, viewHeight, top);
+    const onBar = thumb !== null && m.x === columns - 1 && m.y < viewHeight;
+    if (m.kind === "press") {
+      grab.current = null;
+      held.current = null;
+      clearCopied();
+      // A selection stays until a click: any press but one on the scroll bar, which scrolls as the wheel does (the user's
+      // choice at Task 9's review, 2026-10-27).
+      if (!onBar && selection.current) {
+        selection.current = null;
+        rerender((n) => n + 1);
+      }
+    }
+    if (m.button !== "left") return;
+    if (m.kind === "drag" && held.current) return dragTo(held.current, m.x, m.y);
+    if (m.kind === "press" && m.x !== columns - 1 && m.y < textRows(viewHeight)) return pressAt(top, m.x, m.y);
+    if (m.kind === "press" && m.y >= viewHeight) return clickAt(m.x, m.y);
+    if (!thumb) return;
+    const clamp = (start: number) => Math.max(0, Math.min(viewHeight - thumb.size, start));
+    const move = (start: number) => start !== thumb.start && goTo(barFirst(p.rows.total, viewHeight, thumb.size, start));
+    if (m.kind === "drag" && grab.current !== null) return void move(clamp(m.y - grab.current));
+    if (m.kind !== "press" || !onBar) return;
+    const on = m.y >= thumb.start && m.y < thumb.start + thumb.size;
+    const start = on ? thumb.start : clamp(m.y - Math.floor(thumb.size / 2)); // centred on its middle row, the lower of two
+    grab.current = m.y - start;
+    move(start);
+  };
+
+  // The cell at the pane's row `row` as select.ts takes it. A row below the last line, blank in a view held past the
+  // bottom, stands for the last line's end.
+  const cellAt = (rows: Rows, row: number, x: number) =>
+    row < rows.total ? { row, x } : { row: rows.total - 1, x: rows.width }; // rows.width: past any row's text
+  // The pane's rows that show text: all but the "↓ N new lines" row while it shows, which is not text (plan, choice 10's
+  // rule for such rows): a press there starts nothing, and a drag onto it counts as the row above it.
+  const textRows = (viewHeight: number) => viewHeight - (unseenBelow(pane().rows, pane().view.current, viewHeight) > 0 ? 1 : 0);
+  // A left press in the conversation's text rows (release 5 design, "Selecting"; plan, choice 6), the selection already
+  // cleared: a click takes the pressed character, which a drag grows from; a double-click selects the word, a
+  // triple-click the line, both copied on release. A double-click past a row's text, or a double or triple click below
+  // the last line, clicks nothing: placeAt gives the row's end there, which on a wrapped row is the next row's start.
+  const pressAt = (top: number, x: number, y: number) => {
+    const { rows } = pane();
+    if (!rows.total) return;
+    const at = Date.now();
+    const count = clicks(lastPress.current, at, x, y);
+    lastPress.current = { at, x, y, count };
+    const cell = cellAt(rows, top + y, x);
+    rerender((n) => n + 1);
+    if (count === 1) return void (held.current = { press: span(rows, cell, cell), copy: false, top: y === 0 });
+    const { pos, past } = placeAt(rows, cell.row, cell.x);
+    if (top + y >= rows.total || (count === 2 && past)) return;
+    const text = rows.lines[pos.line]!.text;
+    const { start, end } = count === 2 ? wordAt(text, pos.offset) : { start: 0, end: text.length };
+    const press: [Pos, Pos] = [
+      { line: pos.line, offset: start },
+      { line: pos.line, offset: end },
+    ];
+    selection.current = { press, end: span(rows, cell, cell) };
+    held.current = { press, copy: true, top: y === 0 };
+  };
+  // A left press below the conversation (release 5 design, "Clicking"): on a prompt row the cursor goes to the place under
+  // it, after the two columns of "› ", or to the row's end past it; a menu entry is chosen and Enter's path runs it, so a
+  // `/` command runs and an `@` path fills in. The prompt's "↑ N rows above" and "↓ N rows below" rows, the menu's
+  // "↑ N more" and "↓ N more", and every other row do nothing (release 5 plan, choice 10). The prompt during Ctrl+R's
+  // search shows a match, not what is typed, so the frame gives it no prompt rows then. A click read with a key that
+  // replaced the prompt or the menu's choice is dropped: React draws nothing between them, so the screen is still the one
+  // from before the key (found at Task 10's review). A click that acts starts the press-twice count again, as a key
+  // between the presses does.
+  const clickAt = (x: number, y: number) => {
+    const f = frame.current;
+    if (editor.current !== f.editor || chosen.current !== f.chosen) return;
+    const { columns, promptFirst, promptRows, menuRows } = f;
+    const row = y - promptFirst; // a row of the prompt, then of the menu
+    const marked = (i: number, shown: number, w: { above: number; below: number }) => (i === 0 && w.above > 0) || (i === shown - 1 && w.below > 0);
+    const e = editor.current;
+    if (row >= 0 && row < promptRows) {
+      const { rows, places } = layout(e.text, promptWidth(columns));
+      const w = windowOf(rows.length, promptRows, places.get(e.cursor)!.row, promptTop.current);
+      if (marked(row, promptRows, w)) return;
+      editor.current = move(e, placeOn(places, w.top + row, x - 2)!);
+      goal.current = null;
+    } else {
+      const i = row - promptRows;
+      if (i < 0 || i >= menuRows) return;
+      const menu = menuFor(e); // after the rows are checked: for an `@` path it can list a folder again
+      if (!menu) return;
+      const w = windowOf(menu.entries.length, menuRows, chosenIn(e, menu), menuTop.current);
+      if (marked(i, menuRows, w)) return;
+      chosen.current = { text: e.text, at: w.top + i };
+      run("submit");
+    }
+    forget();
+    rerender((n) => n + 1);
+  };
+  // A drag while selecting grows the selection to the pointer's cell. Below the conversation the view first scrolls a row
+  // for each report, so a selection can be longer than the screen (release 5 design, "Selecting"). The frame starts at
+  // the terminal's top, so the pointer cannot go above the conversation: its top row stands for above it, for a drag
+  // started lower down; one started on the top row selects within it and never scrolls (the user's choice at Task 9's
+  // review, 2026-10-27).
+  const dragTo = (h: Held, x: number, y: number) => {
+    const { viewHeight } = frame.current;
+    const p = pane();
+    const up = y <= 0 && !h.top;
+    if (y >= viewHeight || up) p.view.current = scrollBy(p.rows, p.view.current, viewHeight, up ? -1 : 1);
+    const cell = cellAt(p.rows, firstRow(p.rows, p.view.current, viewHeight) + Math.max(0, Math.min(textRows(viewHeight) - 1, y)), x);
+    selection.current = { press: h.press, end: span(p.rows, cell, cell) };
+    h.copy = true;
+    rerender((n) => n + 1);
+  };
+
+  const scrollKey = (ch: string, key: Key) => {
+    const [c] = commands(ch, key);
+    if (c === undefined || !isScroll(c)) return false;
+    scroll(c);
+    return true;
+  };
+
   const run = (c: Command) => {
+    if (isScroll(c)) {
+      if (fullNow.current) return scroll(c);
+      const as = CLASSIC[c];
+      if (as) run(as);
+      return;
+    }
     const e = editor.current;
     const menu = menuFor(e);
     if (menu && (c === "up" || c === "down")) {
@@ -427,14 +1085,18 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     if (c === "mode") {
       perm.current = cycle[(cycle.indexOf(perm.current) + 1) % cycle.length]!;
       onMode(perm.current);
-      return say({ text: `mode is now ${perm.current}`, color: "gray" });
+      return show({ text: `mode is now ${perm.current}`, color: "gray" });
     }
-    // Alt+P is `/model` typed then: during a turn it waits in the queue.
-    if (c === "models") return working.current ? void queue.current.push("/model") : void submit("/model");
-    if (c === "lastTurn") return say(...lastTurn(session.messages));
+    // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom.
+    if (c === "models" && working.current) return void queue.current.push("/model");
+    if (c === "models") {
+      view.current = FOLLOWING;
+      return void submit("/model");
+    }
+    if (c === "lastTurn") return fullNow.current ? openDetail(lastTurn(session.messages)) : show(...lastTurn(session.messages)); // plan, Task 12
     if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
     // A message starting with `?` needs a space typed first.
-    if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return say(...KEY_LIST.map((text) => ({ text, color: "gray" })));
+    if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return show(...KEY_LIST.map((text) => ({ text, color: "gray" })));
     if (c === "up" && !e.text && queue.current.length) return restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);
@@ -455,6 +1117,7 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
   };
 
   const send = (e: Editor) => {
+    view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     keep(e.text);
     editor.current = load(e, "");
     if (!working.current) void submit(e.text);
@@ -535,6 +1198,9 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     if (key.tab || key.escape) return endSearch(shown());
     for (const c of commands(ch, key)) {
       if (typeof c === "object") Object.assign(s, { query: s.query + c.text, skip: 0 });
+      // In full screen the conversation behind the search scrolls (the user's choice, 2026-10-27, at Task 5's review);
+      // in classic mode the scroll keys do nothing here, as in release 4.
+      else if (fullNow.current && isScroll(c)) scroll(c);
       else if (c === "search") s.skip = Math.max(0, Math.min(s.skip + 1, matches(history.current!.entries, s.query).length - 1));
       else if (c === "backspace" && !s.query) return endSearch(s.before);
       else if (c === "backspace") Object.assign(s, { query: [...s.query].slice(0, -1).join(""), skip: 0 });
@@ -546,16 +1212,22 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
     }
   };
 
+  const d = detail.current; // the detail view drawn, which hides the prompt, its menu and what goes with them (Task 12)
   const prompt = search.current ? shown() : editor.current;
-  const menu = picker || question ? null : menuFor(prompt);
+  const menu = picker || question || d ? null : menuFor(prompt);
   if (menu?.kind !== "path") listed.current = null;
 
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the
   // rows left for the queue.
   const exitKey = first.current?.name === "Esc" ? undefined : first.current?.name;
-  const searching = search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
-  const hintFor = (left: number) =>
-    searching
+  // The detail view's row naming its keys, or its search, stands in the hint row's place (plan, Task 12), as the row over
+  // the status line; Ctrl+R's search waits under the view, and a model list queued as `/model` during a turn, which takes
+  // the keys, takes the row away while it is open.
+  const searching = !d && search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
+  const usualHint = (left: number) =>
+    d && !picker
+      ? keyRow(d)
+      : searching
       ? `${searching} · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel`
       : exitKey
         ? `Press ${exitKey} again to exit`
@@ -570,60 +1242,192 @@ export function App({ session, tasks, bus, stats, mode, onMode, project, root, g
             : busy
               ? null
               : "? for shortcuts";
+  // The line about the last copy, until the next key or click (release 5 design, "Copying"), takes the hint row's place
+  // only while one shows, so a copy never moves the conversation; a failed copy shows anyway, adding the row. Ctrl+R's
+  // search and the exit warning keep the row (the user's choice at Task 9's review, 2026-10-27), and so does the detail
+  // view's search while it is typed, as Ctrl+R's does. A failure on a terminal too short for a hint row waits until one
+  // fits (accepted at Task 9's review).
+  const hintFor = (left: number) => {
+    const usual = usualHint(left);
+    const c = copied.current;
+    return c === null || searching || d?.search?.typing || exitKey || (!c.failed && usual === null) ? usual : c.text;
+  };
 
   // The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since
   // at full height Ink draws the whole scrollback again each time. First the status line and the
   // working line; the tool line when there is room for it, the hint line and the cursor's row; the hint
-  // line when there is room for it and the cursor's row; then an open menu, with the prompt cut to the
+  // line when there is room for it and the cursor's row (under the detail view, which draws no prompt, there is no
+  // cursor's row to keep: found at Task 12's review); then an open menu, with the prompt cut to the
   // cursor's row; then the task panel (release 4 design, "On screen"); then the prompt; then the to-do
   // list, which gives way before the prompt does; then the queue, the last row saying how many more there are when they do
   // not all fit. The model list fills the rows above the status line itself, so it has no tool line
-  // under it.
-  const base = height - 1 - 1 - (busy ? 1 : 0);
-  const tooled = !picker && segments.includes("tools") && calls.current.length > 0 && base >= 2 + (hintFor(1) !== null ? 1 : 0);
+  // under it. In full screen a row fewer is given out: the conversation's, the least it has (release 5
+  // design, "The screen").
+  const base = height - 1 - 1 - (busy ? 1 : 0) - (full ? 1 : 0);
+  const cursor = d ? 0 : 1; // the cursor's row, kept while the prompt is drawn
+  const tooled = !picker && segments.includes("tools") && calls.current.length > 0 && base >= 1 + cursor + (hintFor(1) !== null ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
-  const hinted = hintFor(1) !== null && room >= 2;
+  const hinted = hintFor(1) !== null && room >= 1 + cursor;
   const space = Math.max(1, room - (hinted ? 1 : 0));
   const menuRows = menu ? Math.min(menu.entries.length, Math.max(1, space - 1)) : 0;
   const panel = taskRows(tasks.all, Math.max(0, space - 1 - menuRows), now);
   const promptSpace = menu ? 1 : space - panel.length;
-  const promptLeft = space - menuRows - panel.length - Math.min(layout(prompt.text, promptWidth(columns)).rows.length, promptSpace);
+  const promptRows = layout(prompt.text, promptWidth(columns)).rows.length;
+  const promptShown = Math.min(promptRows, Math.max(1, promptSpace));
+  const promptLeft = space - menuRows - panel.length - Math.min(promptRows, promptSpace);
   const todoShown = !todos.current.hidden && unfinished(todos.current.items) ? todoRows(todos.current.items, promptLeft) : [];
   const left = promptLeft - todoShown.length;
   const q = queue.current.map((e) => visible(e));
   const queued = q.length <= left ? q : left > 0 ? [...q.slice(0, left - 1), `+${q.length - left + 1} more`] : [];
   const hint = hinted ? hintFor(left) : null;
+  // A successful copy's line that is not on screen is dropped, so it never turns up later, when a hint row comes back; only
+  // a failure waits to be shown (the user's choice at Task 9's review, 2026-10-27). Changed while drawing, which is safe as
+  // Ink renders with React's non-concurrent root (ink.js, `concurrent` defaults to false); a concurrent root could drop
+  // or mark shown a line it never drew.
+  if (copied.current && !copied.current.failed && hint !== copied.current.text) copied.current = null;
+  if (copied.current && hint === copied.current.text) copied.current.shown = true; // from now the next key or click takes it away
 
+  // Full screen (release 5 design, "The screen"): the frame is a row shorter than the terminal, as above, and the
+  // conversation takes every row of it the live area does not draw, at least one. The live area's rows are counted as
+  // they are drawn, a question's given as `askedRows`; under the detail view only the working line, while something
+  // runs, and the key row in the hint's place (plan, Task 12). A question is wrapped here and drawn a row a Text, so its
+  // rows are known. The model list takes the rows it needs, up to all but the conversation's least row, its filter line
+  // and the status line (release 5 plan, choice 19), in a box that tall, so the status line stays put while typing filters the
+  // list: the list unfiltered is the longest it gets, with its "No models" line when it has no models.
+  const allow = (q: Question) => `Allow ${q.short ?? q.text}? [y/n] · Esc to decline`;
+  const offered = full && picker ? listRows(picker, "") : [];
+  const needed = offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1);
+  const pickerRows = Math.max(1, Math.min(needed, height - 1 - 1 - 1 - 1 - (hint ? 1 : 0))); // the frame's row short, the conversation's, filter, status
+  const abovePrompt = (busy ? 1 : 0) + todoShown.length + queued.length; // the live area's rows drawn above the prompt
+  const liveFor = (askedRows: number) =>
+    (picker ? pickerRows + 1 : question ? askedRows : d ? (busy ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
+    (hint ? 1 : 0) + 1 + (tooled ? 1 : 0);
+  // A question too long to fit, whose rows would leave the conversation less than its one row, has its line point above
+  // instead (the user's choices at Task 11's reviews): at a write's preview, whose heading holds the whole path, or else
+  // at all of its text, put in the conversation under a heading as a preview is. Nothing of a command is ever cut
+  // (permissions.ts, visible), and the placement below brings it into view, to scroll through before answering. Checked
+  // on every draw, as a resize can leave a question too long; once moved it stays, and its heading counts characters, as
+  // a copy's line does, which no resize makes wrong. A question that fits is drawn as before. Said while drawing, as
+  // `copied` above: React draws the App again at once for the lines it adds. On a very small terminal (20 by 5, say) the
+  // short line can itself wrap past the frame: the limit any live area has there.
+  const fits = (q: Question) => height - 1 - liveFor(wrap(allow(q), columns, false).length) >= 1; // as viewHeight, below
+  const moved = full && question && !picker && !question.short && !fits(question);
+  if (moved) {
+    if (!question.detail) {
+      const n = characters(question.text);
+      const from = kept.lines.length;
+      say({ text: `┌ ${question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" }, { text: question.text, color: "gray" });
+      question.detail = [from, kept.lines.length - 1];
+    }
+    question.short = `${question.label} (shown above)`;
+  }
+  const asked = full && question && !picker ? wrap(allow(question), columns, false) : [];
+  const viewHeight = Math.max(1, height - 1 - liveFor(asked.length));
+  // A question brings its own detail into view when it is first drawn (release 5 design, "Scrolling"; plan, Task 11), and
+  // when a draw moves it into the conversation, above; here, with the height the conversation has beside it; changed
+  // while drawing, as `copied` above. Whether the view was following is kept from the first draw. Its detail's last row
+  // goes on the view's second-last row, the last kept for "↓ N new lines", when its rows fit above that; otherwise its
+  // heading goes on the top row. The view is held there, never moved to the bottom (view.ts, first), so what arrives while
+  // the question waits does not move it, and the lines already below the detail (a reply, an earlier answer) are counted
+  // as unseen. A question without a detail leaves the view (plan, choice 11).
+  if (full && question && !picker && (question.following === undefined || moved)) {
+    if (question.following === undefined) question.following = view.current.at === null;
+    if (question.detail) {
+      const [from, to] = question.detail;
+      const head = kept.rowOf({ line: from, offset: 0 });
+      const end = kept.rowOf({ line: to, offset: kept.lines[to]!.text.length });
+      const r = kept.row(end - head + 1 <= viewHeight - 1 ? Math.max(0, end - (viewHeight - 2)) : head); // 2: the last two rows
+      view.current = { at: { line: r.line, offset: r.start }, unseen: kept.lines.length - 1 - to };
+    }
+  }
+  const promptFirst = (full ? viewHeight : 0) + abovePrompt; // the prompt's first row
+  frame.current = {
+    columns,
+    viewHeight,
+    promptFirst,
+    promptRows: picker || question || search.current || d ? 0 : promptShown,
+    menuRows,
+    editor: editor.current,
+    chosen: chosen.current,
+    detail: d,
+  };
+  const workingLine = busy && (
+    <WorkingLine
+      label={doing.current.label}
+      ms={Math.max(0, now - doing.current.at)}
+      spend={
+        doing.current.from && {
+          lead: session.lead.id,
+          output: stats.output - doing.current.from.output,
+          cost: stats.cost - doing.current.from.cost,
+          costUnknown: stats.unpriced > doing.current.from.unpriced,
+        }
+      }
+    />
+  );
+
+  if (switching) return null; // going to classic: nothing is drawn until Ink has resumed on the normal screen (/screen)
   return (
     <>
-      <Static items={lines}>
-        {(l) => (
-          <Text key={l.id} color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
-            {l.text}
-          </Text>
-        )}
-      </Static>
+      {full && d ? (
+        <DetailView detail={d} height={viewHeight} selection={selected()} />
+      ) : full ? (
+        <Conversation
+          rows={kept}
+          first={firstRow(kept, view.current, viewHeight)}
+          height={viewHeight}
+          unseen={unseenBelow(kept, view.current, viewHeight)}
+          following={view.current.at === null}
+          selection={selected()}
+        />
+      ) : (
+        <Static items={lines}>
+          {(l) => (
+            <Text key={l.id} color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
+              {l.text}
+            </Text>
+          )}
+        </Static>
+      )}
       {picker ? (
-        <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} />
+        full ? (
+          <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
+            <ModelPicker
+              groups={picker}
+              current={session.lead.id}
+              onPick={pick}
+              onClose={closePicker}
+              maxRows={pickerRows}
+              mouse={mouse}
+              bottom={viewHeight + pickerRows} // the box's last row
+            />
+          </Box>
+        ) : (
+          <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} />
+        )
       ) : question ? (
-        <Text color="yellow">Allow {question.text}? [y/n] · Esc to decline</Text>
+        full ? (
+          asked.map((r, i) => (
+            <Text key={i} color="yellow" wrap="truncate-end">
+              {r.text}
+            </Text>
+          ))
+        ) : (
+          <Text color="yellow">Allow {question.text}? [y/n] · Esc to decline</Text>
+        )
+      ) : d ? (
+        workingLine // the working line stays under the detail view while a turn runs (plan, choice 12)
       ) : (
         <>
-          {busy && (
-            <WorkingLine
-              label={doing.current.label}
-              ms={Math.max(0, now - doing.current.at)}
-              spend={doing.current.from && { lead: session.lead.id, output: stats.output - doing.current.from.output, cost: stats.cost - doing.current.from.cost, costUnknown: stats.unpriced > doing.current.from.unpriced }}
-            />
-          )}
+          {workingLine}
           <TodoList rows={todoShown} />
           {queued.map((row, i) => (
             <Text key={i} color="gray" wrap="truncate-end">
               {row}
             </Text>
           ))}
-          <Prompt editor={prompt} columns={columns} offset={(busy ? 1 : 0) + todoShown.length + queued.length} space={promptSpace} />
-          {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} />}
+          <Prompt editor={prompt} columns={columns} offset={promptFirst} space={promptSpace} top={promptTop} />
+          {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} top={menuTop} />}
           <TaskPanel rows={panel} />
         </>
       )}

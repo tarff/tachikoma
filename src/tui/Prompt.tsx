@@ -10,12 +10,27 @@ export const promptWidth = (columns: number) => Math.max(1, columns - 3);
 // The prompt, wrapped to the screen (release 3 design, "Multi-line"), with the terminal's own cursor
 // where typing goes, so input methods work. Shown only while the prompt has the keys: when it is not
 // drawn, Ink hides the cursor. `offset` is the rows drawn above it, since Ink places the cursor from
-// the top of what it draws. Taller than `space` rows, it shows the rows around the cursor.
-export function Prompt({ editor, columns, offset, space }: { editor: Editor; columns: number; offset: number; space: number }) {
+// the top of what it draws. Taller than `space` rows, it shows the rows around the cursor. `top` is
+// the window's first row, kept from one drawing to the next: the App passes its own, to map a click
+// to a row (release 5 design, "Clicking").
+export function Prompt({
+  editor,
+  columns,
+  offset,
+  space,
+  top: given,
+}: {
+  editor: Editor;
+  columns: number;
+  offset: number;
+  space: number;
+  top?: { current: number };
+}) {
   const { rows, places } = layout(editor.text, promptWidth(columns));
   const at = places.get(editor.cursor)!;
   const shown = Math.min(rows.length, Math.max(1, space));
-  const top = useRef(0); // the window's first row, kept from one drawing to the next
+  const own = useRef(0);
+  const top = given ?? own;
   const w = scroll(rows.length, shown, at.row, top.current);
   top.current = w.top;
   useCursor().setCursorPosition({ x: 2 + at.col, y: offset + at.row - w.top });

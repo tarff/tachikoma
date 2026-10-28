@@ -48,14 +48,21 @@ export function layout(text: string, width: number): Layout {
 export function vertical(text: string, width: number, cursor: number, dir: -1 | 1, goal: number | null): { cursor: number; goal: number } | null {
   const { places } = layout(text, width);
   const from = places.get(cursor)!;
-  const row = from.row + dir;
   const aim = goal ?? from.col;
+  const best = placeOn(places, from.row + dir, aim);
+  return best === null ? null : { cursor: best, goal: aim };
+}
+
+// The place on screen row `row` at column `col`: before the character drawn there, or the row's
+// last place for a column past its end, where a click in the prompt goes too (release 5 design,
+// "Clicking"). Null when there is no such row.
+export function placeOn(places: Map<number, Place>, row: number, col: number): number | null {
   let best: number | null = null;
   for (const [index, p] of places) {
     if (p.row !== row) continue;
-    if (best === null || (p.col <= aim && p.col > places.get(best)!.col)) best = index;
+    if (best === null || (p.col <= col && p.col > places.get(best)!.col)) best = index;
   }
-  return best === null ? null : { cursor: best, goal: aim };
+  return best;
 }
 
 // Which rows of a prompt taller than its space are shown (release 3 design, "The prompt's space"):

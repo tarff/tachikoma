@@ -2,7 +2,20 @@ import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describe, expect, it } from "vitest";
 import path from "node:path";
-import { approvalQuestion, headlessAnswer, headlessExit, headlessLeftOut, instructionsLine, jsonLine, prose, statusSegments } from "../src/clilib.js";
+import {
+  approvalQuestion,
+  exitSignals,
+  fullPossible,
+  headlessAnswer,
+  headlessExit,
+  headlessLeftOut,
+  instructionsLine,
+  jsonLine,
+  prose,
+  screenMode,
+  scrollSpeed,
+  statusSegments,
+} from "../src/clilib.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 
 describe("the instruction files on screen", () => {
@@ -114,6 +127,69 @@ describe("statusSegments", () => {
 
   it("names --status when a segment is unknown", () => {
     expect(() => statusSegments("lead,nope")).toThrow('--status must be one of: lead, context, tokens, cost, mode, errors, project, time, tasks, tools (got "nope")');
+  });
+});
+
+describe("screenMode", () => {
+  it("starts in full screen unless --classic is given or TACHI_CLASSIC is set to anything but empty or 0", () => {
+    expect(screenMode(undefined, {}, true)).toBe("full");
+    expect(screenMode(true, {}, true)).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "1" }, true)).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "yes" }, true)).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "0" }, true)).toBe("full");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "" }, true)).toBe("full");
+    expect(screenMode(true, { TACHI_CLASSIC: "0" }, true)).toBe("classic");
+  });
+
+  it("is classic when the output is not a terminal, or in CI, where Ink draws no live frames", () => {
+    expect(screenMode(undefined, {}, false)).toBe("classic");
+    for (const env of [{ CI: "true" }, { CI: "1" }, { CI: "" }, { CONTINUOUS_INTEGRATION: "yes" }]) expect(screenMode(undefined, env, true)).toBe("classic");
+    for (const env of [{ CI: "0" }, { CI: "false" }, { CONTINUOUS_INTEGRATION: "false" }]) expect(screenMode(undefined, env, true)).toBe("full");
+  });
+});
+
+describe("fullPossible", () => {
+  // Found at the final review: /screen asks it, whatever --classic or TACHI_CLASSIC chose at the start.
+  it("is false where the output is not a terminal, or in CI, as screenMode reads them, and true otherwise", () => {
+    expect(fullPossible({}, true)).toBe(true);
+    expect(fullPossible({ TACHI_CLASSIC: "1" }, true)).toBe(true);
+    expect(fullPossible({}, false)).toBe(false);
+    expect(fullPossible({ CI: "true" }, true)).toBe(false);
+    expect(fullPossible({ CI: "0" }, true)).toBe(true);
+  });
+});
+
+describe("scrollSpeed", () => {
+  it("is 3 rows a notch unless given", () => {
+    expect(scrollSpeed(undefined, {})).toBe(3);
+  });
+
+  it("takes digits with an optional decimal point, above 0 and up to 20", () => {
+    expect(scrollSpeed("0.5", {})).toBe(0.5);
+    expect(scrollSpeed(".5", {})).toBe(0.5);
+    expect(scrollSpeed("20", {})).toBe(20);
+    expect(scrollSpeed(undefined, { TACHI_SCROLL_SPEED: "1.5" })).toBe(1.5);
+  });
+
+  it("refuses anything else, naming where it came from", () => {
+    for (const bad of ["0", "21", "-1", "1e1", "abc", " 3", "", "3.", "20.5"]) {
+      expect(() => scrollSpeed(bad, {})).toThrow(`--scroll-speed must be a number above 0, up to 20 (got "${bad}")`);
+      if (bad === "") continue; // an empty variable is unset (below)
+      expect(() => scrollSpeed(undefined, { TACHI_SCROLL_SPEED: bad })).toThrow(`TACHI_SCROLL_SPEED must be a number above 0, up to 20 (got "${bad}")`);
+    }
+  });
+
+  it("takes the option over the variable, and an empty variable as unset", () => {
+    expect(scrollSpeed("2", { TACHI_SCROLL_SPEED: "abc" })).toBe(2);
+    expect(scrollSpeed(undefined, { TACHI_SCROLL_SPEED: "" })).toBe(3);
+  });
+});
+
+describe("exitSignals", () => {
+  it("ends on Ctrl+Break on Windows and on SIGQUIT elsewhere, besides SIGTERM and SIGHUP", () => {
+    expect(exitSignals("win32")).toEqual(["SIGTERM", "SIGHUP", "SIGBREAK"]);
+    expect(exitSignals("linux")).toEqual(["SIGTERM", "SIGHUP", "SIGQUIT"]);
+    expect(exitSignals("darwin")).toEqual(["SIGTERM", "SIGHUP", "SIGQUIT"]);
   });
 });
 

@@ -3,9 +3,23 @@ import { randomUUID } from "node:crypto";
 import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { render } from "ink";
+import { type Instance, render } from "ink";
 import { accountCommand } from "./auth/chatgpt.js";
-import { approvalQuestion, endOnEpipe, headlessAnswer, headlessExit, headlessLeftOut, instructionsLine, jsonLine, prose, statusSegments } from "./clilib.js";
+import {
+  approvalQuestion,
+  endOnEpipe,
+  exitSignals,
+  fullPossible,
+  headlessAnswer,
+  headlessExit,
+  headlessLeftOut,
+  instructionsLine,
+  jsonLine,
+  prose,
+  screenMode,
+  scrollSpeed,
+  statusSegments,
+} from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
@@ -23,9 +37,12 @@ import { delegateTool } from "./tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
+import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
 import { gitBranch } from "./tui/git.js";
 import { historyFile } from "./tui/history.js";
+import { InputFilter } from "./tui/input.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
+import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
 
 // Eight Claude Haiku 5.5 subagents ran at once on the user's account with none refused; eight was the
 // most tried (release 4 design, "Before the build", 2026-10-26).
@@ -50,6 +67,9 @@ Options:
   --worker <spec>   the model subagents run on (or set TACHI_WORKER); the lead's model unless set
   --max-tasks <n>   how many subagents run at once (default: ${MAX_TASKS})
   --status <list>   status line parts, comma-separated: ${SEGMENTS.join(",")}
+  --classic         use the terminal's own scrollback, not the full screen (or set TACHI_CLASSIC=1)
+  --scroll-speed <n>  lines a wheel notch scrolls in full screen, above 0 and up to 20
+                      (default: 3; or set TACHI_SCROLL_SPEED)
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
   --raw             with -p, print the answer exactly as written, control codes and all
@@ -57,9 +77,10 @@ Options:
 
 In a session: /lead <provider:model> switches the lead model, /model picks it from a list,
 /login chatgpt and /logout chatgpt sign in and out, /tasks lists the subagents (/tasks t1 shows one,
-/tasks stop stops them), /errors summarises the error log, /exit quits. Esc or Ctrl-C stops the
-current turn. When idle, Ctrl-C clears the prompt, and twice on an empty prompt quits. Ctrl+T hides
-or shows the to-do list. ? on an empty prompt lists every key.`;
+/tasks stop stops them), /errors summarises the error log, /screen switches between full
+screen and classic, /exit quits. Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears
+the prompt, and twice on an empty prompt quits. Ctrl+T hides or shows the to-do list. ? on an
+empty prompt lists every key.`;
 
 function fail(message: string): never {
   console.error(message);
@@ -118,6 +139,8 @@ try {
       worker: { type: "string" },
       "max-tasks": { type: "string" },
       status: { type: "string" },
+      classic: { type: "boolean" },
+      "scroll-speed": { type: "string" },
       print: { type: "string", short: "p" },
       json: { type: "boolean" },
       raw: { type: "boolean" },
@@ -143,8 +166,12 @@ const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
 const maxTasks = parsed["max-tasks"] === undefined ? MAX_TASKS : /^\d+$/.test(parsed["max-tasks"]) ? Number(parsed["max-tasks"]) : NaN;
 if (!Number.isInteger(maxTasks) || maxTasks < 1) fail(`--max-tasks must be a whole number from 1 (got "${parsed["max-tasks"]}")`);
 let segments;
+let speed;
 try {
   segments = statusSegments(parsed.status);
+  // -p has no screen to scroll, so it ignores TACHI_SCROLL_SPEED as it does TACHI_CLASSIC; a bad --scroll-speed, typed
+  // for this run, still stops it (the user's choice, 2026-10-27, at Task 7's review).
+  speed = scrollSpeed(parsed["scroll-speed"], parsed.print === undefined ? process.env : {});
 } catch (err) {
   fail(errorText(err));
 }
@@ -217,7 +244,7 @@ const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items)), delegateT
 const session: Session = new Session({ lead, fallback, tools, system, ctx: { root, executor, gate }, bus, inbox: () => tasks.take() });
 
 // The executor stops running commands from an "exit" handler, which dying by a signal skips.
-for (const sig of ["SIGTERM", "SIGHUP"] as const) process.on(sig, () => process.exit(128 + constants.signals[sig]));
+for (const sig of exitSignals(process.platform)) process.on(sig, () => process.exit(128 + constants.signals[sig]));
 
 if (parsed.print !== undefined) {
   let failed = false;
@@ -252,7 +279,20 @@ if (parsed.print !== undefined) {
 } else {
   // Ctrl-C reaches the interface as a key; a SIGINT here came from outside (`kill -INT`).
   process.on("SIGINT", () => process.exit(128 + constants.signals.SIGINT));
-  render(
+  // After the instruction files' question, which stays on the normal screen, and before Ink's first frame, which goes to
+  // the second (release 5 design, "The two modes"). restoreOnExit is set up in every mode, as /screen can enter full
+  // screen later. tests/tui/terminal.test.tsx ("restoreOnExit") copies this order from here to restoreWhenInkEnds: keep
+  // the two in step.
+  const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
+  // Ink reads the keys through the filter, which takes the mouse reports out for the App (release 5 design, "The mouse").
+  const keys = new InputFilter(process.stdin);
+  // Copies go to the terminal as OSC 52, in order with the screen's own codes, and to the system's tool where it has one
+  // (release 5 design, "Copying").
+  const tool = systemTool(process.platform, process.env);
+  let ink: Instance | undefined;
+  restoreOnExit(screen, () => ink?.unmount());
+  if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true) === "full") screen.enter();
+  ink = render(
     <App
       session={session}
       tasks={tasks}
@@ -275,8 +315,17 @@ if (parsed.print !== undefined) {
       bindAsk={(fn) => {
         ask = fn;
       }}
+      screen={screen}
+      fullPossible={fullPossible(process.env, process.stdout.isTTY === true)}
+      mouse={keys}
+      input={keys}
+      scrollSpeed={speed}
+      clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
     />,
-    // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter.
-    { exitOnCtrlC: false, kittyKeyboard: { mode: "auto" } },
+    // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
+    // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
+    // only the lines that changed, Ink's incrementalRendering, made no difference felt).
+    { stdin: keys as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" }, maxFps: 60 },
   );
+  restoreWhenInkEnds(screen, ink.waitUntilExit());
 }

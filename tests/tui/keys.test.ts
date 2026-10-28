@@ -105,3 +105,22 @@ describe("commands for the modes, the model list and the last turn", () => {
     expect(commands("o", key({ ctrl: true }))).toEqual(["lastTurn"]);
   });
 });
+
+describe("commands for scrolling the conversation", () => {
+  // As Ink's parse-keypress reads ESC[5~, ESC[6~, ESC[1;5H, ESC[1;5F, ESC[1;2A and ESC[1;2B (release 5 plan, "Before you start").
+  it("scrolls by half a screen on PgUp and PgDn, to the top and the latest on Ctrl+Home and Ctrl+End, and a line on Shift+Up and Shift+Down", () => {
+    expect(commands("", key({ pageUp: true }))).toEqual(["pageUp"]);
+    expect(commands("", key({ pageDown: true }))).toEqual(["pageDown"]);
+    expect(commands("", key({ home: true, ctrl: true }))).toEqual(["top"]);
+    expect(commands("", key({ end: true, ctrl: true }))).toEqual(["bottom"]);
+    expect(commands("", key({ upArrow: true, shift: true }))).toEqual(["lineUp"]);
+    expect(commands("", key({ downArrow: true, shift: true }))).toEqual(["lineDown"]);
+  });
+
+  it("leaves plain Up, Down, Home and End to the prompt", () => {
+    expect(commands("", key({ upArrow: true }))).toEqual(["up"]);
+    expect(commands("", key({ downArrow: true }))).toEqual(["down"]);
+    expect(commands("", key({ home: true }))).toEqual(["home"]);
+    expect(commands("", key({ end: true }))).toEqual(["end"]);
+  });
+});
