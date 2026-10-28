@@ -167,7 +167,7 @@ export function App({
   const unkept = useRef<Line[]>([]);
   const view = useRef<View>(FOLLOWING);
   // The detail view, while it is open (DetailView.tsx); it takes the conversation's place. The keys, the wheel, the bar,
-  // selecting and copying act on whichever is drawn, the pane, with its own rows and view (plan, Task 12).
+  // selecting and copying act on whichever is drawn, the pane, with its own rows and view (release 5 plan, Task 12).
   const detail = useRef<Detail | null>(null);
   const pane = () => detail.current ?? { rows: kept, view };
   // While the detail view is printed out (`[`), from the key on, and once Ink is suspended, how to resume it; `paste`,
@@ -288,7 +288,7 @@ export function App({
   };
   // What the user asks to see (the key list, the mode, `/model`) brings the view to the bottom, following, so it is seen;
   // output arriving on its own leaves a held view where it is (the user's choice, release 5). The last turn opens the
-  // detail view instead (plan, Task 12).
+  // detail view instead (release 5 plan, Task 12).
   const show = (...add: Line[]) => {
     view.current = FOLLOWING;
     say(...add);
@@ -348,11 +348,11 @@ export function App({
         };
         signal?.addEventListener("abort", cancel, { once: true });
         // A question closes the detail view: y and n answer it, and n is "next match" there (release 5 design, "The detail
-        // view"). Closed here, before it is drawn, so its first drawing places the conversation's view (Task 11).
+        // view"). Closed here, before it is drawn, so its first drawing places the conversation's view (release 5 plan, Task 11).
         latest.current.closeDetail();
         questions.current.push(q);
         rerender((n) => n + 1);
-        void latest.current.comeBack(); // printed out, the view comes back at once, as on q, and the question shows (plan, Task 13)
+        void latest.current.comeBack(); // printed out, the view comes back at once, as on q, and the question shows (release 5 plan, Task 13)
       });
     });
     const onMessage = (m: Message) => latest.current.say(...describe(m));
@@ -503,7 +503,7 @@ export function App({
       if (alone("/screen") && !fullNow.current && !fullPossible)
         return say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
       if (alone("/screen")) return await switchScreen();
-      // In full screen a subagent's record opens in the detail view (plan, Task 12); the list, stopping and mistakes print.
+      // In full screen a subagent's record opens in the detail view (release 5 plan, Task 12); the list, stopping and mistakes print.
       if (command === "/tasks") {
         const t = recordToOpen(text);
         return t ? openDetail(recordOf(t)) : say(...tasksCommand(words));
@@ -619,7 +619,7 @@ export function App({
     unselect();
   };
   // `[` prints the view into the normal scrollback, for the terminal's own search, selecting and scrolling (release 5
-  // design, "The detail view"; plan, Task 13). Raw mode is held on throughout, as Ink's suspend would turn it off, which
+  // design, "The detail view"; release 5 plan, Task 13). Raw mode is held on throughout, as Ink's suspend would turn it off, which
   // left the Windows console reading whole lines (design, "Switching during a session"). The mouse goes off before Ink is
   // suspended and the second screen after, as `leave` orders them; the view's lines are drawn by Ink's own renderToString
   // at the terminal's width, with their colours (plan, choice 13), without the search's or the selection's reverse
@@ -695,7 +695,7 @@ export function App({
     if (list) setPicker(list);
     next();
   };
-  // /screen (release 5 design, "The two modes"; plan, Task 14), in the orders the user's check settled, with raw mode held
+  // /screen (release 5 design, "The two modes"; release 5 plan, Task 14), in the orders the user's check settled, with raw mode held
   // on throughout, as Ink's suspend and resume would turn it off and on (plan, "Before you start"). Like a turn, it holds
   // the queue while it runs, so what is sent meanwhile, another /screen too, waits for it. What the mouse was doing (a
   // selection, a held button, a grab of the bar, a run of clicks, the wheel's carried fraction) belongs to the screen
@@ -760,9 +760,9 @@ export function App({
     }
     if (!ended.current) say({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
   };
-  // The detail view's keys (release 5 design, "The detail view"; plan, Task 12): the conversation's scroll keys; j and k,
+  // The detail view's keys (release 5 design, "The detail view"; release 5 plan, Task 12): the conversation's scroll keys; j and k,
   // or Down and Up, a row; g or Home the top, G or End the bottom; q, Esc and Ctrl+O close it; `/` starts a search, and n
-  // and N go to the next and previous match of one kept; `[` prints it out (Task 13). While a search is typed, text goes
+  // and N go to the next and previous match of one kept; `[` prints it out (release 5 plan, Task 13). While a search is typed, text goes
   // into it, `[` too, Backspace edits it, Enter keeps it, or drops it when nothing matches, and Esc drops it, the view
   // going back to where it was; the other keys act as above. Backspace takes away a whole character, as the prompt's does.
   // Any other key does nothing: the prompt is hidden, and Alt+P's model list, Ctrl+R's search and the like wait for the
@@ -901,7 +901,7 @@ export function App({
 
   // The scroll keys move the conversation (release 5 design, "Scrolling"): PgUp and PgDn by half its height, at least a
   // row; Ctrl+Home to the top; Ctrl+End to the bottom, following again; Shift+Up and Shift+Down by a row. They work
-  // during a turn and while a question waits, and move the detail view while it is open (plan, Task 12).
+  // during a turn and while a question waits, and move the detail view while it is open (release 5 plan, Task 12).
   const scroll = (c: Scroll) => {
     const p = pane();
     const half = Math.max(1, Math.floor(viewHeight / 2));
@@ -941,7 +941,7 @@ export function App({
   // where it is does nothing, as one thumb row stands for several first rows. Any press ends an earlier grab or
   // selecting, and a release ends either. A left press elsewhere in the conversation selects (release 5 design,
   // "Selecting"); one below it clicks the prompt or a menu entry (clickAt). All of it acts on the detail view in the
-  // conversation's place while it is open (plan, Task 12). A report read with a key that opened or closed the view, or
+  // conversation's place while it is open (release 5 plan, Task 12). A report read with a key that opened or closed the view, or
   // come after a question closed it, belongs to a screen that is gone, and is dropped, as clickAt drops a click read with
   // a key that changed the prompt.
   const onMouse = (m: Mouse) => {
@@ -1113,7 +1113,7 @@ export function App({
       view.current = FOLLOWING;
       return void submit("/model");
     }
-    if (c === "lastTurn") return fullNow.current ? openDetail(lastTurn(session.messages)) : show(...lastTurn(session.messages)); // plan, Task 12
+    if (c === "lastTurn") return fullNow.current ? openDetail(lastTurn(session.messages)) : show(...lastTurn(session.messages)); // release 5 plan, Task 12
     if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
     // A message starting with `?` needs a space typed first.
     if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return show(...KEY_LIST.map((text) => ({ text, color: "gray" })));
@@ -1239,7 +1239,7 @@ export function App({
   const latest = useRef(handlers);
   latest.current = handlers;
 
-  const d = detail.current; // the detail view drawn, which hides the prompt, its menu and what goes with them (Task 12)
+  const d = detail.current; // the detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12)
   const prompt = search.current ? shown() : editor.current;
   const menu = picker || question || d ? null : menuFor(prompt);
   if (menu?.kind !== "path") listed.current = null;
@@ -1247,7 +1247,7 @@ export function App({
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the
   // rows left for the queue.
   const exitKey = first.current?.name === "Esc" ? undefined : first.current?.name;
-  // The detail view's row naming its keys, or its search, stands in the hint row's place (plan, Task 12), as the row over
+  // The detail view's row naming its keys, or its search, stands in the hint row's place (release 5 plan, Task 12), as the row over
   // the status line; Ctrl+R's search waits under the view, and a model list queued as `/model` during a turn, which takes
   // the keys, takes the row away while it is open.
   const searching = !d && search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
@@ -1340,7 +1340,7 @@ export function App({
     }
     question.short = shortOf(question);
   }
-  // A question brings its own detail into view when it is first drawn (release 5 design, "Scrolling"; plan, Task 11), and
+  // A question brings its own detail into view when it is first drawn (release 5 design, "Scrolling"; release 5 plan, Task 11), and
   // when a draw moves it into the conversation, above; here, with the height the conversation has beside it; changed
   // while drawing, as `copied` above. Whether the view was following is kept from the first draw. Its detail's last row
   // goes on the view's second-last row, the last kept for "↓ N new lines", when its rows fit above that; otherwise its
