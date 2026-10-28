@@ -25,6 +25,17 @@ export const leaves = (rel: string) => rel === ".." || rel.startsWith(`..${path.
 
 const same = (a: BigIntStats | undefined, b: BigIntStats) => a !== undefined && a.dev === b.dev && a.ino === b.ino;
 
+// What a folder on the way up is, or nothing. Windows cannot stat a drive's root spelled \\?\C:\ (EISDIR, though
+// C:\ works), and a drive's root is never the data or settings folder.
+function folderOf(p: string): BigIntStats | undefined {
+  try {
+    return statSync(p, { bigint: true, throwIfNoEntry: false });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EISDIR" && path.dirname(p) === p) return undefined;
+    throw err;
+  }
+}
+
 // Whether `real` is the data folder or in it. The path is compared first, which also covers a data
 // folder not made yet. Then each folder on the way up is compared by what it is (its volume and file
 // number), since Windows reaches one folder by its short name, by \\?\ and by \\localhost\C$, and
@@ -35,7 +46,7 @@ function inData(data: string, real: string): boolean {
   const id = statSync(data, { bigint: true, throwIfNoEntry: false });
   if (!id) return false;
   for (let p = real; ; p = path.dirname(p)) {
-    if (same(statSync(p, { bigint: true, throwIfNoEntry: false }), id)) return true;
+    if (same(folderOf(p), id)) return true;
     if (path.dirname(p) === p) break;
   }
   const file = statSync(real, { bigint: true, throwIfNoEntry: false });
@@ -60,7 +71,7 @@ export function settingsName(name: string): boolean {
 // anywhere with more than one name, since a hard link is another name for it.
 function inSettings(folder: string, real: string): boolean {
   const id = statSync(folder, { bigint: true, throwIfNoEntry: false });
-  const isFolder = (p: string) => path.relative(folder, p) === "" || (id !== undefined && same(statSync(p, { bigint: true, throwIfNoEntry: false }), id));
+  const isFolder = (p: string) => path.relative(folder, p) === "" || (id !== undefined && same(folderOf(p), id));
   for (let p = real; path.dirname(p) !== p; p = path.dirname(p)) {
     if (settingsName(path.basename(p)) && isFolder(path.dirname(p))) return true;
   }

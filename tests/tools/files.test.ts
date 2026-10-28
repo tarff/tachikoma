@@ -98,6 +98,16 @@ describe("the data folder", () => {
     expect(await readFile(file, "utf8")).toBe("{}");
   });
 
+  // Windows cannot stat a drive's root spelled \\?\C:\ (EISDIR), which the walk up from a \\?\ path reaches.
+  it.runIf(process.platform === "win32")("reads and writes a long path (\\\\?\\) outside it, once it exists", async () => {
+    const ctx = await tempContext("never");
+    await mkdir(path.join(ctx.root, "tachikoma"));
+    vi.stubEnv("TACHI_DATA_DIR", path.join(ctx.root, "tachikoma"));
+    const file = `\\\\?\\${path.join(ctx.root, "a.txt")}`;
+    await writeFileTool.run({ path: file, content: "fine" }, ctx);
+    expect(await readFileTool.run({ path: file }, ctx)).toBe("     1\tfine");
+  });
+
   it("leaves a folder whose name only starts the same alone", async () => {
     const ctx = await setup();
     await writeFile(path.join(ctx.root, "data2.txt"), "fine");
@@ -204,14 +214,12 @@ describe("the settings and keys files", () => {
     expect(readdirSync(path.join(ctx.root, ".tachikoma"))).toEqual([]);
   });
 
-  // Windows reaches one folder by the loopback share \\localhost\C$, and macOS ignores case. A \\?\ path
-  // is not tried: once the data folder exists, its check, which comes first, fails on one outside it with
-  // EISDIR (from stat of \\?\C:\), so the path is refused with that error instead.
+  // Windows reaches one folder by \\?\ and by the loopback share \\localhost\C$, and macOS ignores case.
   it.runIf(process.platform === "win32" || process.platform === "darwin")("are refused by every spelling of their folder that reaches it", async () => {
     const ctx = await home("never");
     const file = path.join(ctx.root, ".tachikoma", "settings.json");
     const spellings = [path.join(ctx.root, ".TACHIKOMA", "settings.json")];
-    if (process.platform === "win32") spellings.push(`\\\\localhost\\${file[0]}$${file.slice(2)}`);
+    if (process.platform === "win32") spellings.push(`\\\\?\\${file}`, `\\\\localhost\\${file[0]}$${file.slice(2)}`);
     const reaching = spellings.filter((p) => existsSync(p));
     expect(reaching.length).toBeGreaterThan(0);
     for (const p of reaching) await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(refused(path.resolve(p)));
