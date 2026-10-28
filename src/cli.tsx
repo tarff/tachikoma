@@ -78,10 +78,10 @@ In a session: /lead <provider:model> switches the lead model, /model picks it fr
 /login chatgpt and /logout chatgpt sign in and out, /tasks lists the subagents (/tasks t1 shows one,
 /tasks stop stops them), /errors summarises the error log, /screen switches between full
 screen and classic, /settings opens the settings file in your editor, /keybindings opens the
-keys file in your editor, /exit quits. Esc or Ctrl-C stops the current turn. When idle, Ctrl-C
-clears the prompt, and twice on an empty prompt quits. Ctrl+T hides or shows the to-do list. Esc
-and Ctrl+T can be moved in the keys file; Ctrl-C and Ctrl-D cannot. ? on an empty prompt lists
-every key.`;
+keys file in your editor, /vim switches vim mode in this window, /exit quits. Esc or Ctrl-C stops
+the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty prompt quits. Ctrl+T
+hides or shows the to-do list. Esc and Ctrl+T can be moved in the keys file; Ctrl-C and Ctrl-D
+cannot. ? on an empty prompt lists every key.`;
 
 function fail(message: string): never {
   console.error(message);

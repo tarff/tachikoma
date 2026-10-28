@@ -111,9 +111,10 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(help).toMatch(/\/screen switches between full\s+screen\s+and\s+classic/);
   });
 
-  it("lists /settings and /keybindings in the help", () => {
+  it("lists /settings, /keybindings and /vim in the help", () => {
     const help = tachi("--help").stdout;
     expect(help).toMatch(/\/settings opens the settings file in your editor,\s+\/keybindings opens the\s+keys file in your editor/);
+    expect(help).toMatch(/\/vim\s+switches\s+vim\s+mode\s+in\s+this\s+window,/);
   });
 
   // Release 6 plan, Task 23: Esc and Ctrl+T are actions the keys file can move (release 6 design, "Keys become named

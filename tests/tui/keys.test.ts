@@ -1,6 +1,7 @@
 import type { Key } from "ink";
 import { describe, expect, it } from "vitest";
-import { Bindings, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
+import { readKeybindings } from "../../src/keybindings.js";
+import { Bindings, DEFAULTS, defaultsFor, tableOf } from "../../src/tui/bindings.js";
 import { commands, keyList, named, pieces, vimKey } from "../../src/tui/keys.js";
 
 // A key as Ink's useInput reports it: no flags but the ones given.
@@ -114,9 +115,10 @@ describe("the keys named in help and hints", () => {
     expect(named(defaults(), "chat:externalEditor", "Chat", ["ctrl+x ctrl+e"])).toEqual(["Ctrl+X Ctrl+E"]);
   });
 
-  // `?`'s list, word for word as release 5 wrote it by hand (plan, Task 6, test 1).
+  // `?`'s list, word for word as release 5 wrote it by hand (plan, Task 6, test 1), with release 6's editor, stash and
+  // picture keys after the to-do list's. Windows' table, so the picture key is the same on every machine.
   it("lists the keys with the default table in release 5's words", () => {
-    expect(keyList(defaults())).toEqual([
+    expect(keyList(new Bindings(tableOf(defaultsFor("win32", false))))).toEqual([
       "Keys:",
       "  Enter  send · Shift+Enter, \\ then Enter, or Ctrl+J  new line",
       "  Esc  stop the turn · Esc Esc  clear the prompt",
@@ -129,8 +131,29 @@ describe("the keys named in help and hints", () => {
       "  /  commands · @  project paths · Shift+Tab  permission mode · Alt+P  pick the model",
       "  Ctrl+O  the last turn's tool calls in full · a space first starts a message with ?",
       "  Ctrl+T  show or hide the to-do list",
+      "  Ctrl+G or Ctrl+X Ctrl+E  open the prompt in your editor",
+      "  Ctrl+S  stash the prompt or bring it back · Alt+V  paste a picture",
       "  PgUp PgDn  half a screen · Ctrl+Home Ctrl+End  top, latest · Shift+↑ Shift+↓  a line (full screen)",
     ]);
+  });
+
+  // Release 6 plan, Task 23: the editor, stash and picture keys name every key bound to them, as the command keys do.
+  it("lists the picture key each system binds: Ctrl+V on macOS and Linux, both under WSL", () => {
+    const pictures = (platform: NodeJS.Platform, wsl: boolean) => keyList(new Bindings(tableOf(defaultsFor(platform, wsl))));
+    expect(pictures("darwin", false)).toContain("  Ctrl+S  stash the prompt or bring it back · Ctrl+V  paste a picture");
+    expect(pictures("linux", false)).toContain("  Ctrl+S  stash the prompt or bring it back · Ctrl+V  paste a picture");
+    expect(pictures("linux", true)).toContain("  Ctrl+S  stash the prompt or bring it back · Alt+V or Ctrl+V  paste a picture");
+  });
+
+  it("lists a key the keys file adds to the editor, and leaves out stash and picture keys set to null", () => {
+    // The terminal checklist's step 3: ctrl+e bound to chat:externalEditor in the keys file.
+    const read = readKeybindings(JSON.stringify({ bindings: [{ context: "Chat", bindings: { "ctrl+e": "chat:externalEditor" } }] }));
+    if ("problem" in read) throw new Error(read.problem);
+    expect(keyList(read.table)).toContain("  Ctrl+G, Ctrl+X Ctrl+E, or Ctrl+E  open the prompt in your editor");
+    const list = keyList(over("Chat", { "ctrl+s": null, "alt+v": null, "ctrl+v": null }));
+    expect(list.join("\n")).not.toContain("stash");
+    expect(list.join("\n")).not.toContain("picture");
+    expect(keyList(over("Chat", { "ctrl+g": null, "ctrl+x ctrl+e": null })).join("\n")).not.toContain("your editor");
   });
 
   it("lists the keys a table binds in place of the defaults", () => {

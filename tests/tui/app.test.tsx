@@ -1585,6 +1585,8 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     expect(app.lastFrame()).toContain("Shift+Enter, \\ then Enter, or Ctrl+J  new line");
     expect(app.lastFrame()).toContain("Ctrl+O  the last turn's tool calls in full");
     expect(app.lastFrame()).toContain("Ctrl+T  show or hide the to-do list");
+    expect(app.lastFrame()).toContain("  Ctrl+G or Ctrl+X Ctrl+E  open the prompt in your editor");
+    expect(app.lastFrame()).toContain("  Ctrl+S  stash the prompt or bring it back · ");
     // Keys that work in Windows Terminal, where Ctrl+Backspace is Backspace and Ctrl+_ cannot be typed.
     expect(app.lastFrame()).toContain("Alt+Backspace  the word before");
     expect(app.lastFrame()).toContain("Ctrl+Z  undo");

@@ -71,6 +71,7 @@ const either = (items: string[]) => (items.length < 3 ? items.join(" or ") : `${
 export function keyList(b: Bindings): string[] {
   const k = (action: string, context: Context, ...usual: string[]) => named(b, action, context, usual);
   const scroll = (action: string, usual: string) => k(`scroll:${action}`, "Scroll", usual)[0];
+  const all = (action: string) => b.keysFor(action, "Chat").map(spelled);
   // A part of a line: its keys, then what they do, or nothing when no key is bound.
   const part = (keys: (string | undefined)[], words: string, join = (bound: string[]) => bound.join(" ")) => {
     const bound = keys.filter((x) => x !== undefined);
@@ -106,6 +107,10 @@ export function keyList(b: Bindings): string[] {
     ),
     line(part(k("app:toggleTranscript", "Global", "ctrl+o"), "the last turn's tool calls in full"), "a space first starts a message with ?"),
     line(part(k("app:toggleTodos", "Global", "ctrl+t"), "show or hide the to-do list")),
+    // Release 6's keys have no release 5 words to keep, so each names every key bound to it, as the command keys below do:
+    // one the keys file adds shows beside the defaults (release 6 plan, Task 23's checklist, step 3).
+    line(part(all("chat:externalEditor"), "open the prompt in your editor", either)),
+    line(part(all("chat:stash"), "stash the prompt or bring it back", either), part(all("chat:imagePaste"), "paste a picture", either)),
     // The keys file's command:<name> keys, which run at the prompt (release 6 plan, Task 11), one line a command.
     ...KEY_COMMANDS.map((n) => line(part([...b.keysFor(`command:${n}`, "Chat"), ...b.keysFor(`command:${n}`, "Global")].map(spelled), `/${n}`))),
     line(
