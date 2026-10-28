@@ -182,57 +182,83 @@ Each is marked in its task. None approved yet.
 
 ## Task 1: One owner for the terminal
 
-**Files:** create `src/tui/owner.ts`, `tests/tui/owner.test.ts`; modify `src/tui/App.tsx`.
+**Files:** create `src/tui/owner.ts`, `tests/tui/owner.test.ts`; modify `src/tui/App.tsx`,
+`src/tui/input.ts`.
 
-**What it is.** The one place that hands the terminal to something else and takes it back, so no
-two hand-overs overlap (release 5's final review found two suspends in one key batch crashed Ink).
+**What it is.** The one place that knows who has the terminal: it counts the hand-overs that hold
+the keyboard, knows when Ink is suspended, and runs a program in the terminal (Task 12's editor)
+only when no hand-over is under way.
+
+**Rewritten at Task 1's build** (the builder stopped and asked): the first version made every
+hand-over wait its turn and moved holding, suspending and diverting into the owner. Release 5's
+tests check those steps in an exact order (the mouse off between the hold and the suspend, the
+keys diverted after the printed page, a dropper kept past the resume), a `[` read while a resume
+draws prints out at once, and a `[` read with the Enter that sends `/screen` is dropped. Queueing
+would change all of that, against "nothing a user sees changes". So each flow keeps its own steps
+in release 5's order and asks the owner only for what the flags answered; the queue is only
+between a program and the rest.
 
 ```ts
-export interface Hand { suspend(): Promise<{ resume(): Promise<void> }>; hold(on: boolean): void; divert(to: ((s: string) => void) | null): void }
+export interface Hand {
+  suspend(): Promise<{ resume(): Promise<void> }>;
+  hold(on: boolean): void;
+  divert(to: ((s: string) => void) | null): void;
+  release(): void;   // InputFilter: let go of stdin, so a program reads every key itself
+  retake(): void;    // InputFilter: read stdin again
+}
+export interface Handover {
+  // Ink's suspend, as the flow called it; `suspended` is true from this call until the flow calls resume().
+  suspend(): Promise<{ resume(): Promise<void> }>;
+  done(): void;      // lets the keyboard go when no other hand-over still holds it
+}
 export class TerminalOwner {
   constructor(hand: Hand);
-  // Runs `body` with the terminal suspended and the keyboard held; a second call while one runs waits for it.
-  // `reader`, if given, gets every key while suspended. Resolves after resume; the hold is let go only when no
-  // other hand-over is waiting.
-  away<T>(body: (out: { resume: () => Promise<void> }) => Promise<T>, reader?: (s: string) => void): Promise<T>;
-  // For a program that runs in the terminal (Task 12's editor): suspends without the hold, so Ink's raw mode off goes
-  // through, and asks the keyboard filter to let go of stdin, so the program reads every key itself. Same queue.
-  // After end(), the program's ending touches nothing: no retake(), no resume().
-  program<T>(body: () => Promise<T>): Promise<T>;
-  get busy(): boolean;   // a hand-over is running or waiting
-  end(): void;           // unmount: divert(null), hold(false), and every later away() resolves without suspending
+  take(): Handover;            // hold(true) now, at each start, as release 5 does; the flow's own steps follow
+  get suspended(): boolean;    // a `[` then does nothing, as it would suspend Ink again, which throws (replaces `suspending`)
+  get busy(): boolean;         // a hand-over is held, or a program runs or waits (Task 12's queue waits on it)
+  // A program in the terminal: waits until nothing is held, suspends without the hold, so Ink's raw mode off goes
+  // through, calls release() before the body, then retake() and resume after it, also when it throws. take() is
+  // not called while a program runs: Ink reads no keys then, and the queue waits on `busy` (Task 12).
+  program<T>(body: () => Promise<T>): Promise<T | undefined>;
+  end(): void;                 // unmount: divert(null), hold(false); a program's ending then touches nothing
 }
 ```
 
-`Hand` gains `release(): void` and `retake(): void`, which `InputFilter` provides: `release`
-removes its `"data"` listener from stdin, pauses it and turns raw mode off on the source itself;
-`retake` turns raw mode on, adds the listener back and resumes. Today the filter reads stdin for as
-long as Tachikoma runs (input.ts, the constructor's `source.on("data")`), so a program in the
-terminal would lose keys to it (found at the plan's second review).
+`InputFilter` gains `release()` and `retake()`: `release` removes its `"data"` listener from
+stdin, pauses it and turns raw mode off on the source itself; `retake` turns raw mode on, adds the
+listener back and resumes. Today the filter reads stdin for as long as Tachikoma runs (input.ts,
+the constructor's `source.on("data")`), so a program in the terminal would lose keys to it (found
+at the plan's second review).
 
-`printOut`/`comeBack`, `switchScreen` and the unmount cleanup move onto it, keeping release 5's
-orders step for step (the `setTimeout(0)` waits, `screen.enter`/`leave`, `setSecond`, `setMouse`,
-`PASTE_ON`/`PASTE_OFF`). `suspending` and `switchRunning` go: `busy` answers what they asked.
+`printOut` takes a hand-over and `comeBack` ends it; `switchScreen` takes one and ends it in its
+`finally`. Each keeps release 5's steps and their order exactly (the `setTimeout(0)` waits,
+`screen.enter`/`leave`, `setSecond`, `setMouse`, `PASTE_ON`/`PASTE_OFF`, the divert to the reader
+and to the paste dropper), with `handover.suspend()` where `suspendTerminal()` was. `suspending`
+goes (`owner.suspended`), and `switchRunning` with the `printed.current` checks before
+`hold(false)` (the count: a print-out started while a switch or a coming back still holds keeps
+the hold, as today). The unmount cleanup calls `owner.end()` where it called `divert(null)` and
+`hold(false)`. A flow ending after `end()` still lets go again, as release 5's test of Ink ending
+during a switch expects (harmless: input.ts, `hold`).
 
 **Tests:**
-1. Two `away` calls made in the same tick run one after the other: the second's suspend starts
-   only after the first's resume; `hold(true)` once at the start, `hold(false)` once at the end.
-2. A `reader` gets keys while away, and `divert(null)` is called on resume.
-3. A body that throws still resumes and lets go; the next `away` runs.
-4. `end()` diverts to null and lets go; an `away` after it never calls `suspend`.
-5. `program()` suspends without `hold(true)`, calls `release()` before the body and `retake()` after
-   it (also when it throws), and queues with `away()` both ways.
-6. `end()` while a program runs (found at the plan's third review): when the body ends, neither
-   `retake()` nor `resume()` is called, so stdin and raw mode stay let go with Ink gone; an `away()`
-   or `program()` queued behind it resolves without suspending, releasing or retaking. The same
-   for `end()` during an `away()`: no `hold(false)` after `end()`'s own.
-7. `InputFilter.release()`: a fake source's `"data"` events while released reach no `"readable"`
+1. Two hand-overs, the second taken before the first is done: `hold(true)` at each start,
+   `hold(false)` once, after the second `done()`; in the other order of `done()` too.
+2. `suspended` is true from `handover.suspend()` until the flow calls the `resume` it returned,
+   and false before and after.
+3. `end()` calls `divert(null)` and `hold(false)`; a hand-over done after it lets go again.
+4. `program()` with nothing held: suspends without `hold(true)`, `release()` before the body,
+   `retake()` and then resume after it, also when it throws (the throw passes on). With a
+   hand-over held, it starts only after that `done()`. `busy` is true while it waits and runs.
+5. `end()` while a program runs: when the body ends, neither `retake()` nor `resume()` is called,
+   so stdin and raw mode stay let go with Ink gone; a program waiting behind a hand-over when
+   `end()` comes resolves `undefined` without suspending, releasing or retaking.
+6. `InputFilter.release()`: a fake source's `"data"` events while released reach no `"readable"`
    or `"data"` of the filter and are left to the source (its listener count is 0); `retake()` puts
    back raw mode, the listener and flowing, and the next key reaches Ink.
-8. In App: `[` and `/screen` sent in one read of the keyboard (release 5's crash) both complete,
-   in that order, with no throw; the existing `[` and `/screen` tests pass unchanged.
+7. In App: every existing `[` and `/screen` test passes unchanged, the release 5 crash's among
+   them (the `/screen` Enter, Ctrl+O and `[` in one read: the `[` dropped, nothing thrown).
 
-Commit: `refactor: one owner hands the terminal over, and a second hand-over waits its turn`.
+Commit: `refactor: one owner knows who has the terminal, and a program in it waits its turn`.
 
 ## Task 2: One phase for what is happening now
 
@@ -612,7 +638,9 @@ Both start the editor with stdio inherited, inside `owner.program()` (Task 1), s
 runs in the terminal reads the keys itself and Tachikoma reads none until it ends. Under the shell
 (choice 4) a missing command is the shell's "not found" exit (9009 from `cmd.exe`, 127 from `sh`).
 
-`chat:externalEditor` runs `owner.program(...)` (Task 1): full screen leaves the second screen and
+`chat:externalEditor` runs `owner.program(...)` (Task 1), and the queue starts nothing while
+`owner.busy` is true, so a turn ending while the editor is open runs no queued `/screen` until it
+closes (found at Task 1's build): full screen leaves the second screen and
 the mouse as `[` does, and comes back. While away, Ink's renders are dropped as for `[`, the turn goes on, and a
 permission question waits (it is shown on return). On return: the prompt becomes the text,
 without one trailing `\n` or `\r\n`, the cursor at the end, as one undo step. On failure the

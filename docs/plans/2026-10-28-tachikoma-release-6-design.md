@@ -59,9 +59,11 @@ The final review of release 5 advised it before the editor and vim mode (user: "
 tasks"). Nothing a user sees changes, and every test passes before and after each task.
 - **One owner for the terminal.** Handing the terminal over (`suspendTerminal`), holding raw mode
   through a switch (`hold`) and sending keys to a reader instead of Ink (`divert`) go through one
-  small module that knows who has the terminal. A second hand-over asked for while one is under way
-  waits its turn, instead of throwing: two in one batch of keys crashed release 5 before its fix.
-  `/screen`, `[`, and now the external editor all use it.
+  small module that knows who has the terminal. `/screen`, `[`, and now the external editor all use
+  it. Two hand-overs in one batch of keys crashed release 5 before its fix, which drops a `[` read
+  while a switch has Ink suspended; that stays, as nothing a user sees changes. The editor waits
+  its turn behind a hand-over under way (changed at the build's Task 1: queueing `[` and `/screen`
+  would have changed the orders release 5's tests check).
 - **What is happening now, in one place.** App.tsx's ten or so flags (switching, suspended, printed
   out, working, a question waiting, and the rest) become one state with named cases, so "can this
   key act now?" is asked of one thing.
@@ -376,8 +378,8 @@ OpenAI table. sharp is installed through sfw, pinned to the version checked then
 
 ## Testing
 
-- **The tidy-up:** the whole suite passes unchanged before and after each task; two hand-overs in
-  one batch of keys queue instead of throwing.
+- **The tidy-up:** the whole suite passes unchanged before and after each task; the editor waits
+  for a hand-over under way, and two hand-overs in one batch of keys never throw.
 - **Keys:** the default table against today's keys, so no key changes meaning; a binding taking a
   key before the prompt's editing keys (Ctrl+E); each problem in a keys file with its exact
   message; chords and their 3 seconds under fake timers; `?` and the hints
