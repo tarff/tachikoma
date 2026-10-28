@@ -1,5 +1,6 @@
 import { Box, type Key, renderToString, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
+import { type Given, resolve } from "../clilib.js";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
 import { summarize } from "../core/errorlog.js";
 import { type Ask, type Mode, type Owner, visible } from "../core/permissions.js";
@@ -7,8 +8,10 @@ import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import type { Task, Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
+import type { Effort } from "../providers/anthropic.js";
 import type { ModelGroup } from "../providers/models.js";
-import { saveSetting, type Settings, shownFile } from "../settings.js";
+import { type Loaded, SETTINGS, saveSetting, type Settings, shownFile } from "../settings.js";
+import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
 import { Bindings, CHORD_MS, type Context, DEFAULTS, keyText, type Stroke, strokeOf, tableOf } from "./bindings.js";
 import type { Clipboard } from "./clipboard.js";
@@ -94,6 +97,10 @@ export interface AppProps {
   // The table of keys (bindings.ts); the default table when not given. Task 11 lays the keys file over it.
   bindings?: Bindings;
   home: string; // the user's folder, which holds the settings file (release 6 design, "The settings file")
+  // The settings file as the launch read it, and the entries a flag or variable gave then (clilib.ts, givenBy): with
+  // it the App watches the file and applies each edit (release 6 design, "Live edits"); without it, as in most tests,
+  // it does not.
+  live?: { loaded: { settings: Settings; warnings: string[] }; given: Given };
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /exit";
@@ -108,6 +115,11 @@ const characters = (text: string) => [...segmenter.segment(text)].length;
 // is a message).
 const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
+
+// The settings file's entries a live edit applies here, in the design's table's order ("When a live change applies");
+// editorMode, vimInsertModeRemaps and editor apply where they are used, from the release 6 plan's Tasks 12 and 21.
+const LIVE = ["lead", "mode", "effort", "fallback", "worker", "maxTasks", "status", "screen", "scrollSpeed"] as const;
+const FROM = ` (from ${SETTINGS})`;
 
 // The contexts in force in each phase (phase.ts), innermost first (release 6 plan, Task 6's table). Printed out and
 // ended, keys go where they went before the table: to the reader of the printed view, or nowhere.
@@ -190,6 +202,7 @@ export function App({
   input,
   bindings,
   home,
+  live,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -337,6 +350,17 @@ export function App({
   const abort = useRef<AbortController | null>(null);
   const nextId = useRef(0);
   const lookups = useRef(0);
+  // Live edits of the settings file (release 6 design, "Live edits"): the status line's parts and the wheel's speed
+  // as the file last set them; the file's settings and warnings as last applied, to tell which entries an edit
+  // changed; a changed effort, which every model made after it takes too; the lead and the screen waiting for the
+  // turn to end, as /lead and /screen wait; and whether the lead now set came from the file, for its line (onLead).
+  const [shownSegments, setSegments] = useState(segments);
+  const [speed, setSpeed] = useState(scrollSpeed);
+  const fileNow = useRef(live?.loaded.settings ?? {});
+  const warned = useRef(live?.loaded.warnings ?? []);
+  const effortNow = useRef<{ effort: Effort | undefined } | null>(null);
+  const waiting = useRef<{ lead?: string; screen?: "full" | "classic" }>({});
+  const leadFromFile = useRef(false);
 
   // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
   // design, "Scrolling"); setting `lines` draws them either way.
@@ -359,11 +383,23 @@ export function App({
   const history = useRef<History | null>(null);
   history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
   // Release 6 design, "Saving": /lead, a /model pick and /screen save their choice once it is in force, which a failed
-  // save leaves as it is; the line saying so is in History's colour.
+  // save leaves as it is; the line saying so is in History's colour. A save made counts as applied, so a later edit of
+  // another entry does not apply this one again.
   const save = <K extends keyof Settings>(key: K, value: Required<Settings>[K]) => {
-    saveSetting(key, value, home).catch((err) => {
-      say({ text: `The change holds for this session, but saving it to ${shownFile()} failed (${errorText(err)}).`, color: "magenta" });
-    });
+    saveSetting(key, value, home).then(
+      () => {
+        fileNow.current = { ...fileNow.current, [key]: value };
+      },
+      (err) => {
+        say({ text: `The change holds for this session, but saving it to ${shownFile()} failed (${errorText(err)}).`, color: "magenta" });
+      },
+    );
+  };
+  // Every model made in the session takes a changed effort (release 6 plan, Task 9).
+  const make = (spec: string) => {
+    const provider = makeProvider(spec);
+    if (effortNow.current) provider.setEffort?.(effortNow.current.effort);
+    return provider;
   };
 
   // Only the latest lookup's answer is shown: a late one, for the previous lead or from before a
@@ -438,7 +474,7 @@ export function App({
       latest.current.lookUpWindow(false);
     };
     const onLead = (id: string) => {
-      latest.current.say({ text: `lead is now ${id}`, color: "magenta" });
+      latest.current.say(leadFromFile.current ? gray(`lead is now ${id}${FROM}`) : { text: `lead is now ${id}`, color: "magenta" });
       latest.current.lookUpWindow();
     };
     const onToolStart = ({ id, name, input }: Events["tool-start"][0]) => {
@@ -472,7 +508,10 @@ export function App({
     bus.on("tool-end", onToolEnd);
     bus.on("todo", onTodo);
     bus.on("tasks", onTasks);
-    say(...intro);
+    // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
+    // they show here too (found at Task 7's code review); in classic mode stderr is seen, and they are not said twice.
+    say(...(fullNow.current ? (live?.loaded.warnings ?? []).map(gray) : []), ...intro);
+    const unwatch = live && watchSettings(home, (read) => latest.current.onSettings(read));
     history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
@@ -488,6 +527,7 @@ export function App({
       dropping.current = null;
       owner.end();
       mouse?.off("mouse", onReport);
+      unwatch?.();
       clearInterval(minutes);
       clearTimeout(first.current?.timer);
       clearTimeout(chordTimer.current);
@@ -539,9 +579,27 @@ export function App({
   // unseen; the model list waits in perform, below (the user's choices, release 5). So does /screen, which would change
   // the screen under the printed view, and could not suspend Ink, suspended already. Messages and other commands go on.
   // Nothing starts once Ink has ended, a turn going on paying with no screen to show it.
+  // A lead or screen the settings file set waits here as `/lead` and `/screen` would in the queue, the screen also
+  // while the view is printed out (release 6 design, "When a live change applies").
   const next = () => {
     const h = happening();
     if (h.phase.kind === "ended" || h.working || h.waiting) return;
+    const w = waiting.current;
+    if (w.lead !== undefined) fileLead(w.lead);
+    w.lead = undefined;
+    if (w.screen && h.phase.kind !== "printed") {
+      const to = w.screen;
+      w.screen = undefined;
+      if (to === "full" && !fullNow.current && !fullPossible) say(gray("Full screen needs a terminal (the output is not one, or CI is set)"));
+      else if ((to === "full") === fullNow.current) say(gray(`screen is now ${to}${FROM}`));
+      else {
+        // As perform runs /screen: what goes wrong is said, and the queue goes on after.
+        void switchScreen(true)
+          .catch((err) => say({ text: errorText(err), color: "red" }))
+          .then(next);
+        return;
+      }
+    }
     if (tasks.wakes()) return void submit("", true);
     const q = queue.current;
     const command = q.findIndex(isCommand);
@@ -584,7 +642,7 @@ export function App({
       if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
       if (command === "/lead") {
         const spec = words.join(" ");
-        session.setLead(makeProvider(spec));
+        session.setLead(make(spec));
         return save("lead", spec);
       }
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
@@ -663,7 +721,7 @@ export function App({
     setPicker(null);
     view.current = FOLLOWING;
     try {
-      session.setLead(makeProvider(spec));
+      session.setLead(make(spec));
       save("lead", spec);
     } catch (err) {
       say({ text: errorText(err), color: "red" });
@@ -800,8 +858,8 @@ export function App({
   // (terminal.ts, restoreWhenInkEnds), and the keyboard is let go, so raw mode goes off and the process can end. A `[`
   // read while Ink resumes, before its drawing is done, keeps the hold, as in comeBack. Should the suspend throw going
   // to full screen, the mode goes back to classic, as the screen is (perform says why); `switching` ends however the
-  // switch does.
-  const switchScreen = async () => {
+  // switch does. A switch the settings file asked for (`file`) says so, and saves nothing over the user's own text.
+  const switchScreen = async (file = false) => {
     const toFull = !fullNow.current;
     working.current = true;
     const handover = owner.take();
@@ -839,8 +897,90 @@ export function App({
       handover.done(); // a print-out started during the switch keeps the hold (comeBack, above)
     }
     if (ended.current) return;
-    say({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
-    save("screen", toFull ? "full" : "classic");
+    say({ text: `screen is now ${toFull ? "full" : "classic"}${file ? FROM : ""}`, color: "gray" });
+    if (!file) save("screen", toFull ? "full" : "classic");
+  };
+
+  // A live edit of the settings file (release 6 design, "Live edits"): a broken file keeps the last good settings
+  // and says what is wrong; a warning is said once, while its entry stays; each entry the edit changed applies by the
+  // design's table, or, given by a flag or variable at launch, stays as given. Removing an entry is a change to what
+  // applies without it, the default, as resolve gives it with no flag nor variable.
+  const onSettings = (read: Loaded) => {
+    if ("problem" in read) return say({ text: `${read.problem}; the last good settings still apply`, color: "red" });
+    for (const w of read.warnings) if (!warned.current.includes(w)) say(gray(w));
+    warned.current = read.warnings;
+    const before = fileNow.current;
+    fileNow.current = read.settings;
+    const now = resolve({}, {}, read.settings);
+    for (const key of LIVE) {
+      if (JSON.stringify(before[key]) === JSON.stringify(read.settings[key])) continue;
+      const flag = live?.given[key];
+      if (flag) say(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
+      else applyEntry(key, read.settings, now);
+    }
+    next();
+  };
+  // One entry's new value, `s` the file's and `now` what applies (above), with its line. A lead or a screen waits for
+  // next() (above). A model the file names that cannot be made is said, as at launch (cli.tsx), and the one before is
+  // kept.
+  const applyEntry = (key: (typeof LIVE)[number], s: Settings, now: ReturnType<typeof resolve>) => {
+    const line = (value: string) => say(gray(`${key} is now ${value}${FROM}`));
+    const model = (spec: string | undefined) => {
+      if (!spec) return undefined; // an empty --fallback or --worker is none at launch too (cli.tsx)
+      try {
+        return make(spec);
+      } catch (err) {
+        say({ text: `${SETTINGS}: "${key}": ${errorText(err)}`, color: "red" });
+        return null;
+      }
+    };
+    if (key === "lead") {
+      waiting.current.lead = s.lead;
+      // A session cannot be without a lead, so removing the entry keeps the one it has (the design's table).
+      if (s.lead === undefined) say(gray(`"lead" was removed from ${SETTINGS}; the lead stays ${session.lead.id}`));
+    } else if (key === "mode") {
+      // `never` only at launch, like --mode never (the user's choice, design's table).
+      if (now.mode === "never") return say(gray(`"mode": "never" applies only when a session starts; the mode stays ${perm.current}`));
+      perm.current = now.mode;
+      onMode(now.mode);
+      line(now.mode);
+    } else if (key === "effort") {
+      effortNow.current = { effort: now.effort };
+      session.lead.setEffort?.(now.effort);
+      line(now.effort ?? "the model's default");
+    } else if (key === "fallback") {
+      const p = model(now.fallback);
+      if (p === null) return;
+      session.setFallback(p);
+      line(p?.id ?? "off");
+    } else if (key === "worker") {
+      const p = model(now.worker);
+      if (p === null) return;
+      tasks.setWorker(() => p ?? session.lead); // without one, a subagent uses the model leading when it starts (cli.tsx)
+      line(p?.id ?? "the lead's model");
+    } else if (key === "maxTasks") {
+      tasks.setMax(now.maxTasks);
+      line(String(now.maxTasks));
+    } else if (key === "status") {
+      setSegments(now.segments);
+      line(now.segments.join(", "));
+    } else if (key === "screen") waiting.current.screen = s.screen ?? "full"; // full unless asked for classic (clilib.ts, screenMode)
+    else {
+      setSpeed(now.speed);
+      line(String(now.speed));
+    }
+  };
+  // The lead the file names, as /lead sets it, its line saying where it came from (onLead, above).
+  const fileLead = (spec: string) => {
+    let provider: Provider;
+    try {
+      provider = make(spec);
+    } catch (err) {
+      return say({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "red" });
+    }
+    leadFromFile.current = true;
+    session.setLead(provider);
+    leadFromFile.current = false;
   };
   // Who takes a key (release 6 plan, Task 6): while a field is typed (a Ctrl+R query, a detail-view search, the model
   // list's filter), a printable key goes into it, after a chord under way (lookUp). Keys match the table exactly
@@ -1135,7 +1275,7 @@ export function App({
       if (waited) rerender((n) => n + 1);
       if (!got) return;
       if (!("action" in got) || (got.action !== "scroll:lineUp" && got.action !== "scroll:lineDown")) return onKey(h, got, "", NO_KEY);
-      const step = notch(wheel.current, scrollSpeed, got.action === "scroll:lineUp" ? -1 : 1);
+      const step = notch(wheel.current, speed, got.action === "scroll:lineUp" ? -1 : 1);
       wheel.current = step.carry;
       const from = firstRow(p.rows, p.view.current, viewHeight);
       if (step.rows && (step.rows < 0 ? from > 0 : p.view.current.at !== null)) goTo(from + step.rows); // not up at the top, nor down following
@@ -1411,7 +1551,7 @@ export function App({
   // functions, set at each, so what they read is the screen as last drawn, never what it was when they were set up
   // (release 6 design, "Tidying the screen code first"). Set while drawing, safe with Ink's non-concurrent root
   // (above).
-  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse };
+  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings };
   const latest = useRef(handlers);
   latest.current = handlers;
 
@@ -1501,7 +1641,7 @@ export function App({
     cursorRow: laid.places.get(prompt.cursor)!.row,
     promptTop: promptTop.current,
     working: busy,
-    toolLine: !picker && segments.includes("tools") && calls.current.length > 0,
+    toolLine: !picker && shownSegments.includes("tools") && calls.current.length > 0,
     detail: d !== null,
     hint: hintFor(1) !== null, // whether there is a hint does not depend on the rows left (usualHint)
     menu: menu ? menu.entries.length : null,
@@ -1663,7 +1803,7 @@ export function App({
         </Text>
       )}
       <StatusLine
-        segments={segments}
+        segments={shownSegments}
         info={{
           lead: session.lead.id,
           context: stats.context,

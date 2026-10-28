@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,8 +8,11 @@ import { type Instance, render as renderInk } from "ink";
 import { render } from "ink-testing-library";
 import chalk from "chalk";
 import { Completions } from "openai/resources/chat/completions";
+import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
+import { Models } from "@anthropic-ai/sdk/resources/models";
 import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
+import type { Given } from "../../src/clilib.js";
 import { type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
@@ -19,9 +22,10 @@ import { Tasks } from "../../src/core/tasks.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import { History } from "../../src/tui/history.js";
+import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
-import { settingsDir, shownFile } from "../../src/settings.js";
+import { lastSaved, readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard } from "../../src/tui/clipboard.js";
@@ -97,6 +101,7 @@ async function mount(
     written?: (s: string) => void; // called with each of the screen's writes, as it is made
     bindings?: Bindings; // the table of keys; the default table when not given
     home?: string; // the folder holding the settings file; sharedHome when not given
+    live?: AppProps["live"]; // the settings file as launch read it, which the App then watches; not watched when not given
   } = {},
 ) {
   const bus = new Bus();
@@ -157,6 +162,7 @@ async function mount(
       clipboard={(report) => new Clipboard(write, run, report)}
       bindings={opts.bindings}
       home={opts.home ?? sharedHome}
+      live={opts.live}
     />,
   );
   mounted.push(app);
@@ -4797,5 +4803,287 @@ describe("App's keys from the table of actions", () => {
     const { app, ask } = await mount([], { bindings: table("Confirmation", { escape: null }) });
     void ask("write a.txt");
     await until(app, "Allow write a.txt? [y/n] · n to decline");
+  });
+});
+
+// Release 6 plan, Task 9: edits to the settings file apply in the running session, by the design's table ("The settings
+// file", "When a live change applies").
+describe("App's live settings", () => {
+  const FROM = "(from settings.json)";
+  // fs.watch reported each of 400 writes within 5 ms on this machine (measured 2026-10-28); 2 s is as long as until()
+  // waits (40 ticks of 50 ms), room for a busy machine.
+  const WATCHED = { timeout: 2_000 };
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll("\n", " "); // a long line wraps
+  const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
+  const freshHome = () => mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+  // The home of the test that saves, made private once, as sharedHome is, so its save does not wait for that.
+  const savingHome = freshHome();
+  beforeAll(() => privateDir(settingsDir(savingHome)));
+
+  // A home of the test's own whose settings file holds `file` at launch, and the App watching it; `given`, the
+  // entries a flag or variable gave at launch. `write` changes the file as an editor does; `remove` takes it away.
+  async function watching(
+    turns: ConstructorParameters<typeof FakeProvider>[1],
+    file: Settings,
+    opts: Parameters<typeof mount>[1] = {},
+    given: Given = {},
+    home = freshHome(),
+  ) {
+    const where = path.join(settingsDir(home), "settings.json");
+    mkdirSync(settingsDir(home), { recursive: true });
+    writeFileSync(where, JSON.stringify(file));
+    const m = await mount(turns, { ...opts, home, live: { loaded: { settings: file, warnings: [] }, given } });
+    const write = (data: object | string) => writeFileSync(where, typeof data === "string" ? data : JSON.stringify(data));
+    return { ...m, where, write, remove: () => unlinkSync(where) };
+  }
+
+  it("changes the lead as /lead does, once a turn running ends, and keeps it when the entry is removed", async () => {
+    const lead = new Held();
+    const made: string[] = [];
+    const { app, session, write } = await watching([], {}, { lead, made });
+    await type(app, "go");
+    write({ lead: "ollama:b", mode: "project" });
+    await sees(app, `mode is now project ${FROM}`); // the edit was read while the turn runs
+    expect(flat(app)).not.toContain("lead is now");
+    lead.answer("done");
+    await sees(app, `lead is now fake:b ${FROM}`);
+    expect(session.lead.id).toBe("fake:b");
+    expect(made).toEqual(["ollama:b"]);
+    write({ mode: "project" });
+    await sees(app, '"lead" was removed from settings.json; the lead stays fake:b');
+    expect(session.lead.id).toBe("fake:b");
+  });
+
+  it("says why a lead, fallback or worker the file names cannot be made, and keeps the one before", async () => {
+    const { app, session, write } = await watching([], {}, { leadFails: "no such model" });
+    write({ lead: "x", fallback: "y", worker: "z" });
+    await sees(app, 'settings.json: "lead": no such model');
+    await sees(app, 'settings.json: "fallback": no such model');
+    await sees(app, 'settings.json: "worker": no such model');
+    expect(session.lead.id).toBe("fake:a");
+  });
+
+  it("changes the mode at once, and back to ask when the entry is removed", async () => {
+    const { app, write } = await watching([], {});
+    write({ mode: "project" });
+    await sees(app, `mode is now project ${FROM}`);
+    expect(app.lastFrame()).toContain("perm project");
+    write({});
+    await sees(app, `mode is now ask ${FROM}`);
+    expect(app.lastFrame()).toContain("perm ask");
+  });
+
+  it("refuses a live never, and lets a session started in never go to ask", async () => {
+    const a = await watching([], {});
+    a.write({ mode: "never" });
+    await sees(a.app, '"mode": "never" applies only when a session starts; the mode stays ask');
+    expect(a.app.lastFrame()).toContain("perm ask");
+    const b = await watching([], { mode: "never" }, { mode: "never" });
+    b.write({ mode: "ask" });
+    await sees(b.app, `mode is now ask ${FROM}`);
+    expect(b.app.lastFrame()).toContain("perm ask");
+  });
+
+  // Test 7 too: a change made while a tool runs inside a turn is sent from the request after the tool's result.
+  it("sends a changed effort from the lead's very next request, inside a turn, and none once the entry is removed", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
+    onTestFinished(() => void vi.unstubAllEnvs());
+    const lookup = vi.spyOn(Models.prototype, "retrieve").mockResolvedValue({ max_input_tokens: 1_000 } as never); // no request leaves
+    onTestFinished(() => lookup.mockRestore());
+    const answer = (content: unknown[], stop_reason: string) =>
+      ({
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        model: "claude-test",
+        content,
+        stop_reason,
+        stop_details: null,
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      }) as unknown as BetaMessage;
+    const answers = [
+      answer([{ type: "tool_use", id: "c1", name: "write_file", input: { path: "a.txt", content: "x" } }], "tool_use"),
+      answer([{ type: "text", text: "written" }], "end_turn"),
+      answer([{ type: "text", text: "answered again" }], "end_turn"),
+    ];
+    const efforts: (string | undefined)[] = [];
+    const stream = vi.spyOn(Messages.prototype, "stream").mockImplementation(((params: { output_config?: { effort?: string } }) => {
+      efforts.push(params.output_config?.effort);
+      const next = answers.shift();
+      return { finalMessage: async () => next };
+    }) as never);
+    onTestFinished(() => stream.mockRestore());
+    const { app, ctx, write } = await watching([], { effort: "high" }, { lead: new AnthropicProvider("claude-test", "high") });
+    await type(app, "make a file");
+    await until(app, `Allow write ${path.join(ctx.root, "a.txt")}? [y/n]`);
+    write({ effort: "low" });
+    await sees(app, `effort is now low ${FROM}`);
+    app.stdin.write("y");
+    await until(app, "written");
+    write({});
+    await sees(app, `effort is now the model's default ${FROM}`);
+    await type(app, "again");
+    await until(app, "answered again");
+    expect(efforts).toEqual(["high", "low", undefined]);
+  });
+
+  it("rescues a refusal on a fallback the file names, and none once the entry is removed", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const { app, write } = await watching([refused, refused], {}, { newLead: new FakeProvider("b", [reply("rescued")]) });
+    write({ fallback: "ollama:f" });
+    await sees(app, `fallback is now fake:b ${FROM}`);
+    await type(app, "one");
+    await until(app, "rescued");
+    write({});
+    await sees(app, `fallback is now off ${FROM}`);
+    await type(app, "two");
+    await until(app, "✗ refusal: declined");
+  });
+
+  it("starts later subagents on the worker the file names, and on the lead's model once the entry is removed", async () => {
+    const { app, tasks, write } = await watching([], {});
+    write({ worker: "ollama:w" });
+    await sees(app, `worker is now fake:b ${FROM}`);
+    expect(tasks.start("one", { background: false }).model).toBe("fake:b");
+    write({});
+    await sees(app, `worker is now the lead's model ${FROM}`);
+    expect(tasks.start("two", { background: false }).model).toBe("fake:a");
+  });
+
+  it("holds back new subagents past a lowered maxTasks, stopping none, and starts them once the entry is removed", async () => {
+    const { app, tasks, write } = await watching([], {}, { worker: new Held("fake:w") });
+    tasks.start("one", { background: false });
+    tasks.start("two", { background: false });
+    write({ maxTasks: 1 });
+    await sees(app, `maxTasks is now 1 ${FROM}`);
+    tasks.start("three", { background: false });
+    await vi.waitFor(() => expect(tasks.all.map((t) => t.state)).toEqual(["running", "running", "waiting"]));
+    write({});
+    await sees(app, `maxTasks is now 8 ${FROM}`);
+    await vi.waitFor(() => expect(tasks.all.map((t) => t.state)).toEqual(["running", "running", "running"]));
+  });
+
+  it("shows the status parts the file names at once, and every part once the file is removed", async () => {
+    const { app, write, remove } = await watching([], {});
+    write({ status: ["lead"] });
+    await sees(app, `status is now lead ${FROM}`);
+    expect(app.lastFrame()).not.toContain("perm ask");
+    remove();
+    await sees(app, `status is now ${SEGMENTS.join(", ")} ${FROM}`);
+    expect(app.lastFrame()).toContain("perm ask");
+  });
+
+  it("switches the screen as /screen does, once a turn running ends, without saving, and back once the entry is removed", async () => {
+    const lead = new Held();
+    const { app, write, where } = await watching([], {}, { lead, full: true });
+    await type(app, "go");
+    write({ screen: "classic", mode: "project" });
+    await sees(app, `mode is now project ${FROM}`); // the edit was read while the turn runs
+    expect(flat(app)).not.toContain("screen is now");
+    lead.answer("done");
+    await sees(app, `screen is now classic ${FROM}`);
+    write({ mode: "project" });
+    await sees(app, `screen is now full ${FROM}`);
+    expect(readFileSync(where, "utf8")).toBe('{"mode":"project"}'); // never saved over the user's own text
+  });
+
+  it("says full screen cannot draw here when the file asks for it", async () => {
+    const { app, write } = await watching([], { screen: "classic" }, { fullPossible: false });
+    write({});
+    await sees(app, "Full screen needs a terminal (the output is not one, or CI is set)");
+  });
+
+  it("scrolls by the file's scrollSpeed from the next notch, and by 3 once the entry is removed", async () => {
+    const { app, mouse, write } = await watching([], {}, { full: true, intro: said(80) });
+    const top = () => Number(/^said (\d+)\.$/.exec(shown(app)[0]!)![1]);
+    write({ scrollSpeed: 1 });
+    await sees(app, `scrollSpeed is now 1 ${FROM}`);
+    let from = top();
+    await wheel(mouse, "up");
+    expect(top()).toBe(from - 1);
+    await wheel(mouse, "down", 5); // back to the bottom, following, so the next line shows
+    write({});
+    await sees(app, `scrollSpeed is now 3 ${FROM}`);
+    from = top();
+    await wheel(mouse, "up");
+    expect(top()).toBe(from - 3);
+  });
+
+  it("leaves an entry a flag or variable gave at launch as given, and says so", async () => {
+    const { app, session, write } = await watching([], {}, {}, { lead: "TACHI_LEAD", mode: "--mode" });
+    write({ lead: "ollama:b", mode: "project" });
+    await sees(app, `settings.json's "lead" was left as TACHI_LEAD set it for this session`);
+    await sees(app, `settings.json's "mode" was left as --mode set it for this session`);
+    expect(session.lead.id).toBe("fake:a");
+    expect(app.lastFrame()).toContain("perm ask");
+  });
+
+  // Choice 3: editors such as Notepad empty the file before writing it.
+  it("takes an editor's empty write, then its full text, as one change, with no line resetting the rest", async () => {
+    const { app, write } = await watching([], { mode: "project", maxTasks: 2 }, { mode: "project" });
+    write("");
+    write({ mode: "project", maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    expect(flat(app)).not.toContain("mode is now");
+    expect(flat(app)).not.toContain("maxTasks is now 8");
+  });
+
+  it("keeps the last good settings through a broken edit, says what is wrong once, and applies good text after", async () => {
+    let words = "";
+    try {
+      JSON.parse('{"mode": ');
+    } catch (err) {
+      words = (err as Error).message;
+    }
+    const line = `settings.json is not valid JSON: ${words}; the last good settings still apply`;
+    const { app, write } = await watching([], { mode: "project" }, { mode: "project" });
+    write('{"mode": ');
+    await sees(app, line);
+    expect(app.lastFrame()).toContain("perm project");
+    write('{"mode": '); // the same broken text again
+    write({ mode: "ask" });
+    await sees(app, `mode is now ask ${FROM}`);
+    expect(flat(app).split(line).length - 1).toBe(1);
+  });
+
+  // Release 6 design, "Live edits": Tachikoma's own saves are not counted as changes.
+  it("says nothing of Tachikoma's own save", async () => {
+    const { app, write, where } = await watching([], {}, {}, {}, savingHome);
+    await type(app, "/lead ollama:b");
+    await vi.waitFor(() => expect(readFileSync(where, "utf8")).toContain('"lead": "ollama:b"'), WATCHED);
+    await vi.waitFor(() => expect(lastSaved.has(where)).toBe(false), WATCHED); // the watcher has read the save
+    write({ lead: "ollama:b", mode: "project" });
+    await sees(app, `mode is now project ${FROM}`);
+    expect(flat(app)).not.toContain(`lead is now fake:b ${FROM}`);
+  });
+
+  // Choice 16: on a first launch neither ~/.tachikoma nor the file is there yet.
+  it("makes ~/.tachikoma on a first launch, and applies a settings file written there later", async () => {
+    const home = freshHome();
+    const { app } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    expect(existsSync(settingsDir(home))).toBe(true);
+    writeFileSync(path.join(settingsDir(home), "settings.json"), '{"mode": "project"}');
+    await sees(app, `mode is now project ${FROM}`);
+  });
+
+  it("says a new unknown entry's warning once", async () => {
+    const warning = 'settings.json: "leed" is not a setting; it was left out';
+    const { app, write } = await watching([], {});
+    write({ leed: 1 });
+    await sees(app, warning);
+    write({ leed: 1, mode: "project" });
+    await sees(app, `mode is now project ${FROM}`);
+    expect(flat(app).split(warning).length - 1).toBe(1);
+  });
+
+  // Found at Task 7's code review: full screen hides stderr, where the launch printed them, until the user quits.
+  it("shows the launch's settings warnings in full screen, but not in classic mode, where stderr is seen", async () => {
+    const loaded = readSettings('{"leed": 1}');
+    if ("problem" in loaded) throw new Error(loaded.problem);
+    const warning = 'settings.json: "leed" is not a setting; it was left out';
+    const full = await mount([], { full: true, home: freshHome(), live: { loaded, given: {} } });
+    expect(full.app.lastFrame()).toContain(warning);
+    const classic = await mount([], { home: freshHome(), live: { loaded, given: {} } });
+    expect(classic.app.lastFrame()).not.toContain(warning);
   });
 });

@@ -37,6 +37,10 @@ export interface Settings {
 
 export type Loaded = { settings: Settings; warnings: string[] } | { problem: string };
 
+// The text this process's last save wrote, by file, so the watcher can tell Tachikoma's own save from an edit
+// (release 6 design, "Live edits"); the watcher takes it away once it has read it (settingsWatch.ts).
+export const lastSaved = new Map<string, string>();
+
 // Each value gets its flag's check and words, after the file's and the entry's names (the plan's choice 8); a value of the
 // wrong JSON type is a problem too. An unknown name is a warning and the rest applies. $schema, which editors use to check
 // the file, is allowed and ignored. The lead, fallback and worker are checked by createProvider at use, as flags are.
@@ -100,7 +104,9 @@ export async function saveSetting<K extends keyof Settings>(key: K, value: Requi
     }
     const data = entriesOf(text);
     data[key] = value;
-    writePrivate(file, `${JSON.stringify(data, null, 2)}\n`);
+    const saved = `${JSON.stringify(data, null, 2)}\n`;
+    writePrivate(file, saved);
+    lastSaved.set(file, saved);
   });
 }
 

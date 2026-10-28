@@ -24,10 +24,12 @@ export class Session {
   // Append-only. Earlier messages are never edited, for the same reason the system prompt is fixed.
   readonly messages: Message[] = [];
   #lead: Provider;
+  #fallback: Provider | undefined;
   #running = false;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
+    this.#fallback = opts.fallback;
   }
 
   get lead(): Provider {
@@ -37,6 +39,12 @@ export class Session {
   setLead(provider: Provider): void {
     this.#lead = provider;
     this.opts.bus.emit("lead", provider.id);
+  }
+
+  // From the next refusal; a rescue already under way finishes on the one it started with (release 6 design, "When a
+  // live change applies").
+  setFallback(provider: Provider | undefined): void {
+    this.#fallback = provider;
   }
 
   // An empty `text` starts a turn with only the waiting text, when there is any.
@@ -62,7 +70,7 @@ export class Session {
       let answeredBy = lead;
       let turn = await this.#request(lead, signal);
       if (!turn) return;
-      const rescue = this.opts.fallback;
+      const rescue = this.#fallback;
       if (turn.cutOff?.kind === "refusal" && rescue) {
         // The refused reply is discarded, never stored, so the history stays append-only.
         const refused = { kind: "refusal", attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id } as const;

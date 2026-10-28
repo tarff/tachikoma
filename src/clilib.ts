@@ -109,6 +109,7 @@ export interface Flags {
   worker?: string;
   "max-tasks"?: string;
   status?: string;
+  classic?: boolean;
   "scroll-speed"?: string;
   print?: string;
 }
@@ -131,6 +132,30 @@ export function resolve(flags: Flags, env: NodeJS.ProcessEnv, settings: Settings
     // stops it (the user's choice, 2026-10-27, at release 5's Task 7 review).
     speed: flags.print === undefined ? scrollSpeed(flags["scroll-speed"], env, settings.scrollSpeed) : scrollSpeed(flags["scroll-speed"], {}),
   };
+}
+
+// The entries a flag or TACHI_ variable gave at launch, each with that flag's or variable's name: a live edit of the
+// settings file leaves them as given for the session, and its line names which (release 6 design, "Live edits"). As
+// resolve and screenMode read them: an empty variable is unset, and TACHI_CLASSIC=0 too; an empty --fallback is given.
+export type Given = Partial<Record<keyof Settings, string>>;
+const GIVERS: [keyof Settings, keyof Flags, string?][] = [
+  ["lead", "lead", "TACHI_LEAD"],
+  ["mode", "mode"],
+  ["effort", "effort"],
+  ["fallback", "fallback"],
+  ["worker", "worker", "TACHI_WORKER"],
+  ["maxTasks", "max-tasks"],
+  ["status", "status"],
+  ["screen", "classic", "TACHI_CLASSIC"],
+  ["scrollSpeed", "scroll-speed", "TACHI_SCROLL_SPEED"],
+];
+export function givenBy(flags: Flags, env: NodeJS.ProcessEnv): Given {
+  const given: Given = {};
+  for (const [entry, flag, variable] of GIVERS) {
+    if (flags[flag] !== undefined) given[entry] = `--${flag}`;
+    else if (variable && env[variable] && !(variable === "TACHI_CLASSIC" && env[variable] === "0")) given[entry] = variable;
+  }
+  return given;
 }
 
 // Apart from resolve, since a missing lead is told before any bad flag, as in release 5.

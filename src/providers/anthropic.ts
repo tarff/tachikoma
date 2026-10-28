@@ -105,17 +105,25 @@ export class AnthropicProvider implements Provider {
   readonly id: string;
   #client: Anthropic;
   #window?: number | null;
+  #effort: Effort | undefined;
 
   constructor(
     readonly model: string,
-    private readonly effort?: Effort,
+    effort?: Effort,
   ) {
+    this.#effort = effort;
     // An API key only. Left to itself the SDK also signs in with ANTHROPIC_AUTH_TOKEN or a stored login
     // profile, either of which can carry a subscription token, which the design rules out.
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error("Set ANTHROPIC_API_KEY to use anthropic");
     this.#client = new Anthropic({ apiKey, authToken: null });
     this.id = `anthropic:${model}`;
+  }
+
+  // Read by each request, so a change made while a turn runs its tools is sent from that turn's next request (release 6
+  // design, "When a live change applies": "from the lead's next request").
+  setEffort(effort: Effort | undefined): void {
+    this.#effort = effort;
   }
 
   async complete(req: CompletionRequest): Promise<Turn> {
@@ -144,7 +152,7 @@ export class AnthropicProvider implements Provider {
         tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema as BetaTool["input_schema"] })),
         messages: toAnthropic(messages),
         cache_control: { type: "ephemeral" },
-        ...(this.effort ? { output_config: { effort: this.effort } } : {}),
+        ...(this.#effort ? { output_config: { effort: this.#effort } } : {}),
         ...(FALLBACK_MODELS.has(this.model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
       },
       { signal },

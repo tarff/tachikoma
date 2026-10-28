@@ -49,12 +49,28 @@ export interface TasksOptions {
 export class Tasks {
   readonly all: Task[] = [];
   #inbox: { id: string; text: string; wake: boolean }[] = [];
-  #free: number;
+  #max: number;
+  #free: number; // below 0 while more run than a lowered max allows
+  #worker: () => Provider;
   #line: (() => void)[] = []; // subagents waiting for a free place, in order
   #stops = new Map<string, { stop: AbortController; byUser: boolean }>();
 
   constructor(private readonly opts: TasksOptions) {
+    this.#max = opts.max;
     this.#free = opts.max;
+    this.#worker = opts.worker;
+  }
+
+  // For subagents started after the change; running ones keep theirs (release 6 design, "When a live change applies").
+  setWorker(worker: () => Provider): void {
+    this.#worker = worker;
+  }
+
+  // Lowering it stops none: it only holds back new starts until enough have ended. Raising it starts those waiting.
+  setMax(max: number): void {
+    this.#free += max - this.#max;
+    this.#max = max;
+    this.#wake();
   }
 
   get running(): number {
@@ -63,7 +79,7 @@ export class Tasks {
 
   // `signal` is the lead's turn, for a subagent it waits for: stopping the turn stops it too.
   start(task: string, opts: { description?: string; background: boolean; signal?: AbortSignal }): Task {
-    const provider = this.opts.worker();
+    const provider = this.#worker();
     const id = `t${this.all.length + 1}`;
     const stop = new AbortController();
     opts.signal?.addEventListener("abort", () => stop.abort(), { once: true });
@@ -187,9 +203,15 @@ export class Tasks {
   }
 
   #release(): void {
-    const next = this.#line.shift();
-    if (next) next();
-    else this.#free++;
+    this.#free++;
+    this.#wake();
+  }
+
+  #wake(): void {
+    while (this.#free > 0 && this.#line.length) {
+      this.#free--;
+      this.#line.shift()!();
+    }
   }
 
   #changed(): void {

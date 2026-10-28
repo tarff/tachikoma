@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, expectTypeOf, it } from "vitest";
-import { loadSettings, readSettings, saveSetting, settingsDir, shownFile } from "../src/settings.js";
+import { lastSaved, loadSettings, readSettings, saveSetting, settingsDir, shownFile } from "../src/settings.js";
 
 const read = (data: unknown) => readSettings(JSON.stringify(data));
 const problem = (data: unknown) => {
@@ -178,6 +178,14 @@ describe("saveSetting", () => {
     const home = temp();
     await saveSetting("screen", "classic", home);
     expect(readFileSync(fileOf(home), "utf8")).toBe('{\n  "screen": "classic"\n}\n');
+  });
+
+  // Release 6 plan, Task 9: so the settings watcher can tell Tachikoma's own save from an edit.
+  it("records the text it wrote last, by file", async () => {
+    const home = temp();
+    await saveSetting("screen", "classic", home);
+    await saveSetting("lead", "ollama:a", home);
+    expect(lastSaved.get(fileOf(home))).toBe(readFileSync(fileOf(home), "utf8"));
   });
 
   // As readSettings reads them: past a byte-order mark, and an empty file as {}.

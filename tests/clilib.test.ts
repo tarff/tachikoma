@@ -6,6 +6,7 @@ import {
   approvalQuestion,
   exitSignals,
   fullPossible,
+  givenBy,
   headlessAnswer,
   headlessExit,
   headlessLeftOut,
@@ -279,5 +280,37 @@ describe("resolve", () => {
       '--status must be one of: lead, context, tokens, cost, mode, errors, project, time, tasks, tools (got "nope")',
     );
     expect(() => resolve({ "scroll-speed": "21" }, {}, { scrollSpeed: 2 })).toThrow('--scroll-speed must be a number above 0, up to 20 (got "21")');
+  });
+});
+
+// Release 6 design, "Live edits": an entry a flag or variable gave at launch stays as given, and the line names which.
+describe("givenBy", () => {
+  it("names the flag that gave each entry, or else its variable, an empty variable being unset", () => {
+    const flags = {
+      lead: "a:1",
+      mode: "ask",
+      effort: "low",
+      fallback: "",
+      worker: "w:1",
+      "max-tasks": "2",
+      status: "lead",
+      classic: true,
+      "scroll-speed": "2",
+    };
+    const env = { TACHI_LEAD: "a:2", TACHI_WORKER: "w:2", TACHI_CLASSIC: "1", TACHI_SCROLL_SPEED: "4" };
+    expect(givenBy(flags, env)).toEqual({
+      lead: "--lead",
+      mode: "--mode",
+      effort: "--effort",
+      fallback: "--fallback", // an empty --fallback still wins over the file
+      worker: "--worker",
+      maxTasks: "--max-tasks",
+      status: "--status",
+      screen: "--classic",
+      scrollSpeed: "--scroll-speed",
+    });
+    expect(givenBy({}, env)).toEqual({ lead: "TACHI_LEAD", worker: "TACHI_WORKER", screen: "TACHI_CLASSIC", scrollSpeed: "TACHI_SCROLL_SPEED" });
+    expect(givenBy({}, { TACHI_LEAD: "", TACHI_WORKER: "", TACHI_CLASSIC: "0", TACHI_SCROLL_SPEED: "" })).toEqual({});
+    expect(givenBy({}, {})).toEqual({});
   });
 });

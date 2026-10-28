@@ -1,3 +1,5 @@
+import type { Effort } from "../providers/anthropic.js";
+
 // The conversation format Tachikoma stores. No provider owns it; each adapter converts to and from it.
 
 export type Part =
@@ -57,6 +59,7 @@ export interface Provider {
   readonly id: string; // "<provider>:<model>", e.g. "anthropic:claude-opus-5-5"
   complete(req: CompletionRequest): Promise<Turn>;
   contextWindow?(): Promise<number | null>;
+  setEffort?(effort: Effort | undefined): void; // Anthropic's only, as --effort is
 }
 
 export function errorText(err: unknown): string {
