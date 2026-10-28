@@ -21,7 +21,10 @@ import { type Clipboard, imagePaths, imageReader, pictureFile, readImage } from 
 import { Conversation } from "./Conversation.js";
 import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
 import { type Detail, DetailView, keyRow, opened, searchFor, step as stepMatch } from "./DetailView.js";
-import { apply, change, cutPicture, type Editor, empty, insertPicture, load, move, replace, segmenter } from "./editor.js";
+import {
+  after, apply, change, cutPicture, type Editor, empty, insertPicture, lineEnd, lineStart, load, move, replace,
+  segmenter,
+} from "./editor.js";
 import { editFile, editorCommand, editText, NOT_FOUND } from "./external.js";
 import { History, matches } from "./history.js";
 import { type Mouse, readOut } from "./input.js";
@@ -212,6 +215,18 @@ type Got = { action: string } | { pending: Stroke[] } | { typed: string } | null
 const printable = (s: Stroke) => !s.ctrl && !s.alt && (s.key === "space" || [...s.key].length === 1);
 // The wheel's reports carry no key, so no flag of one is set.
 const NO_KEY = {} as Key;
+// VISUAL's selection, as vim.ts's visual() takes it, to draw (release 6 plan, choice 28): from the anchor to the
+// cursor's character, or in VISUAL LINE whole lines with the line break after the last, so an empty line in it shows.
+// It is widened to the whole of any picture's marker it reaches into, as a delete or yank there takes all of it
+// (vim.ts, cover). None outside VISUAL, so leaving it by any key clears the drawing.
+function visualSelection(v: Vim | null, e: Editor): [number, number] | undefined {
+  if (v?.anchor === undefined || !v.mode.startsWith("VISUAL")) return undefined;
+  const [lo, hi] = [Math.min(v.anchor, e.cursor), Math.max(v.anchor, e.cursor)];
+  const line = v.mode === "VISUAL LINE";
+  let [from, to] = line ? [lineStart(e.text, lo), lineEnd(e.text, hi) + 1] : [lo, after(e.text, hi)];
+  for (const s of e.spans) if (s.from < to && s.to > from) [from, to] = [Math.min(from, s.from), Math.max(to, s.to)];
+  return [from, to];
+}
 
 export function App({
   session,
@@ -1911,6 +1926,7 @@ export function App({
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = detail.current;
   const prompt = search.current ? shown() : editor.current;
+  const highlight = search.current ? undefined : visualSelection(vim.current, prompt);
   const menu = picker || question || d ? null : menuFor(prompt);
   if (menu?.kind !== "path") listed.current = null;
 
@@ -2155,7 +2171,14 @@ export function App({
               {row}
             </Text>
           ))}
-          <Prompt editor={prompt} columns={columns} offset={promptFirst} space={promptSpace} top={promptTop} />
+          <Prompt
+            editor={prompt}
+            columns={columns}
+            offset={promptFirst}
+            space={promptSpace}
+            top={promptTop}
+            selected={highlight}
+          />
           {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} top={menuTop} />}
           <TaskPanel rows={panel} />
         </>

@@ -281,6 +281,20 @@ Each is marked in its task. None approved yet.
     as Task 12 put `/settings` and `/keybindings` there. The keys file's `command:vim` (Task 11)
     needed the `/vim` command itself and its place among the command names, as it runs through
     the same path as a typed `/vim`.
+28. **VISUAL's selection is drawn in the prompt (Task 21; the user's answer, 2026-10-29, to a
+    note from Task 21's spec review: build it in release 6).** As Claude Code 2.1.312 draws it
+    (its cursor's `render`, read 2026-10-29): in reverse colours, its `invert`, the cursor's
+    own style; from the anchor to the cursor's character, that character included; in VISUAL
+    LINE from the first line's start to the last line's end; on each wrapped row the part of it
+    there; an empty line in it as one reversed space; a selected line break at a line's end not
+    drawn. The range is App's, from vim.ts's anchor, mode and the editor's cursor, as vim.ts's
+    `visual()` takes it; vim.ts is unchanged. Leaving VISUAL by any key clears it. Two
+    differences: Claude Code's picture markers are pills with a style of their own, which its
+    selection leaves as they are, but Tachikoma's are plain text, so they are reversed like the
+    rest, and a selection reaching into part of one draws all of it, as `d`, `y` and `c` there
+    take all of it (vim.ts, `cover`). And the terminal's own cursor stays on the cursor's
+    character over the reversed text, as Tachikoma always places it (release 3 design,
+    "Multi-line").
 
 ---
 
@@ -1096,7 +1110,8 @@ drops `v.entered`, so `.` takes what is typed next from its first character (fou
 spec review).
 Claude Code leaves VISUAL on any Ctrl or Meta key, which then does its own action; this task settles
 what Tachikoma does (found at Task 20's spec review; settled in choice 27, with the task's other
-calls: bound keys act; editing keys do not, as Claude Code's text field skips them).
+calls: bound keys act; editing keys do not, as Claude Code's text field skips them). The prompt
+draws VISUAL's selection in reverse colours (choice 28, the user's answer).
 
 **Tests:** `/vim` on and off with the line, in this window only; `dw` written in one read deletes a
 word; a paste in NORMAL inserts; Esc in INSERT during a turn goes to NORMAL and the turn goes on;

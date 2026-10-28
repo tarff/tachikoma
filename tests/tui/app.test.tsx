@@ -5696,6 +5696,49 @@ describe("App's vim mode", () => {
     expect(app.lastFrame()).toContain("› on\n");
   });
 
+  // The plan's choice 28: VISUAL's selection in reverse colours, as Claude Code 2.1.312 draws it.
+  it("draws VISUAL's selection in reverse colours, the cursor's character in it, and clears it on leaving", async () => {
+    await inColour(async () => {
+      const { app } = await mount([]);
+      await normal(app, "one two");
+      await press(app, "0", "v");
+      expect(reversed(app)).toContain("o");
+      await press(app, "l", "l");
+      expect(reversed(app)).toContain("one");
+      await press(app, ESC);
+      expect(app.lastFrame()).toContain("-- NORMAL --");
+      expect(reversed(app)).not.toContain("one");
+      await press(app, "v", "h", CTRL_T); // leaving on a Ctrl key clears it too
+      expect(app.lastFrame()).toContain("-- NORMAL --");
+      expect(reversed(app)).not.toContain("ne");
+    });
+  });
+
+  it("draws VISUAL LINE's selection over whole lines", async () => {
+    await inColour(async () => {
+      const { app } = await mount([]);
+      await type(app, "/vim");
+      await until(app, "-- INSERT --");
+      await press(app, "one two", "\n", "six", ESC, "h", "V"); // a line feed is Ctrl+J, a new line
+      expect(reversed(app)).toContain("six");
+      expect(reversed(app)).not.toContain("one two");
+      await press(app, "k");
+      expect(reversed(app)).toEqual(expect.arrayContaining(["one two", "six"]));
+    });
+  });
+
+  it("draws the whole of a picture's marker the selection reaches into, as a delete there takes all of it", async () => {
+    await inColour(async () => {
+      const { app } = await mount([]);
+      await type(app, "/vim");
+      await until(app, "-- INSERT --");
+      await press(app, "see ", PICTURE, ESC, "0", "v", "l", "l", "l", "l", "l"); // to the marker's I
+      expect(reversed(app)).toContain("see [Image #1]");
+      await press(app, "d");
+      expect(app.lastFrame()).not.toContain("[Image #1]");
+    });
+  });
+
   it("keeps a picture's span through a vim edit, so the message carries the picture", async () => {
     const pictures = new Pictures();
     const { app, session } = await mount([reply("seen")], { pictures });
