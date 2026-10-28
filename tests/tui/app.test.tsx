@@ -5311,6 +5311,7 @@ describe("App's pictures", () => {
     release();
     await until(app, "Send again without the pictures? [y/n] · Esc to decline");
     expect(app.lastFrame()).toContain("✗ provider: 400 invalid image\n");
+    expect(app.lastFrame()).not.toContain("Allow Send"); // a plain question, not a permission one
     await press(app, "y");
     await until(app, "next one");
     expect(app.lastFrame()).toContain("Send again without the pictures: allowed\nPictures are left out for fake:a from now on.\nseen");
@@ -5328,6 +5329,7 @@ describe("App's pictures", () => {
     await press(app, "queued", "\r");
     release();
     await until(app, "Send again without the pictures? [y/n] · Esc to decline");
+    expect(app.lastFrame()).not.toContain("Allow Send");
     await press(app, "n");
     await until(app, "next one");
     expect(app.lastFrame()).toContain("Send again without the pictures: declined");
