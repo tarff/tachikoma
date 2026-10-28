@@ -188,9 +188,11 @@ Each is marked in its task. None approved yet.
     Task 6's build, where these keys did nothing outside the prompt; user: "All three everywhere").
 20. **Keys match the table exactly (Task 6),** with no second try without a modifier, so keys that
     acted only because release 4 ignored a held modifier do nothing: Ctrl+Up and Alt+Up, Alt+Enter,
-    Esc with Alt, Shift+Up and Shift+Down in the model list in full screen, and a wheel notch with
-    Shift, Ctrl or Alt held. Classic mode still reads Shift+Up and Shift+Down as Up and Down, and
-    Ctrl+Home and Ctrl+End as Home and End (found at Task 6's build; user: "Exact match").
+    Shift+Up and Shift+Down in the model list in full screen, and a wheel notch with Shift, Ctrl or
+    Alt held. Classic mode still reads Shift+Up and Shift+Down as Up and Down, and Ctrl+Home and
+    Ctrl+End as Home and End (found at Task 6's build; user: "Exact match"). Esc with Alt is still
+    read as Esc, as in release 5, since it is what two fast Escs look like outside the kitty
+    protocol, so a keys file cannot bind `alt+escape` (found at Task 6's spec review).
 
 ---
 
@@ -1003,7 +1005,9 @@ launch only, the files out of the tools' reach), "Keys" (the file, contexts, the
 question, history keeping only words), vim mode (on, the hint, Esc), the OpenAI table's date;
 known limits (pictures not in prompt history; Ctrl+V eaten by Windows Terminal; `never` from the
 file means every plain `tachi` starts unchecked); the release list's release 5 "(done)" and 6
-"(this release)". The design gains "As built" for every change from it.
+"(this release)". The design gains "As built" for every change from it. cli.tsx's `--help` text
+still names Esc, Ctrl-C and Ctrl+T as fixed keys: say they can be rebound in the keys file (found
+at Task 6's spec review).
 
 **The terminal checklist** (the user runs it once, in Windows Terminal, PowerShell):
 1. `tachi` with only `"lead"` in `~/.tachikoma/settings.json` starts; `/settings`, change

@@ -833,6 +833,9 @@ export function App({
   const route = (kind: Phase["kind"], field: boolean, ch: string, key: Key): Got => {
     let stroke = strokeOf(ch, key);
     if (!stroke) return null;
+    // Two Escs read together reach Ink as one Esc with Alt (Ink's parse-keypress.js), which release 5 took as Esc; the
+    // kitty protocol, which marks each key with its eventType, sends them apart (choice 20).
+    if (stroke.key === "escape" && stroke.alt && key.eventType === undefined) stroke = { ...stroke, alt: false };
     if (!fullNow.current && stroke.shift && !stroke.ctrl && !stroke.alt && (stroke.key === "up" || stroke.key === "down")) stroke = { ...stroke, shift: false };
     const contexts = contextsOf(kind, fullNow.current);
     const at = Date.now();
@@ -1083,7 +1086,9 @@ export function App({
   const onMouse = (m: Mouse) => {
     // `ended` never comes here (useInput says why), and is checked as the first phase. Printed out: a report read with its
     // `[`, as for keys.
-    const { phase } = happening();
+    // A wheel notch asks for the menu, as a key does (useInput), so Autocomplete comes first while one is open.
+    const h = happening(m.kind === "wheel" ? () => menuFor(editor.current) !== null : undefined);
+    const { phase } = h;
     if (!fullNow.current || phase.kind === "ended" || phase.kind === "printed") return;
     const { columns, viewHeight } = frame.current;
     if (frame.current.detail !== detail.current) return;
@@ -1096,9 +1101,14 @@ export function App({
     // them in the model list too. scroll:lineUp and scroll:lineDown move by the notch, as release 5's wheel did;
     // another action acts as its key would.
     if (m.kind === "wheel") {
-      const got = table.press({ key: `wheel${m.wheel}`, ctrl: m.ctrl, alt: m.alt, shift: m.shift }, contextsOf(phase.kind, true, true), Date.now());
-      if (!got) return;
-      if ("pending" in got || (got.action !== "scroll:lineUp" && got.action !== "scroll:lineDown")) return onKey(happening(), pressed(got), "", NO_KEY);
+      const stroke = { key: `wheel${m.wheel}`, ctrl: m.ctrl, alt: m.alt, shift: m.shift };
+      const contexts = contextsOf(phase.kind, true, true);
+      const at = Date.now();
+      // A notch that drops a waiting chord is then pressed as if none had waited, as a key is (route).
+      const waited = table.waiting(at) !== null;
+      const got = table.press(stroke, contexts, at) ?? (waited ? table.press(stroke, contexts, at) : null);
+      if (!got) return void (waited && rerender((n) => n + 1));
+      if ("pending" in got || (got.action !== "scroll:lineUp" && got.action !== "scroll:lineDown")) return onKey(h, pressed(got), "", NO_KEY);
       const step = notch(wheel.current, scrollSpeed, got.action === "scroll:lineUp" ? -1 : 1);
       wheel.current = step.carry;
       const from = firstRow(p.rows, p.view.current, viewHeight);
@@ -1393,7 +1403,8 @@ export function App({
   // turn, which takes the keys, takes the row away while it is open.
   // Each hint names the key bound to its action (keys.ts, named), in the words release 5 wrote; Ctrl-C and Ctrl-D are
   // reserved (bindings.ts, RESERVED), and written as release 5 wrote them. A chord's first strokes take the row first,
-  // in the table's spelling, until the next key or 3 s (release 6 design, "The keys file").
+  // in the table's spelling, until the next key or 3 s (release 6 design, "The keys file"); then the exit warning, as
+  // Ctrl-D twice exits from the detail view and Ctrl+R's search too (choice 19).
   const searching = !d && search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
   const said = (key: string | undefined, words: string) => key !== undefined && `${key} ${words}`;
   const hints = (...parts: (string | false | null)[]) => parts.filter(Boolean).join(" · ");
@@ -1403,6 +1414,8 @@ export function App({
   const usualHint = (left: number) =>
     chord
       ? `${keyText(chord)} ...`
+      : exitKey
+      ? `Press ${exitKey} again to exit`
       : d && !picker
       ? keyRow(d, table)
       : searching
@@ -1413,8 +1426,6 @@ export function App({
           said(keyOf("historySearch:accept", "HistorySearch", "tab"), "edit"),
           "Ctrl-C cancel",
         )
-      : exitKey
-        ? `Press ${exitKey} again to exit`
         : picker || question
           ? null
           : menu

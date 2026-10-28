@@ -4611,4 +4611,62 @@ describe("App's keys from the table of actions", () => {
     await press(app, "\u0004", "y"); // gone: y answers nothing
     expect(answered).toBe(false);
   });
+
+  // Two Escs read together reach Ink as one Esc with Alt, which release 5 took as Esc (Task 6's spec review).
+  const ESC_ESC = "\u001b\u001b";
+
+  it("stops a turn on two Escs read together", async () => {
+    const { app } = await mount([], { lead: hanging() });
+    await type(app, "hi");
+    await until(app, "Esc to stop");
+    await press(app, ESC_ESC);
+    await gone(app, "Esc to stop");
+  });
+
+  it("closes the detail view on two Escs read together", async () => {
+    const { app } = await mount([], { full: true });
+    await press(app, "\u000f");
+    expect(shown(app)[0]).toBe("No turn yet, so no tool calls to show.");
+    await press(app, ESC_ESC);
+    expect(shown(app)[0]).toBe("");
+    expect(shown(app)).toContain("›");
+  });
+
+  it("declines a question on two Escs read together", async () => {
+    const { app, ask } = await mount([]);
+    const answer = ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await press(app, ESC_ESC);
+    expect(await answer).toBe(false);
+    await until(app, "write a.txt: declined");
+  });
+
+  it("warns at the first Ctrl-D in the detail view and in Ctrl+R's search", async () => {
+    const { app } = await mount([], { full: true });
+    await press(app, "\u000f", "\u0004");
+    expect(shown(app)[0]).toBe("No turn yet, so no tool calls to show.");
+    expect(app.lastFrame()).toContain("\nPress Ctrl-D again to exit\n");
+    await press(app, "q", "\u0012", "\u0004");
+    expect(app.lastFrame()).toContain("\nPress Ctrl-D again to exit\n");
+    expect(app.lastFrame()).not.toContain("search:");
+  });
+
+  it("presses a wheel notch in a menu's contexts, Autocomplete first", async () => {
+    const { app, mouse } = await mount([], { full: true, bindings: table("Autocomplete", { wheeldown: "autocomplete:next" }) });
+    await press(app, "/", "e");
+    await until(app, "  /exit  Quit");
+    await wheel(mouse, "down");
+    await press(app, "\t");
+    expect(app.lastFrame()).toContain("› /exit");
+  });
+
+  it("scrolls on a wheel notch that drops a waiting chord, and takes the chord from the hint row", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(60) });
+    const bottom = shown(app)[0];
+    await press(app, CTRL_X);
+    expect(app.lastFrame()).toContain("\nctrl+x ...\n");
+    await wheel(mouse, "up");
+    expect(shown(app)[0]).not.toBe(bottom);
+    expect(app.lastFrame()).not.toContain("ctrl+x");
+  });
 });
