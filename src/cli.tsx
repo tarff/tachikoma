@@ -15,6 +15,7 @@ import {
   headlessLeftOut,
   instructionsLine,
   jsonLine,
+  leadOf,
   MAX_TASKS,
   prose,
   resolve,
@@ -146,21 +147,23 @@ if (parsed.help) {
   process.exit(0);
 }
 
-// Release 6 design, "The settings file": a broken file stops the launch as a bad flag does; its warnings come first.
+// Release 6 design, "The settings file": a broken file stops the launch as a bad flag does; its warnings come first. Then
+// release 5's order: no lead, a blank -p, --raw, then the flags (found at Task 7's spec review).
 const loaded = loadSettings();
 if ("problem" in loaded) fail(loaded.problem);
 for (const warning of loaded.warnings) console.error(warning);
+const leadSpec = leadOf(parsed, process.env, loaded.settings);
+if (!leadSpec) fail(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${shownFile()}.\n\n${HELP}`);
+if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
+if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works only with -p, and not with --json, which is already exact");
+if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
 let options;
 try {
   options = resolve(parsed, process.env, loaded.settings);
 } catch (err) {
   fail(errorText(err));
 }
-const { lead: leadSpec, mode, effort, maxTasks, segments, speed } = options;
-if (!leadSpec) fail(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${shownFile()}.\n\n${HELP}`);
-if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
-if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works only with -p, and not with --json, which is already exact");
-if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
+const { mode, effort, maxTasks, segments, speed } = options;
 
 const root = process.cwd();
 const errorFile = path.join(root, ".tachikoma", "errors.jsonl");

@@ -157,6 +157,23 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.stderr).toContain(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${file}.`);
   });
 
+  // Release 5's order, found at Task 7's spec review: no lead, a blank -p, --raw, then the flags; the settings file's own
+  // problem, new in release 6, before them all.
+  it("says what is wrong in release 5's order, the settings file's own problem first", () => {
+    let r = tachi("--mode", "x");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^No lead model given\./);
+    r = tachi("--lead", "ollama:none", "-p", "", "--mode", "x");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^-p needs a prompt\n/);
+    r = tachi("--lead", "ollama:none", "-p", "hi", "--raw", "--mode", "x");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^warning: --raw prints the answer exactly as the model wrote it; .*\n--mode must be one of: /);
+    r = tachi("--mode", "x", homeWith('{"effort": "x"}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^settings\.json: "effort" must be one of: /);
+  });
+
   it("stops on a broken settings file, with its problem", () => {
     let r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"mode": "x"}'));
     expect(r.code).toBe(1);
