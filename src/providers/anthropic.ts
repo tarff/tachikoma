@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaContentBlock, BetaContentBlockParam, BetaMessage, BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { type CompletionRequest, connectReason, type Message, marker, type Part, type Prepared, type Provider, type Turn } from "../core/types.js";
-import { LIMITS, prepare } from "./pictures.js";
+import { fitted, LIMITS } from "./pictures.js";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -156,7 +156,8 @@ export class AnthropicProvider implements Provider {
     }
   }
 
-  async #complete({ system, messages, tools, signal, shrunk, leftOut }: CompletionRequest): Promise<Turn> {
+  async #complete(req: CompletionRequest): Promise<Turn> {
+    const { system, messages, tools, signal } = req;
     const effort = this.#effort; // read once, so the request measured is the request sent
     const params = (prepared: Prepared) => ({
       model: this.model,
@@ -171,9 +172,7 @@ export class AnthropicProvider implements Provider {
       ...(FALLBACK_MODELS.has(this.model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
     });
     const limits = { ...LIMITS.anthropic, maxCount: await this.#maxPictures(messages) };
-    const sent = await prepare(messages, limits, (p) => Buffer.byteLength(JSON.stringify(params(p))), shrunk ?? new Map());
-    if (sent.leftOut) leftOut?.(sent.leftOut, sent.over);
-    const stream = this.#client.beta.messages.stream(params(sent.prepared), { signal });
+    const stream = this.#client.beta.messages.stream(await fitted(req, limits, params), { signal });
     return fromAnthropic(await stream.finalMessage());
   }
 

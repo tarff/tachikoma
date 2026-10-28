@@ -3,12 +3,20 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import sharp from "sharp";
 import { onTestFinished } from "vitest";
 import { Bus, type ErrorEvent } from "../src/core/bus.js";
 import { type Mode, PermissionGate } from "../src/core/permissions.js";
 import type { CompletionRequest, Message, Part, Provider, Turn, Usage } from "../src/core/types.js";
 import { LocalExecutor } from "../src/exec/local.js";
 import type { ToolContext } from "../src/tools/tool.js";
+
+// An animated GIF of two frames, white then black, made in memory: two frames the same would be stored as one.
+export function twoFrameGif(width = 4, height = 4): Promise<Buffer> {
+  const frames = Buffer.alloc(width * height * 2 * 3);
+  frames.fill(255, 0, width * height * 3);
+  return sharp(frames, { raw: { width, height: height * 2, channels: 3, pageHeight: height } }).gif().toBuffer();
+}
 
 export const usage: Usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 };
 export const reply = (text: string): Turn => ({ parts: [{ type: "text", text }], usage });

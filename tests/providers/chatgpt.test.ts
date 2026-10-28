@@ -7,7 +7,7 @@ import type { ChatGPTAuth } from "../../src/auth/access.js";
 import { Session } from "../../src/core/session.js";
 import { type Message, type Picture, type Prepared, ProviderError, type ToolSpec } from "../../src/core/types.js";
 import { ChatGPTProvider, fromStream, toolsFor, toResponses, USAGE_LIMIT } from "../../src/providers/chatgpt.js";
-import { Bus, collectErrors, tempContext } from "../helpers.js";
+import { Bus, collectErrors, tempContext, twoFrameGif } from "../helpers.js";
 
 const tools: ToolSpec[] = [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: { path: { type: "string" } } } }];
 const usage = { input_tokens: 100, input_tokens_details: { cached_tokens: 30, cache_write_tokens: 10 }, output_tokens: 20, output_tokens_details: { reasoning_tokens: 5 }, total_tokens: 120 };
@@ -215,11 +215,9 @@ describe("ChatGPTProvider", () => {
     for (const refused of ["temperature", "max_output_tokens", "previous_response_id", "metadata", "user", "prompt"]) expect(body).not.toHaveProperty(refused);
   });
 
-  it("sends an animated GIF as its first frame in PNG, made by sharp in memory", async () => {
+  it("sends an animated GIF as its first frame in PNG", async () => {
     const api = await fakeApi((_, res) => sse(res, [done(text), completed]));
-    const frames = Buffer.alloc(4 * 8 * 3);
-    frames.fill(255, 0, 4 * 4 * 3); // a white frame, then a black one: two frames the same would be stored as one
-    const gif = await sharp(frames, { raw: { width: 4, height: 8, channels: 3, pageHeight: 4 } }).gif().toBuffer();
+    const gif = await twoFrameGif();
     const messages: Message[] = [{ role: "user", parts: [{ type: "image", id: 1, mediaType: "image/gif", data: gif }] }];
     await new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete({ ...request, messages });
     const input = api.seen[0]!.body.input as { content: { type: string; image_url?: string }[] }[];

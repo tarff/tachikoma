@@ -1,5 +1,5 @@
 import sharp from "sharp";
-import type { Image, Message, Picture, Prepared } from "../core/types.js";
+import type { CompletionRequest, Image, Message, Picture, Prepared } from "../core/types.js";
 
 // Each picture shrunk to its provider's documented limits, request by request, from the original the conversation keeps
 // (release 6 design, "Pictures": "Shrinking", "The whole request" and the picture limits table, read 2026-10-28).
@@ -62,44 +62,45 @@ export const LIMITS: Record<"anthropic" | "openai" | "kimi" | "openrouter" | "ol
 
 // Shrunk copies for the session, keyed by the picture's number and the limits it was shrunk to, so a copy made to 8000
 // a side is made again at 2000 once a request holds more than 20 pictures (design, "What is sent, request by request").
+// The copies made to 8000 then go unused for the rest of the session. That is accepted, with nothing evicted: the
+// session keeps every original in memory anyway (plan, choice 9).
 export type Cache = Map<string, Promise<Picture>>;
 
 // What one picture must fit, whatever the request around it.
-interface Shape {
-  maxBase64?: number;
-  side?: number;
-  fit?: [number, number];
-  formats: Format[];
-  stillGif?: true;
-}
+type Shape = Pick<Limits, "maxBase64" | "fit" | "formats" | "stillGif"> & { side?: number };
 
 const base64Length = (bytes: number) => 4 * Math.ceil(bytes / 3);
 
 // The original when it already fits; otherwise a copy, scaled to the side and the fit, then by the square root of
 // allowed over actual size, measured again until it fits, since the bytes follow the pixel area (design, "Shrinking").
 // A format the provider does not list becomes PNG, and an animated GIF its first frame in PNG where the provider
-// refuses animation (release 6 plan, choices 12 and 23). A picture sharp cannot read goes as it is, so the provider
-// says whether it takes it, and a refusal there is asked about like any other (plan, choice 23 and Task 18).
+// refuses animation (release 6 plan, choices 12 and 23); a picture that keeps its format keeps its frames.
 async function shrink(p: Image, to: Shape): Promise<Picture> {
   try {
     return await copy(p, to);
   } catch {
+    // Any failure: a picture sharp cannot read (cut off, not a picture, or over sharp's pixel limit), or one that
+    // cannot fit even at one pixel. It goes as it is, so the provider says whether it takes it, and a refusal there is
+    // asked about like any other (plan, choice 23 and Task 18).
     return { mediaType: p.mediaType, data: p.data };
   }
 }
 
+// sharp's defaults, relied on here (node_modules/sharp/dist/constructor.mjs, 0.35.5): JPEG and WebP are written at
+// quality 80, and a picture of more than 268,402,689 pixels (0x3FFF × 0x3FFF) fails to read, so it is sent as it is.
 async function copy(p: Image, to: Shape): Promise<Picture> {
   const meta = await sharp(p.data).metadata();
-  const animated = p.mediaType === "image/gif" && (meta.pages ?? 1) > 1;
-  const mediaType = to.formats.includes(p.mediaType) && !(animated && to.stillGif) ? p.mediaType : "image/png";
-  // Measured as shown, after any turn its camera recorded, since a copy loses that record.
+  const pages = meta.pages ?? 1;
+  const mediaType = to.formats.includes(p.mediaType) && !(p.mediaType === "image/gif" && pages > 1 && to.stillGif) ? p.mediaType : "image/png";
+  const frames = mediaType === p.mediaType && pages > 1;
+  // Measured as shown, after any turn its camera recorded, since a copy loses that record. One frame's size.
   let { width, height } = meta.autoOrient;
   // The box stands as the picture does (plan, choice 23).
   const box = to.fit && (width >= height ? [Math.max(...to.fit), Math.min(...to.fit)] : [Math.min(...to.fit), Math.max(...to.fit)]);
   const scale = Math.min(1, to.side ? to.side / Math.max(width, height) : 1, box ? Math.min(box[0]! / width, box[1]! / height) : 1);
   const fits = (bytes: number) => to.maxBase64 === undefined || base64Length(bytes) <= to.maxBase64;
   const encode = () =>
-    sharp(p.data, { autoOrient: true })
+    sharp(p.data, { autoOrient: true, animated: frames })
       .resize(width, height, { fit: "fill" })
       .toFormat(mediaType.slice("image/".length) as "png" | "jpeg" | "gif" | "webp")
       .toBuffer();
@@ -110,6 +111,7 @@ async function copy(p: Image, to: Shape): Promise<Picture> {
     data = await encode();
   }
   while (!fits(data.length)) {
+    if (width === 1 && height === 1) throw new Error("over the limit even at one pixel");
     const by = Math.sqrt(to.maxBase64! / base64Length(data.length));
     width = Math.max(1, Math.floor(width * by));
     height = Math.max(1, Math.floor(height * by));
@@ -143,14 +145,39 @@ export async function prepare(
   // The oldest first, newest kept (design, "The whole request").
   const caps = new Set<string>();
   let leftOut = 0;
-  for (const p of images) {
-    const tooMany = limits.maxCount !== undefined && images.length - leftOut > limits.maxCount;
-    const tooBig = !tooMany && limits.maxRequest !== undefined && measure(prepared) > limits.maxRequest;
-    if (!tooMany && !tooBig) break;
-    const cap = tooMany ? `${limits.maxCount!.toLocaleString("en-US")} pictures` : `${limits.maxRequest! / 1_000_000} MB`;
+  // Leaves out the oldest picture still sent; how many bytes that saves at least: its base64 for its note.
+  const leaveOut = (cap: string) => {
     caps.add(cap);
-    prepared.set(p.id, `[Image #${p.id} left out: the request was over ${limits.name}'s ${cap}]`);
-    leftOut++;
+    const p = images[leftOut++]!;
+    const note = `[Image #${p.id} left out: the request was over ${limits.name}'s ${cap}]`;
+    const sent = prepared.get(p.id)!;
+    prepared.set(p.id, note);
+    return (typeof sent === "string" ? sent.length : base64Length(sent.data.length)) - note.length;
+  };
+  if (limits.maxCount !== undefined) {
+    while (images.length - leftOut > limits.maxCount) leaveOut(`${limits.maxCount.toLocaleString("en-US")} pictures`);
+  }
+  if (limits.maxRequest !== undefined && leftOut < images.length) {
+    // Measured once, then estimated as each picture goes, then measured again: measuring once a picture costs a whole
+    // request's serialising each time. When the estimate falls short, one more goes at a time.
+    const cap = `${limits.maxRequest / 1_000_000} MB`;
+    let size = measure(prepared);
+    if (size > limits.maxRequest) {
+      while (size > limits.maxRequest && leftOut < images.length) size -= leaveOut(cap);
+      size = measure(prepared);
+      while (size > limits.maxRequest && leftOut < images.length) {
+        leaveOut(cap);
+        size = measure(prepared);
+      }
+    }
   }
   return { prepared, leftOut, over: `${limits.name}'s ${[...caps].join(" and ")}` };
+}
+
+// The body of one request, with its pictures fitted to `limits` and the session told of any left out. `body` builds the
+// request as the adapter sends it, from a set of prepared pictures; it is serialised to measure the request.
+export async function fitted<T>(req: CompletionRequest, limits: Limits, body: (prepared: Prepared) => T): Promise<T> {
+  const sent = await prepare(req.messages, limits, (p) => Buffer.byteLength(JSON.stringify(body(p))), req.shrunk ?? new Map());
+  if (sent.leftOut) req.leftOut?.(sent.leftOut, sent.over);
+  return body(sent.prepared);
 }

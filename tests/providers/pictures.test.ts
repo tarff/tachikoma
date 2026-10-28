@@ -9,7 +9,7 @@ import type { Image, Message, Picture } from "../../src/core/types.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
 import { type Cache, LIMITS, type Limits, prepare } from "../../src/providers/pictures.js";
-import { Bus, tempContext } from "../helpers.js";
+import { Bus, tempContext, twoFrameGif } from "../helpers.js";
 
 // Every picture here is made by sharp in memory; none is written to disk.
 const base64 = (p: Picture) => p.data.toString("base64").length;
@@ -111,10 +111,7 @@ describe("prepare", () => {
   });
 
   it("sends an animated GIF to OpenAI as its first frame in PNG, a still GIF as it is, and to Kimi as it is", async () => {
-    const frames = Buffer.alloc(4 * 8 * 3);
-    frames.fill(255, 0, 4 * 4 * 3); // a white frame, then a black one: two frames the same would be stored as one
-    const gif = sharp(frames, { raw: { width: 4, height: 8, channels: 3, pageHeight: 4 } }).gif();
-    const animated: Picture = { mediaType: "image/gif", data: await gif.toBuffer() };
+    const animated: Picture = { mediaType: "image/gif", data: await twoFrameGif() };
     expect((await size(animated)).pages).toBe(2);
     const still: Picture = { mediaType: "image/gif", data: await solid(4, 4).gif().toBuffer() };
     const { prepared } = await run([user(image(1, animated), image(2, still))], LIMITS.openai);
@@ -127,6 +124,18 @@ describe("prepare", () => {
     const toKimi = (await run([user(image(1, animated))], LIMITS.kimi)).prepared.get(1) as Picture;
     expect(toKimi).toEqual(animated);
     expect((await size(toKimi)).pages).toBe(2);
+  });
+
+  it("keeps an animated GIF's frames when it is shrunk and stays a GIF", async () => {
+    const wide: Picture = { mediaType: "image/gif", data: await twoFrameGif(5000, 100) };
+    const sent = (await run([user(image(1, wide))], LIMITS.kimi)).prepared.get(1) as Picture;
+    expect(await size(sent)).toMatchObject({ format: "gif", width: 4096, pages: 2 });
+  });
+
+  it("sends a picture as it is when even one pixel would be over the limit", async () => {
+    const p = await png(20, 20);
+    const { prepared } = await run([user(image(1, p))], { name: "Nowhere", maxBase64: 10, formats: ["image/png"] });
+    expect(prepared.get(1)).toEqual(p);
   });
 
   it("leaves pictures for OpenAI as they are, which documents no limit for one picture", async () => {
@@ -146,17 +155,42 @@ describe("prepare", () => {
     expect(leftOut).toBe(0);
   });
 
-  it("leaves out the oldest pictures first, each as a note, until the request is within the cap", async () => {
-    const small = await png(10, 10);
-    // Each picture still sent counts as 15 MB, so two fit Anthropic's 32 MB.
-    const measure = (prepared: ReadonlyMap<number, Picture | string>) => [...prepared.values()].filter((p) => typeof p !== "string").length * 15_000_000;
-    const messages = [user(image(1, small)), user(image(2, small), image(3, small), image(4, small))];
+  // A request measured as the rest of it plus each picture's base64 or note: with the rest at 32 MB less two and a half
+  // pictures, two pictures fit and three do not.
+  const sized = async (count: number) => {
+    const each: Picture = { mediaType: "image/png", data: await noise(80, 80) };
+    const rest = 32_000_000 - 2.5 * base64(each);
+    const calls: number[] = [];
+    const measure = (prepared: ReadonlyMap<number, Picture | string>) => {
+      const size = rest + [...prepared.values()].reduce((n, p) => n + (typeof p === "string" ? p.length : base64(p)), 0);
+      calls.push(size);
+      return size;
+    };
+    return { each, calls, measure, messages: [user(image(1, each)), user(...Array.from({ length: count - 1 }, (_, i) => image(i + 2, each)))] };
+  };
+
+  it("leaves out the oldest pictures first, each as a note, until the request is within the cap, measuring it twice", async () => {
+    const { each, calls, measure, messages } = await sized(10);
     const { prepared, leftOut } = await prepare(messages, LIMITS.anthropic, measure, new Map());
-    expect(prepared.get(1)).toBe("[Image #1 left out: the request was over Anthropic's 32 MB]");
-    expect(prepared.get(2)).toBe("[Image #2 left out: the request was over Anthropic's 32 MB]");
-    expect(prepared.get(3)).toMatchObject({ data: small.data });
-    expect(prepared.get(4)).toMatchObject({ data: small.data });
+    for (let id = 1; id <= 8; id++) expect(prepared.get(id)).toBe(`[Image #${id} left out: the request was over Anthropic's 32 MB]`);
+    expect(prepared.get(9)).toMatchObject({ data: each.data });
+    expect(prepared.get(10)).toMatchObject({ data: each.data });
+    expect(leftOut).toBe(8);
+    expect(calls).toHaveLength(2); // once as asked, once with the notes the estimate chose: never once a picture
+  });
+
+  it("leaves out one more at a time when the request comes out larger than the estimate", async () => {
+    const { calls, measure: measured, messages } = await sized(3);
+    // Over the cap until only one picture is left, so leaving one out saves less than the estimate counts on.
+    const measure = (prepared: ReadonlyMap<number, Picture | string>) => {
+      const sent = [...prepared.values()].filter((p) => typeof p !== "string").length;
+      return sent > 1 ? 32_000_001 : measured(prepared);
+    };
+    const { prepared, leftOut } = await prepare(messages, LIMITS.anthropic, measure, new Map());
+    expect([prepared.get(1), prepared.get(2)]).toEqual([1, 2].map((id) => `[Image #${id} left out: the request was over Anthropic's 32 MB]`));
+    expect(prepared.get(3)).not.toBeTypeOf("string");
     expect(leftOut).toBe(2);
+    expect(calls).toHaveLength(1);
   });
 });
 

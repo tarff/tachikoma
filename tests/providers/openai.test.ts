@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Session } from "../../src/core/session.js";
 import type { Message, Picture, Prepared } from "../../src/core/types.js";
 import { toAnthropic } from "../../src/providers/anthropic.js";
-import { fromOpenAI, OpenAIProvider, toOpenAI } from "../../src/providers/openai.js";
+import { fromOpenAI, OpenAIProvider, PRESETS, toOpenAI } from "../../src/providers/openai.js";
+import { LIMITS } from "../../src/providers/pictures.js";
 import { Bus, collectErrors, tempContext } from "../helpers.js";
 
 function completion(message: Record<string, unknown>, finish_reason = "stop", usage?: Record<string, unknown>): ChatCompletion {
@@ -203,6 +204,10 @@ describe("OpenAIProvider", () => {
   it("rejects names every object inherits", () => {
     expect(() => new OpenAIProvider("constructor", "m")).toThrow('Unknown OpenAI-format provider "constructor"');
     expect(() => new OpenAIProvider("toString", "m")).toThrow('Unknown OpenAI-format provider "toString"');
+  });
+
+  it("has picture limits for every provider it can lead", () => {
+    for (const kind of Object.keys(PRESETS)) expect(Object.hasOwn(LIMITS, kind), kind).toBe(true);
   });
 
   it("keeps a refused request's HTTP status on the session's error event", async () => {

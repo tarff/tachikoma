@@ -14,7 +14,7 @@ import {
   type Turn,
 } from "../core/types.js";
 import { dataUrl, inOrder, parseArgs } from "./openai.js";
-import { LIMITS, prepare } from "./pictures.js";
+import { fitted, LIMITS } from "./pictures.js";
 
 // A ChatGPT plan leading, through OpenAI's Responses API (release 2 design, "Requests"; OpenAI's
 // "models and inference" and "preview limitations" pages, read 2026-10-23).
@@ -259,7 +259,8 @@ export class ChatGPTProvider implements Provider {
     return found;
   }
 
-  async complete({ system, messages, tools, signal, shrunk, leftOut }: CompletionRequest): Promise<Turn> {
+  async complete(req: CompletionRequest): Promise<Turn> {
+    const { system, messages, tools, signal } = req;
     // Read again after the model check, so a logout while the model list was fetched is seen, and a
     // switch to another account is checked against that account's list.
     let login = await this.auth.token(signal);
@@ -283,10 +284,9 @@ export class ChatGPTProvider implements Provider {
       stream: true as const,
       store: false,
     });
-    const sent = await prepare(messages, LIMITS.chatgpt, (p) => Buffer.byteLength(JSON.stringify(body(p))), shrunk ?? new Map());
-    if (sent.leftOut) leftOut?.(sent.leftOut, sent.over);
+    const sent = await fitted(req, LIMITS.chatgpt, body);
     try {
-      const { data: stream, request_id } = await client.responses.create(body(sent.prepared), { signal }).withResponse();
+      const { data: stream, request_id } = await client.responses.create(sent, { signal }).withResponse();
       return await fromStream(dropped(stream, request_id), tools, request_id);
     } catch (err) {
       if (signal?.aborted) throw err; // Ctrl-C, passed on as it is (the SDK's abort error is an APIError)
