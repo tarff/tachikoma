@@ -254,10 +254,15 @@ describe("imageReader", () => {
     expect(reader.output(Buffer.from(PNG.toString("base64")))).toEqual(PNG);
   });
 
-  it("on macOS asks osascript for the clipboard as PNG, which answers in hex", () => {
+  it("on macOS asks osascript for the clipboard as PNG, which answers in hex, a failed coercion (-1700) caught", () => {
     const reader = imageReader("darwin", {})!;
-    expect(reader).toMatchObject({ command: "osascript", args: ["-e", "get the clipboard as «class PNGf»"], name: "osascript" });
+    expect(reader).toMatchObject({
+      command: "osascript",
+      args: ["-e", "try", "-e", "get the clipboard as «class PNGf»", "-e", "on error number -1700", "-e", "end try"],
+      name: "osascript",
+    });
     expect(reader.output(Buffer.from(`«data PNGf${PNG.toString("hex").toUpperCase()}»\n`, "utf8"))).toEqual(PNG);
+    expect(reader.output(Buffer.from("\n"))).toEqual(Buffer.alloc(0));
   });
 
   it("on Linux is wl-paste with Wayland, otherwise xclip with X, each asked for PNG and giving its bytes as they are", () => {
@@ -317,6 +322,51 @@ describe("readImage", () => {
     const reader: Reader = { command: "tachikoma-no-such-tool-7f3a", args: [], output: (b) => b, name: "xclip" };
     await expect(readImage(reader)).resolves.toEqual({ failed: "xclip not found" });
   });
+
+  // The real tools are not run: each stand-in writes the tool's own words, from its source (clipboard.ts, imageReader),
+  // and exits with 1, as each does.
+  const linux = (env: NodeJS.ProcessEnv, stderr: string): Reader => ({
+    ...standIn(`process.stderr.write(${JSON.stringify(stderr)}); process.exit(1)`),
+    none: imageReader("linux", env)!.none,
+  });
+  const WAYLAND = { WAYLAND_DISPLAY: "wayland-0" };
+  const X = { DISPLAY: ":0" };
+
+  it.each([
+    "Nothing is copied\n",
+    "No selection\n",
+    "No suitable type of content copied\n",
+    'Clipboard content is not available as requested type "image/png"\n' +
+      'Use "wl-paste --list-types" to view available types.\n',
+  ])("is none when wl-paste says the clipboard holds no PNG: %j", async (stderr) => {
+    await expect(readImage(linux(WAYLAND, stderr))).resolves.toBe("none");
+  });
+
+  it.each([
+    "Error: target image/png not available\n",
+    "xclip: Error: There is no owner for the CLIPBOARD selection\n",
+    "xclip: Error: Firefox cannot convert CLIPBOARD selection to target 'image/png'\n",
+  ])("is none when xclip says the clipboard holds no PNG: %j", async (stderr) => {
+    await expect(readImage(linux(X, stderr))).resolves.toBe("none");
+  });
+
+  it("still fails for anything else either tool says, and for those words from another tool", async () => {
+    const failed = (why: string) => ({ failed: `stand-in failed: ${why}` });
+    const wrong = [
+      [WAYLAND, "Failed to connect to a Wayland server"],
+      [WAYLAND, "Nothing is copied here"],
+      [X, "Error: target image/jpeg not available"],
+      [X, "Nothing is copied"],
+    ] as const;
+    for (const [env, why] of wrong) await expect(readImage(linux(env, `${why}\n`))).resolves.toEqual(failed(why));
+    const noPatterns = { ...linux(X, "Nothing is copied\n"), none: undefined };
+    await expect(readImage(noPatterns)).resolves.toEqual(failed("Nothing is copied"));
+  });
+
+  it("is none when osascript answers nothing, as after the caught -1700", async () => {
+    const reader = { ...standIn('process.stdout.write("\\n")'), output: imageReader("darwin", {})!.output };
+    await expect(readImage(reader)).resolves.toBe("none");
+  });
 });
 
 // Release 6 design, "From pasted paths".
@@ -336,6 +386,46 @@ describe("imagePaths", () => {
     expect(imagePaths("look at this")).toBeNull();
     expect(imagePaths("/a/one.png.txt")).toBeNull();
     expect(imagePaths(" \n ")).toBeNull();
+  });
+
+  it("on macOS and Linux, undoes a dragged path's backslashes, a doubled one left as one", () => {
+    expect(imagePaths("/Users/me/My\\ Pic.png", "darwin")).toEqual(["/Users/me/My Pic.png"]);
+    expect(imagePaths("/home/me/a\\\\b\\ c.png", "linux")).toEqual(["/home/me/a\\b c.png"]);
+  });
+
+  it("on Windows, keeps every backslash, as a path's separator", () => {
+    expect(imagePaths("C:\\Users\\me\\pic.png", "win32")).toEqual(["C:\\Users\\me\\pic.png"]);
+    expect(imagePaths("C:\\Users\\me\\My\\ Pic.png", "win32")).toEqual(["C:\\Users\\me\\My\\ Pic.png"]);
+  });
+
+  it("on macOS and Linux, keeps the backslashes of a Windows path, as WSL gives it", () => {
+    expect(imagePaths("C:\\Users\\me\\pic.png", "linux")).toEqual(["C:\\Users\\me\\pic.png"]);
+    expect(imagePaths('"C:\\x y\\a.png"', "linux")).toEqual(["C:\\x y\\a.png"]);
+    expect(imagePaths("\\\\server\\share\\a.png", "linux")).toEqual(["\\\\server\\share\\a.png"]);
+  });
+
+  it("takes several on a line, split at spaces outside quotes and escapes, as a drag of several writes them", () => {
+    const mac = ["/Users/me/My Pic.png", "/Users/me/b.png"];
+    expect(imagePaths("/Users/me/My\\ Pic.png /Users/me/b.png ", "darwin")).toEqual(mac);
+    expect(imagePaths("'/home/me/a b.png' '/home/me/c.png' ", "linux")).toEqual(["/home/me/a b.png", "/home/me/c.png"]);
+    expect(imagePaths('"C:\\x y\\a.png" "C:\\b.png"', "win32")).toEqual(["C:\\x y\\a.png", "C:\\b.png"]);
+    expect(imagePaths("C:\\a.png C:\\b.jpg", "win32")).toEqual(["C:\\a.png", "C:\\b.jpg"]);
+    expect(imagePaths("a.png b.png", "linux")).toEqual(["a.png", "b.png"]);
+    expect(imagePaths("a.png b.png", "win32")).toEqual(["a.png", "b.png"]);
+  });
+
+  it("takes a whole line with spaces as one path when its words are not all pictures", () => {
+    expect(imagePaths("C:\\My Pictures\\a.png", "win32")).toEqual(["C:\\My Pictures\\a.png"]);
+    expect(imagePaths("/home/me/a b.png", "linux")).toEqual(["/home/me/a b.png"]);
+    // One path, which App finds is no file, so the paste stays text.
+    expect(imagePaths("look at a.png", "linux")).toEqual(["look at a.png"]);
+  });
+
+  it("is null when the words are not all pictures and the line is no picture; words run together are one", () => {
+    expect(imagePaths("a.png notes.txt", "linux")).toBeNull();
+    expect(imagePaths('"/a/b.png" notes', "darwin")).toBeNull();
+    expect(imagePaths('"/a/one.png""/b/two.png"', "linux")).toEqual(['/a/one.png""/b/two.png']);
+    expect(imagePaths('"C:\\a.png" "C:\\b.txt"', "win32")).toBeNull();
   });
 });
 

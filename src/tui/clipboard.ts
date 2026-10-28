@@ -71,13 +71,14 @@ export function runTool(tool: Tool): (text: string) => Promise<void> {
     });
 }
 
-// A reader of the clipboard's picture (release 6 design, "Pictures"): its command, and how its output becomes the PNG's
-// bytes.
+// A reader of the clipboard's picture (release 6 design, "Pictures"): its command, how its output becomes the PNG's
+// bytes, and the first line of stderr with which it fails when the clipboard holds no PNG, if it has one.
 export interface Reader {
   command: string;
   args: string[];
   output: (out: Buffer) => Buffer;
   name: string;
+  none?: RegExp;
 }
 
 // Where the Windows reader reads the clipboard. Exported so a test can put a picture of its own in its place, leaving
@@ -89,6 +90,18 @@ export const GET_IMAGE = "[Windows.Forms.Clipboard]::GetImage()";
 // that mode (.NET's Clipboard class docs), the PNG written as base64, as text, with nothing written for no picture; a
 // failure is written as its message alone, as systemTool's is. macOS's osascript answers with the data in AppleScript's
 // own form, «data PNGf» and the bytes in hex. Linux as systemTool chooses its tool.
+//
+// No PNG on the clipboard is "none", not a failure, on every system. On macOS the coercion to PNG fails with error
+// -1700 ("a failure while performing a coercion", AppleScript Language Guide, "Error Numbers and Error Messages", B-3),
+// which the script itself catches, `on error number -1700` handling that number alone (the guide's "try" statement),
+// so osascript answers nothing; its man page: "Multiple -e options may be given to build up a multi-line script." On
+// Linux the tool's own words, each tool exiting with 1: wl-paste's bail() and complain_no_suitable_type()
+// (wl-clipboard's src/wl-paste.c and src/util/misc.h, "No selection" and "No suitable type of content copied" in
+// v2.0.0 and v2.1.0, "Nothing is copied" and the first line 'Clipboard content is not available as requested type
+// "image/png"' from v2.2.0 to v2.3.0 and master, 2026-09-15); xclip's doOut() in 0.13, its last release ("Error:
+// target image/png not available"), and errconvsel() in its xcprint.c since (master, 2025-01-09), which names the
+// window holding the clipboard. Claude Code 2.1.312 asks first instead, its checkImage, and treats any failure there as
+// no picture, so it is no source for telling the two apart.
 export function imageReader(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): Reader | null {
   if (platform === "win32") {
     const read =
@@ -110,16 +123,33 @@ export function imageReader(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): 
   const bytes = (out: Buffer) => out;
   if (platform === "darwin") {
     const output = (out: Buffer) => Buffer.from(/PNGf([0-9a-f]*)/i.exec(out.toString("latin1"))?.[1] ?? "", "hex");
-    return { command: "osascript", args: ["-e", "get the clipboard as «class PNGf»"], output, name: "osascript" };
+    const script = ["try", "get the clipboard as «class PNGf»", "on error number -1700", "end try"];
+    return { command: "osascript", args: script.flatMap((line) => ["-e", line]), output, name: "osascript" };
   }
-  if (platform === "linux" && env.WAYLAND_DISPLAY) return { command: "wl-paste", args: ["--type", "image/png"], output: bytes, name: "wl-paste" };
+  // Each tool's words for no PNG, as a whole first line, each a pattern.
+  const words = (...lines: string[]) => new RegExp(`^(?:${lines.join("|")})$`);
+  if (platform === "linux" && env.WAYLAND_DISPLAY) {
+    const none = words(
+      "No selection",
+      "No suitable type of content copied",
+      "Nothing is copied",
+      'Clipboard content is not available as requested type "image/png"',
+    );
+    return { command: "wl-paste", args: ["--type", "image/png"], output: bytes, name: "wl-paste", none };
+  }
   const xclip = ["-selection", "clipboard", "-t", "image/png", "-o"];
-  if (platform === "linux" && env.DISPLAY) return { command: "xclip", args: xclip, output: bytes, name: "xclip" };
+  const none = words(
+    "Error: target image/png not available",
+    "xclip: Error: There is no owner for the CLIPBOARD selection",
+    "xclip: Error: .* cannot convert CLIPBOARD selection to target 'image/png'",
+  );
+  if (platform === "linux" && env.DISPLAY) return { command: "xclip", args: xclip, output: bytes, name: "xclip", none };
   return null;
 }
 
-// One run of the reader: the PNG it gives (each reader asks for PNG, imageReader), "none" when it gives nothing, or why
-// it failed, in runTool's words. It never throws, so every read ends in one of these (pictures.ts, Pictures.set).
+// One run of the reader: the PNG it gives (each reader asks for PNG, imageReader), "none" when it gives nothing or
+// fails saying there is no PNG, or why it failed, in runTool's words. It never throws, so every read ends in one of
+// these (pictures.ts, Pictures.set).
 export function readImage(tool: Reader): Promise<Read> {
   return new Promise((resolve) => {
     const child = spawn(tool.command, tool.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: commandEnv() });
@@ -132,22 +162,53 @@ export function readImage(tool: Reader): Promise<Read> {
     });
     child.on("close", (code, signal) => {
       const why = stderr.trim().split(/\r?\n/)[0] || (code === null ? `stopped by ${signal}` : `exit code ${code}`);
-      if (code !== 0) return resolve({ failed: `${tool.name} failed: ${why}` });
+      if (code !== 0) return resolve(tool.none?.test(why) ? "none" : { failed: `${tool.name} failed: ${why}` });
       const data = tool.output(Buffer.concat(out));
       resolve(data.length ? { mediaType: "image/png", data } : "none");
     });
   });
 }
 
-// A paste that is only paths to pictures, one a line, with or without quotes (release 6 design, "From pasted paths"):
-// the paths, or null. Whether the files are there is the caller's to ask.
-export function imagePaths(paste: string): string[] | null {
-  const lines = paste
-    .split(/\r\n?|\n/)
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((l) => /^(["'])(.*)\1$/.exec(l)?.[2] ?? l);
-  return lines.length && lines.every((l) => /\.(png|jpe?g|gif|webp)$/i.test(l)) ? lines : null;
+// One word of a line of dragged paths: quoted, or a run of other characters ending at a space, taking a backslash and
+// the character after it together except on Windows, where a backslash is the path's separator.
+const WORD = /\s*("[^"]*"|'[^']*'|(?:\\.|[^\s"'\\])+)(?=\s|$)/y;
+const WINDOWS_WORD = /\s*("[^"]*"|'[^']*'|[^\s"']+)(?=\s|$)/y;
+
+function wordsOf(line: string, word: RegExp): string[] | null {
+  const words: string[] = [];
+  for (word.lastIndex = 0; word.lastIndex < line.length; ) {
+    const m = word.exec(line);
+    if (!m) return null;
+    words.push(m[1]!);
+  }
+  return words;
+}
+
+// A paste that is only paths to pictures (release 6 design, "From pasted paths"): the paths, or null. Whether the files
+// are there is the caller's to ask. Each path as Claude Code 2.1.312 reads one (its macOS, Linux and Windows builds,
+// read 2026-10-29): its outer quotes go; on macOS and Linux a backslash then gives the character after it, a doubled
+// one leaving one, except in a path starting with a drive letter or \\ (Claude Code's exception under WSL, which
+// writes Windows' paths so; here on any system but Windows, as no other has such paths), while its Windows build
+// leaves backslashes as they are; and a picture's path ends in .png, .jpg, .jpeg, .gif or .webp. Several paths come
+// on one line with a space between them, each quoted or with its own spaces escaped (Claude Code's paste handler,
+// dut(), splits a line at a space before a path, quoted or not), so a line whose words are all pictures is those. Any
+// other line is one path, as dut() also takes a line whose spaces are not escaped, and the paste is text unless every
+// line is pictures.
+export function imagePaths(paste: string, platform: NodeJS.Platform = process.platform): string[] | null {
+  const windows = platform === "win32";
+  const path = (word: string) => {
+    const p = /^(["'])(.*)\1$/.exec(word)?.[2] ?? word;
+    return windows || /^(?:[A-Za-z]:\\|\\\\)/.test(p) ? p : p.replace(/\\(.)/g, "$1");
+  };
+  const picture = (p: string) => /\.(png|jpe?g|gif|webp)$/i.test(p);
+  const paths: string[] = [];
+  for (const line of paste.split(/\r\n?|\n/).map((l) => l.trim()).filter(Boolean)) {
+    const words = wordsOf(line, windows ? WINDOWS_WORD : WORD)?.map(path);
+    if (words?.every(picture)) paths.push(...words);
+    else if (picture(path(line))) paths.push(path(line));
+    else return null;
+  }
+  return paths.length ? paths : null;
 }
 
 const startsWith = (data: Buffer, at: number, bytes: number[] | string) => {
