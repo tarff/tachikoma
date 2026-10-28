@@ -17,7 +17,7 @@ export function shownFile(platform: NodeJS.Platform = process.platform): string 
 }
 
 // Every entry is optional; one that is absent keeps the default. The names follow the flags, or Claude Code's where it
-// has the same setting. editorMode, vimInsertModeRemaps and editor are read and checked now, and used by later tasks.
+// has the same setting.
 export interface Settings {
   lead?: string;
   mode?: Mode;
