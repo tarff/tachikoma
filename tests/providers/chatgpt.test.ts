@@ -4,7 +4,7 @@ import type { ResponseStreamEvent } from "openai/resources/responses/responses";
 import { describe, expect, it, onTestFinished } from "vitest";
 import type { ChatGPTAuth } from "../../src/auth/access.js";
 import { Session } from "../../src/core/session.js";
-import { type Message, type Prepared, ProviderError, type ToolSpec } from "../../src/core/types.js";
+import { type Message, type Picture, type Prepared, ProviderError, type ToolSpec } from "../../src/core/types.js";
 import { ChatGPTProvider, fromStream, toolsFor, toResponses, USAGE_LIMIT } from "../../src/providers/chatgpt.js";
 import { Bus, collectErrors, tempContext } from "../helpers.js";
 
@@ -62,7 +62,10 @@ describe("toResponses", () => {
   });
 
   it("sends a note in a left-out picture's place as text with no label, and items as before when no picture is left to send", () => {
-    const one: Prepared = new Map([[1, note(1)]]);
+    const one: Prepared = new Map<number, Picture | string>([
+      [1, note(1)],
+      [2, { mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }],
+    ]);
     expect(toResponses([{ role: "user", parts }], one)[1]).toEqual({
       role: "user",
       content: [
@@ -70,7 +73,7 @@ describe("toResponses", () => {
         { type: "input_text", text: note(1) },
         { type: "input_text", text: " with " },
         { type: "input_text", text: "[Image #2]" },
-        { type: "input_image", image_url: "data:image/jpeg;base64,/9j/" },
+        { type: "input_image", image_url: "data:image/png;base64,iVBORw==" },
       ],
     });
     const both: Prepared = new Map([[1, note(1)], [2, note(2)]]);
@@ -262,7 +265,11 @@ describe("ChatGPTProvider", () => {
       [(res) => json(res, 503, { detail: "Direct routing is off" }), "ChatGPT plan use is unavailable right now (HTTP 503). Direct routing is off. Your sign-in is kept; try again later. OpenAI's request ID: req_9.", 503],
       [(res) => json(res, 503, { error: { code: "server_overloaded", message: "Busy", type: "x", param: null } }), "ChatGPT plan use is unavailable right now (HTTP 503, server_overloaded). Busy. Your sign-in is kept; try again later. OpenAI's request ID: req_9.", 503],
       [(res) => json(res, 429, { error: { code: "rate_limit_exceeded", message: "Slow down", type: "x", param: null } }), "OpenAI refused the request (HTTP 429, rate_limit_exceeded). Slow down. Try again later. OpenAI's request ID: req_9.", 429],
-      [(res) => json(res, 403, { detail: "Region not supported" }), "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9.", 403],
+      [
+        (res) => json(res, 403, { detail: "Region not supported" }),
+        "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9.",
+        403,
+      ],
       [(res) => json(res, 400, { error: { code: "too_long", message: "Your input is too long.", type: "x", param: "input" } }), "OpenAI refused the request (HTTP 400, too_long, about input). Your input is too long. OpenAI's request ID: req_9.", 400],
       [(res) => res.writeHead(502, { "content-type": "text/html" }).end("<html>Bad gateway</html>"), "OpenAI could not complete the request (HTTP 502).", 502],
     ];
@@ -284,11 +291,11 @@ describe("ChatGPTProvider", () => {
   it("keeps the request ID of a reply that fails part way through", async () => {
     const failed = { type: "response.failed", response: { error: { code: "server_error", message: "Something broke" } } };
     const api = await fakeApi((_, res) => sse(res, [done(text), failed]));
-    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error("OpenAI could not complete the request (server_error). Something broke. OpenAI's request ID: req_9."));
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new ProviderError("OpenAI could not complete the request (server_error). Something broke. OpenAI's request ID: req_9."));
     // A named `event: error`, which the SDK throws itself.
     const limit = { type: "error", code: "subscription_sharing_usage_limit_exceeded", message: "limit", param: null };
     const limited = await fakeApi((_, res) => sse(res, [done(text), limit]));
-    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, limited.base).complete(request)).rejects.toThrow(new Error(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`));
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, limited.base).complete(request)).rejects.toThrow(new ProviderError(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`));
   });
 
   it("says a connection that drops part way through a reply dropped", async () => {
@@ -321,7 +328,11 @@ describe("ChatGPTProvider", () => {
         "This ChatGPT account cannot use its plan here (subscription_sharing_user_not_eligible). Not for this workspace. Use openai:<model> with an API key instead. OpenAI's request ID: req_9.",
         403,
       ],
-      [(res) => json(res, 403, { detail: "Region not supported" }), "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9.", 403],
+      [
+        (res) => json(res, 403, { detail: "Region not supported" }),
+        "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9.",
+        403,
+      ],
       [(res) => res.writeHead(500).end(), "OpenAI could not complete the request (HTTP 500).", 500],
     ];
     for (const [list, message, status] of cases) {

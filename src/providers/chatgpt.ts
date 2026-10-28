@@ -114,14 +114,15 @@ export function toResponses(messages: Message[], prepared: Prepared = new Map())
     // picture's data inline (release 6 design, "In the conversation"); without one each text is its own item, so a
     // request whose pictures were all left out is sent as before them.
     const pieces = inOrder(m, prepared);
-    if (pieces.some((s) => typeof s !== "string")) {
+    const texts = pieces.filter((s) => typeof s === "string");
+    if (texts.length < pieces.length) {
       // No `detail`: the API then takes "auto" (the openai package's ResponseInputImage, 7.30.0), though the type
       // marks it required.
       const content = pieces.map((s) =>
         typeof s === "string" ? { type: "input_text" as const, text: s } : ({ type: "input_image", image_url: dataUrl(s) } as ResponseInputImage),
       );
       out.push({ role: "user", content });
-    } else for (const s of pieces) if (typeof s === "string") out.push({ role: "user", content: s });
+    } else for (const s of texts) out.push({ role: "user", content: s });
   }
   return out;
 }

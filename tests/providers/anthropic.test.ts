@@ -3,7 +3,7 @@ import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/mes
 import { Models } from "@anthropic-ai/sdk/resources/models";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Session } from "../../src/core/session.js";
-import type { Message, Prepared } from "../../src/core/types.js";
+import type { Message, Picture, Prepared } from "../../src/core/types.js";
 import { AnthropicProvider, fromAnthropic, toAnthropic } from "../../src/providers/anthropic.js";
 import { Bus, collectErrors, tempContext } from "../helpers.js";
 

@@ -3,7 +3,7 @@ import type { ChatCompletion } from "openai/resources/chat/completions";
 import { Completions } from "openai/resources/chat/completions";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Session } from "../../src/core/session.js";
-import type { Message, Prepared } from "../../src/core/types.js";
+import type { Message, Picture, Prepared } from "../../src/core/types.js";
 import { toAnthropic } from "../../src/providers/anthropic.js";
 import { fromOpenAI, OpenAIProvider, toOpenAI } from "../../src/providers/openai.js";
 import { Bus, collectErrors, tempContext } from "../helpers.js";
@@ -35,8 +35,7 @@ describe("toOpenAI", () => {
     ]);
   });
 
-  // The shape is `image_url` with the data inline, on OpenAI's images-vision guide
-  // (developers.openai.com/api/docs/guides/images-vision).
+  // The shape is `image_url` with the data inline (the openai package's ChatCompletionContentPartImage, 7.30.0).
   const png = { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } as const;
   const jpeg = { type: "image", id: 2, mediaType: "image/jpeg", data: Buffer.from([0xff, 0xd8, 0xff]) } as const;
   const tool = { type: "tool_result", callId: "c1", output: "ok", isError: false } as const;
@@ -62,7 +61,10 @@ describe("toOpenAI", () => {
   });
 
   it("sends a note in a left-out picture's place as text with no label, and one string when no picture is left to send", () => {
-    const one: Prepared = new Map([[1, note(1)]]);
+    const one: Prepared = new Map<number, Picture | string>([
+      [1, note(1)],
+      [2, { mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }],
+    ]);
     expect(toOpenAI("s", [{ role: "user", parts }], "openai", one)[2]).toEqual({
       role: "user",
       content: [
@@ -70,7 +72,7 @@ describe("toOpenAI", () => {
         { type: "text", text: note(1) },
         { type: "text", text: " with " },
         { type: "text", text: "[Image #2]" },
-        { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/" } },
+        { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw==" } },
       ],
     });
     const both: Prepared = new Map([[1, note(1)], [2, note(2)]]);

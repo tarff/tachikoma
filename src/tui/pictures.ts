@@ -2,13 +2,12 @@
 // ends, never on disk. A picture's number is taken when its read starts, so its marker goes into the prompt at once and
 // pictures keep the order they were asked for; the picture fills in under that number when the read ends ("While a read
 // runs").
-import type { Part } from "../core/types.js";
+import { marker, type Part, type Picture } from "../core/types.js";
 import type { Span } from "./editor.js";
 
-export type Picture = Pick<Extract<Part, { type: "image" }>, "mediaType" | "data">;
 export type Read = Picture | "none" | { failed: string };
 
-export { marker } from "../core/types.js";
+export { marker, type Picture } from "../core/types.js";
 
 export class Pictures {
   #last = 0;
