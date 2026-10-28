@@ -272,7 +272,7 @@ so "who takes this key?" is asked of one thing.
 ```ts
 // Who takes the keys: the order App's useInput decides in today (App.tsx 786-846), first match winning.
 export type Phase =
-  | { kind: "ended" } | { kind: "printed" } | { kind: "switching" } | { kind: "picker" } | { kind: "question" }
+  | { kind: "ended" } | { kind: "printed" } | { kind: "picker" } | { kind: "question" }
   | { kind: "detail"; searching: boolean } | { kind: "search" } | { kind: "menu" } | { kind: "prompt" };
 // What is running, beside whoever has the keys: a turn can run under the detail view, a search, a menu or `[`, and
 // next() and Ctrl-C need to know (found at the plan's second review).
@@ -283,6 +283,12 @@ export function now(s: PhaseInputs): Now;
 `PhaseInputs` holds the current values (from the refs). `useInput`, `usePaste`, `next()` and the
 mouse handler call `now()` instead of reading the flags one by one. The refs stay where they are
 (their writers do not change); only the reading is gathered.
+
+**Changed at Task 2's build:** a `/screen` switch is no phase, since no key, paste, queue or mouse
+check reads `switching` today (keys act in the mode it goes to); the inputs keep what is drawn
+(`picker`, `question`) apart from what is open (`listOpen`, the questions waiting), as keys follow
+the screen and the queue what is open; and the menu is found only when nothing before it takes
+the key, as finding an `@` menu can list a folder.
 
 **Tests:**
 1. `now()` gives each phase for its inputs, and the precedence: printed beats everything but
@@ -414,7 +420,7 @@ Commit: `feat: keys as named actions in Claude Code's format, with chords`.
 | search (Ctrl+R) | HistorySearch, Global | Scroll, after HistorySearch |
 | detail | Transcript, Global | Scroll, after Transcript |
 | picker | Select, Global | none |
-| printed, switching, ended | none (keys go where they go today) | none |
+| printed, ended (a /screen switch is no phase: keys act in the mode it goes to, Task 2) | none (keys go where they go today) | none |
 
 So PgUp, PgDn, Ctrl+Home and Ctrl+End keep scrolling in a search and in the detail view, as they
 do today (found at the plan's second review); in classic mode Scroll is never in force, and the
