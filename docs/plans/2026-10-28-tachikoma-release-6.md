@@ -278,7 +278,9 @@ Each is marked in its task. None approved yet.
     and says the line; other words get `Usage: /vim, /vim on, /vim off` in red, as `/tasks`'s
     mistakes do. `/vim` is in the `/` menu ("Switch vim mode on or off in this window") and the
     unknown command's list, after `/keybindings` (`src/tui/menus.ts`, beyond the task's files),
-    which the keys file's `command:vim` (Task 11) needed too.
+    as Task 12 put `/settings` and `/keybindings` there. The keys file's `command:vim` (Task 11)
+    needed the `/vim` command itself and its place among the command names, as it runs through
+    the same path as a typed `/vim`.
 
 ---
 
@@ -1094,7 +1096,7 @@ drops `v.entered`, so `.` takes what is typed next from its first character (fou
 spec review).
 Claude Code leaves VISUAL on any Ctrl or Meta key, which then does its own action; this task settles
 what Tachikoma does (found at Task 20's spec review; settled in choice 27, with the task's other
-calls).
+calls: bound keys act; editing keys do not, as Claude Code's text field skips them).
 
 **Tests:** `/vim` on and off with the line, in this window only; `dw` written in one read deletes a
 word; a paste in NORMAL inserts; Esc in INSERT during a turn goes to NORMAL and the turn goes on;

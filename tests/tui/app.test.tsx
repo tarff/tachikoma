@@ -5658,7 +5658,7 @@ describe("App's vim mode", () => {
     expect(app.lastFrame()).toContain("› six\n");
   });
 
-  it("goes to NORMAL on Esc in INSERT with chat:cancel rebound to Ctrl+Q", async () => {
+  it("goes to NORMAL on Esc in INSERT with chat:cancel rebound to Ctrl+Q, which stops the turn from INSERT", async () => {
     const { app } = await mount([], { lead: hanging(), bindings: table("Chat", { escape: null, "ctrl+q": "chat:cancel" }) });
     await type(app, "/vim");
     await until(app, "-- INSERT --");
@@ -5667,6 +5667,11 @@ describe("App's vim mode", () => {
     await press(app, ESC);
     expect(app.lastFrame()).toContain("-- NORMAL --");
     expect(app.lastFrame()).toContain("Ctrl+Q to stop");
+    await press(app, "i");
+    expect(app.lastFrame()).toContain("-- INSERT --");
+    await press(app, "\u{11}"); // Ctrl+Q: chat:cancel stops the turn, not a switch of mode
+    await gone(app, "Ctrl+Q to stop");
+    expect(app.lastFrame()).toContain("-- INSERT --");
   });
 
   // As Claude Code's vim hook does: any Ctrl or Meta key in VISUAL goes to NORMAL first; its text field then takes no
