@@ -70,6 +70,10 @@ export function parseKeys(text: string): Stroke[] | { problem: string } {
   return strokes;
 }
 
+// The slash commands that take nothing after them, which a key bound to `command:<name>` runs (release 6 plan,
+// Task 11).
+export const KEY_COMMANDS = ["exit", "errors", "model", "screen", "tasks", "vim", "settings", "keybindings"];
+
 // One spelling of a key, the table's and the help's: "ctrl+alt+shift+k", strokes joined by a space.
 export const keyText = (strokes: Stroke[]): string =>
   strokes.map((s) => [s.ctrl && "ctrl", s.alt && "alt", s.shift && "shift", s.key].filter(Boolean).join("+")).join(" ");

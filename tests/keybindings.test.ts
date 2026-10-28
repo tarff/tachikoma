@@ -125,6 +125,17 @@ describe("readKeybindings", () => {
     expect(table.press(stroke("ctrl+c"), [...CHAT], 0)).toEqual({ action: "app:interrupt" });
   });
 
+  it("names no context whose block is empty in the skipped line", () => {
+    expect(problemsOf({ bindings: [{ context: "Footer", bindings: {} }, ...chat({ "meta+o": "chat:fastMode" }).bindings] })).toEqual([
+      "keybindings.json: 1 entry skipped: Tachikoma has no chat:fastMode",
+    ]);
+  });
+
+  // Choice 21: an action Tachikoma has is taken in any context, doing nothing where the screen does not use it.
+  it("takes an action of Tachikoma's in a context that does not use it", () => {
+    expect(problemsOf(chat({ "alt+t": "transcript:top" }))).toEqual([]);
+  });
+
   it("takes command: with the commands that take nothing after them, and no other", () => {
     const names = ["exit", "errors", "model", "screen", "tasks", "vim", "settings", "keybindings"];
     const { table, problems } = read(chat(Object.fromEntries(names.map((n, i) => [`alt+${i}`, `command:${n}`]))));

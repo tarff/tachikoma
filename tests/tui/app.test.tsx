@@ -5191,7 +5191,7 @@ describe("App's live settings", () => {
   // Release 6 plan, Task 11: the keys file beside the settings file, through the same watcher.
   const keysIn = (home: string) => path.join(settingsDir(home), "keybindings.json");
   const writeKeys = (home: string, data: object | string) => writeFileSync(keysIn(home), typeof data === "string" ? data : JSON.stringify(data));
-  const global = (keys: Record<string, string | null>) => ({ bindings: [{ context: "Global", bindings: keys }] });
+  const globalKeys = (keys: Record<string, string | null>) => ({ bindings: [{ context: "Global", bindings: keys }] });
   const todo: TodoItem[] = [{ text: "write the fix", status: "pending" }];
   const parserWords = (text: string) => {
     try {
@@ -5206,7 +5206,7 @@ describe("App's live settings", () => {
     const home = freshHome();
     const { app, bus } = await watching([], {}, {}, {}, home);
     const read = readsOf();
-    await read(() => writeKeys(home, global({ "ctrl+t": null, "ctrl+y": "app:toggleTodos" })));
+    await read(() => writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+y": "app:toggleTodos" })));
     await tick();
     bus.emit("todo", todo);
     await tick();
@@ -5248,11 +5248,14 @@ describe("App's live settings", () => {
     const home = freshHome();
     const { app, bus, where } = await watching([], {}, {}, {}, home);
     const read = readsOf();
-    await read(() => writeKeys(home, global({ "ctrl+t": null })));
-    rmSync(path.dirname(where), { recursive: true });
-    await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json and keybindings.json are no longer watched this session`);
+    await read(() => writeKeys(home, globalKeys({ "ctrl+t": null })));
+    await tick();
     bus.emit("todo", todo);
     await tick();
+    await press(app, "\u0014"); // Ctrl+T, unbound by the file
+    expect(app.lastFrame()).toContain("write the fix");
+    rmSync(path.dirname(where), { recursive: true });
+    await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json and keybindings.json are no longer watched this session`);
     await press(app, "\u0014"); // Ctrl+T, the default's again
     expect(app.lastFrame()).not.toContain("write the fix");
   });
@@ -5264,10 +5267,10 @@ describe("App's live settings", () => {
     const { app, bus } = await watching([], {}, {}, {}, home);
     await sees(app, `keybindings.json is not valid JSON: ${parserWords('{"bindings": ')}; the default keys apply`);
     const reserved = 'keybindings.json: Global "ctrl+c" is a reserved key; it was left out';
-    writeKeys(home, global({ "ctrl+t": null, "ctrl+c": null }));
+    writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null }));
     await sees(app, reserved);
     const read = readsOf();
-    await read(() => writeKeys(home, global({ "ctrl+t": null, "ctrl+c": null, "ctrl+y": "app:toggleTodos" })));
+    await read(() => writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null, "ctrl+y": "app:toggleTodos" })));
     writeKeys(home, '{"bindings": [');
     await sees(app, `keybindings.json is not valid JSON: ${parserWords('{"bindings": [')}; the last good keys still apply`);
     expect(flat(app).split(reserved).length - 1).toBe(1);

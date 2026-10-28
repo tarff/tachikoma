@@ -525,8 +525,8 @@ export function App({
         watchSettings(
           home,
           (read) => latest.current.onSettings(read),
-          () => latest.current.say(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} and ${KEYBINDINGS} are no longer watched this session`)),
           (read) => latest.current.onKeys(read),
+          () => latest.current.say(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} and ${KEYBINDINGS} are no longer watched this session`)),
         );
     } catch (err) {
       say(gray(`${SETTINGS} and ${KEYBINDINGS} are not watched this session (${errorText(err)})`));
@@ -1455,11 +1455,7 @@ export function App({
       return show({ text: `mode is now ${perm.current}`, color: "gray" });
     }
     // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom.
-    if (c === "models" && working.current) return void queue.current.push("/model");
-    if (c === "models") {
-      view.current = FOLLOWING;
-      return void submit("/model");
-    }
+    if (c === "models") return command("/model");
     if (c === "lastTurn") return fullNow.current ? openDetail(lastTurn(session.messages)) : show(...lastTurn(session.messages)); // release 5 plan, Task 12
     if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
     // A message starting with `?` needs a space typed first.
@@ -1483,8 +1479,8 @@ export function App({
     else send(e);
   };
 
-  // A key bound to command:<name> runs the command as if typed then, the prompt's text left as it is: during a turn it
-  // waits in the queue, as Alt+P's /model does (choice 21).
+  // A key bound to command:<name>, and Alt+P's /model, run the command as if typed then, the prompt's text left as it
+  // is: during a turn it waits in the queue (choice 21).
   const command = (text: string) => {
     if (working.current) return void queue.current.push(text);
     view.current = FOLLOWING;

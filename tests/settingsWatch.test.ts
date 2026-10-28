@@ -25,7 +25,7 @@ const temp = () => mkdtempSync(path.join(tmpdir(), "tachi-watch-"));
 const fileOf = (home: string) => path.join(settingsDir(home), "settings.json");
 const keysOf = (home: string) => path.join(settingsDir(home), "keybindings.json");
 // What a keys file read gives, as the problems and the key Ctrl+T is, so two reads can be compared.
-const ctrlT = (k: KeysLoaded | undefined) =>
+const ctrlT = (k: KeysLoaded | null | undefined) =>
   k && ("problem" in k ? k : { problems: k.problems, ctrlT: k.table.press({ key: "t", ctrl: true, alt: false, shift: false }, ["Chat", "Global"], 0) });
 const MOVED = '{"bindings": [{"context": "Global", "bindings": {"ctrl+t": null}}]}';
 // fs.watch reported each of 400 writes within 5 ms on this machine (measured 2026-10-28); 2 s is as long as
@@ -100,10 +100,10 @@ describe("changes", () => {
 
   // Release 6 plan, Task 11: the keys file follows the same rules, a removed one being {}, the default keys.
   it("takes a removed keys file as {}, the default keys, and skips an empty one", () => {
-    const step = changes(path.join(temp(), "keybindings.json"), readKeybindings);
-    expect(ctrlT(step(MOVED) ?? undefined)).toEqual({ problems: [], ctrlT: null });
+    const step = changes(path.join(path.dirname(file), "keybindings.json"), readKeybindings);
+    expect(ctrlT(step(MOVED))).toEqual({ problems: [], ctrlT: null });
     expect(step("")).toBeNull();
-    expect(ctrlT(step(null) ?? undefined)).toEqual({ problems: [], ctrlT: { action: "app:toggleTodos" } });
+    expect(ctrlT(step(null))).toEqual({ problems: [], ctrlT: { action: "app:toggleTodos" } });
   });
 });
 
@@ -115,6 +115,7 @@ describe("watchSettings", () => {
     const stop = watchSettings(
       home,
       (next) => seen.push(next),
+      () => {},
       () => {},
     );
     onTestFinished(stop);
@@ -135,6 +136,7 @@ describe("watchSettings", () => {
         home,
         (next) => seen.push(next),
         () => {},
+        () => {},
       ),
     );
     expect(seen).toEqual([{ settings: { maxTasks: 2 }, warnings: [] }]);
@@ -148,6 +150,7 @@ describe("watchSettings", () => {
     const stop = watchSettings(
       home,
       (next) => seen.push(next),
+      () => {},
       () => gone++,
     );
     onTestFinished(stop);
@@ -166,6 +169,7 @@ describe("watchSettings", () => {
     onTestFinished(
       watchSettings(
         home,
+        () => {},
         () => {},
         () => gone++,
       ),
@@ -186,6 +190,7 @@ describe("watchSettings", () => {
           throw new Error("no");
         },
         () => {},
+        () => {},
       ),
     ).toThrow("no");
     // FSWatcher emits "close" on the next tick after close() (node:fs, FSWatcher.close); left open, the test times out.
@@ -202,8 +207,8 @@ describe("watchSettings", () => {
     const stop = watchSettings(
       home,
       (next) => settings.push(next),
-      () => {},
       (next) => keys.push(next),
+      () => {},
     );
     onTestFinished(stop);
     expect(keys.map(ctrlT)).toEqual([{ problems: [], ctrlT: null }]);
@@ -213,7 +218,7 @@ describe("watchSettings", () => {
     expect(ctrlT(keys[1])).toEqual({ problems: ['keybindings.json: Global "ctrl+c" is a reserved key; it was left out'], ctrlT: null });
     unlinkSync(keysOf(home));
     await vi.waitFor(() => expect(ctrlT(keys.at(-1))).toEqual({ problems: [], ctrlT: { action: "app:toggleTodos" } }), WATCHED);
-    expect(keys).toHaveLength(3); // the empty write was skipped
+    expect(keys).toHaveLength(3); // no other callback, the settings file's events among them
     expect(settings).toEqual([{ settings: {}, warnings: [] }]); // the settings file, missing throughout, read once
   });
 
@@ -225,13 +230,16 @@ describe("watchSettings", () => {
     writeFileSync(keysOf(home), MOVED);
     const settings: Loaded[] = [];
     const keys: KeysLoaded[] = [];
+    onTestFinished(() => {
+      refuse.next = null;
+    });
     refuse.next = new Error("ENOSPC: System limit for number of file watchers reached");
     expect(() =>
       watchSettings(
         home,
         (next) => settings.push(next),
-        () => {},
         (next) => keys.push(next),
+        () => {},
       ),
     ).toThrow("ENOSPC");
     expect(settings).toEqual([{ settings: { maxTasks: 2 }, warnings: [] }]);

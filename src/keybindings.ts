@@ -1,7 +1,7 @@
 import { KEYBINDINGS } from "./core/datadir.js";
 import { errorText } from "./core/types.js";
 import { emptyText } from "./settings.js";
-import { Bindings, CONTEXTS, type Context, DEFAULTS, keyText, parseKeys, RESERVED, SUPER, tableOf } from "./tui/bindings.js";
+import { Bindings, CONTEXTS, type Context, DEFAULTS, KEY_COMMANDS, keyText, parseKeys, RESERVED, type Stroke, SUPER, tableOf } from "./tui/bindings.js";
 
 export { KEYBINDINGS };
 
@@ -62,15 +62,14 @@ const CLAUDE_CODE_ACTIONS = new Set([
   ...["up", "down", "top", "bottom", "select"].map((a) => `messageSelector:${a}`),
   "diff:viewDetails",
 ]);
-// The slash commands that take nothing after them, which `command:<name>` runs (release 6 plan, Task 11).
-export const COMMANDS = ["exit", "errors", "model", "screen", "tasks", "vim", "settings", "keybindings"];
 // Tachikoma's actions: every one the default table binds somewhere (bindings.ts, DEFAULTS). An action bound in a
 // context where the screen does not use it does nothing there, as Claude Code checks only that an action exists
 // (choice 21).
 const ACTIONS = new Set(CONTEXTS.flatMap((c) => Object.values(DEFAULTS[c])));
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const reserved = (s: { key: string; ctrl: boolean; alt: boolean; shift: boolean }) => RESERVED.some((r) => keyText([r]) === keyText([s]));
+const RESERVED_KEYS = new Set(RESERVED.map((r) => keyText([r])));
+const reserved = (s: Stroke) => RESERVED_KEYS.has(keyText([s]));
 // A key held with Claude Code's Command or Super key, by any of its names (bindings.ts, SUPER).
 const withSuper = (keys: string) => keys.split(/\s+/).some((part) => part.split("+").slice(0, -1).some((m) => SUPER.has(m.toLowerCase())));
 
@@ -109,7 +108,7 @@ export function readKeybindings(text: string): KeysLoaded {
     const { context } = block;
     const entries = Object.entries(block.bindings);
     if (CLAUDE_CODE_CONTEXTS.has(context)) {
-      skip(context, entries.length);
+      if (entries.length) skip(context, entries.length);
       continue;
     }
     if (!(CONTEXTS as readonly string[]).includes(context)) {
@@ -124,19 +123,20 @@ export function readKeybindings(text: string): KeysLoaded {
         continue;
       }
       const strokes = parseKeys(keys);
+      const text = Array.isArray(strokes) ? keyText(strokes) : "";
       if (!Array.isArray(strokes)) problems.push(`${where}: ${strokes.problem}; it was left out`);
       else if (strokes.some(reserved)) problems.push(`${where} is a reserved key; it was left out`);
       else if (action !== null && typeof action !== "string") {
         problems.push(`${where} must be an action's name in quotes, or null (got ${JSON.stringify(action)}); it was left out`);
       } else if (action !== null && CLAUDE_CODE_ACTIONS.has(action)) skip(action);
-      else if (action?.startsWith("command:") && !COMMANDS.includes(action.slice("command:".length))) {
-        problems.push(`${where}: ${JSON.stringify(action)} is not a command a key can run (${COMMANDS.join(", ")}); it was left out`);
+      else if (action?.startsWith("command:") && !KEY_COMMANDS.includes(action.slice("command:".length))) {
+        problems.push(`${where}: ${JSON.stringify(action)} is not a command a key can run (${KEY_COMMANDS.join(", ")}); it was left out`);
       } else if (action !== null && !action.startsWith("command:") && !ACTIONS.has(action)) {
         problems.push(`${where}: ${JSON.stringify(action)} is not an action; it was left out`);
-      } else if (keysOf.has(keyText(strokes))) problems.push(`${where} is bound twice in ${context}; the first stays`);
+      } else if (keysOf.has(text)) problems.push(`${where} is bound twice in ${context}; the first stays`);
       else {
-        keysOf.add(keyText(strokes));
-        table[context as Context].set(keyText(strokes), action);
+        keysOf.add(text);
+        table[context as Context].set(text, action);
       }
     }
   }

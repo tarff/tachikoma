@@ -43,7 +43,7 @@ export function changes<T extends object>(file: string, parse: (text: string) =>
 // is reported when the watched directory is deleted", and an error with no listener would end the session. Making the
 // folder or starting the watch can throw (a home that cannot be written, Linux's limit on watches); the caller says
 // so. A watch that cannot start still reads the files once, so their keys apply unwatched (choice 21).
-export function watchSettings(home: string, on: (next: Loaded) => void, gone: () => void, onKeys: (next: KeysLoaded) => void = () => {}): () => void {
+export function watchSettings(home: string, on: (next: Loaded) => void, onKeys: (next: KeysLoaded) => void, gone: () => void): () => void {
   const dir = settingsDir(home);
   mkdirSync(dir, { recursive: true });
   const file = path.join(dir, SETTINGS);
