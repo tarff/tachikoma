@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -5064,6 +5064,13 @@ describe("App's live settings", () => {
     expect(existsSync(settingsDir(home))).toBe(true);
     writeFileSync(path.join(settingsDir(home), "settings.json"), '{"mode": "project"}');
     await sees(app, `mode is now project ${FROM}`);
+  });
+
+  it("applies the defaults and says the file is no longer watched once ~/.tachikoma is removed", async () => {
+    const { app, where } = await watching([], { mode: "project" });
+    rmSync(path.dirname(where), { recursive: true });
+    await sees(app, `mode is now ask ${FROM}`);
+    await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json is no longer watched this session`);
   });
 
   it("says a new unknown entry's warning once", async () => {

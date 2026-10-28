@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
@@ -64,12 +64,34 @@ describe("watchSettings", () => {
   it("makes the folder, then calls back with a file written there, and with {} once it is removed", async () => {
     const home = temp();
     const seen: Loaded[] = [];
-    const stop = watchSettings(home, (next) => seen.push(next));
+    const stop = watchSettings(
+      home,
+      (next) => seen.push(next),
+      () => {},
+    );
     onTestFinished(stop);
     expect(existsSync(settingsDir(home))).toBe(true);
     writeFileSync(fileOf(home), '{"maxTasks": 2}');
     await vi.waitFor(() => expect(seen.at(-1)).toEqual({ settings: { maxTasks: 2 }, warnings: [] }), WATCHED);
     unlinkSync(fileOf(home));
     await vi.waitFor(() => expect(seen.at(-1)).toEqual({ settings: {}, warnings: [] }), WATCHED);
+  });
+
+  // On Windows a watch on a removed folder reports the removal over and over until it is closed (settingsWatch.ts).
+  it("applies {} and stops watching once the folder itself is removed", async () => {
+    const home = temp();
+    const seen: Loaded[] = [];
+    let gone = 0;
+    const stop = watchSettings(
+      home,
+      (next) => seen.push(next),
+      () => gone++,
+    );
+    onTestFinished(stop);
+    writeFileSync(fileOf(home), '{"maxTasks": 2}');
+    await vi.waitFor(() => expect(seen).toHaveLength(1), WATCHED);
+    rmSync(settingsDir(home), { recursive: true });
+    await vi.waitFor(() => expect(gone).toBe(1), WATCHED);
+    expect(seen.at(-1)).toEqual({ settings: {}, warnings: [] });
   });
 });

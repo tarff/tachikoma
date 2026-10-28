@@ -1,3 +1,4 @@
+import path from "node:path";
 import { Box, type Key, renderToString, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
 import { type Given, resolve } from "../clilib.js";
@@ -511,7 +512,13 @@ export function App({
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (found at Task 7's code review); in classic mode stderr is seen, and they are not said twice.
     say(...(fullNow.current ? (live?.loaded.warnings ?? []).map(gray) : []), ...intro);
-    const unwatch = live && watchSettings(home, (read) => latest.current.onSettings(read));
+    const unwatch =
+      live &&
+      watchSettings(
+        home,
+        (read) => latest.current.onSettings(read),
+        () => latest.current.say(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} is no longer watched this session`)),
+      );
     history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
