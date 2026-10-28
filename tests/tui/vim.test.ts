@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Editor, empty, load, move } from "../../src/tui/editor.js";
+import { type Editor, empty, load, move, segmenter } from "../../src/tui/editor.js";
 import { press, start, type Vim, type VimMode } from "../../src/tui/vim.js";
 
 // The text with the cursor shown as "|"; in NORMAL the cursor is on the character after it.
@@ -11,13 +11,13 @@ const NORMAL: Vim = { ...start, mode: "NORMAL" };
 // keys such as "escape". Checks the text, cursor and mode they leave, and gives the rest.
 function keys(text: string, typed: string | string[], shown: string, mode: VimMode = "NORMAL", v: Vim = NORMAL) {
   let r: ReturnType<typeof press> = { v, e: at(text) };
-  for (const k of typeof typed === "string" ? [...typed] : typed) r = press(r.v, r.e, k);
+  for (const k of typeof typed === "string" ? [...segmenter.segment(typed)].map((s) => s.segment) : typed) r = press(r.v, r.e, k);
   expect({ shown: show(r.e), mode: r.v.mode }).toMatchObject({ shown, mode });
   return r;
 }
 
 // One test per row of Claude Code's "Vim editor mode" tables (code.claude.com/docs/en/interactive-mode,
-// read 2026-10-28). `v`, `V` and `.` are Task 20's.
+// read 2026-10-28). `v`, `V` and `.` are the release 6 plan's Task 20's.
 describe("vim: mode switching", () => {
   it("Esc: INSERT to NORMAL, the cursor back onto the character before", () => {
     keys("ab|c", ["escape"], "a|bc", "NORMAL", start);
@@ -361,6 +361,14 @@ describe("vim: counts", () => {
   it("0 after a count is part of it", () => {
     keys("|a b c d e f g h i j k", "10w", "a b c d e f g h i j |k");
   });
+
+  it("too big a count stops where the text does, or is refused, at once", () => {
+    keys("|a\nb", "999999999j", "a\n|b");
+    keys("a\n|b", "999999999k", "|a\nb");
+    keys("a|bc", "x50000000u", "a|bc");
+    keys("|ab", "yl4294967296p", "|ab"); // Vim refuses a put too long to make (E1240)
+    keys("|ab", "yy4294967296p", "|ab");
+  });
 });
 
 describe("vim: characters made of several code points", () => {
@@ -370,28 +378,59 @@ describe("vim: characters made of several code points", () => {
     keys("a|👍🏽b", "x", "a|b");
     keys("ab👍🏽|", ["escape"], "ab|👍🏽", "NORMAL", start);
   });
+
+  it("are one character to r, f and t, typed or looked for", () => {
+    keys("a|bc", "r👍🏽", "a|👍🏽c");
+    keys("|abc", "2r👍🏽", "👍🏽|👍🏽c");
+    keys("|ab👍🏽c", "f👍🏽", "ab|👍🏽c");
+    keys("|ab👍🏽c", "dt👍🏽", "|👍🏽c");
+  });
+
+  it("x deletes é whole, as one code point or a letter and its accent", () => {
+    keys("a|\u00e9b", "x", "a|b");
+    keys("a|e\u0301b", "x", "a|b");
+  });
+});
+
+describe("vim: the editor as App leaves it", () => {
+  it("with the cursor at the text's end, as load leaves it, works on the last character", () => {
+    const loaded = (typed: string) => [...typed].reduce((r, k) => press(r.v, r.e, k), { v: NORMAL, e: load(empty, "ab\ncd") });
+    expect(show(loaded("x").e)).toBe("ab\n|c");
+    expect(show(loaded("D").e)).toBe("ab\n|c");
+    expect(show(loaded("rz").e)).toBe("ab\nc|z");
+    expect(show(loaded("h").e)).toBe("ab\n|cd");
+  });
+
+  it("empty, x dd p J w G >> change nothing and make no undo step", () => {
+    for (const k of ["x", "dd", "p", "J", "w", "G", ">>"]) expect(keys("|", k, "|").e.undo).toEqual([]);
+  });
+
+  it("<< on a line with no indent makes no undo step", () => {
+    expect(keys("a|b", "<<", "|ab").e.undo).toEqual([]);
+  });
 });
 
 describe("vim: half-typed commands", () => {
   it("are kept while typed, and Esc or a key that is no motion drops them", () => {
     expect(keys("|ab", "2d", "|ab").v).toMatchObject({ count: "2", pending: "d" });
     keys("|ab", ["d", "escape", "l"], "a|b");
+    keys("|ab", ["2", "escape", "l"], "a|b");
     keys("|ab", "dzl", "a|b");
   });
 
-  it("Esc in NORMAL with nothing half typed changes nothing, so App's Esc does what it does", () => {
+  it("Esc in NORMAL with nothing half typed is returned unchanged, for App", () => {
     expect(keys("a|b", ["escape"], "a|b").act).toBeUndefined();
   });
 });
 
 describe("vim: INSERT", () => {
-  it("types a character, and leaves other keys to App's own editing", () => {
+  it("types a character; any other key but Esc is returned unchanged, for App", () => {
     keys("a|b", "x", "ax|b", "INSERT", start);
     keys("a|b", ["backspace"], "a|b", "INSERT", start);
   });
 });
 
-describe("vim: the last change, for Task 20's .", () => {
+describe("vim: the last change, for the release 6 plan's Task 20's .", () => {
   it("is the keys of the command, with its count", () => {
     expect(keys("|foo bar", "dw", "|bar").v.lastChange).toEqual(["d", "w"]);
     expect(keys("|abcd", "3x", "|d").v.lastChange).toEqual(["3", "x"]);
