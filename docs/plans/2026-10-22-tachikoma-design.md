@@ -44,6 +44,8 @@ learn from experience. The command is `tachi`.
 | Release 4, choices | Subagents use `--worker`'s model, else the lead's; they may run in the background, and one finishing while the lead is idle starts a turn; Esc stops only the subagents a turn waits for; a subagent's read outside the project asks, naming it; no subagent starts another; the lead and subagents get `find_files` and `search_files`, which follow `.gitignore`; the to-do list shows while any item is open; instruction files from `~/.claude`, `~/.codex` and every folder down to the project, CLAUDE.md and AGENTS.md both, with `@` imports; an import leaving the project, or a found file linked to another folder, asks first unless it is the user's own; with `-p`, background subagents run in the foreground | User, 2026-10-25 (chose each from options offered; [release 4 design](2026-10-25-tachikoma-release-4-design.md)) |
 | Releases 5 and 6 | Full screen with its own scrolling (5); vim mode, image paste, an external editor, stash and rebinding keys in a file (6); every later release moves down one, to 14 | User, 2026-10-26 (option chosen: "Split: full screen first"; [release 5 design](2026-10-27-tachikoma-release-5-design.md)) |
 | Release 5, as built | Classic mode also when the output is not a terminal or under CI; an error that ends the screen exits with 1; Ctrl+Break and SIGQUIT put the terminal back too; `-p` ignores `TACHI_SCROLL_SPEED`; no cap on kept lines; Shift+Up/Down only scroll; in the detail view Ctrl-C with nothing running only closes it, and a paste goes only into a search being typed; while `[` has the view printed out, pastes do nothing and a queued `/model` or `/tasks t3` waits; `/screen` to classic is classic from its start | User, 2026-10-27 and 2026-10-28, at the build and its reviews ([release 5 design](2026-10-27-tachikoma-release-5-design.md), "As built") |
+| Release 6 | A settings file, `~/.tachikoma/settings.json`, holding every launch option, vim mode and the editor, flags still winning; `/lead`, `/model`, `/screen` and `/vim` save to it; edits apply live; `never` only at launch; no settings file in projects. Keys as named actions in Claude Code's format, rebound in `~/.tachikoma/keybindings.json`, live. Ctrl+G opens VISUAL, EDITOR, the settings' editor or Notepad; Ctrl+S stashes; Alt+V (Ctrl+V outside Windows) and pasted image paths add pictures, shrunk with sharp to each provider's documented limits; a request with pictures refused as invalid asks before sending again without them; all of Claude Code's vim mode. The screen code is tidied first | User, 2026-10-28 (chose each from options offered: "I don't want to be launching with args"; [release 6 design](2026-10-28-tachikoma-release-6-design.md)) |
+| Auto mode | Claude Code's `auto` (a second model judging each action before it runs) goes into release 7, designed with the sandbox; release 12's loops decide which may use it | User, 2026-10-28 (option chosen: "Release 7, with the sandbox"; [release 6 design](2026-10-28-tachikoma-release-6-design.md), "Not in this release") |
 
 ## 1. Overall shape
 
@@ -858,9 +860,11 @@ Each release works on its own and can be shown.
    ([release 4 design](2026-10-25-tachikoma-release-4-design.md))
 5. Full screen with its own scrolling, a scroll bar, mouse selection and copying, and a detail
    view for Ctrl+O and `/tasks t3` ([release 5 design](2026-10-27-tachikoma-release-5-design.md))
-6. Key extras: vim mode, image paste, external editor, stash, rebinding keys in a file; the
-   context window of OpenAI API models, from a dated table of OpenAI's model pages
-7. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
+6. A settings file, and key extras: vim mode, image paste, external editor, stash, rebinding keys
+   in a file; the context window of OpenAI API models, from a dated table of OpenAI's model pages
+   ([release 6 design](2026-10-28-tachikoma-release-6-design.md))
+7. Docker sandbox, both modes, including conflict-safe apply for copy-then-review; auto mode, a
+   second model judging each action
 8. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
    disk; shortening the history
 9. Skills: the loader, vendored superpowers, Tachikoma's own skills

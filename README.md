@@ -350,9 +350,10 @@ Each is fixed in a later release, unless it says otherwise.
    your own instruction files (AGENTS.md, CLAUDE.md) (done).
 5. Full screen with its own scrolling: a scroll bar, selecting and copying with the mouse, and
    Ctrl+O and `/tasks t3` opening in place (this release).
-6. Key extras: vim mode, image paste, an external editor, stash, rebinding keys in a file.
+6. A settings file, so a plain `tachi` starts the way you want; key extras: vim mode, image
+   paste, an external editor, stash, rebinding keys in a file.
 7. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is
-   applied).
+   applied); auto mode, where a second model judges each action instead of asking you.
 8. MCP tools and long-term memory (MemPalace); transcripts saved to disk; shortening the history.
 9. Skills: the loader, the bundled superpowers skills, and Tachikoma's own.
 10. Search of the codebase by meaning, with EmbeddingGemma 2.
