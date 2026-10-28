@@ -1104,10 +1104,12 @@ export function App({
       const stroke = { key: `wheel${m.wheel}`, ctrl: m.ctrl, alt: m.alt, shift: m.shift };
       const contexts = contextsOf(phase.kind, true, true);
       const at = Date.now();
-      // A notch that drops a waiting chord is then pressed as if none had waited, as a key is (route).
+      // A notch that drops a waiting chord is then pressed as if none had waited, as a key is (route), and the chord leaves
+      // the hint row even when the notch has nowhere to scroll.
       const waited = table.waiting(at) !== null;
       const got = table.press(stroke, contexts, at) ?? (waited ? table.press(stroke, contexts, at) : null);
-      if (!got) return void (waited && rerender((n) => n + 1));
+      if (waited) rerender((n) => n + 1);
+      if (!got) return;
       if ("pending" in got || (got.action !== "scroll:lineUp" && got.action !== "scroll:lineDown")) return onKey(h, pressed(got), "", NO_KEY);
       const step = notch(wheel.current, scrollSpeed, got.action === "scroll:lineUp" ? -1 : 1);
       wheel.current = step.carry;

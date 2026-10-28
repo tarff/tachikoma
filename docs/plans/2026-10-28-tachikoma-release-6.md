@@ -192,7 +192,8 @@ Each is marked in its task. None approved yet.
     Alt held. Classic mode still reads Shift+Up and Shift+Down as Up and Down, and Ctrl+Home and
     Ctrl+End as Home and End (found at Task 6's build; user: "Exact match"). Esc with Alt is still
     read as Esc, as in release 5, since it is what two fast Escs look like outside the kitty
-    protocol, so a keys file cannot bind `alt+escape` (found at Task 6's spec review).
+    protocol, so `alt+escape` binds only where the terminal has the kitty protocol (found at Task 6's
+    spec review).
 
 ---
 
@@ -939,6 +940,10 @@ another key or a later second leaves both (design). Yank and put copy picture sp
 `3x`, `ciwfoo<Esc>`; the remap with fake times on each side of 1 s; a yanked marker put twice
 gives two spans of one id.
 
+`press` puts the cursor on a character before every key outside INSERT, VISUAL included (Task 19);
+if VISUAL's `$` selects up to the line's end, as in Vim, VISUAL skips that step (found at Task
+19's code review).
+
 **Before building, settle which pairs Task 7 accepts** (found at Task 7's code review): its
 check (`settings.ts`, two code points outside Unicode's control group) keeps a letter with a
 combining accent, which is one character on screen but two code points, a line separator, and
@@ -956,6 +961,9 @@ Commit: `feat: vim mode's text objects, VISUAL modes, repeat and INSERT remaps`.
 With `editorMode: "vim"`, keys a binding does not take go to `vim.press` instead of `commands()`,
 after Task 6's exceptions (Esc in INSERT or VISUAL and a half-typed command's keys go to vim
 first, so Esc there is never `chat:cancel`).
+In INSERT only a typed character and Esc are vim's: `press` hands any other key back unchanged,
+and App sends it to `commands()`. In NORMAL a lone Esc (no `v.pending`, no `v.count`) is App's
+`chat:cancel` (`press`'s comment; found at Task 19's code review).
 Typed text arriving in one read is split into graphemes, each one key, so a fast `dw` or `yy` is
 two keys (design; mends "yy in one read"); a bracketed paste always inserts as text. Esc in INSERT
 or VISUAL goes to NORMAL and is not `chat:cancel`; in NORMAL it is. The hint row shows `-- INSERT

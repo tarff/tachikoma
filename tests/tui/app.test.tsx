@@ -4669,4 +4669,14 @@ describe("App's keys from the table of actions", () => {
     expect(shown(app)[0]).not.toBe(bottom);
     expect(app.lastFrame()).not.toContain("ctrl+x");
   });
+
+  it("takes a dropped chord from the hint row on a wheel notch that has nowhere to scroll", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(60) });
+    const bottom = shown(app)[0];
+    await press(app, CTRL_X);
+    expect(app.lastFrame()).toContain("\nctrl+x ...\n");
+    await wheel(mouse, "down"); // following the bottom: the notch moves nothing
+    expect(shown(app)[0]).toBe(bottom);
+    expect(app.lastFrame()).not.toContain("ctrl+x");
+  });
 });
