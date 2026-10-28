@@ -22,6 +22,7 @@ import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
 import { ModelPicker, rows as listRows } from "./ModelPicker.js";
 import { type Hand, type Handover, TerminalOwner } from "./owner.js";
+import { now as nowOf } from "./phase.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -445,6 +446,25 @@ export function App({
     if (!(await perform(raw, answers))) next();
   };
 
+  // What is happening now (phase.ts): from the refs, and from this drawing the model list and the question shown, which
+  // take the keys (phase.ts, PhaseInputs, says why). Set up once, the mouse listener and the bus's handlers call the first
+  // render's: they ask only what the refs answer, ended, printed out, working and waiting. Only the keys ask for the menu,
+  // where it was found before: finding an `@` menu can list a folder (menuFor); without it, a menu counts as the prompt.
+  const happening = (findMenu = () => false) =>
+    nowOf({
+      ended: ended.current,
+      printed: printed.current !== null,
+      picker: picker !== null,
+      listOpen: listOpen.current,
+      question: question !== null,
+      questions: questions.current.length,
+      detail: detail.current,
+      search: search.current !== null,
+      menu: findMenu,
+      working: working.current,
+      queued: queue.current.length,
+    });
+
   // Background answers waiting go first, in a turn of their own (release 4 design, "Background
   // subagents"). Then the queue's entries, taken from the front: a command alone, as if typed then;
   // prompts next to each other as one message, separated by blank lines. Not while something runs (a
@@ -455,12 +475,13 @@ export function App({
   // the screen under the printed view, and could not suspend Ink, suspended already. Messages and other commands go on.
   // Nothing starts once Ink has ended, a turn going on paying with no screen to show it (found at Task 13's round 3).
   const next = () => {
-    if (ended.current || working.current || listOpen.current || questions.current.length) return;
+    const h = happening();
+    if (h.phase.kind === "ended" || h.working || h.waiting) return;
     if (tasks.wakes()) return void submit("", true);
     const q = queue.current;
     const command = q.findIndex(isCommand);
-    if (!q.length) return;
-    if (printed.current && command === 0 && (recordToOpen(q[0]!) || /^\/screen$/i.test(q[0]!))) return;
+    if (!h.queued) return;
+    if (h.phase.kind === "printed" && command === 0 && (recordToOpen(q[0]!) || /^\/screen$/i.test(q[0]!))) return;
     view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
   };
@@ -786,11 +807,14 @@ export function App({
     else if (LETTERS[letter]) scroll(LETTERS[letter]);
   };
 
+  // Once Ink has ended no key comes here, nor a paste or a mouse report below: Ink's cleanup takes their listeners away
+  // with the App's, which sets `ended` (above).
   useInput((ch, key) => {
-    if (printed.current) return; // a key read with the `[` that printed the view out, which Ink reads before it is out
+    const h = happening(() => menuFor(editor.current) !== null);
+    if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // a key read with the `[` that printed the view out, which Ink reads before it is out
     clearCopied();
-    if (picker) return; // the picker reads the keys while it is open
-    if (question) {
+    if (h.phase.kind === "picker") return; // the picker reads the keys while it is open
+    if (h.phase.kind === "question" && question) {
       // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent.
       if (key.ctrl && ch === "c") {
         question.answer(false, "declined (cancelled)");
@@ -809,31 +833,30 @@ export function App({
     // review). No press-twice count waits while the view is open: the key that opens it is read below, starting the count
     // again, and a queued `/tasks t3` runs only from `next()`, after a turn, an answer or the model list, when no count
     // was started.
-    if (detail.current) {
+    if (h.phase.kind === "detail" && detail.current) {
       if (!(key.ctrl && ch === "c")) detailKey(detail.current, ch, key);
-      else if (!working.current) closeDetail();
+      else if (!h.working) closeDetail();
       else {
         restore();
         abort.current?.abort();
       }
       return rerender((n) => n + 1);
     }
-    if (search.current) {
+    if (h.phase.kind === "search") {
       searchKey(ch, key);
       return rerender((n) => n + 1);
     }
     const e = editor.current;
-    const menu = menuFor(e);
-    if (menu && ((key.tab && !key.shift) || key.escape)) {
+    if (h.phase.kind === "menu" && ((key.tab && !key.shift) || key.escape)) {
       if (key.escape) closed.current = e.text;
-      else fill(menu, e);
+      else fill(menuFor(e)!, e); // the menu happening() found: the same text, its folder's listing kept (menuFor, list)
       forget();
       return rerender((n) => n + 1);
     }
     const name = key.escape ? "Esc" : key.ctrl && ch === "c" ? "Ctrl-C" : key.ctrl && ch === "d" && !e.text ? "Ctrl-D" : null;
     // During a turn the prompt still edits; Esc stops the turn and the queue goes on, Ctrl-C stops it
     // and the queue comes back. Ctrl-D does not exit while a turn is running.
-    if (working.current && name) {
+    if (h.working && name) {
       if (name === "Ctrl-C") restore();
       if (name !== "Ctrl-D") abort.current?.abort();
       return rerender((n) => n + 1);
@@ -866,17 +889,18 @@ export function App({
   // picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
-      if (printed.current) return; // as for keys, above
+      const h = happening();
+      if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // as for keys, above
       clearCopied();
       // In the detail view a paste goes into a search being typed, up to its first line break, without the control
       // characters typed text loses (keys.ts, commands); otherwise it does nothing there (the user's choice at Task 12's
       // review).
       const d = detail.current;
-      if (d?.search?.typing) {
+      if (h.phase.kind === "detail" && h.phase.searching && d?.search) {
         searchFor(d, d.search.query + text.split(/\r\n?|\n/, 1)[0]!.replace(/\p{Cc}/gu, ""), viewHeight);
         return rerender((n) => n + 1);
       }
-      if (question || search.current || d) return;
+      if (h.phase.kind !== "menu" && h.phase.kind !== "prompt") return;
       run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       rerender((n) => n + 1);
     },
@@ -929,7 +953,8 @@ export function App({
   // come after a question closed it, belongs to a screen that is gone, and is dropped, as clickAt drops a click read with
   // a key that changed the prompt (found at Task 10's review).
   const onMouse = (m: Mouse) => {
-    if (!fullNow.current || printed.current) return; // printed out: a report read with its `[`, as for keys
+    const { phase } = happening();
+    if (!fullNow.current || phase.kind === "ended" || phase.kind === "printed") return; // printed out: a report read with its `[`, as for keys
     const { columns, viewHeight } = frame.current;
     if (frame.current.detail !== detail.current) return;
     const p = pane();
