@@ -4957,6 +4957,76 @@ describe("App's external editor", () => {
   });
 });
 
+// Release 6 design, "Stash"; plan, Task 13: one slot a session; the prompt and the slot swap when both have text.
+describe("App's stash", () => {
+  const CTRL_S = "\u0013";
+  const LEFT = "\u001b[D";
+  const STASHED = "Stashed · Ctrl+S to bring back";
+
+  it("puts the prompt aside on Ctrl+S and brings it back on an empty prompt, the cursor where it was", async () => {
+    const { app } = await mount([]);
+    await press(app, "abcd", LEFT, LEFT, CTRL_S);
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    await press(app, CTRL_S, "X");
+    expect(app.lastFrame()).toContain("› abXcd\n? for shortcuts");
+  });
+
+  it("swaps the prompt and the slot when both have text", async () => {
+    const { app } = await mount([]);
+    await press(app, "one", CTRL_S, "two", CTRL_S);
+    expect(app.lastFrame()).toContain(`› one\n${STASHED}`);
+    await press(app, CTRL_S);
+    expect(app.lastFrame()).toContain(`› two\n${STASHED}`);
+  });
+
+  it("shows the hint while the slot is full and no other hint takes the row: a menu's and the queue's come first", async () => {
+    const { lead, release } = gated([reply("r1")]);
+    const { app } = await mount([], { lead });
+    await press(app, "aside", CTRL_S);
+    expect(app.lastFrame()).toContain(`›\n${STASHED}\n`);
+    await press(app, "/");
+    expect(app.lastFrame()).toContain("↑↓ choose");
+    expect(app.lastFrame()).not.toContain("Stashed");
+    await press(app, "\u007f", "go", "\r");
+    await until(app, "Esc to stop");
+    expect(app.lastFrame()).toContain(`›\n${STASHED}`); // during a turn too, where no hint shows otherwise
+    await press(app, "later", "\r");
+    expect(app.lastFrame()).toContain("›\n↑ to edit queued messages");
+    release();
+    await until(app, "r1");
+    await press(app, CTRL_S);
+    expect(app.lastFrame()).toContain("› aside\n? for shortcuts");
+  });
+
+  it("names the key chat:stash is bound to in the hint", async () => {
+    const bindings = new Bindings(tableOf({ ...DEFAULTS, Chat: { ...DEFAULTS.Chat, "ctrl+s": null, "ctrl+q": "chat:stash" } }));
+    const { app } = await mount([], { bindings });
+    await press(app, "aside", CTRL_S);
+    expect(app.lastFrame()).toContain("› aside\n? for shortcuts"); // Ctrl+S is bound to nothing now
+    await press(app, "\u0011");
+    expect(app.lastFrame()).toContain("›\nStashed · Ctrl+Q to bring back");
+  });
+
+  it("undoes within the text brought back", async () => {
+    const { app } = await mount([]);
+    // Backspace is a step of its own. On the cleared prompt Ctrl+Z takes nothing back: the steps went aside too.
+    await press(app, "abc", "\u007f", CTRL_S, "\u001a");
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    await press(app, CTRL_S, "\u001a");
+    expect(app.lastFrame()).toContain("› abc\n");
+    await press(app, "\u001a", "\u001a");
+    expect(app.lastFrame()).toMatch(/^›$/m);
+  });
+
+  it("does nothing on Ctrl+S with an empty prompt and an empty slot", async () => {
+    const { app } = await mount([]);
+    const frame = app.lastFrame();
+    await press(app, CTRL_S);
+    expect(app.lastFrame()).toBe(frame);
+    expect(frame).toContain("›\n? for shortcuts");
+  });
+});
+
 // Release 6 plan, Task 9: edits to the settings file apply in the running session, by the design's table ("The settings
 // file", "When a live change applies").
 describe("App's live settings", () => {

@@ -228,6 +228,7 @@ export function App({
   const step = useRef<{ at: number; draft: string } | null>(null); // where Up has gone in the history, and what was typed before
   // Ctrl+R: what is searched for, how many older matches Ctrl+R has passed, and the prompt to give back.
   const search = useRef<{ query: string; skip: number; before: Editor } | null>(null);
+  const stash = useRef<Editor | null>(null); // Ctrl+S's one slot, for the session (release 6 design, "Stash")
   // The menus: the entry chosen, for the text it was chosen at; the text Esc closed one at, which
   // keeps it closed until the text changes; and the folder `@` listed last.
   const chosen = useRef({ text: "", at: 0 });
@@ -1222,6 +1223,7 @@ export function App({
       if (action && ACTIONS[action]) run(ACTIONS[action]);
       // Called without await, so nothing may escape (submit, above): what goes wrong is said, as for a switch (next).
       else if (action === "chat:externalEditor") void externalEditor().catch((err) => say({ text: errorText(err), color: "red" }));
+      else if (action === "chat:stash") swapStash(e);
       else if (action?.startsWith("command:")) command(`/${action.slice("command:".length)}`);
       else if (!got) for (const c of commands(ch, key)) run(c);
     } else if (name === "Ctrl-C" && e.text) clear(e); // one press clears
@@ -1582,6 +1584,18 @@ export function App({
     keep(e.text);
     editor.current = load(e, "");
   };
+  // Ctrl+S (release 6 design, "Stash"): a prompt with text goes into the slot whole, cursor and undo steps (and Task
+  // 14's spans) with it, and an empty prompt takes the slot back; with text and a full slot the two swap, so nothing is
+  // lost (the design's call). What the last delete took stays with the prompt, as load() keeps it; the cursor was left
+  // for Ctrl+S, so typing after it is a step of its own.
+  const swapStash = (e: Editor) => {
+    const back = stash.current;
+    if (!e.text && !back) return;
+    stash.current = e.text ? e : null;
+    editor.current = back ? { ...back, typing: false, killed: e.killed } : load(e, "");
+    goal.current = null;
+    step.current = null;
+  };
   // Saved for Up and Ctrl+R, in this session and later ones: each sent prompt, and one cleared with
   // Ctrl-C or Esc Esc. The same prompt twice in a row is kept once, as Claude Code keeps it.
   const keep = (raw: string) => {
@@ -1727,9 +1741,11 @@ export function App({
             ? left > 0 && previous
               ? `${previous} to edit queued messages`
               : `${queue.current.length} queued`
-            : busy
-              ? null
-              : "? for shortcuts";
+            : stash.current
+              ? hints("Stashed", said(keyOf("chat:stash", "Chat", "ctrl+s"), "to bring back")) // during a turn too, no other hint taking the row (plan, Task 13)
+              : busy
+                ? null
+                : "? for shortcuts";
   // The line about the last copy, until the next key or click (release 5 design, "Copying"), takes the hint row's place
   // only while one shows, so a copy never moves the conversation; a failed copy shows anyway, adding the row. Ctrl+R's
   // search and the exit warning keep the row (the user's choice, release 5), and so does the detail view's search while
