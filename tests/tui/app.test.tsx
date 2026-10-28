@@ -4687,6 +4687,14 @@ describe("App's keys from the table of actions", () => {
     expect(app.lastFrame()).toContain("☐ write the fix\n› abt\n? for shortcuts");
   });
 
+  it("drops a waiting chord on a paste, so the next letter is typed", async () => {
+    const { app, bus } = await mount([], { bindings: chord() });
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, CTRL_X, "\u001b[200~ab\u001b[201~", "t");
+    expect(app.lastFrame()).toContain("☐ write the fix\n› abt\n? for shortcuts");
+  });
+
   // Each hint names the keys a table leaves bound, in release 5's words (keys.ts, named).
   it("leaves out of the detail view's key row a group with no key, and its kept search's n with none", async () => {
     const { app } = await mount([], { full: true, bindings: table("Transcript", { "[": null, n: null }) });
