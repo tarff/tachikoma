@@ -5120,7 +5120,7 @@ describe("App's live settings", () => {
     const { app, where } = await watching([], { mode: "project" });
     rmSync(path.dirname(where), { recursive: true });
     await sees(app, `mode is now ask ${FROM}`);
-    await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json is no longer watched this session`);
+    await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json and keybindings.json are no longer watched this session`);
   });
 
   // mkdir and fs.watch can fail: a home that cannot be written, or Linux's limit on watches. Here `.tachikoma` is a
@@ -5135,7 +5135,7 @@ describe("App's live settings", () => {
       reason = (err as Error).message;
     }
     const { app } = await mount([reply("still here")], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
-    expect(flat(app)).toContain(`${shownFile()} is not watched this session (${reason})`);
+    expect(flat(app)).toContain(`${path.dirname(shownFile())} is not watched this session (${reason})`);
     await type(app, "hi");
     await until(app, "still here");
   });
@@ -5186,5 +5186,70 @@ describe("App's live settings", () => {
     expect(full.app.lastFrame()).toContain(warning);
     const classic = await mount([], { home: freshHome(), live: { loaded, given: {} } });
     expect(classic.app.lastFrame()).not.toContain(warning);
+  });
+
+  // Release 6 plan, Task 11: the keys file beside the settings file, through the same watcher.
+  const keysIn = (home: string) => path.join(settingsDir(home), "keybindings.json");
+  const writeKeys = (home: string, data: object | string) => writeFileSync(keysIn(home), typeof data === "string" ? data : JSON.stringify(data));
+  const global = (keys: Record<string, string | null>) => ({ bindings: [{ context: "Global", bindings: keys }] });
+  const todo: TodoItem[] = [{ text: "write the fix", status: "pending" }];
+  const parserWords = (text: string) => {
+    try {
+      JSON.parse(text);
+    } catch (err) {
+      return (err as Error).message;
+    }
+    throw new Error("parsed");
+  };
+
+  it("rebinds a key from the keys file without a restart, and ? follows it", async () => {
+    const home = freshHome();
+    const { app, bus } = await watching([], {}, {}, {}, home);
+    const read = readsOf();
+    await read(() => writeKeys(home, global({ "ctrl+t": null, "ctrl+y": "app:toggleTodos" })));
+    await tick();
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0014"); // Ctrl+T, now unbound
+    expect(app.lastFrame()).toContain("write the fix");
+    await press(app, "\u0019"); // Ctrl+Y
+    expect(app.lastFrame()).not.toContain("write the fix");
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("  Ctrl+Y  show or hide the to-do list");
+    expect(app.lastFrame()).not.toContain("Ctrl+T");
+  });
+
+  // /screen saves its choice, so this runs in the home made private once.
+  it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
+    writeKeys(savingHome, { bindings: [{ context: "Chat", bindings: { "ctrl+y": "command:screen" } }] });
+    onTestFinished(() => unlinkSync(keysIn(savingHome)));
+    const lead = new Held();
+    const { app } = await watching([], {}, { lead }, {}, savingHome);
+    await type(app, "go");
+    await press(app, "ab", "\u0019");
+    expect(flat(app)).not.toContain("screen is now");
+    lead.answer("done");
+    await sees(app, "screen is now full");
+    expect(app.lastFrame()).toContain("› ab");
+  });
+
+  it("says the keys file's problems in the conversation, each once while it stays, and keeps the keys before a broken edit", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, '{"bindings": ');
+    const { app, bus } = await watching([], {}, {}, {}, home);
+    await sees(app, `keybindings.json is not valid JSON: ${parserWords('{"bindings": ')}; the default keys apply`);
+    const reserved = 'keybindings.json: Global "ctrl+c" is a reserved key; it was left out';
+    writeKeys(home, global({ "ctrl+t": null, "ctrl+c": null }));
+    await sees(app, reserved);
+    const read = readsOf();
+    await read(() => writeKeys(home, global({ "ctrl+t": null, "ctrl+c": null, "ctrl+y": "app:toggleTodos" })));
+    writeKeys(home, '{"bindings": [');
+    await sees(app, `keybindings.json is not valid JSON: ${parserWords('{"bindings": [')}; the last good keys still apply`);
+    expect(flat(app).split(reserved).length - 1).toBe(1);
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0019"); // Ctrl+Y, from the last good keys
+    expect(app.lastFrame()).not.toContain("write the fix");
   });
 });

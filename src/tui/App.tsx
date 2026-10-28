@@ -9,6 +9,7 @@ import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import type { Task, Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
+import { KEYBINDINGS, type KeysLoaded } from "../keybindings.js";
 import type { Effort } from "../providers/anthropic.js";
 import type { ModelGroup } from "../providers/models.js";
 import { type Loaded, SETTINGS, saveSetting, type Settings, shownFile } from "../settings.js";
@@ -95,7 +96,8 @@ export interface AppProps {
   // holds raw mode too. With none, `[` does nothing. Letting go of stdin and taking it back are for a program in the
   // terminal (owner.ts, program).
   input?: Pick<Hand, "divert" | "hold" | "release" | "retake">;
-  // The table of keys (bindings.ts); the default table when not given. Task 11 lays the keys file over it.
+  // The table of keys (bindings.ts); the default table when not given. With `live`, the keys file replaces it
+  // (release 6 plan, Task 11).
   bindings?: Bindings;
   home: string; // the user's folder, which holds the settings file (release 6 design, "The settings file")
   // The settings file as the launch read it, and the entries a flag or variable gave then (clilib.ts, givenBy): with
@@ -212,10 +214,9 @@ export function App({
   const editor = useRef(empty);
   const goal = useRef<number | null>(null);
   const first = useRef<{ name: string; timer: NodeJS.Timeout } | null>(null); // a key waiting for its second press
-  // The table of keys (release 6 design, "Keys become named actions"), and the timer that draws the hint row again once
-  // a chord's 3 s are up (bindings.ts, CHORD_MS).
-  const [defaultTable] = useState(() => new Bindings(tableOf(DEFAULTS)));
-  const table = bindings ?? defaultTable;
+  // The table of keys (release 6 design, "Keys become named actions"), as the keys file last set it, and the timer that
+  // draws the hint row again once a chord's 3 s are up (bindings.ts, CHORD_MS).
+  const [table, setTable] = useState(() => bindings ?? new Bindings(tableOf(DEFAULTS)));
   const chordTimer = useRef<NodeJS.Timeout | undefined>(undefined);
   // The keys a hint names for an action (keys.ts, named).
   const keyOf = (action: string, context: Context, usual: string) => named(table, action, context, [usual])[0];
@@ -362,6 +363,9 @@ export function App({
   const effortNow = useRef<{ effort: Effort | undefined } | null>(null);
   const waiting = useRef<{ lead?: string; screen?: "full" | "classic" }>({});
   const leadFromFile = useRef(false);
+  // The keys file's problems as last said, and whether a good file has been read (onKeys).
+  const keysWarned = useRef<string[]>([]);
+  const keysRead = useRef(false);
 
   // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
   // design, "Scrolling"); setting `lines` draws them either way.
@@ -521,10 +525,11 @@ export function App({
         watchSettings(
           home,
           (read) => latest.current.onSettings(read),
-          () => latest.current.say(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} is no longer watched this session`)),
+          () => latest.current.say(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} and ${KEYBINDINGS} are no longer watched this session`)),
+          (read) => latest.current.onKeys(read),
         );
     } catch (err) {
-      say(gray(`${shownFile()} is not watched this session (${errorText(err)})`));
+      say(gray(`${path.dirname(shownFile())} is not watched this session (${errorText(err)})`));
     }
     history.current!.load();
     lookUpWindow();
@@ -937,6 +942,18 @@ export function App({
     }
     next();
   };
+  // The keys file, at launch and at each edit (release 6 plan, Task 11): its keys apply at once, `?` and the hints
+  // following them. A broken file keeps the keys before it, the default ones until a good file is read, and says so;
+  // each problem in an entry is said once, while it stays, as a settings warning is (choice 21).
+  const onKeys = (read: KeysLoaded) => {
+    if ("problem" in read) {
+      return say({ text: `${read.problem}; ${keysRead.current ? "the last good keys still apply" : "the default keys apply"}`, color: "red" });
+    }
+    keysRead.current = true;
+    for (const p of read.problems) if (!keysWarned.current.includes(p)) say(gray(p));
+    keysWarned.current = read.problems;
+    setTable(read.table);
+  };
   // One entry's new value, `s` the file's and `now` what applies (above), with its line. A lead or a screen waits for
   // next() (above). A model the file names that cannot be made is said, as at launch (cli.tsx), and the one before is
   // kept.
@@ -1127,6 +1144,7 @@ export function App({
     if (action === "app:exit" && e.text) run("delete");
     else if (!name) {
       if (action && ACTIONS[action]) run(ACTIONS[action]);
+      else if (action?.startsWith("command:")) command(`/${action.slice("command:".length)}`);
       else if (!got) for (const c of commands(ch, key)) run(c);
     } else if (name === "Ctrl-C" && e.text) clear(e); // one press clears
     else if (!again) remember(name);
@@ -1465,6 +1483,13 @@ export function App({
     else send(e);
   };
 
+  // A key bound to command:<name> runs the command as if typed then, the prompt's text left as it is: during a turn it
+  // waits in the queue, as Alt+P's /model does (choice 21).
+  const command = (text: string) => {
+    if (working.current) return void queue.current.push(text);
+    view.current = FOLLOWING;
+    void submit(text);
+  };
   const send = (e: Editor) => {
     view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     keep(e.text);
@@ -1573,7 +1598,7 @@ export function App({
   // functions, set at each, so what they read is the screen as last drawn, never what it was when they were set up
   // (release 6 design, "Tidying the screen code first"). Set while drawing, safe with Ink's non-concurrent root
   // (above).
-  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings };
+  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys };
   const latest = useRef(handlers);
   latest.current = handlers;
 

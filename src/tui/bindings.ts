@@ -33,7 +33,8 @@ const MODIFIERS = new Map<string, "ctrl" | "alt" | "shift">([
 ]);
 // Claude Code's Command or Super key. Ink reports it only through the kitty protocol, which cli.tsx asks for where the
 // terminal has it; a stroke here has no Super, so a keys file cannot name it and strokeOf makes nothing of a key held with it.
-const SUPER = new Set(["cmd", "command", "super", "win"]);
+// The keys file's reader counts a key with one among those Tachikoma has no use for (keybindings.ts).
+export const SUPER = new Set(["cmd", "command", "super", "win"]);
 const SPECIAL = new Map<string, string>([
   ["escape", "escape"],
   ["esc", "escape"],

@@ -194,6 +194,18 @@ Each is marked in its task. None approved yet.
     read as Esc, as in release 5, since it is what two fast Escs look like outside the kitty
     protocol, so `alt+escape` binds only where the terminal has the kitty protocol (found at Task 6's
     spec review).
+21. **Task 11's keys-file words and rules (found at Task 11's build; the coordinator's call, for the
+    user to review).** Each problem's words are in `src/keybindings.ts` and its tests; a broken file
+    says the default keys apply at launch and the last good keys after. An action is unknown only
+    when Tachikoma has it in no context; one bound where the screen does not use it does nothing.
+    Every action and context on Claude Code's keybindings page that Tachikoma lacks is counted in the
+    one skipped line, each key one entry, `cmd+ keys` for all four Super names. `command:` takes only
+    Task 11's eight names, acts at the prompt, and waits in the queue during a turn, as Alt+P does.
+    Of one key bound twice in a context the first stays, a chord with a reserved key in it is
+    refused, and `null` on a reserved key too. The keys are read by the watcher's first read, not in
+    cli.tsx, so `-p` never reads them; problems show in the conversation in both modes, each once
+    while it stays; a good rebind says nothing. The watcher's lines name both files, and a watch
+    that cannot start still reads both files once.
 
 ---
 

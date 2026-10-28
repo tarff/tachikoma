@@ -2,18 +2,32 @@ import { existsSync, type FSWatcher, mkdirSync, mkdtempSync, rmSync, unlinkSync,
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
-import { type Loaded, lastSaved, settingsDir } from "../src/settings.js";
+import { type KeysLoaded, readKeybindings } from "../src/keybindings.js";
+import { type Loaded, lastSaved, readSettings, settingsDir } from "../src/settings.js";
 import { changes, watchSettings } from "../src/settingsWatch.js";
 
-// Each folder watch the watcher starts, kept so a test can make one report an error; otherwise node:fs's own.
+// Each folder watch the watcher starts, kept so a test can make one report an error; otherwise node:fs's own. With
+// `refuse` set, the next watch throws it instead, as Linux's limit on watches would.
 const watches = vi.hoisted(() => [] as FSWatcher[]);
+const refuse = vi.hoisted(() => ({ next: null as Error | null }));
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
-  return { ...fs, watch: (...args: Parameters<typeof fs.watch>) => watches[watches.push(fs.watch(...args)) - 1] };
+  const watch = (...args: Parameters<typeof fs.watch>) => {
+    const err = refuse.next;
+    refuse.next = null;
+    if (err) throw err;
+    return watches[watches.push(fs.watch(...args)) - 1];
+  };
+  return { ...fs, watch };
 });
 
 const temp = () => mkdtempSync(path.join(tmpdir(), "tachi-watch-"));
 const fileOf = (home: string) => path.join(settingsDir(home), "settings.json");
+const keysOf = (home: string) => path.join(settingsDir(home), "keybindings.json");
+// What a keys file read gives, as the problems and the key Ctrl+T is, so two reads can be compared.
+const ctrlT = (k: KeysLoaded | undefined) =>
+  k && ("problem" in k ? k : { problems: k.problems, ctrlT: k.table.press({ key: "t", ctrl: true, alt: false, shift: false }, ["Chat", "Global"], 0) });
+const MOVED = '{"bindings": [{"context": "Global", "bindings": {"ctrl+t": null}}]}';
 // fs.watch reported each of 400 writes within 5 ms on this machine (measured 2026-10-28); 2 s is as long as
 // app.test.tsx's until() waits (40 ticks of 50 ms), room for a busy machine.
 const WATCHED = { timeout: 2_000 };
@@ -23,15 +37,15 @@ describe("changes", () => {
   const file = path.join(temp(), "settings.json");
   // The step, once it has read `start`.
   const from = (start: string | null) => {
-    const step = changes(file);
+    const step = changes(file, readSettings);
     step(start);
     return step;
   };
 
   // So an edit made before the watcher started, during the instruction files' question say, is not missed.
   it("calls back with the first text it reads, whatever it is", () => {
-    expect(changes(file)('{"mode": "ask"}')).toEqual({ settings: { mode: "ask" }, warnings: [] });
-    expect(changes(file)(null)).toEqual({ settings: {}, warnings: [] });
+    expect(changes(file, readSettings)('{"mode": "ask"}')).toEqual({ settings: { mode: "ask" }, warnings: [] });
+    expect(changes(file, readSettings)(null)).toEqual({ settings: {}, warnings: [] });
   });
 
   it("calls back only when the text differs from the last it read", () => {
@@ -82,6 +96,14 @@ describe("changes", () => {
     expect(lastSaved.has(file)).toBe(false);
     expect(step('{"lead": "ollama:b"}')).toEqual({ settings: { lead: "ollama:b" }, warnings: [] });
     expect(step(own)).toEqual({ settings: { lead: "ollama:a" }, warnings: [] });
+  });
+
+  // Release 6 plan, Task 11: the keys file follows the same rules, a removed one being {}, the default keys.
+  it("takes a removed keys file as {}, the default keys, and skips an empty one", () => {
+    const step = changes(path.join(temp(), "keybindings.json"), readKeybindings);
+    expect(ctrlT(step(MOVED) ?? undefined)).toEqual({ problems: [], ctrlT: null });
+    expect(step("")).toBeNull();
+    expect(ctrlT(step(null) ?? undefined)).toEqual({ problems: [], ctrlT: { action: "app:toggleTodos" } });
   });
 });
 
@@ -168,5 +190,51 @@ describe("watchSettings", () => {
     ).toThrow("no");
     // FSWatcher emits "close" on the next tick after close() (node:fs, FSWatcher.close); left open, the test times out.
     await new Promise((resolve) => watches.at(-1)!.once("close", resolve));
+  });
+
+  // Release 6 plan, Task 11: one folder, two files.
+  it("calls back with the keys file at once, with each change to it, and with the default keys once it is removed", async () => {
+    const home = temp();
+    mkdirSync(settingsDir(home));
+    writeFileSync(keysOf(home), MOVED);
+    const settings: Loaded[] = [];
+    const keys: KeysLoaded[] = [];
+    const stop = watchSettings(
+      home,
+      (next) => settings.push(next),
+      () => {},
+      (next) => keys.push(next),
+    );
+    onTestFinished(stop);
+    expect(keys.map(ctrlT)).toEqual([{ problems: [], ctrlT: null }]);
+    writeFileSync(keysOf(home), "");
+    writeFileSync(keysOf(home), '{"bindings": [{"context": "Global", "bindings": {"ctrl+t": null, "ctrl+c": null}}]}');
+    await vi.waitFor(() => expect(keys).toHaveLength(2), WATCHED);
+    expect(ctrlT(keys[1])).toEqual({ problems: ['keybindings.json: Global "ctrl+c" is a reserved key; it was left out'], ctrlT: null });
+    unlinkSync(keysOf(home));
+    await vi.waitFor(() => expect(ctrlT(keys.at(-1))).toEqual({ problems: [], ctrlT: { action: "app:toggleTodos" } }), WATCHED);
+    expect(keys).toHaveLength(3); // the empty write was skipped
+    expect(settings).toEqual([{ settings: {}, warnings: [] }]); // the settings file, missing throughout, read once
+  });
+
+  // Linux's limit on watches, say: the files as they are still apply, unwatched (choice 21).
+  it("reads both files once when the watch cannot start, then throws", () => {
+    const home = temp();
+    mkdirSync(settingsDir(home));
+    writeFileSync(fileOf(home), '{"maxTasks": 2}');
+    writeFileSync(keysOf(home), MOVED);
+    const settings: Loaded[] = [];
+    const keys: KeysLoaded[] = [];
+    refuse.next = new Error("ENOSPC: System limit for number of file watchers reached");
+    expect(() =>
+      watchSettings(
+        home,
+        (next) => settings.push(next),
+        () => {},
+        (next) => keys.push(next),
+      ),
+    ).toThrow("ENOSPC");
+    expect(settings).toEqual([{ settings: { maxTasks: 2 }, warnings: [] }]);
+    expect(keys.map(ctrlT)).toEqual([{ problems: [], ctrlT: null }]);
   });
 });
