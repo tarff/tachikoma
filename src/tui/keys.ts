@@ -71,9 +71,10 @@ const either = (items: string[]) => (items.length < 3 ? items.join(" or ") : `${
 // contexts the prompt obeys (App.tsx, contextsOf: Scroll too in full screen), takes, the rest from the table. Ctrl-C and
 // Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them.
 export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"]): string[] {
-  // A key is named only where it runs its action at the prompt; Scroll's, in classic mode, where Scroll is not in force,
-  // keep the table's keys, as the list names them "(full screen)".
-  const k = (action: string, context: Context, ...usual: string[]) => named(b, action, context, usual, prompt.includes(context) ? prompt : undefined);
+  // A key is named only where it runs its action at the prompt; Scroll's as full screen's prompt runs them, Chat, Scroll
+  // and Global (App.tsx, contextsOf), as the list names them "(full screen)".
+  const fullScreen: Context[] = prompt.includes("Scroll") ? prompt : [...prompt.slice(0, -1), "Scroll", ...prompt.slice(-1)];
+  const k = (action: string, context: Context, ...usual: string[]) => named(b, action, context, usual, context === "Scroll" ? fullScreen : prompt);
   const scroll = (action: string, usual: string) => k(`scroll:${action}`, "Scroll", usual)[0];
   // Every key that runs an action at the prompt, from each context the prompt obeys: release 6's keys and the command keys.
   const all = (action: string) => [...new Set(prompt.flatMap((c) => b.keysFor(action, c)))].filter((key) => b.acts(key, action, prompt)).map(spelled);

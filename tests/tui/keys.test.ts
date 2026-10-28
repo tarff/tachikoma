@@ -215,6 +215,13 @@ describe("the keys named in help and hints", () => {
     expect(keyList(b, ["Chat", "Global"])).toContain("  Home End or Ctrl+A Ctrl+E  line start, end · Alt+B Alt+F or Ctrl+← Ctrl+→  by word");
   });
 
+  // The Scroll line names full screen's keys, where a Chat binding wins over Scroll's, so classic mode leaves it out too.
+  it("in classic mode leaves out of the Scroll line a key a Chat binding takes in full screen", () => {
+    const list = keyList(over("Chat", { pageup: "chat:stash" }));
+    expect(list).toContain("  Ctrl+S or PgUp  stash the prompt or bring it back · Alt+V  paste a picture");
+    expect(list).toContain("  PgDn  half a screen · Ctrl+Home Ctrl+End  top, latest · Shift+↑ Shift+↓  a line (full screen)");
+  });
+
   it("lists the keys a table binds in place of the defaults", () => {
     const list = keyList(over("Chat", { "ctrl+n": null, enter: null, "alt+enter": "chat:submit", "ctrl+j": null }));
     expect(list[1]).toBe("  Alt+Enter  send · Shift+Enter or \\ then Alt+Enter  new line");
