@@ -177,6 +177,10 @@ Each is marked in its task. None approved yet.
     removed and a line saying so, rather than held back or put back in the prompt, so the queue's
     order and newer typing are never disturbed (found at the plan's third review). Esc or Ctrl-C
     while it waits ends the wait the same way.
+18. **A key set to `null` in a context does nothing there (Task 5),** even when an outer context
+    binds it: `"ctrl+t": null` under Chat stops Ctrl+T at the prompt, and Global's Ctrl+T still
+    works elsewhere (found at Task 5's spec review; Claude Code's docs leave it open; user: "Sure
+    b").
 
 ---
 
