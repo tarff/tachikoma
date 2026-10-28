@@ -121,7 +121,7 @@ const fromClipboard = () => {
   return tool && (() => readImage(tool));
 };
 // Whether a pasted path names a file, not a folder; one that cannot be looked at, as a name Windows does not allow, is
-// not one.
+// not one. Synchronous, as the paste must be pictures or text before the next key is applied.
 const isFile = (file: string) => {
   try {
     return statSync(file).isFile();
@@ -805,7 +805,8 @@ export function App({
   };
   // chat:imagePaste: the next picture's marker at the cursor at once, so pictures keep the order they were asked for,
   // and the picture filled in under its number when the read ends, wherever the marker is by then (design, "While a
-  // read runs"). With no reader, as on Linux with neither tool, no marker goes in (plan, Task 15).
+  // read runs"). With no reader, as on Linux with no display (clipboard.ts, imageReader), no marker goes in (plan,
+  // Task 15).
   const imagePaste = (e: Editor) => {
     const read = readPicture === undefined ? fromClipboard() : readPicture;
     if (!read) return say({ text: "No clipboard reader here: install wl-paste or xclip.", color: "red" });

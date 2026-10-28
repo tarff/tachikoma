@@ -238,7 +238,6 @@ const tempFolder = () => {
 describe("imageReader", () => {
   it("on Windows, reads the picture through Windows Forms in PowerShell under -STA, writing it as PNG in base64", () => {
     const reader = imageReader("win32", {})!;
-    expect(reader.command.toLowerCase()).toMatch(/powershell\.exe$/);
     expect(reader.command).toBe(system32("WindowsPowerShell/v1.0/powershell.exe"));
     expect(reader.args).toEqual([
       "-NoProfile",
