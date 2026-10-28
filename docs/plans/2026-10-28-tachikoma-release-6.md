@@ -433,7 +433,10 @@ Commit: `feat: keys as named actions in Claude Code's format, with chords`.
 So PgUp, PgDn, Ctrl+Home and Ctrl+End keep scrolling in a search and in the detail view, as they
 do today (found at the plan's second review); in classic mode Scroll is never in force, and the
 keys keep release 4's meanings as today. A context's own binding beats Scroll's, so the detail
-view's Home and End stay `transcript:top`/`bottom`.
+view's Home and End stay `transcript:top`/`bottom`. The wheel is the one exception under the model
+list: it still scrolls the conversation there (release 5's choice 3), so in full screen the mouse
+handler presses wheel strokes with Scroll after Select for the picker, while keys get none (found
+at Task 2's code review).
 
 **A chord under way comes first** (found at the plan's third review): while a chord's first key
 waits, the next key goes to `bindings.press` before anything below, so a chord ending in a plain
