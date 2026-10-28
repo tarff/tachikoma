@@ -139,6 +139,7 @@ tachi logout chatgpt                               sign out of ChatGPT
 --json            with -p, print every event as one JSON line
 --raw             with -p, print the answer exactly as written, control codes and all
 -h, --help        show this help
+Options --lead to --scroll-speed can also be set in ~/.tachikoma/settings.json; a flag or variable wins.
 ```
 
 In a session, `/lead <provider:model>` switches the lead model, `/model` picks it from a list,

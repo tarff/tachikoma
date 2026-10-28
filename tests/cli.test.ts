@@ -123,6 +123,15 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(tachi("--help").stdout).toMatch(/Esc\s+and\s+Ctrl\+T\s+can\s+be\s+moved\s+in\s+the\s+keys\s+file;\s+Ctrl-C\s+and\s+Ctrl-D\s+cannot\./);
   });
 
+  // Final review: the help showed --lead as needed, and never named the settings file.
+  it("shows --lead as optional in the help, and says the options from --lead to --scroll-speed can be set in the settings file", () => {
+    const help = tachi("--help").stdout;
+    expect(help).toMatch(/^ {2}tachi \[--lead <provider:model>\] \[options\] +interactive session$/m);
+    expect(help).toMatch(/^ {2}tachi \[--lead <provider:model>\] -p "<prompt>" +run one prompt, print the answer, exit$/m);
+    const file = path.join("~", ".tachikoma", "settings.json"); // this machine's separator
+    expect(help).toContain(`\n  Options --lead to --scroll-speed can also be set in ${file}; a flag or variable wins.\n`);
+  });
+
   it("lists --scroll-speed in the help, and stops on a bad one, from the option or, in interactive mode, TACHI_SCROLL_SPEED", () => {
     expect(tachi("--help").stdout).toMatch(/^ {2}--scroll-speed <n> /m);
     let r = tachi("--lead", "ollama:none", "--scroll-speed", "abc", "-p", "hi");

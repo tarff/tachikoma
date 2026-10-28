@@ -50,8 +50,8 @@ import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tu
 const HELP = `tachi: a coding agent for your terminal
 
 Usage:
-  tachi --lead <provider:model> [options]            interactive session
-  tachi --lead <provider:model> -p "<prompt>"        run one prompt, print the answer, exit
+  tachi [--lead <provider:model>] [options]          interactive session
+  tachi [--lead <provider:model>] -p "<prompt>"      run one prompt, print the answer, exit
   tachi login chatgpt [--new | --account <number>]   sign in to use your ChatGPT plan;
                       [--keychain]                   --keychain seals the tokens with a key in the keychain
   tachi logout chatgpt                               sign out of ChatGPT
@@ -74,6 +74,7 @@ Options:
   --json            with -p, print every event as one JSON line
   --raw             with -p, print the answer exactly as written, control codes and all
   -h, --help        show this help
+  Options --lead to --scroll-speed can also be set in ${shownFile()}; a flag or variable wins.
 
 In a session: /lead <provider:model> switches the lead model, /model picks it from a list,
 /login chatgpt and /logout chatgpt sign in and out, /tasks lists the subagents (/tasks t1 shows one,
