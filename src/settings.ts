@@ -110,12 +110,15 @@ export async function saveSetting<K extends keyof Settings>(key: K, value: Requi
   });
 }
 
+// An empty file, or one of only whitespace after a byte-order mark: nothing set, not a broken file (the coordinator's
+// decision, 2026-10-28, in the spirit of the plan's choice 3). The settings watcher skips the same texts.
+export const emptyText = (text: string) => !(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text).trim();
+
 // The file's entries, before any is checked. A byte-order mark at the start, which Windows PowerShell 5.1's Out-File
-// and Set-Content -Encoding utf8 write, is skipped; an empty file, or one of only whitespace, means nothing set, not a
-// broken file (the coordinator's decision, 2026-10-28, in the spirit of the plan's choice 3).
+// and Set-Content -Encoding utf8 write, is skipped; an empty file is {} (emptyText).
 function entriesOf(text: string): Record<string, unknown> {
+  if (emptyText(text)) return {};
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-  if (!text.trim()) return {};
   let data: unknown;
   try {
     data = JSON.parse(text);

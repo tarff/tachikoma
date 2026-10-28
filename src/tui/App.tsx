@@ -954,11 +954,16 @@ export function App({
     } else if (key === "effort") {
       effortNow.current = { effort: now.effort };
       session.lead.setEffort?.(now.effort);
+      // As at launch (cli.tsx), the fallback and the subagents' worker too: the coordinator's call at Task 9's spec
+      // review.
+      session.fallback?.setEffort?.(now.effort);
+      tasks.worker.setEffort?.(now.effort);
       line(now.effort ?? "the model's default");
     } else if (key === "fallback") {
       const p = model(now.fallback);
       if (p === null) return;
       session.setFallback(p);
+      tasks.setFallback(p); // subagents get the lead's fallback, as at launch (cli.tsx)
       line(p?.id ?? "off");
     } else if (key === "worker") {
       const p = model(now.worker);

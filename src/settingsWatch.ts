@@ -1,14 +1,15 @@
 import { existsSync, mkdirSync, readFileSync, watch } from "node:fs";
 import path from "node:path";
-import { lastSaved, type Loaded, readSettings, SETTINGS, settingsDir } from "./settings.js";
+import { emptyText, lastSaved, type Loaded, readSettings, SETTINGS, settingsDir } from "./settings.js";
 
 // What the watcher makes of the file's text each time it reads it (null: there is no file), in order: the settings
 // to apply, a problem to report, or null for no change (release 6 plan, Task 9). Tachikoma's own last save is
 // passed over once (settings.ts, lastSaved), so the same text written later by hand still counts; an edit that lands
 // just before a save is read into the save's text, and so is passed over with it, a small risk the plan accepts. An
-// empty file is skipped, as editors such as Notepad empty the file before writing it (choice 3); a removed one is {}
-// (release 6 design, "Live edits"). A broken file is reported once for the same broken text, so an editor's empty
-// write between two saves of it says nothing more. Apart from the watching, so the rule can be checked text by text.
+// empty file, as the launch reads one (settings.ts, emptyText), is skipped, as editors such as Notepad empty the file
+// before writing it (choice 3); a removed one is {} (release 6 design, "Live edits"). A broken file is reported once
+// for the same broken text, so an editor's empty write between two saves of it says nothing more. Apart from the
+// watching, so the rule can be checked text by text.
 export function changes(file: string, start: string | null): (text: string | null) => Loaded | null {
   let last = start;
   let reported: string | null = null;
@@ -20,7 +21,7 @@ export function changes(file: string, start: string | null): (text: string | nul
     }
     if (text === last) return null;
     last = text;
-    if (text === "") return null;
+    if (text !== null && emptyText(text)) return null;
     const read = text === null ? { settings: {}, warnings: [] } : readSettings(text);
     if (!("problem" in read)) reported = null;
     else if (text === reported) return null;

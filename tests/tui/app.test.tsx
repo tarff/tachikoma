@@ -4927,17 +4927,51 @@ describe("App's live settings", () => {
     expect(efforts).toEqual(["high", "low", undefined]);
   });
 
-  it("rescues a refusal on a fallback the file names, and none once the entry is removed", async () => {
+  it("rescues a refusal, the lead's and a subagent's, on a fallback the file names, and none once the entry is removed", async () => {
     const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
-    const { app, write } = await watching([refused, refused], {}, { newLead: new FakeProvider("b", [reply("rescued")]) });
+    const rescue = new FakeProvider("b", [reply("rescued"), reply("rescued the subagent")]);
+    const worker = new FakeProvider("w", [refused, refused]);
+    const { app, tasks, write } = await watching([refused, refused], {}, { newLead: rescue, worker });
     write({ fallback: "ollama:f" });
     await sees(app, `fallback is now fake:b ${FROM}`);
     await type(app, "one");
     await until(app, "rescued");
+    expect(await tasks.start("one", { background: false }).done).toEqual({ state: "done", text: "rescued the subagent" });
     write({});
     await sees(app, `fallback is now off ${FROM}`);
     await type(app, "two");
     await until(app, "✗ refusal: declined");
+    expect(await tasks.start("two", { background: false }).done).toEqual({ state: "failed", text: "declined" });
+  });
+
+  // The coordinator's call at Task 9's spec review: as at launch (cli.tsx), the effort reaches the fallback and the
+  // subagents' worker too, not only the lead.
+  it("sends a changed effort to the fallback and the subagents' worker as well as the lead", async () => {
+    // Records the effort each request goes with, as AnthropicProvider sends it.
+    class Effortful extends FakeProvider {
+      effort: string | undefined;
+      readonly sent: (string | undefined)[] = [];
+      setEffort(effort: string | undefined) {
+        this.effort = effort;
+      }
+      override complete(req: Parameters<FakeProvider["complete"]>[0]) {
+        this.sent.push(this.effort);
+        return super.complete(req);
+      }
+    }
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const lead = new Effortful("a", [refused]);
+    const rescue = new Effortful("b", [reply("rescued")]);
+    const worker = new Effortful("w", [reply("subagent done")]);
+    const { app, tasks, write } = await watching([], {}, { lead, newLead: rescue, worker });
+    write({ fallback: "ollama:f" });
+    await sees(app, `fallback is now fake:b ${FROM}`);
+    write({ fallback: "ollama:f", effort: "low" });
+    await sees(app, `effort is now low ${FROM}`);
+    await type(app, "go");
+    await until(app, "rescued");
+    expect(await tasks.start("one", { background: false }).done).toEqual({ state: "done", text: "subagent done" });
+    expect([lead.sent, rescue.sent, worker.sent]).toEqual([["low"], ["low"], ["low"]]);
   });
 
   it("starts later subagents on the worker the file names, and on the lead's model once the entry is removed", async () => {
@@ -5018,10 +5052,24 @@ describe("App's live settings", () => {
     expect(app.lastFrame()).toContain("perm ask");
   });
 
-  // Choice 3: editors such as Notepad empty the file before writing it.
+  // The watcher looks for Tachikoma's own save in each text it reads (settingsWatch.ts, changes), so a call here once
+  // the file is written shows the watcher has read what was written.
+  const readsOf = () => {
+    const get = vi.spyOn(lastSaved, "get");
+    onTestFinished(() => get.mockRestore());
+    return async (write: () => void) => {
+      get.mockClear();
+      write();
+      await vi.waitFor(() => expect(get).toHaveBeenCalled(), WATCHED);
+    };
+  };
+
+  // Choice 3: editors such as Notepad empty the file before writing it. Neither entry is given by a flag, so a reset
+  // would show.
   it("takes an editor's empty write, then its full text, as one change, with no line resetting the rest", async () => {
     const { app, write } = await watching([], { mode: "project", maxTasks: 2 }, { mode: "project" });
-    write("");
+    const read = readsOf();
+    await read(() => write(""));
     write({ mode: "project", maxTasks: 3 });
     await sees(app, `maxTasks is now 3 ${FROM}`);
     expect(flat(app)).not.toContain("mode is now");
@@ -5040,7 +5088,9 @@ describe("App's live settings", () => {
     write('{"mode": ');
     await sees(app, line);
     expect(app.lastFrame()).toContain("perm project");
-    write('{"mode": '); // the same broken text again
+    const read = readsOf();
+    await read(() => write("")); // an editor's empty write, then the same broken text again
+    await read(() => write('{"mode": '));
     write({ mode: "ask" });
     await sees(app, `mode is now ask ${FROM}`);
     expect(flat(app).split(line).length - 1).toBe(1);

@@ -29,6 +29,13 @@ describe("changes", () => {
     expect(step('{"mode": "project"}')).toEqual({ settings: { mode: "project" }, warnings: [] });
   });
 
+  // As the launch reads them (settings.ts, entriesOf): a byte-order mark alone, or only spaces and line breaks.
+  it("skips every text the launch calls empty, not only one with no characters", () => {
+    const step = changes(file, '{"mode": "ask"}');
+    for (const text of [String.fromCharCode(0xfeff), " ", "\r\n", " \t\n "]) expect(step(text)).toBeNull();
+    expect(step('{"mode": "project"}')).toEqual({ settings: { mode: "project" }, warnings: [] });
+  });
+
   it("takes a removed file as {}", () => {
     const step = changes(file, '{"mode": "project"}');
     expect(step(null)).toEqual({ settings: {}, warnings: [] });

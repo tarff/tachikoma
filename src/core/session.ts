@@ -41,6 +41,10 @@ export class Session {
     this.opts.bus.emit("lead", provider.id);
   }
 
+  get fallback(): Provider | undefined {
+    return this.#fallback;
+  }
+
   // From the next refusal; a rescue already under way finishes on the one it started with (release 6 design, "When a
   // live change applies").
   setFallback(provider: Provider | undefined): void {

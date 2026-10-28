@@ -697,6 +697,8 @@ prompt is unchanged and one line: `The editor failed (<reason>). Set VISUAL or E
 end). `/settings` and `/keybindings` open their real file with `editFile` (found at the plan's
 second review: a temporary copy would reach the watcher only after the editor closed, if at all),
 making a missing one first (`{}`, `{"bindings": []}` with two-space indents).
+A live edit of `editor` says its line, as Task 9's entries do, since Task 9 holds the file's last
+settings in `fileNow` (found at Task 9's spec review).
 
 **Tests** (a stand-in editor: a small Node script given as the command that rewrites the file, or
 exits 1, or sleeps until told):
@@ -971,6 +973,8 @@ or VISUAL goes to NORMAL and is not `chat:cancel`; in NORMAL it is. The hint row
 (choice 15). The mode and cursor are kept when the detail view, a menu or the model list opens
 and closes. `/vim` (choice 6) and the live
 `editorMode` entry switch it; `/vim` saves.
+A live edit of `vimInsertModeRemaps` applies from the next key and says its line, as `editorMode`
+does (found at Task 9's spec review).
 
 **Tests:** `/vim` on and off with the line and the saved entry; `dw` written in one read deletes a
 word; a paste in NORMAL inserts; Esc in INSERT during a turn goes to NORMAL and the turn goes on;
