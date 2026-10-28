@@ -259,10 +259,10 @@ Each is marked in its task. None approved yet.
     first, whatever is half typed, as Claude Code 2.1.312's vim hook does (`if(a.ctrl||a.meta)
     {if(l.mode==="VISUAL"){...}}`, read 2026-10-29); then a key the table binds does its action
     (Ctrl+T, Ctrl+O, Ctrl-C), and an editor key no binding takes (Ctrl+A, Ctrl+K, Alt+B) does
-    nothing more, since Claude Code marks the key handled there and its text field skips it; so
-    Ctrl+D in VISUAL with text leaves VISUAL and then deletes the character after the cursor, as
-    `app:exit` does on a prompt with text. In
-    NORMAL and INSERT those editor keys keep working, as in Claude Code. Enter, bound to
+    nothing more, since Claude Code marks the key handled there and its text field skips it.
+    Ctrl+D, which the table binds to `app:exit`, leaves VISUAL and then, with text, deletes the
+    character after the cursor, as `app:exit` does on a prompt with text. In NORMAL and INSERT
+    those editor keys keep working, as in Claude Code. Enter, bound to
     `chat:submit`, sends from VISUAL too, as bindings come first, and the mode is then NORMAL;
     Claude Code moves down a line there, which vim.ts does only after a count (`2` Enter). Any
     change App makes to the prompt's text in VISUAL (a message sent, a recall, a paste, a
