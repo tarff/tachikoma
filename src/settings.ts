@@ -151,7 +151,9 @@ function remaps(entry: string, value: unknown, warnings: string[]): Record<strin
   const kept: Record<string, "<Esc>"> = {};
   for (const [keys, target] of Object.entries(value)) {
     if (/^[\p{L}\p{N}\p{P}\p{S}]{2}$/u.test(keys) && target === "<Esc>") kept[keys] = target;
-    else warnings.push(`${entry} entry ${JSON.stringify(keys)} is not two printable characters mapped to "<Esc>"; it was left out`);
+    else {
+      warnings.push(`${entry} entry ${JSON.stringify(keys)} is not two letters, digits, punctuation marks or symbols mapped to "<Esc>"; it was left out`);
+    }
   }
   return kept;
 }

@@ -357,9 +357,28 @@ describe("vim: editing", () => {
     keys("|a\nb", ["o", "x", "escape", "."], "a\nx\n|x\nb");
   });
 
-  it(".: a count before it takes the place of the change's own count, as in Vim", () => {
-    keys("|a b c d e", "dw2.", "|d e");
-    keys("|a b c d e", "dw2..", "|");
+  // Not after an operator over h, l, Space, Backspace, % or a find, nor after >>, <<, J, r or a VISUAL change.
+  it(".: a count before it applies to that . alone, and only for x, s, p, text objects and most operators, as Claude Code's own code has it", () => {
+    expect(keys("|a b c d e", "dw2.", "|d e").v.lastChange).toEqual({ keys: ["d", "w"], count: "" });
+    keys("|a b c d e", "dw2..", "|e");
+    keys("|abcdef", "x3.", "|ef");
+    keys("|abcdef", "dl3.", "|cdef");
+    keys("|a,b,c,d", "df,2.", "|c,d");
+    keys("|a\nb", ">>2.", "    |a\nb");
+  });
+
+  it(".: repeats what was typed in an INSERT no command began, as an insert at the cursor, as Claude Code records it", () => {
+    keys("|", ["a", "b", "escape", "0", "."], "a|bab", "NORMAL", start);
+    const dw = { keys: ["d", "w"], count: "" };
+    expect(keys("a|b", ["escape"], "|ab", "NORMAL", { ...start, lastChange: dw }).v.lastChange).toEqual(dw); // nothing typed
+  });
+
+  it(".: an INSERT no command began whose edits reached past where it began has nothing to repeat", () => {
+    let r = press(start, at("ab|"), "x");
+    r = { ...r, e: apply(apply(r.e, "backspace"), "backspace") }; // App's Backspace, twice
+    r = press(r.v, r.e, "escape");
+    expect(show(r.e)).toBe("|a");
+    expect(r.v.lastChange).toBeUndefined();
   });
 
   it(".: the change and its typing are one undo step", () => {
@@ -716,6 +735,20 @@ describe("vim: vimInsertModeRemaps", () => {
     expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "a|xb", mode: "NORMAL" });
     expect(show(press(r.v, r.e, "u").e)).toBe("a|b");
     expect(show(press(r.v, r.e, ".").e)).toBe("a|xxb");
+  });
+
+  // Claude Code 2.1.312's own code (read 2026-10-29): a remap ending an INSERT no command began records it as an
+  // insert, even of nothing, unless the change before went into INSERT itself.
+  it("ending an INSERT no command began, records what was typed there for ., even when nothing was", () => {
+    let r = timed("a|b", [["x", 0], ["j", 1], ["j", 2]]);
+    expect(show(r.e)).toBe("a|xb");
+    expect(show(press(r.v, move(r.e, 0), ".").e)).toBe("|xaxb");
+    const dw = { keys: ["d", "w"], count: "" };
+    r = timed("ab|", [["j", 0], ["j", 1]], { ...start, lastChange: dw });
+    expect(show(r.e)).toBe("a|b");
+    expect(show(press(r.v, r.e, ".").e)).toBe("a|b"); // the empty insert took dw's place
+    const cw = { keys: ["c", "w"], count: "", typed: "x" };
+    expect(timed("ab|", [["j", 0], ["j", 1]], { ...start, lastChange: cw }).v.lastChange).toEqual(cw);
   });
 
   it("does nothing without pairs, or outside INSERT", () => {

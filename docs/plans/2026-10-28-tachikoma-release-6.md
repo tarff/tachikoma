@@ -960,12 +960,18 @@ Commit: `feat: a request with pictures refused as invalid asks before sending ag
 
 ```ts
 export type VimMode = "INSERT" | "NORMAL" | "VISUAL" | "VISUAL LINE";
+// As built through Task 20: the last change for `.` (its keys, its count apart, what its INSERT typed, a VISUAL change's
+// size and put), the register with its pictures' spans (Task 14), VISUAL's anchor, and INSERT's capture and remap wait.
+export type Change = { keys: string[]; count: string; typed?: string; selected?: { line: boolean; size: number }; put?: Register };
 export interface Vim { mode: VimMode; pending: string; count: string; lastFind?: { op: "f" | "F" | "t" | "T"; ch: string };
-  lastChange?: string[]; register: { text: string; linewise: boolean }; anchor?: number }
+  lastChange?: Change; register: { text: string; linewise: boolean; spans: readonly Span[] }; anchor?: number;
+  entered?: { head: string; tail: string; plain?: true }; remap?: { ch: string; at: number; before: Editor; text: string; cursor: number };
+  goal?: { column: number; cursor: number; text: string } }
 export const start: Vim;   // INSERT
+export type Remaps = { pairs: Readonly<Record<string, "<Esc>">>; now: number };   // vimInsertModeRemaps, the key's time in ms
 // One key (a grapheme, or a named key: "escape", "enter", "backspace", "left"...). Returns the new state and editor, and an
 // action for App when the key means one ("submit", "history:previous", "history:next", "history:search", "help").
-export function press(v: Vim, e: Editor, key: string): { v: Vim; e: Editor; act?: string };
+export function press(v: Vim, e: Editor, key: string, remaps?: Remaps): { v: Vim; e: Editor; act?: string };
 ```
 
 This task: mode switching (`i I a A o O`, Esc), navigation (`h j k l Space w e b 0 $ ^ gg G f F
@@ -1028,13 +1034,24 @@ and closes. `/vim` (choice 6) and the live
 `editorMode` entry switch it; `/vim` saves.
 A live edit of `vimInsertModeRemaps` applies from the next key and says its line, as `editorMode`
 does (found at Task 9's spec review).
+App passes `press` the remaps as `{ pairs, now }`: `pairs` the settings file's
+`vimInsertModeRemaps`, `now` the key's time in ms. `press` hands INSERT's other keys back with the
+editor unchanged but `v.remap` dropped, so App keeps the `v` it returns; a key App handles without
+`press` drops `v.remap` too, as Claude Code clears it on every key (its `cancelPendingRemap`; found
+at Task 20's spec review).
+When App puts new text in the prompt (a message sent, a history recall, the editor's text back), it
+drops `v.entered`, so `.` takes what is typed next from its first character (found at Task 20's
+spec review).
+Claude Code leaves VISUAL on any Ctrl or Meta key, which then does its own action; this task settles
+what Tachikoma does (found at Task 20's spec review).
 
 **Tests:** `/vim` on and off with the line and the saved entry; `dw` written in one read deletes a
 word; a paste in NORMAL inserts; Esc in INSERT during a turn goes to NORMAL and the turn goes on;
 Esc in NORMAL during a turn stops it; Enter in NORMAL sends; `/` in NORMAL opens Ctrl+R's search;
 the mode kept across Ctrl+O; the live setting switching it; `d` then Ctrl+T toggles the to-do
 list and leaves `d` pending, `d` then `w` deletes a word even with `w` bound in Chat; Esc with
-`chat:cancel` rebound to Ctrl+Q still goes to NORMAL.
+`chat:cancel` rebound to Ctrl+Q still goes to NORMAL; with `"jj": "<Esc>"` set, `jj` typed within
+1 s on a fake clock goes to NORMAL leaving neither `j`.
 
 Commit: `feat: vim mode at the prompt, switched by /vim and the settings file`.
 

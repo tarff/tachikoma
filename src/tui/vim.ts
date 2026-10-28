@@ -22,9 +22,10 @@ export interface Vim {
   lastChange?: Change;
   register: Register; // the last yank or delete, kept here and never on the clipboard
   anchor?: number; // where VISUAL's selection began; the cursor is its other end
-  // The text before and after the cursor when a command went into INSERT. At Esc, what lies between them is what was
-  // typed, for `.`, whatever App's own keys did in between: Backspace, the arrows and pastes are App's (plan, Task 21).
-  entered?: { head: string; tail: string };
+  // The text before and after the cursor when a command went into INSERT, or at the first character typed in an
+  // INSERT no command began (`plain`). At Esc, what lies between them is what was typed, for `.`, whatever App's own
+  // keys did in between: Backspace, the arrows and pastes are App's (plan, Task 21).
+  entered?: { head: string; tail: string; plain?: true };
   // A remap pair's first character, typed at `at` (ms), with the editor before it and the text and cursor it left.
   remap?: { ch: string; at: number; before: Editor; text: string; cursor: number };
   // The column, in characters, that j and k keep across a shorter line (Infinity after $, the line's
@@ -42,9 +43,13 @@ export type Remaps = { pairs: Readonly<Record<string, "<Esc>">>; now: number };
 
 // One key: a character, or a named key ("escape", "enter", "left", ...). The act is for App to do:
 // "submit", "history:previous", "history:next", "history:search" or "help".
-// Not every key is vim's. In INSERT only a typed character and Esc are; any other key comes back
-// unchanged, and App edits with `commands()` as without vim mode. In NORMAL a lone Esc, with nothing
-// half typed, is App's own Esc, so App checks `v.pending || v.count` before giving NORMAL's Esc to vim.
+// Not every key is vim's. In INSERT only a typed character and Esc are; any other key comes back with
+// the editor unchanged but `remap` dropped, as a pair's wait ends at any key, so App keeps the returned
+// `v` and edits with `commands()` as without vim mode. A key App handles without `press` must drop
+// `v.remap` too, as Claude Code clears it on every key (its `cancelPendingRemap`). When App puts new text
+// in the prompt (a message sent, a history recall), it drops `v.entered`, so `.` takes what is typed next
+// from its first character. In NORMAL a lone Esc, with nothing half typed, is App's own Esc, so App
+// checks `v.pending || v.count` before giving NORMAL's Esc to vim.
 // VISUAL's cursor is not put on a character first: there `$` selects the line break too, as in Vim.
 export function press(v: Vim, e: Editor, key: string, remaps?: Remaps): Result {
   if (v.mode === "INSERT") return insert(v, e, key, remaps);
@@ -62,23 +67,31 @@ function insert(v: Vim, e: Editor, key: string, remaps?: Remaps): Result {
   const { remap, ...rest } = v;
   if (!isChar(key)) return key === "escape" ? toNormal(rest, e) : { v: rest, e };
   if (remap && remaps?.pairs[remap.ch + key] === "<Esc>" && remaps.now - remap.at <= REMAP_MS && e.text === remap.text && e.cursor === remap.cursor) {
-    return toNormal(rest, remap.before);
+    return toNormal(rest, remap.before, true);
   }
+  const typing = rest.entered ? rest : { ...rest, entered: { head: e.text.slice(0, e.cursor), tail: e.text.slice(e.cursor), plain: true as const } };
   const d = apply(e, { type: "insert", text: key });
-  if (!remaps || !Object.keys(remaps.pairs).some((p) => p.startsWith(key))) return { v: rest, e: d };
-  return { v: { ...rest, remap: { ch: key, at: remaps.now, before: e, text: d.text, cursor: d.cursor } }, e: d };
+  if (!remaps || !Object.keys(remaps.pairs).some((p) => p.startsWith(key))) return { v: typing, e: d };
+  return { v: { ...typing, remap: { ch: key, at: remaps.now, before: e, text: d.text, cursor: d.cursor } }, e: d };
 }
 
-// Esc: NORMAL, the cursor back onto the character before, as in Vim. What lies between the text before and after
-// where a command went into INSERT joins that command's change for `.`; when either is gone, the INSERT reached past
-// where it began, and `.` has nothing to repeat rather than a part of it.
-function toNormal(v: Vim, e: Editor): Result {
+// Esc, or a remap (`remapped`): NORMAL, the cursor back onto the character before, as in Vim. What lies between the
+// text before and after where INSERT began is what was typed: it joins the change of the command that went into
+// INSERT, for `.`; when either piece is gone, the INSERT reached past where it began, and `.` has nothing to repeat
+// rather than a part of it. An INSERT no command began is an insert of its own, as Claude Code 2.1.312's own code
+// records it (read 2026-10-29): when something was typed, or when a remap ended it, even with nothing typed, unless
+// the change before was a command that went into INSERT.
+function toNormal(v: Vim, e: Editor, remapped = false): Result {
   const { entered, ...rest } = v;
   let { lastChange } = rest;
-  if (entered && lastChange) {
-    const { head, tail } = entered;
+  if (entered) {
+    const { head, tail, plain } = entered;
     const kept = e.text.length >= head.length + tail.length && e.text.startsWith(head) && e.text.endsWith(tail);
-    lastChange = kept ? { ...lastChange, typed: e.text.slice(head.length, e.text.length - tail.length) } : undefined;
+    const typed = e.text.slice(head.length, e.text.length - tail.length);
+    const intoInsert = !!lastChange?.keys.length && lastChange.typed !== undefined;
+    if (!kept) lastChange = undefined;
+    else if (!plain) lastChange = lastChange && { ...lastChange, typed };
+    else if (typed || (remapped && !intoInsert)) lastChange = { keys: [], count: "", typed };
   }
   const c = e.cursor;
   return { v: { ...rest, mode: "NORMAL", lastChange }, e: onChar(move(e, c === lineStart(e.text, c) ? c : before(e.text, c))) };
@@ -448,19 +461,29 @@ function putOver(v: Vim, e: Editor, from: number, to: number, line: boolean, las
   return { v: { ...v, register, lastChange: { ...last, put: reg } }, e: move(d, at) };
 }
 
-// `.`: the last change again from the cursor, with its count or one typed before `.`, which takes its place (Vim's
-// ":help .": "the count replaces the original count"), and with what its INSERT typed. A VISUAL change is made over
-// as many characters or lines from the cursor, and its p puts what it put then, as Claude Code 2.1.312's own code
-// repeats them (read 2026-10-29).
+// `.`: the last change again from the cursor, with what its INSERT typed, as Claude Code 2.1.312's own code repeats
+// it (read 2026-10-29). A count typed before `.` stands in for the change's own for this `.` alone, and only where
+// `recounts` says. A VISUAL change is made over as many characters or lines from the cursor, and its p puts what it
+// put then. An insert no command began puts its text at the cursor, as `i` would, and an empty one does nothing.
 function repeat(v: Vim, e: Editor, count: string): Result {
   const last = v.lastChange;
   if (!last) return { v, e };
-  const n = count || last.count;
+  const keys = last.keys.length ? last.keys : last.typed ? ["i"] : [];
+  const n = count && recounts(last) ? count : last.count;
   let r: Result = { v: last.put ? { ...v, register: last.put } : v, e };
   if (last.selected) r = reselect(r.v, e, last.selected);
-  for (const k of [...n, ...last.keys]) r = press(r.v, r.e, k);
+  for (const k of [...n, ...keys]) r = press(r.v, r.e, k);
   if (r.v.mode === "INSERT") r = press(r.v, apply(r.e, { type: "insert", text: last.typed ?? "" }), "escape");
-  return { v: { ...r.v, lastChange: { ...last, count: n } }, e: r.e };
+  return { v: { ...r.v, lastChange: last }, e: r.e };
+}
+
+// The changes a count before `.` applies to, as Claude Code 2.1.312's own code has them (read 2026-10-29): x, s, p,
+// P, D, C and S, and d or c over a text object or a motion other than h, l, Space, Backspace, % and a find. Not >>,
+// <<, J, r, a command into INSERT or a VISUAL change.
+const KEEPS_COUNT = new Set(["h", "l", " ", "backspace", "left", "right", "%", "f", "F", "t", "T", ";", ","]);
+function recounts({ keys: [key = "", next = ""], selected }: Change): boolean {
+  if (selected) return false;
+  return key === "d" || key === "c" ? !KEEPS_COUNT.has(next) : ["x", "s", "p", "P", "D", "C", "S"].includes(key);
 }
 
 // VISUAL from the cursor over `size` characters, or lines, for `.`.

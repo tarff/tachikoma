@@ -86,18 +86,19 @@ describe("readSettings", () => {
     });
   });
 
-  // Release 6 design, "Vim mode": two printable characters, and <Esc> the only target.
-  it("keeps only vimInsertModeRemaps entries of two printable characters mapped to <Esc>, and warns of the rest", () => {
-    const remaps = { jj: "<Esc>", jk: "<Esc>", j: "<Esc>", jjj: "<Esc>", "j\t": "<Esc>", kj: "<CR>", "éé": "<Esc>", ab: 1 };
+  // Release 6 design, "Vim mode": two printable characters, and <Esc> the only target; the plan's choice 24 says which.
+  it("keeps only vimInsertModeRemaps entries of two letters, digits, punctuation marks or symbols mapped to <Esc>, and warns of the rest", () => {
+    const kept = { "11": "<Esc>", ";;": "<Esc>", "++": "<Esc>" }; // digits, punctuation, symbols
+    const remaps = { jj: "<Esc>", jk: "<Esc>", j: "<Esc>", jjj: "<Esc>", "j\t": "<Esc>", kj: "<CR>", "éé": "<Esc>", ab: 1, ...kept };
     const r = read({ vimInsertModeRemaps: remaps });
     expect(r).toEqual({
-      settings: { vimInsertModeRemaps: { jj: "<Esc>", jk: "<Esc>", "éé": "<Esc>" } },
+      settings: { vimInsertModeRemaps: { jj: "<Esc>", jk: "<Esc>", "éé": "<Esc>", ...kept } },
       warnings: [
-        'settings.json: "vimInsertModeRemaps" entry "j" is not two printable characters mapped to "<Esc>"; it was left out',
-        'settings.json: "vimInsertModeRemaps" entry "jjj" is not two printable characters mapped to "<Esc>"; it was left out',
-        'settings.json: "vimInsertModeRemaps" entry "j\\t" is not two printable characters mapped to "<Esc>"; it was left out',
-        'settings.json: "vimInsertModeRemaps" entry "kj" is not two printable characters mapped to "<Esc>"; it was left out',
-        'settings.json: "vimInsertModeRemaps" entry "ab" is not two printable characters mapped to "<Esc>"; it was left out',
+        'settings.json: "vimInsertModeRemaps" entry "j" is not two letters, digits, punctuation marks or symbols mapped to "<Esc>"; it was left out',
+        'settings.json: "vimInsertModeRemaps" entry "jjj" is not two letters, digits, punctuation marks or symbols mapped to "<Esc>"; it was left out',
+        'settings.json: "vimInsertModeRemaps" entry "j\\t" is not two letters, digits, punctuation marks or symbols mapped to "<Esc>"; it was left out',
+        'settings.json: "vimInsertModeRemaps" entry "kj" is not two letters, digits, punctuation marks or symbols mapped to "<Esc>"; it was left out',
+        'settings.json: "vimInsertModeRemaps" entry "ab" is not two letters, digits, punctuation marks or symbols mapped to "<Esc>"; it was left out',
       ],
     });
   });
@@ -107,7 +108,8 @@ describe("readSettings", () => {
   it("leaves out a remap pair with a space, a combining accent, a line separator or a control character", () => {
     const pairs = ["j ", " j", `e${String.fromCharCode(0x301)}`, `j${String.fromCharCode(0x2028)}`, `j${String.fromCharCode(7)}`];
     const r = read({ vimInsertModeRemaps: Object.fromEntries(pairs.map((k) => [k, "<Esc>"])) });
-    const words = (k: string) => `settings.json: "vimInsertModeRemaps" entry ${JSON.stringify(k)} is not two printable characters mapped to "<Esc>"`;
+    const words = (k: string) =>
+      `settings.json: "vimInsertModeRemaps" entry ${JSON.stringify(k)} is not two letters, digits, punctuation marks or symbols mapped to "<Esc>"`;
     expect(r).toEqual({ settings: { vimInsertModeRemaps: {} }, warnings: pairs.map((k) => `${words(k)}; it was left out`) });
   });
 
