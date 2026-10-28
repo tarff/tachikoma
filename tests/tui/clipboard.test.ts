@@ -454,9 +454,10 @@ describe("imagePaths", () => {
     expect(imagePaths("'C:\\x y\\a.png'", "win32")).toEqual(["C:\\x y\\a.png"]);
   });
 
-  // 130,000 words: enough for spreading them into push() to overflow the stack, as it did.
+  // Spreading the words into push() overflowed Node 24's stack from 130,000 words here (measured at the code review);
+  // 1,000,000 keeps the test failing on a runtime with a larger stack, and splits in milliseconds.
   it("takes a line of very many paths without overflowing the stack", () => {
-    expect(imagePaths(" /a.png".repeat(130_000).trim(), "linux")).toHaveLength(130_000);
+    expect(imagePaths(" /a.png".repeat(1_000_000).trim(), "linux")).toHaveLength(1_000_000);
   });
 
   it("is null when the words are not all pictures and the line is no picture; words run together are one", () => {

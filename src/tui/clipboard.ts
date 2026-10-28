@@ -186,7 +186,7 @@ const WINDOWS_WORD = new RegExp(String.raw`(?:"[^"]*"|[^ ]|${NO_SPLIT})+`, "g");
 // read 2026-10-29): its blanks and outer quotes go; on macOS and Linux a backslash then gives the character after it, a
 // doubled one leaving one, except in a path starting with a drive letter or \\ (Claude Code's exception under WSL,
 // whose terminals write Windows' paths so), while its Windows build leaves backslashes as they are; and a picture's
-// path ends in .png, .jpg, .jpeg, .gif or .webp. Off Windows such a path keeps its backslashes on any system, only so
+// path ends in .png, .jpg, .jpeg, .gif or .webp. Off Windows such a path keeps its backslashes only so
 // it is not garbled: it is not turned into a path of this system, as Claude Code does under WSL alone (cDs()), so no
 // file is found there and the paste stays text. A line whose words are all pictures is those; any other line is one
 // path, and the paste is text unless every line is pictures.
