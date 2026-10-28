@@ -115,7 +115,19 @@ describe("readSettings", () => {
       expect(readSettings(text)).toEqual({ problem: `settings.json must be one object, such as {"lead": "ollama:qwen3:8b"} (got ${text})` });
     }
   });
+
+  // Windows PowerShell 5.1's Out-File and Set-Content -Encoding utf8 begin the file with one.
+  it("reads past a byte-order mark at the start", () => {
+    expect(readSettings(`${BOM}{"lead": "ollama:a"}`)).toEqual({ settings: { lead: "ollama:a" }, warnings: [] });
+  });
+
+  // An empty file means nothing set, not a broken file (the coordinator's decision, in the spirit of the plan's choice 3).
+  it("takes an empty file, or one of only spaces and line breaks, as {}", () => {
+    for (const text of ["", " ", "\r\n", " \t\n ", BOM, `${BOM}\r\n`]) expect(readSettings(text)).toEqual({ settings: {}, warnings: [] });
+  });
 });
+
+const BOM = String.fromCharCode(0xfeff);
 
 describe("loadSettings", () => {
   it("reads ~/.tachikoma/settings.json", () => {

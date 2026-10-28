@@ -172,6 +172,20 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
   });
 
+  it("starts on a settings file that begins with a byte-order mark, as Windows PowerShell 5.1 writes it", () => {
+    const r = tachi(homeWith(`${String.fromCharCode(0xfeff)}{"lead": "ollama:none"}`));
+    expect(r.stderr).not.toContain("settings.json");
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+  });
+
+  it("starts with the defaults on an empty settings file, or one of only spaces and line breaks", () => {
+    for (const text of ["", " \r\n "]) {
+      const r = tachi("--lead", "ollama:none", homeWith(text));
+      expect(r.stderr).not.toContain("settings.json");
+      expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+    }
+  });
+
   it("lets a flag win over the settings file", () => {
     const r = tachi("--lead", "ollama:none", "--mode", "project", homeWith('{"lead": "nope", "mode": "never"}'));
     expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");

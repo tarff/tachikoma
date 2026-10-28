@@ -43,7 +43,12 @@ export type Loaded = { settings: Settings; warnings: string[] } | { problem: str
 // Each value gets its flag's check and words, after the file's and the entry's names (the plan's choice 8); a value of the
 // wrong JSON type is a problem too. An unknown name is a warning and the rest applies. $schema, which editors use to check
 // the file, is allowed and ignored. The lead, fallback and worker are checked by createProvider at use, as flags are.
+// A byte-order mark at the start, which Windows PowerShell 5.1's Out-File and Set-Content -Encoding utf8 write, is skipped;
+// an empty file, or one of only whitespace, means nothing set, not a broken file (the coordinator's decision, 2026-10-28,
+// in the spirit of the plan's choice 3).
 export function readSettings(text: string): Loaded {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  if (!text.trim()) return { settings: {}, warnings: [] };
   let data: unknown;
   try {
     data = JSON.parse(text);
