@@ -4539,6 +4539,18 @@ describe("App's keys from the table of actions", () => {
     expect(usual.lastFrame()).toContain("› abx\n");
   });
 
+  // Release 6 plan, Task 23 (the spec review): `?` asks the contexts the prompt obeys, Scroll among them in full screen.
+  it("leaves End out of ?'s line keys when Scroll binds it in full screen, and keeps it in classic mode", async () => {
+    const bindings = table("Scroll", { end: "scroll:bottom" });
+    const { app: full } = await mount([], { full: true, bindings });
+    await press(full, "?");
+    await until(full, "Keys:");
+    expect(full.lastFrame()).toContain("  Ctrl+A Ctrl+E  line start, end · Home  line start · ");
+    const { app: classic } = await mount([], { bindings });
+    await press(classic, "?");
+    expect(classic.lastFrame()).toContain("  Home End or Ctrl+A Ctrl+E  line start, end · ");
+  });
+
   it("moves the to-do list's key to Ctrl+Y, Ctrl+T doing nothing, and lists Ctrl+Y on ?", async () => {
     const { app, bus } = await mount([], { bindings: table("Global", { "ctrl+t": null, "ctrl+y": "app:toggleTodos" }) });
     bus.emit("todo", todo);

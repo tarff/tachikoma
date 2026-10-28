@@ -167,8 +167,14 @@ describe("the keys named in help and hints", () => {
     // The terminal checklist's step 3: Ctrl+E opens the editor, so it is no longer the line's end.
     const read = readKeybindings(JSON.stringify({ bindings: [{ context: "Chat", bindings: { "ctrl+e": "chat:externalEditor" } }] }));
     if ("problem" in read) throw new Error(read.problem);
-    expect(keyList(read.table)).toContain("  Home End or Ctrl+A  line start, end · Alt+B Alt+F or Ctrl+← Ctrl+→  by word");
-    expect(keyList(over("Global", { "ctrl+e": "app:toggleTodos" }))).toContain("  Home End or Ctrl+A  line start, end · Alt+B Alt+F or Ctrl+← Ctrl+→  by word");
+    // The pair's key left gets its own words: Ctrl+A goes only to the line's start.
+    const startOnly = "  Home End  line start, end · Ctrl+A  line start · Alt+B Alt+F or Ctrl+← Ctrl+→  by word";
+    expect(keyList(read.table)).toContain(startOnly);
+    expect(keyList(over("Global", { "ctrl+e": "app:toggleTodos" }))).toContain(startOnly);
+    // A lone Home, a lone Alt+B and a lone Ctrl+→, the other of each pair taken.
+    expect(keyList(over("Chat", { end: "chat:stash" }))).toContain("  Ctrl+A Ctrl+E  line start, end · Home  line start · Alt+B Alt+F or Ctrl+← Ctrl+→  by word");
+    expect(keyList(over("Chat", { "alt+f": "chat:stash" }))).toContain("  Home End or Ctrl+A Ctrl+E  line start, end · Ctrl+← Ctrl+→  by word · Alt+B  a word left");
+    expect(keyList(over("Chat", { "ctrl+left": "chat:stash" }))).toContain("  Home End or Ctrl+A Ctrl+E  line start, end · Alt+B Alt+F  by word · Ctrl+→  a word right");
     // Ctrl+K taken, by a key or by the first of a chord's keys: Ctrl+U's words then name the line themselves.
     for (const keys of [{ "ctrl+k": "chat:stash" }, { "ctrl+k ctrl+s": "chat:stash" }] as Record<string, string>[]) {
       expect(keyList(over("Chat", keys))).toContain("  Ctrl+U  delete to the line's start · Ctrl+Y  put it back · Ctrl+Z  undo");
@@ -179,6 +185,14 @@ describe("the keys named in help and hints", () => {
     // A key set to null in Chat frees it there, so Global's binding of it does not take it at the prompt (choice 18).
     const freed = new Bindings(tableOf({ ...DEFAULTS, Chat: { ...DEFAULTS.Chat, "ctrl+w": null }, Global: { ...DEFAULTS.Global, "ctrl+w": "app:toggleTodos" } }));
     expect(keyList(freed)).toContain("  Ctrl+W  delete back to a space · Alt+Backspace  the word before · Alt+D  the word after");
+  });
+
+  // In full screen the prompt obeys Chat, Scroll and Global (App.tsx, contextsOf), so a Scroll binding takes an editing
+  // key there; in classic mode, Chat and Global, Scroll is not in force.
+  it("leaves out an editing key a Scroll binding takes only when asked with Scroll's context, as in full screen", () => {
+    const b = over("Scroll", { end: "scroll:bottom" });
+    expect(keyList(b, ["Chat", "Scroll", "Global"])).toContain("  Ctrl+A Ctrl+E  line start, end · Home  line start · Alt+B Alt+F or Ctrl+← Ctrl+→  by word");
+    expect(keyList(b, ["Chat", "Global"])).toContain("  Home End or Ctrl+A Ctrl+E  line start, end · Alt+B Alt+F or Ctrl+← Ctrl+→  by word");
   });
 
   it("lists the keys a table binds in place of the defaults", () => {

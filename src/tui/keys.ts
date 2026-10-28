@@ -66,22 +66,38 @@ export function both(a: string | undefined, b: string | undefined): string | und
 // "a", "a or b", "a, b, or c".
 const either = (items: string[]) => (items.length < 3 ? items.join(" or ") : `${items.slice(0, -1).join(", ")}, or ${items.at(-1)}`);
 
-// What `?` on an empty prompt prints, grey, in the scrollback: the editor's own keys that no binding takes, the rest
-// from the table. Ctrl-C and Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them.
-export function keyList(b: Bindings): string[] {
+// What `?` on an empty prompt prints, grey, in the scrollback: the editor's own keys that no binding in `prompt`, the
+// contexts the prompt obeys (App.tsx, contextsOf: Scroll too in full screen), takes, the rest from the table. Ctrl-C and
+// Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them.
+export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"]): string[] {
   const k = (action: string, context: Context, ...usual: string[]) => named(b, action, context, usual);
   const scroll = (action: string, usual: string) => k(`scroll:${action}`, "Scroll", usual)[0];
   // Every key bound to an action at the prompt, from Chat and Global, as the command keys' lines read them.
   const all = (action: string) => [...new Set([...b.keysFor(action, "Chat"), ...b.keysFor(action, "Global")])].map(spelled);
-  // The prompt's own editing keys that still edit: a key a Chat or Global binding takes acts there instead (design,
-  // "Bindings come first"). Each group's keys side by side, "Home End", the groups joined by "or".
-  const free = (text: string) => (b.takes(text, ["Chat", "Global"]) ? [] : [spelled(text)]);
-  const editing = (...groups: string[][]) => groups.map((g) => g.flatMap(free).join(" ")).filter(Boolean);
-  const [killEnd] = editing(["ctrl+k"]);
+  // The prompt's own editing keys that still edit: a key a binding in force at the prompt takes acts there instead
+  // (design, "Bindings come first").
+  const free = (text: string) => (b.takes(text, prompt) ? [] : [spelled(text)]);
+  const [killEnd] = free("ctrl+k");
   // A part of a line: its keys, then what they do, or nothing when no key is bound.
   const part = (keys: (string | undefined)[], words: string, join = (bound: string[]) => bound.join(" ")) => {
     const bound = keys.filter((x) => x !== undefined);
     return bound.length > 0 && `${join(bound)}  ${words}`;
+  };
+  // Pairs of editing keys, each a first and a second ("Home End"): pairs with both keys free share `both`, and a key
+  // left alone by its pair's other being taken gets its own words, so it never claims the other's.
+  const paired = (keys: [string, string][], both: string, first: string, second: string) => {
+    const whole: string[] = [];
+    const firsts: string[] = [];
+    const seconds: string[] = [];
+    for (const [a, z] of keys) {
+      const [x] = free(a);
+      const [y] = free(z);
+      if (x && y) whole.push(`${x} ${y}`);
+      else if (x) firsts.push(x);
+      else if (y) seconds.push(y);
+    }
+    const or = (bound: string[]) => bound.join(" or ");
+    return [part(whole, both, or), part(firsts, first, or), part(seconds, second, or)];
   };
   // A line of parts, or none when no part has a key, which the list then leaves out.
   const line = (...parts: (string | false)[]) => (parts.some(Boolean) ? `  ${parts.filter(Boolean).join(" · ")}` : null);
@@ -103,14 +119,30 @@ export function keyList(b: Bindings): string[] {
       part(k("history:search", "Chat", "ctrl+r"), "search them"),
     ),
     line(
-      part(editing(["home", "end"], ["ctrl+a", "ctrl+e"]), "line start, end", (bound) => bound.join(" or ")),
-      part(editing(["alt+b", "alt+f"], ["ctrl+left", "ctrl+right"]), "by word", (bound) => bound.join(" or ")),
+      ...paired(
+        [
+          ["home", "end"],
+          ["ctrl+a", "ctrl+e"],
+        ],
+        "line start, end",
+        "line start",
+        "line end",
+      ),
+      ...paired(
+        [
+          ["alt+b", "alt+f"],
+          ["ctrl+left", "ctrl+right"],
+        ],
+        "by word",
+        "a word left",
+        "a word right",
+      ),
     ),
-    line(part(editing(["ctrl+w"]), "delete back to a space"), part(editing(["alt+backspace"]), "the word before"), part(editing(["alt+d"]), "the word after")),
+    line(part(free("ctrl+w"), "delete back to a space"), part(free("alt+backspace"), "the word before"), part(free("alt+d"), "the word after")),
     line(
       part([killEnd], "delete to the line's end"),
-      part(editing(["ctrl+u"]), killEnd ? "to its start" : "delete to the line's start"),
-      part(editing(["ctrl+y"]), "put it back"),
+      part(free("ctrl+u"), killEnd ? "to its start" : "delete to the line's start"),
+      part(free("ctrl+y"), "put it back"),
       part(k("chat:undo", "Chat", "ctrl+z"), "undo"),
     ),
     line(

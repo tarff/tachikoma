@@ -1441,7 +1441,7 @@ export function App({
     editor.current = r.e;
     vimText.current = r.e.text;
     goal.current = null;
-    if (r.act === "help") show(...keyList(table).map(gray));
+    if (r.act === "help") show(...keyList(table, contextsOf("prompt", fullNow.current)).map(gray));
     else if (r.act) run(r.act === "submit" ? "submit" : ACTIONS[r.act]!); // history:previous, :next or :search
     return true;
   };
@@ -1777,7 +1777,8 @@ export function App({
     if (c === "lastTurn") return fullNow.current ? openDetail(lastTurn(session.messages)) : show(...lastTurn(session.messages)); // release 5 plan, Task 12
     if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
     // A message starting with `?` needs a space typed first.
-    if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return show(...keyList(table).map((text) => ({ text, color: "gray" })));
+    if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text)
+      return show(...keyList(table, contextsOf("prompt", fullNow.current)).map((text) => ({ text, color: "gray" })));
     if (c === "up" && !e.text && queue.current.length) return restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);
