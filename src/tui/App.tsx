@@ -32,7 +32,7 @@ import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu 
 import { ModelPicker, type PickerKey, rows as listRows } from "./ModelPicker.js";
 import { type Hand, type Handover, TerminalOwner } from "./owner.js";
 import { type Now, now as nowOf, pasteTo, type Phase, phaseInputs } from "./phase.js";
-import { type Draft, joined, marker, messageParts, Pictures, trimmed, without } from "./pictures.js";
+import { type Draft, joined, marker, messageParts, Pictures, spansIn, trimmed, without } from "./pictures.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -230,7 +230,8 @@ export function App({
   const keyOf = (action: string, context: Context, usual: string) => named(table, action, context, [usual])[0];
   // The model list's keys (ModelPicker.tsx), set as it draws; called only in the picker phase, while it is drawn.
   const pickerKey = useRef<((k: PickerKey) => void) | null>(null);
-  const step = useRef<{ at: number; draft: string } | null>(null); // where Up has gone in the history, and what was typed before
+  // Where Up has gone in the history, and what was typed before, its pictures' spans kept (release 6 plan, Task 14).
+  const step = useRef<{ at: number; draft: Draft } | null>(null);
   // Ctrl+R: what is searched for, how many older matches Ctrl+R has passed, and the prompt to give back.
   const search = useRef<{ query: string; skip: number; before: Editor } | null>(null);
   const stash = useRef<Editor | null>(null); // Ctrl+S's one slot, for the session (release 6 design, "Stash")
@@ -761,12 +762,14 @@ export function App({
     };
     editor.current = cutPicture(editor.current, id);
     const s = stash.current && cutPicture(stash.current, id);
-    stash.current = s?.text ? s : null;
+    stash.current = s?.text.trim() ? s : null;
     queue.current = queue.current.map(out).filter((d) => d.text.trim());
     const waits = reading.current?.spans.some((x) => x.id === id);
     if (reading.current) reading.current = out(reading.current);
+    // A message that was only pictures, left empty, sends nothing (session.ts, send).
+    const ending = !waits ? "" : reading.current!.text.trim() ? `; ${marker(id)} was sent without it.` : "; nothing was sent.";
     const why = read === "none" ? "No picture on the clipboard" : `Could not read the clipboard: ${read.failed}`;
-    say({ text: waits ? `${why}; ${marker(id)} was sent without it.` : read === "none" ? `${why}.` : why, color: read === "none" ? "gray" : "red" });
+    say({ text: ending ? why + ending : read === "none" ? `${why}.` : why, color: read === "none" ? "gray" : "red" });
   };
   // chat:imagePaste: the next picture's marker at the cursor at once, so pictures keep the order they were asked for
   // (design, "While a read runs"). The read itself is the release 6 plan's Task 15's.
@@ -1031,12 +1034,16 @@ export function App({
   // prompt, the cursor at the end, as one step Ctrl+Z takes back; on failure the prompt stays (design, "On return").
   // Then the queue goes on: a /screen, /settings or /keybindings may have waited for the editor (next, above).
   const externalEditor = async () => {
+    const ids = editor.current.spans.map((s) => s.id); // the pictures the prompt holds as the editor opens
     const ran = await away((command) => editText(editor.current.text, command));
     if (!ran) return; // Ink ended meanwhile
     if ("failed" in ran.got) editorFailed(ran.command, ran.got.failed);
     else {
       const e = editor.current;
-      editor.current = change(e, 0, e.text.length, ran.got.text);
+      // A marker is a span again when it names a picture the prompt held as the editor opened (release 6 design,
+      // "Which pictures a message carries"): the editor's file is plain text.
+      const d = change(e, 0, e.text.length, ran.got.text);
+      editor.current = { ...d, spans: spansIn(d.text, ids) };
       goal.current = null;
       rerender((n) => n + 1);
     }
@@ -1682,10 +1689,10 @@ export function App({
     goal.current = null;
     if (at < 0 || (!step.current && dir === 1)) return;
     if (at < entries.length) {
-      step.current = { at, draft: step.current?.draft ?? e.text };
+      step.current = { at, draft: step.current?.draft ?? { text: e.text, spans: e.spans } };
       editor.current = load(e, entries[at]!);
     } else {
-      editor.current = load(e, step.current!.draft);
+      editor.current = { ...load(e, step.current!.draft.text), spans: step.current!.draft.spans };
       step.current = null;
     }
   };

@@ -3,7 +3,7 @@
 // Where Claude Code's docs leave a key's exact behaviour open, this does what Claude Code 2.1.312's own
 // code does where that was read (2026-10-28), and otherwise what Vim does. Every change is one undo
 // step through editor.ts's `change`, and `u` is the editor's undo.
-import { after, apply, before, boundaries, change, type Editor, lineEnd, lineStart, move } from "./editor.js";
+import { after, apply, before, boundaries, change, changes, type Editor, lineEnd, lineStart, move } from "./editor.js";
 
 export type VimMode = "INSERT" | "NORMAL" | "VISUAL" | "VISUAL LINE";
 type Find = "f" | "F" | "t" | "T";
@@ -153,9 +153,13 @@ function operate(v: Vim, e: Editor, op: string, m: Motion, keys: string[]): Resu
   if (op === "c") return toInsert({ ...v, register }, change(e, from, to, "", { typing: true }), keys);
   const changed = { ...v, register: op === "d" ? register : v.register, lastChange: keys };
   if (op === ">" || op === "<") {
-    const lines = text.slice(from, to);
-    const shifted = lines.split("\n").map((l) => shift(l, op)).join("\n");
-    const d = shifted === lines ? e : change(e, from, to, shifted); // nothing to take off: no undo step
+    // Each line's own change at its start, as one step (editor.ts, changes); nothing to take off: no undo step.
+    const edits: [number, number, string][] = [];
+    for (let s = from; s <= to; s = lineEnd(text, s) + 1) {
+      const [cut, add] = shift(text.slice(s, lineEnd(text, s)), op);
+      if (cut || add) edits.push([s, s + cut, add]);
+    }
+    const d = changes(e, edits);
     return { v: changed, e: onChar(move(d, firstNonBlank(d.text, from))) };
   }
   if (!line) return { v: changed, e: onChar(change(e, from, to, "")) };
@@ -168,13 +172,13 @@ function operate(v: Vim, e: Editor, op: string, m: Motion, keys: string[]): Resu
 // >> and << as Claude Code 2.1.312's own code does them (read 2026-10-28; the user's choice, two
 // spaces): >> puts two spaces before a line; << takes off two spaces, else a tab, else up to two
 // leading blanks, a blank being what `\s` matches, as Claude Code's `/\s/.test(i[u])` has it. An empty
-// line is left alone.
-function shift(line: string, op: string): string {
-  if (!line) return line;
-  if (op === ">") return `  ${line}`;
-  if (line.startsWith("  ")) return line.slice(2);
-  if (line.startsWith("\t")) return line.slice(1);
-  return line.replace(/^\s{1,2}/u, "");
+// line is left alone. What to take off the line's start, and what to put there.
+function shift(line: string, op: string): [number, string] {
+  if (!line) return [0, ""];
+  if (op === ">") return [0, "  "];
+  if (line.startsWith("  ")) return [2, ""];
+  if (line.startsWith("\t")) return [1, ""];
+  return [/^\s{0,2}/u.exec(line)![0].length, ""];
 }
 
 // `r`: `n` characters from the cursor, each made `ch`, or nothing when the line has fewer (Vim).
@@ -182,8 +186,10 @@ function replaceChars(v: Vim, e: Editor, ch: string, n: number, keys: string[]):
   const t = chars(e.text);
   const k = t.at.indexOf(e.cursor);
   if (k + n > t.ch.length || t.ch.slice(k, k + n).includes("\n")) return { v, e };
+  // The cursor on the last character put: from where the change ended, as a change reaching into a picture's marker
+  // takes the whole marker (editor.ts, change).
   const d = change(e, t.at[k]!, t.at[k + n]!, ch.repeat(n));
-  return { v: { ...v, lastChange: keys }, e: move(d, e.cursor + ch.length * (n - 1)) };
+  return { v: { ...v, lastChange: keys }, e: move(d, d.cursor - ch.length) };
 }
 
 // `p` and `P`: the register `n` times, after or before the cursor, or below or above its line for a
@@ -222,15 +228,19 @@ function join(v: Vim, e: Editor, n: number, keys: string[]): Result {
   if (to === text.length) return { v, e };
   let joined = text.slice(from, to);
   let at = 0;
+  // Each join's line break and indent replaced on its own, as one step (editor.ts, changes).
+  const edits: [number, number, string][] = [];
   for (let i = 1; i < Math.max(n, 2) && to < text.length; i++) {
     const end = lineEnd(text, to + 1);
-    const next = text.slice(to + 1, end).replace(/^[ \t]+/u, "");
+    const indent = /^[ \t]*/u.exec(text.slice(to + 1, end))![0].length;
+    const next = text.slice(to + 1 + indent, end);
     at = joined.length;
-    if (next && !next.startsWith(")") && joined && !/[ \t]$/u.test(joined)) joined += " ";
-    joined += next;
+    const space = next && !next.startsWith(")") && joined && !/[ \t]$/u.test(joined) ? " " : "";
+    edits.push([to, to + 1 + indent, space]);
+    joined += space + next;
     to = end;
   }
-  const d = change(e, from, to, joined);
+  const d = changes(e, edits);
   return { v: { ...v, lastChange: keys }, e: onChar(move(d, from + at)) };
 }
 

@@ -98,6 +98,17 @@ export function joined(drafts: readonly Draft[], between: string): Draft {
   return { text, spans };
 }
 
+// A span for each copy of the markers of pictures `ids` in `text`, in the text's order: the prompt back from the
+// external editor, whose file is plain text (release 6 design, "Which pictures a message carries").
+export function spansIn(text: string, ids: Iterable<number>): Span[] {
+  const spans: Span[] = [];
+  for (const id of new Set(ids)) {
+    const m = marker(id);
+    for (let i = text.indexOf(m); i >= 0; i = text.indexOf(m, i + m.length)) spans.push({ id, from: i, to: i + m.length });
+  }
+  return spans.sort((a, b) => a.from - b.from);
+}
+
 // Picture `id`'s spans taken out, text and all (plan, Task 14: a read that found nothing or failed); `at` says where
 // a place in the old text is in the new, one inside a span taken out going to where it was.
 export function without(d: Draft, id: number): Draft & { at: (i: number) => number } {

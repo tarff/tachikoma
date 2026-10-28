@@ -128,6 +128,15 @@ export function cutPicture(e: Editor, id: number): Editor {
   return { ...e, text: d.text, spans: d.spans, cursor: d.at(e.cursor), undo: [...e.undo, state(e)], typing: false };
 }
 
+// Several changes as one step, each [from, to, insert] in the text as it is, apart and in order. Vim's >>, << and J
+// change only blanks and line breaks, so made as the small changes they are, never one over the whole lines, they keep
+// the span of a marker in those lines, which goes only when one of its characters is deleted (release 6 design,
+// "Which pictures a message carries"). The cursor is left for the caller to place.
+export function changes(e: Editor, edits: [number, number, string][]): Editor {
+  const d = edits.reduceRight((x, [from, to, insert]) => change(x, from, to, insert), e);
+  return d.text === e.text ? e : { ...d, undo: [...e.undo, state(e)], typing: false };
+}
+
 // `insert` in place of the text from `from` to the cursor, as one step: a menu's choice.
 export const replace = (e: Editor, from: number, insert: string): Editor => change(e, from, e.cursor, insert);
 

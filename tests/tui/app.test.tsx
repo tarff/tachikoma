@@ -5100,11 +5100,52 @@ describe("App's pictures", () => {
 
   it("sends a marker recalled from prompt history as text, carrying no picture", async () => {
     const pictures = new Pictures();
-    pictures.set(pictures.next(), PNG); // picture #1, never sent
     const { app, session } = await mount([reply("ok")], { pictures, past: ["see [Image #1]"] });
+    await press(app, PICTURE); // picture #1 in the prompt, never sent, so a recall that kept its span would send it
+    pictures.set(1, PNG);
     await press(app, "\u001b[A", "\r");
     await until(app, "ok");
     expect(userParts(session)).toEqual([[{ type: "text", text: "see [Image #1]" }]]);
+  });
+
+  it("keeps the draft's pictures through Up and Down in the history", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures, past: ["older"] });
+    await press(app, "see ", PICTURE, "\u001b[A");
+    expect(app.lastFrame()).toContain("› older\n");
+    await press(app, "\u001b[B");
+    expect(app.lastFrame()).toContain("› see [Image #1]\n");
+    pictures.set(1, PNG);
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]]);
+  });
+
+  // Release 6 design, "Which pictures a message carries": the editor's file is plain text, so on return a marker is a
+  // span again only if it names a picture the prompt held when the editor opened.
+  it("keeps a marker through the external editor as its picture, and takes one typed there as text", async () => {
+    const editor = standInEditor();
+    editor.next("now [Image #1] and [Image #2]\n");
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures });
+    await press(app, "see ", PICTURE, "\u0007"); // Ctrl+G
+    await until(app, "› now [Image #1] and [Image #2]\n");
+    pictures.set(1, PNG);
+    pictures.set(pictures.next(), PNG); // picture #2, which the prompt never held
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "now " }, { type: "image", id: 1, ...PNG }, { type: "text", text: " and [Image #2]" }]]);
+  });
+
+  it("says nothing was sent when a message that was only a picture is left empty", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures });
+    await press(app, PICTURE, "\r");
+    pictures.set(1, "none");
+    await until(app, "No picture on the clipboard; nothing was sent.");
+    await gone(app, "Esc to stop");
+    expect(session.messages).toEqual([]);
   });
 
   it("sends without a picture whose read fails after Enter, its marker gone, and says so in red", async () => {
@@ -5149,7 +5190,7 @@ describe("App's pictures", () => {
   it("takes a marker the read found none of out of the prompt and the stash", async () => {
     const pictures = new Pictures();
     const { app } = await mount([], { pictures });
-    await press(app, PICTURE, CTRL_S, "b ", PICTURE);
+    await press(app, " ", PICTURE, CTRL_S, "b ", PICTURE); // the stash, left with a blank only, empties
     expect(app.lastFrame()).toContain("Stashed");
     pictures.set(1, "none");
     pictures.set(2, "none");

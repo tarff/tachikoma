@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { apply, empty, insertPicture, load } from "../../src/tui/editor.js";
-import { joined, marker, messageParts, Pictures, trimmed, without } from "../../src/tui/pictures.js";
+import { joined, marker, messageParts, Pictures, spansIn, trimmed, without } from "../../src/tui/pictures.js";
 
 // Small stand-ins for pictures: no test reads a real file or the clipboard (release 6 plan, "Before you start").
 const png = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) };
@@ -109,6 +109,14 @@ describe("drafts", () => {
       [1, marker(1)],
       [2, marker(2)],
     ]);
+  });
+
+  it("finds the markers of the pictures given, each copy a span, and no other marker", () => {
+    expect(spansIn("[Image #2] a [Image #1] [Image #12] [Image #2]", [2])).toEqual([
+      { id: 2, from: 0, to: 10 },
+      { id: 2, from: 36, to: 46 },
+    ]);
+    expect(spansIn("[Image #1]", [])).toEqual([]);
   });
 
   it("takes a picture's spans out, text and all", () => {

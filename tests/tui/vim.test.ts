@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Editor, empty, load, move, segmenter } from "../../src/tui/editor.js";
+import { apply, type Editor, empty, insertPicture, load, move, segmenter } from "../../src/tui/editor.js";
 import { press, start, type Vim, type VimMode } from "../../src/tui/vim.js";
 
 // The text with the cursor shown as "|"; in NORMAL the cursor is on the character after it.
@@ -436,5 +436,38 @@ describe("vim: the last change, for the release 6 plan's Task 20's .", () => {
     expect(keys("|abcd", "3x", "|d").v.lastChange).toEqual(["3", "x"]);
     expect(keys("|foo bar", ["2", "c", "w", "x", "escape"], "|x").v.lastChange).toEqual(["2", "c", "w"]);
     expect(keys("|abcd", "yw", "|abcd").v.lastChange).toBeUndefined();
+  });
+});
+
+// Release 6 design, "Which pictures a message carries": a marker's span goes only when one of its characters is
+// deleted.
+describe("vim: pictures' markers", () => {
+  // `before`, picture #1's marker, then `after`, the cursor at `cursor`, in NORMAL.
+  const withPicture = (before: string, after: string, cursor: number) =>
+    move(apply(insertPicture(load(empty, before), 1), { type: "insert", text: after }), cursor);
+  const spans = (e: Editor) => e.spans.map((s) => `${s.id}:${e.text.slice(s.from, s.to)}`);
+  const pressed = (e: Editor, typed: string) => [...typed].reduce((r, k) => press(r.v, r.e, k), { v: NORMAL, e });
+
+  it(">> and << keep the span of a marker on the line, as one undo step", () => {
+    const right = pressed(withPicture("go ", " end", 0), ">>").e;
+    expect(right.text).toBe("  go [Image #1] end");
+    expect(spans(right)).toEqual(["1:[Image #1]"]);
+    expect(right.undo).toHaveLength(3); // the marker's step, the typing, then the >>
+    const left = pressed(right, "<<").e;
+    expect(left.text).toBe("go [Image #1] end");
+    expect(spans(left)).toEqual(["1:[Image #1]"]);
+  });
+
+  it("J keeps the span of a marker on the line it joins", () => {
+    const e = pressed(withPicture("a\n", " b", 0), "J").e;
+    expect(show(e)).toBe("a| [Image #1] b");
+    expect(spans(e)).toEqual(["1:[Image #1]"]);
+    expect(e.undo).toHaveLength(3); // the marker's step, the typing, then the J
+  });
+
+  it("r on a marker replaces the whole marker, the cursor on the new character", () => {
+    const e = pressed(withPicture("go ", " end", 4), "rZ").e;
+    expect(show(e)).toBe("go |Z end");
+    expect(e.spans).toEqual([]);
   });
 });

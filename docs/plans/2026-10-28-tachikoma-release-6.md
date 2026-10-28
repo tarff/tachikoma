@@ -833,7 +833,8 @@ bytes, not its name); otherwise it is text as today.
 Task 14 already wires `chat:imagePaste` to `pictures.next()` and the span (App.tsx, `imagePaste`), and
 already says the "none" and failed lines, with their ending, from its one settle handler (`settle`,
 grey for "none", red for a failure, Esc's `stopped` included). This task adds the read, the hint and
-the readers to that wiring.
+the readers to that wiring. `settle`'s words name the clipboard, so a pasted file path's read passes
+its source, or its own words, into `settle` (found at Task 14's spec review).
 
 **Tests:** each reader's command line per platform and env (no real clipboard); `readImage` with a
 stand-in tool that prints a small PNG's base64, prints nothing, or fails; `imagePaths` with
