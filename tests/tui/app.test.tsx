@@ -3459,6 +3459,8 @@ async function onTerminal(
       reader = to;
       record(to ? "divert(reader)" : "divert(null)");
     },
+    release: () => record("release"),
+    retake: () => record("retake"),
   };
   const bus = new Bus();
   const ctx = await tempContext();

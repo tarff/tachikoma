@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { type Hand, TerminalOwner } from "../../src/tui/owner.js";
 
 // A stand-in hand that records each call in order; Ink's suspend and resume each take a turn of the event loop.
-function hand() {
+// `onResume` runs as Ink's resume starts, when Ink reads keys again.
+function hand(onResume?: () => void) {
   const calls: string[] = [];
   const turn = () => new Promise((r) => setImmediate(r));
   const h: Hand = {
@@ -12,16 +13,30 @@ function hand() {
       return {
         resume: async () => {
           calls.push("resume");
+          onResume?.();
           await turn();
         },
       };
     },
     hold: (on) => calls.push(`hold(${on})`),
-    divert: (to) => calls.push(to ? "divert(reader)" : "divert(null)"),
+    divert: (keys) => calls.push(keys ? "divert(reader)" : "divert(null)"),
     release: () => calls.push("release"),
     retake: () => calls.push("retake"),
   };
   return { h, calls };
+}
+
+// A program body that records that it started, and ends only when told.
+function blocked(calls: string[], name: string) {
+  let started!: () => void;
+  let finish!: () => void;
+  const begun = new Promise<void>((r) => (started = r));
+  const body = () => {
+    calls.push(name);
+    started();
+    return new Promise<void>((r) => (finish = r));
+  };
+  return { body, begun, finish: () => finish() };
 }
 
 describe("TerminalOwner's hand-overs", () => {
@@ -38,6 +53,16 @@ describe("TerminalOwner's hand-overs", () => {
     expect(calls).toEqual(["hold(true)", "hold(true)"]);
     both[order[1]!]!.done();
     expect(calls).toEqual(["hold(true)", "hold(true)", "hold(false)"]);
+    expect(owner.busy).toBe(false);
+  });
+
+  it("lets go once for a hand-over done twice", () => {
+    const { h, calls } = hand();
+    const owner = new TerminalOwner(h);
+    const over = owner.take();
+    over.done();
+    over.done();
+    expect(calls).toEqual(["hold(true)", "hold(false)"]);
     expect(owner.busy).toBe(false);
   });
 
@@ -67,6 +92,27 @@ describe("TerminalOwner's hand-overs", () => {
     const over = owner.take();
     await expect(over.suspend()).rejects.toThrow("no terminal");
     expect(owner.suspended).toBe(false);
+  });
+
+  it("is no longer suspended once a hand-over that never resumed is done", async () => {
+    const { h } = hand();
+    const owner = new TerminalOwner(h);
+    const over = owner.take();
+    await over.suspend();
+    over.done();
+    expect(owner.suspended).toBe(false);
+  });
+
+  it("stays suspended for a second hand-over when the first, already resumed, is done", async () => {
+    const { h } = hand();
+    const owner = new TerminalOwner(h);
+    const a = owner.take();
+    const { resume } = await a.suspend();
+    await resume();
+    const b = owner.take();
+    void b.suspend();
+    a.done();
+    expect(owner.suspended).toBe(true);
   });
 
   it("lets go on end(), and again for a hand-over done after it", () => {
@@ -106,6 +152,21 @@ describe("TerminalOwner's program", () => {
     expect(owner.busy).toBe(false);
   });
 
+  it("passes on a suspend that throws, suspended and busy no longer, and runs the next program", async () => {
+    const { h, calls } = hand();
+    const suspend = h.suspend;
+    h.suspend = async () => {
+      h.suspend = suspend;
+      throw new Error("no terminal");
+    };
+    const owner = new TerminalOwner(h);
+    await expect(owner.program(async () => void calls.push("first"))).rejects.toThrow("no terminal");
+    expect(owner.suspended).toBe(false);
+    expect(owner.busy).toBe(false);
+    await owner.program(async () => void calls.push("second"));
+    expect(calls).toEqual(["suspend", "release", "second", "retake", "resume"]);
+  });
+
   it("starts only after a hand-over held is done, busy while it waits", async () => {
     const { h, calls } = hand();
     const owner = new TerminalOwner(h);
@@ -115,13 +176,30 @@ describe("TerminalOwner's program", () => {
     expect(calls).toEqual(["hold(true)"]);
     expect(owner.busy).toBe(true);
     over.done();
+    expect(owner.busy).toBe(true);
     await ran;
     expect(calls).toEqual(["hold(true)", "hold(false)", "suspend", "release", "body", "retake", "resume"]);
     expect(owner.busy).toBe(false);
   });
 
-  it("is suspended while the program runs, so a [ read with the key that started it does nothing", async () => {
-    const { h } = hand();
+  it("starts a second program only after the first's resume", async () => {
+    const { h, calls } = hand();
+    const owner = new TerminalOwner(h);
+    const a = blocked(calls, "a");
+    const ranA = owner.program(a.body);
+    await a.begun;
+    const ranB = owner.program(async () => void calls.push("b"));
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual(["suspend", "release", "a"]);
+    a.finish();
+    await Promise.all([ranA, ranB]);
+    expect(calls).toEqual(["suspend", "release", "a", "retake", "resume", "suspend", "release", "b", "retake", "resume"]);
+  });
+
+  // Suspended from the start, so a `[` read with the key that started the program does nothing.
+  it("is suspended from program()'s start until its resume", async () => {
+    let atResume: boolean | undefined;
+    const { h } = hand(() => (atResume = owner.suspended));
     const owner = new TerminalOwner(h);
     let during = false;
     const ran = owner.program(async () => {
@@ -130,21 +208,30 @@ describe("TerminalOwner's program", () => {
     expect(owner.suspended).toBe(true);
     await ran;
     expect(during).toBe(true);
+    expect(atResume).toBe(false);
     expect(owner.suspended).toBe(false);
+  });
+
+  // Found at Task 1's code review: Ink reads keys again once the program's resume starts, and a `[` then takes the
+  // terminal and suspends Ink; the program's ending must leave that suspension standing.
+  it("leaves a hand-over taken during its resume suspended", async () => {
+    const { h } = hand(() => void owner.take().suspend());
+    const owner = new TerminalOwner(h);
+    await owner.program(async () => {});
+    expect(owner.suspended).toBe(true);
   });
 
   it("neither retakes nor resumes when the body ends after end(), leaving stdin and raw mode let go", async () => {
     const { h, calls } = hand();
     const owner = new TerminalOwner(h);
-    let finish!: () => void;
-    const ran = owner.program(() => new Promise<void>((r) => (finish = r)));
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
-    expect(calls).toEqual(["suspend", "release"]);
+    const p = blocked(calls, "body");
+    const ran = owner.program(p.body);
+    await p.begun;
+    expect(calls).toEqual(["suspend", "release", "body"]);
     owner.end();
-    finish();
+    p.finish();
     await ran;
-    expect(calls).toEqual(["suspend", "release", "divert(null)", "hold(false)"]);
+    expect(calls).toEqual(["suspend", "release", "body", "divert(null)", "hold(false)"]);
   });
 
   it("resolves undefined without suspending, releasing or retaking when end() comes while it waits behind a hand-over", async () => {

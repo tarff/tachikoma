@@ -6,7 +6,7 @@
 export interface Hand {
   suspend(): Promise<{ resume(): Promise<void> }>; // Ink's suspendTerminal()
   hold(on: boolean): void; // InputFilter.hold
-  divert(to: ((s: string) => void) | null): void; // InputFilter.divert
+  divert(keys: ((keys: string) => void) | null): void; // InputFilter.divert
   release(): void; // InputFilter: let go of stdin, so a program reads every key itself
   retake(): void; // InputFilter: read stdin again
 }
@@ -20,7 +20,9 @@ export interface Handover {
 export class TerminalOwner {
   readonly #hand: Hand;
   #held = 0;
-  #suspended = false;
+  // Whose suspension it is, a hand-over's or a program call's own token, so one ending clears only its own: a `[` read
+  // once a resume starts suspends Ink again before the first is over (found at Task 1's code review).
+  #suspendedBy: object | null = null;
   #programs = 0; // running or waiting
   #running = false;
   #ended = false;
@@ -30,34 +32,36 @@ export class TerminalOwner {
     this.#hand = hand;
   }
 
-  // hold(true) at each start, as release 5 does; a print-out started while a switch or a coming back still holds keeps the
-  // hold, as the count is not yet down to none.
+  // hold(true) at each start, as release 5 does. The count is there so that a print-out taken during a switch, or during
+  // a coming back, keeps the hold when the other ends: letting go then would let Ink's suspend turn raw mode off, which
+  // left the Windows console reading whole lines (release 5 design, "Switching during a session").
   take(): Handover {
     this.#hand.hold(true);
     this.#held++;
-    let suspended = false;
+    const token = {};
     let done = false;
     return {
       suspend: async () => {
-        suspended = this.#suspended = true;
+        this.#suspendedBy = token;
         try {
           const { resume } = await this.#hand.suspend();
           return {
             resume: () => {
-              if (suspended) suspended = this.#suspended = false; // resume() ends the suspension before its first await (Ink's ink.js, endSuspend)
+              this.#clear(token); // resume() ends the suspension before its first await (Ink's ink.js, endSuspend)
               return resume();
             },
           };
         } catch (e) {
-          suspended = this.#suspended = false;
+          this.#clear(token);
           throw e;
         }
       },
       done: () => {
         if (done) return;
         done = true;
-        if (suspended) suspended = this.#suspended = false; // a flow that ended without resuming: Ink ended first
-        if (--this.#held > 0) return;
+        this.#clear(token); // a flow that ended without resuming: Ink ended first
+        this.#held--;
+        if (this.#held > 0) return;
         // Also after end(), as release 5's flows let go again then: harmless (input.ts, hold).
         this.#hand.hold(false);
         this.#next();
@@ -67,9 +71,11 @@ export class TerminalOwner {
 
   // A `[` then does nothing, as it would suspend Ink again, which throws.
   get suspended(): boolean {
-    return this.#suspended;
+    return this.#suspendedBy !== null;
   }
 
+  // For Task 12's queue: only the queued commands that hand the terminal over (/screen, /settings, /keybindings) wait on
+  // it. Messages and other commands go on, as they do while the view is printed out, which holds too.
   get busy(): boolean {
     return this.#held > 0 || this.#programs > 0;
   }
@@ -77,12 +83,17 @@ export class TerminalOwner {
   // Waits until nothing is held, then suspends without the hold, so Ink's raw mode off goes through, and lets go of stdin,
   // so the program reads every key itself. After end(), nothing is taken back: Ink is gone, and stdin and raw mode stay
   // let go so the process can end.
+  // A take() can come once its resume starts, Ink reading keys again (a `[`), never before: Ink reads none while
+  // suspended, and what would hand the terminal over from the queue waits on `busy` (Task 12; found at Task 1's code
+  // review).
   async program<T>(body: () => Promise<T>): Promise<T | undefined> {
     this.#programs++;
     try {
       while (!this.#ended && (this.#held > 0 || this.#running)) await new Promise<void>((resolve) => this.#wake.push(resolve));
       if (this.#ended) return undefined;
-      this.#running = this.#suspended = true;
+      const token = {};
+      this.#running = true;
+      this.#suspendedBy = token;
       try {
         const { resume } = await this.#hand.suspend();
         if (this.#ended) return undefined;
@@ -92,12 +103,13 @@ export class TerminalOwner {
         } finally {
           if (!this.#ended) {
             this.#hand.retake();
-            this.#suspended = false;
+            this.#clear(token);
             await resume();
           }
         }
       } finally {
-        this.#running = this.#suspended = false;
+        this.#running = false;
+        this.#clear(token);
         this.#next();
       }
     } finally {
@@ -111,6 +123,10 @@ export class TerminalOwner {
     this.#hand.divert(null);
     this.#hand.hold(false);
     this.#next();
+  }
+
+  #clear(token: object): void {
+    if (this.#suspendedBy === token) this.#suspendedBy = null;
   }
 
   #next(): void {

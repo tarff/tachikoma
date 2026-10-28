@@ -87,7 +87,7 @@ export interface AppProps {
   // The InputFilter's hold on raw mode and its diverting of the keys, for `[` (release 5 design, "The detail view"); /screen
   // holds raw mode too. With none, `[` does nothing. Letting go of stdin and taking it back are for a program in the
   // terminal (owner.ts, program).
-  input?: Pick<Hand, "divert" | "hold"> & Partial<Pick<Hand, "release" | "retake">>;
+  input?: Pick<Hand, "divert" | "hold" | "release" | "retake">;
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /exit";
@@ -185,8 +185,8 @@ export function App({
         suspend: () => suspendTerminal(),
         hold: (on) => input?.hold(on),
         divert: (to) => input?.divert(to),
-        release: () => input?.release?.(),
-        retake: () => input?.retake?.(),
+        release: () => input?.release(),
+        retake: () => input?.retake(),
       }),
   );
   // What is set up once, at mount (the bus listeners, bindAsk, History's warning, the mouse listener), keeps the first
