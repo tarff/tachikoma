@@ -337,6 +337,46 @@ describe("Bindings.keysFor", () => {
   });
 });
 
+// Release 6 plan, Task 23's code review: takes() and acts() answer as press() decides, from the same lookups.
+describe("Bindings.takes and Bindings.acts", () => {
+  type File = Record<Context, Record<string, string | null>>;
+  const over = (layers: Partial<File>): File =>
+    Object.fromEntries(CONTEXTS.map((c) => [c, { ...DEFAULTS[c], ...layers[c] }])) as File;
+  const tables: [string, File][] = [
+    ["the defaults", DEFAULTS],
+    ["a chord set to null in Chat over Global's", over({ Chat: { "ctrl+k ctrl+s": null }, Global: { "ctrl+k ctrl+s": "chat:stash" } })],
+    ["a chord live in Global only", over({ Global: { "ctrl+k ctrl+s": "chat:stash" } })],
+    ["a key set to null in Chat over Global's", over({ Chat: { "ctrl+w": null }, Global: { "ctrl+w": "app:toggleTodos" } })],
+    ["End bound in Scroll", over({ Scroll: { end: "scroll:bottom" } })],
+  ];
+  const EDITING = ["home", "end", "ctrl+a", "ctrl+e", "alt+b", "alt+f", "ctrl+left", "ctrl+right", "ctrl+w", "alt+backspace", "alt+d", "ctrl+k", "ctrl+u", "ctrl+y"];
+  const LISTS: Context[][] = [
+    ["Chat", "Global"],
+    ["Chat", "Scroll", "Global"],
+  ];
+  it.each(tables)("takes an editing key exactly when press does not give null, with %s", (_, file) => {
+    for (const contexts of LISTS) {
+      for (const key of EDITING) {
+        const [stroke] = parseKeys(key) as Stroke[];
+        const pressed = new Bindings(tableOf(file)).press(stroke!, contexts, 0);
+        expect(new Bindings(tableOf(file)).takes(key, contexts), `${key} in ${contexts.join(", ")}`).toBe(pressed !== null);
+      }
+    }
+  });
+
+  it("says a key acts on an action only where press gives that action", () => {
+    const file = over({ Chat: { "ctrl+s": null, "ctrl+k ctrl+s": "chat:stash" }, Global: { "ctrl+s": "chat:stash" } });
+    const b = new Bindings(tableOf(file));
+    expect(b.acts("ctrl+s", "chat:stash", ["Chat", "Global"])).toBe(false); // Chat's null wins (choice 18)
+    expect(b.acts("ctrl+s", "chat:stash", ["Global"])).toBe(true);
+    expect(b.acts("ctrl+k ctrl+s", "chat:stash", ["Chat", "Global"])).toBe(true);
+    expect(b.acts("ctrl+g", "chat:externalEditor", ["Chat", "Global"])).toBe(true);
+    // A key a live chord starts with waits for the chord's next key, so its own binding never acts.
+    const chord = new Bindings(tableOf(over({ Chat: { "ctrl+g ctrl+g": "chat:stash" } })));
+    expect(chord.acts("ctrl+g", "chat:externalEditor", ["Chat", "Global"])).toBe(false);
+  });
+});
+
 describe("DEFAULTS", () => {
   // Every action App handles today, in its context, with today's keys (plan, Task 5), and the new editor and stash keys.
   const today: [Context, string, string[]][] = [

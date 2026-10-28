@@ -232,18 +232,33 @@ export class Bindings {
     this.#chord = null;
     const strokes = [...(before ?? []), stroke];
     const text = keyText(strokes);
-    const tables = contexts.map((c) => this.#table[c]);
-    // A chord counts only where the innermost context in force that has it binds an action (choice 18).
-    const live = (k: string) => tables.find((t) => t.has(k))?.get(k) != null;
-    if (tables.some((t) => [...t.keys()].some((k) => k.startsWith(`${text} `) && live(k)))) {
+    const tables = this.#tables(contexts);
+    if (this.#begins(tables, text)) {
       this.#chord = { strokes, at: now };
       return { pending: copy(strokes) };
     }
+    const action = this.#bound(tables, text);
+    return action ? { action } : null;
+  }
+
+  #tables(contexts: Context[]): Map<string, string | null>[] {
+    return contexts.map((c) => this.#table[c]);
+  }
+
+  // The innermost binding of a key in `tables`: an action, null where a context unbinds it (the lookup stops there,
+  // choice 18), or undefined where no context has it.
+  #bound(tables: Map<string, string | null>[], text: string): string | null | undefined {
     for (const t of tables) {
       const action = t.get(text);
-      if (action !== undefined) return action ? { action } : null;
+      if (action !== undefined) return action;
     }
-    return null;
+    return undefined;
+  }
+
+  // Whether a chord starts with this key and binds an action where it counts: in the innermost context that has the
+  // chord (choice 18).
+  #begins(tables: Map<string, string | null>[], text: string): boolean {
+    return tables.some((t) => [...t.keys()].some((k) => k.startsWith(`${text} `) && this.#bound(tables, k) != null));
   }
 
   // Drops a chord under way, for what is no one keystroke and so can complete none: text read together (App.tsx,
@@ -261,9 +276,16 @@ export class Bindings {
   // bound to an action, or the first key of a chord bound to one. A key it takes never reaches the prompt's own
   // editing keys, so `?` leaves those out (keys.ts, keyList; release 6 plan, Task 23's spec review).
   takes(text: string, contexts: Context[]): boolean {
-    const tables = contexts.map((c) => this.#table[c]);
-    const live = (k: string) => tables.find((t) => t.has(k))?.get(k) != null;
-    return live(text) || tables.some((t) => [...t.keys()].some((k) => k.startsWith(`${text} `) && live(k)));
+    const tables = this.#tables(contexts);
+    return this.#bound(tables, text) != null || this.#begins(tables, text);
+  }
+
+  // Whether a key, or a chord, in keyText's spelling, runs `action` in the contexts in force, as press runs it: its
+  // innermost binding is that action, and no chord bound where it counts starts with it, which press would wait on
+  // instead. So `?` lists a key only where it does what the list says (keys.ts, keyList; Task 23's code review).
+  acts(text: string, action: string, contexts: Context[]): boolean {
+    const tables = this.#tables(contexts);
+    return this.#bound(tables, text) === action && !this.#begins(tables, text);
   }
 
   // The keys bound to an action in a context, in the table's order, for help and hints.

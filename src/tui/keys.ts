@@ -49,9 +49,10 @@ const spelled = (text: string) =>
 
 // The keys a hint or help names for an action: each of `usual`, the keys release 5's words name, still bound to it, or
 // with none of them, its first key bound, or none, so the words stay release 5's with the default table and a rebind
-// never leaves them stale (plan, Task 6, test 1: the same words).
-export function named(b: Bindings, action: string, context: Context, usual: string[]): string[] {
-  const bound = b.keysFor(action, context);
+// never leaves them stale (plan, Task 6, test 1: the same words). Given the contexts in force, only keys that run the
+// action there count (Bindings.acts).
+export function named(b: Bindings, action: string, context: Context, usual: string[], contexts?: Context[]): string[] {
+  const bound = b.keysFor(action, context).filter((k) => !contexts || b.acts(k, action, contexts));
   const kept = usual.filter((k) => bound.includes(k));
   return (kept.length ? kept : bound.slice(0, 1)).map(spelled);
 }
@@ -70,34 +71,39 @@ const either = (items: string[]) => (items.length < 3 ? items.join(" or ") : `${
 // contexts the prompt obeys (App.tsx, contextsOf: Scroll too in full screen), takes, the rest from the table. Ctrl-C and
 // Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them.
 export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"]): string[] {
-  const k = (action: string, context: Context, ...usual: string[]) => named(b, action, context, usual);
+  // A key is named only where it runs its action at the prompt; Scroll's, in classic mode, where Scroll is not in force,
+  // keep the table's keys, as the list names them "(full screen)".
+  const k = (action: string, context: Context, ...usual: string[]) => named(b, action, context, usual, prompt.includes(context) ? prompt : undefined);
   const scroll = (action: string, usual: string) => k(`scroll:${action}`, "Scroll", usual)[0];
-  // Every key bound to an action at the prompt, from Chat and Global, as the command keys' lines read them.
-  const all = (action: string) => [...new Set([...b.keysFor(action, "Chat"), ...b.keysFor(action, "Global")])].map(spelled);
+  // Every key that runs an action at the prompt, from each context the prompt obeys: release 6's keys and the command keys.
+  const all = (action: string) => [...new Set(prompt.flatMap((c) => b.keysFor(action, c)))].filter((key) => b.acts(key, action, prompt)).map(spelled);
   // The prompt's own editing keys that still edit: a key a binding in force at the prompt takes acts there instead
   // (design, "Bindings come first").
-  const free = (text: string) => (b.takes(text, prompt) ? [] : [spelled(text)]);
-  const [killEnd] = free("ctrl+k");
+  const free = (text: string) => (b.takes(text, prompt) ? undefined : spelled(text));
+  const killEnd = free("ctrl+k");
+  const killStart = free("ctrl+u");
+  const killBack = free("ctrl+w");
+  const wordBefore = free("alt+backspace");
   // A part of a line: its keys, then what they do, or nothing when no key is bound.
   const part = (keys: (string | undefined)[], words: string, join = (bound: string[]) => bound.join(" ")) => {
     const bound = keys.filter((x) => x !== undefined);
     return bound.length > 0 && `${join(bound)}  ${words}`;
   };
-  // Pairs of editing keys, each a first and a second ("Home End"): pairs with both keys free share `both`, and a key
+  // Pairs of editing keys, each a first and a second ("Home End"): pairs with both keys free share `together`, and a key
   // left alone by its pair's other being taken gets its own words, so it never claims the other's.
-  const paired = (keys: [string, string][], both: string, first: string, second: string) => {
+  const paired = (keys: [string, string][], together: string, first: string, second: string) => {
     const whole: string[] = [];
     const firsts: string[] = [];
     const seconds: string[] = [];
     for (const [a, z] of keys) {
-      const [x] = free(a);
-      const [y] = free(z);
+      const x = free(a);
+      const y = free(z);
       if (x && y) whole.push(`${x} ${y}`);
       else if (x) firsts.push(x);
       else if (y) seconds.push(y);
     }
     const or = (bound: string[]) => bound.join(" or ");
-    return [part(whole, both, or), part(firsts, first, or), part(seconds, second, or)];
+    return [part(whole, together, or), part(firsts, first, or), part(seconds, second, or)];
   };
   // A line of parts, or none when no part has a key, which the list then leaves out.
   const line = (...parts: (string | false)[]) => (parts.some(Boolean) ? `  ${parts.filter(Boolean).join(" · ")}` : null);
@@ -138,11 +144,16 @@ export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"]): st
         "a word right",
       ),
     ),
-    line(part(free("ctrl+w"), "delete back to a space"), part(free("alt+backspace"), "the word before"), part(free("alt+d"), "the word after")),
+    // A key left alone keeps the verb its line's first key gave it.
+    line(
+      part([killBack], "delete back to a space"),
+      part([wordBefore], killBack ? "the word before" : "delete the word before"),
+      part([free("alt+d")], killBack || wordBefore ? "the word after" : "delete the word after"),
+    ),
     line(
       part([killEnd], "delete to the line's end"),
-      part(free("ctrl+u"), killEnd ? "to its start" : "delete to the line's start"),
-      part(free("ctrl+y"), "put it back"),
+      part([killStart], killEnd ? "to its start" : "delete to the line's start"),
+      part([free("ctrl+y")], killEnd || killStart ? "put it back" : "put back the last delete"),
       part(k("chat:undo", "Chat", "ctrl+z"), "undo"),
     ),
     line(
@@ -153,12 +164,12 @@ export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"]): st
     ),
     line(part(k("app:toggleTranscript", "Global", "ctrl+o"), "the last turn's tool calls in full"), "a space first starts a message with ?"),
     line(part(k("app:toggleTodos", "Global", "ctrl+t"), "show or hide the to-do list")),
-    // Release 6's keys have no release 5 words to keep, so each names every key bound to it, as the command keys below do:
-    // one the keys file adds shows beside the defaults (release 6 plan, Task 23's checklist, step 3).
+    // Release 6's keys have no release 5 words to keep, so each names every key that runs it, as the command keys below
+    // do: one the keys file adds shows beside the defaults (release 6 plan, Task 23's checklist, step 3).
     line(part(all("chat:externalEditor"), "open the prompt in your editor", either)),
     line(part(all("chat:stash"), "stash the prompt or bring it back", either), part(all("chat:imagePaste"), "paste a picture", either)),
     // The keys file's command:<name> keys, which run at the prompt (release 6 plan, Task 11), one line a command.
-    ...KEY_COMMANDS.map((n) => line(part([...b.keysFor(`command:${n}`, "Chat"), ...b.keysFor(`command:${n}`, "Global")].map(spelled), `/${n}`))),
+    ...KEY_COMMANDS.map((n) => line(part(all(`command:${n}`), `/${n}`))),
     line(
       part([scroll("pageUp", "pageup"), scroll("pageDown", "pagedown")], "half a screen"),
       part([scroll("top", "ctrl+home"), scroll("bottom", "ctrl+end")], "top, latest"),

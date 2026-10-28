@@ -295,7 +295,7 @@ making it first if it is missing.
   one before. The keys pressed so far show in the hint row (`ctrl+x ...`).
 - **`null` unbinds** a key in its context, even where an outer context binds it: `"ctrl+t": null`
   under `Chat` stops Ctrl+T at the prompt, and Global's Ctrl+T still works elsewhere.
-  **`command:<name>`** runs `/exit`, `/errors`, `/model`, `/screen`, `/tasks`, `/vim`, `/settings`
+- **`command:<name>`** runs `/exit`, `/errors`, `/model`, `/screen`, `/tasks`, `/vim`, `/settings`
   or `/keybindings`; during a turn it waits its turn, as a typed command does.
 - **Bindings come first.** The prompt's editing keys (Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, Alt+B,
   Alt+F and the rest) act only on a key no binding takes, so binding Ctrl+E to

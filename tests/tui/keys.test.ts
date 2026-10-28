@@ -162,6 +162,19 @@ describe("the keys named in help and hints", () => {
     expect(list.join("\n")).toMatch(/Ctrl\+S or Ctrl\+B {2}stash the prompt or bring it back · .* or Alt\+I {2}paste a picture/);
   });
 
+  // Release 6 plan, Task 23's code review: a key is listed for an action only where the prompt runs that action on it.
+  it("leaves out a key whose binding at the prompt is not the action: null in Chat over Global's, or a chord's first key", () => {
+    const both = (chat: Record<string, string | null>, global: Record<string, string | null>) =>
+      new Bindings(tableOf({ ...DEFAULTS, Chat: { ...DEFAULTS.Chat, ...chat }, Global: { ...DEFAULTS.Global, ...global } }));
+    // Ctrl+S set to null in Chat does nothing at the prompt, though Global binds it to chat:stash (choice 18).
+    expect(keyList(both({ "ctrl+s": null }, { "ctrl+s": "chat:stash" })).join("\n")).not.toContain("stash");
+    // The same for a command key, and for the to-do list's Ctrl+T.
+    expect(keyList(both({ "ctrl+q": null }, { "ctrl+q": "command:vim" })).join("\n")).not.toContain("/vim");
+    expect(keyList(both({ "ctrl+t": null }, {})).join("\n")).not.toContain("to-do list");
+    // Ctrl+G waits for a chord's next key once a chord starts with it, so it no longer opens the editor alone.
+    expect(keyList(both({ "ctrl+g ctrl+s": "chat:stash" }, {}))).toContain("  Ctrl+X Ctrl+E  open the prompt in your editor");
+  });
+
   // Release 6 plan, Task 23 (the spec review): an editing key a binding takes no longer edits, so `?` does not name it.
   it("leaves out of the editing keys' lines a key a Chat or Global binding takes, and a part with none left", () => {
     // The terminal checklist's step 3: Ctrl+E opens the editor, so it is no longer the line's end.
@@ -185,6 +198,13 @@ describe("the keys named in help and hints", () => {
     // A key set to null in Chat frees it there, so Global's binding of it does not take it at the prompt (choice 18).
     const freed = new Bindings(tableOf({ ...DEFAULTS, Chat: { ...DEFAULTS.Chat, "ctrl+w": null }, Global: { ...DEFAULTS.Global, "ctrl+w": "app:toggleTodos" } }));
     expect(keyList(freed)).toContain("  Ctrl+W  delete back to a space · Alt+Backspace  the word before · Alt+D  the word after");
+    // A key left alone keeps its verb: Ctrl+W taken, Alt+Backspace deletes; both taken, Alt+D deletes.
+    const ctrlW = readKeybindings(JSON.stringify({ bindings: [{ context: "Chat", bindings: { "ctrl+w": "chat:stash" } }] }));
+    if ("problem" in ctrlW) throw new Error(ctrlW.problem);
+    expect(keyList(ctrlW.table)).toContain("  Alt+Backspace  delete the word before · Alt+D  the word after");
+    expect(keyList(over("Chat", { "ctrl+w": "chat:stash", "alt+backspace": "chat:stash" }))).toContain("  Alt+D  delete the word after");
+    // Ctrl+K and Ctrl+U both taken: Ctrl+Y says what it puts back.
+    expect(keyList(over("Chat", { "ctrl+k": "chat:stash", "ctrl+u": "chat:stash" }))).toContain("  Ctrl+Y  put back the last delete · Ctrl+Z  undo");
   });
 
   // In full screen the prompt obeys Chat, Scroll and Global (App.tsx, contextsOf), so a Scroll binding takes an editing
