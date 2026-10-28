@@ -315,6 +315,11 @@ making it first if it is missing.
   the last good keys after.
 - **Edits apply at once,** as for the settings file, and an empty or missing file changes nothing
   until the next start.
+- **Except the keys that answer a question,** which stay as they were at launch, so a command that
+  rewrites the file cannot make `n` answer yes. The parts of an edit that would change which key
+  answers yes or no, or stop one answering (all of `Confirmation`, and any `Global` or `Scroll`
+  binding that uses an answering key, even in a chord), take effect at the next launch, and a grey
+  line says so; the rest applies at once.
 
 The default keys:
 

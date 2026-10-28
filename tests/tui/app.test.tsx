@@ -6260,6 +6260,54 @@ describe("App's live settings", () => {
     await press(app, "?");
     expect(app.lastFrame()).toContain("  Ctrl+Y  show or hide the to-do list");
     expect(app.lastFrame()).not.toContain("Ctrl+T");
+    expect(flat(app)).not.toContain("take effect at the next launch"); // no key that answers a question was touched
+  });
+
+  // Release 6 plan, choice 30 (security review finding 1): a shell command could rewrite the keys file so that n and Esc
+  // answer yes. After a live edit every key answers a question as at launch, the rest of the edit applies, and a line
+  // says so; at launch the file applies whole, as the user's own choice.
+  const PAYLOAD = [
+    { context: "Confirmation", bindings: { n: "confirm:yes", escape: "confirm:yes" } },
+    { context: "Global", bindings: { enter: "confirm:yes" } },
+  ];
+  const HELD = "keybindings.json: changes to the keys that answer a question take effect at the next launch; the rest apply now";
+
+  it("keeps the keys that answer a question as at launch after a live edit, says so, and applies the rest", async () => {
+    const home = freshHome();
+    const { app, bus, ask, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [...PAYLOAD, { context: "Global", bindings: { "ctrl+y": "app:toggleTodos" } }] }));
+    await sees(app, HELD);
+    let answer = ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n]");
+    await press(app, "\r"); // Enter answers nothing
+    expect(app.lastFrame()).toContain("Allow write a.txt? [y/n]");
+    await press(app, "n");
+    expect(await answer).toBe(false);
+    answer = ask("write b.txt");
+    await until(app, "Allow write b.txt? [y/n]");
+    await press(app, "\u001b");
+    expect(await answer).toBe(false);
+    answer = ask("write c.txt");
+    await until(app, "Allow write c.txt? [y/n]");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0019"); // Ctrl+Y, from the same edit
+    expect(app.lastFrame()).not.toContain("write the fix");
+  });
+
+  it("applies keys that answer a question from the keys file at launch, with no line", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, { bindings: PAYLOAD });
+    const { app, ask } = await watching([], {}, {}, {}, home);
+    const answer = ask("write a.txt");
+    await until(app, "Allow write a.txt?"); // no key left declines, so the question names none
+    await press(app, "n");
+    expect(await answer).toBe(true);
+    expect(flat(app)).not.toContain(HELD);
   });
 
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {

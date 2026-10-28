@@ -428,6 +428,10 @@ export function App({
   // The keys file's problems as last said, and whether a good file has been read (onKeys).
   const keysWarned = useRef<string[]>([]);
   const keysRead = useRef(false);
+  // The keys as the launch's read of the keys file left them, the table given if it read none, and whether that read
+  // is done: after it, a key answers a permission question as it did then (onKeys; release 6 plan, choice 30).
+  const launchKeys = useRef(table);
+  const launched = useRef(false);
 
   // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
   // design, "Scrolling"); setting `lines` draws them either way.
@@ -583,6 +587,7 @@ export function App({
     } catch (err) {
       say(gray(`${SETTINGS} and ${KEYBINDINGS} are not watched this session (${errorText(err)})`));
     }
+    launched.current = true; // the watcher's first read, done at once inside watchSettings, was the launch's (onKeys)
     history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
@@ -1164,9 +1169,18 @@ export function App({
       return say({ text: `${read.problem}; ${keysRead.current ? "the last good keys still apply" : "the default keys apply"}`, color: "red" });
     }
     keysRead.current = true;
-    for (const p of read.problems) if (!keysWarned.current.includes(p)) say(gray(p));
-    keysWarned.current = read.problems;
-    setTable(read.table);
+    // After the launch, the parts of an edit that would change how a key answers a question wait for the next launch,
+    // so a shell command that rewrites the file cannot make n answer yes (choice 30); their line is said as a problem is.
+    let { table: keys, problems } = read;
+    if (!launched.current) launchKeys.current = keys;
+    else {
+      const kept = keys.keepAnswers(launchKeys.current);
+      keys = kept.table;
+      if (kept.held) problems = [...problems, `${KEYBINDINGS}: changes to the keys that answer a question take effect at the next launch; the rest apply now`];
+    }
+    for (const p of problems) if (!keysWarned.current.includes(p)) say(gray(p));
+    keysWarned.current = problems;
+    setTable(keys);
   };
   // One entry's new value, `s` the file's and `now` what applies (above), with its line. A lead or a screen waits for
   // next() (above). A model the file names that cannot be made is said, as at launch (cli.tsx), and the one before is
