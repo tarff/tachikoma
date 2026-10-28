@@ -224,6 +224,12 @@ describe("Bindings.press", () => {
     expect(bindings.keysFor("chat:stash", "Chat")).toEqual(["ctrl+shift+k"]);
     expect(bindings.keysFor("chat:modelPicker", "Chat")).toEqual(["alt+p escape"]);
   });
+
+  it("refuses a table with a key it cannot read, which the keys file's reader reports first", () => {
+    const table = empty();
+    table.Chat.set("ctl+k", "chat:stash");
+    expect(() => new Bindings(table)).toThrow('Chat "ctl+k": unknown modifier "ctl"');
+  });
 });
 
 describe("Bindings.keysFor", () => {
@@ -284,17 +290,19 @@ describe("DEFAULTS", () => {
   ];
 
   it("binds every action App handles today, on today's keys, and nothing else but picture pasting", () => {
-    const bindings = new Bindings(tableOf(defaultsFor("win32")));
+    const bindings = new Bindings(tableOf(defaultsFor("win32", false)));
     for (const [context, action, keys] of today) expect([context, action, bindings.keysFor(action, context)]).toEqual([context, action, keys]);
-    const all = CONTEXTS.flatMap((c) => Object.values(defaultsFor("win32")[c]).map((a) => `${c} ${a}`));
+    const all = CONTEXTS.flatMap((c) => Object.values(defaultsFor("win32", false)[c]).map((a) => `${c} ${a}`));
     expect(new Set(all)).toEqual(new Set([...today.map(([c, a]) => `${c} ${a}`), "Chat chat:imagePaste"]));
   });
 
-  it("pastes a picture on Alt+V on Windows, where Ctrl+V never arrives, and on Ctrl+V elsewhere", () => {
-    expect(new Bindings(tableOf(defaultsFor("win32"))).keysFor("chat:imagePaste", "Chat")).toEqual(["alt+v"]);
-    for (const platform of ["linux", "darwin"] as const)
-      expect(new Bindings(tableOf(defaultsFor(platform))).keysFor("chat:imagePaste", "Chat")).toEqual(["ctrl+v"]);
-    expect(DEFAULTS).toEqual(defaultsFor(process.platform));
+  it("pastes a picture on Alt+V on Windows, where Ctrl+V never arrives, on both on WSL, and on Ctrl+V elsewhere", () => {
+    const paste = (platform: NodeJS.Platform, wsl: boolean) => new Bindings(tableOf(defaultsFor(platform, wsl))).keysFor("chat:imagePaste", "Chat");
+    expect(paste("win32", false)).toEqual(["alt+v"]);
+    expect(paste("linux", true)).toEqual(["alt+v", "ctrl+v"]);
+    expect(paste("linux", false)).toEqual(["ctrl+v"]);
+    expect(paste("darwin", false)).toEqual(["ctrl+v"]);
+    expect(DEFAULTS).toEqual(defaultsFor(process.platform, process.env.WSL_DISTRO_NAME !== undefined));
   });
 
   it("writes every key in the spelling the table gives back", () => {

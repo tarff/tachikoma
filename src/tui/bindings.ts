@@ -107,8 +107,10 @@ export function strokeOf(input: string, key: Key): Stroke | null {
 // The default table, in Claude Code's file shape (keys to action, a block a context): today's keys under Claude Code's names
 // where it has the action, and Tachikoma's own named in its style (plan, Task 5). Each action's first key is the one hints
 // name. Picture pasting is Alt+V on Windows, where Ctrl+V never reaches the program (the terminal pastes; release 6 probe),
-// and Ctrl+V elsewhere, as Claude Code has it.
-export function defaultsFor(platform: NodeJS.Platform): Record<Context, Record<string, string>> {
+// both on WSL, Alt+V first, since it runs in the same Windows terminals, and Ctrl+V elsewhere, as Claude Code has them (its
+// keybindings page: "On WSL, both shortcuts are bound by default").
+export function defaultsFor(platform: NodeJS.Platform, wsl: boolean): Record<Context, Record<string, string>> {
+  const paste = platform === "win32" ? ["alt+v"] : wsl ? ["alt+v", "ctrl+v"] : ["ctrl+v"];
   return {
     Global: { "ctrl+c": "app:interrupt", "ctrl+d": "app:exit", "ctrl+t": "app:toggleTodos", "ctrl+o": "app:toggleTranscript" },
     Chat: {
@@ -128,7 +130,7 @@ export function defaultsFor(platform: NodeJS.Platform): Record<Context, Record<s
       "ctrl+g": "chat:externalEditor",
       "ctrl+x ctrl+e": "chat:externalEditor",
       "ctrl+s": "chat:stash",
-      [platform === "win32" ? "alt+v" : "ctrl+v"]: "chat:imagePaste",
+      ...Object.fromEntries(paste.map((k) => [k, "chat:imagePaste"])),
     },
     Autocomplete: { tab: "autocomplete:accept", escape: "autocomplete:dismiss", up: "autocomplete:previous", down: "autocomplete:next" },
     Confirmation: { y: "confirm:yes", n: "confirm:no", escape: "confirm:no" },
@@ -169,7 +171,9 @@ export function defaultsFor(platform: NodeJS.Platform): Record<Context, Record<s
     },
   };
 }
-export const DEFAULTS = defaultsFor(process.platform);
+// WSL sets WSL_DISTRO_NAME inside every distribution it runs (the coordinator's spec review of Task 5, 2026-10-28; Microsoft's
+// "Working across file systems" page, read the same day, does not name it). The only place the platform is read.
+export const DEFAULTS = defaultsFor(process.platform, process.env.WSL_DISTRO_NAME !== undefined);
 
 // A table for Bindings from a file-shaped one, which the keys file (Task 11) then lays its entries over.
 export const tableOf = (file: Record<Context, Record<string, string | null>>): Record<Context, Map<string, string | null>> =>
