@@ -354,8 +354,10 @@ Each is fixed in a later release, unless it says otherwise.
    paste, an external editor, stash, rebinding keys in a file.
 7. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is
    applied); auto mode, where a second model judges each action instead of asking you.
-8. MCP tools and long-term memory (MemPalace); transcripts saved to disk; shortening the history.
-9. Skills: the loader, the bundled superpowers skills, and Tachikoma's own.
+8. MCP tools and long-term memory (MemPalace); transcripts saved to disk; shortening the history;
+   lessons learned from the error log, recalled when the same error comes back.
+9. Skills: the loader, the bundled superpowers skills, and Tachikoma's own; Tachikoma offers to
+   turn what it has learned into new skills, saved only on your yes.
 10. Search of the codebase by meaning, with EmbeddingGemma 2.
 11. A budget controller, then handing work to the `claude`, `codex` and `kimi` command-line tools.
 12. Loops: on a timer, and until a task is done.
