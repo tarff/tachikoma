@@ -267,7 +267,7 @@ export function App({
   // Vim mode's state (vim.ts), or null with vim mode off: on from the settings file's editorMode, /vim or a live edit,
   // starting in INSERT (release 6 design, "Vim mode"). Kept while the detail view, a menu or the model list is open.
   const vim = useRef<Vim | null>(live?.loaded.settings.editorMode === "vim" ? vimStart : null);
-  const vimText = useRef<string | null>(null); // the prompt's text as vim's last key left it (staleVisual)
+  const vimText = useRef<string | null>(null); // the prompt's text as vim's last key left it (staleVim)
   const first = useRef<{ name: string; timer: NodeJS.Timeout } | null>(null); // a key waiting for its second press
   // The table of keys (release 6 design, "Keys become named actions"), as the keys file last set it, and the timer that
   // draws the hint row again once a chord's 3 s are up (bindings.ts, CHORD_MS).
@@ -1281,6 +1281,8 @@ export function App({
     if (!fullNow.current && stroke.shift && !stroke.ctrl && !stroke.alt && (stroke.key === "up" || stroke.key === "down")) stroke = { ...stroke, shift: false };
     // At the prompt in vim mode, Esc in INSERT or VISUAL, and a key without Ctrl or Alt while a vim command is half
     // typed, go to vim before any binding, as a field's text does (plan, Task 6), so Esc there is never chat:cancel.
+    // What is half typed is asked once text App changed since has dropped it (staleVim).
+    staleVim();
     const v = vim.current;
     const toVim =
       v !== null &&
@@ -1383,7 +1385,6 @@ export function App({
   // the editor, or in vim mode to vim first (vimTakes).
   const promptKey = (h: Now, got: Got, ch: string, key: Key) => {
     const action = got && "action" in got ? got.action : null;
-    staleVisual();
     const v = vim.current;
     const stroke = strokeOf(ch, key);
     // Claude Code's vim hook leaves VISUAL on any Ctrl or Meta key, and its text field then takes no editing key from
@@ -1465,14 +1466,18 @@ export function App({
     else if (r.act) run(r.act === "submit" ? "submit" : ACTIONS[r.act]!); // history:previous, :next or :search
     return true;
   };
-  // VISUAL's anchor is a place in the text as vim's last key left it. Once App changes the text (a message sent, a
-  // recall, a paste, a picture's marker taken out...), VISUAL goes to NORMAL, so no selection, nor `o`'s jump to the
-  // anchor, reaches into text that is gone; moving the cursor alone keeps it (code review of Task 21; choice 27).
-  const staleVisual = () => {
+  // VISUAL's anchor is a place in the text as vim's last key left it, and a command or count half typed was typed for
+  // that text. Once App changes the text (a message sent, a recall, a paste, a picture's marker taken out...), VISUAL
+  // goes to NORMAL and what was half typed is dropped, so no selection, nor `o`'s jump to the anchor, reaches into text
+  // that is gone, and no `d` typed for one text deletes from another; moving the cursor alone keeps them (code review of
+  // Task 21; choice 27; the final review).
+  const staleVim = () => {
     const v = vim.current;
-    if (!v?.mode.startsWith("VISUAL") || editor.current.text === vimText.current) return;
-    const { anchor, ...rest } = v;
-    vim.current = { ...rest, mode: "NORMAL", pending: "", count: "" };
+    if (!v || editor.current.text === vimText.current) return;
+    if (v.mode.startsWith("VISUAL")) {
+      const { anchor, ...rest } = v;
+      vim.current = { ...rest, mode: "NORMAL", pending: "", count: "" };
+    } else if (v.pending || v.count) vim.current = { ...v, pending: "", count: "" };
   };
   // Claude Code ends a remap pair's wait at every key (its cancelPendingRemap): `press` ends it at the keys it takes,
   // and App at the rest (plan, Task 21).
@@ -1962,7 +1967,7 @@ export function App({
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = detail.current;
   const prompt = search.current ? shown() : editor.current;
-  staleVisual(); // while drawing too, for a change no key made (a picture's read ending), safe as `copied` below says
+  staleVim(); // while drawing too, for a change no key made (a picture's read ending), safe as `copied` below says
   const highlight = search.current ? undefined : visualSelection(vim.current, prompt);
   const menu = picker || question || d ? null : menuFor(prompt);
   if (menu?.kind !== "path") listed.current = null;

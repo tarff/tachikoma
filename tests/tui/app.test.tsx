@@ -5801,6 +5801,18 @@ describe("App's vim mode", () => {
     });
   });
 
+  // Final review: a command or count half typed outlived App putting other text in the prompt, so `d`, Ctrl+P, `w`
+  // deleted a word of the line recalled. Changed text drops them, as it leaves VISUAL.
+  it.each([
+    { name: "a past prompt recalled with Ctrl+P", keys: ["\u{10}"], after: "› /vim\n" },
+    { name: "a picture's marker put in", keys: [PICTURE], after: "› [Image #1]alpha beta\n" },
+  ])("drops a half-typed d when $name changes the text, so w only moves", async ({ keys, after }) => {
+    const { app } = await mount([]);
+    await normal(app, "alpha beta");
+    await press(app, "0", "d", ...keys, "w");
+    expect(app.lastFrame()).toContain(after);
+  });
+
   it("leaves VISUAL for NORMAL when a picture's failed read takes its marker out", async () => {
     await inColour(async () => {
       const pictures = new Pictures();
