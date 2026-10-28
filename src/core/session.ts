@@ -155,14 +155,20 @@ export class Session {
       if (signal?.aborted) return undefined;
       // The SDKs' `APIError` and chatgpt.ts's ProviderError carry the HTTP status; anything else has none.
       const status: unknown = (err as { status?: unknown } | null | undefined)?.status;
-      const error = { kind: "provider" as const, attempted: `request to ${provider.id}`, message: errorText(err), lead: this.#lead.id };
+      const error = {
+        kind: "provider" as const,
+        attempted: `request to ${provider.id}`,
+        message: errorText(err),
+        lead: this.#lead.id,
+      };
       bus.emit("error", typeof status === "number" ? { ...error, status } : error);
       // A 400 does not say whether the pictures caused it, so the user is asked, after seeing the provider's words; y
       // leaves them out for this provider from now on, the conversation keeping them (release 6 design, "When the
       // provider refuses"). It is whichever provider was sent the request, the fallback included, as its id is the one
       // marked. A request already without pictures asks nothing, so a second refusal ends the turn.
       const pictures = !refused && this.messages.some((m) => m.parts.some((p) => p.type === "image"));
-      if (status === 400 && pictures && (await this.opts.ask?.("Send again without the pictures", undefined, undefined, true))) {
+      const question = "Send again without the pictures";
+      if (status === 400 && pictures && (await this.opts.ask?.(question, undefined, undefined, true))) {
         this.#refusedPictures.add(provider.id);
         bus.emit("note", `Pictures are left out for ${provider.id} from now on.`);
         return this.#request(provider, signal);

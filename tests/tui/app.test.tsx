@@ -5294,7 +5294,7 @@ describe("App's pictures", () => {
     expect(app.lastFrame()).not.toContain("Allow Send"); // a plain question, not a permission one
     await press(app, "y");
     await until(app, "next one");
-    expect(app.lastFrame()).toContain("Send again without the pictures: allowed\nPictures are left out for fake:a from now on.\nseen");
+    expect(app.lastFrame()).toContain("Send again without the pictures: yes\nPictures are left out for fake:a from now on.\nseen");
     expect(fake.seen).toHaveLength(3);
     expect(userParts(session)).toEqual([looked, [{ type: "text", text: "queued" }]]); // the conversation is never changed
   });
@@ -5312,10 +5312,25 @@ describe("App's pictures", () => {
     expect(app.lastFrame()).not.toContain("Allow Send");
     await press(app, "n");
     await until(app, "next one");
-    expect(app.lastFrame()).toContain("Send again without the pictures: declined");
+    expect(app.lastFrame()).toContain("Send again without the pictures: no");
     expect(app.lastFrame()).not.toContain("Pictures are left out");
     expect(fake.seen).toHaveLength(2);
     expect(userParts(session)).toEqual([looked, [{ type: "text", text: "queued" }]]);
+  });
+
+  // Task 18's code review: "allowed" and "declined" fit a permission; a plain question's answer is yes or no.
+  it("logs a Ctrl-C at the question as no (cancelled), and sends nothing again", async () => {
+    const pictures = new Pictures();
+    const { lead, fake, release } = gated([invalid()]);
+    const { app } = await mount([], { lead, pictures });
+    await press(app, "look ", PICTURE, "\r");
+    pictures.set(1, PNG);
+    await until(app, "Esc to stop");
+    release();
+    await until(app, "Send again without the pictures? [y/n] · Esc to decline");
+    await press(app, "\u0003");
+    await until(app, "Send again without the pictures: no (cancelled)");
+    expect(fake.seen).toHaveLength(1);
   });
 });
 

@@ -1265,16 +1265,19 @@ export function App({
       else if (!got && (key.backspace || key.delete)) to?.("backspace");
       else if (!got && !key.ctrl && !key.meta && ch) to?.({ text: ch }); // typed text read together, or a paste (usePaste, below)
     } else if (kind === "question") {
-      // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent.
+      // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent. A plain question's
+      // answer is logged as yes or no, a permission's as allowed or declined (Task 18's code review).
+      const [yes, no] = question!.plain ? ["yes", "no"] : ["allowed", "declined"];
       if (action === "app:interrupt") {
-        question!.answer(false, "declined (cancelled)");
+        question!.answer(false, `${no} (cancelled)`);
         if (question!.owner) question!.owner.stop();
         else {
           abort.current?.abort();
           restore();
         }
       } else if (action === "confirm:yes" || action === "confirm:no") {
-        question!.answer(action === "confirm:yes", action === "confirm:yes" ? "allowed" : "declined"); // Esc, as n: that action only; the turn goes on
+        // Esc, as n: that action only; the turn goes on
+        question!.answer(action === "confirm:yes", action === "confirm:yes" ? yes : no);
       } else if (action) everywhere(action, h);
     } else if (kind === "detail") detailKey(detail.current!, h, got, ch, key);
     else if (kind === "search") searchKey(h, got, ch, key);
@@ -1878,11 +1881,14 @@ export function App({
   // models" line when it has no models, in a box that tall, so the status line stays put while typing filters the list.
   // A question's line is wrapped and drawn a row a Text in full screen, so its rows are known; the line it moves to when
   // too long to fit is its short one, below.
-  const allow = (what: string, plain?: boolean) =>
-    hints(
-      `${plain ? "" : "Allow "}${what}? [${keyOf("confirm:yes", "Confirmation", "y") ?? ""}/${keyOf("confirm:no", "Confirmation", "n") ?? ""}]`,
+  const allow = (what: string, plain?: boolean) => {
+    const yes = keyOf("confirm:yes", "Confirmation", "y") ?? "";
+    const no = keyOf("confirm:no", "Confirmation", "n") ?? "";
+    return hints(
+      `${plain ? "" : "Allow "}${what}? [${yes}/${no}]`,
       said(keyOf("confirm:no", "Confirmation", "escape"), "to decline"),
     );
+  };
   const shortOf = (q: Question) => `${q.label} (shown above)`;
   const laid = layout(prompt.text, promptWidth(columns));
   const offered = full && picker ? listRows(picker, "") : [];
