@@ -3,7 +3,11 @@ import path from "node:path";
 import { z } from "zod";
 import { dataDir } from "../core/datadir.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
+import { SETTINGS, settingsDir } from "../settings.js";
 import { defineTool } from "./tool.js";
+
+// The keys file, beside the settings file in the settings folder.
+const KEYBINDINGS = "keybindings.json";
 
 // Where a path really leads, following symlinks and Windows junctions. Parts that don't exist yet
 // (a new file in a new folder) are added back onto the deepest part that does. Null for a link that
@@ -23,6 +27,8 @@ function realTarget(abs: string): string | null {
 // comes back absolute.
 export const leaves = (rel: string) => rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
 
+const same = (a: BigIntStats | undefined, b: BigIntStats) => a !== undefined && a.dev === b.dev && a.ino === b.ino;
+
 // Whether `real` is the data folder or in it. The path is compared first, which also covers a data
 // folder not made yet. Then each folder on the way up is compared by what it is (its volume and file
 // number), since Windows reaches one folder by its short name, by \\?\ and by \\localhost\C$, and
@@ -32,7 +38,6 @@ function inData(data: string, real: string): boolean {
   if (!leaves(path.relative(data, real))) return true;
   const id = statSync(data, { bigint: true, throwIfNoEntry: false });
   if (!id) return false;
-  const same = (a: BigIntStats | undefined, b: BigIntStats) => a !== undefined && a.dev === b.dev && a.ino === b.ino;
   for (let p = real; ; p = path.dirname(p)) {
     if (same(statSync(p, { bigint: true, throwIfNoEntry: false }), id)) return true;
     if (path.dirname(p) === p) break;
@@ -40,6 +45,30 @@ function inData(data: string, real: string): boolean {
   const file = statSync(real, { bigint: true, throwIfNoEntry: false });
   if (!file || !file.isFile() || file.nlink < 2n) return false;
   return readdirSync(data).some((name) => same(statSync(path.join(data, name), { bigint: true, throwIfNoEntry: false }), file));
+}
+
+// Whether `name`, in the settings folder, is the settings file, the keys file, or a lock or temporary
+// file that saving the settings makes beside it (settings.json.lock, settings.json.<pid>.<hex>.tmp).
+// Compared as Windows reads a name, so another spelling cannot make one: ignoring case (as macOS does),
+// the dots and spaces it drops from the end, and a ":stream" after it.
+export function settingsName(name: string): boolean {
+  const n = name.replace(/:.*/s, "").replace(/[. ]+$/, "").toLowerCase();
+  return n === SETTINGS || n === KEYBINDINGS || n.startsWith(`${SETTINGS}.`);
+}
+
+// Whether `real` is one of the settings folder's protected files, or a path inside one (which would
+// make it a folder). As for the data folder: the folder by path, which covers one not made yet, or by
+// what it is, and a file with more than one name compared with each protected file directly.
+function inSettings(folder: string, real: string): boolean {
+  const id = statSync(folder, { bigint: true, throwIfNoEntry: false });
+  for (let p = real; path.dirname(p) !== p; p = path.dirname(p)) {
+    if (!settingsName(path.basename(p))) continue;
+    const parent = path.dirname(p);
+    if (path.relative(folder, parent) === "" || (id && same(statSync(parent, { bigint: true, throwIfNoEntry: false }), id))) return true;
+  }
+  const file = statSync(real, { bigint: true, throwIfNoEntry: false });
+  if (!id || !file || !file.isFile() || file.nlink < 2n) return false;
+  return readdirSync(folder).some((name) => settingsName(name) && same(statSync(path.join(folder, name), { bigint: true, throwIfNoEntry: false }), file));
 }
 
 // On Linux, /proc/<process>/environ is a program's starting environment, API keys included, and
@@ -57,6 +86,12 @@ export function resolveIn(root: string, p: string): { abs: string; outside: bool
   // so a link cannot get round it.
   const data = realTarget(path.resolve(dataDir()));
   if (data === null || inData(data, real)) throw new Error(`${abs} is in Tachikoma's data folder, which the file tools never touch`);
+  // The settings and keys files, the same way: when the project is the home folder they are inside it,
+  // where `project` mode would let the model rewrite them unasked.
+  const settings = realTarget(settingsDir());
+  if (settings === null || inSettings(settings, real)) {
+    throw new Error(`${abs} is one of Tachikoma's settings files, which the file tools never touch; edit it with /settings or /keybindings`);
+  }
   if (programEnvironment(real)) throw new Error(`${abs} is a program's environment, which can hold API keys, so the file tools never read it`);
   const rel = path.relative(base, real);
   return { abs, outside: leaves(rel), shown: rel === path.relative(root, abs) ? abs : `${abs} (really ${real})` };

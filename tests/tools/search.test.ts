@@ -23,6 +23,17 @@ async function files(root: string, tree: Record<string, string>) {
   }
 }
 
+// A project that is the test's home folder, its ~/.tachikoma holding the settings and keys files, a
+// save's lock, and the error log, each with "token" in it.
+async function settingsHome() {
+  const ctx = await tempContext();
+  vi.stubEnv("USERPROFILE", ctx.root);
+  vi.stubEnv("HOME", ctx.root);
+  const names = ["settings.json", "keybindings.json", "settings.json.lock", "errors.jsonl"];
+  await files(ctx.root, Object.fromEntries(names.map((name) => [`.tachikoma/${name}`, "token"])));
+  return ctx;
+}
+
 describe("find_files", () => {
   it("lists the files whose path matches, sorted, with forward slashes", async () => {
     const ctx = await tempContext();
@@ -128,6 +139,11 @@ describe("find_files", () => {
     await expect(findFilesTool.run({ pattern: "**/*" }, ctx)).rejects.toThrow("Tachikoma's data folder");
   });
 
+  it("leaves out the settings and keys files when the project is the home folder", async () => {
+    const ctx = await settingsHome();
+    expect(await findFilesTool.run({ pattern: ".tachikoma/**" }, ctx)).toBe(".tachikoma/errors.jsonl");
+  });
+
   it("cuts a long list and says how many more there were", async () => {
     const ctx = await tempContext();
     const name = (n: number) => `${String(n).padStart(3, "0")}${"x".repeat(140)}.txt`;
@@ -202,6 +218,13 @@ describe("search_files", () => {
     vi.stubEnv("TACHI_DATA_DIR", path.join(ctx.root, "data"));
     linkSync(path.join(ctx.root, "data", "chatgpt.json"), path.join(ctx.root, "innocent.json"));
     expect(await searchFilesTool.run({ pattern: "token" }, ctx)).toBe("a.txt:1: token");
+  });
+
+  it("leaves out the settings and keys files when the project is the home folder, and a hard link to one", async () => {
+    const ctx = await settingsHome();
+    linkSync(path.join(ctx.root, ".tachikoma", "settings.json"), path.join(ctx.root, "innocent.json"));
+    expect(await searchFilesTool.run({ pattern: "token" }, ctx)).toBe(".tachikoma/errors.jsonl:1: token");
+    expect(await searchFilesTool.run({ pattern: "token", path: ".tachikoma" }, ctx)).toBe(".tachikoma/errors.jsonl:1: token");
   });
 
   it("says when the pattern is not a regular expression", async () => {

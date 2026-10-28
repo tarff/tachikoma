@@ -7,7 +7,8 @@ import { z } from "zod";
 import { dataDir } from "../core/datadir.js";
 import { errorText } from "../core/types.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
-import { programEnvironment, resolveIn } from "./files.js";
+import { settingsDir } from "../settings.js";
+import { programEnvironment, resolveIn, settingsName } from "./files.js";
 import { defineTool, type ToolContext } from "./tool.js";
 
 type Rules = { base: string; rules: ReturnType<typeof ignore> }[];
@@ -49,9 +50,10 @@ const id = (p: string) => stat(p, { bigint: true }).catch(() => null);
 
 // Every file under `folder`, as git would list them: no `.git`, nothing the .gitignore files leave
 // out (a folder they leave out is not looked inside, since git cannot bring back what is in it), and
-// Tachikoma's data folder skipped. No link or junction is followed, so the walk cannot loop or be led
-// out of the folder. A folder that cannot be read is skipped.
-async function* walk(folder: string, rules: Rules, data: BigIntStats | null, signal?: AbortSignal): AsyncGenerator<string> {
+// Tachikoma's data folder and settings files skipped. No link or junction is followed, so the walk
+// cannot loop or be led out of the folder. A folder that cannot be read is skipped. `settings` is the
+// settings folder, which is only looked up when a file has one of the settings files' names.
+async function* walk(folder: string, rules: Rules, data: BigIntStats | null, settings: BigIntStats | null, signal?: AbortSignal): AsyncGenerator<string> {
   signal?.throwIfAborted();
   const here = [...rules, ...(await rulesIn(folder))];
   const entries = await readdir(folder, { withFileTypes: true }).catch(() => []);
@@ -60,8 +62,8 @@ async function* walk(folder: string, rules: Rules, data: BigIntStats | null, sig
     if (e.isSymbolicLink()) continue;
     if (e.isDirectory()) {
       if (e.name === ".git" || ignored(here, abs, true) || same(await id(abs), data)) continue;
-      yield* walk(abs, here, data, signal);
-    } else if (e.isFile() && !ignored(here, abs, false)) yield abs;
+      yield* walk(abs, here, data, settings, signal);
+    } else if (e.isFile() && !ignored(here, abs, false) && !(settingsName(e.name) && same(await id(folder), settings))) yield abs;
   }
 }
 
@@ -85,7 +87,7 @@ async function* files(start: string, ctx: ToolContext, verb: string): AsyncGener
     if (!ignored(rules, real, false)) yield real;
     return;
   }
-  yield* walk(real, rules, await id(dataDir()), ctx.signal);
+  yield* walk(real, rules, await id(dataDir()), await id(settingsDir()), ctx.signal);
 }
 
 // Lines up to the size every tool's output is cut at, leaving room for the note of how many more;
