@@ -3323,8 +3323,9 @@ describe("App's detail view in full screen", () => {
     expect(rows[4]).toMatch(/^said 1\. word/);
   });
 
-  // A record opened by the queue going on from a listener set up once, at mount: a question's answer (bindAsk), and the
-  // end of a command clicked in the menu (the mouse's listener). Either way it wraps at the width the terminal has then.
+  // A record opened by the queue going on from a listener set up once, at mount: a question's answer (bindAsk), the end
+  // of a turn the bus's tasks event started, and the end of a command clicked in the menu (the mouse's listener). Each
+  // way it wraps at the width the terminal has then.
   const narrow = async (app: ReturnType<typeof render>) => {
     Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
     app.stdout.emit("resize");
@@ -3357,6 +3358,24 @@ describe("App's detail view in full screen", () => {
     await narrow(app);
     await press(app, "y");
     expect(await answer).toBe(true);
+    await until(app, "t1 (find x), done: 0 tool calls");
+    wrappedAt60(app);
+  });
+
+  it("wraps a record opened after a resize at the new width, when a background subagent's ending starts the turn before it", async () => {
+    const lead = new Held();
+    const worker = new Held("fake:w");
+    const { app } = await mount([], { full: true, lead, worker });
+    await type(app, "go");
+    lead.answer(callTool("c1", "delegate", { description: "find x", task: "find x", background: true }));
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("started it");
+    await gone(app, "Esc to stop");
+    await narrow(app);
+    worker.answer(lines(3, long)); // the bus's tasks event: the lead, idle, reads t1's answer in a turn of its own
+    await waitFor(() => lead.asked.length === 3);
+    await type(app, "/tasks t1"); // queued: the turn reading t1's answer is running
+    lead.answer("t1 says found");
     await until(app, "t1 (find x), done: 0 tool calls");
     wrappedAt60(app);
   });
