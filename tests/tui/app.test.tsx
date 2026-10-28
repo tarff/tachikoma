@@ -56,18 +56,18 @@ async function gone(app: ReturnType<typeof render>, text: string) {
   expect(app.lastFrame()).not.toContain(text);
 }
 
-const mounted: ReturnType<typeof render>[] = [];
-afterEach(() => {
-  for (const app of mounted.splice(0)) app.unmount();
-});
-
 // No test opens a real editor (release 6 plan, Task 12): Ctrl+G, Ctrl+X Ctrl+E, /settings and /keybindings run VISUAL,
 // which a test that opens one sets to a stand-in (helpers.ts, standInEditor), and which names no program elsewhere.
+// The variables go back only once the App is unmounted, so none it still runs reads the user's own.
 beforeEach(() => {
   vi.stubEnv("VISUAL", "tachi-test-no-editor");
   vi.stubEnv("EDITOR", "");
 });
-afterEach(() => void vi.unstubAllEnvs());
+const mounted: ReturnType<typeof render>[] = [];
+afterEach(() => {
+  for (const app of mounted.splice(0)) app.unmount();
+  vi.unstubAllEnvs();
+});
 
 type Login = AppProps["login"];
 
@@ -4880,6 +4880,23 @@ describe("App's external editor", () => {
     await press(app, CTRL_G);
     await waitFor(() => flat(app).includes(`tachi-no-such-editor was not found. ${SET}`));
     expect(app.lastFrame()).toContain("› keep me\n");
+  });
+
+  // Nothing escapes as an unhandled rejection, which would end the program: here the terminal write that leaves full
+  // screen fails, before the editor starts.
+  it("says what went wrong when handing the terminal to the editor fails", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    let fail = false;
+    const written = (s: string) => {
+      if (fail && s === MOUSE_OFF) throw new Error("the terminal took no write");
+    };
+    const { app } = await mount([], { full: true, written });
+    fail = true;
+    await press(app, "keep me", CTRL_G);
+    await waitFor(() => flat(app).includes("the terminal took no write"));
+    expect(editor.given()).toBeNull();
+    expect(app.lastFrame()).toContain("› keep me");
   });
 
   // The queue starts none of the commands that hand the terminal over while the editor has it; messages go on.

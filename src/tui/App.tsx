@@ -1218,7 +1218,8 @@ export function App({
     if (action === "app:exit" && e.text) run("delete");
     else if (!name) {
       if (action && ACTIONS[action]) run(ACTIONS[action]);
-      else if (action === "chat:externalEditor") void externalEditor();
+      // Called without await, so nothing may escape (submit, above): what goes wrong is said, as for a switch (next).
+      else if (action === "chat:externalEditor") void externalEditor().catch((err) => say({ text: errorText(err), color: "red" }));
       else if (action?.startsWith("command:")) command(`/${action.slice("command:".length)}`);
       else if (!got) for (const c of commands(ch, key)) run(c);
     } else if (name === "Ctrl-C" && e.text) clear(e); // one press clears

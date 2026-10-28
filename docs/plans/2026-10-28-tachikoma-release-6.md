@@ -1052,5 +1052,7 @@ at Task 6's spec review).
 8. Drag a .png from Explorer into the prompt: a marker.
 9. `/vim`: `-- INSERT --`; Esc, `dw`, `u`, `ciw`, `.`; `jj` with the remap set.
 10. An `openai:gpt-5.5` lead (if the user has an API key): the context bar shows.
+11. During a turn, Ctrl+G with Notepad open: Ctrl-C typed in the terminal meanwhile, and what it
+    does to the running turn (found at Task 12's spec review; Git behaves the same way).
 
 Commit: `docs: release 6 in the README, the design's as built, and the terminal checklist`.

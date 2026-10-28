@@ -61,10 +61,14 @@ describe("editText", () => {
     { name: "two line breaks", saved: "a\n\n", text: "a\n" },
     { name: "Windows' line break", saved: "a\r\n", text: "a" },
     { name: "none", saved: "a", text: "a" },
-  ])("drops one trailing line break only: $name", async ({ saved, text }) => {
+    { name: "Windows' line breaks within", saved: "a\r\nb\r\n", text: "a\nb" },
+    { name: "a lone carriage return", saved: "a\rb", text: "a\nb" },
+  ])("drops one trailing line break only, line breaks read as a paste's: $name, its temporary folder gone after", async ({ saved, text }) => {
     const editor = standInEditor();
     editor.next(saved);
-    expect(await editText("", editor.command("keep"))).toEqual({ text });
+    const { run, temp } = recorded();
+    expect(await editText("", editor.command("keep"), run)).toEqual({ text });
+    expect(existsSync(path.dirname(temp()))).toBe(false);
   });
 
   it("says the exit code of an editor that fails, its temporary folder gone after", async () => {

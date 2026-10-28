@@ -32,9 +32,10 @@ export function editorCommand(env: NodeJS.ProcessEnv, setting: string | undefine
 }
 
 // The prompt's text in a private temporary file (choice 5: prompt.md in a fresh folder, the user's own temporary
-// folder on Windows, opened with mode 0o600), the editor run on it, and the text it saved, without the one line break
-// editors add at the end (design, "On return"). The folder is removed after, unless the editor still holds it open
-// (Windows), in which case it is left where only the user can read it.
+// folder on Windows, opened with mode 0o600), the editor run on it, and the text it saved, its line breaks read as a
+// paste's (App.tsx, usePaste), since Notepad and VS Code on Windows save \r\n, and without the one line break editors
+// add at the end (design, "On return"). The folder is removed after, unless the editor still holds it open (Windows),
+// in which case it is left where only the user can read it.
 export async function editText(text: string, command: string, run = spawned): Promise<{ text: string } | { failed: string }> {
   let dir: string | undefined;
   try {
@@ -43,7 +44,7 @@ export async function editText(text: string, command: string, run = spawned): Pr
     await writeFile(file, text, { mode: 0o600, flag: "wx" });
     const failed = await runEditor(file, command, run);
     if (failed !== null) return { failed };
-    return { text: (await readFile(file, "utf8")).replace(/\r?\n$/, "") };
+    return { text: (await readFile(file, "utf8")).replace(/\r\n?/g, "\n").replace(/\n$/, "") };
   } catch (err) {
     return { failed: errorText(err) };
   } finally {

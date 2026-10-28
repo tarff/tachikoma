@@ -111,6 +111,11 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(help).toMatch(/\/screen switches between full\s+screen\s+and\s+classic/);
   });
 
+  it("lists /settings and /keybindings in the help", () => {
+    const help = tachi("--help").stdout;
+    expect(help).toMatch(/\/settings opens the settings file in your editor,\s+\/keybindings opens the\s+keys file in your editor/);
+  });
+
   it("lists --scroll-speed in the help, and stops on a bad one, from the option or, in interactive mode, TACHI_SCROLL_SPEED", () => {
     expect(tachi("--help").stdout).toMatch(/^ {2}--scroll-speed <n> /m);
     let r = tachi("--lead", "ollama:none", "--scroll-speed", "abc", "-p", "hi");
