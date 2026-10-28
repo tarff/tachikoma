@@ -178,7 +178,7 @@ async function mount(
       pictures={opts.pictures}
       // No test reads the user's clipboard: unless a test gives its own reader, Alt+V's read never answers, and the
       // test ends it through the session's Pictures.
-      readPicture={"readPicture" in opts ? opts.readPicture : () => new Promise(() => {})}
+      readPicture={opts.readPicture === undefined ? () => new Promise(() => {}) : opts.readPicture}
     />,
   );
   mounted.push(app);
@@ -1832,6 +1832,7 @@ describe("App in full screen", () => {
         fullPossible
         scrollSpeed={3}
         clipboard={(report) => new Clipboard(() => {}, null, report)}
+        readPicture={() => new Promise(() => {})} // never answers: no test reads the user's clipboard
         home={sharedHome}
       />,
       { stdout: stdout as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
@@ -3729,6 +3730,7 @@ async function onTerminal(
       input={input}
       scrollSpeed={3}
       clipboard={(report) => new Clipboard(() => {}, null, report)}
+      readPicture={() => new Promise(() => {})} // never answers: no test reads the user's clipboard
       home={sharedHome}
     />,
     { stdout: terminal as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
@@ -5247,6 +5249,10 @@ describe("App's pictures", () => {
     const { app } = await mount([], { pictures });
     await press(app, " ", PICTURE, CTRL_S, "b ", PICTURE); // the stash, left with a blank only, empties
     expect(app.lastFrame()).toContain("Reading picture..."); // in the hint row, over "Stashed", while a read runs (Task 15)
+    await press(app, CTRL_S); // the two swap: the stash held the first marker
+    expect(app.lastFrame()).toContain("›  [Image #1]");
+    await press(app, CTRL_S);
+    expect(app.lastFrame()).toContain("› b [Image #2]");
     pictures.set(1, "none");
     pictures.set(2, "none");
     await until(app, "No picture on the clipboard.\nNo picture on the clipboard.");
@@ -5324,7 +5330,8 @@ describe("App's picture reads", () => {
     expect(userParts(session)).toEqual([[{ type: "image", id: 1, ...PNG }, { type: "text", text: " and " }, { type: "image", id: 2, ...OTHER }]]);
   });
 
-  it("keeps the picture of a marker deleted during its read when undo brings the marker back, reading only once", async () => {
+  // Release 6 design, "Testing": deleting the marker during the read, the read ending, then undo.
+  it("keeps the picture of a marker deleted during its read when undo brings the marker back after, reading only once", async () => {
     const { read, answers } = answered();
     let reads = 0;
     const { app, session } = await mount([reply("ok")], {
@@ -5335,13 +5342,30 @@ describe("App's picture reads", () => {
     });
     await press(app, "see ", PICTURE, "\u007f"); // Backspace takes the whole marker (choice 14)
     expect(app.lastFrame()).toMatch(/› see ?\n/);
+    answers[0]!(PNG);
+    await tick();
     await press(app, "\u001a"); // Ctrl+Z
     expect(app.lastFrame()).toContain("› see [Image #1]");
-    answers[0]!(PNG);
     await press(app, "\r");
     await until(app, "ok");
     expect(userParts(session)).toEqual([[{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]]);
     expect(reads).toBe(1);
+  });
+
+  // Release 6 design, "While a read runs": a copy of the marker that undo brings back after a read found nothing is
+  // only text.
+  it("sends a marker undo brings back after the read found no picture as text only", async () => {
+    const { read, answers } = answered();
+    const { app, session } = await mount([reply("ok")], { readPicture: read });
+    await press(app, "see ", PICTURE);
+    answers[0]!("none");
+    await until(app, "No picture on the clipboard.");
+    expect(app.lastFrame()).toMatch(/› see ?\n/);
+    await press(app, "\u001a"); // Ctrl+Z
+    expect(app.lastFrame()).toContain("› see [Image #1]");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "see [Image #1]" }]]);
   });
 
   it("takes a marker out of a queued message when the clipboard has no picture, and the message goes without it", async () => {
@@ -5423,6 +5447,17 @@ describe("App's picture reads", () => {
     await press(app, paste(text), "\r");
     await until(app, "ok");
     expect(userParts(session)).toEqual([[{ type: "text", text }]]);
+  });
+
+  it("keeps a pasted path to a folder named like a picture as text, with no marker", async () => {
+    const folderPath = path.join(folder(), "shots.png");
+    mkdirSync(folderPath);
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, paste(folderPath));
+    expect(app.lastFrame()).not.toContain("[Image #");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: folderPath }]]);
   });
 
   it("says in red that a pasted file that is not a picture could not be read, naming the file, and takes its marker out", async () => {

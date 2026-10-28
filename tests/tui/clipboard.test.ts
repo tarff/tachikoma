@@ -366,4 +366,14 @@ describe("pictureFile", () => {
     const missing = path.join(dir, "missing.png");
     await expect(pictureFile(missing)).resolves.toEqual({ failed: `ENOENT: no such file or directory, open '${missing}'` });
   });
+
+  // Near misses: JPEG's SOI with no marker after it, and a RIFF file that is not WebP (a WAVE sound).
+  it.each([
+    ["FF D8 00", Buffer.from([0xff, 0xd8, 0x00, 0xe0])],
+    ["RIFF, 4 bytes, WAVE", Buffer.concat([Buffer.from("RIFF"), Buffer.from([4, 0, 0, 0]), Buffer.from("WAVEfmt ")])],
+  ])("fails for a file starting %s", async (_, data) => {
+    const file = path.join(tempFolder(), "near.png");
+    writeFileSync(file, data);
+    await expect(pictureFile(file)).resolves.toEqual({ failed: "not a PNG, JPEG, GIF or WebP picture" });
+  });
 });
