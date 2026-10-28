@@ -72,12 +72,12 @@ function forward(text: string, i: number, inWord: (c: string) => boolean): numbe
 }
 
 // At 0 there is no line before: lastIndexOf would read -1 as 0 and find a line break there.
-const lineStart = (text: string, i: number) => (i === 0 ? 0 : text.lastIndexOf("\n", i - 1) + 1);
-const lineEnd = (text: string, i: number) => (text.indexOf("\n", i) + 1 || text.length + 1) - 1;
+export const lineStart = (text: string, i: number) => (i === 0 ? 0 : text.lastIndexOf("\n", i - 1) + 1);
+export const lineEnd = (text: string, i: number) => (text.indexOf("\n", i) + 1 || text.length + 1) - 1;
 
 // One step: the text between `from` and `to` replaced. Typing joins the step before when that was
 // typing too; everything else is a step of its own. A step that changes nothing is none.
-function change(e: Editor, from: number, to: number, insert: string, how: { typing?: boolean; kill?: boolean } = {}): Editor {
+export function change(e: Editor, from: number, to: number, insert: string, how: { typing?: boolean; kill?: boolean } = {}): Editor {
   if (from === to && !insert) return { ...e, typing: false };
   const joins = how.typing === true && e.typing;
   return {

@@ -1,8 +1,9 @@
 // Vim mode as plain data (release 6 design, "Vim mode"): `press` takes the state, the editor and one
 // key, and gives them back changed, so every row of Claude Code's vim tables is a test fed key by key.
-// Where Claude Code's docs leave a key's exact behaviour open, this does what Vim does. Every change
-// is one undo step through editor.ts, and `u` is the editor's undo.
-import { apply, type Editor, move, replace, segmenter } from "./editor.js";
+// Where Claude Code's docs leave a key's exact behaviour open, this does what Claude Code 2.1.312's own
+// code does where that was read (2026-10-28), and otherwise what Vim does. Every change is one undo
+// step through editor.ts's `change`, and `u` is the editor's undo.
+import { apply, change, type Editor, lineEnd, lineStart, move, segmenter } from "./editor.js";
 
 export type VimMode = "INSERT" | "NORMAL" | "VISUAL" | "VISUAL LINE";
 type Find = "f" | "F" | "t" | "T";
@@ -11,9 +12,10 @@ export interface Vim {
   pending: string; // the command typed so far after its count: an operator, its own count, a `g`, `r` or f/F/t/T
   count: string; // the digits typed before it
   lastFind?: { op: Find; ch: string }; // for ; and ,
-  lastChange?: string[]; // the keys of the last change, for `.`; for one into INSERT, the text typed there and Esc
+  lastChange?: string[]; // the keys of the last change, with its count, for `.`
   register: { text: string; linewise: boolean }; // the last yank or delete, kept here and never on the clipboard
-  anchor?: number; // in INSERT, where typing began, so Esc can tell `.` what was typed
+  anchor?: number; // VISUAL's (Task 20)
+  goal?: number; // the column, in characters, that j and k keep across a shorter line
 }
 
 export const start: Vim = { mode: "INSERT", pending: "", count: "", register: { text: "", linewise: false } };
@@ -32,28 +34,27 @@ export function press(v: Vim, e: Editor, key: string): Result {
 function insert(v: Vim, e: Editor, key: string): Result {
   if (isChar(key)) return { v, e: apply(e, { type: "insert", text: key }) };
   if (key !== "escape") return { v, e };
-  const { anchor, ...rest } = v;
   const c = e.cursor;
-  const typed = anchor !== undefined && c > anchor ? chars(e.text.slice(anchor, c)).ch : [];
-  const lastChange = anchor !== undefined && v.lastChange ? [...v.lastChange, ...typed, "escape"] : v.lastChange;
-  return { v: { ...rest, mode: "NORMAL", lastChange }, e: onChar(move(e, c === lineStart(e.text, c) ? c : before(e.text, c))) };
+  return { v: { ...v, mode: "NORMAL" }, e: onChar(move(e, c === lineStart(e.text, c) ? c : before(e.text, c))) };
 }
 
-const MOTIONS = new Set(["h", "j", "k", "l", " ", "left", "right", "up", "down", "w", "e", "b", "0", "$", "^", "G", ";", ",", "%"]);
+const MOTIONS = new Set(["h", "j", "k", "l", " ", "backspace", "left", "right", "up", "down", "w", "e", "b", "0", "$", "^", "G", ";", ",", "%"]);
 // Keys that are an operator and a motion, as Vim defines them.
 const SHORT = new Map([["x", "dl"], ["s", "cl"], ["D", "d$"], ["C", "c$"], ["S", "cc"], ["Y", "yy"]]);
 
 function normal(v: Vim, e: Editor, key: string, keys = [...v.count, ...v.pending, key]): Result {
   const [, op = "", opCount = "", prefix = ""] = /^([dcy<>]?)(\d*)([gfFtTr]?)$/u.exec(v.pending)!;
-  const done: Vim = { ...v, pending: "", count: "" };
+  const { goal, ...rest } = v; // a finished command forgets the column j and k keep, unless it is j or k
+  const done: Vim = { ...rest, pending: "", count: "" };
   const n = Number(v.count || 1) * Number(opCount || 1); // `2d3w` is six words, as in Vim
   const go = (name: string, lastFind = v.lastFind): Result => {
     const w = { ...done, lastFind };
-    const m = motion(w, e.text, e.cursor, name, n, v.count + opCount !== "", op);
+    const m = motion(w, e.text, e.cursor, name, n, v.count + opCount !== "", op, goal);
     if (!m && !op && (name === "j" || name === "down")) return { v: w, e, act: "history:next" };
     if (!m && !op && (name === "k" || name === "up")) return { v: w, e, act: "history:previous" };
     if (!m) return { v: w, e };
-    return op ? operate(w, e, op, m, keys) : { v: w, e: onChar(move(e, m.to)) };
+    if (op) return operate(w, e, op, m, keys);
+    return { v: m.goal === undefined ? w : { ...w, goal: m.goal }, e: onChar(move(e, m.to)) };
   };
   if (prefix === "r") return isChar(key) ? replaceChars(done, e, key, n, keys) : { v: done, e };
   if (prefix === "g") return key === "g" ? go("gg") : { v: done, e };
@@ -72,20 +73,21 @@ function command(v: Vim, e: Editor, key: string, n: number, keys: string[]): Res
   const { text, cursor: c } = e;
   switch (key) {
     case "i":
-      return insertAt(v, e, e, c, keys);
+      return toInsert(v, e, keys);
     case "a":
-      return insertAt(v, e, e, Math.min(after(text, c), lineEnd(text, c)), keys);
+      return toInsert(v, move(e, Math.min(after(text, c), lineEnd(text, c))), keys);
     case "I":
-      return insertAt(v, e, e, firstNonBlank(text, c), keys);
+      return toInsert(v, move(e, firstNonBlank(text, c)), keys);
     case "A":
-      return insertAt(v, e, e, lineEnd(text, c), keys);
+      return toInsert(v, move(e, lineEnd(text, c)), keys);
     case "o": {
       const at = lineEnd(text, c);
-      return insertAt(v, e, edit(e, at, at, "\n"), at + 1, keys);
+      return toInsert(v, change(e, at, at, "\n", { typing: true }), keys);
     }
     case "O": {
+      // The cursor before the new line break, the step still open for the typing to join.
       const at = lineStart(text, c);
-      return insertAt(v, e, edit(e, at, at, "\n"), at, keys);
+      return toInsert(v, { ...change(e, at, at, "\n", { typing: true }), cursor: at }, keys);
     }
     case "p":
     case "P":
@@ -93,6 +95,7 @@ function command(v: Vim, e: Editor, key: string, n: number, keys: string[]): Res
     case "J":
       return join(v, e, n, keys);
     case "u": {
+      // The editor's undo, `n` steps; each puts back the text and the cursor from before its step.
       let u = e;
       for (let i = 0; i < n; i++) u = apply(u, "undo");
       return { v, e: onChar(u) };
@@ -107,17 +110,10 @@ function command(v: Vim, e: Editor, key: string, n: number, keys: string[]): Res
   return { v, e };
 }
 
-// INSERT at `cursor`. Typing joins the step the command made, if it made one, so `cw` and the word
-// typed in its place undo together, as in Vim.
-function insertAt(v: Vim, e0: Editor, e: Editor, cursor: number, keys: string[]): Result {
-  return { v: { ...v, mode: "INSERT", lastChange: keys, anchor: cursor }, e: { ...move(e, cursor), typing: e.undo.length > e0.undo.length } };
-}
-
-// One undo step: the text from `from` to `to` replaced, through editor.ts's `replace`, with the cursor
-// after the new text. Undoing it puts the cursor back where the command found it, as Vim's `u` does.
-function edit(e: Editor, from: number, to: number, insert: string): Editor {
-  const r = replace(move(e, to), from, insert);
-  return r.undo.length > e.undo.length ? { ...r, undo: [...e.undo, { text: e.text, cursor: e.cursor }] } : r;
+// INSERT where the editor's cursor is. A command that changed the text made its step with `typing`, so
+// what is typed now joins it: `cw` and the word typed in its place undo together, as in Vim.
+function toInsert(v: Vim, e: Editor, keys: string[]): Result {
+  return { v: { ...v, mode: "INSERT", lastChange: keys }, e };
 }
 
 // In NORMAL the cursor is on a character, so never on a line's end unless the line is empty (Vim).
@@ -126,7 +122,7 @@ function onChar(e: Editor): Editor {
   return (c === text.length || text[c] === "\n") && c !== lineStart(text, c) ? move(e, before(text, c)) : e;
 }
 
-type Motion = { to: number; kind: "exclusive" | "inclusive" | "line" };
+type Motion = { to: number; kind: "exclusive" | "inclusive" | "line"; goal?: number };
 
 // An operator over the text from the cursor to where the motion goes, by Vim's rules: an inclusive
 // motion takes the character it lands on, and an exclusive one ending at a line's start ends at the
@@ -144,29 +140,28 @@ function operate(v: Vim, e: Editor, op: string, m: Motion, keys: string[]): Resu
   if (line || op === ">" || op === "<") [from, to] = [lineStart(text, from), lineEnd(text, to)];
   const register = to > from || line ? { text: text.slice(from, to), linewise: line } : v.register;
   if (op === "y") return { v: { ...v, register }, e: onChar(move(e, Math.min(c, m.to))) }; // the cursor to the yank's start
-  if (op === "c") return insertAt({ ...v, register }, e, edit(e, from, to, ""), from, keys);
+  if (op === "c") return toInsert({ ...v, register }, change(e, from, to, "", { typing: true }), keys);
   const changed = { ...v, register: op === "d" ? register : v.register, lastChange: keys };
   if (op === ">" || op === "<") {
-    const d = edit(e, from, to, text.slice(from, to).split("\n").map((l) => shift(l, op === ">" ? 1 : -1)).join("\n"));
+    const d = change(e, from, to, text.slice(from, to).split("\n").map((l) => shift(l, op)).join("\n"));
     return { v: changed, e: onChar(move(d, firstNonBlank(d.text, from))) };
   }
-  if (!line) return { v: changed, e: onChar(edit(e, from, to, "")) };
+  if (!line) return { v: changed, e: onChar(change(e, from, to, "")) };
   // Whole lines go with the line break after them, or for the last line the one before.
   const [x, y] = to < text.length ? [from, to + 1] : [Math.max(0, from - 1), to];
-  const d = edit(e, x, y, "");
+  const d = change(e, x, y, "");
   return { v: changed, e: onChar(move(d, firstNonBlank(d.text, x))) };
 }
 
-// The docs give no width for >> and <<, so these are Vim's defaults: 'shiftwidth' and 'tabstop' 8,
-// without 'expandtab', so a level is a tab. Vim leaves an empty line alone.
-const WIDTH = 8;
-function shift(line: string, dir: 1 | -1): string {
+// >> and << as Claude Code 2.1.312's own code does them (read 2026-10-28; the user's choice, two
+// spaces): >> puts two spaces before a line; << takes off two spaces, else a tab, else up to two
+// leading blanks. An empty line is left alone.
+function shift(line: string, op: string): string {
   if (!line) return line;
-  const indent = /^[ \t]*/u.exec(line)![0];
-  let cols = 0;
-  for (const ch of indent) cols = ch === "\t" ? cols + WIDTH - (cols % WIDTH) : cols + 1;
-  const next = Math.max(0, cols + dir * WIDTH);
-  return "\t".repeat(Math.floor(next / WIDTH)) + " ".repeat(next % WIDTH) + line.slice(indent.length);
+  if (op === ">") return `  ${line}`;
+  if (line.startsWith("  ")) return line.slice(2);
+  if (line.startsWith("\t")) return line.slice(1);
+  return line.replace(/^\s{1,2}/u, "");
 }
 
 // `r`: `n` characters from the cursor, each made `ch`, or nothing when the line has fewer (Vim).
@@ -174,7 +169,7 @@ function replaceChars(v: Vim, e: Editor, ch: string, n: number, keys: string[]):
   const t = chars(e.text);
   const k = t.at.indexOf(e.cursor);
   if (k + n > t.ch.length || t.ch.slice(k, k + n).includes("\n")) return { v, e };
-  const d = edit(e, t.at[k]!, t.at[k + n]!, ch.repeat(n));
+  const d = change(e, t.at[k]!, t.at[k + n]!, ch.repeat(n));
   return { v: { ...v, lastChange: keys }, e: move(d, e.cursor + ch.length * (n - 1)) };
 }
 
@@ -189,18 +184,18 @@ function put(v: Vim, e: Editor, below: boolean, n: number, keys: string[]): Resu
   if (linewise) {
     const lines = Array<string>(n).fill(reg).join("\n");
     const at = below ? lineEnd(text, c) : lineStart(text, c);
-    const d = edit(e, at, at, below ? `\n${lines}` : `${lines}\n`);
+    const d = change(e, at, at, below ? `\n${lines}` : `${lines}\n`);
     return { v: done, e: onChar(move(d, firstNonBlank(d.text, below ? at + 1 : at))) };
   }
   const block = reg.repeat(n);
   const at = below ? Math.min(after(text, c), lineEnd(text, c)) : c;
-  const d = edit(e, at, at, block);
+  const d = change(e, at, at, block);
   return { v: done, e: onChar(move(d, block.includes("\n") ? at : before(d.text, at + block.length))) };
 }
 
-// `J`: `n` lines (two at least) made one. Each joined line loses its indent and gets one space before
-// it, as in Vim, but none when it is empty or starts with ")", or the text before is empty or ends in a
-// blank. The cursor goes to the last join.
+// `J`: `n` lines (two at least) made one, as Claude Code 2.1.312's own code does it (read 2026-10-28).
+// Each joined line loses its indent and gets one space before it, but none when it is empty or starts
+// with ")", or the text before is empty or ends in a blank. The cursor goes to the last join.
 function join(v: Vim, e: Editor, n: number, keys: string[]): Result {
   const { text, cursor: c } = e;
   const from = lineStart(text, c);
@@ -216,13 +211,14 @@ function join(v: Vim, e: Editor, n: number, keys: string[]): Result {
     joined += next;
     to = end;
   }
-  const d = edit(e, from, to, joined);
+  const d = change(e, from, to, joined);
   return { v: { ...v, lastChange: keys }, e: onChar(move(d, from + at)) };
 }
 
 // Where a motion goes from `c`, `n` times, or nothing when it cannot go (Vim beeps then and the whole
 // command is dropped). `counted` is whether a count was typed, for gg and G, which take it as a line.
-function motion(v: Vim, text: string, c: number, key: string, n: number, counted: boolean, op: string): Motion | undefined {
+// `goal` is the column j and k keep.
+function motion(v: Vim, text: string, c: number, key: string, n: number, counted: boolean, op: string, goal?: number): Motion | undefined {
   const t = chars(text);
   const k = t.at.indexOf(c);
   const ex = (i: number): Motion => ({ to: t.at[i]!, kind: "exclusive" });
@@ -232,14 +228,17 @@ function motion(v: Vim, text: string, c: number, key: string, n: number, counted
       return ex(Math.max(t.at.indexOf(lineStart(text, c)), k - n));
     case "l":
     case "right":
-    case " ":
       return ex(Math.min(t.at.indexOf(lineEnd(text, c)), k + n));
+    case " ":
+      return ex(across(t, k, n, 1));
+    case "backspace":
+      return ex(across(t, k, n, -1));
     case "j":
     case "down":
-      return vertical(text, c, n);
+      return vertical(text, c, n, goal);
     case "k":
     case "up":
-      return vertical(text, c, -n);
+      return vertical(text, c, -n, goal);
     case "line":
       return vertical(text, c, n - 1);
     case "w":
@@ -260,7 +259,8 @@ function motion(v: Vim, text: string, c: number, key: string, n: number, counted
     }
     case "gg":
     case "G":
-      return { to: firstNonBlank(text, nthLine(text, counted ? n - 1 : key === "gg" ? 0 : Infinity)), kind: "line" };
+      // The line's start, as Claude Code's docs and code have it ("Beginning of input", "Beginning of last line").
+      return { to: nthLine(text, counted ? n - 1 : key === "gg" ? 0 : Infinity), kind: "line" };
     case "%": {
       const i = bracket(t, k);
       return i === undefined ? undefined : { to: t.at[i]!, kind: "inclusive" };
@@ -273,11 +273,12 @@ function motion(v: Vim, text: string, c: number, key: string, n: number, counted
   return find(t, k, key === "," ? REVERSE[f] : f, ch, n, key !== "find");
 }
 
-// `n` lines down (up when negative), keeping the column in characters; a count past the end stops at
-// the end, but on the last line (or first) already there is nowhere to go (Vim).
-function vertical(text: string, c: number, n: number): Motion | undefined {
+// `n` lines down (up when negative), keeping the column in characters, or `goal` when j and k have one;
+// a count past the end stops at the end, but on the last line (or first) already there is nowhere to
+// go (Vim).
+function vertical(text: string, c: number, n: number, goal?: number): Motion | undefined {
   let s = lineStart(text, c);
-  const col = chars(text.slice(s, c)).ch.length;
+  const col = goal ?? chars(text.slice(s, c)).ch.length;
   if (n > 0 && lineEnd(text, c) === text.length) return undefined;
   if (n < 0 && s === 0) return undefined;
   for (let i = 0; i < Math.abs(n); i++) {
@@ -285,7 +286,17 @@ function vertical(text: string, c: number, n: number): Motion | undefined {
     else if (lineEnd(text, s) < text.length) s = lineEnd(text, s) + 1;
   }
   const line = chars(text.slice(s, lineEnd(text, s)));
-  return { to: s + line.at[Math.min(col, line.ch.length)]!, kind: "line" };
+  return { to: s + line.at[Math.min(col, line.ch.length)]!, kind: "line", goal: col };
+}
+
+// Space and Backspace: `n` characters right or left, over a line break to the next line's start or the
+// line before's last character, as Claude Code's do; an empty line is a stop of its own.
+function across(t: Chars, k: number, n: number, step: 1 | -1): number {
+  for (let i = 0; i < n && k + step >= 0 && k + step <= t.ch.length; i++) {
+    k += step;
+    if (t.ch[k] === "\n" && !emptyLine(t, k)) k += step;
+  }
+  return k;
 }
 
 // The start of line `n` (from 0), or of the last line when there are fewer.
@@ -389,10 +400,6 @@ type Chars = ReturnType<typeof chars>;
 const isChar = (key: string) => chars(key).ch.length === 1;
 const before = (text: string, i: number) => chars(text).at.findLast((b) => b < i) ?? 0;
 const after = (text: string, i: number) => chars(text).at.find((b) => b > i) ?? text.length;
-
-// As editor.ts's, which it does not export.
-const lineStart = (text: string, i: number) => (i === 0 ? 0 : text.lastIndexOf("\n", i - 1) + 1);
-const lineEnd = (text: string, i: number) => (text.indexOf("\n", i) + 1 || text.length + 1) - 1;
 function firstNonBlank(text: string, i: number): number {
   let j = lineStart(text, i);
   while (text[j] === " " || text[j] === "\t") j++;
