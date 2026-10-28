@@ -26,7 +26,7 @@ import { History } from "../../src/tui/history.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
-import { lastSaved, readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
+import { readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
@@ -38,6 +38,18 @@ import { wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, reply, standInEditor, tempContext, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
+
+// How many times each file has been read, so a test can tell the settings watcher has read a file it wrote (readsOf,
+// below); otherwise node:fs's own.
+const reads = vi.hoisted(() => new Map<string, number>());
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  const readFileSync = ((file: unknown, ...rest: unknown[]) => {
+    if (typeof file === "string") reads.set(file, (reads.get(file) ?? 0) + 1);
+    return (fs.readFileSync as (...args: unknown[]) => unknown)(file, ...rest);
+  }) as typeof fs.readFileSync;
+  return { ...fs, readFileSync };
+});
 
 // Wait until the screen shows `text`; the session runs real file I/O in the background.
 async function until(app: ReturnType<typeof render>, text: string) {
@@ -79,10 +91,9 @@ const histories = path.join(mkdtempSync(path.join(tmpdir(), "tachi-")), "history
 mkdirSync(histories);
 beforeAll(() => privateDir(histories)); // so the first test does not wait for it
 let nextHistory = 0;
-// The home folder whose settings file /lead, /model and /screen save to (release 6 plan, Task 8), shared by the tests
-// that do not look at the file; made private once, as the histories' folder is.
+// The home folder whose settings and keys files /settings and /keybindings open, shared by the tests that do not look
+// at them.
 const sharedHome = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-beforeAll(() => privateDir(settingsDir(sharedHome)));
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
@@ -431,59 +442,28 @@ describe("App", () => {
     expect(session.messages).toEqual([]);
   });
 
-  // Release 6 plan, Task 8: /lead, a /model pick and /screen save their choice; Shift+Tab's mode is not saved.
-  const savedIn = (home: string) => {
-    const file = path.join(settingsDir(home), "settings.json");
-    return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
-  };
-
-  it("saves the lead /lead and a /model pick set and the screen /screen set, but not Shift+Tab's mode", async () => {
+  // Choice 26, the user's: /lead, a /model pick and /screen change this window only, and save nothing, nor does
+  // Shift+Tab. Unwatched here, so nothing else makes ~/.tachikoma either.
+  it("changes the lead with /lead and a /model pick, and the screen with /screen, in this window only, making no settings file", async () => {
     const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-    const { app } = await mount([], { models, full: true, home });
+    const made: string[] = [];
+    const { app, session } = await mount([], { models, full: true, home, made });
     await press(app, "\u001b[Z");
     await until(app, "mode is now project");
     await type(app, "/lead ollama:a");
-    await waitFor(() => savedIn(home)?.lead === "ollama:a");
+    await until(app, "lead is now fake:b");
     await type(app, "/model");
     await until(app, "fake:c");
     await tick(); // the picker starts reading keys just after it first appears
     app.stdin.write("c");
     await tick();
     app.stdin.write("\r");
-    await waitFor(() => savedIn(home)?.lead === "fake:c");
+    await waitFor(() => made.length === 2);
     await type(app, "/screen");
     await until(app, "screen is now classic");
-    await waitFor(() => savedIn(home)?.screen === "classic");
-    expect(savedIn(home)).toEqual({ lead: "fake:c", screen: "classic" });
-  });
-
-  it("keeps the new lead for the session when it cannot be saved, and says so", async () => {
-    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-    const file = path.join(settingsDir(home), "settings.json");
-    mkdirSync(file, { recursive: true }); // a folder where the file goes, so it cannot be read or written, with no permission changed
-    let reason = "";
-    try {
-      readFileSync(file, "utf8");
-    } catch (err) {
-      reason = (err as Error).message;
-    }
-    const { app, session } = await mount([], { home });
-    await type(app, "/lead fake:b");
+    expect(made).toEqual(["ollama:a", "fake:c"]);
     expect(session.lead.id).toBe("fake:b");
-    const line = `The change holds for this session, but saving it to ${shownFile()} failed (${reason}).`;
-    const said = () => app.lastFrame()!.replaceAll("\n", " ");
-    await waitFor(() => said().includes(line));
-    expect(said()).toContain(`lead is now fake:b ${line}`);
-  });
-
-  it("saves no lead that could not be made", async () => {
-    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-    const { app } = await mount([], { leadFails: "no such model", full: true, home });
-    await type(app, "/lead ollama:a");
-    await until(app, "no such model");
-    await type(app, "/screen");
-    await waitFor(() => savedIn(home)?.screen !== undefined);
-    expect(savedIn(home)).toEqual({ screen: "classic" });
+    expect(existsSync(settingsDir(home))).toBe(false);
   });
 
   it("moves both ways, unfilters on Backspace, says when nothing matches, and closes on Ctrl-C", async () => {
@@ -4932,8 +4912,8 @@ describe("App's external editor", () => {
   });
 
   // The queue starts none of the commands that hand the terminal over while the editor has it; messages go on.
-  // /screen saves its choice, so it runs in the home made private once. /keybindings makes its file as it starts, then
-  // opens the editor VISUAL names by then, the failing stand-in, whose line shows that run has ended.
+  // /keybindings makes its file as it starts, then opens the editor VISUAL names by then, the failing stand-in, whose
+  // line shows that run has ended.
   type Shown = ReturnType<typeof render>;
   const keysFile = (home: string) => path.join(settingsDir(home), "keybindings.json");
   it.each([
@@ -5548,9 +5528,6 @@ describe("App's live settings", () => {
   const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll("\n", " "); // a long line wraps
   const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
   const freshHome = () => mkdtempSync(path.join(tmpdir(), "tachi-home-"));
-  // The home of the test that saves, made private once, as sharedHome is, so its save does not wait for that.
-  const savingHome = freshHome();
-  beforeAll(() => privateDir(settingsDir(savingHome)));
 
   // A home of the test's own whose settings file holds `file` at launch, and the App watching it; `given`, the
   // entries a flag or variable gave at launch. `write` changes the file as an editor does; `remove` takes it away.
@@ -5729,14 +5706,19 @@ describe("App's live settings", () => {
     await vi.waitFor(() => expect(tasks.all.map((t) => t.state)).toEqual(["running", "running", "running"]));
   });
 
-  it("shows the status parts the file names at once, and every part once the file is removed", async () => {
-    const { app, write, remove } = await watching([], {});
+  // Choice 26, the user's: a missing file is skipped, as an empty one is, so an editor that saves by renaming a new
+  // file over the old one changes nothing while there is none.
+  it("shows the status parts the file names at once, and keeps them while the file is missing and once it is back", async () => {
+    const { app, write, remove, where } = await watching([], {});
     write({ status: ["lead"] });
     await sees(app, `status is now lead ${FROM}`);
+    const read = readsOf(where);
+    await read(remove);
+    await read(() => write({ status: ["lead"] }));
+    write({ status: ["lead"], mode: "project" });
+    await sees(app, `mode is now project ${FROM}`);
+    expect(flat(app).split("status is now").length - 1).toBe(1);
     expect(app.lastFrame()).not.toContain("perm ask");
-    remove();
-    await sees(app, `status is now ${SEGMENTS.join(", ")} ${FROM}`);
-    expect(app.lastFrame()).toContain("perm ask");
   });
 
   it("switches the screen as /screen does, once a turn running ends, without saving, and back once the entry is removed", async () => {
@@ -5784,23 +5766,19 @@ describe("App's live settings", () => {
     expect(app.lastFrame()).toContain("perm ask");
   });
 
-  // The watcher looks for Tachikoma's own save in each text it reads (settingsWatch.ts, changes), so a call here once
-  // the file is written shows the watcher has read what was written.
-  const readsOf = () => {
-    const get = vi.spyOn(lastSaved, "get");
-    onTestFinished(() => get.mockRestore());
-    return async (write: () => void) => {
-      get.mockClear();
-      write();
-      await vi.waitFor(() => expect(get).toHaveBeenCalled(), WATCHED);
-    };
+  // The watcher reads the settings file `where` on every event in its folder (settingsWatch.ts, watchSettings), so a
+  // read of it once a file there is written shows the watcher has read what was written.
+  const readsOf = (where: string) => async (write: () => void) => {
+    const before = reads.get(where) ?? 0;
+    write();
+    await vi.waitFor(() => expect(reads.get(where) ?? 0).toBeGreaterThan(before), WATCHED);
   };
 
   // Choice 3: editors such as Notepad empty the file before writing it. Neither entry is given by a flag, so a reset
   // would show.
   it("takes an editor's empty write, then its full text, as one change, with no line resetting the rest", async () => {
-    const { app, write } = await watching([], { mode: "project", maxTasks: 2 }, { mode: "project" });
-    const read = readsOf();
+    const { app, write, where } = await watching([], { mode: "project", maxTasks: 2 }, { mode: "project" });
+    const read = readsOf(where);
     await read(() => write(""));
     write({ mode: "project", maxTasks: 3 });
     await sees(app, `maxTasks is now 3 ${FROM}`);
@@ -5816,11 +5794,11 @@ describe("App's live settings", () => {
       words = (err as Error).message;
     }
     const line = `settings.json is not valid JSON: ${words}; the last good settings still apply`;
-    const { app, write } = await watching([], { mode: "project" }, { mode: "project" });
+    const { app, write, where } = await watching([], { mode: "project" }, { mode: "project" });
     write('{"mode": ');
     await sees(app, line);
     expect(app.lastFrame()).toContain("perm project");
-    const read = readsOf();
+    const read = readsOf(where);
     await read(() => write("")); // an editor's empty write, then the same broken text again
     await read(() => write('{"mode": '));
     write({ mode: "ask" });
@@ -5828,15 +5806,30 @@ describe("App's live settings", () => {
     expect(flat(app).split(line).length - 1).toBe(1);
   });
 
-  // Release 6 design, "Live edits": Tachikoma's own saves are not counted as changes.
-  it("says nothing of Tachikoma's own save", async () => {
-    const { app, write, where } = await watching([], {}, {}, {}, savingHome);
-    await type(app, "/lead ollama:b");
-    await vi.waitFor(() => expect(readFileSync(where, "utf8")).toContain('"lead": "ollama:b"'), WATCHED);
-    await vi.waitFor(() => expect(lastSaved.has(where)).toBe(false), WATCHED); // the watcher has read the save
-    write({ lead: "ollama:b", mode: "project" });
+  // Choice 26, the user's: /lead, a /model pick and /screen change this window only, so the file keeps the user's own
+  // text, and an edit of another entry does not put the file's lead back; an edit of "lead" or "screen" applies as any
+  // edit does.
+  it("leaves the file as it was on /lead, a /model pick and /screen, and applies a later edit of those entries", async () => {
+    const made: string[] = [];
+    const models = [{ provider: "fake", models: ["c"] }];
+    const { app, write, where } = await watching([], { lead: "ollama:x" }, { models, made, full: true });
+    await type(app, "/lead ollama:a");
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick(); // the picker starts reading keys just after it first appears
+    app.stdin.write("\r");
+    await waitFor(() => made.length === 2);
+    await type(app, "/screen");
+    await until(app, "screen is now classic");
+    expect(readFileSync(where, "utf8")).toBe('{"lead":"ollama:x"}');
+    write({ lead: "ollama:x", mode: "project" });
     await sees(app, `mode is now project ${FROM}`);
-    expect(flat(app)).not.toContain(`lead is now fake:b ${FROM}`);
+    expect(made).toEqual(["ollama:a", "fake:c"]);
+    write({ lead: "ollama:b", mode: "project", screen: "full" });
+    await sees(app, `lead is now fake:b ${FROM}`);
+    await sees(app, `screen is now full ${FROM}`);
+    expect(made).toEqual(["ollama:a", "fake:c", "ollama:b"]);
+    expect(readFileSync(where, "utf8")).toBe('{"lead":"ollama:b","mode":"project","screen":"full"}');
   });
 
   // Choice 16: on a first launch neither ~/.tachikoma nor the file is there yet.
@@ -5848,11 +5841,13 @@ describe("App's live settings", () => {
     await sees(app, `mode is now project ${FROM}`);
   });
 
-  it("applies the defaults and says the file is no longer watched once ~/.tachikoma is removed", async () => {
-    const { app, where } = await watching([], { mode: "project" });
+  // Choice 26: the settings file goes with the folder, and a missing one keeps the settings in force.
+  it("keeps the settings and says the file is no longer watched once ~/.tachikoma is removed", async () => {
+    const { app, where } = await watching([], { mode: "project" }, { mode: "project" });
     rmSync(path.dirname(where), { recursive: true });
-    await sees(app, `mode is now ask ${FROM}`);
     await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json and keybindings.json are no longer watched this session`);
+    expect(flat(app)).not.toContain("mode is now");
+    expect(app.lastFrame()).toContain("perm project");
   });
 
   // mkdir and fs.watch can fail: a home that cannot be written, or Linux's limit on watches. Here `.tachikoma` is a
@@ -5875,13 +5870,13 @@ describe("App's live settings", () => {
   // The pick comes after the file's edit, so it wins, as a /lead typed then would.
   it("keeps the lead picked from the model list over one the file set while the list was open", async () => {
     const made: string[] = [];
-    const { app, where, write } = await watching([], {}, { models: [{ provider: "fake", models: ["c"] }], made }, {}, savingHome);
-    const read = readsOf();
+    const { app, where, write } = await watching([], {}, { models: [{ provider: "fake", models: ["c"] }], made });
+    const read = readsOf(where);
     await type(app, "/model");
     await until(app, "fake:c");
     await read(() => write({ lead: "ollama:y" }));
     app.stdin.write("\r");
-    await vi.waitFor(() => expect(JSON.parse(readFileSync(where, "utf8")).lead).toBe("fake:c"), WATCHED);
+    await sees(app, "lead is now fake:b");
     expect(made).toEqual(["fake:c"]); // the file's lead was never made, though the pick's closing the list ran next()
     expect(flat(app)).not.toContain(FROM);
   });
@@ -5936,8 +5931,8 @@ describe("App's live settings", () => {
 
   it("rebinds a key from the keys file without a restart, and ? follows it", async () => {
     const home = freshHome();
-    const { app, bus } = await watching([], {}, {}, {}, home);
-    const read = readsOf();
+    const { app, bus, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
     await read(() => writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+y": "app:toggleTodos" })));
     await tick();
     bus.emit("todo", todo);
@@ -5951,12 +5946,12 @@ describe("App's live settings", () => {
     expect(app.lastFrame()).not.toContain("Ctrl+T");
   });
 
-  // /screen saves its choice, so this runs in the home made private once.
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
-    writeKeys(savingHome, { bindings: [{ context: "Chat", bindings: { "ctrl+y": "command:screen" } }] });
-    onTestFinished(() => unlinkSync(keysIn(savingHome)));
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, { bindings: [{ context: "Chat", bindings: { "ctrl+y": "command:screen" } }] });
     const lead = new Held();
-    const { app } = await watching([], {}, { lead }, {}, savingHome);
+    const { app } = await watching([], {}, { lead }, {}, home);
     await type(app, "go");
     await press(app, "ab", "\u0019");
     expect(flat(app)).not.toContain("screen is now");
@@ -5966,9 +5961,10 @@ describe("App's live settings", () => {
   });
 
   it("lists a key bound to a command on ?, and runs it at once when idle, leaving the prompt as typed", async () => {
-    writeKeys(savingHome, { bindings: [{ context: "Chat", bindings: { "ctrl+y": "command:screen" } }] });
-    onTestFinished(() => unlinkSync(keysIn(savingHome)));
-    const { app } = await watching([], {}, {}, {}, savingHome);
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, { bindings: [{ context: "Chat", bindings: { "ctrl+y": "command:screen" } }] });
+    const { app } = await watching([], {}, {}, {}, home);
     await press(app, "?");
     expect(app.lastFrame()).toContain("  Ctrl+Y  /screen");
     await press(app, "ab", "\u0019");
@@ -5979,7 +5975,7 @@ describe("App's live settings", () => {
   it("gives the default keys once ~/.tachikoma is removed with a keys file in it, then says it is no longer watched", async () => {
     const home = freshHome();
     const { app, bus, where } = await watching([], {}, {}, {}, home);
-    const read = readsOf();
+    const read = readsOf(where);
     await read(() => writeKeys(home, globalKeys({ "ctrl+t": null })));
     await tick();
     bus.emit("todo", todo);
@@ -5996,12 +5992,12 @@ describe("App's live settings", () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));
     writeKeys(home, '{"bindings": ');
-    const { app, bus } = await watching([], {}, {}, {}, home);
+    const { app, bus, where } = await watching([], {}, {}, {}, home);
     await sees(app, `keybindings.json is not valid JSON: ${parserWords('{"bindings": ')}; the default keys apply`);
     const reserved = 'keybindings.json: Global "ctrl+c" is a reserved key; it was left out';
     writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null }));
     await sees(app, reserved);
-    const read = readsOf();
+    const read = readsOf(where);
     await read(() => writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null, "ctrl+y": "app:toggleTodos" })));
     writeKeys(home, '{"bindings": [');
     await sees(app, `keybindings.json is not valid JSON: ${parserWords('{"bindings": [')}; the last good keys still apply`);

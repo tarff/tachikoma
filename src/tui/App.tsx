@@ -13,7 +13,7 @@ import { errorText, type Message, type Provider } from "../core/types.js";
 import { KEYBINDINGS, type KeysLoaded } from "../keybindings.js";
 import type { Effort } from "../providers/anthropic.js";
 import type { ModelGroup } from "../providers/models.js";
-import { type Loaded, SETTINGS, saveSetting, type Settings, settingsDir, shownFile } from "../settings.js";
+import { type Loaded, SETTINGS, type Settings, settingsDir, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
 import { Bindings, CHORD_MS, type Context, DEFAULTS, keyText, type Stroke, strokeOf, tableOf } from "./bindings.js";
@@ -422,19 +422,6 @@ export function App({
   };
   const history = useRef<History | null>(null);
   history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
-  // Release 6 design, "Saving": /lead, a /model pick and /screen save their choice once it is in force, which a failed
-  // save leaves as it is; the line saying so is in History's colour. A save made counts as applied, so a later edit of
-  // another entry does not apply this one again.
-  const save = <K extends keyof Settings>(key: K, value: Required<Settings>[K]) => {
-    saveSetting(key, value, home).then(
-      () => {
-        fileNow.current = { ...fileNow.current, [key]: value };
-      },
-      (err) => {
-        say({ text: `The change holds for this session, but saving it to ${shownFile()} failed (${errorText(err)}).`, color: "magenta" });
-      },
-    );
-  };
   // Every model made in the session takes a changed effort (release 6 plan, Task 9).
   const make = (spec: string) => {
     const provider = makeProvider(spec);
@@ -706,8 +693,8 @@ export function App({
       if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
       if (command === "/lead") {
         const spec = words.join(" ");
-        session.setLead(make(spec));
-        return save("lead", spec);
+        session.setLead(make(spec)); // this window only, saving nothing (choice 26, the user's)
+        return;
       }
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
@@ -868,8 +855,7 @@ export function App({
     // then would.
     waiting.current.lead = undefined;
     try {
-      session.setLead(make(spec));
-      save("lead", spec);
+      session.setLead(make(spec)); // this window only, as /lead (choice 26)
     } catch (err) {
       say({ text: errorText(err), color: "red" });
     }
@@ -1005,7 +991,7 @@ export function App({
   // (terminal.ts, restoreWhenInkEnds), and the keyboard is let go, so raw mode goes off and the process can end. A `[`
   // read while Ink resumes, before its drawing is done, keeps the hold, as in comeBack. Should the suspend throw going
   // to full screen, the mode goes back to classic, as the screen is (perform says why); `switching` ends however the
-  // switch does. A switch the settings file asked for (`file`) says so, and saves nothing over the user's own text.
+  // switch does. A switch the settings file asked for (`file`) says so; /screen's own saves nothing (choice 26).
   const switchScreen = async (file = false) => {
     const toFull = !fullNow.current;
     working.current = true;
@@ -1045,7 +1031,6 @@ export function App({
     }
     if (ended.current) return;
     say({ text: `screen is now ${toFull ? "full" : "classic"}${file ? FROM : ""}`, color: "gray" });
-    if (!file) save("screen", toFull ? "full" : "classic");
   };
 
   // The editor in the terminal (release 6 design, "The external editor"; plan, Task 12), through the owner, which waits
@@ -1102,8 +1087,8 @@ export function App({
     next();
   };
   // /settings and /keybindings open the real file, so each save reaches the watcher while the editor is still open
-  // (plan, Task 12). A missing one is made first, `blank` in two-space JSON as a save writes it (choice 2), with a
-  // save's mode, 0o600 (auth/private.ts, writePrivate), never over one made meanwhile.
+  // (plan, Task 12). A missing one is made first, `blank` in two-space JSON (choice 2), with a private file's mode,
+  // 0o600 (auth/private.ts, writePrivate), never over one made meanwhile.
   const openFile = async (name: string, blank: object) => {
     const file = path.join(settingsDir(home), name);
     mkdirSync(path.dirname(file), { recursive: true });

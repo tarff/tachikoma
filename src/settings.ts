@@ -1,8 +1,6 @@
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { withLock } from "./auth/lock.js";
-import { privateDir, writePrivate } from "./auth/private.js";
 import { oneOf, speedValue, statusSegments, taskCount } from "./clilib.js";
 import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode } from "./core/permissions.js";
@@ -36,10 +34,6 @@ export interface Settings {
 }
 
 export type Loaded = { settings: Settings; warnings: string[] } | { problem: string };
-
-// The text this process's last save wrote, by file, so the watcher can tell Tachikoma's own save from an edit
-// (release 6 design, "Live edits"); the watcher takes it away once it has read it (settingsWatch.ts).
-export const lastSaved = new Map<string, string>();
 
 // Each value gets its flag's check and words, after the file's and the entry's names (the plan's choice 8); a value of the
 // wrong JSON type is a problem too. An unknown name is a warning and the rest applies. $schema, which editors use to check
@@ -85,29 +79,6 @@ export function loadSettings(home = os.homedir()): Loaded {
     return { problem: `${SETTINGS} could not be read: ${errorText(err)}` };
   }
   return readSettings(text);
-}
-
-// Release 6 design, "The settings file", "Saving": one entry set, every other kept as it was, entries the user added
-// included, in their order. The file is read again under the lock, so two sessions saving at once lose nothing, and
-// written as JSON with two-space indents (the plan's choice 2). A file that is not one object is left as it is, and the
-// promise rejects with why. The value cannot be undefined, which JSON.stringify would leave out, removing the entry.
-export async function saveSetting<K extends keyof Settings>(key: K, value: Required<Settings>[K], home = os.homedir()): Promise<void> {
-  const dir = settingsDir(home);
-  const file = path.join(dir, SETTINGS);
-  privateDir(dir); // the lock file goes there too
-  await withLock(`${file}.lock`, async () => {
-    let text = "";
-    try {
-      text = readFileSync(file, "utf8");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
-    const data = entriesOf(text);
-    data[key] = value;
-    const saved = `${JSON.stringify(data, null, 2)}\n`;
-    writePrivate(file, saved);
-    lastSaved.set(file, saved);
-  });
 }
 
 // An empty file, or one of only whitespace after a byte-order mark: nothing set, not a broken file (the coordinator's

@@ -1,10 +1,8 @@
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
-import { describe, expect, expectTypeOf, it } from "vitest";
-import { lastSaved, loadSettings, readSettings, saveSetting, settingsDir, shownFile } from "../src/settings.js";
+import { describe, expect, it } from "vitest";
+import { loadSettings, readSettings, settingsDir, shownFile } from "../src/settings.js";
 
 const read = (data: unknown) => readSettings(JSON.stringify(data));
 const problem = (data: unknown) => {
@@ -161,89 +159,6 @@ describe("loadSettings", () => {
     const r = loadSettings(home);
     expect("problem" in r && r.problem).toMatch(/^settings\.json could not be read: EISDIR/);
   });
-});
-
-// Release 6 plan, Task 8 and choice 2: one entry set, every other kept in its order, written as two-space JSON.
-describe("saveSetting", () => {
-  const fileOf = (home: string) => path.join(settingsDir(home), "settings.json");
-  const written = (data: object) => `${JSON.stringify(data, null, 2)}\n`;
-  const settingsUrl = pathToFileURL(path.resolve("src/settings.ts")).href;
-
-  it("sets one entry and keeps every other, unknown ones included, in their order", async () => {
-    const home = temp();
-    mkdirSync(settingsDir(home));
-    writeFileSync(fileOf(home), '{"$schema": "x",  "mode": "project", "leed": 1,\n"lead": "ollama:old", "screen": "full"}');
-    await saveSetting("lead", "ollama:a", home);
-    expect(readFileSync(fileOf(home), "utf8")).toBe(written({ $schema: "x", mode: "project", leed: 1, lead: "ollama:a", screen: "full" }));
-    await saveSetting("fallback", "ollama:b", home);
-    const all = { $schema: "x", mode: "project", leed: 1, lead: "ollama:a", screen: "full", fallback: "ollama:b" };
-    expect(readFileSync(fileOf(home), "utf8")).toBe(written(all));
-  });
-
-  // A type check, which tsc makes: undefined would make JSON.stringify drop the entry (Task 8's code review).
-  it("takes a value for the entry, never undefined", () => {
-    expectTypeOf(saveSetting<"lead">).parameter(1).toEqualTypeOf<string>();
-  });
-
-  it("makes the file, and its folder, when there is none", async () => {
-    const home = temp();
-    await saveSetting("screen", "classic", home);
-    expect(readFileSync(fileOf(home), "utf8")).toBe('{\n  "screen": "classic"\n}\n');
-  });
-
-  // Release 6 plan, Task 9: so the settings watcher can tell Tachikoma's own save from an edit.
-  it("records the text it wrote last, by file", async () => {
-    const home = temp();
-    await saveSetting("screen", "classic", home);
-    await saveSetting("lead", "ollama:a", home);
-    expect(lastSaved.get(fileOf(home))).toBe(readFileSync(fileOf(home), "utf8"));
-  });
-
-  // As readSettings reads them: past a byte-order mark, and an empty file as {}.
-  it("saves into a file Windows PowerShell wrote with a byte-order mark, and into an empty one", async () => {
-    const home = temp();
-    mkdirSync(settingsDir(home));
-    writeFileSync(fileOf(home), `${BOM}{"mode": "ask"}`);
-    await saveSetting("lead", "ollama:a", home);
-    expect(readFileSync(fileOf(home), "utf8")).toBe(written({ mode: "ask", lead: "ollama:a" }));
-    writeFileSync(fileOf(home), "\r\n");
-    await saveSetting("lead", "ollama:a", home);
-    expect(readFileSync(fileOf(home), "utf8")).toBe(written({ lead: "ollama:a" }));
-  });
-
-  it("leaves a file that is not one JSON object as it is, and says why", async () => {
-    const home = temp();
-    mkdirSync(settingsDir(home));
-    writeFileSync(fileOf(home), '["lead"]');
-    await expect(saveSetting("lead", "ollama:a", home)).rejects.toThrow('settings.json must be one object, such as {"lead": "ollama:qwen3:8b"} (got ["lead"])');
-    expect(readFileSync(fileOf(home), "utf8")).toBe('["lead"]');
-    writeFileSync(fileOf(home), "{");
-    await expect(saveSetting("lead", "ollama:a", home)).rejects.toThrow(/^settings\.json is not valid JSON: /);
-    expect(readFileSync(fileOf(home), "utf8")).toBe("{");
-  });
-
-  it("loses neither of two saves made at once", async () => {
-    const home = temp();
-    await Promise.all([saveSetting("lead", "ollama:a", home), saveSetting("screen", "classic", home)]);
-    expect(JSON.parse(readFileSync(fileOf(home), "utf8"))).toEqual({ lead: "ollama:a", screen: "classic" });
-  });
-
-  // Two processes each save twenty entries of their own, as tests/tui/history.test.ts's two sessions do; 15 s as there.
-  it("loses no entry when two sessions save at once", async () => {
-    const home = temp();
-    const sessions = ["a", "b"].map((tag) => {
-      const script = path.join(home, `${tag}.mts`);
-      const saves = `for (let i = 0; i < 20; i++) await saveSetting("${tag}" + i, i, ${JSON.stringify(home)});`;
-      writeFileSync(script, `import { saveSetting } from ${JSON.stringify(settingsUrl)};\n${saves}\n`);
-      const child = spawn(process.execPath, ["--import", "tsx", script], { stdio: ["ignore", "ignore", "inherit"] });
-      return new Promise((resolve) => child.on("close", resolve));
-    });
-    expect(await Promise.all(sessions)).toEqual([0, 0]);
-    const saved = JSON.parse(readFileSync(fileOf(home), "utf8"));
-    for (const tag of ["a", "b"]) {
-      expect(Object.entries(saved).filter(([name]) => name.startsWith(tag))).toEqual([...Array(20).keys()].map((i) => [`${tag}${i}`, i]));
-    }
-  }, 15_000);
 });
 
 describe("where the file is", () => {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { type KeysLoaded, readKeybindings } from "../src/keybindings.js";
-import { type Loaded, lastSaved, readSettings, settingsDir } from "../src/settings.js";
+import { type Loaded, readSettings, settingsDir } from "../src/settings.js";
 import { changes, watchSettings } from "../src/settingsWatch.js";
 
 // Each folder watch the watcher starts, kept so a test can make one report an error; otherwise node:fs's own. With
@@ -34,18 +34,17 @@ const WATCHED = { timeout: 2_000 };
 
 // Release 6 plan, Task 9: what the watcher makes of each text it reads, in order.
 describe("changes", () => {
-  const file = path.join(temp(), "settings.json");
   // The step, once it has read `start`.
   const from = (start: string | null) => {
-    const step = changes(file, readSettings);
+    const step = changes(readSettings);
     step(start);
     return step;
   };
 
   // So an edit made before the watcher started, during the instruction files' question say, is not missed.
   it("calls back with the first text it reads, whatever it is", () => {
-    expect(changes(file, readSettings)('{"mode": "ask"}')).toEqual({ settings: { mode: "ask" }, warnings: [] });
-    expect(changes(file, readSettings)(null)).toEqual({ settings: {}, warnings: [] });
+    expect(changes(readSettings)('{"mode": "ask"}')).toEqual({ settings: { mode: "ask" }, warnings: [] });
+    expect(ctrlT(changes(readKeybindings)(null))).toEqual({ problems: [], ctrlT: { action: "app:toggleTodos" } });
   });
 
   it("calls back only when the text differs from the last it read", () => {
@@ -69,12 +68,6 @@ describe("changes", () => {
     expect(step('{"mode": "project"}')).toEqual({ settings: { mode: "project" }, warnings: [] });
   });
 
-  it("takes a removed file as {}", () => {
-    const step = from('{"mode": "project"}');
-    expect(step(null)).toEqual({ settings: {}, warnings: [] });
-    expect(step(null)).toBeNull();
-  });
-
   it("reports a broken file once per broken text, and again after good text", () => {
     const step = from("{}");
     const broken = step('{"mode": ');
@@ -86,21 +79,9 @@ describe("changes", () => {
     expect(step('{"mode": ')).toEqual(broken);
   });
 
-  // saveSetting records the text it wrote (tests/settings.test.ts); set here, as a save would, so no folder is made
-  // private.
-  it("passes over Tachikoma's own last save once, so the same text written later by hand is a change", () => {
-    const own = '{\n  "lead": "ollama:a"\n}\n';
-    const step = from("{}");
-    lastSaved.set(file, own);
-    expect(step(own)).toBeNull();
-    expect(lastSaved.has(file)).toBe(false);
-    expect(step('{"lead": "ollama:b"}')).toEqual({ settings: { lead: "ollama:b" }, warnings: [] });
-    expect(step(own)).toEqual({ settings: { lead: "ollama:a" }, warnings: [] });
-  });
-
-  // Release 6 plan, Task 11: the keys file follows the same rules, a removed one being {}, the default keys.
+  // Release 6 plan, Task 11: a removed keys file is {}, the default keys (choice 26 is for the settings file alone).
   it("takes a removed keys file as {}, the default keys, and skips an empty one", () => {
-    const step = changes(path.join(path.dirname(file), "keybindings.json"), readKeybindings);
+    const step = changes(readKeybindings);
     expect(ctrlT(step(MOVED))).toEqual({ problems: [], ctrlT: null });
     expect(step("")).toBeNull();
     expect(ctrlT(step(null))).toEqual({ problems: [], ctrlT: { action: "app:toggleTodos" } });
@@ -109,7 +90,7 @@ describe("changes", () => {
 
 describe("watchSettings", () => {
   // Choice 16: on a first launch neither ~/.tachikoma nor the file is there yet.
-  it("makes the folder, then calls back with a file written there, and with {} once it is removed", async () => {
+  it("makes the folder, then calls back with a file written there", async () => {
     const home = temp();
     const seen: Loaded[] = [];
     const stop = watchSettings(
@@ -122,8 +103,36 @@ describe("watchSettings", () => {
     expect(existsSync(settingsDir(home))).toBe(true);
     writeFileSync(fileOf(home), '{"maxTasks": 2}');
     await vi.waitFor(() => expect(seen.at(-1)).toEqual({ settings: { maxTasks: 2 }, warnings: [] }), WATCHED);
-    unlinkSync(fileOf(home));
-    await vi.waitFor(() => expect(seen.at(-1)).toEqual({ settings: {}, warnings: [] }), WATCHED);
+  });
+
+  // Choice 26, the user's: an editor that saves by renaming a new file over the old one leaves no file for a moment,
+  // which is skipped, as an empty one is. Each event reads both files (settingsWatch.ts), so a change to the keys file,
+  // once called back, shows the settings file was read as it then was.
+  it("skips a missing settings file, so an editor's rename over it with the same text changes nothing", async () => {
+    const home = temp();
+    mkdirSync(settingsDir(home));
+    writeFileSync(fileOf(home), '{"maxTasks": 2}');
+    const seen: Loaded[] = [];
+    const keys: KeysLoaded[] = [];
+    const stop = watchSettings(
+      home,
+      (next) => seen.push(next),
+      (next) => keys.push(next),
+      () => {},
+    );
+    onTestFinished(stop);
+    const read = async (change: () => void) => {
+      const before = keys.length;
+      change();
+      writeFileSync(keysOf(home), keys.length % 2 ? "{}" : MOVED);
+      await vi.waitFor(() => expect(keys.length).toBeGreaterThan(before), WATCHED);
+    };
+    await read(() => unlinkSync(fileOf(home)));
+    await read(() => writeFileSync(fileOf(home), '{"maxTasks": 2}'));
+    expect(seen).toEqual([{ settings: { maxTasks: 2 }, warnings: [] }]);
+    writeFileSync(fileOf(home), '{"maxTasks": 3}');
+    await vi.waitFor(() => expect(seen.at(-1)).toEqual({ settings: { maxTasks: 3 }, warnings: [] }), WATCHED);
+    expect(seen).toHaveLength(2);
   });
 
   it("calls back at once with the file as it is when watching starts", () => {
@@ -143,7 +152,7 @@ describe("watchSettings", () => {
   });
 
   // On Windows a watch on a removed folder reports the removal over and over until it is closed (settingsWatch.ts).
-  it("applies {} and stops watching once the folder itself is removed", async () => {
+  it("keeps the settings, as for a removed file, and stops watching once the folder itself is removed", async () => {
     const home = temp();
     const seen: Loaded[] = [];
     let gone = 0;
@@ -158,7 +167,7 @@ describe("watchSettings", () => {
     await vi.waitFor(() => expect(seen.at(-1)).toEqual({ settings: { maxTasks: 2 }, warnings: [] }), WATCHED);
     rmSync(settingsDir(home), { recursive: true });
     await vi.waitFor(() => expect(gone).toBe(1), WATCHED);
-    expect(seen.at(-1)).toEqual({ settings: {}, warnings: [] });
+    expect(seen).toEqual([{ settings: { maxTasks: 2 }, warnings: [] }]);
   });
 
   // Node's fs.watch docs: on Windows "an EPERM error is reported when the watched directory is deleted"; an error with
@@ -186,10 +195,10 @@ describe("watchSettings", () => {
     expect(() =>
       watchSettings(
         home,
-        () => {
-          throw new Error("no");
-        },
         () => {},
+        () => {
+          throw new Error("no"); // the keys file's: a missing settings file is not called back (choice 26)
+        },
         () => {},
       ),
     ).toThrow("no");
@@ -219,7 +228,7 @@ describe("watchSettings", () => {
     unlinkSync(keysOf(home));
     await vi.waitFor(() => expect(ctrlT(keys.at(-1))).toEqual({ problems: [], ctrlT: { action: "app:toggleTodos" } }), WATCHED);
     expect(keys).toHaveLength(3); // no other callback, the settings file's events among them
-    expect(settings).toEqual([{ settings: {}, warnings: [] }]); // the settings file, missing throughout, read once
+    expect(settings).toEqual([]); // the settings file, missing throughout, skipped (choice 26)
   });
 
   // Linux's limit on watches, say: the files as they are still apply, unwatched (choice 21).
