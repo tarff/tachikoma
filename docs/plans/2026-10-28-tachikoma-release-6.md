@@ -1201,10 +1201,16 @@ at Task 6's spec review).
 5. Ctrl+S, type, Ctrl+S: swap; Ctrl+S on empty: back.
 6. Win+Shift+S, Alt+V, "what is in this picture?" to an Anthropic lead: it answers about it.
 7. PrtScn over both monitors, Alt+V, send: the answer comes (shrunk or not, no error).
-8. Drag a .png from Explorer into the prompt: a marker.
-9. `/vim`: `-- INSERT --`; Esc, `dw`, `u`, `ciw`, `.`; `jj` with the remap set.
+8. Drag a .png from Explorer into the prompt: a marker. Then two .png files at once, one with a
+   space in its name: two markers (choice 29). Alt+V with text, not a picture, copied: `No
+   picture on the clipboard.`
+9. `/vim`: `-- INSERT --`; Esc, `dw`, `u`, `ciw`, `.`; `jj` with the remap set. Then `v`, `l`,
+   `l`: the three characters show in reverse; `V`: the whole line; Esc: no reverse (choice 28).
 10. An `openai:gpt-5.5` lead (if the user has an API key): the context bar shows.
 11. During a turn, Ctrl+G with Notepad open: Ctrl-C typed in the terminal meanwhile, and what it
     does to the running turn (found at Task 12's spec review; Git behaves the same way).
+12. Only if a Mac is to hand (choice 29's script was not run on one): a screenshot copied with
+    Cmd+Ctrl+Shift+4, Ctrl+V (macOS's default, bindings.ts): a marker, and the answer is about
+    it; then text copied, Ctrl+V: `No picture on the clipboard.`
 
 Commit: `docs: release 6 in the README, the design's as built, and the terminal checklist`.
