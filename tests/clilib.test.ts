@@ -11,6 +11,7 @@ import {
   headlessLeftOut,
   instructionsLine,
   jsonLine,
+  leadOf,
   prose,
   resolve,
   screenMode,
@@ -222,10 +223,10 @@ describe("endOnEpipe", () => {
 // Release 6 design, "Which wins": a flag, then a TACHI_ variable, then the settings file, then the default.
 describe("resolve", () => {
   it("takes the lead from --lead, then TACHI_LEAD, then the file, an empty variable being unset", () => {
-    expect(resolve({ lead: "a:1" }, { TACHI_LEAD: "a:2" }, { lead: "a:3" }).lead).toBe("a:1");
-    expect(resolve({}, { TACHI_LEAD: "a:2" }, { lead: "a:3" }).lead).toBe("a:2");
-    expect(resolve({}, { TACHI_LEAD: "" }, { lead: "a:3" }).lead).toBe("a:3");
-    expect(resolve({}, {}, {}).lead).toBeUndefined();
+    expect(leadOf({ lead: "a:1" }, { TACHI_LEAD: "a:2" }, { lead: "a:3" })).toBe("a:1");
+    expect(leadOf({}, { TACHI_LEAD: "a:2" }, { lead: "a:3" })).toBe("a:2");
+    expect(leadOf({}, { TACHI_LEAD: "" }, { lead: "a:3" })).toBe("a:3");
+    expect(leadOf({}, {}, {})).toBeUndefined();
   });
 
   it("takes the worker from --worker, then TACHI_WORKER, then the file", () => {

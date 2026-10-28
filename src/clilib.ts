@@ -117,23 +117,23 @@ export interface Flags {
 // "Which wins"). A bad flag throws in its own words; the file's values were checked when it was read. An empty variable is
 // unset; an empty --fallback or --worker still wins, so it turns the file's off as it turned the variable's off before.
 // The screen is screenMode's, which also asks the terminal; createProvider checks the lead, fallback and worker at use.
-// The flags are checked in release 5's order.
+// The flags are checked in release 5's order. The lead is leadOf's.
 export function resolve(flags: Flags, env: NodeJS.ProcessEnv, settings: Settings) {
   return {
-    lead: leadOf(flags, env, settings),
     mode: oneOf<Mode>("--mode", flags.mode, MODES) ?? settings.mode ?? "ask", // the safest mode is the default
     effort: oneOf<Effort>("--effort", flags.effort, EFFORTS) ?? settings.effort,
     fallback: flags.fallback ?? settings.fallback,
     worker: flags.worker ?? (env.TACHI_WORKER || undefined) ?? settings.worker,
     maxTasks: flags["max-tasks"] === undefined ? (settings.maxTasks ?? MAX_TASKS) : taskCount(flags["max-tasks"], "--max-tasks"),
     segments: flags.status === undefined ? (settings.status ?? SEGMENTS) : statusSegments(flags.status),
-    // -p has no screen to scroll, so it ignores TACHI_SCROLL_SPEED as it does TACHI_CLASSIC, and the file's scrollSpeed with
-    // it; a bad --scroll-speed, typed for this run, still stops it (the user's choice, 2026-10-27, at release 5's Task 7 review).
+    // -p has no screen to scroll, so it ignores TACHI_SCROLL_SPEED as it does TACHI_CLASSIC, and the file's scrollSpeed too,
+    // though the file is still checked whole, so a bad one there stops -p. A bad --scroll-speed, typed for this run, still
+    // stops it (the user's choice, 2026-10-27, at release 5's Task 7 review).
     speed: flags.print === undefined ? scrollSpeed(flags["scroll-speed"], env, settings.scrollSpeed) : scrollSpeed(flags["scroll-speed"], {}),
   };
 }
 
-// On its own as well, since a missing lead is told before any bad flag, as in release 5 (found at Task 7's spec review).
+// Apart from resolve, since a missing lead is told before any bad flag, as in release 5.
 export function leadOf(flags: Flags, env: NodeJS.ProcessEnv, settings: Settings): string | undefined {
   return flags.lead ?? (env.TACHI_LEAD || undefined) ?? settings.lead;
 }

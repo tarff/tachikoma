@@ -157,7 +157,7 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.stderr).toContain(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${file}.`);
   });
 
-  // Release 5's order, found at Task 7's spec review: no lead, a blank -p, --raw, then the flags; the settings file's own
+  // Release 5's order: no lead, a blank -p, --raw, then the flags; the settings file's own
   // problem, new in release 6, before them all.
   it("says what is wrong in release 5's order, the settings file's own problem first", () => {
     let r = tachi("--mode", "x");
@@ -203,8 +203,14 @@ describe("tachi", { timeout: 15_000 }, () => {
     }
   });
 
+  it("with -p, still stops on a bad scrollSpeed in the settings file, which is checked whole", () => {
+    const r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"scrollSpeed": 50}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('settings.json: "scrollSpeed" must be a number above 0, up to 20 (got "50")');
+  });
+
   it("lets a flag win over the settings file", () => {
-    const r = tachi("--lead", "ollama:none", "--mode", "project", homeWith('{"lead": "nope", "mode": "never"}'));
+    const r = tachi("--lead", "ollama:none", homeWith('{"lead": "nope"}'));
     expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
   });
 

@@ -148,7 +148,7 @@ if (parsed.help) {
 }
 
 // Release 6 design, "The settings file": a broken file stops the launch as a bad flag does; its warnings come first. Then
-// release 5's order: no lead, a blank -p, --raw, then the flags (found at Task 7's spec review).
+// release 5's order: no lead, a blank -p, --raw, then the flags.
 const loaded = loadSettings();
 if ("problem" in loaded) fail(loaded.problem);
 for (const warning of loaded.warnings) console.error(warning);
@@ -172,26 +172,28 @@ attachErrorLog(bus, errorFile, randomUUID());
 const stats = new Stats(bus);
 
 const makeProvider = (spec: string): Provider => createProvider(spec, { effort });
+// A value came from the settings file when no flag gave it, nor a variable where it has one (an empty variable is unset).
+const fromFile = (flag: string | undefined, variable?: string) => flag === undefined && !variable;
 // A spec the settings file gave names its entry, as one from a flag or variable names the flag (the plan's choice 8).
-const named = (entry: string, flag: string, given: string | undefined) => (given === undefined ? `${SETTINGS}: "${entry}": ` : flag);
+const named = (entry: string, file: boolean, flag = "") => (file ? `${SETTINGS}: "${entry}": ` : flag);
 let lead: Provider;
 let fallback: Provider | undefined;
 try {
   lead = makeProvider(leadSpec);
 } catch (err) {
-  fail(`${named("lead", "", parsed.lead ?? (process.env.TACHI_LEAD || undefined))}${errorText(err)}`);
+  fail(`${named("lead", fromFile(parsed.lead, process.env.TACHI_LEAD))}${errorText(err)}`);
 }
 try {
   if (options.fallback) fallback = makeProvider(options.fallback);
 } catch (err) {
-  fail(`${named("fallback", "--fallback: ", parsed.fallback)}${errorText(err)}`); // otherwise it reads like a bad lead
+  fail(`${named("fallback", fromFile(parsed.fallback), "--fallback: ")}${errorText(err)}`); // otherwise it reads like a bad lead
 }
 // Without --worker, a subagent uses the model leading when it starts.
 let worker: Provider | undefined;
 try {
   if (options.worker) worker = makeProvider(options.worker);
 } catch (err) {
-  fail(`${named("worker", "--worker: ", parsed.worker ?? (process.env.TACHI_WORKER || undefined))}${errorText(err)}`);
+  fail(`${named("worker", fromFile(parsed.worker, process.env.TACHI_WORKER), "--worker: ")}${errorText(err)}`);
 }
 
 const interactive = parsed.print === undefined;

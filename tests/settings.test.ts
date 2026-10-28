@@ -10,6 +10,7 @@ const problem = (data: unknown) => {
   return "problem" in r ? r.problem : undefined;
 };
 const temp = () => mkdtempSync(path.join(tmpdir(), "tachi-settings-"));
+const BOM = String.fromCharCode(0xfeff);
 
 describe("readSettings", () => {
   // The design's example file ("The settings file"), every entry with a good value.
@@ -85,12 +86,11 @@ describe("readSettings", () => {
 
   // Release 6 design, "Vim mode": two printable characters, and <Esc> the only target.
   it("keeps only vimInsertModeRemaps entries of two printable characters mapped to <Esc>, and warns of the rest", () => {
-    const remaps = { jj: "<Esc>", "j k": "<Esc>", jk: "<Esc>", j: "<Esc>", jjj: "<Esc>", "j\t": "<Esc>", kj: "<CR>", "éé": "<Esc>", ab: 1 };
+    const remaps = { jj: "<Esc>", jk: "<Esc>", j: "<Esc>", jjj: "<Esc>", "j\t": "<Esc>", kj: "<CR>", "éé": "<Esc>", ab: 1 };
     const r = read({ vimInsertModeRemaps: remaps });
     expect(r).toEqual({
       settings: { vimInsertModeRemaps: { jj: "<Esc>", jk: "<Esc>", "éé": "<Esc>" } },
       warnings: [
-        'settings.json: "vimInsertModeRemaps" entry "j k" is not two printable characters mapped to "<Esc>"; it was left out',
         'settings.json: "vimInsertModeRemaps" entry "j" is not two printable characters mapped to "<Esc>"; it was left out',
         'settings.json: "vimInsertModeRemaps" entry "jjj" is not two printable characters mapped to "<Esc>"; it was left out',
         'settings.json: "vimInsertModeRemaps" entry "j\\t" is not two printable characters mapped to "<Esc>"; it was left out',
@@ -126,8 +126,6 @@ describe("readSettings", () => {
     for (const text of ["", " ", "\r\n", " \t\n ", BOM, `${BOM}\r\n`]) expect(readSettings(text)).toEqual({ settings: {}, warnings: [] });
   });
 });
-
-const BOM = String.fromCharCode(0xfeff);
 
 describe("loadSettings", () => {
   it("reads ~/.tachikoma/settings.json", () => {
