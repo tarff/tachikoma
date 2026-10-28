@@ -7,7 +7,9 @@ import { stripVTControlCharacters } from "node:util";
 import { type Instance, render as renderInk } from "ink";
 import { render } from "ink-testing-library";
 import chalk from "chalk";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import type { ChatCompletion } from "openai/resources/chat/completions";
+import { Completions } from "openai/resources/chat/completions";
+import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import { type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
@@ -19,6 +21,7 @@ import { delegateTool } from "../../src/tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import { History } from "../../src/tui/history.js";
 import type { ModelGroup } from "../../src/providers/models.js";
+import { OpenAIProvider } from "../../src/providers/openai.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Clipboard } from "../../src/tui/clipboard.js";
 import type { Mouse } from "../../src/tui/input.js";
@@ -542,6 +545,24 @@ describe("App", () => {
     first(null); // as Anthropic's lookup answers when it gives up
     await tick();
     expect(app.lastFrame()).toContain("% left");
+  });
+
+  it("shows the bar for an OpenAI API lead once a reply says how much is in use", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    vi.stubEnv("OPENAI_BASE_URL", "");
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+      vi.restoreAllMocks();
+    });
+    const res = {
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "there", refusal: null } }],
+      usage: { prompt_tokens: 209_000, completion_tokens: 1_000, total_tokens: 210_000 },
+    } as unknown as ChatCompletion;
+    vi.spyOn(Completions.prototype, "create").mockResolvedValue(res as never);
+    const { app } = await mount([], { lead: new OpenAIProvider("openai", "gpt-5.5") });
+    await type(app, "hi");
+    await until(app, "there");
+    await until(app, "██░░░░░░░░ 80% left"); // 210,000 of gpt-5.5's 1,050,000
   });
 
   it("keeps going when the context-window lookup fails", async () => {

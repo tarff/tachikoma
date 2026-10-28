@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import type { ChatCompletion, ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
 import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type Turn } from "../core/types.js";
+import { openaiWindow } from "./windows.js";
 
 // Providers that accept OpenAI's chat-completions format. Base URLs checked 2026-10-22 against each
 // provider's docs: OpenRouter (openrouter.ai/docs), Moonshot/Kimi global platform (platform.kimi.ai),
@@ -120,5 +121,12 @@ export class OpenAIProvider implements Provider {
       }
       throw err;
     }
+  }
+
+  // OpenAI's table, so only for openai: leads at OpenAI's own address: another one, set by OPENAI_BASE_URL,
+  // may serve other models under the same names, as OpenRouter, Kimi and Ollama do. Null shows the tokens in use.
+  async contextWindow(): Promise<number | null> {
+    if (this.kind !== "openai" || !/^https:\/\/api\.openai\.com\/v1\/?$/.test(this.#client.baseURL)) return null;
+    return openaiWindow(this.model);
   }
 }
