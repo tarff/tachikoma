@@ -228,6 +228,13 @@ Each is marked in its task. None approved yet.
     review; the coordinator's call, for the user to review).
 24. **Remap pairs are two letters, digits, punctuation or symbols; a space is not accepted for now**
     (found at Task 7's code review; the coordinator's call pending the user's answer on spaces).
+25. **Task 18's question, beyond its text.** A request "carries pictures" when the conversation
+    has picture parts and the provider is not yet marked, so the question can come even when
+    Task 17 already turned every picture into a note; y then sends it once more and a second
+    400 ends the turn. When the lead refuses and the fallback's own request then gets a 400, the
+    fallback is the one asked about and marked; the lead keeps getting pictures. The question
+    shows plainly, without "Allow " in front, though it uses the permission question's line
+    (found at Task 18's build and spec review; the coordinator's call, for the user to review).
 
 ---
 
