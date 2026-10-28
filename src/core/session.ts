@@ -130,7 +130,12 @@ export class Session {
       bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage }); // last: it sets the context size
       return turn;
     } catch (err) {
-      if (!signal?.aborted) bus.emit("error", { kind: "provider", attempted: `request to ${provider.id}`, message: errorText(err), lead: this.#lead.id });
+      // The SDKs' `APIError` and chatgpt.ts's ProviderError carry the HTTP status; anything else has none.
+      const status: unknown = (err as { status?: unknown } | null | undefined)?.status;
+      if (!signal?.aborted) {
+        const error = { kind: "provider" as const, attempted: `request to ${provider.id}`, message: errorText(err), lead: this.#lead.id };
+        bus.emit("error", typeof status === "number" ? { ...error, status } : error);
+      }
       return undefined;
     }
   }

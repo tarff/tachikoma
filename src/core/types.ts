@@ -14,6 +14,12 @@ export type Part =
 
 export type ToolCall = Extract<Part, { type: "tool_call" }>;
 export type ToolResult = Extract<Part, { type: "tool_result" }>;
+export type Image = Extract<Part, { type: "image" }>;
+
+// The pictures of one request, by number, as that request sends them: shrunk to its provider's limits, or a note's
+// text in a left-out picture's place (release 6 design, "What is sent, request by request"). A picture not in the map
+// goes as it was read.
+export type Prepared = ReadonlyMap<number, Pick<Image, "mediaType" | "data"> | string>;
 
 export interface Message {
   role: "user" | "assistant";
@@ -63,6 +69,17 @@ export interface Provider {
   complete(req: CompletionRequest): Promise<Turn>;
   contextWindow?(): Promise<number | null>;
   setEffort?(effort: Effort | undefined): void; // Anthropic's only, as --effort is
+}
+
+// A provider's failure with the HTTP status it came with, so the session can tell a refused request (400) apart without
+// reading the provider's words (release 6 plan, choice 10). The SDKs' own `APIError` carries `status` the same way.
+export class ProviderError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+  }
 }
 
 export function errorText(err: unknown): string {

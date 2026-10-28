@@ -7,6 +7,7 @@ export interface ErrorEvent {
   attempted: string;
   message: string;
   lead: string;
+  status?: number; // a provider's HTTP status, when its failure came with one (release 6 plan, choice 10)
 }
 
 // How a tool call ended. "declined": the user said no, or the mode refused it. "cancelled": the turn

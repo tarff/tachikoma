@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import type { ChatCompletion, ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
-import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type Turn } from "../core/types.js";
+import { type CompletionRequest, connectReason, type Image, type Message, type Part, type Prepared, type Provider, type Turn } from "../core/types.js";
 import { openaiWindow } from "./windows.js";
 
 // Providers that accept OpenAI's chat-completions format. Base URLs checked 2026-10-22 against each
@@ -18,12 +18,16 @@ export const PRESETS: Record<string, { baseURL?: string; keyEnv?: string }> = {
 // OpenRouter's `reasoning` / `reasoning_details`. Only these are kept, as OpenAI rejects unknown fields.
 const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_details"];
 
-export function toOpenAI(system: string, messages: Message[], kind: string): ChatCompletionMessageParam[] {
+// A picture's data inline, as a data URL (OpenAI's images-vision guide,
+// developers.openai.com/api/docs/guides/images-vision).
+export const dataUrl = (p: Pick<Image, "mediaType" | "data">) => `data:${p.mediaType};base64,${p.data.toString("base64")}`;
+
+export function toOpenAI(system: string, messages: Message[], kind: string, prepared: Prepared = new Map()): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [{ role: "system", content: system }];
   for (const m of messages) {
-    // A picture is its marker as text until the release 6 plan's Task 16 sends the picture, so a message of a picture
-    // alone is never empty.
-    const text = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : p.type === "image" ? [`[Image #${p.id}]`] : [])).join("\n");
+    // The text and pictures in order, a note in a left-out picture's place being text.
+    const pieces = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : p.type === "image" ? [prepared.get(p.id) ?? p] : []));
+    const text = pieces.flatMap((s) => (typeof s === "string" ? [s] : [])).join("\n");
     if (m.role === "assistant") {
       const calls = m.parts.flatMap((p) => (p.type === "tool_call" ? [p] : []));
       // The SDK requires content unless there are tool calls; an empty reply (all output spent on
@@ -43,7 +47,14 @@ export function toOpenAI(system: string, messages: Message[], kind: string): Cha
     for (const p of m.parts) {
       if (p.type === "tool_result") out.push({ role: "tool", tool_call_id: p.callId, content: p.isError ? `Error: ${p.output}` : p.output });
     }
-    if (text) out.push({ role: "user", content: text });
+    // With a picture to send, the content is a list of parts in order, each picture an `image_url` (images-vision
+    // guide). Without one it stays one string, so a request whose pictures were all left out is sent as before them.
+    if (pieces.some((s) => typeof s !== "string")) {
+      out.push({
+        role: "user",
+        content: pieces.map((s) => (typeof s === "string" ? { type: "text", text: s } : { type: "image_url", image_url: { url: dataUrl(s) } })),
+      });
+    } else if (text) out.push({ role: "user", content: text });
   }
   return out;
 }

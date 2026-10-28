@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaContentBlock, BetaContentBlockParam, BetaMessage, BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type Turn } from "../core/types.js";
+import { type CompletionRequest, connectReason, type Message, type Part, type Prepared, type Provider, type Turn } from "../core/types.js";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -14,7 +14,7 @@ const MAX_TOKENS = 64_000;
 // Tool-call ids from other providers may hold characters Anthropic rejects.
 const safeId = (id: string) => id.replace(/[^a-zA-Z0-9_-]/g, "_");
 
-function toBlock(p: Part): BetaContentBlockParam {
+function toBlock(p: Part, prepared: Prepared): BetaContentBlockParam {
   switch (p.type) {
     case "text":
       return { type: "text", text: p.text };
@@ -22,20 +22,22 @@ function toBlock(p: Part): BetaContentBlockParam {
       return { type: "tool_use", id: safeId(p.id), name: p.name, input: p.input };
     case "tool_result":
       return { type: "tool_result", tool_use_id: safeId(p.callId), content: p.output, is_error: p.isError };
-    case "image":
-      // Its marker as text until the release 6 plan's Task 16 sends the picture, so a message of a picture alone is
-      // never empty.
-      return { type: "text", text: `[Image #${p.id}]` };
+    case "image": {
+      // The base64 source on Anthropic's vision page (platform.claude.com/docs/en/build-with-claude/vision).
+      const sent = prepared.get(p.id) ?? p;
+      if (typeof sent === "string") return { type: "text", text: sent };
+      return { type: "image", source: { type: "base64", media_type: sent.mediaType, data: sent.data.toString("base64") } };
+    }
   }
 }
 
-export function toAnthropic(messages: Message[]): BetaMessageParam[] {
+export function toAnthropic(messages: Message[], prepared: Prepared = new Map()): BetaMessageParam[] {
   return (
     messages
       .map((m): BetaMessageParam =>
         m.role === "assistant" && m.native?.provider === "anthropic"
           ? { role: "assistant", content: m.native.content as BetaContentBlockParam[] }
-          : { role: m.role, content: m.parts.map(toBlock) },
+          : { role: m.role, content: m.parts.map((p) => toBlock(p, prepared)) },
       )
       // A reply can come back empty (context full before any output), but the API rejects an empty
       // message anywhere but last, and the history is append-only, so it would fail every later request.

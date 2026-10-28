@@ -2,8 +2,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { Models } from "@anthropic-ai/sdk/resources/models";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Message } from "../../src/core/types.js";
+import { Session } from "../../src/core/session.js";
+import type { Message, Prepared } from "../../src/core/types.js";
 import { AnthropicProvider, fromAnthropic, toAnthropic } from "../../src/providers/anthropic.js";
+import { Bus, collectErrors, tempContext } from "../helpers.js";
 
 // Shaped like a real response; only the fields the adapter reads are filled in.
 function message(fields: Partial<BetaMessage>): BetaMessage {
@@ -34,11 +36,41 @@ describe("toAnthropic", () => {
     ]);
   });
 
-  // Release 6 plan, Task 14: until Task 16 sends the picture, its marker goes as text in its place.
-  it("sends a picture as its marker's text for now", () => {
-    const picture = { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50]) } as const;
-    const history: Message[] = [{ role: "user", parts: [picture, { type: "text", text: " what is it?" }] }];
-    expect(toAnthropic(history)).toEqual([{ role: "user", content: [{ type: "text", text: "[Image #1]" }, { type: "text", text: " what is it?" }] }]);
+  // The shape is the base64 source on Anthropic's vision page (platform.claude.com/docs/en/build-with-claude/vision).
+  const png = { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } as const;
+  const jpeg = { type: "image", id: 2, mediaType: "image/jpeg", data: Buffer.from([0xff, 0xd8, 0xff]) } as const;
+  const tool = { type: "tool_result", callId: "c1", output: "ok", isError: false } as const;
+  const parts: Message["parts"] = [tool, { type: "text", text: "compare " }, png, { type: "text", text: " with " }, jpeg];
+
+  it("sends each picture as an image block with its data inline, in its place", () => {
+    expect(toAnthropic([{ role: "user", parts }])).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "c1", content: "ok", is_error: false },
+          { type: "text", text: "compare " },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw==" } },
+          { type: "text", text: " with " },
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "/9j/" } },
+        ],
+      },
+    ]);
+  });
+
+  it("sends each picture as the request prepared it, and a note in a left-out picture's place as text", () => {
+    const prepared: Prepared = new Map<number, string | { mediaType: "image/png"; data: Buffer }>([
+      [1, "[Image #1 left out: the request was over Anthropic's 32 MB]"],
+      [2, { mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }],
+    ]);
+    expect(toAnthropic([{ role: "user", parts: [png, jpeg] }], prepared)).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "[Image #1 left out: the request was over Anthropic's 32 MB]" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw==" } },
+        ],
+      },
+    ]);
   });
 
   it("replays Anthropic's own content unchanged, thinking blocks included", () => {
@@ -229,6 +261,15 @@ describe("AnthropicProvider", () => {
     await expect(new AnthropicProvider("claude-opus-5-5").complete({ system: "s", messages: [], tools: [] })).rejects.toThrow("stop here");
     expect(sent[0]!.get("x-api-key")).toBe("test-key");
     expect(sent[0]!.has("authorization")).toBe(false);
+  });
+
+  it("keeps a refused request's HTTP status on the session's error event", async () => {
+    const body = { type: "error", error: { type: "invalid_request_error", message: "Could not process image" } };
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify(body), { status: 400, headers: { "content-type": "application/json" } }));
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    await new Session({ lead: new AnthropicProvider("claude-opus-5-5"), tools: [], system: "s", ctx: await tempContext(), bus }).send("look");
+    expect(errors).toEqual([expect.objectContaining({ kind: "provider", status: 400, message: expect.stringContaining("Could not process image") })]);
   });
 
   it("names the underlying reason a connection failed", async () => {

@@ -211,6 +211,18 @@ describe("Session", () => {
     expect(errors).toEqual([expect.objectContaining({ kind: "provider", message: "rate limited" })]);
   });
 
+  // Release 6 plan, choice 10: the 400 question reads the status, never an error's words.
+  it("keeps a provider error's HTTP status on the error event, only when it is a number", async () => {
+    const refused = Object.assign(new Error("bad image"), { status: 400 });
+    const { session, errors } = await setup([refused, Object.assign(new Error("odd"), { status: "400" }), new Error("offline")]);
+    for (const text of ["one", "two", "three"]) await session.send(text);
+    expect(errors.map((e) => [e.kind, e.message, e.status])).toEqual([
+      ["provider", "bad image", 400],
+      ["provider", "odd", undefined],
+      ["provider", "offline", undefined],
+    ]);
+  });
+
   it("answers every tool call when a response is cut off", async () => {
     const cut = { ...callTool("c1", "echo", { text: "x" }), cutOff: { kind: "max_tokens" as const, detail: "limit" } };
     const { session, errors } = await setup([cut]);

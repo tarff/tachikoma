@@ -1,9 +1,19 @@
 import OpenAI from "openai";
-import type { ResponseInputItem, ResponseOutputItem, ResponseStreamEvent, ResponseUsage, Tool } from "openai/resources/responses/responses";
+import type { ResponseInputImage, ResponseInputItem, ResponseOutputItem, ResponseStreamEvent, ResponseUsage, Tool } from "openai/resources/responses/responses";
 import type { Access, ChatGPTAuth } from "../auth/access.js";
 import { USAGE_URL } from "../auth/chatgpt.js";
-import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type ToolSpec, type Turn } from "../core/types.js";
-import { parseArgs } from "./openai.js";
+import {
+  type CompletionRequest,
+  connectReason,
+  type Message,
+  type Part,
+  type Prepared,
+  type Provider,
+  ProviderError,
+  type ToolSpec,
+  type Turn,
+} from "../core/types.js";
+import { dataUrl, parseArgs } from "./openai.js";
 
 // A ChatGPT plan leading, through OpenAI's Responses API (release 2 design, "Requests"; OpenAI's
 // "models and inference" and "preview limitations" pages, read 2026-10-23).
@@ -68,7 +78,7 @@ function planText({ code, param, status, message }: Failure): string {
   return `OpenAI ${what} the request${about ? ` (${about})` : ""}.${why}${status === 429 ? " Try again later." : ""}`;
 }
 
-const planError = (failure: Failure) => new Error(withId(planText(failure), failure.requestId));
+const planError = (failure: Failure) => new ProviderError(withId(planText(failure), failure.requestId), failure.status);
 
 // A connection that drops part way through a reply ends the stream with Node's bare "terminated", a
 // TypeError from undici (the fetch under the SDK).
@@ -81,7 +91,7 @@ async function* dropped<T>(events: AsyncIterable<T>, requestId: string | null): 
   }
 }
 
-export function toResponses(messages: Message[]): ResponseInputItem[] {
+export function toResponses(messages: Message[], prepared: Prepared = new Map()): ResponseInputItem[] {
   const out: ResponseInputItem[] = [];
   for (const m of messages) {
     if (m.role === "assistant") {
@@ -99,11 +109,20 @@ export function toResponses(messages: Message[]): ResponseInputItem[] {
     }
     for (const p of m.parts) {
       if (p.type === "tool_result") out.push({ type: "function_call_output", call_id: p.callId, output: p.isError ? `Error: ${p.output}` : p.output });
-      else if (p.type === "text") out.push({ role: "user", content: p.text });
-      // Its marker as text until the release 6 plan's Task 16 sends the picture, so a message of a picture alone is
-      // never empty.
-      else if (p.type === "image") out.push({ role: "user", content: `[Image #${p.id}]` });
     }
+    // The text and pictures in order, a note in a left-out picture's place being text. With a picture to send they go
+    // as one user item of `input_text` and `input_image` parts, the picture's data inline (release 6 design, "In the
+    // conversation"); without one each text is its own item, so a request whose pictures were all left out is sent as
+    // before them.
+    const pieces = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : p.type === "image" ? [prepared.get(p.id) ?? p] : []));
+    if (pieces.some((s) => typeof s !== "string")) {
+      // No `detail`: the API then takes "auto" (the openai package's ResponseInputImage, 7.30.0), though the type
+      // marks it required.
+      const content = pieces.map((s) =>
+        typeof s === "string" ? { type: "input_text" as const, text: s } : ({ type: "input_image", image_url: dataUrl(s) } as ResponseInputImage),
+      );
+      out.push({ role: "user", content });
+    } else for (const s of pieces) if (typeof s === "string") out.push({ role: "user", content: s });
   }
   return out;
 }
