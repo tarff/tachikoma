@@ -160,7 +160,8 @@ Each is marked in its task. None approved yet.
 11. **Clipboard readers (Task 15):** Windows as the probe (Windows Forms under `-STA`, the PNG as
     base64 on stdout); macOS `osascript -e "get the clipboard as «class PNGf»"` (hex in its
     answer); Linux `wl-paste --type image/png` with `WAYLAND_DISPLAY`, else `xclip -selection
-    clipboard -t image/png -o` with `DISPLAY`, else no reader.
+    clipboard -t image/png -o` with `DISPLAY`, else no reader. macOS's script and each reader's
+    "none" are in choice 29.
 12. **A format a provider does not list is sent as PNG (Task 17),** and an animated GIF as its
     first frame in PNG, since OpenAI takes only non-animated GIF.
 13. **One yank register (Tasks 19-20),** as Claude Code's table describes (`p`/`P` "register
@@ -304,6 +305,23 @@ Each is marked in its task. None approved yet.
     take all of it (vim.ts, `cover`). And the terminal's own cursor stays on the cursor's
     character over the reversed text, as Tachikoma always places it (release 3 design,
     "Multi-line").
+29. **An empty clipboard and dragged paths (Task 15; the user's answers, 2026-10-29: "Fix from
+    the docs" and "Both").** No PNG on the clipboard is "none" (`No picture on the clipboard.`),
+    not a failure, on every system. On macOS the script catches the coercion's error -1700 alone
+    (`try` / `return (the clipboard as «class PNGf»)` / `on error number -1700` / `return ""` /
+    `end try`, from the AppleScript Language Guide); it was not run on a Mac, so Task 23's
+    checklist tries a picture and an empty clipboard there. On Linux a failing tool whose first
+    line of stderr is its own words for no PNG is "none": wl-paste's from wl-clipboard v2.0.0 to
+    master, xclip's from 0.13 and master (clipboard.ts names each); so a clipboard holding only a
+    JPEG also says `No picture on the clipboard.`, as it has no PNG. A pasted line splits into
+    paths where Claude Code 2.1.312's paste handler splits one: at a space before a path that
+    starts with `/` or a drive letter, quoted or not; a space in quotes or after a backslash stays
+    in its path. Off Windows a backslash gives the character after it, except in a path starting
+    with a drive letter or `\\`; on Windows backslashes stay and only `"` quotes, as Windows
+    Terminal quotes a dropped path with `"` alone, so an apostrophe is part of a name. A line whose
+    words are all pictures is those pictures; any other line is one path. A known gap, as in Claude
+    Code: a shell's `'\''` inside single quotes stays in the path as written, so such a file is
+    not found and the paste stays text.
 
 ---
 
@@ -922,7 +940,8 @@ the clipboard.`; a failed read settles as `{failed}`, removes its spans the same
 #3] was sent without it.` (Task 14); no reader: `No
 clipboard reader here: install wl-paste or xclip.` (Linux). A paste that `imagePaths` accepts and
 whose files all exist becomes those pictures (read with `fs.readFile`, type from the file's first
-bytes, not its name); otherwise it is text as today.
+bytes, not its name); otherwise it is text as today. Several paths on a line, escaped spaces and an
+empty clipboard on macOS and Linux follow choice 29.
 
 Task 14 already wires `chat:imagePaste` to `pictures.next()` and the span (App.tsx, `imagePaste`), and
 already says the "none" and failed lines, with their ending, from its one settle handler (`settle`,
