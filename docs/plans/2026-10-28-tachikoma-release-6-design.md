@@ -428,7 +428,7 @@ OpenAI table. sharp is installed through sfw, pinned to the version checked then
 ## As built
 
 Where the code differs from the design above, or settles what it left open, and why. The plan
-(`2026-10-28-tachikoma-release-6.md`) lists the 29 choices it made, each marked in its task, and
+(`2026-10-28-tachikoma-release-6.md`) lists the 31 choices it made, each marked in its task, and
 each task's "found at" notes. Choice 26 (nothing is saved, and a missing settings or keys file is
 skipped) is already written into "Saving", "Live edits", "When something goes wrong" and "Vim mode"
 above, and Task 1's hand-overs into "Tidying the screen code first"; the rest follows, task by
@@ -508,17 +508,25 @@ build made, for the user to review at the final review.
     Its line breaks are read as a paste's, as Notepad and VS Code on Windows save `\r\n`.
   - While the editor is open, a queued `/screen`, `/settings` or `/keybindings` waits, as each
     would hand the terminal over again; messages and other commands go on (Task 12).
+  - Ctrl-C typed in the terminal while the editor runs, which comes as SIGINT as raw mode is off
+    then, is ignored, and SIGQUIT too, as Git's editor launch ignores both: the session and a
+    running turn go on (found at Task 12's spec review; settled at the final review, choice 31, the
+    build's call).
   - Found and not settled: through `cmd.exe`, a `%` in the path given to the editor can be expanded
-    (found at Task 12's build; a known limit in the README); Windows 11's tabbed Notepad may hand
-    the file to a Notepad window already open and exit at once (found at Task 12's code review);
-    and what Ctrl-C typed in the terminal while the editor runs does to a running turn (found at
-    Task 12's spec review). The plan's terminal checklist tries the last two.
+    (found at Task 12's build; a known limit in the README); and Windows 11's tabbed Notepad may hand
+    the file to a Notepad window already open and exit at once (found at Task 12's code review).
+    The plan's terminal checklist tries the second, and Ctrl-C during the editor.
+- **Stash (Task 13).** The slot keeps where Up had got to with the prompt it takes, the draft typed
+  before Up included, so Ctrl+S after Up loses no draft: once Ctrl+S brings that prompt back, Down
+  brings the draft back (found at the final review; choice 31, the build's call).
 - **Pictures (Tasks 14 to 18):**
   - Pictures live in memory for the session, never on disk; quitting drops them (choice 9, the
     build's call).
   - A marker deletes as one character: Backspace at its end or Delete at its start removes all of
     `[Image #2]`, so no broken marker text is left behind, where the design has a span go when any
-    of its characters is deleted (choice 14, the build's call).
+    of its characters is deleted (choice 14, the build's call). What a word or line delete takes
+    keeps its markers' spans, as vim's register does, so Ctrl+Y puts a picture back with its marker
+    (found at the final review).
   - A message waiting on a read that fails or finds nothing is sent without that picture, its marker
     removed and a line saying so, rather than held back or put back in the prompt; Esc or Ctrl-C
     while it waits ends the wait the same way (choice 17, the build's call).
@@ -568,6 +576,11 @@ build made, for the user to review at the final review.
     drops the command, where Claude Code's Enter sends; a change App makes to the prompt's text in
     VISUAL leaves it for NORMAL; `j`, `k` and `/` at the edges act as Up, Down and Ctrl+R do; `/vim`
     and live edits say `editorMode is now vim` and the like (choice 27, the build's call).
+  - A change App makes to the prompt's text drops a command or count half typed too, so `d`, then
+    Ctrl+P, then `w` moves in the line recalled rather than deleting from it (found at the final
+    review). Where vim takes Esc first, in INSERT, VISUAL or with something half typed, the working
+    line says `Esc Esc to stop` and `?` names Esc twice to stop and three times to clear (choice
+    31, the build's call).
   - Counts stop at 10,000, as Claude Code's own code caps them (found at Task 20's code review).
     Claude Code's code also takes `` ` ``, `b`, `B`, `<`, `>`, `)`, `]` and `}` as text objects;
     they are not built, as the plan lists the docs' set (found at Task 20's code review).

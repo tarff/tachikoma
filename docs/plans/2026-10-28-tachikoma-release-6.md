@@ -362,6 +362,22 @@ Each is marked in its task. None approved yet.
       `~/.tachikoma` is made, the file tools match its path ignoring case on macOS as on Windows.
     - Not done: finding 6, a size cap on a pasted picture, waits for measured sizes, as a cap
       needs a number taken from data first.
+31. **Three calls from the final review (2026-10-29; the coordinator's, for the user to review).**
+    Ctrl-C typed in the terminal while the editor runs, where raw mode is off so it comes as
+    SIGINT, is ignored, and Ctrl-\ (SIGQUIT) too where it exists, as Git's
+    `launch_specified_editor` ignores both while the editor runs (`editor.c`, read 2026-10-29):
+    the session goes on and a running turn is not stopped; what Ctrl-C does to the editor itself is
+    the editor's business (`owner.ts`, `programRunning`; `clilib.ts`, `exitOn`). Unlike Git, which
+    ends itself once an editor that one of them ended has exited, Tachikoma says the editor failed,
+    as for any failure. Ctrl+Break still ends Tachikoma. The stash keeps where Up had got to with
+    the prompt it takes, the draft typed before Up and its pictures included, and gives it back
+    with that prompt: so Ctrl+S after Up puts the line shown aside with the draft, and once Ctrl+S
+    brings that line back, Down past the newest brings the draft back, as before the stash; nothing
+    is dropped, which "the two swap, so nothing is lost" asks. Where vim takes Esc first (INSERT,
+    VISUAL, or a command or count half typed), the working line says `Esc Esc to stop` and `?`'s
+    list `Esc Esc  stop the turn · Esc Esc Esc  clear the prompt`, as the first Esc only goes to
+    NORMAL; the key is still the one the table binds to `chat:cancel`, and one held with Ctrl or
+    Alt, which never goes to vim, is named once.
 
 ---
 
@@ -1247,8 +1263,10 @@ at Task 6's spec review).
 9. `/vim`: `-- INSERT --`; Esc, `dw`, `u`, `ciw`, `.`; `jj` with the remap set. Then `v`, `l`,
    `l`: the three characters show in reverse; `V`: the whole line; Esc: no reverse (choice 28).
 10. An `openai:gpt-5.5` lead (if the user has an API key): the context bar shows.
-11. During a turn, Ctrl+G with Notepad open: Ctrl-C typed in the terminal meanwhile, and what it
-    does to the running turn (found at Task 12's spec review; Git behaves the same way).
+11. During a turn, Ctrl+G with Notepad open: Ctrl-C typed in the terminal meanwhile leaves the
+    session and the running turn going, as Git ignores Ctrl-C while its editor runs (found at
+    Task 12's spec review; choice 31). Then the same with `"editor": "code --wait"`, where cmd may
+    ask `Terminate batch job (Y/N)?`: whatever the editor does, Tachikoma goes on.
 12. Only if a Mac is to hand (choice 29's script was not run on one): a screenshot copied with
     Cmd+Ctrl+Shift+4, Ctrl+V (macOS's default, bindings.ts): a marker, and the answer is about
     it; then text copied, Ctrl+V: `No picture on the clipboard.`

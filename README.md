@@ -349,7 +349,8 @@ becomes the prompt, with the cursor at the end; Ctrl+Z brings back the text befo
   after, as for `[`. The editor gets the environment shell commands get, without the API keys.
 - **Meanwhile** a turn already running carries on, and its output is there when you come back; a
   permission question waits until you are back. A queued `/screen`, `/settings` or `/keybindings`
-  waits for the editor to close.
+  waits for the editor to close. Ctrl-C typed in the terminal while the editor is open is the
+  editor's: Tachikoma ignores it, as Git does, so the session and a running turn go on.
 - **If the editor fails or is not found,** the prompt stays as it was and a line says why, either
   `The editor failed (<reason>). Set VISUAL or EDITOR, or "editor" in ~/.tachikoma/settings.json.`
   or `<command> was not found. Set VISUAL or EDITOR, or "editor" in ~/.tachikoma/settings.json.`
@@ -365,7 +366,9 @@ becomes the prompt, with the cursor at the end; Ctrl+Z brings back the text befo
 Ctrl+S, as in Claude Code: with text in the prompt, the text, its cursor and any pictures go aside,
 the prompt clears, and the hint row shows `Stashed · Ctrl+S to bring back`. Ctrl+S on an empty
 prompt brings them back. With text in the prompt and something already stashed, the two swap, so
-nothing is lost. There is one slot, kept until you quit.
+nothing is lost. There is one slot, kept until you quit. After Up has brought back a past prompt,
+Ctrl+S puts that prompt aside with the draft you were typing before Up: once Ctrl+S brings the
+prompt back, Down brings the draft back.
 
 ## Pictures
 
@@ -420,7 +423,8 @@ counts (`3w`, `2dd`, `d3w`). See [Known limits](#known-limits) for the text obje
   `/vim off` set it). It starts in INSERT. The mode shows in the hint row (`-- NORMAL --`) whenever
   no other hint takes it.
 - **Esc** in INSERT or VISUAL goes to NORMAL and does not stop a turn; in NORMAL it does what Esc
-  does without vim mode. Ctrl-C always stops. Enter sends from NORMAL too. `j` and `k` at the first
+  does without vim mode. So in INSERT it takes Esc twice to stop a turn, and the working line says
+  `Esc Esc to stop`. Ctrl-C always stops. Enter sends from NORMAL too. `j` and `k` at the first
   or last line go through prompt history, `/` in NORMAL opens Ctrl+R's search, and `?` lists the
   keys.
 - **Keys bound in the keys file keep their actions,** Ctrl and Alt keys among them; vim's own keys
