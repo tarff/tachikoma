@@ -291,11 +291,13 @@ describe("ChatGPTProvider", () => {
   it("keeps the request ID of a reply that fails part way through", async () => {
     const failed = { type: "response.failed", response: { error: { code: "server_error", message: "Something broke" } } };
     const api = await fakeApi((_, res) => sse(res, [done(text), failed]));
-    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new ProviderError("OpenAI could not complete the request (server_error). Something broke. OpenAI's request ID: req_9."));
+    const broke = new ProviderError("OpenAI could not complete the request (server_error). Something broke. OpenAI's request ID: req_9.");
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(broke);
     // A named `event: error`, which the SDK throws itself.
     const limit = { type: "error", code: "subscription_sharing_usage_limit_exceeded", message: "limit", param: null };
     const limited = await fakeApi((_, res) => sse(res, [done(text), limit]));
-    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, limited.base).complete(request)).rejects.toThrow(new ProviderError(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`));
+    const limitError = new ProviderError(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`);
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, limited.base).complete(request)).rejects.toThrow(limitError);
   });
 
   it("says a connection that drops part way through a reply dropped", async () => {
