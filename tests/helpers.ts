@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import sharp from "sharp";
 import { onTestFinished } from "vitest";
 import { Bus, type ErrorEvent } from "../src/core/bus.js";
 import { type Mode, PermissionGate } from "../src/core/permissions.js";
@@ -11,8 +10,10 @@ import type { CompletionRequest, Message, Part, Provider, Turn, Usage } from "..
 import { LocalExecutor } from "../src/exec/local.js";
 import type { ToolContext } from "../src/tools/tool.js";
 
-// An animated GIF of two frames, white then black, made in memory: two frames the same would be stored as one.
-export function twoFrameGif(width = 4, height = 4): Promise<Buffer> {
+// An animated GIF of two frames, white then black, made in memory: two frames the same would be stored as one. sharp is
+// loaded only here, so the test files that never make a picture do not pay for it.
+export async function twoFrameGif(width = 4, height = 4): Promise<Buffer> {
+  const { default: sharp } = await import("sharp");
   const frames = Buffer.alloc(width * height * 2 * 3);
   frames.fill(255, 0, width * height * 3);
   return sharp(frames, { raw: { width, height: height * 2, channels: 3, pageHeight: height } }).gif().toBuffer();

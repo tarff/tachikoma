@@ -1,4 +1,3 @@
-import sharp from "sharp";
 import type { CompletionRequest, Image, Message, Picture, Prepared } from "../core/types.js";
 
 // Each picture shrunk to its provider's documented limits, request by request, from the original the conversation keeps
@@ -89,6 +88,10 @@ async function shrink(p: Image, to: Shape): Promise<Picture> {
 // sharp's defaults, relied on here (node_modules/sharp/dist/constructor.mjs, 0.35.5): JPEG and WebP are written at
 // quality 80, and a picture of more than 268,402,689 pixels (0x3FFF × 0x3FFF) fails to read, so it is sent as it is.
 async function copy(p: Image, to: Shape): Promise<Picture> {
+  // Loaded here, at the first picture, not at launch: loading sharp takes about 60 ms, which every launch, `-p`
+  // included, would pay through settings.ts and anthropic.ts. Node keeps it after the first load. A sharp that will not
+  // load fails here, into shrink's catch, so the picture is sent as it is.
+  const { default: sharp } = await import("sharp");
   const meta = await sharp(p.data).metadata();
   const pages = meta.pages ?? 1;
   const mediaType = to.formats.includes(p.mediaType) && !(p.mediaType === "image/gif" && pages > 1 && to.stillGif) ? p.mediaType : "image/png";
