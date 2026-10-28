@@ -6,7 +6,7 @@
 export interface Hand {
   suspend(): Promise<{ resume(): Promise<void> }>; // Ink's suspendTerminal()
   hold(on: boolean): void; // InputFilter.hold
-  divert(keys: ((keys: string) => void) | null): void; // InputFilter.divert
+  divert(to: ((keys: string) => void) | null): void; // InputFilter.divert
   release(): void; // InputFilter: let go of stdin, so a program reads every key itself
   retake(): void; // InputFilter: read stdin again
 }

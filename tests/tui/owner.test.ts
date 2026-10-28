@@ -19,7 +19,7 @@ function hand(onResume?: () => void) {
       };
     },
     hold: (on) => calls.push(`hold(${on})`),
-    divert: (keys) => calls.push(keys ? "divert(reader)" : "divert(null)"),
+    divert: (to) => calls.push(to ? "divert(reader)" : "divert(null)"),
     release: () => calls.push("release"),
     retake: () => calls.push("retake"),
   };
