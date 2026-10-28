@@ -4156,7 +4156,7 @@ describe("App's /screen", () => {
     expect(app.lastFrame()).not.toContain("screen is now");
     await type(app, "/nope");
     await until(app, "Unknown command: /nope.");
-    expect(app.lastFrame()!.replaceAll("\n", " ")).toContain("/errors, /screen, /settings, /keybindings, /exit"); // a long line wraps
+    expect(app.lastFrame()!.replaceAll("\n", " ")).toContain("/errors, /screen, /settings, /keybindings, /vim, /exit"); // a long line wraps
     await press(app, "/", "s");
     expect(app.lastFrame()).toContain("› /s\n  /screen  Switch between full screen and classic\n");
   });
@@ -5533,6 +5533,178 @@ describe("App's picture reads", () => {
   });
 });
 
+// Release 6 plan, Task 21: vim mode at the prompt (vim.ts), switched by /vim and the settings file.
+describe("App's vim mode", () => {
+  const ESC = "\u{1b}";
+  const CTRL_T = "\u{14}";
+  const CTRL_K = "\u{b}";
+  const CTRL_O = "\u{f}";
+  const PICTURE = process.platform === "win32" ? "\u{1b}v" : "\u{16}"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+  const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
+  const todo: TodoItem[] = [{ text: "write the fix", status: "pending" }];
+  // The default table with `keys` laid over one context's.
+  const table = (context: Context, keys: Record<string, string | null>) =>
+    new Bindings(tableOf({ ...DEFAULTS, [context]: { ...DEFAULTS[context], ...keys } }));
+  // Vim mode on with /vim, which starts in INSERT; then `text` typed in one read, and Esc: NORMAL, the cursor on the
+  // text's last character.
+  const normal = async (app: ReturnType<typeof render>, text = "") => {
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await press(app, ...(text ? [text] : []), ESC);
+    await until(app, "-- NORMAL --");
+  };
+
+  it("switches on and off with /vim, /vim on and /vim off, saying so, in this window only", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const { app } = await mount([], { home });
+    expect(app.lastFrame()).toContain("? for shortcuts");
+    await type(app, "/vim");
+    await until(app, "editorMode is now vim");
+    expect(app.lastFrame()).toContain("-- INSERT --");
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    await type(app, "/vim");
+    await until(app, "editorMode is now normal");
+    expect(app.lastFrame()).toContain("? for shortcuts");
+    await type(app, "/vim on");
+    await until(app, "-- INSERT --");
+    await type(app, "/VIM OFF"); // typed in INSERT, in one read; commands ignore case
+    await until(app, "? for shortcuts");
+    expect(app.lastFrame()!.split("editorMode is now normal").length - 1).toBe(2);
+    await type(app, "/vim maybe");
+    await until(app, "Usage: /vim, /vim on, /vim off");
+    expect(existsSync(path.join(settingsDir(home), "settings.json"))).toBe(false); // nothing saved (choice 26)
+  });
+
+  it("deletes a word on dw written in one read", async () => {
+    const { app } = await mount([]);
+    await normal(app, "one two");
+    await press(app, "0", "dw");
+    expect(app.lastFrame()).toContain("› two\n");
+  });
+
+  it("inserts a paste in NORMAL as text", async () => {
+    const { app } = await mount([]);
+    await normal(app, "ab");
+    await press(app, "\u{1b}[200~dw\u{1b}[201~");
+    expect(app.lastFrame()).toContain("› adwb\n");
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+  });
+
+  it("goes to NORMAL on Esc in INSERT during a turn, which goes on, and stops the turn on Esc in NORMAL", async () => {
+    const { app } = await mount([], { lead: hanging() });
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await type(app, "hi");
+    await until(app, "Esc to stop");
+    await press(app, ESC);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    expect(app.lastFrame()).toContain("Esc to stop");
+    await press(app, ESC);
+    await gone(app, "Esc to stop");
+  });
+
+  it("sends on Enter in NORMAL", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await normal(app, "hi");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(sent(session)).toEqual({ type: "text", text: "hi" });
+  });
+
+  it("lists the keys on ?, recalls a past prompt on k, and opens Ctrl+R's search on /, in NORMAL", async () => {
+    const { app } = await mount([], { past: ["older"] });
+    await normal(app);
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("Keys:");
+    await press(app, "k");
+    expect(app.lastFrame()).toContain("› /vim\n");
+    await press(app, "/");
+    expect(app.lastFrame()).toContain("search: ");
+    await press(app, "o"); // typed into the search, not a vim key
+    expect(app.lastFrame()).toContain("› older\n");
+  });
+
+  it("keeps the mode and the cursor across Ctrl+O's detail view", async () => {
+    const { app } = await mount([], { full: true });
+    await normal(app, "abc");
+    await press(app, CTRL_O);
+    expect(app.lastFrame()).not.toContain("-- NORMAL --"); // the view's key row takes the row
+    await press(app, CTRL_O);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    await press(app, "x");
+    expect(shown(app)).toContain("› ab");
+  });
+
+  it("toggles the to-do list on Ctrl+T after d, leaving d pending", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("todo", todo);
+    await normal(app, "one two");
+    expect(app.lastFrame()).toContain("write the fix");
+    await press(app, "0", "d", CTRL_T);
+    expect(app.lastFrame()).not.toContain("write the fix");
+    await press(app, "w");
+    expect(app.lastFrame()).toContain("› two\n");
+  });
+
+  it("deletes a word on d then w, with w bound in Chat, which a lone w does", async () => {
+    const { app, bus } = await mount([], { bindings: table("Chat", { w: "app:toggleTodos" }) });
+    bus.emit("todo", todo);
+    await normal(app, "one six");
+    await press(app, "0", "w");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    expect(app.lastFrame()).toContain("› one six\n");
+    await press(app, "d", "w");
+    expect(app.lastFrame()).toContain("› six\n");
+  });
+
+  it("goes to NORMAL on Esc in INSERT with chat:cancel rebound to Ctrl+Q", async () => {
+    const { app } = await mount([], { lead: hanging(), bindings: table("Chat", { escape: null, "ctrl+q": "chat:cancel" }) });
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await type(app, "hi");
+    await until(app, "Ctrl+Q to stop");
+    await press(app, ESC);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    expect(app.lastFrame()).toContain("Ctrl+Q to stop");
+  });
+
+  // As Claude Code's vim hook does: any Ctrl or Meta key in VISUAL goes to NORMAL first; its text field then takes no
+  // editing key, and a key the table binds does its action (the plan's choice 27).
+  it("leaves VISUAL on a Ctrl or Alt key, which then does its table action but no editing", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("todo", todo);
+    await normal(app, "one two");
+    await press(app, "0", "v", "e");
+    expect(app.lastFrame()).toContain("-- VISUAL --");
+    await press(app, CTRL_T);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    await press(app, "x"); // one character: nothing is selected now
+    expect(app.lastFrame()).toContain("› on two\n");
+    await press(app, "V");
+    expect(app.lastFrame()).toContain("-- VISUAL LINE --");
+    await press(app, CTRL_K);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    expect(app.lastFrame()).toContain("› on two\n");
+    await press(app, CTRL_K); // in NORMAL the editor's own key: delete to the line's end
+    expect(app.lastFrame()).toContain("› on\n");
+  });
+
+  it("keeps a picture's span through a vim edit, so the message carries the picture", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("seen")], { pictures });
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await press(app, "one see ", PICTURE, ESC, "0", "dw");
+    expect(app.lastFrame()).toContain("› see [Image #1]\n");
+    pictures.set(1, PNG);
+    await press(app, "\r");
+    await until(app, "seen");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]);
+  });
+});
+
 // Release 6 plan, Task 9: edits to the settings file apply in the running session, by the design's table ("The settings
 // file", "When a live change applies").
 describe("App's live settings", () => {
@@ -6097,7 +6269,7 @@ describe("App's live settings", () => {
   it("names /settings and /keybindings in the unknown command's list and the / menu", async () => {
     const { app } = await mount([]);
     await type(app, "/nope");
-    await sees(app, "/errors, /screen, /settings, /keybindings, /exit");
+    await sees(app, "/errors, /screen, /settings, /keybindings, /vim, /exit");
     await press(app, "/", "k");
     expect(app.lastFrame()).toContain("› /k\n  /keybindings  Open the keys file in your editor\n");
     await press(app, "\u007f", "s", "e");
@@ -6137,5 +6309,47 @@ describe("App's live settings", () => {
     editor.go();
     await sees(app, `screen is now classic ${FROM}`);
     expect(flat(app)).not.toContain("suspended");
+  });
+
+  // Release 6 plan, Task 21: editorMode at once, as /vim, whose own switch saves nothing, so a later edit applies.
+  it("starts in vim mode from the file, switches it on an edit of editorMode, after /vim too, and says a remaps edit", async () => {
+    const launched = await watching([], { editorMode: "vim" });
+    expect(launched.app.lastFrame()).toContain("-- INSERT --");
+    const { app, write } = await watching([], {});
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    write({ editorMode: "vim" });
+    await sees(app, `editorMode is now vim ${FROM}`);
+    expect(app.lastFrame()).toContain("-- INSERT --");
+    write({ editorMode: "normal", vimInsertModeRemaps: { jj: "<Esc>", jk: "<Esc>" } });
+    await sees(app, `editorMode is now normal ${FROM}`);
+    await sees(app, `vimInsertModeRemaps is now jj, jk ${FROM}`);
+    expect(app.lastFrame()).toContain("? for shortcuts");
+    write({ editorMode: "normal" });
+    await sees(app, `vimInsertModeRemaps is now none ${FROM}`);
+  });
+
+  it("goes to NORMAL on a vimInsertModeRemaps pair typed within 1 s, from the key after the edit, leaving neither key", async () => {
+    const { app, write } = await watching([], { editorMode: "vim" });
+    write({ editorMode: "vim", vimInsertModeRemaps: { jj: "<Esc>" } });
+    await sees(app, `vimInsertModeRemaps is now jj ${FROM}`);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // The clock moved on by `ms`, then one turn of the event loop (setImmediate is not faked), in which the screen is drawn.
+    const wait = async (ms: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    try {
+      app.stdin.write("aj");
+      await wait(10);
+      expect(app.lastFrame()).toContain("› aj\n");
+      await wait(990); // 1 s since the first j: within, as Claude Code counts it (vim.ts, REMAP_MS)
+      app.stdin.write("j");
+      await wait(10);
+      expect(app.lastFrame()).toContain("› a\n");
+      expect(app.lastFrame()).toContain("-- NORMAL --");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

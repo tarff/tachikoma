@@ -254,6 +254,31 @@ Each is marked in its task. None approved yet.
     the design's "Live edits", the watcher no longer passes over Tachikoma's own save (Task 9's
     test 6 goes), and a removed file is no longer `{}`, nor is it in choice 3. `/vim` (choice 6,
     Task 21) changes this window only too.
+27. **Task 21's vim keys and lines, beyond its text (found at Task 21's build; the coordinator's
+    call, for the user to review).** Any Ctrl or Alt key in VISUAL or VISUAL LINE goes to NORMAL
+    first, whatever is half typed, as Claude Code 2.1.312's vim hook does (`if(a.ctrl||a.meta)
+    {if(l.mode==="VISUAL"){...}}`, read 2026-10-29); then a key the table binds does its action
+    (Ctrl+T, Ctrl+O, Ctrl-C), and an editor key no binding takes (Ctrl+A, Ctrl+K, Alt+B) does
+    nothing more, since Claude Code marks the key handled there and its text field skips it. In
+    NORMAL and INSERT those editor keys keep working, as in Claude Code. Enter, bound to
+    `chat:submit`, sends from VISUAL too, as bindings come first; Claude Code moves down a line
+    there, which vim.ts does only after a count (`2` Enter). Every other key no binding takes,
+    without Ctrl or Alt, goes to vim in NORMAL and VISUAL, so Home, End, Delete and Tab, which
+    vim.ts does not use, do nothing there; a half-typed command's Enter drops the command (Task
+    6's rule), where Claude Code's Enter sends. `?` on an empty prompt in INSERT still lists the
+    keys. j and k at the first or last line, and `/`, act as Up, Down and Ctrl+R do, so k on an
+    empty prompt with messages queued takes them back, as Up does. Text read together is split
+    into keys only at the prompt and its menus. Where App puts new text in the prompt, `.`
+    forgets where INSERT's typing began: a message sent, a recall, the editor's text back, the
+    queue brought back, a clear, a stash swap and a Ctrl+R search ending; and a remap pair's
+    wait ends at any key `press` does not take, in every phase. The lines: `/vim` says
+    `editorMode is now vim` or `normal` in grey, as `/screen` says `screen is now full`, naming the
+    entry that makes it last; an edit of the file adds `(from settings.json)`, and one of the
+    remaps says `vimInsertModeRemaps is now jj, jk`, or `none`; `/vim on` when on keeps the mode
+    and says the line; other words get `Usage: /vim, /vim on, /vim off` in red, as `/tasks`'s
+    mistakes do. `/vim` is in the `/` menu ("Switch vim mode on or off in this window") and the
+    unknown command's list, after `/keybindings` (`src/tui/menus.ts`, beyond the task's files),
+    which the keys file's `command:vim` (Task 11) needed too.
 
 ---
 
@@ -1068,7 +1093,8 @@ When App puts new text in the prompt (a message sent, a history recall, the edit
 drops `v.entered`, so `.` takes what is typed next from its first character (found at Task 20's
 spec review).
 Claude Code leaves VISUAL on any Ctrl or Meta key, which then does its own action; this task settles
-what Tachikoma does (found at Task 20's spec review).
+what Tachikoma does (found at Task 20's spec review; settled in choice 27, with the task's other
+calls).
 
 **Tests:** `/vim` on and off with the line, in this window only; `dw` written in one read deletes a
 word; a paste in NORMAL inserts; Esc in INSERT during a turn goes to NORMAL and the turn goes on;

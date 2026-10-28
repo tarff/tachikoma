@@ -32,6 +32,7 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/screen", run: "/screen", note: "Switch between full screen and classic" },
   { label: "/settings", run: "/settings", note: "Open the settings file in your editor" },
   { label: "/keybindings", run: "/keybindings", note: "Open the keys file in your editor" },
+  { label: "/vim", run: "/vim", note: "Switch vim mode on or off in this window" },
   { label: "/exit", run: "/exit", note: "Quit" },
 ];
 

@@ -1,6 +1,6 @@
 import type { Key } from "ink";
-import { type Bindings, type Context, KEY_COMMANDS, parseKeys, type Stroke } from "./bindings.js";
-import type { Action } from "./editor.js";
+import { type Bindings, type Context, KEY_COMMANDS, parseKeys, type Stroke, strokeOf } from "./bindings.js";
+import { type Action, segmenter } from "./editor.js";
 
 // What a key means in the prompt (release 3 design, "Editing" and "Multi-line"), for the codes the
 // user's terminal was seen to send on 2026-10-25. Enter sends; Up and Down move by screen row, which
@@ -138,4 +138,23 @@ export function commands(input: string, key: Key): Command[] {
     const text = part.replace(/\p{Cc}/gu, "");
     return text ? [{ type: "insert", text }] : [];
   });
+}
+
+// A key as vim mode's `press` takes it (vim.ts; release 6 plan, Task 21): a character typed, as typed, or a key's name
+// ("escape", "enter", "left", "tab"...). Null for a key held with Ctrl or Alt, which keeps its table or editor meaning
+// (release 6 design, "Vim mode"), and for what is not one key; Esc with Alt is two Escs read together (App.tsx, route).
+export function vimKey(input: string, key: Key): string | null {
+  const s = strokeOf(input, key);
+  if (s?.ctrl || (s?.alt && s.key !== "escape")) return null;
+  if (s) return s.key === "space" ? " " : [...s.key].length === 1 ? input : s.key;
+  // One character of several code points, which strokeOf takes for text read together.
+  return !key.ctrl && !key.meta && pieces(input).length === 1 && !/\p{Cc}/u.test(input) ? input : null;
+}
+
+// Typed text read together, a key a piece, for vim mode, where a fast `dw` is two keys (release 6 design, "Vim mode"):
+// each character as the screen shows it, Enter (a carriage return) and Ctrl+J (a line feed) apart, and the other
+// control characters dropped, as commands() drops them.
+export function pieces(input: string): string[] {
+  const characters = (part: string) => [...segmenter.segment(part.replace(/\p{Cc}/gu, ""))].map((g) => g.segment);
+  return input.split(/(\r|\n)/).flatMap((part) => (part === "\r" || part === "\n" ? [part] : characters(part)));
 }

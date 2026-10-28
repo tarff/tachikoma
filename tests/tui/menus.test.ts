@@ -15,7 +15,7 @@ describe("commandMenu", () => {
     const m = commandMenu("/", 1);
     expect(labels(m)).toEqual([
       ...["/lead <provider:model>", "/model", "/login chatgpt", "/logout chatgpt", "/tasks", "/errors", "/screen"],
-      ...["/settings", "/keybindings", "/exit"],
+      ...["/settings", "/keybindings", "/vim", "/exit"],
     ]);
     expect(m!.entries[0]).toMatchObject({ note: "Switch the lead model", fill: "/lead ", run: "/lead" });
     expect(m!.entries[7]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });

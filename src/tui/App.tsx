@@ -25,7 +25,7 @@ import { apply, change, cutPicture, type Editor, empty, insertPicture, load, mov
 import { editFile, editorCommand, editText, NOT_FOUND } from "./external.js";
 import { History, matches } from "./history.js";
 import { type Mouse, readOut } from "./input.js";
-import { both, type Command, commands, isScroll, keyList, named, type Scroll } from "./keys.js";
+import { both, type Command, commands, isScroll, keyList, named, pieces, type Scroll, vimKey } from "./keys.js";
 import { frame as frameOf, layout, placeOn, scroll as windowOf, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
@@ -41,6 +41,7 @@ import { PASTE_OFF, PASTE_ON, type Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
 import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow, type View } from "./view.js";
+import { type Vim, press as vimPress, start as vimStart } from "./vim.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 // A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn. In full screen, `detail`:
@@ -131,7 +132,9 @@ const isFile = (file: string) => {
   }
 };
 
-const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /settings, /keybindings, /exit";
+const COMMANDS =
+  "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /settings, " +
+  "/keybindings, /vim, /exit";
 // "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
 const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
@@ -141,13 +144,18 @@ const characters = (text: string) => [...segmenter.segment(text)].length;
 
 // What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
 // is a message).
-const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen", "/settings", "/keybindings"];
+const NAMES = [
+  "/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen", "/settings", "/keybindings", "/vim",
+];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
-// The settings file's entries a live edit applies here, in the design's table's order ("When a live change applies");
-// editorMode and vimInsertModeRemaps apply where they are used, from the release 6 plan's Task 21. The editor is read
-// at each Ctrl+G, /settings and /keybindings, and is here for its line (plan, Task 12).
-const LIVE = ["lead", "mode", "effort", "fallback", "worker", "maxTasks", "status", "screen", "scrollSpeed", "editor"] as const;
+// The settings file's entries a live edit applies here, in the design's table's order ("When a live change applies").
+// vimInsertModeRemaps is read at each key (vimTakes), and the editor at each Ctrl+G, /settings and /keybindings; both
+// are here for their lines (plan, Tasks 12 and 21).
+const LIVE = [
+  "lead", "mode", "effort", "fallback", "worker", "maxTasks",
+  "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor",
+] as const;
 const FROM = ` (from ${SETTINGS})`;
 
 // The contexts in force in each phase (phase.ts), innermost first (release 6 plan, Task 6's table). Printed out and
@@ -241,6 +249,9 @@ export function App({
   // screen is drawn again. `goal` is the column Up and Down keep to, until another key moves the cursor.
   const editor = useRef(empty);
   const goal = useRef<number | null>(null);
+  // Vim mode's state (vim.ts), or null with vim mode off: on from the settings file's editorMode, /vim or a live edit,
+  // starting in INSERT (release 6 design, "Vim mode"). Kept while the detail view, a menu or the model list is open.
+  const vim = useRef<Vim | null>(live?.loaded.settings.editorMode === "vim" ? vimStart : null);
   const first = useRef<{ name: string; timer: NodeJS.Timeout } | null>(null); // a key waiting for its second press
   // The table of keys (release 6 design, "Keys become named actions"), as the keys file last set it, and the timer that
   // draws the hint row again once a chord's 3 s are up (bindings.ts, CHORD_MS).
@@ -684,6 +695,13 @@ export function App({
       if (alone("/screen")) return await switchScreen();
       if (alone("/settings")) return await openFile(SETTINGS, {});
       if (alone("/keybindings")) return await openFile(KEYBINDINGS, { bindings: [] });
+      // /vim switches vim mode, /vim on and /vim off set it (choice 6), this window only, saving nothing (choice 26).
+      if (command === "/vim") {
+        const [word = "", ...rest] = words.map((w) => w.toLowerCase());
+        const on = word ? word === "on" : vim.current === null;
+        if (!rest.length && ["", "on", "off"].includes(word)) return setVim(on);
+        return say({ text: "Usage: /vim, /vim on, /vim off", color: "red" });
+      }
       // In full screen a subagent's record opens in the detail view (release 5 plan, Task 12); the list, stopping and
       // mistakes print.
       if (command === "/tasks") {
@@ -1082,6 +1100,7 @@ export function App({
       const d = change(e, 0, e.text.length, ran.got.text);
       editor.current = { ...d, spans: spansIn(d.text, ids) };
       goal.current = null;
+      freshText();
       rerender((n) => n + 1);
     }
     next();
@@ -1183,6 +1202,8 @@ export function App({
       line(now.segments.join(", "));
     } else if (key === "screen") waiting.current.screen = s.screen ?? "full"; // full unless asked for classic (clilib.ts, screenMode)
     else if (key === "editor") line(editorCommand(process.env, s.editor, process.platform)); // read again at each use (away)
+    else if (key === "editorMode") setVim(s.editorMode === "vim", FROM); // at once, as /vim (design's table)
+    else if (key === "vimInsertModeRemaps") line(Object.keys(s.vimInsertModeRemaps ?? {}).join(", ") || "none");
     else {
       // scrollSpeed
       setSpeed(now.speed);
@@ -1201,6 +1222,12 @@ export function App({
     session.setLead(provider);
     leadFromFile.current = false;
   };
+  // Vim mode on, from INSERT, or off, leaving the text and cursor as they are (release 6 design's table), with its
+  // line; `from` says the settings file asked. Asked to be what it is, it stays as it is.
+  const setVim = (on: boolean, from = "") => {
+    if (on !== (vim.current !== null)) vim.current = on ? vimStart : null;
+    say(gray(`editorMode is now ${on ? "vim" : "normal"}${from}`));
+  };
   // Who takes a key (release 6 plan, Task 6): while a field is typed (a Ctrl+R query, a detail-view search, the model
   // list's filter), a printable key goes into it, after a chord under way (lookUp). Keys match the table exactly
   // (choice 20, the user's: "Exact match"), but in classic mode Shift+Up and Shift+Down are Up and Down, as release 4
@@ -1216,7 +1243,16 @@ export function App({
     // kitty protocol, which marks each key with its eventType, sends them apart (choice 20).
     if (stroke.key === "escape" && stroke.alt && key.eventType === undefined) stroke = { ...stroke, alt: false };
     if (!fullNow.current && stroke.shift && !stroke.ctrl && !stroke.alt && (stroke.key === "up" || stroke.key === "down")) stroke = { ...stroke, shift: false };
-    return lookUp(stroke, contextsOf(kind, fullNow.current), field && printable(stroke) ? ch : null);
+    // At the prompt in vim mode, Esc in INSERT or VISUAL, and a key without Ctrl or Alt while a vim command is half
+    // typed, go to vim before any binding, as a field's text does (plan, Task 6), so Esc there is never chat:cancel.
+    const v = vim.current;
+    const toVim =
+      v !== null &&
+      (kind === "prompt" || kind === "menu") &&
+      !stroke.ctrl &&
+      !stroke.alt &&
+      (v.pending !== "" || v.count !== "" || (stroke.key === "escape" && v.mode !== "NORMAL"));
+    return lookUp(stroke, contextsOf(kind, fullNow.current), (field && printable(stroke)) || toVim ? ch : null);
   };
   // A stroke in the table (release 6 plan, Task 6): a chord under way first, so one ending in a plain letter completes
   // in a field too; then `typed`, the text of a key that goes into a field; then the table, in the contexts in force. A
@@ -1240,13 +1276,14 @@ export function App({
 
   // Once Ink has ended no key comes here, nor a paste or a mouse report below: Ink's cleanup takes their listeners away
   // with the App's, which sets `ended` (above). It is checked all the same, as the first phase, which hides the others.
-  useInput((ch, key) => {
+  const onInput = (ch: string, key: Key) => {
     const h = happening(() => menuFor(editor.current) !== null);
     if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // printed out: a key read with the `[` that printed the view out
     clearCopied();
     const field = h.phase.kind === "search" || h.phase.kind === "picker" || (h.phase.kind === "detail" && h.phase.searching);
     onKey(h, route(h.phase.kind, field, ch, key), ch, key);
-  });
+  };
+  useInput(onInput);
   // What a key does in each phase. `ch` and `key` are for a key no binding takes (`got` null), which the prompt's
   // editor, a field or the model list may still take; and for Ctrl-C, which is reserved (bindings.ts, RESERVED), so
   // the detail view's rule for it stays its own.
@@ -1254,6 +1291,7 @@ export function App({
     const action = got && "action" in got ? got.action : null;
     const kind = h.phase.kind;
     if (kind === "prompt" || kind === "menu") return promptKey(h, got, ch, key);
+    dropRemap();
     // Any other key starts the press-twice count again, as at the prompt (below).
     if (action !== "app:exit") forget();
     if (kind === "picker") {
@@ -1306,9 +1344,25 @@ export function App({
   // empty prompt keep release 3's rules: during a turn the prompt still edits; Esc stops the turn and the queue goes
   // on, Ctrl-C stops it and the queue comes back. Ctrl-D does not exit while a turn is running; with text it deletes
   // the character after the cursor, as before. The rest run as commands (ACTIONS), and a key no binding takes goes to
-  // the editor.
+  // the editor, or in vim mode to vim first (vimTakes).
   const promptKey = (h: Now, got: Got, ch: string, key: Key) => {
     const action = got && "action" in got ? got.action : null;
+    const v = vim.current;
+    const stroke = strokeOf(ch, key);
+    // Claude Code's vim hook leaves VISUAL on any Ctrl or Meta key, and its text field then takes no editing key from
+    // it (2.1.312's `if(a.ctrl||a.meta){if(l.mode==="VISUAL"){...;a.preventDefault();return}`), so here the table's
+    // action still acts and the editor's own keys do nothing (plan, choice 27). Leaving is Esc with nothing half typed.
+    if (v?.mode.startsWith("VISUAL") && stroke && (stroke.ctrl || stroke.alt) && stroke.key !== "escape") {
+      const out = vimPress({ ...v, pending: "", count: "" }, editor.current, "escape");
+      vim.current = out.v;
+      editor.current = out.e;
+      if (!got) return rerender((n) => n + 1);
+    }
+    if (vimTakes(got, ch, key)) {
+      forget(); // any other key starts the press-twice count again (below)
+      return rerender((n) => n + 1);
+    }
+    dropRemap();
     const e = editor.current;
     if (action === "autocomplete:accept" || action === "autocomplete:dismiss") {
       if (action === "autocomplete:dismiss") closed.current = e.text;
@@ -1344,6 +1398,47 @@ export function App({
     else if (name !== "Esc") return exit();
     else if (e.text) clear(e); // Esc Esc; on an empty prompt it does nothing
     rerender((n) => n + 1);
+  };
+  // Vim mode at the prompt (release 6 plan, Task 21): a key route() sent to vim first (`typed`), or one no binding
+  // takes and not held with Ctrl or Alt; in INSERT only a typed character and Esc, the rest being the editor's
+  // (commands), and `?` on an empty prompt still lists the keys (run). Text read together is a key a character, each
+  // from the top, so a fast `dw` is two keys, and a `/` among them opens the search the rest go into (design, "Vim
+  // mode"). The remaps are the settings file's as now, so an edit applies from the next key. True when vim took it.
+  const vimTakes = (got: Got, ch: string, key: Key): boolean => {
+    const v = vim.current;
+    if (!v || (got && !("typed" in got))) return false;
+    const each = pieces(ch);
+    if (!got && !key.ctrl && !key.meta && each.length > 1) {
+      for (const p of each) {
+        onInput(p, p === "\r" ? { ...key, return: true } : { ...key, shift: p !== p.toLowerCase() });
+      }
+      return true;
+    }
+    const k = vimKey(ch, key);
+    const e = editor.current;
+    const typed = k !== null && pieces(k).length === 1; // a character, not a key's name
+    if (k === null || (v.mode === "INSERT" && k !== "escape" && (!typed || (k === "?" && !e.text)))) return false;
+    const r = vimPress(v, e, k, { pairs: fileNow.current.vimInsertModeRemaps ?? {}, now: Date.now() });
+    vim.current = r.v;
+    editor.current = r.e;
+    goal.current = null;
+    if (r.act === "help") show(...keyList(table).map(gray));
+    else if (r.act) run(r.act === "submit" ? "submit" : ACTIONS[r.act]!); // history:previous, :next or :search
+    return true;
+  };
+  // Claude Code ends a remap pair's wait at every key (its cancelPendingRemap): `press` ends it at the keys it takes,
+  // and App at the rest (plan, Task 21).
+  const dropRemap = () => {
+    if (!vim.current?.remap) return;
+    const { remap, ...rest } = vim.current;
+    vim.current = rest;
+  };
+  // New text in the prompt (a message sent, a history recall, the editor's text back...) drops where vim's INSERT began
+  // its typing, so `.` takes what is typed next from its first character (plan, Task 21).
+  const freshText = () => {
+    if (!vim.current?.entered) return;
+    const { entered, ...rest } = vim.current;
+    vim.current = rest;
   };
 
   // The detail view's keys (release 5 design, "The detail view"; release 5 plan, Task 12): the conversation's scroll
@@ -1686,6 +1781,7 @@ export function App({
     view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     keep(e.text);
     editor.current = load(e, "");
+    freshText();
     if (!working.current) void submit(e);
     else if (e.text.trim()) queue.current.push(trimmed(e));
   };
@@ -1696,10 +1792,12 @@ export function App({
     const back = joined([editor.current, ...queue.current].filter((d) => d.text), "\n");
     editor.current = { ...load(editor.current, back.text), spans: back.spans };
     queue.current = [];
+    freshText();
   };
   const clear = (e: Editor) => {
     keep(e.text);
     editor.current = load(e, "");
+    freshText();
   };
   // Ctrl+S (release 6 design, "Stash"): a prompt with text goes into the slot whole, cursor and undo steps with it, and
   // an empty prompt takes the slot back; with text and a full slot the two swap, so nothing is lost (the design's
@@ -1712,6 +1810,7 @@ export function App({
     editor.current = back ? { ...back, typing: false, killed: e.killed } : load(e, "");
     goal.current = null;
     step.current = null;
+    freshText();
   };
   // Saved for Up and Ctrl+R, in this session and later ones: each sent prompt, and one cleared with
   // Ctrl-C or Esc Esc. The same prompt twice in a row is kept once, as Claude Code keeps it.
@@ -1730,6 +1829,7 @@ export function App({
     const at = (step.current?.at ?? entries.length) + dir;
     goal.current = null;
     if (at < 0 || (!step.current && dir === 1)) return;
+    freshText();
     if (at < entries.length) {
       step.current = { at, draft: step.current?.draft ?? { text: e.text, spans: e.spans } };
       editor.current = load(e, entries[at]!);
@@ -1767,6 +1867,7 @@ export function App({
   const endSearch = (e: Editor) => {
     search.current = null;
     editor.current = e;
+    freshText();
   };
   // Ctrl+R's keys, as Claude Code's search has them (interactive-mode.md): typing searches, Ctrl+R
   // finds an older match, Enter sends the match, Tab or Esc puts it in the prompt to edit, and Ctrl-C,
@@ -1863,9 +1964,11 @@ export function App({
             : stash.current
               ? // during a turn too, no other hint taking the row (release 6 plan, Task 13)
                 hints("Stashed", said(keyOf("chat:stash", "Chat", "ctrl+s"), "to bring back"))
-              : busy
-                ? null
-                : "? for shortcuts";
+              : vim.current
+                ? `-- ${vim.current.mode} --` // every mode, in a turn too, when no other hint takes the row (choice 15)
+                : busy
+                  ? null
+                  : "? for shortcuts";
   // The line about the last copy, until the next key or click (release 5 design, "Copying"), takes the hint row's place
   // only while one shows, so a copy never moves the conversation; a failed copy shows anyway, adding the row. Ctrl+R's
   // search and the exit warning keep the row (the user's choice, release 5), and so does the detail view's search while
