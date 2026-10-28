@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Hand, TerminalOwner } from "../../src/tui/owner.js";
+import { type Hand, programRunning, TerminalOwner } from "../../src/tui/owner.js";
 
 // A stand-in hand that records each call in order; Ink's suspend and resume each take a turn of the event loop.
 // `onResume` runs as Ink's resume starts, when Ink reads keys again.
@@ -232,6 +232,48 @@ describe("TerminalOwner's program", () => {
     p.finish();
     await ran;
     expect(calls).toEqual(["suspend", "release", "body", "divert(null)", "hold(false)"]);
+  });
+
+  // Final review: while a program has the terminal raw mode is off, so Ctrl-C comes as SIGINT, which cli.tsx then ignores
+  // (clilib.ts, exitOn; choice 31). Not while the program waits: Ink still reads Ctrl-C as a key then.
+  it("says a program is running from its suspend to its resume, and not while it waits behind a hand-over", async () => {
+    let atSuspend: boolean | undefined;
+    let atResume: boolean | undefined;
+    const { h } = hand(() => (atResume = programRunning()));
+    const suspend = h.suspend;
+    h.suspend = () => {
+      atSuspend = programRunning();
+      return suspend();
+    };
+    const owner = new TerminalOwner(h);
+    const over = owner.take();
+    let inBody: boolean | undefined;
+    const ran = owner.program(async () => void (inBody = programRunning()));
+    await new Promise((r) => setImmediate(r));
+    expect(programRunning()).toBe(false);
+    over.done();
+    await ran;
+    expect([atSuspend, inBody, atResume]).toEqual([true, true, true]);
+    expect(programRunning()).toBe(false);
+  });
+
+  it("no longer says a program is running once its body throws, or ends after end()", async () => {
+    const { h, calls } = hand();
+    const owner = new TerminalOwner(h);
+    await expect(
+      owner.program(async () => {
+        throw new Error("editor failed");
+      }),
+    ).rejects.toThrow("editor failed");
+    expect(programRunning()).toBe(false);
+    const p = blocked(calls, "body");
+    const ran = owner.program(p.body);
+    await p.begun;
+    owner.end();
+    expect(programRunning()).toBe(true); // the editor is still open
+    p.finish();
+    await ran;
+    expect(programRunning()).toBe(false);
   });
 
   it("resolves undefined without suspending, releasing or retaking when end() comes while it waits behind a hand-over", async () => {

@@ -174,6 +174,16 @@ export function exitSignals(platform: NodeJS.Platform): NodeJS.Signals[] {
   return ["SIGTERM", "SIGHUP", platform === "win32" ? "SIGBREAK" : "SIGQUIT"];
 }
 
+// The handler cli.tsx gives a signal that ends Tachikoma: exit with 128 and its number. While a program has the terminal
+// (owner.ts, programRunning: the editor), raw mode is off, so Ctrl-C and Ctrl-\ come as SIGINT and SIGQUIT; they are
+// the program's keys then and are ignored here, as Git's launch_specified_editor ignores both while the editor runs
+// (editor.c, its sigchain_push(SIGINT, SIG_IGN), read 2026-10-29). The turn goes on (release 6 plan, choice 31).
+export function exitOn(sig: NodeJS.Signals, programRunning: () => boolean): () => void {
+  return () => {
+    if (!(programRunning() && (sig === "SIGINT" || sig === "SIGQUIT"))) process.exit(128 + constants.signals[sig]);
+  };
+}
+
 // A reader such as `head` that stops early is a normal end, not a crash.
 export function endOnEpipe(err: NodeJS.ErrnoException): void {
   if (err.code !== "EPIPE") throw err;

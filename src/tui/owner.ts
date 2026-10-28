@@ -17,6 +17,12 @@ export interface Handover {
   done(): void; // lets the keyboard go when no other hand-over still holds it
 }
 
+// How many programs have the terminal now, from before Ink's suspend to after its resume, which is when raw mode can be
+// off and Ctrl-C comes as SIGINT: cli.tsx's signal handlers ask it, so Ctrl-C there is the program's (clilib.ts, exitOn;
+// release 6 plan, choice 31). Counted for the process, as cli.tsx has no owner of its own: the App makes it.
+let running = 0;
+export const programRunning = () => running > 0;
+
 export class TerminalOwner {
   readonly #hand: Hand;
   #held = 0;
@@ -93,6 +99,7 @@ export class TerminalOwner {
       if (this.#ended) return undefined;
       const token = {};
       this.#running = true;
+      running++;
       this.#suspendedBy = token;
       try {
         const { resume } = await this.#hand.suspend();
@@ -109,6 +116,7 @@ export class TerminalOwner {
         }
       } finally {
         this.#running = false;
+        running--;
         this.#clear(token);
         this.#next();
       }

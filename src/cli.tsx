@@ -8,6 +8,7 @@ import { accountCommand } from "./auth/chatgpt.js";
 import {
   approvalQuestion,
   endOnEpipe,
+  exitOn,
   exitSignals,
   fullPossible,
   givenBy,
@@ -44,6 +45,7 @@ import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
 import { gitBranch } from "./tui/git.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
+import { programRunning } from "./tui/owner.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
 
@@ -258,8 +260,9 @@ const session: Session = new Session({
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
 });
 
-// The executor stops running commands from an "exit" handler, which dying by a signal skips.
-for (const sig of exitSignals(process.platform)) process.on(sig, () => process.exit(128 + constants.signals[sig]));
+// The executor stops running commands from an "exit" handler, which dying by a signal skips. SIGQUIT is ignored while the
+// editor has the terminal (clilib.ts, exitOn).
+for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));
 
 if (parsed.print !== undefined) {
   let failed = false;
@@ -292,8 +295,10 @@ if (parsed.print !== undefined) {
   }
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
-  // Ctrl-C reaches the interface as a key; a SIGINT here came from outside (`kill -INT`).
-  process.on("SIGINT", () => process.exit(128 + constants.signals.SIGINT));
+  // Ctrl-C reaches the interface as a key, as raw mode is on, so a SIGINT here came from outside (`kill -INT`), or from
+  // Ctrl-C typed while the editor has the terminal, with raw mode off: that one is ignored, as Git ignores it, and the
+  // turn goes on (clilib.ts, exitOn; release 6 plan, choice 31).
+  process.on("SIGINT", exitOn("SIGINT", programRunning));
   // After the instruction files' question, which stays on the normal screen, and before Ink's first frame, which goes to
   // the second (release 5 design, "The two modes"). restoreOnExit is set up in every mode, as /screen can enter full
   // screen later. tests/tui/terminal.test.tsx ("restoreOnExit") copies this order from here to restoreWhenInkEnds: keep

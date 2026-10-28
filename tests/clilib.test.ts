@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import path from "node:path";
 import {
   approvalQuestion,
+  exitOn,
   exitSignals,
   fullPossible,
   givenBy,
@@ -204,6 +205,27 @@ describe("exitSignals", () => {
     expect(exitSignals("win32")).toEqual(["SIGTERM", "SIGHUP", "SIGBREAK"]);
     expect(exitSignals("linux")).toEqual(["SIGTERM", "SIGHUP", "SIGQUIT"]);
     expect(exitSignals("darwin")).toEqual(["SIGTERM", "SIGHUP", "SIGQUIT"]);
+  });
+});
+
+// Final review: Ctrl-C in the terminal while the editor ran ended the whole session. As Git's launch_editor does, Ctrl-C
+// and Ctrl-\ are ignored while a program has the terminal; every other signal still ends Tachikoma (choice 31).
+describe("exitOn", () => {
+  it("exits on each signal with 128 and its number, but on SIGINT and SIGQUIT only while no program runs", () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as typeof process.exit);
+    onTestFinished(() => exit.mockRestore());
+    for (const sig of ["SIGINT", "SIGQUIT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const) {
+      exitOn(sig, () => false)();
+      expect(exit).toHaveBeenLastCalledWith(128 + constants.signals[sig]);
+    }
+    exit.mockClear();
+    exitOn("SIGINT", () => true)();
+    exitOn("SIGQUIT", () => true)();
+    expect(exit).not.toHaveBeenCalled();
+    for (const sig of ["SIGTERM", "SIGHUP", "SIGBREAK"] as const) {
+      exitOn(sig, () => true)();
+      expect(exit).toHaveBeenLastCalledWith(128 + constants.signals[sig]);
+    }
   });
 });
 
