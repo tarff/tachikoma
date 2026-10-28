@@ -228,11 +228,16 @@ export class Bindings {
     const strokes = [...(before ?? []), stroke];
     const text = keyText(strokes);
     const tables = contexts.map((c) => this.#table[c]);
-    if (tables.some((t) => [...t].some(([k, action]) => action !== null && k.startsWith(`${text} `)))) {
+    // A chord counts only where the innermost context in force that has it binds an action (choice 18).
+    const live = (k: string) => tables.find((t) => t.has(k))?.get(k) != null;
+    if (tables.some((t) => [...t.keys()].some((k) => k.startsWith(`${text} `) && live(k)))) {
       this.#chord = { strokes, at: now };
       return { pending: copy(strokes) };
     }
-    for (const t of tables) if (t.has(text)) return t.get(text) ? { action: t.get(text)! } : null;
+    for (const t of tables) {
+      const action = t.get(text);
+      if (action !== undefined) return action ? { action } : null;
+    }
     return null;
   }
 

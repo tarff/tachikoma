@@ -269,6 +269,28 @@ describe("Bindings.press", () => {
     expect(bindings.press(ctrl("t"), ["Transcript", "Global"], 0)).toEqual({ action: "app:toggleTodos" });
   });
 
+  it("frees a chord's prefix where an inner context sets the chord to null, though an outer one binds it (choice 18)", () => {
+    const table = empty();
+    table.Global.set("ctrl+x ctrl+e", "app:toggleTodos");
+    table.Chat.set("ctrl+x ctrl+e", null);
+    expect(new Bindings(table).press(ctrl("x"), ["Chat", "Global"], 0)).toBeNull();
+    expect(new Bindings(table).waiting(0)).toBeNull();
+    table.Chat.set("ctrl+x", "chat:stash");
+    expect(new Bindings(table).press(ctrl("x"), ["Chat", "Global"], 0)).toEqual({ action: "chat:stash" });
+    const outer = new Bindings(table);
+    expect(outer.press(ctrl("x"), ["Transcript", "Global"], 0)).toEqual({ pending: [ctrl("x")] });
+    expect(outer.press(ctrl("e"), ["Transcript", "Global"], 1)).toEqual({ action: "app:toggleTodos" });
+  });
+
+  it("completes a chord the inner context binds, though an outer one sets it to null", () => {
+    const table = empty();
+    table.Chat.set("ctrl+x ctrl+e", "chat:externalEditor");
+    table.Global.set("ctrl+x ctrl+e", null);
+    const bindings = new Bindings(table);
+    expect(bindings.press(ctrl("x"), ["Chat", "Global"], 0)).toEqual({ pending: [ctrl("x")] });
+    expect(bindings.press(ctrl("e"), ["Chat", "Global"], 1)).toEqual({ action: "chat:externalEditor" });
+  });
+
   it("reads a table's keys in any spelling", () => {
     const table = empty();
     table.Chat.set("Control+Shift+K", "chat:stash");
