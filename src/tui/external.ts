@@ -67,7 +67,7 @@ export async function editFile(file: string, command: string, run = spawned): Pr
 // exiting 0, 1 or 3 and a .cmd editor exiting 0 or 5 pass through; a path in a missing folder gives 3 ("The system
 // cannot find the path specified"). Elsewhere sh gets the file as $1, so no character in its path needs quoting. The
 // terminal is the editor's (stdio inherited), and the environment is the one commands get, without the API keys. Null
-// when it saved and exited with 0; otherwise the reason.
+// when it exited with 0; otherwise the reason.
 async function runEditor(file: string, command: string, run: Runner): Promise<string | null> {
   const options = { stdio: "inherit", env: commandEnv() } as const;
   try {

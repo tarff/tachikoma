@@ -942,23 +942,25 @@ export function App({
   // next one. In classic mode the lines said meanwhile reach <Static> only once Ink has resumed: it counts as printed
   // what a render Ink drops held, so they would never be printed.
   const away = async <T,>(edit: (command: string) => Promise<T>) => {
-    const ran = await owner.program(async () => {
-      const full = screen.full;
-      unselect();
-      if (full) screen.leave();
-      else printUpTo.current = nextId.current;
-      screen.suspended = true;
-      const command = editorCommand(process.env, fileNow.current.editor, process.platform);
-      try {
-        return { command, got: await edit(command) };
-      } finally {
-        if (full && !ended.current) screen.enter();
-        screen.suspended = false;
-      }
-    });
-    printUpTo.current = null;
-    rerender((n) => n + 1);
-    return ran;
+    try {
+      return await owner.program(async () => {
+        const full = screen.full;
+        unselect();
+        if (full) screen.leave();
+        else printUpTo.current = nextId.current;
+        screen.suspended = true;
+        const command = editorCommand(process.env, fileNow.current.editor, process.platform);
+        try {
+          return { command, got: await edit(command) };
+        } finally {
+          if (full && !ended.current) screen.enter();
+          screen.suspended = false;
+        }
+      });
+    } finally {
+      printUpTo.current = null;
+      rerender((n) => n + 1);
+    }
   };
   // The one line for an editor that failed or was not found, naming how to set one (design, "On return").
   const editorFailed = (command: string, failed: string) => {
@@ -981,13 +983,13 @@ export function App({
     next();
   };
   // /settings and /keybindings open the real file, so each save reaches the watcher while the editor is still open
-  // (plan, Task 12). A missing one is made first, `empty` in two-space JSON as a save writes it (choice 2), with a
+  // (plan, Task 12). A missing one is made first, `blank` in two-space JSON as a save writes it (choice 2), with a
   // save's mode, 0o600 (auth/private.ts, writePrivate), never over one made meanwhile.
-  const openFile = async (name: string, empty: object) => {
+  const openFile = async (name: string, blank: object) => {
     const file = path.join(settingsDir(home), name);
     mkdirSync(path.dirname(file), { recursive: true });
     try {
-      writeFileSync(file, `${JSON.stringify(empty, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+      writeFileSync(file, `${JSON.stringify(blank, null, 2)}\n`, { flag: "wx", mode: 0o600 });
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }

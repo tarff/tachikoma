@@ -4922,6 +4922,7 @@ describe("App's external editor", () => {
     vi.stubEnv("VISUAL", editor.command("wait"));
     const lead = new Held();
     const home = made.home();
+    if (home !== sharedHome) onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const { app, session } = await mount([], { lead, home });
     await type(app, "go");
     await type(app, command);
@@ -5434,7 +5435,9 @@ describe("App's live settings", () => {
   // before the file (release 6 design, "The external editor"), as a flag does.
   it("says a changed editor, the one that applies once the entry is removed, and that EDITOR keeps its own", async () => {
     vi.stubEnv("VISUAL", "");
-    const { app, write } = await watching([], {});
+    const { app, write, where } = await watching([], {});
+    const home = path.dirname(path.dirname(where));
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     write({ editor: "code --wait" });
     await sees(app, `editor is now code --wait ${FROM}`);
     write({});
@@ -5451,6 +5454,7 @@ describe("App's live settings", () => {
     editor.next('{"mode": "project"}\n');
     vi.stubEnv("VISUAL", editor.command("wait"));
     const home = freshHome();
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const { app, gate } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
     await type(app, "/settings");
     await vi.waitFor(() => expect(editor.started()).toBe(true), WATCHED);
@@ -5464,6 +5468,7 @@ describe("App's live settings", () => {
     const editor = standInEditor();
     vi.stubEnv("VISUAL", editor.command("keep"));
     const home = freshHome();
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     const { app } = await mount([], { home });
     await type(app, "/keybindings");
     const file = path.join(settingsDir(home), "keybindings.json");
@@ -5474,6 +5479,8 @@ describe("App's live settings", () => {
     const editor = standInEditor();
     vi.stubEnv("VISUAL", editor.command("keep"));
     const { app, where } = await watching([], { mode: "project" });
+    const home = path.dirname(path.dirname(where));
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
     await type(app, "/settings");
     await vi.waitFor(() => expect(editor.given()).toEqual({ file: where, text: '{"mode":"project"}' }), WATCHED);
   });
@@ -5499,7 +5506,9 @@ describe("App's live settings", () => {
   it("says the editor failed on /settings as on Ctrl+G", async () => {
     const editor = standInEditor();
     vi.stubEnv("VISUAL", editor.command("fail"));
-    const { app } = await mount([], { home: freshHome() });
+    const home = freshHome();
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const { app } = await mount([], { home });
     await type(app, "/settings");
     await sees(app, `The editor failed (exit code 1). Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`);
   });
@@ -5510,7 +5519,9 @@ describe("App's live settings", () => {
     const editor = standInEditor();
     editor.next('{"screen": "classic", "mode": "project"}\n');
     vi.stubEnv("VISUAL", editor.command("wait"));
-    const { app, gate } = await mount([], { full: true, home: freshHome(), live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    const home = freshHome();
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const { app, gate } = await mount([], { full: true, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
     await type(app, "/settings");
     await vi.waitFor(() => expect(gate.mode).toBe("project"), WATCHED); // the save read, its screen waiting
     await tick();

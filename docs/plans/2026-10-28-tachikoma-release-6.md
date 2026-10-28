@@ -1043,7 +1043,9 @@ at Task 6's spec review).
    `"status"` in Notepad, save: the status line changes.
 2. `/lead`, quit, `tachi`: the new lead.
 3. `/keybindings`, bind `ctrl+e` to `chat:externalEditor`: Ctrl+E opens Notepad; `?` shows it.
-4. Ctrl+G on a two-line prompt: Notepad opens, edit, close: the prompt has the edit. Then with
+4. Ctrl+G on a two-line prompt, with another Notepad window already open (Windows 11's tabbed
+   Notepad may hand the file to the open window and exit at once; found at Task 12's code review):
+   Notepad opens, edit, close: the prompt has the edit. Then with
    `"editor": "\"C:\\Program Files\\Git\\usr\\bin\\vim.exe\""` (Git for Windows' vim,
    if installed): vim takes every key, `:wq` brings the edit back, and the keyboard works after.
 5. Ctrl+S, type, Ctrl+S: swap; Ctrl+S on empty: back.
