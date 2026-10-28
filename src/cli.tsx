@@ -25,7 +25,7 @@ import {
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
-import { type Ask, MODES, PermissionGate } from "./core/permissions.js";
+import { type Ask, type Mode, PermissionGate } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { Session } from "./core/session.js";
 import { Stats } from "./core/stats.js";
@@ -60,7 +60,8 @@ Options:
   --lead <spec>     anthropic:<model> | chatgpt:<model> | openai:<model> | openrouter:<model>
                     | kimi:<model> | ollama:<model> (or set TACHI_LEAD)
                     chatgpt: uses your ChatGPT plan; openai: uses OPENAI_API_KEY
-  --mode <mode>     when to ask before acting: ${MODES.join(" | ")} (default: ask)
+  --mode <mode>     when to ask before acting: ask | project (default: ask);
+                    never is switched off until release 7
   --effort <level>  Anthropic models only: ${EFFORTS.join(" | ")}
   --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
   --worker <spec>   the model subagents run on (or set TACHI_WORKER); the lead's model unless set
@@ -167,6 +168,12 @@ try {
   fail(errorText(err));
 }
 const { mode, effort, maxTasks, segments, speed } = options;
+// `never` is switched off until release 7 brings the sandbox, auto mode and a check on dangerous commands (release 6
+// plan, choice 30). Refused once the mode is resolved, so the flag and the file are caught alike, as the flag's own
+// check names its source.
+if (mode === "never") {
+  fail(`${parsed.mode === undefined ? `${SETTINGS}: "mode": ` : "--mode: "}never is switched off until release 7, which adds the safety checks it needs; use ask or project`);
+}
 
 const root = process.cwd();
 const errorFile = path.join(root, ".tachikoma", "errors.jsonl");
@@ -206,7 +213,8 @@ if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal
 // Read once, at the start (release 4 design, "Instruction files"). TACHI_INSTRUCTIONS_TOP moves where
 // the walk down to the project starts, so tests never read the user's files.
 const instructions = await readInstructions({ root, codexHome: process.env.CODEX_HOME || undefined, top: process.env.TACHI_INSTRUCTIONS_TOP || undefined }, async (reached) => {
-  if (mode === "never") return true; // as read_file reads outside the project then
+  // As read_file reads outside the project then. Unreachable while `never` is switched off, kept for release 7 (choice 30).
+  if ((mode as Mode) === "never") return true;
   if (!interactive) {
     console.error(headlessLeftOut(reached));
     return false;
@@ -219,7 +227,7 @@ let declined = false;
 let ask: Ask = async (summary, _detail, owner) => {
   declined = true;
   console.error(
-    `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused; --mode never means no checks at all): ${owner ? `${prose(owner.name)}: ` : ""}${summary}`,
+    `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused):${owner ? `${prose(owner.name)}: ` : ""}${summary}`,
   );
   return false;
 };

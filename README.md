@@ -30,9 +30,10 @@ editor, stash, pictures and vim mode. The command is `tachi`.
     project.
   - `project`: writes inside the project without asking; asks before shell commands and anything
     outside the project.
-  - `never`: never asks. It is meant for the Docker sandbox, which arrives in release 7. Without the
-    sandbox it means no checks at all, apart from keeping the keys, the data folder and the
-    settings files from the tools.
+  - `never`, which never asks, is switched off until release 7: `tachi` and `tachi -p` refuse to
+    start in it, from `--mode` or the settings file. It comes back only once release 7 brings the
+    Docker sandbox, auto mode (a second model judging each action) and a check on dangerous
+    commands of every kind, not only ones that delete files.
 - **Search tools:** `find_files` lists files by a pattern such as `src/**/*.ts`, and `search_files`
   searches their contents with a regular expression. Both skip `.git` and what the project's
   `.gitignore` files list, follow no links, and run no program.
@@ -124,7 +125,8 @@ tachi logout chatgpt                               sign out of ChatGPT
 --lead <spec>     anthropic:<model> | chatgpt:<model> | openai:<model> | openrouter:<model>
                   | kimi:<model> | ollama:<model> (or set TACHI_LEAD)
                   chatgpt: uses your ChatGPT plan; openai: uses OPENAI_API_KEY
---mode <mode>     when to ask before acting: ask | project | never (default: ask)
+--mode <mode>     when to ask before acting: ask | project (default: ask);
+                  never is switched off until release 7
 --effort <level>  Anthropic models only: low | medium | high | xhigh | max
 --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
 --worker <spec>   the model subagents run on (or set TACHI_WORKER); the lead's model unless set
@@ -229,7 +231,7 @@ Every entry is optional; one left out keeps its default.
 | Entry | What it sets | Default | An edit while Tachikoma runs applies |
 |---|---|---|---|
 | `lead` | the lead model, as `--lead` | none | as `/lead`: at once when idle, otherwise when the turn ends. Taken out, the session keeps its lead |
-| `mode` | `"ask"`, `"project"` or `"never"`, as `--mode` | `"ask"` | at once, as Shift+Tab, between `ask` and `project`; `never` only at launch (below) |
+| `mode` | `"ask"` or `"project"`, as `--mode`; `"never"` is switched off until release 7 | `"ask"` | at once, as Shift+Tab, between `ask` and `project`; `never` is refused (below) |
 | `effort` | as `--effort` | the model's own | from the next request, the fallback's and the subagents' too |
 | `fallback` | as `--fallback` | off | from the next refusal; a rescue under way finishes on the old one |
 | `worker` | as `--worker` | the lead's model | for subagents started after it; running ones keep theirs |
@@ -259,9 +261,8 @@ Every entry is optional; one left out keeps its default.
   empty or missing file changes nothing, as editors such as Notepad empty the file, or put a new one
   in its place, while they save; so deleting the file keeps the settings in force until the next
   start.
-- **`"mode": "never"` applies only at launch,** like `--mode never`: an edit to it during a session
-  is refused with a line, and the mode stays. An edit away from it applies. See
-  [Known limits](#known-limits).
+- **`"mode": "never"` is refused until release 7,** as `--mode never` is: at launch Tachikoma
+  stops with one line, and an edit to it during a session gets a line, and the mode stays.
 - **The file tools never touch the settings file or the keys file,** in any mode, even when the
   project is your home folder, so the model cannot change them with its file tools. A shell command
   is not stopped: it asks first in `ask` and `project` mode, as every command does, and in `never`
@@ -576,10 +577,6 @@ Each is fixed in a later release, unless it says otherwise.
 - **Windows Terminal keeps Ctrl+V** and pastes the clipboard's text itself, so Tachikoma never sees
   it: pictures are Alt+V there, under WSL too, and binding `ctrl+v` in the keys file does nothing in
   it (not planned to change).
-- **`"mode": "never"` in the settings file means every plain `tachi` starts with no checks,** not
-  only the session you meant, until you take it out of the file; without the sandbox (release 7),
-  that is no checks at all. `--mode ask` on the command line still wins for one session (not
-  planned to change).
 - **On Windows, a `%` in a path given to the editor can be changed on the way:** the editor runs
   through `cmd.exe`, which reads `%NAME%` as a variable, so a user folder with `%` signs in its name
   could give the editor the wrong file for Ctrl+G or `/settings` (no release is set).
@@ -603,7 +600,8 @@ Each is fixed in a later release, unless it says otherwise.
 6. A settings file, so a plain `tachi` starts the way you want; key extras: vim mode, image
    paste, an external editor, stash, rebinding keys in a file (this release).
 7. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is
-   applied); auto mode, where a second model judges each action instead of asking you.
+   applied); auto mode, where a second model judges each action instead of asking you; a check on
+   dangerous commands of every kind. `never` mode comes back only with these.
 8. MCP tools and long-term memory (MemPalace); transcripts saved to disk; shortening the history;
    lessons learned from the error log, recalled when the same error comes back.
 9. Skills: the loader, the bundled superpowers skills, and Tachikoma's own; Tachikoma offers to

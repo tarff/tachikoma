@@ -195,6 +195,23 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.stderr).toMatch(/^settings\.json is not valid JSON: /);
   });
 
+  // Release 6 plan, choice 30: `never` is switched off until release 7, from the flag or the file, with -p and without.
+  // Without -p the stand-in terminal would stop the start later, so the refusal comes first.
+  it("refuses never mode, from --mode or the settings file, with and without -p", () => {
+    const off = "never is switched off until release 7, which adds the safety checks it needs; use ask or project\n";
+    for (const r of [tachi("--lead", "ollama:none", "--mode", "never", "-p", "hi"), tachi("--lead", "ollama:none", "--mode", "never")]) {
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(`--mode: ${off}`);
+    }
+    for (const r of [tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"mode": "never"}')), tachi("--lead", "ollama:none", homeWith('{"mode": "never"}'))]) {
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(`settings.json: "mode": ${off}`);
+    }
+    // A flag still wins over the file, so --mode ask starts.
+    expect(tachi("--lead", "ollama:none", "--mode", "ask", homeWith('{"mode": "never"}')).stderr).toContain("Interactive mode needs a terminal; use -p");
+    expect(tachi("--help").stdout).toMatch(/^ {2}--mode <mode> +when to ask before acting: ask \| project \(default: ask\);\n +never is switched off until release 7\n/m);
+  });
+
   it("warns of an unknown settings entry on stderr, and starts", () => {
     const r = tachi(homeWith('{"lead": "ollama:none", "leed": "x"}'));
     expect(r.stderr).toContain('settings.json: "leed" is not a setting; it was left out\n');

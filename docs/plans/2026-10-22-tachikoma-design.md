@@ -48,6 +48,7 @@ learn from experience. The command is `tachi`.
 | Release 6, as built | Nothing is saved: `/lead`, a `/model` pick, `/screen` and `/vim` change this window only, and a missing settings or keys file is skipped; the file tools never touch either file, in any mode; a key set to `null` stops it in its own context only; Global's keys act everywhere; keys match their modifiers exactly; Alt+V and Ctrl+V both paste a picture under WSL; vim's VISUAL selection drawn in reverse; the editor run through the system's shell | User, 2026-10-28 and 2026-10-29, at the build and its reviews; the rest the plan's and the build's calls, for the final review ([release 6 design](2026-10-28-tachikoma-release-6-design.md), "As built") |
 | Lessons and skills from experience | The lessons (section 4) are built in release 8, with memory. Release 9 adds skills drafted from experience: Tachikoma offers to turn a lesson that keeps coming back, or a way of working that went well, into a draft skill, saved only on the user's yes | User, 2026-10-28 ("Yes add the self skills and add lesson builds to release 8"), after asking whether the plans had self-learning or self skill creation |
 | Auto mode | Claude Code's `auto` (a second model judging each action before it runs) goes into release 7, designed with the sandbox; release 12's loops decide which may use it | User, 2026-10-28 (option chosen: "Release 7, with the sandbox"; [release 6 design](2026-10-28-tachikoma-release-6-design.md), "Not in this release") |
+| `never` mode switched off | From release 6 until release 7, `never` is refused however it is asked for (`--mode never` or `"mode": "never"` in the settings file), at launch with one line, in `tachi` and `tachi -p` alike. Release 7 brings, before `never` returns: (1) the Docker sandbox; (2) auto mode, a second model judging each action before it runs; (3) a check on dangerous commands of every kind, not only ones that delete files. Examples only, for release 7's design to settle: wiping or formatting disks, changing permissions or system settings, stopping processes, rewriting or force-pushing git history, sending files or secrets off the machine, installing software | User, 2026-10-29 ("we can't have never mode deleting a filesystem"; options chosen: "Switch never off (Recommended)", then "Off now, checks in 7"; then "not just file deletion, any other dangerous commands too"; release 6 plan, choice 30) |
 
 ## 1. Overall shape
 
@@ -887,7 +888,8 @@ Each release works on its own and can be shown.
    in a file; the context window of OpenAI API models, from a dated table of OpenAI's model pages
    ([release 6 design](2026-10-28-tachikoma-release-6-design.md))
 7. Docker sandbox, both modes, including conflict-safe apply for copy-then-review; auto mode, a
-   second model judging each action
+   second model judging each action; a check on dangerous commands of every kind. `never` mode,
+   switched off in release 6, returns only with these three
 8. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
    disk; shortening the history; lessons from the error log, stored in the palace and recalled
 9. Skills: the loader, vendored superpowers, Tachikoma's own skills, and skills drafted from

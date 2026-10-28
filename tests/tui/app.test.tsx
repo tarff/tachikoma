@@ -5901,7 +5901,7 @@ describe("App's live settings", () => {
   it("refuses a live never, and lets a session started in never go to ask", async () => {
     const a = await watching([], {});
     a.write({ mode: "never" });
-    await sees(a.app, '"mode": "never" applies only when a session starts; the mode stays ask');
+    await sees(a.app, '"mode": "never" is switched off until release 7; the mode stays ask');
     expect(a.app.lastFrame()).toContain("perm ask");
     const b = await watching([], { mode: "never" }, { mode: "never" });
     b.write({ mode: "ask" });

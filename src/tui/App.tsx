@@ -1187,8 +1187,8 @@ export function App({
       // A session cannot be without a lead, so removing the entry keeps the one it has (the design's table).
       if (s.lead === undefined) say(gray(`"lead" was removed from ${SETTINGS}; the lead stays ${session.lead.id}`));
     } else if (key === "mode") {
-      // `never` only at launch, like --mode never (the user's choice, design's table).
-      if (now.mode === "never") return say(gray(`"mode": "never" applies only when a session starts; the mode stays ${perm.current}`));
+      // `never` is refused live (the user's choice, design's table), and at launch too until release 7 (plan, choice 30).
+      if (now.mode === "never") return say(gray(`"mode": "never" is switched off until release 7; the mode stays ${perm.current}`));
       perm.current = now.mode;
       onMode(now.mode);
       line(now.mode);

@@ -574,4 +574,10 @@ build made, for the user to review at the final review.
 - **OpenAI API context windows (Task 22).** `OPENAI_BASE_URL` set to `https://api.openai.com/v1`,
   with or without the trailing slash, counts as OpenAI's own address. Each row was checked against
   its page again on 2026-10-28.
+- **`never` is switched off until release 7** (choice 30, the user's choice, after the final
+  security review): `--mode never` or `"mode": "never"` in the settings file stops `tachi` and
+  `tachi -p` at launch with one line, naming `ask` and `project`; a live edit to it is refused as
+  before. This replaces "`never` only at launch" in the table above. Release 7 brings the sandbox,
+  auto mode and a check on dangerous commands of every kind before `never` returns (main design,
+  "`never` mode switched off").
 - **Testing.** The user's terminal checklist is in the plan's Task 23, to be run after the build.
