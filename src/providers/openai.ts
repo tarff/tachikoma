@@ -21,7 +21,9 @@ const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_details"]
 export function toOpenAI(system: string, messages: Message[], kind: string): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [{ role: "system", content: system }];
   for (const m of messages) {
-    const text = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
+    // A picture is its marker as text until the release 6 plan's Task 16 sends the picture, so a message of a picture
+    // alone is never empty.
+    const text = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : p.type === "image" ? [`[Image #${p.id}]`] : [])).join("\n");
     if (m.role === "assistant") {
       const calls = m.parts.flatMap((p) => (p.type === "tool_call" ? [p] : []));
       // The SDK requires content unless there are tool calls; an empty reply (all output spent on

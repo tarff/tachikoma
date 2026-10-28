@@ -269,6 +269,17 @@ describe("describe", () => {
     expect(describeMessage({ role: "user", parts: [{ type: "text", text: "go" }, { type: "text", text: "t3 finished: x", from: "tasks" }] })).toEqual([{ text: "> go", color: "cyan" }]);
   });
 
+  // Release 6 plan, choice 22: one line, in the line's colour.
+  it("shows a picture as its marker in its place in the user's line", () => {
+    const data = Buffer.from([0x89, 0x50]); // a stand-in picture
+    const parts = [
+      { type: "text", text: "look at " },
+      { type: "image", id: 1, mediaType: "image/png", data },
+      { type: "text", text: " please" },
+    ] as const;
+    expect(describeMessage({ role: "user", parts: [...parts] })).toEqual([{ text: "> look at [Image #1] please", color: "cyan" }]);
+  });
+
   it("does not show an unknown kind of part as a tool result", () => {
     expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] })).toEqual([]);
   });

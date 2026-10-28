@@ -21,7 +21,7 @@ import type { Clipboard } from "./clipboard.js";
 import { Conversation } from "./Conversation.js";
 import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
 import { type Detail, DetailView, keyRow, opened, searchFor, step as stepMatch } from "./DetailView.js";
-import { apply, change, type Editor, empty, load, move, replace, segmenter } from "./editor.js";
+import { apply, change, cutPicture, type Editor, empty, insertPicture, load, move, replace, segmenter } from "./editor.js";
 import { editFile, editorCommand, editText, NOT_FOUND } from "./external.js";
 import { History, matches } from "./history.js";
 import { type Mouse, readOut } from "./input.js";
@@ -32,6 +32,7 @@ import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu 
 import { ModelPicker, type PickerKey, rows as listRows } from "./ModelPicker.js";
 import { type Hand, type Handover, TerminalOwner } from "./owner.js";
 import { type Now, now as nowOf, pasteTo, type Phase, phaseInputs } from "./phase.js";
+import { type Draft, joined, marker, messageParts, Pictures, trimmed, without } from "./pictures.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -106,6 +107,9 @@ export interface AppProps {
   // it the App watches the file and applies each edit (release 6 design, "Live edits"); without it, as in most tests,
   // it does not.
   live?: { loaded: { settings: Settings; warnings: string[] }; given: Given };
+  // The session's pictures (pictures.ts; release 6 plan, choice 9); the App makes its own when not given. Tests give
+  // one to end its reads.
+  pictures?: Pictures;
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /settings, /keybindings, /exit";
@@ -209,6 +213,7 @@ export function App({
   bindings,
   home,
   live,
+  pictures: picturesGiven,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -313,7 +318,10 @@ export function App({
   if (detail.current && detail.current.rows.width !== columns - 1) detail.current.rows.setWidth(columns - 1);
   const [busy, setBusy] = useState(false);
   const working = useRef(false); // busy, for keys read before the screen is drawn again
-  const queue = useRef<string[]>([]); // what Enter added during a turn, in order
+  const queue = useRef<Draft[]>([]); // what Enter added during a turn, in order, pictures' spans kept (release 6 plan, Task 14)
+  const [pictures] = useState(() => picturesGiven ?? new Pictures());
+  // The message waiting for its pictures' reads to end before it is sent, as the reads leave it (perform, below).
+  const reading = useRef<Draft | null>(null);
   // What is running, since when, and for a turn the totals it started from; and the turn's tool calls,
   // kept after it until the next turn starts.
   const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
@@ -582,7 +590,7 @@ export function App({
   // Called without await, so nothing may escape: an unhandled rejection ends the program. The queue
   // goes on after a turn, however it ended, and after `/model` once the list is closed. `answers`: a
   // turn with nothing typed, to read the background answers waiting.
-  const submit = async (raw: string, answers = false) => {
+  const submit = async (raw: Draft, answers = false) => {
     if (!(await perform(raw, answers))) next();
   };
 
@@ -626,14 +634,14 @@ export function App({
         return;
       }
     }
-    if (tasks.wakes()) return void submit("", true);
+    if (tasks.wakes()) return void submit({ text: "", spans: [] }, true);
     const q = queue.current;
-    const command = q.findIndex(isCommand);
+    const command = q.findIndex((d) => isCommand(d.text));
     if (!h.queued) return;
-    if (h.phase.kind === "printed" && command === 0 && (recordToOpen(q[0]!) || /^\/screen$/i.test(q[0]!))) return;
-    if (owner.busy && command === 0 && /^\/(screen|settings|keybindings)$/i.test(q[0]!)) return;
+    if (h.phase.kind === "printed" && command === 0 && (recordToOpen(q[0]!.text) || /^\/screen$/i.test(q[0]!.text))) return;
+    if (owner.busy && command === 0 && /^\/(screen|settings|keybindings)$/i.test(q[0]!.text)) return;
     view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
-    void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
+    void submit(joined(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command), "\n\n"));
   };
   // The subagent whose record `text` opens in the detail view: in full screen, `/tasks t3` with a subagent of that id
   // (perform, below).
@@ -643,8 +651,9 @@ export function App({
   };
 
   // True when it opened the model list.
-  const perform = async (raw: string, answers = false): Promise<boolean | void> => {
-    const text = raw.trim();
+  const perform = async (raw: Draft, answers = false): Promise<boolean | void> => {
+    const message = trimmed(raw);
+    const { text } = message;
     if (!text && !answers) return;
     // Commands ignore case; a message is sent as typed.
     const [first = "", ...words] = text.split(/\s+/);
@@ -707,7 +716,7 @@ export function App({
             else setPicker(groups);
             return true;
           }
-        } else await session.send(text, abort.current.signal);
+        } else await session.send(await readsEnded(message, abort.current.signal), abort.current.signal);
       } finally {
         setBusy(false);
         working.current = false;
@@ -716,6 +725,56 @@ export function App({
     } catch (err) {
       say({ text: errorText(err), color: "red" });
     }
+  };
+
+  // A message's parts, once the reads of its pictures have ended (release 6 plan, Task 14): the wait is part of its
+  // turn, so Enter meanwhile queues as during a turn. A read that found nothing or failed takes its spans out of the
+  // message (settle, below), which goes without it (choice 17). Any stop of the turn during the wait (Ctrl-C in the
+  // detail view) ends the reads as stopped, and the turn then stops as usual; at the prompt, Esc and Ctrl-C end only
+  // the reads (promptKey, below).
+  const readsEnded = async (message: Draft, signal: AbortSignal) => {
+    const ids = new Set(message.spans.filter((s) => pictures.get(s.id) === "reading").map((s) => s.id));
+    if (!ids.size) return messageParts(message, pictures);
+    reading.current = message;
+    signal.addEventListener("abort", stopReads);
+    try {
+      // Each picture's own settle, set when its marker went in, runs first (imagePaste, below).
+      await Promise.all([...ids].map((id) => pictures.settled(id)));
+      return messageParts(trimmed(reading.current), pictures); // trimmed again, as a marker taken out may leave a blank at an end
+    } finally {
+      reading.current = null;
+      signal.removeEventListener("abort", stopReads);
+    }
+  };
+  const stopReads = () => {
+    for (const s of reading.current?.spans ?? []) pictures.set(s.id, { failed: "stopped" }); // a read that ended stays as it ended
+  };
+  // A read has ended (release 6 design, "While a read runs"). With no picture, its marker goes from wherever it is: the
+  // prompt, the stash, the queue and the message waiting on it; and one line says so, naming the marker when that
+  // message goes without it (plan, choice 17), in Task 15's words.
+  const settle = (id: number) => {
+    const read = pictures.get(id);
+    if (read !== "none" && !(typeof read === "object" && "failed" in read)) return;
+    const out = (d: Draft): Draft => {
+      const { text, spans } = without(d, id);
+      return { text, spans };
+    };
+    editor.current = cutPicture(editor.current, id);
+    const s = stash.current && cutPicture(stash.current, id);
+    stash.current = s?.text ? s : null;
+    queue.current = queue.current.map(out).filter((d) => d.text.trim());
+    const waits = reading.current?.spans.some((x) => x.id === id);
+    if (reading.current) reading.current = out(reading.current);
+    const why = read === "none" ? "No picture on the clipboard" : `Could not read the clipboard: ${read.failed}`;
+    say({ text: waits ? `${why}; ${marker(id)} was sent without it.` : read === "none" ? `${why}.` : why, color: read === "none" ? "gray" : "red" });
+  };
+  // chat:imagePaste: the next picture's marker at the cursor at once, so pictures keep the order they were asked for
+  // (design, "While a read runs"). The read itself is the release 6 plan's Task 15's.
+  const imagePaste = (e: Editor) => {
+    const id = pictures.next();
+    editor.current = insertPicture(e, id);
+    goal.current = null;
+    void pictures.settled(id).then(() => latest.current.settle(id));
   };
 
   // `/tasks` lists the session's subagents, `/tasks t3` prints one's tool calls and answer in full,
@@ -1211,6 +1270,12 @@ export function App({
       return rerender((n) => n + 1);
     }
     const name = action === "chat:cancel" ? "Esc" : action === "app:interrupt" ? "Ctrl-C" : action === "app:exit" && !e.text ? "Ctrl-D" : null;
+    // While a message waits on its pictures' reads, Esc and Ctrl-C end those reads, and it goes without them (release 6
+    // plan, choice 17), so a reader that never answers cannot hold the prompt.
+    if (h.working && name && name !== "Ctrl-D" && reading.current) {
+      stopReads();
+      return rerender((n) => n + 1);
+    }
     if (h.working && name) {
       if (name === "Ctrl-C") restore();
       if (name !== "Ctrl-D") abort.current?.abort();
@@ -1224,6 +1289,7 @@ export function App({
       // Called without await, so nothing may escape (submit, above): what goes wrong is said, as for a switch (next).
       else if (action === "chat:externalEditor") void externalEditor().catch((err) => say({ text: errorText(err), color: "red" }));
       else if (action === "chat:stash") swapStash(e);
+      else if (action === "chat:imagePaste") imagePaste(e);
       else if (action?.startsWith("command:")) command(`/${action.slice("command:".length)}`);
       else if (!got) for (const c of commands(ch, key)) run(c);
     } else if (name === "Ctrl-C" && e.text) clear(e); // one press clears
@@ -1562,22 +1628,24 @@ export function App({
   // A key bound to command:<name>, and Alt+P's /model, run the command as if typed then, the prompt's text left as it
   // is: during a turn it waits in the queue (choice 21).
   const command = (text: string) => {
-    if (working.current) return void queue.current.push(text);
+    if (working.current) return void queue.current.push({ text, spans: [] });
     view.current = FOLLOWING;
-    void submit(text);
+    void submit({ text, spans: [] });
   };
+  // The prompt goes with its pictures' spans; prompt history keeps its text only (release 6 plan, Task 14).
   const send = (e: Editor) => {
     view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     keep(e.text);
     editor.current = load(e, "");
-    if (!working.current) void submit(e.text);
-    else if (e.text.trim()) queue.current.push(e.text.trim());
+    if (!working.current) void submit(e);
+    else if (e.text.trim()) queue.current.push(trimmed(e));
   };
   // Ctrl-C during a turn, or Up on an empty prompt: the queue comes back into the prompt, one entry a
-  // line, after what is there, to edit or send.
+  // line, after what is there, to edit or send, with its pictures' spans.
   const restore = () => {
     if (!queue.current.length) return;
-    editor.current = load(editor.current, [editor.current.text, ...queue.current].filter(Boolean).join("\n"));
+    const back = joined([editor.current, ...queue.current].filter((d) => d.text), "\n");
+    editor.current = { ...load(editor.current, back.text), spans: back.spans };
     queue.current = [];
   };
   const clear = (e: Editor) => {
@@ -1686,7 +1754,7 @@ export function App({
   // functions, set at each, so what they read is the screen as last drawn, never what it was when they were set up
   // (release 6 design, "Tidying the screen code first"). Set while drawing, safe with Ink's non-concurrent root
   // (above).
-  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys };
+  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys, settle };
   const latest = useRef(handlers);
   latest.current = handlers;
 
@@ -1792,7 +1860,7 @@ export function App({
     askedShort: movable ? allow(shortOf(question)) : null,
   });
   const { tooled, menuRows, panel, promptSpace, promptShown, todoShown, pickerRows, viewHeight, promptFirst } = f;
-  const q = queue.current.map((e) => visible(e));
+  const q = queue.current.map((e) => visible(e.text));
   const shownQueued = f.queuedShown;
   const queued = q.length <= shownQueued ? q : shownQueued > 0 ? [...q.slice(0, shownQueued - 1), `+${q.length - shownQueued + 1} more`] : [];
   const hint = f.hinted ? hintFor(f.left) : null;

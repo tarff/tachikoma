@@ -1,5 +1,6 @@
 import { visible } from "../core/permissions.js";
 import type { Message } from "../core/types.js";
+import { marker } from "./pictures.js";
 
 export interface Line {
   text: string;
@@ -32,10 +33,17 @@ export function screen(l: Line): Line {
 // How one message appears in the scrollback.
 export function describe(m: Message): Line[] {
   const lines: Line[] = [];
+  let typed: Line | null = null; // the user's prompt so far, its text and pictures one line
   for (const p of m.parts) {
     if (p.type === "text" && p.from === "tasks") continue; // shown when it arrived, as "t3 finished"
-    if (p.type === "text") lines.push(m.role === "user" ? { text: `> ${p.text}`, color: "cyan" } : { text: p.text });
-    else if (p.type === "tool_call") lines.push({ text: `● ${p.name} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
+    // A picture is its marker in its place, in the line's colour (release 6 plan, choice 22).
+    if (p.type === "text" || p.type === "image") {
+      const text = p.type === "image" ? marker(p.id) : p.text;
+      if (m.role !== "user") lines.push({ text });
+      else if (typed) typed.text += text;
+      else lines.push((typed = { text: `> ${text}`, color: "cyan" }));
+    } else if (p.type === "tool_call")
+      lines.push({ text: `● ${p.name} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
     else if (p.type === "tool_result") lines.push({ text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, color: p.isError ? "red" : "gray", oneLine: true });
     else {
       const _: never = p; // a new kind of part must be given its own line here

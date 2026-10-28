@@ -34,6 +34,13 @@ describe("toAnthropic", () => {
     ]);
   });
 
+  // Release 6 plan, Task 14: until Task 16 sends the picture, its marker goes as text in its place.
+  it("sends a picture as its marker's text for now", () => {
+    const picture = { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50]) } as const;
+    const history: Message[] = [{ role: "user", parts: [picture, { type: "text", text: " what is it?" }] }];
+    expect(toAnthropic(history)).toEqual([{ role: "user", content: [{ type: "text", text: "[Image #1]" }, { type: "text", text: " what is it?" }] }]);
+  });
+
   it("replays Anthropic's own content unchanged, thinking blocks included", () => {
     const native = [{ type: "thinking", thinking: "", signature: "sig" }, { type: "text", text: "hi" }];
     const history: Message[] = [{ role: "assistant", parts: [{ type: "text", text: "hi" }], native: { provider: "anthropic", content: native } }];

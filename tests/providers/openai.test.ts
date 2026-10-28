@@ -33,6 +33,12 @@ describe("toOpenAI", () => {
     ]);
   });
 
+  // Release 6 plan, Task 14: until Task 16 sends the picture, its marker goes as text in its place.
+  it("sends a picture as its marker's text for now", () => {
+    const history: Message[] = [{ role: "user", parts: [{ type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50]) }] }];
+    expect(toOpenAI("s", history, "openai")[1]).toEqual({ role: "user", content: "[Image #1]" });
+  });
+
   it("converts Anthropic turns too, ignoring their native content", () => {
     const history: Message[] = [{ role: "assistant", parts: [{ type: "text", text: "hi" }], native: { provider: "anthropic", content: [] } }];
     expect(toOpenAI("s", history, "openai")[1]).toEqual({ role: "assistant", content: "hi" });

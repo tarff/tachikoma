@@ -33,6 +33,12 @@ describe("toResponses", () => {
     ]);
   });
 
+  // Release 6 plan, Task 14: until Task 16 sends the picture, its marker goes as text in its place.
+  it("sends a picture as its marker's text for now", () => {
+    const history: Message[] = [{ role: "user", parts: [{ type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50]) }] }];
+    expect(toResponses(history)).toEqual([{ role: "user", content: "[Image #1]" }]);
+  });
+
   it("sends a ChatGPT turn back exactly as it came, encrypted reasoning included", () => {
     const history: Message[] = [{ role: "assistant", parts: [], native: { provider: "chatgpt", content: [reasoning, call] } }];
     expect(toResponses(history)).toEqual([reasoning, call]);

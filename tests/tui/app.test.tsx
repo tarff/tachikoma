@@ -30,6 +30,7 @@ import { lastSaved, readSettings, type Settings, settingsDir, shownFile } from "
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard } from "../../src/tui/clipboard.js";
+import { Pictures } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
@@ -111,6 +112,7 @@ async function mount(
     bindings?: Bindings; // the table of keys; the default table when not given
     home?: string; // the folder holding the settings file; sharedHome when not given
     live?: AppProps["live"]; // the settings file as launch read it, which the App then watches; not watched when not given
+    pictures?: Pictures; // the session's pictures, whose reads the test ends
   } = {},
 ) {
   const bus = new Bus();
@@ -172,6 +174,7 @@ async function mount(
       bindings={opts.bindings}
       home={opts.home ?? sharedHome}
       live={opts.live}
+      pictures={opts.pictures}
     />,
   );
   mounted.push(app);
@@ -5037,6 +5040,134 @@ describe("App's stash", () => {
     await press(app, CTRL_S);
     expect(app.lastFrame()).toBe(frame);
     expect(frame).toContain("›\n? for shortcuts");
+  });
+});
+
+// Release 6 plan, Task 14: a picture's marker is a span in the prompt, kept by the queue and the stash, and the message
+// waits for its reads. The tests end each read through the session's Pictures; Task 15 reads the clipboard.
+describe("App's pictures", () => {
+  const PICTURE = process.platform === "win32" ? "\u001bv" : "\u0016"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+  const CTRL_S = "\u0013";
+  const ESC = "\u001b";
+  const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
+  const userParts = (session: Session) => session.messages.filter((m) => m.role === "user").map((m) => m.parts);
+
+  it("waits on Enter for a picture still being read, then sends it with the picture in place", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("seen")], { pictures });
+    await press(app, "look at ", PICTURE);
+    expect(app.lastFrame()).toContain("› look at [Image #1]");
+    await press(app, "\r");
+    expect(app.lastFrame()).toContain("Esc to stop");
+    expect(session.messages).toEqual([]);
+    pictures.set(1, PNG);
+    await until(app, "seen");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look at " }, { type: "image", id: 1, ...PNG }]]);
+    expect(app.lastFrame()).toContain("> look at [Image #1]\n"); // in the conversation, one line (choice 22)
+  });
+
+  it("keeps the spans of a queued message, of one brought back by Ctrl-C, and of the stash", async () => {
+    const pictures = new Pictures();
+    const { lead, release } = gated([reply("r1"), reply("r2"), reply("r3")]);
+    const { app, session } = await mount([], { lead, pictures });
+    await press(app, "first", "\r");
+    await until(app, "Esc to stop");
+    await press(app, PICTURE, " queued", "\r", "aside ", PICTURE, CTRL_S);
+    pictures.set(1, PNG);
+    pictures.set(2, PNG);
+    release();
+    await until(app, "r2");
+    expect(userParts(session)[1]).toEqual([{ type: "image", id: 1, ...PNG }, { type: "text", text: " queued" }]);
+    await press(app, CTRL_S, "\r");
+    await until(app, "r3");
+    expect(userParts(session)[2]).toEqual([{ type: "text", text: "aside " }, { type: "image", id: 2, ...PNG }]);
+  });
+
+  it("keeps a queued message's spans when Ctrl-C brings it back into the prompt", async () => {
+    const pictures = new Pictures();
+    const { lead } = gated([reply("ok")]); // the first request waits, and Ctrl-C stops it
+    const { app, session } = await mount([], { lead, pictures });
+    await press(app, "first", "\r");
+    await until(app, "Esc to stop");
+    await press(app, "see ", PICTURE, "\r", "\u0003");
+    await gone(app, "Esc to stop");
+    expect(app.lastFrame()).toContain("› see [Image #1]");
+    pictures.set(1, PNG);
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session).at(-1)).toEqual([{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]);
+  });
+
+  it("sends a marker recalled from prompt history as text, carrying no picture", async () => {
+    const pictures = new Pictures();
+    pictures.set(pictures.next(), PNG); // picture #1, never sent
+    const { app, session } = await mount([reply("ok")], { pictures, past: ["see [Image #1]"] });
+    await press(app, "\u001b[A", "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "see [Image #1]" }]]);
+  });
+
+  it("sends without a picture whose read fails after Enter, its marker gone, and says so in red", async () => {
+    await inColour(async () => {
+      const pictures = new Pictures();
+      const { app, session } = await mount([reply("ok")], { pictures });
+      await press(app, "look ", PICTURE, " here", "\r");
+      pictures.set(1, { failed: "access denied" });
+      await until(app, "\u001b[31mCould not read the clipboard: access denied; [Image #1] was sent without it.");
+      await until(app, "ok");
+      expect(userParts(session)).toEqual([[{ type: "text", text: "look  here" }]]);
+    });
+  });
+
+  it("sends without a picture the read found none of, and says so in grey", async () => {
+    await inColour(async () => {
+      const pictures = new Pictures();
+      const { app, session } = await mount([reply("ok")], { pictures });
+      await press(app, "look ", PICTURE, "\r");
+      pictures.set(1, "none");
+      await until(app, "\u001b[90mNo picture on the clipboard; [Image #1] was sent without it.");
+      await until(app, "ok");
+      expect(userParts(session)).toEqual([[{ type: "text", text: "look" }]]);
+    });
+  });
+
+  it("takes a failed read's marker out of a queued message, which goes without it once the turn ends", async () => {
+    const pictures = new Pictures();
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session } = await mount([], { lead, pictures });
+    await press(app, "first", "\r");
+    await until(app, "Esc to stop");
+    await press(app, PICTURE, " later", "\r");
+    pictures.set(1, { failed: "access denied" });
+    await until(app, "Could not read the clipboard: access denied");
+    expect(app.lastFrame()).not.toContain("was sent without it");
+    release();
+    await until(app, "r2");
+    expect(userParts(session)[1]).toEqual([{ type: "text", text: "later" }]);
+  });
+
+  it("takes a marker the read found none of out of the prompt and the stash", async () => {
+    const pictures = new Pictures();
+    const { app } = await mount([], { pictures });
+    await press(app, PICTURE, CTRL_S, "b ", PICTURE);
+    expect(app.lastFrame()).toContain("Stashed");
+    pictures.set(1, "none");
+    pictures.set(2, "none");
+    await until(app, "No picture on the clipboard.\nNo picture on the clipboard.");
+    expect(app.lastFrame()).toMatch(/› b ?\n\? for shortcuts/); // the stash, left empty, is gone too
+  });
+
+  it.each([
+    ["Esc", ESC],
+    ["Ctrl-C", "\u0003"],
+  ])("ends a read the message waits on when %s is pressed, and sends the message without it", async (_, key) => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures });
+    await press(app, "look ", PICTURE, "\r", key);
+    await until(app, "Could not read the clipboard: stopped; [Image #1] was sent without it.");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look" }]]);
+    expect(pictures.get(1)).toEqual({ failed: "stopped" });
   });
 });
 

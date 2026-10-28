@@ -22,6 +22,10 @@ function toBlock(p: Part): BetaContentBlockParam {
       return { type: "tool_use", id: safeId(p.id), name: p.name, input: p.input };
     case "tool_result":
       return { type: "tool_result", tool_use_id: safeId(p.callId), content: p.output, is_error: p.isError };
+    case "image":
+      // Its marker as text until the release 6 plan's Task 16 sends the picture, so a message of a picture alone is
+      // never empty.
+      return { type: "text", text: `[Image #${p.id}]` };
   }
 }
 

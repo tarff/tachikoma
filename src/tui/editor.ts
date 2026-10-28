@@ -2,15 +2,29 @@
 // one action and gives the new editor. Which key is which action is App's business, so every edit is
 // tested here by feeding actions in.
 
+import { marker, without } from "./pictures.js";
+
+// A picture's marker in the text, from `from` to `to`, tied to picture `id` (release 6 design, "Which pictures a
+// message carries"): text that only looks like a marker carries nothing.
+export interface Span {
+  readonly id: number;
+  readonly from: number;
+  readonly to: number;
+}
+
+type State = { text: string; cursor: number; spans: readonly Span[] };
+
 export interface Editor {
   readonly text: string;
   readonly cursor: number; // a place between characters, as an index into `text`
-  readonly undo: readonly { text: string; cursor: number }[]; // the states before each step, newest last
+  readonly spans: readonly Span[]; // the pictures' markers, in the text's order
+  readonly undo: readonly State[]; // the states before each step, newest last
   readonly typing: boolean; // the last step was typing, so more typing joins it
   readonly killed: string; // what the last word or line delete took, for Ctrl+Y
 }
 
-export const empty: Editor = { text: "", cursor: 0, undo: [], typing: false, killed: "" };
+export const empty: Editor = { text: "", cursor: 0, spans: [], undo: [], typing: false, killed: "" };
+const state = (e: Editor): State => ({ text: e.text, cursor: e.cursor, spans: e.spans });
 
 export type Action =
   | { type: "insert"; text: string } // typed
@@ -33,7 +47,8 @@ export type Action =
   | "undo"; // Ctrl+Z or Ctrl+_
 
 // A new prompt holding `text`, with the cursor at its end and nothing to undo. What the last delete
-// took is kept, as a terminal's line editor keeps it from one command to the next.
+// took is kept, as a terminal's line editor keeps it from one command to the next. No spans: a marker
+// in text from prompt history carries no picture (release 6 design, "Which pictures a message carries").
 export function load(e: Editor, text: string): Editor {
   return { ...empty, text, cursor: text.length, killed: e.killed };
 }
@@ -77,16 +92,40 @@ export const lineEnd = (text: string, i: number) => (text.indexOf("\n", i) + 1 |
 
 // One step: the text between `from` and `to` replaced. Typing joins the step before when that was
 // typing too; everything else is a step of its own. A step that changes nothing is none.
+// A delete reaching into a picture's marker takes the whole marker, so no broken marker text is left
+// (release 6 plan, choice 14). Spans after the change move with it; one typed into is no marker any
+// more, and goes, its text staying.
 export function change(e: Editor, from: number, to: number, insert: string, how: { typing?: boolean; kill?: boolean } = {}): Editor {
   if (from === to && !insert) return { ...e, typing: false };
+  for (const s of e.spans) {
+    if (from < to && s.from < to && s.to > from) [from, to] = [Math.min(from, s.from), Math.max(to, s.to)];
+  }
   const joins = how.typing === true && e.typing;
+  const moved = insert.length - (to - from);
   return {
     text: e.text.slice(0, from) + insert + e.text.slice(to),
     cursor: from + insert.length,
-    undo: joins ? e.undo : [...e.undo, { text: e.text, cursor: e.cursor }],
+    spans: e.spans.flatMap((s) => (s.to <= from ? [s] : s.from >= to ? [{ ...s, from: s.from + moved, to: s.to + moved }] : [])),
+    undo: joins ? e.undo : [...e.undo, state(e)],
     typing: how.typing === true,
     killed: how.kill ? e.text.slice(from, to) : e.killed,
   };
+}
+
+// Picture `id`'s marker at the cursor, as a span, one step (release 6 plan, Task 14).
+export function insertPicture(e: Editor, id: number): Editor {
+  const c = e.cursor;
+  const d = change(e, c, c, marker(id));
+  return { ...d, spans: [...d.spans, { id, from: c, to: d.cursor }].sort((a, b) => a.from - b.from) };
+}
+
+// Picture `id`'s markers taken out, as one step, the cursor staying where it was among the rest: its read found
+// nothing or failed (release 6 plan, Task 14). Undo brings them back, but with no picture to send they are only text
+// (pictures.ts, messageParts).
+export function cutPicture(e: Editor, id: number): Editor {
+  const d = without(e, id);
+  if (d.text === e.text) return e;
+  return { ...e, text: d.text, spans: d.spans, cursor: d.at(e.cursor), undo: [...e.undo, state(e)], typing: false };
 }
 
 // `insert` in place of the text from `from` to the cursor, as one step: a menu's choice.

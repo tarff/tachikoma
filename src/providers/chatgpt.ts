@@ -100,6 +100,9 @@ export function toResponses(messages: Message[]): ResponseInputItem[] {
     for (const p of m.parts) {
       if (p.type === "tool_result") out.push({ type: "function_call_output", call_id: p.callId, output: p.isError ? `Error: ${p.output}` : p.output });
       else if (p.type === "text") out.push({ role: "user", content: p.text });
+      // Its marker as text until the release 6 plan's Task 16 sends the picture, so a message of a picture alone is
+      // never empty.
+      else if (p.type === "image") out.push({ role: "user", content: `[Image #${p.id}]` });
     }
   }
   return out;

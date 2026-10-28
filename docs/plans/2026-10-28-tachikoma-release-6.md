@@ -210,6 +210,10 @@ Each is marked in its task. None approved yet.
     first read, not in cli.tsx, so `-p` never reads them; problems show in the conversation in both
     modes, each once while it stays; a good rebind says nothing. The watcher's lines name both
     files, and a watch that cannot start still reads both files once.
+22. **A picture shows in the conversation as its marker inside the user's line (Task 14),** in the
+    line's colour, not grey: grey inside a line needs coloured pieces through describe, Rows,
+    Conversation and classic mode, about 50-80 lines (found at Task 14's build; the coordinator's
+    call, for the user to review).
 
 ---
 
@@ -785,7 +789,8 @@ then sent without it; the line says why and names the marker (choice 17). Esc or
 message waits on a read settles that read as failed (`stopped`), so a reader that never answers
 cannot hold the prompt.
 
-The conversation view shows a picture part as its marker in grey.
+The conversation view shows a picture part as its marker in its place in the user's line, in the
+line's colour (choice 22).
 
 **Tests:**
 1. Editor: inserting a picture; typing before it moves the span; Backspace at its end and Delete
@@ -824,6 +829,11 @@ the clipboard.`; a failed read settles as `{failed}`, removes its spans the same
 clipboard reader here: install wl-paste or xclip.` (Linux). A paste that `imagePaths` accepts and
 whose files all exist becomes those pictures (read with `fs.readFile`, type from the file's first
 bytes, not its name); otherwise it is text as today.
+
+Task 14 already wires `chat:imagePaste` to `pictures.next()` and the span (App.tsx, `imagePaste`), and
+already says the "none" and failed lines, with their ending, from its one settle handler (`settle`,
+grey for "none", red for a failure, Esc's `stopped` included). This task adds the read, the hint and
+the readers to that wiring.
 
 **Tests:** each reader's command line per platform and env (no real clipboard); `readImage` with a
 stand-in tool that prints a small PNG's base64, prints nothing, or fails; `imagePaths` with

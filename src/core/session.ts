@@ -51,21 +51,22 @@ export class Session {
     this.#fallback = provider;
   }
 
-  // An empty `text` starts a turn with only the waiting text, when there is any.
-  async send(text: string, signal?: AbortSignal): Promise<void> {
+  // An empty `text` starts a turn with only the waiting text, when there is any. The prompt sends its parts, pictures
+  // among its text (release 6 plan, Task 14).
+  async send(text: string | Part[], signal?: AbortSignal): Promise<void> {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
     try {
-      await this.#turn(text, signal);
+      await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal);
     } finally {
       this.#running = false;
     }
   }
 
-  async #turn(text: string, signal?: AbortSignal): Promise<void> {
+  async #turn(typed: Part[], signal?: AbortSignal): Promise<void> {
     const { bus } = this.opts;
-    const parts: Part[] = [...(text ? [{ type: "text" as const, text }] : []), ...this.#waiting()];
+    const parts: Part[] = [...typed, ...this.#waiting()];
     if (!parts.length) return;
     this.#push({ role: "user", parts });
 

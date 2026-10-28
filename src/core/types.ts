@@ -7,7 +7,10 @@ export type Part =
   // something the user typed.
   | { type: "text"; text: string; from?: "tasks" }
   | { type: "tool_call"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; callId: string; output: string; isError: boolean };
+  | { type: "tool_result"; callId: string; output: string; isError: boolean }
+  // A picture the user added, the original as read, kept in memory for the session (release 6 plan, choice 9); `id` is
+  // its number, the N of its marker `[Image #N]` (release 6 design, "Pictures").
+  | { type: "image"; id: number; mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: Buffer };
 
 export type ToolCall = Extract<Part, { type: "tool_call" }>;
 export type ToolResult = Extract<Part, { type: "tool_result" }>;
