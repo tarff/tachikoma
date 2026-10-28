@@ -63,7 +63,12 @@ export function watchSettings(home: string, on: (next: Loaded) => void, gone: ()
   };
   const watcher = watch(dir, seen);
   watcher.on("error", end);
-  seen();
+  try {
+    seen();
+  } catch (err) {
+    watcher.close(); // the caller, told by the throw that nothing is watched, has no way to close it
+    throw err;
+  }
   return () => watcher.close();
 }
 

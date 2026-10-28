@@ -154,4 +154,19 @@ describe("watchSettings", () => {
     watcher.emit("error", error);
     expect(gone).toBe(1);
   });
+
+  it("closes the folder watch when the first read's callback throws, as the caller is left nothing to close", async () => {
+    const home = temp();
+    expect(() =>
+      watchSettings(
+        home,
+        () => {
+          throw new Error("no");
+        },
+        () => {},
+      ),
+    ).toThrow("no");
+    // FSWatcher emits "close" on the next tick after close() (node:fs, FSWatcher.close); left open, the test times out.
+    await new Promise((resolve) => watches.at(-1)!.once("close", resolve));
+  });
 });
