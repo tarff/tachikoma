@@ -257,6 +257,15 @@ export class Bindings {
     return this.#chord && now - this.#chord.at < CHORD_MS ? copy(this.#chord.strokes) : null;
   }
 
+  // Whether a key, in keyText's spelling, is taken in the contexts in force (innermost first), as press takes it:
+  // bound to an action, or the first key of a chord bound to one. A key it takes never reaches the prompt's own
+  // editing keys, so `?` leaves those out (keys.ts, keyList; release 6 plan, Task 23's spec review).
+  takes(text: string, contexts: Context[]): boolean {
+    const tables = contexts.map((c) => this.#table[c]);
+    const live = (k: string) => tables.find((t) => t.has(k))?.get(k) != null;
+    return live(text) || tables.some((t) => [...t.keys()].some((k) => k.startsWith(`${text} `) && live(k)));
+  }
+
   // The keys bound to an action in a context, in the table's order, for help and hints.
   keysFor(action: string, context: Context): string[] {
     return [...this.#table[context]].filter(([, a]) => a === action).map(([k]) => k);

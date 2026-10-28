@@ -156,6 +156,31 @@ describe("the keys named in help and hints", () => {
     expect(keyList(over("Chat", { "ctrl+g": null, "ctrl+x ctrl+e": null })).join("\n")).not.toContain("your editor");
   });
 
+  it("lists editor, stash and picture keys bound under Global too", () => {
+    const list = keyList(over("Global", { "ctrl+q": "chat:externalEditor", "ctrl+b": "chat:stash", "alt+i": "chat:imagePaste" }));
+    expect(list).toContain("  Ctrl+G, Ctrl+X Ctrl+E, or Ctrl+Q  open the prompt in your editor");
+    expect(list.join("\n")).toMatch(/Ctrl\+S or Ctrl\+B {2}stash the prompt or bring it back · .* or Alt\+I {2}paste a picture/);
+  });
+
+  // Release 6 plan, Task 23 (the spec review): an editing key a binding takes no longer edits, so `?` does not name it.
+  it("leaves out of the editing keys' lines a key a Chat or Global binding takes, and a part with none left", () => {
+    // The terminal checklist's step 3: Ctrl+E opens the editor, so it is no longer the line's end.
+    const read = readKeybindings(JSON.stringify({ bindings: [{ context: "Chat", bindings: { "ctrl+e": "chat:externalEditor" } }] }));
+    if ("problem" in read) throw new Error(read.problem);
+    expect(keyList(read.table)).toContain("  Home End or Ctrl+A  line start, end · Alt+B Alt+F or Ctrl+← Ctrl+→  by word");
+    expect(keyList(over("Global", { "ctrl+e": "app:toggleTodos" }))).toContain("  Home End or Ctrl+A  line start, end · Alt+B Alt+F or Ctrl+← Ctrl+→  by word");
+    // Ctrl+K taken, by a key or by the first of a chord's keys: Ctrl+U's words then name the line themselves.
+    for (const keys of [{ "ctrl+k": "chat:stash" }, { "ctrl+k ctrl+s": "chat:stash" }] as Record<string, string>[]) {
+      expect(keyList(over("Chat", keys))).toContain("  Ctrl+U  delete to the line's start · Ctrl+Y  put it back · Ctrl+Z  undo");
+    }
+    const taken = keyList(over("Chat", { home: "chat:stash", end: "chat:stash", "alt+backspace": "chat:stash", "alt+d": "chat:stash", "ctrl+w": "chat:stash" }));
+    expect(taken).toContain("  Ctrl+A Ctrl+E  line start, end · Alt+B Alt+F or Ctrl+← Ctrl+→  by word");
+    expect(taken.join("\n")).not.toMatch(/delete back to a space|the word before|the word after/);
+    // A key set to null in Chat frees it there, so Global's binding of it does not take it at the prompt (choice 18).
+    const freed = new Bindings(tableOf({ ...DEFAULTS, Chat: { ...DEFAULTS.Chat, "ctrl+w": null }, Global: { ...DEFAULTS.Global, "ctrl+w": "app:toggleTodos" } }));
+    expect(keyList(freed)).toContain("  Ctrl+W  delete back to a space · Alt+Backspace  the word before · Alt+D  the word after");
+  });
+
   it("lists the keys a table binds in place of the defaults", () => {
     const list = keyList(over("Chat", { "ctrl+n": null, enter: null, "alt+enter": "chat:submit", "ctrl+j": null }));
     expect(list[1]).toBe("  Alt+Enter  send · Shift+Enter or \\ then Alt+Enter  new line");

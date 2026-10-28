@@ -66,12 +66,18 @@ export function both(a: string | undefined, b: string | undefined): string | und
 // "a", "a or b", "a, b, or c".
 const either = (items: string[]) => (items.length < 3 ? items.join(" or ") : `${items.slice(0, -1).join(", ")}, or ${items.at(-1)}`);
 
-// What `?` on an empty prompt prints, grey, in the scrollback: the editor's own keys as written, the rest from the
-// table. Ctrl-C and Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them.
+// What `?` on an empty prompt prints, grey, in the scrollback: the editor's own keys that no binding takes, the rest
+// from the table. Ctrl-C and Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them.
 export function keyList(b: Bindings): string[] {
   const k = (action: string, context: Context, ...usual: string[]) => named(b, action, context, usual);
   const scroll = (action: string, usual: string) => k(`scroll:${action}`, "Scroll", usual)[0];
-  const all = (action: string) => b.keysFor(action, "Chat").map(spelled);
+  // Every key bound to an action at the prompt, from Chat and Global, as the command keys' lines read them.
+  const all = (action: string) => [...new Set([...b.keysFor(action, "Chat"), ...b.keysFor(action, "Global")])].map(spelled);
+  // The prompt's own editing keys that still edit: a key a Chat or Global binding takes acts there instead (design,
+  // "Bindings come first"). Each group's keys side by side, "Home End", the groups joined by "or".
+  const free = (text: string) => (b.takes(text, ["Chat", "Global"]) ? [] : [spelled(text)]);
+  const editing = (...groups: string[][]) => groups.map((g) => g.flatMap(free).join(" ")).filter(Boolean);
+  const [killEnd] = editing(["ctrl+k"]);
   // A part of a line: its keys, then what they do, or nothing when no key is bound.
   const part = (keys: (string | undefined)[], words: string, join = (bound: string[]) => bound.join(" ")) => {
     const bound = keys.filter((x) => x !== undefined);
@@ -96,9 +102,17 @@ export function keyList(b: Bindings): string[] {
       part(pairs, `past prompts${previous[0] ? ` (${previous[0]} takes back a queue)` : ""}`, (bound) => bound.join(" or ")),
       part(k("history:search", "Chat", "ctrl+r"), "search them"),
     ),
-    "  Home End or Ctrl+A Ctrl+E  line start, end · Alt+B Alt+F or Ctrl+← Ctrl+→  by word",
-    "  Ctrl+W  delete back to a space · Alt+Backspace  the word before · Alt+D  the word after",
-    line("Ctrl+K  delete to the line's end", "Ctrl+U  to its start", "Ctrl+Y  put it back", part(k("chat:undo", "Chat", "ctrl+z"), "undo")),
+    line(
+      part(editing(["home", "end"], ["ctrl+a", "ctrl+e"]), "line start, end", (bound) => bound.join(" or ")),
+      part(editing(["alt+b", "alt+f"], ["ctrl+left", "ctrl+right"]), "by word", (bound) => bound.join(" or ")),
+    ),
+    line(part(editing(["ctrl+w"]), "delete back to a space"), part(editing(["alt+backspace"]), "the word before"), part(editing(["alt+d"]), "the word after")),
+    line(
+      part([killEnd], "delete to the line's end"),
+      part(editing(["ctrl+u"]), killEnd ? "to its start" : "delete to the line's start"),
+      part(editing(["ctrl+y"]), "put it back"),
+      part(k("chat:undo", "Chat", "ctrl+z"), "undo"),
+    ),
     line(
       "/  commands",
       "@  project paths",

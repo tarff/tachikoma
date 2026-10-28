@@ -343,8 +343,10 @@ becomes the prompt, with the cursor at the end; Ctrl+Z brings back the text befo
 - **Meanwhile** a turn already running carries on, and its output is there when you come back; a
   permission question waits until you are back. A queued `/screen`, `/settings` or `/keybindings`
   waits for the editor to close.
-- **If the editor fails or is not found,** the prompt stays as it was and a line says why:
+- **If the editor fails or is not found,** the prompt stays as it was and a line says why, either
   `The editor failed (<reason>). Set VISUAL or EDITOR, or "editor" in ~/.tachikoma/settings.json.`
+  or `<command> was not found. Set VISUAL or EDITOR, or "editor" in ~/.tachikoma/settings.json.`
+  (on Windows the path reads `~\.tachikoma\settings.json`).
 - **Pictures:** a picture's `[Image #2]` marker is plain text in the file; back in the prompt it
   carries its picture again if the prompt held that picture when the editor opened.
 - **`/settings` and `/keybindings`** open those files in the same editor, making a missing one first
@@ -399,9 +401,9 @@ Pictures go to the model with your message.
 
 ## Vim mode
 
-All of Claude Code's vim mode: its modes, motions, `f`/`t`/`;`/`,`, `%`, operators with motions and
-text objects, VISUAL and VISUAL LINE, `p`/`P`, `.` to repeat, `u` to undo, and counts (`3w`, `2dd`,
-`d3w`).
+Claude Code's vim mode, as its docs describe it: its modes, motions, `f`/`t`/`;`/`,`, `%`, operators
+with motions and text objects, VISUAL and VISUAL LINE, `p`/`P`, `.` to repeat, `u` to undo, and
+counts (`3w`, `2dd`, `d3w`). See [Known limits](#known-limits) for the text objects.
 
 - **On:** `"editorMode": "vim"` in the settings file, or `/vim` for this window only (`/vim on` and
   `/vim off` set it). It starts in INSERT. The mode shows in the hint row (`-- NORMAL --`) whenever
@@ -581,6 +583,9 @@ Each is fixed in a later release, unless it says otherwise.
 - **On Windows, a `%` in a path given to the editor can be changed on the way:** the editor runs
   through `cmd.exe`, which reads `%NAME%` as a variable, so a user folder with `%` signs in its name
   could give the editor the wrong file for Ctrl+G or `/settings` (no release is set).
+- **Vim mode's text objects are the ones Claude Code's docs list** (`iw`, `aw`, `iW`, `aW`, and `i`
+  or `a` with `"`, `'`, `(`, `[` or `{`). Claude Code's own code also takes `` ` ``, `b`, `B`, `<`,
+  `>`, `)`, `]` and `}` after `i` or `a`; those are not built yet (no release is set).
 
 ## What comes next
 
