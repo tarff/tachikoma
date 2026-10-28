@@ -214,6 +214,17 @@ Each is marked in its task. None approved yet.
     line's colour, not grey: grey inside a line needs coloured pieces through describe, Rows,
     Conversation and classic mode, about 50-80 lines (found at Task 14's build; the coordinator's
     call, for the user to review).
+23. **Task 17's pictures, beyond its file list and choice 12.** The line saying how many pictures a
+    request left out goes out as a `note` event on the bus, which App shows as a grey line; `-p`
+    sends text only, so headless output never needs it. An animated GIF becomes its first frame in
+    PNG only where a provider documents refusing animation: OpenAI ("non-animated GIF") and the
+    ChatGPT plan, which reaches OpenAI's models through the same Responses API. Kimi takes animated
+    GIF as it is, Anthropic uses only the first frame anyway, and Ollama and OpenRouter document
+    nothing, so all four get it as it is (this refines choice 12). Kimi's "4k (4096×2160)" is read
+    as a size class, so an upright picture fits inside 2160×4096. A picture sharp cannot read is
+    sent as it is, never cached as a failure, so the provider decides and a refusal there goes to
+    Task 18's question (found at Task 17's build and spec review; the coordinator's call, for the
+    user to review).
 24. **Remap pairs are two letters, digits, punctuation or symbols; a space is not accepted for now**
     (found at Task 7's code review; the coordinator's call pending the user's answer on spaces).
 

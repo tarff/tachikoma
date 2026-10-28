@@ -11,10 +11,11 @@ export interface Limits {
   maxBase64?: number; // characters of one picture's base64
   maxSide?: number; // pixels on a picture's longer side
   manySide?: { over: number; side: number }; // a smaller `maxSide` once the request holds more than `over` pictures
-  fit?: [number, number]; // width and height a picture must fit inside, its shape kept
+  fit?: [number, number]; // a box a picture must fit inside, its shape kept, turned to stand as the picture does
   maxRequest?: number; // bytes of the request as sent
   maxCount?: number; // pictures in one request
   formats: Format[];
+  stillGif?: true; // the provider refuses an animated GIF
 }
 
 // The formats Tachikoma reads (core/types.ts), for a provider that documents no list: they are sent as they are.
@@ -37,18 +38,26 @@ export const LIMITS: Record<"anthropic" | "openai" | "kimi" | "openrouter" | "ol
     formats: ["image/jpeg", "image/png", "image/gif", "image/webp"],
   },
   // developers.openai.com/api/docs/guides/images-vision: no limit for one picture, which OpenAI resizes itself; 512 MB
-  // "total payload" and 1,500 pictures a request; PNG, JPEG, WebP and non-animated GIF.
-  openai: { name: "OpenAI", maxRequest: 512_000_000, maxCount: 1500, formats: ["image/png", "image/jpeg", "image/webp", "image/gif"] },
-  // platform.kimi.ai/docs/guide/use-kimi-vision-model: 4096×2160 is its recommendation, followed at the user's word; a
-  // 100 MB "request body"; JPEG, PNG, GIF and WebP among others.
+  // "total payload" and 1,500 pictures a request; PNG, JPEG, WebP and "non-animated GIF".
+  openai: {
+    name: "OpenAI",
+    maxRequest: 512_000_000,
+    maxCount: 1500,
+    formats: ["image/png", "image/jpeg", "image/webp", "image/gif"],
+    stillGif: true,
+  },
+  // platform.kimi.ai/docs/guide/use-kimi-vision-model: "4k (4096×2160)" is its recommendation, followed at the user's
+  // word and read as a size class, so an upright picture fits 2160×4096 (plan, choice 23); a 100 MB "request body";
+  // JPEG, PNG, GIF and WebP among others, animated GIF and WebP passed in as they are.
   kimi: { name: "Kimi", fit: [4096, 2160], maxRequest: 100_000_000, formats: ["image/jpeg", "image/png", "image/gif", "image/webp"] },
   // openrouter.ai/docs/guides/overview/multimodal/image-understanding.md: limits "vary per provider and per model", so
   // none here; PNG, JPEG, WebP and GIF.
   openrouter: { name: "OpenRouter", formats: ["image/png", "image/jpeg", "image/webp", "image/gif"] },
   // docs.ollama.com/api/openai-compatibility documents no limits or formats.
   ollama: { name: "Ollama", formats: ALL },
-  // The ChatGPT plan's route documents nothing public.
-  chatgpt: { name: "ChatGPT", formats: ALL },
+  // The ChatGPT plan's route documents nothing public of its own. It reaches OpenAI's models through the Responses API,
+  // whose images-vision guide (above) takes only "non-animated GIF".
+  chatgpt: { name: "ChatGPT", formats: ALL, stillGif: true },
 };
 
 // Shrunk copies for the session, keyed by the picture's number and the limits it was shrunk to, so a copy made to 8000
@@ -61,21 +70,33 @@ interface Shape {
   side?: number;
   fit?: [number, number];
   formats: Format[];
+  stillGif?: true;
 }
 
 const base64Length = (bytes: number) => 4 * Math.ceil(bytes / 3);
 
 // The original when it already fits; otherwise a copy, scaled to the side and the fit, then by the square root of
 // allowed over actual size, measured again until it fits, since the bytes follow the pixel area (design, "Shrinking").
-// A format the provider does not list becomes PNG, and an animated GIF its first frame in PNG, as OpenAI takes only
-// non-animated GIF and Anthropic uses only the first frame (release 6 plan, choice 12).
+// A format the provider does not list becomes PNG, and an animated GIF its first frame in PNG where the provider
+// refuses animation (release 6 plan, choices 12 and 23). A picture sharp cannot read goes as it is, so the provider
+// says whether it takes it, and a refusal there is asked about like any other (plan, choice 23 and Task 18).
 async function shrink(p: Image, to: Shape): Promise<Picture> {
+  try {
+    return await copy(p, to);
+  } catch {
+    return { mediaType: p.mediaType, data: p.data };
+  }
+}
+
+async function copy(p: Image, to: Shape): Promise<Picture> {
   const meta = await sharp(p.data).metadata();
   const animated = p.mediaType === "image/gif" && (meta.pages ?? 1) > 1;
-  const mediaType = to.formats.includes(p.mediaType) && !animated ? p.mediaType : "image/png";
+  const mediaType = to.formats.includes(p.mediaType) && !(animated && to.stillGif) ? p.mediaType : "image/png";
   // Measured as shown, after any turn its camera recorded, since a copy loses that record.
   let { width, height } = meta.autoOrient;
-  const scale = Math.min(1, to.side ? to.side / Math.max(width, height) : 1, to.fit ? Math.min(to.fit[0] / width, to.fit[1] / height) : 1);
+  // The box stands as the picture does (plan, choice 23).
+  const box = to.fit && (width >= height ? [Math.max(...to.fit), Math.min(...to.fit)] : [Math.min(...to.fit), Math.max(...to.fit)]);
+  const scale = Math.min(1, to.side ? to.side / Math.max(width, height) : 1, box ? Math.min(box[0]! / width, box[1]! / height) : 1);
   const fits = (bytes: number) => to.maxBase64 === undefined || base64Length(bytes) <= to.maxBase64;
   const encode = () =>
     sharp(p.data, { autoOrient: true })
@@ -109,7 +130,8 @@ export async function prepare(
   const images = messages.flatMap((m) => m.parts.filter((p) => p.type === "image"));
   const many = limits.manySide && images.length > limits.manySide.over ? limits.manySide.side : undefined;
   const sides = [limits.maxSide, many].filter((s) => s !== undefined);
-  const to: Shape = { maxBase64: limits.maxBase64, side: sides.length ? Math.min(...sides) : undefined, fit: limits.fit, formats: limits.formats };
+  const side = sides.length ? Math.min(...sides) : undefined;
+  const to: Shape = { maxBase64: limits.maxBase64, side, fit: limits.fit, formats: limits.formats, stillGif: limits.stillGif };
   const prepared = new Map<number, Picture | string>();
   for (const p of images) {
     const key = `${p.id} ${JSON.stringify(to)}`;

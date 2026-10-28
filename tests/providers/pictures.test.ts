@@ -73,10 +73,33 @@ describe("prepare", () => {
     for (let id = 1; id <= 21; id++) expect(again.prepared.get(id)).toBe(more.prepared.get(id));
   });
 
-  it("fits a picture inside 4096 × 2160 for Kimi, keeping its shape", async () => {
-    const { prepared } = await run([user(image(1, await png(4100, 100)), image(2, await png(1000, 3000)))], LIMITS.kimi);
+  it("fits a picture inside 4096 × 2160 for Kimi, or 2160 × 4096 when it stands upright, keeping its shape", async () => {
+    const pictures = [png(4100, 100), png(1000, 3000), png(1170, 2532), png(2200, 5000)];
+    const { prepared } = await run([user(...(await Promise.all(pictures)).map((p, i) => image(i + 1, p)))], LIMITS.kimi);
     expect(await size(prepared.get(1) as Picture)).toMatchObject({ width: 4096, height: 100 });
-    expect(await size(prepared.get(2) as Picture)).toMatchObject({ width: 720, height: 2160 });
+    expect(await size(prepared.get(2) as Picture)).toMatchObject({ width: 1000, height: 3000 });
+    expect(await size(prepared.get(3) as Picture)).toMatchObject({ width: 1170, height: 2532 }); // a phone's screenshot
+    expect(await size(prepared.get(4) as Picture)).toMatchObject({ width: 1802, height: 4096 });
+  });
+
+  it("measures a photo as it stands, and sends a copy turned upright with no record of the turn", async () => {
+    // Stored 9000 × 100, with the camera's record (EXIF orientation 6) that it shows turned a quarter, 100 × 9000.
+    const photo: Picture = { mediaType: "image/jpeg", data: await solid(9000, 100).jpeg().withMetadata({ orientation: 6 }).toBuffer() };
+    expect((await sharp(photo.data).metadata()).orientation).toBe(6);
+    const sent = (await run([user(image(1, photo))], LIMITS.anthropic)).prepared.get(1) as Picture;
+    const { width, height, orientation } = await sharp(sent.data).metadata();
+    expect({ width, height, orientation }).toEqual({ width: 89, height: 8000, orientation: undefined });
+  });
+
+  it("sends a picture sharp cannot read as it is, so a refusal can come from the provider", async () => {
+    const whole = await png(9000, 100);
+    const cut: Picture = { mediaType: "image/png", data: whole.data.subarray(0, 100) }; // its header, with the pixels cut off
+    const junk: Picture = { mediaType: "image/jpeg", data: Buffer.from("not a picture at all") };
+    for (const limits of [LIMITS.ollama, LIMITS.anthropic]) {
+      const { prepared } = await run([user(image(1, cut), image(2, junk))], limits);
+      expect(prepared.get(1)).toEqual(cut);
+      expect(prepared.get(2)).toEqual(junk);
+    }
   });
 
   it("sends a WebP as PNG to a provider whose formats leave out WebP", async () => {
@@ -87,9 +110,9 @@ describe("prepare", () => {
     expect(await size(sent)).toMatchObject({ format: "png", width: 30, height: 20 });
   });
 
-  it("sends an animated GIF as its first frame in PNG, and a still GIF as it is", async () => {
+  it("sends an animated GIF to OpenAI as its first frame in PNG, a still GIF as it is, and to Kimi as it is", async () => {
     const frames = Buffer.alloc(4 * 8 * 3);
-    frames.fill(255, 0, 4 * 4 * 3); // a white frame, then a black one
+    frames.fill(255, 0, 4 * 4 * 3); // a white frame, then a black one: two frames the same would be stored as one
     const gif = sharp(frames, { raw: { width: 4, height: 8, channels: 3, pageHeight: 4 } }).gif();
     const animated: Picture = { mediaType: "image/gif", data: await gif.toBuffer() };
     expect((await size(animated)).pages).toBe(2);
@@ -100,6 +123,10 @@ describe("prepare", () => {
     expect(await size(first)).toMatchObject({ format: "png", width: 4, height: 4, pages: undefined });
     expect((await sharp(first.data).raw().toBuffer())[0]).toBe(255);
     expect(prepared.get(2)).toMatchObject({ mediaType: "image/gif", data: still.data });
+
+    const toKimi = (await run([user(image(1, animated))], LIMITS.kimi)).prepared.get(1) as Picture;
+    expect(toKimi).toEqual(animated);
+    expect((await size(toKimi)).pages).toBe(2);
   });
 
   it("leaves pictures for OpenAI as they are, which documents no limit for one picture", async () => {
@@ -206,6 +233,23 @@ describe("each request, from the session", () => {
     await s.send(parts);
     expect(pictures(sent[0]!)).toHaveLength(101);
     expect(said).toEqual([]);
+  });
+
+  // 101 pictures, the oldest a dot, then four of about 9 MB as base64 (36 MB): the dot goes for the count, then the
+  // first large one for the size.
+  it("names both of Anthropic's limits in one line when a request is over both", async () => {
+    const dot = await png(1, 1);
+    const nine: Picture = { mediaType: "image/png", data: await noise(1500, 1500) };
+    const parts = [image(1, dot), ...[2, 3, 4, 5].map((id) => image(id, nine)), ...Array.from({ length: 96 }, (_, i) => image(i + 6, dot))];
+    vi.spyOn(Models.prototype, "retrieve").mockResolvedValueOnce({ max_input_tokens: 200_000 } as never);
+    const sent = anthropicSees();
+    const { said, session: s } = await session(new AnthropicProvider("claude-opus-5-5"));
+    await s.send(parts);
+    expect(notes(sent[0]!)).toEqual([
+      "[Image #1 left out: the request was over Anthropic's 100 pictures]",
+      "[Image #2 left out: the request was over Anthropic's 32 MB]",
+    ]);
+    expect(said).toEqual(["2 pictures were left out of this request to fit Anthropic's 100 pictures and 32 MB."]);
   });
 
   it("gives the lead and the fallback each a copy for its own provider's limits, from the original", async () => {
