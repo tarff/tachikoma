@@ -280,6 +280,11 @@ describe("describe", () => {
     expect(describeMessage({ role: "user", parts: [...parts] })).toEqual([{ text: "> look at [Image #1] please", color: "cyan" }]);
   });
 
+  it("puts a space between two pictures next to each other, so their markers do not run together", () => {
+    const picture = (id: number) => ({ type: "image", id, mediaType: "image/png", data: Buffer.from([0x89, 0x50]) }) as const;
+    expect(describeMessage({ role: "user", parts: [picture(1), picture(2)] })).toEqual([{ text: "> [Image #1] [Image #2]", color: "cyan" }]);
+  });
+
   it("does not show an unknown kind of part as a tool result", () => {
     expect(describeMessage({ role: "assistant", parts: [{ type: "thinking" } as never] })).toEqual([]);
   });

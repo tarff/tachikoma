@@ -739,7 +739,7 @@ export function App({
     reading.current = message;
     signal.addEventListener("abort", stopReads);
     try {
-      // Each picture's own settle, set when its marker went in, runs first (imagePaste, below).
+      // Each picture's own settle, set when its number was taken, runs first (newPicture, below).
       await Promise.all([...ids].map((id) => pictures.settled(id)));
       return messageParts(trimmed(reading.current), pictures); // trimmed again, as a marker taken out may leave a blank at an end
     } finally {
@@ -751,33 +751,36 @@ export function App({
     for (const s of reading.current?.spans ?? []) pictures.set(s.id, { failed: "stopped" }); // a read that ended stays as it ended
   };
   // A read has ended (release 6 design, "While a read runs"). With no picture, its marker goes from wherever it is: the
-  // prompt, the stash, the queue and the message waiting on it; and one line says so, naming the marker when that
-  // message goes without it (plan, choice 17), in Task 15's words.
+  // prompt, the stash, the draft Up keeps, the prompt Ctrl+R gives back, the queue and the message waiting on it; and
+  // one line says so, naming the marker when that message goes without it (plan, choice 17), in Task 15's words.
   const settle = (id: number) => {
     const read = pictures.get(id);
     if (read !== "none" && !(typeof read === "object" && "failed" in read)) return;
-    const out = (d: Draft): Draft => {
-      const { text, spans } = without(d, id);
-      return { text, spans };
-    };
     editor.current = cutPicture(editor.current, id);
     const s = stash.current && cutPicture(stash.current, id);
-    stash.current = s?.text.trim() ? s : null;
-    queue.current = queue.current.map(out).filter((d) => d.text.trim());
+    if (s && s !== stash.current) stash.current = s.text.trim() ? s : null;
+    if (step.current) step.current = { ...step.current, draft: without(step.current.draft, id) };
+    if (search.current) search.current.before = cutPicture(search.current.before, id);
+    queue.current = queue.current.map((d) => without(d, id)).filter((d) => d.text.trim());
     const waits = reading.current?.spans.some((x) => x.id === id);
-    if (reading.current) reading.current = out(reading.current);
+    if (reading.current) reading.current = without(reading.current, id);
     // A message that was only pictures, left empty, sends nothing (session.ts, send).
     const ending = !waits ? "" : reading.current!.text.trim() ? `; ${marker(id)} was sent without it.` : "; nothing was sent.";
     const why = read === "none" ? "No picture on the clipboard" : `Could not read the clipboard: ${read.failed}`;
     say({ text: ending ? why + ending : read === "none" ? `${why}.` : why, color: read === "none" ? "gray" : "red" });
   };
+  // A new picture's number, its read running, with settle set to run when the read ends. Every read starts here:
+  // Alt+V's and, from the release 6 plan's Task 15, a pasted path's.
+  const newPicture = () => {
+    const id = pictures.next();
+    void pictures.settled(id).then(() => latest.current.settle(id));
+    return id;
+  };
   // chat:imagePaste: the next picture's marker at the cursor at once, so pictures keep the order they were asked for
   // (design, "While a read runs"). The read itself is the release 6 plan's Task 15's.
   const imagePaste = (e: Editor) => {
-    const id = pictures.next();
-    editor.current = insertPicture(e, id);
+    editor.current = insertPicture(e, newPicture());
     goal.current = null;
-    void pictures.settled(id).then(() => latest.current.settle(id));
   };
 
   // `/tasks` lists the session's subagents, `/tasks t3` prints one's tool calls and answer in full,

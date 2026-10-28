@@ -34,11 +34,14 @@ export function screen(l: Line): Line {
 export function describe(m: Message): Line[] {
   const lines: Line[] = [];
   let typed: Line | null = null; // the user's prompt so far, its text and pictures one line
+  let picture = false; // the last part put in it was a picture
   for (const p of m.parts) {
     if (p.type === "text" && p.from === "tasks") continue; // shown when it arrived, as "t3 finished"
-    // A picture is its marker in its place, in the line's colour (release 6 plan, choice 22).
+    // A picture is its marker in its place, in the line's colour (release 6 plan, choice 22). Two next to each other
+    // get a space between, as the blanks between them were left out of the message (pictures.ts, messageParts).
     if (p.type === "text" || p.type === "image") {
-      const text = p.type === "image" ? marker(p.id) : p.text;
+      const text = p.type === "image" ? `${picture ? " " : ""}${marker(p.id)}` : p.text;
+      picture = p.type === "image";
       if (m.role !== "user") lines.push({ text });
       else if (typed) typed.text += text;
       else lines.push((typed = { text: `> ${text}`, color: "cyan" }));

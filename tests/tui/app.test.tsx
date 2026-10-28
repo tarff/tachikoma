@@ -5066,7 +5066,7 @@ describe("App's pictures", () => {
     expect(app.lastFrame()).toContain("> look at [Image #1]\n"); // in the conversation, one line (choice 22)
   });
 
-  it("keeps the spans of a queued message, of one brought back by Ctrl-C, and of the stash", async () => {
+  it("keeps the spans of a queued message and of the stash", async () => {
     const pictures = new Pictures();
     const { lead, release } = gated([reply("r1"), reply("r2"), reply("r3")]);
     const { app, session } = await mount([], { lead, pictures });
@@ -5136,6 +5136,56 @@ describe("App's pictures", () => {
     await press(app, "\r");
     await until(app, "ok");
     expect(userParts(session)).toEqual([[{ type: "text", text: "now " }, { type: "image", id: 1, ...PNG }, { type: "text", text: " and [Image #2]" }]]);
+  });
+
+  it("takes a marker the read found none of out of the draft Up keeps, so Down brings it back without it", async () => {
+    const pictures = new Pictures();
+    const { app } = await mount([], { pictures, past: ["older"] });
+    await press(app, "see ", PICTURE, "\u001b[A");
+    pictures.set(1, "none");
+    await until(app, "No picture on the clipboard.");
+    await press(app, "\u001b[B");
+    expect(app.lastFrame()).toMatch(/› see ?\n/);
+  });
+
+  it("takes a marker the read found none of out of the prompt Ctrl+R gives back", async () => {
+    const pictures = new Pictures();
+    const { app } = await mount([], { pictures, past: ["older"] });
+    await press(app, "see ", PICTURE, "\u0012"); // Ctrl+R
+    pictures.set(1, "none");
+    await until(app, "No picture on the clipboard.");
+    await press(app, "\u0003"); // Ctrl-C: the prompt as it was
+    expect(app.lastFrame()).toMatch(/› see ?\n/);
+  });
+
+  it("ends the reads as stopped when the detail view's Ctrl-C stops the turn during the wait, and the turn stops", async () => {
+    const pictures = new Pictures();
+    // A lead that refuses a request already stopped, as the SDKs do.
+    const lead: Provider = {
+      id: "fake:a",
+      complete: async ({ signal }) => {
+        if (signal?.aborted) throw new Error("aborted");
+        return reply("answered");
+      },
+    };
+    const { app, session } = await mount([], { lead, pictures, full: true });
+    await press(app, "look ", PICTURE, "\r", "\u000f", "\u0003"); // Ctrl+O opens the detail view, where Ctrl-C stops the turn
+    await waitFor(() => session.messages.length > 0);
+    await press(app, "q");
+    await until(app, "Could not read the clipboard: stopped; [Image #1] was sent without it.");
+    await gone(app, "Esc to stop");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look" }]]);
+    expect(app.lastFrame()).not.toContain("answered");
+  });
+
+  it("queues what is sent during the wait, sending it after the message waiting", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("one"), reply("two")], { pictures });
+    await press(app, "look ", PICTURE, "\r", "more", "\r");
+    expect(app.lastFrame()).toContain("more");
+    pictures.set(1, PNG);
+    await until(app, "two");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }], [{ type: "text", text: "more" }]]);
   });
 
   it("says nothing was sent when a message that was only a picture is left empty", async () => {

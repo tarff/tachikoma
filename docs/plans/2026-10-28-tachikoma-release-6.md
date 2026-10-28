@@ -834,7 +834,9 @@ Task 14 already wires `chat:imagePaste` to `pictures.next()` and the span (App.t
 already says the "none" and failed lines, with their ending, from its one settle handler (`settle`,
 grey for "none", red for a failure, Esc's `stopped` included). This task adds the read, the hint and
 the readers to that wiring. `settle`'s words name the clipboard, so a pasted file path's read passes
-its source, or its own words, into `settle` (found at Task 14's spec review).
+its source, or its own words, into `settle` (found at Task 14's spec review). A pasted path's picture
+takes its number through `newPicture` (App.tsx), as Alt+V does, so its `settle` runs when its read
+ends (found at Task 14's code review).
 
 **Tests:** each reader's command line per platform and env (no real clipboard); `readImage` with a
 stand-in tool that prints a small PNG's base64, prints nothing, or fails; `imagePaths` with
