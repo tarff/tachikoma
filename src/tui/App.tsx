@@ -281,7 +281,9 @@ export function App({
   const step = useRef<{ at: number; draft: Draft } | null>(null);
   // Ctrl+R: what is searched for, how many older matches Ctrl+R has passed, and the prompt to give back.
   const search = useRef<{ query: string; skip: number; before: Editor } | null>(null);
-  const stash = useRef<Editor | null>(null); // Ctrl+S's one slot, for the session (release 6 design, "Stash")
+  // Ctrl+S's one slot, for the session (release 6 design, "Stash"): the prompt, and where Up had got to with it, the
+  // draft typed before Up included, so a stash during Up's walk loses nothing (choice 31).
+  const stash = useRef<{ prompt: Editor; step: { at: number; draft: Draft } | null } | null>(null);
   // The menus: the entry chosen, for the text it was chosen at; the text Esc closed one at, which
   // keeps it closed until the text changes; and the folder `@` listed last.
   const chosen = useRef({ text: "", at: 0 });
@@ -809,8 +811,12 @@ export function App({
     const read = pictures.get(id);
     if (read !== "none" && !(typeof read === "object" && "failed" in read)) return;
     editor.current = cutPicture(editor.current, id);
-    const s = stash.current && cutPicture(stash.current, id);
-    if (s && s !== stash.current) stash.current = s.text.trim() ? s : null;
+    const s = stash.current;
+    if (s) {
+      const prompt = cutPicture(s.prompt, id);
+      const walk = s.step && { ...s.step, draft: without(s.step.draft, id) };
+      stash.current = prompt === s.prompt || prompt.text.trim() || walk?.draft.text.trim() ? { prompt, step: walk } : null;
+    }
     if (step.current) step.current = { ...step.current, draft: without(step.current.draft, id) };
     if (search.current) search.current.before = cutPicture(search.current.before, id);
     queue.current = queue.current.map((d) => without(d, id)).filter((d) => d.text.trim());
@@ -1845,14 +1851,16 @@ export function App({
   // Ctrl+S (release 6 design, "Stash"): a prompt with text goes into the slot whole, cursor and undo steps with it, and
   // an empty prompt takes the slot back; with text and a full slot the two swap, so nothing is lost (the design's
   // call). What the last delete took stays with the prompt, as load() keeps it. `typing: false`, so what is typed after
-  // a restore is an undo step of its own, not part of the stashed prompt's last one.
+  // a restore is an undo step of its own, not part of the stashed prompt's last one. Where Up had got to goes with the
+  // prompt and comes back with it, so the draft Up keeps is never dropped: after the line Up showed comes back, Down
+  // past the newest brings the draft back (choice 31).
   const swapStash = (e: Editor) => {
     const back = stash.current;
     if (!e.text && !back) return;
-    stash.current = e.text ? e : null;
-    editor.current = back ? { ...back, typing: false, killed: e.killed } : load(e, "");
+    stash.current = e.text || step.current ? { prompt: e, step: step.current } : null;
+    editor.current = back ? { ...back.prompt, typing: false, killed: e.killed } : load(e, "");
     goal.current = null;
-    step.current = null;
+    step.current = back?.step ?? null;
     freshText();
   };
   // Saved for Up and Ctrl+R, in this session and later ones: each sent prompt, and one cleared with

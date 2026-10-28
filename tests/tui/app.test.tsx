@@ -5057,6 +5057,27 @@ describe("App's stash", () => {
     expect(app.lastFrame()).toContain(`› two\n${STASHED}`);
   });
 
+  // Final review: Ctrl+S after Up stashed the line Up showed and dropped the draft Up keeps, picture and all. The slot
+  // keeps where Up had got to with the line, the draft included (choice 31).
+  it("keeps the draft typed before Up with the line it stashes, Down bringing the draft back once that line is back", async () => {
+    const PICTURE = process.platform === "win32" ? "\u001bv" : "\u0016"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+    const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("seen")], { past: ["older"], pictures });
+    await press(app, "draft ", PICTURE, "\u001b[A");
+    expect(app.lastFrame()).toContain("› older\n");
+    await press(app, CTRL_S, "\u001b[B");
+    expect(app.lastFrame()).toMatch(/^›$/m); // Down: nothing, the walk went with the line
+    await press(app, CTRL_S);
+    expect(app.lastFrame()).toContain("› older\n");
+    await press(app, "\u001b[B");
+    expect(app.lastFrame()).toContain("› draft [Image #1]\n");
+    pictures.set(1, PNG);
+    await press(app, "\r");
+    await until(app, "seen");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "draft " }, { type: "image", id: 1, ...PNG }]);
+  });
+
   it("does nothing on Ctrl+S with an empty prompt and an empty slot", async () => {
     const { app } = await mount([]);
     const frame = app.lastFrame();
