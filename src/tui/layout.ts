@@ -121,7 +121,7 @@ export interface FrameOut {
   queuedShown: number; // the queue's rows, the last saying how many more there are when they do not all fit
   pickerRows: number;
   questionFits: boolean; // the question's line leaves the conversation its one row
-  askedRows: number; // the rows of the question's line drawn: its short line's, when it does not fit and can move
+  asked: string[]; // the rows of the question's line drawn: its short line's, when it does not fit and can move
   viewHeight: number; // the conversation's rows, in full screen
   promptFirst: number; // the prompt's first row
 }
@@ -134,6 +134,7 @@ export interface FrameOut {
 // to-do list, which gives way before the prompt does; then the queue, the last row saying how many more there are when
 // they do not all fit. The model list fills the rows above the status line itself. In full screen a row fewer is given
 // out: the conversation's, the least it has (release 5 design, "The screen").
+//
 // Full screen: the conversation takes every row of the frame the live area does not draw, at least one. The live area's
 // rows are counted as they are drawn; under the detail view only the working line, while something runs, and the key
 // row in the hint's place (release 5 plan, Task 12). A question is wrapped and drawn a row a Text, so its rows are known;
@@ -161,10 +162,10 @@ export function frame(i: FrameIn): FrameOut {
   const live = (askedRows: number) =>
     (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
-  const rowsOf = (text: string | null) => (text === null ? 0 : wrap(text, i.columns, false).length);
-  const questionFits = i.askedText === null || i.rows - 1 - live(rowsOf(i.askedText)) >= 1; // as viewHeight, below
-  const askedRows = rowsOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
-  const viewHeight = Math.max(1, i.rows - 1 - live(askedRows));
+  const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
+  const questionFits = i.askedText === null || i.rows - 1 - live(linesOf(i.askedText).length) >= 1; // as viewHeight, below
+  const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
+  const viewHeight = Math.max(1, i.rows - 1 - live(asked.length));
   return {
     tooled,
     hinted,
@@ -178,7 +179,7 @@ export function frame(i: FrameIn): FrameOut {
     queuedShown,
     pickerRows,
     questionFits,
-    askedRows,
+    asked,
     viewHeight,
     promptFirst: (i.full ? viewHeight : 0) + abovePrompt,
   };

@@ -30,7 +30,7 @@ import { TaskPanel, taskRow, taskRows } from "./TaskPanel.js";
 import { PASTE_OFF, PASTE_ON, type Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { type Call, ToolLine } from "./ToolLine.js";
-import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow, type View, wrap } from "./view.js";
+import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow, type View } from "./view.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 // A question waiting in the line, and who asked it: a subagent, or with no owner the lead's turn. In full screen, `detail`:
@@ -1308,8 +1308,8 @@ export function App({
   });
   const { tooled, menuRows, panel, promptSpace, promptShown, todoShown, pickerRows, viewHeight, promptFirst } = f;
   const q = queue.current.map((e) => visible(e));
-  const n = f.queuedShown;
-  const queued = q.length <= n ? q : n > 0 ? [...q.slice(0, n - 1), `+${q.length - n + 1} more`] : [];
+  const shownQueued = f.queuedShown;
+  const queued = q.length <= shownQueued ? q : shownQueued > 0 ? [...q.slice(0, shownQueued - 1), `+${q.length - shownQueued + 1} more`] : [];
   const hint = f.hinted ? hintFor(f.left) : null;
   // A successful copy's line that is not on screen is dropped, so it never turns up later, when a hint row comes back; only
   // a failure waits to be shown (the user's choice at Task 9's review, 2026-10-27). Changed while drawing, which is safe as
@@ -1336,7 +1336,6 @@ export function App({
     }
     question.short = shortOf(question);
   }
-  const asked = full && question && !picker ? wrap(allow(question.short ?? question.text), columns, false) : [];
   // A question brings its own detail into view when it is first drawn (release 5 design, "Scrolling"; plan, Task 11), and
   // when a draw moves it into the conversation, above; here, with the height the conversation has beside it; changed
   // while drawing, as `copied` above. Whether the view was following is kept from the first draw. Its detail's last row
@@ -1423,9 +1422,9 @@ export function App({
         )
       ) : question ? (
         full ? (
-          asked.map((r, i) => (
+          f.asked.map((r, i) => (
             <Text key={i} color="yellow" wrap="truncate-end">
-              {r.text}
+              {r}
             </Text>
           ))
         ) : (

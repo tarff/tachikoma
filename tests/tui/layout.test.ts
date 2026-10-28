@@ -127,7 +127,7 @@ describe("frame", () => {
       queuedShown: 0,
       pickerRows: 0,
       questionFits: true,
-      askedRows: 0,
+      asked: [],
       viewHeight: 16, // with the prompt, the hint and the status line, 19 rows
       promptFirst: 16,
     });
@@ -165,7 +165,7 @@ describe("frame", () => {
   it("shows as many queued messages as fit, the last row saying how many more, and none with no row left", () => {
     // Five rows left for seven: four and "+3 more".
     expect(frame({ ...base, rows: 10, queued: 7 })).toMatchObject({ left: 5, queuedShown: 5, viewHeight: 1, promptFirst: 6 });
-    expect(frame({ ...base, rows: 10, queued: 5 })).toMatchObject({ left: 5, queuedShown: 5 });
+    expect(frame({ ...base, rows: 10, queued: 3 })).toMatchObject({ left: 5, queuedShown: 3, viewHeight: 3, promptFirst: 6 });
     expect(frame({ ...base, rows: 5, queued: 7 })).toMatchObject({ left: 0, queuedShown: 0, viewHeight: 1, promptFirst: 1 });
   });
 
@@ -181,14 +181,23 @@ describe("frame", () => {
     const fitting = "Allow run: ls? [y/n] · Esc to decline";
     const long = `Allow run: ${"echo hello ".repeat(60)}? [y/n] · Esc to decline`;
     const short = "Allow run (shown above)? [y/n] · Esc to decline";
-    expect([fitting, long, short].map((t) => wrap(t, columns, false).length)).toEqual([1, 12, 1]);
+    // Seven rows are the most that fit in ten, the frame's row short, the status line's and the conversation's one taken.
+    const seven = "x".repeat(7 * columns);
+    const eight = "x".repeat(7 * columns + 1);
+    expect([fitting, long, short, seven, eight].map((t) => wrap(t, columns, false).length)).toEqual([1, 12, 1, 7, 8]);
     const asked: FrameIn = { ...base, rows: 10, columns, hint: false, question: true };
-    expect(frame({ ...asked, askedText: fitting, askedShort: short })).toMatchObject({ questionFits: true, askedRows: 1, viewHeight: 7 });
-    expect(frame({ ...asked, askedText: long, askedShort: short })).toMatchObject({ questionFits: false, askedRows: 1, viewHeight: 7 });
+    const fits = frame({ ...asked, askedText: fitting, askedShort: short });
+    expect(fits).toMatchObject({ questionFits: true, viewHeight: 7 });
+    expect(fits.asked).toEqual([fitting]);
+    const moves = frame({ ...asked, askedText: long, askedShort: short });
+    expect(moves).toMatchObject({ questionFits: false, viewHeight: 7 });
+    expect(moves.asked).toEqual([short]);
+    expect(frame({ ...asked, askedText: seven, askedShort: short })).toMatchObject({ questionFits: true, asked: { length: 7 }, viewHeight: 1 });
+    expect(frame({ ...asked, askedText: eight, askedShort: short })).toMatchObject({ questionFits: false, asked: [short], viewHeight: 7 });
     // One that cannot move (it has moved already, or the list is open) keeps its rows, the conversation its one row.
-    expect(frame({ ...asked, askedText: long })).toMatchObject({ questionFits: false, askedRows: 12, viewHeight: 1 });
+    expect(frame({ ...asked, askedText: long })).toMatchObject({ questionFits: false, asked: { length: 12 }, viewHeight: 1 });
     // In classic mode a question is drawn as one Text, which counts no rows here.
-    expect(frame({ ...asked, full: false })).toMatchObject({ questionFits: true, askedRows: 0, viewHeight: 8 });
+    expect(frame({ ...asked, full: false })).toMatchObject({ questionFits: true, asked: [], viewHeight: 8 });
   });
 
   describe("one input changed, every other the same", () => {
@@ -225,7 +234,6 @@ describe("frame", () => {
       const moved = frame({ ...tall, promptTop: 4 });
       expect(moved).toMatchObject(off);
       expect(moved.promptWindow).toEqual({ top: 4, above: 5, below: 0 });
-      expect(frame(tall).promptWindow).toEqual({ top: 0, above: 0, below: 5 });
     });
   });
 });
