@@ -17,7 +17,7 @@ import { type Detail, DetailView, keyRow, opened, searchFor, step as stepMatch }
 import { apply, type Editor, empty, load, move, replace, segmenter } from "./editor.js";
 import { History, matches } from "./history.js";
 import { type Mouse, readOut } from "./input.js";
-import { type Command, commands, isScroll, keyList, named, type Scroll } from "./keys.js";
+import { both, type Command, commands, isScroll, keyList, named, type Scroll } from "./keys.js";
 import { frame as frameOf, layout, placeOn, scroll as windowOf, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
@@ -109,7 +109,7 @@ const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLower
 
 // The contexts in force in each phase (phase.ts), innermost first (release 6 plan, Task 6's table). Printed out and
 // ended, keys go where they went before the table: to the reader of the printed view, or nowhere.
-const CONTEXTS: Record<Phase["kind"], Context[]> = {
+const PHASE_CONTEXTS: Record<Phase["kind"], Context[]> = {
   prompt: ["Chat", "Global"],
   menu: ["Autocomplete", "Chat", "Global"],
   question: ["Confirmation", "Global"],
@@ -123,7 +123,7 @@ const CONTEXTS: Record<Phase["kind"], Context[]> = {
 // End stay transcript:top and transcript:bottom); in the model list only for the wheel, which scrolls the conversation
 // there while keys do not (release 5 plan, choice 3). In classic mode Scroll is never in force.
 const contextsOf = (kind: Phase["kind"], full: boolean, wheel = false): Context[] => {
-  const c = CONTEXTS[kind];
+  const c = PHASE_CONTEXTS[kind];
   return full && c.length && (kind !== "picker" || wheel) ? [...c.slice(0, -1), "Scroll", "Global"] : c;
 };
 // The actions the prompt runs as commands (keys.ts); Global's toggles and Scroll's actions run so everywhere.
@@ -202,7 +202,8 @@ export function App({
   const chordTimer = useRef<NodeJS.Timeout | undefined>(undefined);
   // The keys a hint names for an action (keys.ts, named).
   const keyOf = (action: string, context: Context, usual: string) => named(table, action, context, [usual])[0];
-  const pickerKey = useRef<((k: PickerKey) => void) | null>(null); // the model list's, while it is drawn (ModelPicker.tsx)
+  // The model list's keys (ModelPicker.tsx), set as it draws; called only in the picker phase, while it is drawn.
+  const pickerKey = useRef<((k: PickerKey) => void) | null>(null);
   const step = useRef<{ at: number; draft: string } | null>(null); // where Up has gone in the history, and what was typed before
   // Ctrl+R: what is searched for, how many older matches Ctrl+R has passed, and the prompt to give back.
   const search = useRef<{ query: string; skip: number; before: Editor } | null>(null);
@@ -514,8 +515,8 @@ export function App({
   // What is happening now (phase.ts), from the refs only, the model list and the question as last drawn among them
   // (`frame`), so the mouse listener and the bus's handlers, set up once, read the screen as it is. Keys see the same as
   // this drawing's values: Ink's root is non-concurrent (above), so React draws and commits in one go, and useInput's and
-  // usePaste's handler is the committed drawing's (useEffectEvent). Only the keys ask for the menu, where it was found
-  // before: finding an `@` menu can list a folder (menuFor). A paste asks pasteTo() of the same inputs.
+  // usePaste's handler is the committed drawing's (useEffectEvent). Only the keys and the wheel ask for the menu, where
+  // it was found before: finding an `@` menu can list a folder (menuFor). A paste asks pasteTo() of the same inputs.
   const phaseRefs = { ended, printed, drawn: frame, listOpen, questions, detail, search, working, queue };
   const happening = (findMenu?: () => boolean) => nowOf(phaseInputs(phaseRefs, findMenu));
 
@@ -824,24 +825,31 @@ export function App({
     }
     if (!ended.current) say({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
   };
-  // Who takes a key (release 6 plan, Task 6): a chord under way first, so one ending in a plain letter completes in
-  // a field too; then, while a field is typed (a Ctrl+R query, a detail-view search, the model list's filter), a
-  // printable key goes into it; then the table, in the contexts in force. A key that drops a chord is then handled as
-  // if none had waited (bindings.ts, press). Keys match the table exactly (choice 20, the user's: "Exact match"), but
-  // in classic mode Shift+Up and Shift+Down are Up and Down, as release 4 read them (release 5 plan, choice 16);
-  // Ctrl+Home and Ctrl+End reach the editor's Home and End there (keys.ts, commands).
+  // Who takes a key (release 6 plan, Task 6): while a field is typed (a Ctrl+R query, a detail-view search, the model
+  // list's filter), a printable key goes into it, after a chord under way (lookUp). Keys match the table exactly
+  // (choice 20, the user's: "Exact match"), but in classic mode Shift+Up and Shift+Down are Up and Down, as release 4
+  // read them (release 5 plan, choice 16); Ctrl+Home and Ctrl+End reach the editor's Home and End there (keys.ts,
+  // commands). Text read together is no keystroke, and drops a chord under way, as any other key would.
   const route = (kind: Phase["kind"], field: boolean, ch: string, key: Key): Got => {
     let stroke = strokeOf(ch, key);
-    if (!stroke) return null;
+    if (!stroke) {
+      table.drop();
+      return null;
+    }
     // Two Escs read together reach Ink as one Esc with Alt (Ink's parse-keypress.js), which release 5 took as Esc; the
     // kitty protocol, which marks each key with its eventType, sends them apart (choice 20).
     if (stroke.key === "escape" && stroke.alt && key.eventType === undefined) stroke = { ...stroke, alt: false };
     if (!fullNow.current && stroke.shift && !stroke.ctrl && !stroke.alt && (stroke.key === "up" || stroke.key === "down")) stroke = { ...stroke, shift: false };
-    const contexts = contextsOf(kind, fullNow.current);
+    return lookUp(stroke, contextsOf(kind, fullNow.current), field && printable(stroke) ? ch : null);
+  };
+  // A stroke in the table (release 6 plan, Task 6): a chord under way first, so one ending in a plain letter completes
+  // in a field too; then `typed`, the text of a key that goes into a field; then the table, in the contexts in force. A
+  // stroke that drops a chord is then looked up as if none had waited (bindings.ts, press).
+  const lookUp = (stroke: Stroke, contexts: Context[], typed: string | null): Got => {
     const at = Date.now();
     const chord = table.waiting(at) && table.press(stroke, contexts, at);
     if (chord) return pressed(chord);
-    if (field && printable(stroke)) return { typed: ch };
+    if (typed !== null) return { typed };
     const got = table.press(stroke, contexts, at);
     return got && pressed(got);
   };
@@ -982,7 +990,7 @@ export function App({
     if ("typed" in got) return searchFor(d, s!.query + got.typed, viewHeight);
     if ("pending" in got) return;
     const a = got.action;
-    const move = MOVES[a] ?? ACTIONS[a];
+    const move = MOVES[a];
     if ((a === "transcript:exit" || a === "app:interrupt") && key.ctrl && ch === "c") {
       if (!h.working) closeDetail();
       else {
@@ -996,7 +1004,7 @@ export function App({
     else if (a === "transcript:print" && input && !owner.suspended) void printOut(d); // switchScreen says why
     else if (a === "transcript:search") d.search = { query: "", found: [], at: 0, typing: true, before: d.view.current };
     else if ((a === "transcript:nextMatch" || a === "transcript:previousMatch") && s) stepMatch(d, a === "transcript:nextMatch" ? 1 : -1, viewHeight);
-    else if (move && isScroll(move)) scroll(move);
+    else if (move) scroll(move);
     else everywhere(a, h);
   };
 
@@ -1102,15 +1110,13 @@ export function App({
     // another action acts as its key would.
     if (m.kind === "wheel") {
       const stroke = { key: `wheel${m.wheel}`, ctrl: m.ctrl, alt: m.alt, shift: m.shift };
-      const contexts = contextsOf(phase.kind, true, true);
-      const at = Date.now();
-      // A notch that drops a waiting chord is then pressed as if none had waited, as a key is (route), and the chord leaves
-      // the hint row even when the notch has nowhere to scroll.
-      const waited = table.waiting(at) !== null;
-      const got = table.press(stroke, contexts, at) ?? (waited ? table.press(stroke, contexts, at) : null);
+      // A notch that drops a waiting chord is then looked up as if none had waited, as a key is (lookUp), and the chord
+      // leaves the hint row even when the notch has nowhere to scroll.
+      const waited = table.waiting(Date.now()) !== null;
+      const got = lookUp(stroke, contextsOf(phase.kind, true, true), null);
       if (waited) rerender((n) => n + 1);
       if (!got) return;
-      if ("pending" in got || (got.action !== "scroll:lineUp" && got.action !== "scroll:lineDown")) return onKey(h, pressed(got), "", NO_KEY);
+      if (!("action" in got) || (got.action !== "scroll:lineUp" && got.action !== "scroll:lineDown")) return onKey(h, got, "", NO_KEY);
       const step = notch(wheel.current, scrollSpeed, got.action === "scroll:lineUp" ? -1 : 1);
       wheel.current = step.carry;
       const from = firstRow(p.rows, p.view.current, viewHeight);
@@ -1432,8 +1438,10 @@ export function App({
           ? null
           : menu
             ? hints(
-                `${keyOf("autocomplete:previous", "Autocomplete", "up") ?? ""}${keyOf("autocomplete:next", "Autocomplete", "down") ?? ""} choose`,
-                ...(menu.kind === "command" ? [said(fillKeys[0], "fill"), said(fillKeys[1], "run")] : [`${fillKeys.filter(Boolean).join(" or ")} fill`]),
+                said(both(keyOf("autocomplete:previous", "Autocomplete", "up"), keyOf("autocomplete:next", "Autocomplete", "down")), "choose"),
+                ...(menu.kind === "command"
+                  ? [said(fillKeys[0], "fill"), said(fillKeys[1], "run")]
+                  : [said(fillKeys.filter(Boolean).join(" or ") || undefined, "fill")]),
                 said(keyOf("autocomplete:dismiss", "Autocomplete", "escape"), "close"),
               )
             : queue.current.length

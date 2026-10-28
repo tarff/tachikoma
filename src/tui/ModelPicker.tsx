@@ -4,7 +4,7 @@ import { visible } from "../core/permissions.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { Bindings } from "./bindings.js";
 import type { Mouse } from "./input.js";
-import { named } from "./keys.js";
+import { both, named } from "./keys.js";
 
 // `/model`: every model of every provider that is set up (release 2 design, "The model picker").
 // Arrow keys move, Enter picks, Esc (or Ctrl-C) closes, and typing filters, since OpenRouter alone
@@ -124,7 +124,8 @@ export function ModelPicker({
   // The help line names the keys bound to Select's actions, as release 5 named them (keys.ts, named).
   const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
   const [up, down, enter, esc] = [key("select:previous", "up"), key("select:next", "down"), key("select:accept", "enter"), key("select:cancel", "escape")];
-  const help = [(up || down) && `${up ?? ""}${down ?? ""} move`, enter && `${enter} picks`, esc && `${esc} closes`].filter(Boolean).join(" · ");
+  const moves = both(up, down);
+  const help = [moves && `${moves} move`, enter && `${enter} picks`, esc && `${esc} closes`].filter(Boolean).join(" · ");
 
   return (
     <>

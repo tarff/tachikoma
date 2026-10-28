@@ -98,7 +98,8 @@ describe("commands", () => {
 
 describe("the keys named in help and hints", () => {
   const defaults = () => new Bindings(tableOf(DEFAULTS));
-  const without = (context: keyof typeof DEFAULTS, keys: Record<string, string | null>) =>
+  // The default table with `keys` laid over one context's: bindings added, moved or set to null.
+  const over = (context: keyof typeof DEFAULTS, keys: Record<string, string | null>) =>
     new Bindings(tableOf({ ...DEFAULTS, [context]: { ...DEFAULTS[context], ...keys } }));
 
   it("names the key today's words name while it is bound to the action, else the first key bound, else none", () => {
@@ -106,10 +107,10 @@ describe("the keys named in help and hints", () => {
     expect(named(defaults(), "historySearch:accept", "HistorySearch", ["tab"])).toEqual(["Tab"]);
     expect(named(defaults(), "transcript:exit", "Transcript", ["q", "escape"])).toEqual(["q", "Esc"]);
     expect(named(defaults(), "transcript:bottom", "Transcript", ["shift+g", "end"])).toEqual(["G", "End"]);
-    expect(named(without("Transcript", { q: null }), "transcript:exit", "Transcript", ["q", "escape"])).toEqual(["Esc"]);
-    expect(named(without("Confirmation", { escape: null }), "confirm:no", "Confirmation", ["escape"])).toEqual(["n"]);
-    expect(named(without("Chat", { escape: null, "ctrl+q": "chat:cancel" }), "chat:cancel", "Chat", ["escape"])).toEqual(["Ctrl+Q"]);
-    expect(named(without("Chat", { escape: null }), "chat:cancel", "Chat", ["escape"])).toEqual([]);
+    expect(named(over("Transcript", { q: null }), "transcript:exit", "Transcript", ["q", "escape"])).toEqual(["Esc"]);
+    expect(named(over("Confirmation", { escape: null }), "confirm:no", "Confirmation", ["escape"])).toEqual(["n"]);
+    expect(named(over("Chat", { escape: null, "ctrl+q": "chat:cancel" }), "chat:cancel", "Chat", ["escape"])).toEqual(["Ctrl+Q"]);
+    expect(named(over("Chat", { escape: null }), "chat:cancel", "Chat", ["escape"])).toEqual([]);
     expect(named(defaults(), "chat:externalEditor", "Chat", ["ctrl+x ctrl+e"])).toEqual(["Ctrl+X Ctrl+E"]);
   });
 
@@ -133,8 +134,15 @@ describe("the keys named in help and hints", () => {
   });
 
   it("lists the keys a table binds in place of the defaults", () => {
-    const list = keyList(without("Chat", { "ctrl+n": null, enter: null, "alt+enter": "chat:submit", "ctrl+j": null }));
+    const list = keyList(over("Chat", { "ctrl+n": null, enter: null, "alt+enter": "chat:submit", "ctrl+j": null }));
     expect(list[1]).toBe("  Alt+Enter  send · Shift+Enter or \\ then Alt+Enter  new line");
     expect(list[5]).toBe("  ↑ ↓ or Ctrl+P  past prompts (↑ takes back a queue) · Ctrl+R  search them");
+  });
+
+  it("leaves out a line whose only action has no key", () => {
+    const list = keyList(over("Global", { "ctrl+t": null }));
+    expect(list).toHaveLength(keyList(defaults()).length - 1);
+    expect(list.join("\n")).not.toContain("to-do list");
+    expect(list).not.toContain("  ");
   });
 });

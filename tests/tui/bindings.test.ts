@@ -221,6 +221,15 @@ describe("Bindings.press", () => {
     expect(bindings.press(k("q"), ["Chat", "Global"], 300)).toBeNull(); // typed, as no binding takes it
   });
 
+  // For what is no one keystroke, text read together (App.tsx, route; Task 6's code review).
+  it("drops a chord on drop(), reading the next stroke as if none had waited", () => {
+    const bindings = b();
+    bindings.press(ctrl("x"), ["Chat", "Global"], 0);
+    bindings.drop();
+    expect(bindings.waiting(100)).toBeNull();
+    expect(bindings.press(ctrl("e"), ["Chat", "Global"], 100)).toBeNull(); // the editor's end of line, not the chord's end
+  });
+
   it("drops a chord started in one set of contexts and finished in another without it", () => {
     const bindings = b();
     bindings.press(ctrl("x"), ["Chat", "Global"], 0);

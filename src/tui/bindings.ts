@@ -241,6 +241,12 @@ export class Bindings {
     return null;
   }
 
+  // Drops a chord under way, for what is no one keystroke and so can complete none: text read together (App.tsx,
+  // route).
+  drop(): void {
+    this.#chord = null;
+  }
+
   // The strokes of a chord under way, for the hint row (release 6 design, "The keys file"), or null.
   waiting(now: number): Stroke[] | null {
     return this.#chord && now - this.#chord.at < CHORD_MS ? copy(this.#chord.strokes) : null;

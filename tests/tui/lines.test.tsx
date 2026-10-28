@@ -30,6 +30,10 @@ describe("workingText", () => {
   it("leaves out tokens and cost for what is not a turn", () => {
     expect(workingText("Waiting for the browser", 5_000, null, "Esc")).toBe("⠹ Waiting for the browser · 5s · Esc to stop");
   });
+
+  it("leaves out the stop key when no key is bound to chat:cancel", () => {
+    expect(workingText("Working", 1_000, null, undefined)).toBe("⠹ Working · 1s");
+  });
 });
 
 describe("toolParts", () => {

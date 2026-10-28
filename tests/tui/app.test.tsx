@@ -4463,15 +4463,23 @@ describe("App's keys from the table of actions", () => {
     await gone(app, "Ctrl+Q to stop");
   });
 
-  it("shows a chord's first key in the hint row until the second key, or for 3 s", async () => {
-    const { app } = await mount([]);
+  // Runs `body` on a fake clock (setTimeout and Date); `wait` moves it on by `ms`, then lets one turn of the event loop
+  // pass (setImmediate is not faked), in which the screen is drawn again.
+  const onFakeClock = async (body: (wait: (ms: number) => Promise<void>) => Promise<void>) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
-      // Then one turn of the event loop (setImmediate is not faked), in which the screen is drawn again.
-      const wait = async (ms: number) => {
+      await body(async (ms) => {
         await vi.advanceTimersByTimeAsync(ms);
         await new Promise((resolve) => setImmediate(resolve));
-      };
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+
+  it("shows a chord's first key in the hint row until the second key, or for 3 s", async () => {
+    const { app } = await mount([]);
+    await onFakeClock(async (wait) => {
       app.stdin.write(CTRL_X);
       await wait(10);
       expect(app.lastFrame()).toContain("\nctrl+x ...\n");
@@ -4485,9 +4493,7 @@ describe("App's keys from the table of actions", () => {
       await wait(20); // 3 s since Ctrl+X
       expect(app.lastFrame()).not.toContain("ctrl+x");
       expect(app.lastFrame()).toContain("? for shortcuts");
-    } finally {
-      vi.useRealTimers();
-    }
+    });
   });
 
   // Each of the four keys moves the conversation: back up from the bottom, to the top, down from it, and to the bottom.
@@ -4551,16 +4557,12 @@ describe("App's keys from the table of actions", () => {
     expect(app.lastFrame()).toContain("search:  ·");
     await press(app, CTRL_X, "q");
     expect(app.lastFrame()).toContain("search: q ·");
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    try {
+    await onFakeClock(async (wait) => {
       app.stdin.write(CTRL_X);
-      await vi.advanceTimersByTimeAsync(3_000);
+      await wait(3_000);
       app.stdin.write("t");
-      await vi.advanceTimersByTimeAsync(10);
-      await new Promise((resolve) => setImmediate(resolve));
-    } finally {
-      vi.useRealTimers();
-    }
+      await wait(10);
+    });
     expect(app.lastFrame()).toContain("search: qt (no match) ·");
     expect(app.lastFrame()).not.toContain("write the fix");
   });
@@ -4575,16 +4577,12 @@ describe("App's keys from the table of actions", () => {
     expect(app.lastFrame()).toContain("Filter: (type to filter)");
     await press(app, CTRL_X, "q");
     expect(app.lastFrame()).toContain("Filter: q ·");
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    try {
+    await onFakeClock(async (wait) => {
       app.stdin.write(CTRL_X);
-      await vi.advanceTimersByTimeAsync(3_000);
+      await wait(3_000);
       app.stdin.write("u");
-      await vi.advanceTimersByTimeAsync(10);
-      await new Promise((resolve) => setImmediate(resolve));
-    } finally {
-      vi.useRealTimers();
-    }
+      await wait(10);
+    });
     expect(app.lastFrame()).toContain("Filter: qu ·");
     await press(app, "\u001b");
     await gone(app, "Filter:");
@@ -4678,5 +4676,54 @@ describe("App's keys from the table of actions", () => {
     await wheel(mouse, "down"); // following the bottom: the notch moves nothing
     expect(shown(app)[0]).toBe(bottom);
     expect(app.lastFrame()).not.toContain("ctrl+x");
+  });
+
+  // Task 6's code review: text read together is no keystroke, and drops a chord as any other key does.
+  it("drops a waiting chord on text read together, so the next letter is typed", async () => {
+    const { app, bus } = await mount([], { bindings: chord() });
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, CTRL_X, "ab", "t");
+    expect(app.lastFrame()).toContain("☐ write the fix\n› abt\n? for shortcuts");
+  });
+
+  // Each hint names the keys a table leaves bound, in release 5's words (keys.ts, named).
+  it("leaves out of the detail view's key row a group with no key, and its kept search's n with none", async () => {
+    const { app } = await mount([], { full: true, bindings: table("Transcript", { "[": null, n: null }) });
+    await press(app, "\u000f");
+    expect(app.lastFrame()).toContain("\nj k ↑ ↓ line · g G Home End top, bottom · / search · q Esc close\n");
+    await press(app, "/", "turn", "\r");
+    expect(app.lastFrame()).toContain('\n"turn": 1 of 1 · N previous\n');
+  });
+
+  it("names the model list's moved keys in its help line", async () => {
+    const bindings = table("Select", { up: null, down: null, "ctrl+p": "select:previous", "ctrl+n": "select:next" });
+    const { app } = await mount([], { bindings, models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "/model");
+    await until(app, "fake:a");
+    expect(app.lastFrame()).toContain("Filter: (type to filter) · Ctrl+P Ctrl+N move · Enter picks · Esc closes");
+  });
+
+  it("names a menu's moved keys in its hint, leaving out what no key does", async () => {
+    const bindings = new Bindings(
+      tableOf({
+        ...DEFAULTS,
+        Autocomplete: { "ctrl+p": "autocomplete:previous", "ctrl+n": "autocomplete:next", escape: "autocomplete:dismiss" },
+        Chat: { ...DEFAULTS.Chat, enter: null },
+      }),
+    );
+    const { app, ctx } = await mount([], { bindings });
+    await writeFile(path.join(ctx.root, "a.txt"), "");
+    await press(app, "/");
+    expect(app.lastFrame()).toContain("\nCtrl+P Ctrl+N choose · Esc close\n");
+    await press(app, "\u007f", "@");
+    await until(app, "  a.txt");
+    expect(app.lastFrame()).toContain("\nCtrl+P Ctrl+N choose · Esc close\n");
+  });
+
+  it("names the key confirm:no is left on in a question's line", async () => {
+    const { app, ask } = await mount([], { bindings: table("Confirmation", { escape: null }) });
+    void ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · n to decline");
   });
 });

@@ -56,6 +56,13 @@ export function named(b: Bindings, action: string, context: Context, usual: stri
   return (kept.length ? kept : bound.slice(0, 1)).map(spelled);
 }
 
+// Two keys named side by side, as hints name a pair: "↑↓" for one-character names, "Ctrl+P Ctrl+N" otherwise; either
+// may be missing, and with neither, undefined.
+export function both(a: string | undefined, b: string | undefined): string | undefined {
+  const keys = [a, b].filter((k) => k !== undefined);
+  return keys.length ? keys.join(keys.every((k) => [...k].length === 1) ? "" : " ") : undefined;
+}
+
 // "a", "a or b", "a, b, or c".
 const either = (items: string[]) => (items.length < 3 ? items.join(" or ") : `${items.slice(0, -1).join(", ")}, or ${items.at(-1)}`);
 
@@ -69,7 +76,8 @@ export function keyList(b: Bindings): string[] {
     const bound = keys.filter((x) => x !== undefined);
     return bound.length > 0 && `${join(bound)}  ${words}`;
   };
-  const line = (...parts: (string | false)[]) => `  ${parts.filter(Boolean).join(" · ")}`;
+  // A line of parts, or none when no part has a key, which the list then leaves out.
+  const line = (...parts: (string | false)[]) => (parts.some(Boolean) ? `  ${parts.filter(Boolean).join(" · ")}` : null);
   const [submit] = k("chat:submit", "Chat", "enter");
   const [cancel] = k("chat:cancel", "Chat", "escape");
   const [newline, ...newlines] = k("chat:newline", "Chat", "shift+enter", "ctrl+j");
@@ -77,7 +85,7 @@ export function keyList(b: Bindings): string[] {
   const next = k("history:next", "Chat", "down", "ctrl+n");
   // "↑ ↓ or Ctrl+P Ctrl+N": each Up key beside its Down key.
   const pairs = Array.from({ length: Math.max(previous.length, next.length) }, (_, i) => [previous[i], next[i]].filter(Boolean).join(" "));
-  return [
+  const list = [
     "Keys:",
     line(part([submit], "send"), part([newline, submit && `\\ then ${submit}`, ...newlines], "new line", either)),
     line(part([cancel], "stop the turn"), part([cancel && `${cancel} ${cancel}`], "clear the prompt")),
@@ -104,6 +112,7 @@ export function keyList(b: Bindings): string[] {
       part([scroll("lineUp", "shift+up"), scroll("lineDown", "shift+down")], "a line (full screen)"),
     ),
   ];
+  return list.filter((l) => l !== null);
 }
 
 export function commands(input: string, key: Key): Command[] {
