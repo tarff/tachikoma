@@ -243,8 +243,9 @@ Each is marked in its task. None approved yet.
     the old one leaves none for a moment, which used to reset every setting, or every key, and set
     it again, saying the keys file's problems again each time. Deleting either file on purpose, or
     the whole folder, keeps them until a restart. Should `/settings` then make a new blank `{}`
-    file, every setting goes back to its default at that moment, as a blank file sets nothing; the
-    user expects this. `/lead`, a `/model` pick and `/screen` change only the window they are typed
+    file after a file (not the folder) was removed, every setting goes back to its default at that
+    moment, as a blank file sets nothing; the user expects this. After the folder is removed the
+    watch is closed, so nothing resets. `/lead`, a `/model` pick and `/screen` change only the window they are typed
     in and save nothing, since every open window watches the file and would follow a save; to make
     a change last, the user edits the file (`/settings` opens it). A later edit of the file's
     `lead` or `screen` applies as any edit does. This replaces all of Task 8 (`saveSetting`, its

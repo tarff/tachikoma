@@ -40,7 +40,7 @@ import { Bus, FakeProvider, Held, callTool, reply, standInEditor, tempContext, u
 const tick = () => new Promise((r) => setTimeout(r, 50));
 
 // How many times each file has been read, so a test can tell the settings watcher has read a file it wrote (readsOf,
-// below); otherwise node:fs's own.
+// below); otherwise node:fs's own. It counts every reader, so a test reads `where` itself only outside a readsOf wait.
 const reads = vi.hoisted(() => new Map<string, number>());
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>();
@@ -5736,7 +5736,7 @@ describe("App's live settings", () => {
     expect(app.lastFrame()).not.toContain("perm ask");
   });
 
-  it("switches the screen as /screen does, once a turn running ends, without saving, and back once the entry is removed", async () => {
+  it("switches the screen as /screen does, once a turn running ends, and back once the entry is removed", async () => {
     const lead = new Held();
     const { app, write, where } = await watching([], {}, { lead, full: true });
     await type(app, "go");
@@ -5747,7 +5747,7 @@ describe("App's live settings", () => {
     await sees(app, `screen is now classic ${FROM}`);
     write({ mode: "project" });
     await sees(app, `screen is now full ${FROM}`);
-    expect(readFileSync(where, "utf8")).toBe('{"mode":"project"}'); // never saved over the user's own text
+    expect(readFileSync(where, "utf8")).toBe('{"mode":"project"}'); // the file as the user wrote it
   });
 
   it("says full screen cannot draw here when the file asks for it", async () => {
