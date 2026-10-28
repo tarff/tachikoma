@@ -3,7 +3,7 @@
 // Where Claude Code's docs leave a key's exact behaviour open, this does what Claude Code 2.1.312's own
 // code does where that was read (2026-10-28), and otherwise what Vim does. Every change is one undo
 // step through editor.ts's `change`, and `u` is the editor's undo.
-import { apply, change, type Editor, lineEnd, lineStart, move, segmenter } from "./editor.js";
+import { after, apply, before, boundaries, change, type Editor, lineEnd, lineStart, move } from "./editor.js";
 
 export type VimMode = "INSERT" | "NORMAL" | "VISUAL" | "VISUAL LINE";
 type Find = "f" | "F" | "t" | "T";
@@ -15,7 +15,10 @@ export interface Vim {
   lastChange?: string[]; // the keys of the last change, with its count, for `.`
   register: { text: string; linewise: boolean }; // the last yank or delete, kept here and never on the clipboard
   anchor?: number; // VISUAL's (Task 20)
-  goal?: number; // the column, in characters, that j and k keep across a shorter line
+  // The column, in characters, that j and k keep across a shorter line (Infinity after $, the line's
+  // end), kept with the cursor and text it was set at and used only while both are unchanged, so a
+  // change App makes forgets it (Claude Code 2.1.312's own code, read 2026-10-28).
+  goal?: { column: number; cursor: number; text: string };
 }
 
 export const start: Vim = { mode: "INSERT", pending: "", count: "", register: { text: "", linewise: false } };
@@ -44,17 +47,19 @@ const SHORT = new Map([["x", "dl"], ["s", "cl"], ["D", "d$"], ["C", "c$"], ["S",
 
 function normal(v: Vim, e: Editor, key: string, keys = [...v.count, ...v.pending, key]): Result {
   const [, op = "", opCount = "", prefix = ""] = /^([dcy<>]?)(\d*)([gfFtTr]?)$/u.exec(v.pending)!;
-  const { goal, ...rest } = v; // a finished command forgets the column j and k keep, unless it is j or k
+  const { goal, ...rest } = v; // a finished command forgets the column j and k keep, unless it is j, k or $
   const done: Vim = { ...rest, pending: "", count: "" };
   const n = Number(v.count || 1) * Number(opCount || 1); // `2d3w` is six words, as in Vim
   const go = (name: string, lastFind = v.lastFind): Result => {
     const w = { ...done, lastFind };
-    const m = motion(w, e.text, e.cursor, name, n, v.count + opCount !== "", op, goal);
+    const kept = goal?.cursor === e.cursor && goal.text === e.text ? goal.column : undefined;
+    const m = motion(w, e.text, e.cursor, name, n, v.count + opCount !== "", op, kept);
     if (!m && !op && (name === "j" || name === "down")) return { v: w, e, act: "history:next" };
     if (!m && !op && (name === "k" || name === "up")) return { v: w, e, act: "history:previous" };
     if (!m) return { v: w, e };
     if (op) return operate(w, e, op, m, keys);
-    return { v: m.goal === undefined ? w : { ...w, goal: m.goal }, e: onChar(move(e, m.to)) };
+    const to = onChar(move(e, m.to));
+    return { v: m.goal === undefined ? w : { ...w, goal: { column: m.goal, cursor: to.cursor, text: to.text } }, e: to };
   };
   if (prefix === "r") return isChar(key) ? replaceChars(done, e, key, n, keys) : { v: done, e };
   if (prefix === "g") return key === "g" ? go("gg") : { v: done, e };
@@ -255,7 +260,7 @@ function motion(v: Vim, text: string, c: number, key: string, n: number, counted
       return { to: firstNonBlank(text, c), kind: "exclusive" };
     case "$": {
       const m = vertical(text, c, n - 1);
-      return m && { to: lineEnd(text, m.to), kind: "exclusive" };
+      return m && { to: lineEnd(text, m.to), kind: "exclusive", goal: Infinity }; // j and k keep to the line's end
     }
     case "gg":
     case "G":
@@ -393,13 +398,11 @@ function wordBack(t: Chars, k: number, n: number): number {
 // The text as the characters the screen shows, and where each starts, the text's end last, so an
 // emoji made of several code points is one character to every motion.
 function chars(text: string) {
-  const s = [...segmenter.segment(text)];
-  return { ch: s.map((x) => x.segment), at: [...s.map((x) => x.index), text.length] };
+  const at = boundaries(text);
+  return { ch: at.slice(0, -1).map((a, i) => text.slice(a, at[i + 1])), at };
 }
 type Chars = ReturnType<typeof chars>;
 const isChar = (key: string) => chars(key).ch.length === 1;
-const before = (text: string, i: number) => chars(text).at.findLast((b) => b < i) ?? 0;
-const after = (text: string, i: number) => chars(text).at.find((b) => b > i) ?? text.length;
 function firstNonBlank(text: string, i: number): number {
   let j = lineStart(text, i);
   while (text[j] === " " || text[j] === "\t") j++;

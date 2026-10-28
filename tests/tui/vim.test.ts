@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Editor, empty, load } from "../../src/tui/editor.js";
+import { type Editor, empty, load, move } from "../../src/tui/editor.js";
 import { press, start, type Vim, type VimMode } from "../../src/tui/vim.js";
 
 // The text with the cursor shown as "|"; in NORMAL the cursor is on the character after it.
@@ -66,6 +66,18 @@ describe("vim: navigation", () => {
     keys("abcd|e\nx\nabcdef", "jj", "abcde\nx\nabcd|ef");
     keys("abcde\nx\nabcd|ef", "kk", "abcd|e\nx\nabcdef");
     keys("abcd|e\nx\nabcdef", "jhj", "abcde\nx\n|abcdef"); // another motion sets the column anew
+  });
+
+  it("j and k forget the column when the cursor was moved from outside, as Claude Code's do", () => {
+    let r = press(NORMAL, at("abcd|e\nxy\nabcdef"), "j");
+    expect(show(r.e)).toBe("abcde\nx|y\nabcdef");
+    r = press(r.v, move(r.e, 6), "j"); // App moved it, onto the x
+    expect({ shown: show(r.e), mode: r.v.mode }).toMatchObject({ shown: "abcde\nxy\n|abcdef", mode: "NORMAL" });
+  });
+
+  it("$ then j or k keeps to the line's end, as Claude Code's does", () => {
+    keys("a|bc\nabcdef", "$j", "abc\nabcde|f");
+    keys("a|bc\nx\nabcdef", "$jj", "abc\nx\nabcde|f");
   });
 
   it("the arrows in NORMAL are h j k l", () => {

@@ -42,11 +42,11 @@ export const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme"
 
 // The places between characters as the screen shows them, so an emoji made of several code points
 // is passed over and deleted as one.
-function boundaries(text: string): number[] {
+export function boundaries(text: string): number[] {
   return [...[...segmenter.segment(text)].map((s) => s.index), text.length];
 }
-const before = (text: string, i: number) => boundaries(text).findLast((b) => b < i) ?? 0;
-const after = (text: string, i: number) => boundaries(text).find((b) => b > i) ?? text.length;
+export const before = (text: string, i: number) => boundaries(text).findLast((b) => b < i) ?? 0;
+export const after = (text: string, i: number) => boundaries(text).find((b) => b > i) ?? text.length;
 
 // GNU Readline's words: letters and digits (with their accents, which are code points of their own).
 const wordChar = (c: string) => /[\p{L}\p{N}\p{M}]/u.test(c);
