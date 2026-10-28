@@ -418,6 +418,9 @@ describe("vim: text objects", () => {
     keys("foo b|ar", "daw", "fo|o");
     keys("foo-b|ar", "diw", "foo|-");
     keys("foo |  bar", "daw", "foo|bar");
+    // A line break is a blank like any other, as Claude Code's dt() takes /\s/ for blanks over the whole text.
+    keys("a\n|\nb", "diw", "a|b");
+    keys("foo b|ar\nbaz", "daw", "foo |baz");
     keys("foo b|ar baz", "ciw", "foo | baz", "INSERT");
     expect(keys("foo b|ar baz", "yiw", "foo |bar baz").v.register.text).toBe("bar");
   });
@@ -518,6 +521,16 @@ describe("vim: VISUAL", () => {
     expect(keys("a\nb|c\nd", "Vp", "a\n|X\nd", "NORMAL", yanked("X", true)).v.register).toEqual({ text: "bc", linewise: true, spans: [] });
     keys("a|bc\nd", "v$p", "a|X\nd", "NORMAL", yanked("X")); // the line break selected is kept
     keys("a|b", "vp", "a|b", "VISUAL"); // nothing yanked: nothing to put
+    keys("a\nb|c\nd", "Vp", "a\n | \nd", "NORMAL", yanked("  ", true)); // a line of blanks: the cursor on its last
+  });
+
+  // Claude Code 2.1.312's own Wt() (read 2026-10-29): a yanked line keeps its line breaks; a yank that ended with a
+  // line break loses it, and one comes back when the selection ended with one.
+  it("p: puts line breaks as Claude Code's own code does", () => {
+    const lines = keys("a|b\n\ncd", "Vjy", "|ab\n\ncd").v;
+    keys("x|y", "vp", "x|ab\n", "NORMAL", lines);
+    const charwise = keys("a|b\n\ncd", "vjy", "a|b\n\ncd").v;
+    keys("x|y\nz", "v$p", "x|b\nz", "NORMAL", charwise);
   });
 
   it("r{char}: replaces every selected character, line breaks kept", () => {
@@ -577,6 +590,7 @@ describe("vim: VISUAL", () => {
     keys("|ab cd", ["v", "l", "c", "x", "escape", "w", "."], "x |x");
     keys("|a\nb\nc\nd\ne", "Vjd.", "|e");
     keys("|abcd", "vlrx2l.", "xx|xx");
+    keys("|ab cd", "vlpw.", "X |X", "NORMAL", { ...NORMAL, register: { text: "X", linewise: false, spans: [] } }); // what p put then
   });
 });
 
@@ -604,12 +618,21 @@ describe("vim: counts", () => {
     keys("|a b c d e f g h i j k", "10w", "a b c d e f g h i j |k");
   });
 
-  it("too big a count stops where the text does, or is refused, at once", () => {
+  // Claude Code 2.1.312's own code caps a count at 10,000 as it is typed (read 2026-10-29).
+  it("too big a count stops where the text does, and is 10,000 at most, as Claude Code's own code caps it", () => {
     keys("|a\nb", "999999999j", "a\n|b");
     keys("a\n|b", "999999999k", "|a\nb");
     keys("a|bc", "x50000000u", "a|bc");
-    keys("|ab", "yl4294967296p", "|ab"); // Vim refuses a put too long to make (E1240)
-    keys("|ab", "yy4294967296p", "|ab");
+    keys("|ab", "yl4294967296p", `${"a".repeat(10000)}|ab`);
+    keys("|ab", "yy4294967296p", `ab\n|${"ab\n".repeat(9999)}ab`);
+    expect(keys("|ab", "d4294967296", "|ab").v.pending).toBe("d10000");
+    keys("a|b", "v30000000>", `${"  ".repeat(10000)}|ab`); // VISUAL's > shifts 10,000 times, not 30,000,000
+  });
+
+  it("a put too long to make is refused, as Vim refuses it (E1240)", () => {
+    const long: Vim = { ...NORMAL, register: { text: "a".repeat(200000), linewise: false, spans: [] } };
+    keys("|ab", "9999p", "|ab", "NORMAL", long);
+    keys("|ab", "9999p", "|ab", "NORMAL", { ...long, register: { ...long.register, linewise: true } });
   });
 });
 
@@ -724,8 +747,14 @@ describe("vim: vimInsertModeRemaps", () => {
   it("leaves both when App's key or edit came between: Left, or a paste", () => {
     const first = timed("ab|", [["j", 0]]);
     const left = press(first.v, first.e, "left", { pairs, now: 1 }); // given back for App, which moves the cursor
+    expect(left.v.remap).toBeUndefined();
     let r = press(left.v, apply(left.e, "left"), "j", { pairs, now: 2 });
     expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "abj|j", mode: "INSERT" });
+    r = press(first.v, apply(first.e, "left"), "j", { pairs, now: 1 }); // App moved the cursor without `press`
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "abj|j", mode: "INSERT" });
+    const before = timed("a|b", [["j", 0]]);
+    r = press(before.v, apply(before.e, "delete"), "j", { pairs, now: 1 }); // the text changed, the cursor did not
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "ajj|", mode: "INSERT" });
     r = press(first.v, apply(first.e, { type: "paste", text: "x" }), "j", { pairs, now: 1 });
     expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "abjxj|", mode: "INSERT" });
   });
@@ -838,5 +867,37 @@ describe("vim: pictures' markers", () => {
     const replaced = pressed(e, "0v$rz").e;
     expect(show(replaced)).toBe("|zzzzzz");
     expect(replaced.spans).toEqual([]);
+  });
+
+  it("VISUAL ~ begun inside a marker leaves the cursor at the marker's start, as Claude Code's snaps out of one", () => {
+    const e = pressed(withPicture("go ", " x", 5), "v$~").e;
+    expect(show(e)).toBe("go |[Image #1] X");
+    expect(spans(e)).toEqual(["1:[Image #1]"]);
+  });
+
+  it("a marker put before another keeps the spans in order, so a VISUAL ~ over both keeps both", () => {
+    const e = pressed(withPicture("go ", "", 3), "ylP0v$~").e;
+    expect(e.text).toBe("GO [Image #1][Image #1]");
+    expect(spans(e)).toEqual(["1:[Image #1]", "1:[Image #1]"]);
+  });
+});
+
+describe("vim: plain data", () => {
+  // Every object in `x` frozen, so a change made in place throws.
+  function frozen<T>(x: T): T {
+    if (x && typeof x === "object" && !Object.isFrozen(x)) {
+      Object.freeze(x);
+      for (const y of Object.values(x)) frozen(y);
+    }
+    return x;
+  }
+
+  it("press changes nothing it is given, through a . and a remap", () => {
+    const remaps = frozen({ pairs: { jj: "<Esc>" }, now: 0 } as const);
+    let r: ReturnType<typeof press> = { v: structuredClone(NORMAL), e: at("|foo bar") };
+    for (const k of ["c", "w", "x", "escape", "w", "."]) r = press(frozen(r.v), frozen(r.e), k, remaps);
+    expect(show(r.e)).toBe("x |x");
+    for (const k of ["a", "y", "j", "j"]) r = press(frozen(r.v), frozen(r.e), k, remaps);
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "x x|y", mode: "NORMAL" });
   });
 });

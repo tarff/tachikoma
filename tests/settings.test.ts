@@ -12,7 +12,7 @@ const problem = (data: unknown) => {
   return "problem" in r ? r.problem : undefined;
 };
 const temp = () => mkdtempSync(path.join(tmpdir(), "tachi-settings-"));
-const BOM = String.fromCharCode(0xfeff);
+const BOM = "\u{FEFF}";
 
 describe("readSettings", () => {
   // The design's example file ("The settings file"), every entry with a good value.
@@ -105,8 +105,8 @@ describe("readSettings", () => {
 
   // A pair is two keys typed in turn, so each must be a key typed alone: a letter, digit, punctuation mark or
   // symbol (release 6 plan, choice 24). A space is not one for now.
-  it("leaves out a remap pair with a space, a combining accent, a line separator or a control character", () => {
-    const pairs = ["j ", " j", `e${String.fromCharCode(0x301)}`, `j${String.fromCharCode(0x2028)}`, `j${String.fromCharCode(7)}`];
+  it("leaves out a remap pair with a space, a combining accent, a line separator, a control character, or one character on screen", () => {
+    const pairs = ["j ", " j", "e\u{301}", "j\u{2028}", "j\u{7}", "\u{1F44D}\u{1F3FD}", "\u{1F1E6}\u{1F1FA}"]; // the last two: a thumb and a flag
     const r = read({ vimInsertModeRemaps: Object.fromEntries(pairs.map((k) => [k, "<Esc>"])) });
     const words = (k: string) =>
       `settings.json: "vimInsertModeRemaps" entry ${JSON.stringify(k)} is not two letters, digits, punctuation marks or symbols mapped to "<Esc>"`;

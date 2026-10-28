@@ -128,9 +128,10 @@ function normal(v: Vim, e: Editor, key: string, keys = [...v.pending.replace(/\d
     return o ? operate(done, move(e, o[0]), op, { to: o[1], kind: "object" }, last) : { v: done, e };
   }
   if (prefix) return isChar(key) ? go("find", { op: prefix as Find, ch: key }) : { v: done, e };
-  // A digit adds to the count, after an operator to its own; 0 with no digits before it is the line's start.
-  if (/^\d$/u.test(key) && op && (key !== "0" || opCount)) return { v: { ...v, pending: v.pending + key }, e };
-  if (/^\d$/u.test(key) && !op && (key !== "0" || v.count)) return { v: { ...v, count: v.count + key }, e };
+  // A digit adds to the count, after an operator to its own; 0 with no digits before it is the line's start. Each
+  // count is 10,000 at most, as Claude Code 2.1.312's own code caps it as it is typed (`Math.min(t*10+digit, 1e4)`).
+  if (/^\d$/u.test(key) && op && (key !== "0" || opCount)) return { v: { ...v, pending: op + upTo(opCount + key) }, e };
+  if (/^\d$/u.test(key) && !op && (key !== "0" || v.count)) return { v: { ...v, count: upTo(v.count + key) }, e };
   // A text object follows d, c or y; Claude Code's > and < take only themselves again (2.1.312's own code).
   const object = /^[dcy]$/u.test(op) && /^[ia]$/u.test(key);
   if (object || /^[gfFtT]$/u.test(key) || (!op && /^[dcy<>r]$/u.test(key))) return { v: { ...v, pending: v.pending + key }, e };
@@ -146,6 +147,10 @@ function normal(v: Vim, e: Editor, key: string, keys = [...v.pending.replace(/\d
 }
 
 const VISUALS = { v: "VISUAL", V: "VISUAL LINE" } as const;
+
+// Claude Code 2.1.312's own cap on a count (its `mt=1e4`, read 2026-10-29).
+const MAX_COUNT = 10000;
+const upTo = (digits: string) => String(Math.min(Number(digits), MAX_COUNT));
 
 function command(v: Vim, e: Editor, key: string, n: number, last: Change): Result {
   const { text, cursor: c } = e;
@@ -374,8 +379,7 @@ function visual(v: Vim, e: Editor, key: string): Result {
   const from = line ? lineStart(text, Math.min(a, c)) : Math.min(a, c);
   const end = Math.max(a, c); // where the last character selected starts
   const to = line ? lineEnd(text, end) : after(text, end);
-  const { anchor, ...rest } = done;
-  const out: Vim = { ...rest, mode: "NORMAL" };
+  const out = leave(done, e).v;
   const lines = text.slice(from, end).split("\n").length;
   // For `.`: as many characters, or lines, from the cursor (Claude Code 2.1.312's own code).
   const size = line ? lines : chars(text.slice(from, to)).ch.length;
@@ -425,8 +429,8 @@ const CASES = {
 
 // VISUAL's r, ~, u and U: each character from `from` to `to` made anew by `f`, line breaks kept, a run at a time
 // between pictures' markers, as one step. A marker is one character (release 6 plan, choice 14) with no case: r
-// makes it one `marker`, and ~ u U leave it and its span. The cursor goes to the selection's start (Claude Code
-// 2.1.312's own code), or to a marker's start that began before it.
+// makes it one `marker`, and ~ u U leave it and its span. The cursor goes to the selection's start, or to the start
+// of a marker the selection began inside, as Claude Code 2.1.312's own code snaps it out of one.
 function remake(v: Vim, e: Editor, from: number, to: number, f: (ch: string) => string, marker?: string): Result {
   const edits: [number, number, string][] = [];
   let at = from;
@@ -442,23 +446,25 @@ function remake(v: Vim, e: Editor, from: number, to: number, f: (ch: string) => 
     at = Math.max(at, s.to);
   }
   if (to > at) run(to);
-  return { v, e: onChar(move(changes(e, edits), Math.min(from, edits[0]?.[0] ?? from))) };
+  return { v, e: onChar(move(changes(e, edits), cover(e.spans, from, to)[0])) };
 }
 
-// VISUAL's p, as Claude Code 2.1.312's own code does it (read 2026-10-29): the selection replaced by the register's
-// text, less a line break at its end, with a line break after it when the selection ended with one; the register
-// then holds what was replaced. The cursor goes to the first line's first non-blank in VISUAL LINE, else to the
-// last character put, or to its start when what was put ends with a line break.
+// VISUAL's p, as Claude Code 2.1.312's own Wt() does it (read 2026-10-29): the selection replaced by the register's
+// text, less a line break at its end, and with one after it when the selection ended with one and the text does
+// not; the register then holds what was replaced. Claude Code's register holds yanked lines with a line break after
+// them, which it takes off; this one never holds that break, so yanked lines keep every break they have. The cursor
+// goes to the first line's first non-blank in VISUAL LINE, else to the last character put, or to its start when
+// what was put ends with a line break, and onto a character.
 function putOver(v: Vim, e: Editor, from: number, to: number, line: boolean, last: Change): Result {
   const reg = v.register;
   [from, to] = cover(e.spans, from, to);
   const old = e.text.slice(from, to);
-  const body = reg.text.endsWith("\n") ? reg.text.slice(0, -1) : reg.text;
-  const put = old.endsWith("\n") ? `${body}\n` : body;
+  const body = !reg.linewise && reg.text.endsWith("\n") ? reg.text.slice(0, -1) : reg.text;
+  const put = old.endsWith("\n") && !body.endsWith("\n") ? `${body}\n` : body;
   const d = withCopies(change(e, from, to, put), reg.spans, from, 0, 1);
   const at = line ? firstNonBlank(d.text, from) : put.endsWith("\n") ? from : Math.max(from, before(d.text, from + put.length));
   const register = { text: old, linewise: line, spans: within(e.spans, from, to) };
-  return { v: { ...v, register, lastChange: { ...last, put: reg } }, e: move(d, at) };
+  return { v: { ...v, register, lastChange: { ...last, put: reg } }, e: onChar(move(d, at)) };
 }
 
 // `.`: the last change again from the cursor, with what its INSERT typed, as Claude Code 2.1.312's own code repeats

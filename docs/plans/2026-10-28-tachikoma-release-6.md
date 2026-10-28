@@ -996,6 +996,8 @@ and `V`, motions extending, `d x y c s p r ~ u U > < J o`, `v`/`V` switching or 
 repeating the last change (with its count, in INSERT the typed text too); `vimInsertModeRemaps`: the first
 character typed is inserted, the second within 1 s (`now` passed in) removes it and goes to NORMAL,
 another key or a later second leaves both (design). Yank and put copy picture spans (Task 14).
+Claude Code's own code also takes `` ` ``, `b`, `B`, `<`, `>`, `)`, `]` and `}` as text objects; they
+are not built, as this plan lists the docs' set (found at Task 20's code review).
 
 **Tests:** one per row of Claude Code's "Text objects" and "Visual mode" tables; `.` after `dw`,
 `3x`, `ciwfoo<Esc>`; the remap with fake times on each side of 1 s; a yanked marker put twice
