@@ -17,7 +17,7 @@ import { apply, type Editor, empty, load, move, replace, segmenter } from "./edi
 import { History, matches } from "./history.js";
 import { type Mouse, readOut } from "./input.js";
 import { type Command, commands, isScroll, KEY_LIST, type Scroll } from "./keys.js";
-import { layout, placeOn, scroll as windowOf, vertical } from "./layout.js";
+import { frame as frameOf, layout, placeOn, scroll as windowOf, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
 import { ModelPicker, rows as listRows } from "./ModelPicker.js";
@@ -196,16 +196,17 @@ export function App({
   // `full` following (switchScreen, below). The mouse listener reads the frame's shape from `frame`, below, for the same
   // reason.
   const fullNow = useRef(full);
-  // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row and how many it draws, and
-  // the menu's under it, no prompt rows while a question, the model list, Ctrl+R's search, whose prompt shows a match, or
-  // the detail view takes their place; the prompt as typed and the menu's choice when they were drawn, which keys
-  // replace, never change; the detail view drawn, if any; and whether the model list and a question are drawn, which take
-  // the keys (phase.ts, PhaseInputs).
+  // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row, how many it draws and
+  // which of its rows they are (layout.ts, frame), and the menu's under it, no prompt rows while a question, the model
+  // list, Ctrl+R's search, whose prompt shows a match, or the detail view takes their place; the prompt as typed and the
+  // menu's choice when they were drawn, which keys replace, never change; the detail view drawn, if any; and whether the
+  // model list and a question are drawn, which take the keys (phase.ts, PhaseInputs).
   const frame = useRef({
     columns,
     viewHeight: 1,
     promptFirst: 0,
     promptRows: 0,
+    promptWindow: { top: 0, above: 0, below: 0 },
     menuRows: 0,
     editor: empty,
     chosen: chosen.current,
@@ -1045,15 +1046,14 @@ export function App({
   const clickAt = (x: number, y: number) => {
     const f = frame.current;
     if (editor.current !== f.editor || chosen.current !== f.chosen) return;
-    const { columns, promptFirst, promptRows, menuRows } = f;
+    const { columns, promptFirst, promptRows, promptWindow, menuRows } = f;
     const row = y - promptFirst; // a row of the prompt, then of the menu
     const marked = (i: number, shown: number, w: { above: number; below: number }) => (i === 0 && w.above > 0) || (i === shown - 1 && w.below > 0);
     const e = editor.current;
     if (row >= 0 && row < promptRows) {
-      const { rows, places } = layout(e.text, promptWidth(columns));
-      const w = windowOf(rows.length, promptRows, places.get(e.cursor)!.row, promptTop.current);
-      if (marked(row, promptRows, w)) return;
-      editor.current = move(e, placeOn(places, w.top + row, x - 2)!);
+      const { places } = layout(e.text, promptWidth(columns));
+      if (marked(row, promptRows, promptWindow)) return;
+      editor.current = move(e, placeOn(places, promptWindow.top + row, x - 2)!);
       goal.current = null;
     } else {
       const i = row - promptRows;
@@ -1276,33 +1276,41 @@ export function App({
     return c === null || searching || d?.search?.typing || exitKey || (!c.failed && usual === null) ? usual : c.text;
   };
 
-  // The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since
-  // at full height Ink draws the whole scrollback again each time. First the status line and the
-  // working line; the tool line when there is room for it, the hint line and the cursor's row; the hint
-  // line when there is room for it and the cursor's row (under the detail view, which draws no prompt, there is no
-  // cursor's row to keep: found at Task 12's review); then an open menu, with the prompt cut to the
-  // cursor's row; then the task panel (release 4 design, "On screen"); then the prompt; then the to-do
-  // list, which gives way before the prompt does; then the queue, the last row saying how many more there are when they do
-  // not all fit. The model list fills the rows above the status line itself, so it has no tool line
-  // under it. In full screen a row fewer is given out: the conversation's, the least it has (release 5
-  // design, "The screen").
-  const base = height - 1 - 1 - (busy ? 1 : 0) - (full ? 1 : 0);
-  const cursor = d ? 0 : 1; // the cursor's row, kept while the prompt is drawn
-  const tooled = !picker && segments.includes("tools") && calls.current.length > 0 && base >= 1 + cursor + (hintFor(1) !== null ? 1 : 0);
-  const room = base - (tooled ? 1 : 0);
-  const hinted = hintFor(1) !== null && room >= 1 + cursor;
-  const space = Math.max(1, room - (hinted ? 1 : 0));
-  const menuRows = menu ? Math.min(menu.entries.length, Math.max(1, space - 1)) : 0;
-  const panel = taskRows(tasks.all, Math.max(0, space - 1 - menuRows), now);
-  const promptSpace = menu ? 1 : space - panel.length;
-  const promptRows = layout(prompt.text, promptWidth(columns)).rows.length;
-  const promptShown = Math.min(promptRows, Math.max(1, promptSpace));
-  const promptLeft = space - menuRows - panel.length - Math.min(promptRows, promptSpace);
-  const todoShown = !todos.current.hidden && unfinished(todos.current.items) ? todoRows(todos.current.items, promptLeft) : [];
-  const left = promptLeft - todoShown.length;
+  // The frame's rows (layout.ts, frame), from what is drawn: the prompt as shown, Ctrl+R's match while it searches. The
+  // model list has no tool line under it. In full screen it needs its rows unfiltered, the longest it gets, with its "No
+  // models" line when it has no models, in a box that tall, so the status line stays put while typing filters the list.
+  // A question's line is wrapped and drawn a row a Text in full screen, so its rows are known; the line it moves to when
+  // too long to fit is its short one, below.
+  const allow = (what: string) => `Allow ${what}? [y/n] · Esc to decline`;
+  const shortOf = (q: Question) => `${q.label} (shown above)`;
+  const laid = layout(prompt.text, promptWidth(columns));
+  const offered = full && picker ? listRows(picker, "") : [];
+  const movable = full && question && !picker && !question.short; // a question that can still move into the conversation
+  const f = frameOf({
+    rows: height,
+    columns,
+    full,
+    promptRows: laid.rows.length,
+    cursorRow: laid.places.get(prompt.cursor)!.row,
+    promptTop: promptTop.current,
+    working: busy,
+    toolLine: !picker && segments.includes("tools") && calls.current.length > 0,
+    detail: d !== null,
+    hint: hintFor(1) !== null, // whether there is a hint does not depend on the rows left (usualHint)
+    menu: menu ? menu.entries.length : null,
+    taskRows: (rows) => taskRows(tasks.all, rows, now),
+    todoRows: (rows) => (!todos.current.hidden && unfinished(todos.current.items) ? todoRows(todos.current.items, rows) : []),
+    queued: queue.current.length,
+    pickerNeeded: picker ? offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1) : null,
+    question: question !== null,
+    askedText: full && question && !picker ? allow(question.short ?? question.text) : null,
+    askedShort: movable ? allow(shortOf(question)) : null,
+  });
+  const { tooled, menuRows, panel, promptSpace, promptShown, todoShown, pickerRows, viewHeight, promptFirst } = f;
   const q = queue.current.map((e) => visible(e));
-  const queued = q.length <= left ? q : left > 0 ? [...q.slice(0, left - 1), `+${q.length - left + 1} more`] : [];
-  const hint = hinted ? hintFor(left) : null;
+  const n = f.queuedShown;
+  const queued = q.length <= n ? q : n > 0 ? [...q.slice(0, n - 1), `+${q.length - n + 1} more`] : [];
+  const hint = f.hinted ? hintFor(f.left) : null;
   // A successful copy's line that is not on screen is dropped, so it never turns up later, when a hint row comes back; only
   // a failure waits to be shown (the user's choice at Task 9's review, 2026-10-27). Changed while drawing, which is safe as
   // Ink renders with React's non-concurrent root (ink.js, `concurrent` defaults to false); a concurrent root could drop
@@ -1310,21 +1318,6 @@ export function App({
   if (copied.current && !copied.current.failed && hint !== copied.current.text) copied.current = null;
   if (copied.current && hint === copied.current.text) copied.current.shown = true; // from now the next key or click takes it away
 
-  // Full screen (release 5 design, "The screen"): the frame is a row shorter than the terminal, as above, and the
-  // conversation takes every row of it the live area does not draw, at least one. The live area's rows are counted as
-  // they are drawn, a question's given as `askedRows`; under the detail view only the working line, while something
-  // runs, and the key row in the hint's place (plan, Task 12). A question is wrapped here and drawn a row a Text, so its
-  // rows are known. The model list takes the rows it needs, up to all but the conversation's least row, its filter line
-  // and the status line (release 5 plan, choice 19), in a box that tall, so the status line stays put while typing filters the
-  // list: the list unfiltered is the longest it gets, with its "No models" line when it has no models.
-  const allow = (q: Question) => `Allow ${q.short ?? q.text}? [y/n] · Esc to decline`;
-  const offered = full && picker ? listRows(picker, "") : [];
-  const needed = offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1);
-  const pickerRows = Math.max(1, Math.min(needed, height - 1 - 1 - 1 - 1 - (hint ? 1 : 0))); // the frame's row short, the conversation's, filter, status
-  const abovePrompt = (busy ? 1 : 0) + todoShown.length + queued.length; // the live area's rows drawn above the prompt
-  const liveFor = (askedRows: number) =>
-    (picker ? pickerRows + 1 : question ? askedRows : d ? (busy ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
-    (hint ? 1 : 0) + 1 + (tooled ? 1 : 0);
   // A question too long to fit, whose rows would leave the conversation less than its one row, has its line point above
   // instead (the user's choices at Task 11's reviews): at a write's preview, whose heading holds the whole path, or else
   // at all of its text, put in the conversation under a heading as a preview is. Nothing of a command is ever cut
@@ -1333,8 +1326,7 @@ export function App({
   // a copy's line does, which no resize makes wrong. A question that fits is drawn as before. Said while drawing, as
   // `copied` above: React draws the App again at once for the lines it adds. On a very small terminal (20 by 5, say) the
   // short line can itself wrap past the frame: the limit any live area has there.
-  const fits = (q: Question) => height - 1 - liveFor(wrap(allow(q), columns, false).length) >= 1; // as viewHeight, below
-  const moved = full && question && !picker && !question.short && !fits(question);
+  const moved = movable && !f.questionFits;
   if (moved) {
     if (!question.detail) {
       const n = characters(question.text);
@@ -1342,10 +1334,9 @@ export function App({
       say({ text: `┌ ${question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" }, { text: question.text, color: "gray" });
       question.detail = [from, kept.lines.length - 1];
     }
-    question.short = `${question.label} (shown above)`;
+    question.short = shortOf(question);
   }
-  const asked = full && question && !picker ? wrap(allow(question), columns, false) : [];
-  const viewHeight = Math.max(1, height - 1 - liveFor(asked.length));
+  const asked = full && question && !picker ? wrap(allow(question.short ?? question.text), columns, false) : [];
   // A question brings its own detail into view when it is first drawn (release 5 design, "Scrolling"; plan, Task 11), and
   // when a draw moves it into the conversation, above; here, with the height the conversation has beside it; changed
   // while drawing, as `copied` above. Whether the view was following is kept from the first draw. Its detail's last row
@@ -1363,12 +1354,12 @@ export function App({
       view.current = { at: { line: r.line, offset: r.start }, unseen: kept.lines.length - 1 - to };
     }
   }
-  const promptFirst = (full ? viewHeight : 0) + abovePrompt; // the prompt's first row
   frame.current = {
     columns,
     viewHeight,
     promptFirst,
     promptRows: picker || question || search.current || d ? 0 : promptShown,
+    promptWindow: f.promptWindow,
     menuRows,
     editor: editor.current,
     chosen: chosen.current,
