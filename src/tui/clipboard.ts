@@ -169,42 +169,32 @@ export function readImage(tool: Reader): Promise<Read> {
   });
 }
 
-// One word of a line of dragged paths: quoted, or a run of other characters ending at a space, taking a backslash and
-// the character after it together except on Windows, where a backslash is the path's separator.
-const WORD = /\s*("[^"]*"|'[^']*'|(?:\\.|[^\s"'\\])+)(?=\s|$)/y;
-const WINDOWS_WORD = /\s*("[^"]*"|'[^']*'|[^\s"']+)(?=\s|$)/y;
-
-function wordsOf(line: string, word: RegExp): string[] | null {
-  const words: string[] = [];
-  for (word.lastIndex = 0; word.lastIndex < line.length; ) {
-    const m = word.exec(line);
-    if (!m) return null;
-    words.push(m[1]!);
-  }
-  return words;
-}
+// The words of a line of dragged paths. A line splits where Claude Code 2.1.312's paste handler, dut(), splits one
+// (~/.local/bin/claude.exe, read 2026-10-29), at / (?=["']?(?:\/|[A-Za-z]:\\))/: a space before a path starting with /
+// or a drive letter, after a quote or not. A space inside quotes, or after a backslash except on Windows, where a
+// backslash is the path's separator, stays in its word; any other space is part of a word too.
+const NO_SPLIT = String.raw` (?!["']?(?:\/|[A-Za-z]:\\))`;
+const WORD = new RegExp(String.raw`(?:"[^"]*"|'[^']*'|\\.?|[^\\ ]|${NO_SPLIT})+`, "g");
+const WINDOWS_WORD = new RegExp(String.raw`(?:"[^"]*"|'[^']*'|[^ ]|${NO_SPLIT})+`, "g");
 
 // A paste that is only paths to pictures (release 6 design, "From pasted paths"): the paths, or null. Whether the files
 // are there is the caller's to ask. Each path as Claude Code 2.1.312 reads one (its macOS, Linux and Windows builds,
-// read 2026-10-29): its outer quotes go; on macOS and Linux a backslash then gives the character after it, a doubled
-// one leaving one, except in a path starting with a drive letter or \\ (Claude Code's exception under WSL, which
-// writes Windows' paths so; here on any system but Windows, as no other has such paths), while its Windows build
-// leaves backslashes as they are; and a picture's path ends in .png, .jpg, .jpeg, .gif or .webp. Several paths come
-// on one line with a space between them, each quoted or with its own spaces escaped (Claude Code's paste handler,
-// dut(), splits a line at a space before a path, quoted or not), so a line whose words are all pictures is those. Any
-// other line is one path, as dut() also takes a line whose spaces are not escaped, and the paste is text unless every
-// line is pictures.
+// read 2026-10-29): its blanks and outer quotes go; on macOS and Linux a backslash then gives the character after it, a
+// doubled one leaving one, except in a path starting with a drive letter or \\ (Claude Code's exception under WSL,
+// which writes Windows' paths so; here on any system but Windows, as no other has such paths), while its Windows build
+// leaves backslashes as they are; and a picture's path ends in .png, .jpg, .jpeg, .gif or .webp. A line whose words
+// are all pictures is those; any other line is one path, and the paste is text unless every line is pictures.
 export function imagePaths(paste: string, platform: NodeJS.Platform = process.platform): string[] | null {
   const windows = platform === "win32";
   const path = (word: string) => {
-    const p = /^(["'])(.*)\1$/.exec(word)?.[2] ?? word;
+    const p = /^(["'])(.*)\1$/.exec(word.trim())?.[2] ?? word.trim();
     return windows || /^(?:[A-Za-z]:\\|\\\\)/.test(p) ? p : p.replace(/\\(.)/g, "$1");
   };
   const picture = (p: string) => /\.(png|jpe?g|gif|webp)$/i.test(p);
   const paths: string[] = [];
   for (const line of paste.split(/\r\n?|\n/).map((l) => l.trim()).filter(Boolean)) {
-    const words = wordsOf(line, windows ? WINDOWS_WORD : WORD)?.map(path);
-    if (words?.every(picture)) paths.push(...words);
+    const words = line.match(windows ? WINDOWS_WORD : WORD)!.map(path);
+    if (words.every(picture)) paths.push(...words);
     else if (picture(path(line))) paths.push(path(line));
     else return null;
   }

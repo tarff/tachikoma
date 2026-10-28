@@ -404,21 +404,34 @@ describe("imagePaths", () => {
     expect(imagePaths("\\\\server\\share\\a.png", "linux")).toEqual(["\\\\server\\share\\a.png"]);
   });
 
-  it("takes several on a line, split at spaces outside quotes and escapes, as a drag of several writes them", () => {
+  it("takes several on a line, split at a space before a path starting with / or a drive letter, quoted or not", () => {
     const mac = ["/Users/me/My Pic.png", "/Users/me/b.png"];
     expect(imagePaths("/Users/me/My\\ Pic.png /Users/me/b.png ", "darwin")).toEqual(mac);
+    expect(imagePaths("/a/one.png /b/two.png", "linux")).toEqual(["/a/one.png", "/b/two.png"]);
     expect(imagePaths("'/home/me/a b.png' '/home/me/c.png' ", "linux")).toEqual(["/home/me/a b.png", "/home/me/c.png"]);
     expect(imagePaths('"C:\\x y\\a.png" "C:\\b.png"', "win32")).toEqual(["C:\\x y\\a.png", "C:\\b.png"]);
     expect(imagePaths("C:\\a.png C:\\b.jpg", "win32")).toEqual(["C:\\a.png", "C:\\b.jpg"]);
-    expect(imagePaths("a.png b.png", "linux")).toEqual(["a.png", "b.png"]);
-    expect(imagePaths("a.png b.png", "win32")).toEqual(["a.png", "b.png"]);
+    expect(imagePaths("C:\\My Pictures\\a.png C:\\b.png", "win32")).toEqual(["C:\\My Pictures\\a.png", "C:\\b.png"]);
   });
 
-  it("takes a whole line with spaces as one path when its words are not all pictures", () => {
+  it("does not split at a space inside quotes or after a backslash, though a path follows", () => {
+    expect(imagePaths("/a/x.png\\ /b.png /c.png", "darwin")).toEqual(["/a/x.png /b.png", "/c.png"]);
+    expect(imagePaths("'/a/x /b.png' '/c.png'", "linux")).toEqual(["/a/x /b.png", "/c.png"]);
+    expect(imagePaths('"/a/x.png /b.png" /c.png', "linux")).toEqual(["/a/x.png /b.png", "/c.png"]);
+  });
+
+  it("takes a line with spaces before no path as one path", () => {
     expect(imagePaths("C:\\My Pictures\\a.png", "win32")).toEqual(["C:\\My Pictures\\a.png"]);
     expect(imagePaths("/home/me/a b.png", "linux")).toEqual(["/home/me/a b.png"]);
+    expect(imagePaths("/a/x.png y.png", "linux")).toEqual(["/a/x.png y.png"]);
+    expect(imagePaths("a.png b.png", "linux")).toEqual(["a.png b.png"]);
+    expect(imagePaths("a.png b.png", "win32")).toEqual(["a.png b.png"]);
     // One path, which App finds is no file, so the paste stays text.
     expect(imagePaths("look at a.png", "linux")).toEqual(["look at a.png"]);
+  });
+
+  it("takes the whole line as one path when its words are not all pictures", () => {
+    expect(imagePaths("/a/b /c.png", "linux")).toEqual(["/a/b /c.png"]);
   });
 
   it("is null when the words are not all pictures and the line is no picture; words run together are one", () => {
