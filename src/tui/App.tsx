@@ -622,7 +622,7 @@ export function App({
   // design, "The detail view"; release 5 plan, Task 13). Raw mode is held on throughout, as Ink's suspend would turn it off, which
   // left the Windows console reading whole lines (design, "Switching during a session"). The mouse goes off before Ink is
   // suspended and the second screen after, as `leave` orders them; the view's lines are drawn by Ink's own renderToString
-  // at the terminal's width, with their colours (plan, choice 13), without the search's or the selection's reverse
+  // at the terminal's width, with their colours (release 5 plan, choice 13), without the search's or the selection's reverse
   // colours, and the selection is cleared, as opening and closing clear it. An empty line is drawn as a space, as an empty
   // Text takes no row, and without a colour, whose codes would keep the space at the line's end. Then the keys go to a
   // reader of the App's own: q, Esc or Ctrl-C come back, other keys do nothing. Ink's suspend turns the kitty keyboard
@@ -696,13 +696,13 @@ export function App({
     next();
   };
   // /screen (release 5 design, "The two modes"; release 5 plan, Task 14), in the orders the user's check settled, with raw mode held
-  // on throughout, as Ink's suspend and resume would turn it off and on (plan, "Before you start"). Like a turn, it holds
+  // on throughout, as Ink's suspend and resume would turn it off and on (release 5 plan, "Before you start"). Like a turn, it holds
   // the queue while it runs, so what is sent meanwhile, another /screen too, waits for it. What the mouse was doing (a
   // selection, a held button, a grab of the bar, a run of clicks, the wheel's carried fraction) belongs to the screen
   // before, and goes.
   // To classic: the detail view closes, as a queued /screen can run while it is open; nothing is drawn, and once React has
   // drawn that, Ink is suspended, the screen left and Ink resumed, so its redraw draws nothing on the normal screen; then
-  // <Static> mounts and prints the whole conversation (plan, choice 17). The mode is classic from the start, nothing being
+  // <Static> mounts and prints the whole conversation (release 5 plan, choice 17). The mode is classic from the start, nothing being
   // drawn meanwhile, so a key read then (Ctrl+O, a scroll key) acts as in classic mode. The wait matters for a /screen run
   // from the queue: set outside any key, its state is drawn only later, by React's scheduler, and without the wait Ink's
   // resume would draw the full-screen frame again on the normal screen.
@@ -1006,10 +1006,10 @@ export function App({
   // bottom, stands for the last line's end.
   const cellAt = (rows: Rows, row: number, x: number) =>
     row < rows.total ? { row, x } : { row: rows.total - 1, x: rows.width }; // rows.width: past any row's text
-  // The pane's rows that show text: all but the "↓ N new lines" row while it shows, which is not text (plan, choice 10's
+  // The pane's rows that show text: all but the "↓ N new lines" row while it shows, which is not text (release 5 plan, choice 10's
   // rule for such rows): a press there starts nothing, and a drag onto it counts as the row above it.
   const textRows = (viewHeight: number) => viewHeight - (unseenBelow(pane().rows, pane().view.current, viewHeight) > 0 ? 1 : 0);
-  // A left press in the conversation's text rows (release 5 design, "Selecting"; plan, choice 6), the selection already
+  // A left press in the conversation's text rows (release 5 design, "Selecting"; release 5 plan, choice 6), the selection already
   // cleared: a click takes the pressed character, which a drag grows from; a double-click selects the word, a
   // triple-click the line, both copied on release. A double-click past a row's text, or a double or triple click below
   // the last line, clicks nothing: placeAt gives the row's end there, which on a wrapped row is the next row's start.
@@ -1346,7 +1346,7 @@ export function App({
   // goes on the view's second-last row, the last kept for "↓ N new lines", when its rows fit above that; otherwise its
   // heading goes on the top row. The view is held there, never moved to the bottom (view.ts, first), so what arrives while
   // the question waits does not move it, and the lines already below the detail (a reply, an earlier answer) are counted
-  // as unseen. A question without a detail leaves the view (plan, choice 11).
+  // as unseen. A question without a detail leaves the view (release 5 plan, choice 11).
   if (full && question && !picker && (question.following === undefined || moved)) {
     if (question.following === undefined) question.following = view.current.at === null;
     if (question.detail) {
@@ -1435,7 +1435,7 @@ export function App({
           <Text color="yellow">Allow {question.text}? [y/n] · Esc to decline</Text>
         )
       ) : d ? (
-        workingLine // the working line stays under the detail view while a turn runs (plan, choice 12)
+        workingLine // the working line stays under the detail view while a turn runs (release 5 plan, choice 12)
       ) : (
         <>
           {workingLine}

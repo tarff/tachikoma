@@ -1,4 +1,4 @@
-// What is happening now, in one place (release 6 design, "Tidying the screen code first"; plan, Task 2): who takes the
+// What is happening now, in one place (release 6 design, "Tidying the screen code first", and plan, Task 2): who takes the
 // keys, and what runs beside them. App's flags stay where their writers set them; useInput, next() and the mouse read them
 // through now(); usePaste through pasteTo().
 //
@@ -18,7 +18,7 @@ export type Phase =
   | { kind: "prompt" };
 
 // What is running, beside whoever has the keys: a turn can run under the detail view, a search, a menu or `[`, and next()
-// and Ctrl-C need to know (plan, Task 2).
+// and Ctrl-C need to know (release 6 plan, Task 2).
 export interface Now {
   phase: Phase;
   working: boolean;
@@ -93,7 +93,7 @@ function phaseOf(s: PhaseInputs): Phase {
 // Where a paste goes: into a search typed in the detail view, into the prompt, or nowhere (null). Release 5's path, kept
 // apart from the keys' order: usePaste is off while the model list is drawn (App.tsx, isActive), so the list is not asked,
 // and in the moment before Ink turns it off a paste went into the prompt; and a search typed in the detail view takes it
-// even while a question is drawn (plan, Task 2). The menu is never asked: a paste goes into the prompt either way.
+// even while a question is drawn (release 6 plan, Task 2). The menu is never asked: a paste goes into the prompt either way.
 export function pasteTo(s: PhaseInputs): "search" | "prompt" | null {
   if (s.printed) return null;
   if (s.detail?.search?.typing) return "search";
