@@ -378,7 +378,8 @@ export class Bindings {
 Shift+Enter and Ctrl+J, `chat:cycleMode` Shift+Tab, `chat:modelPicker` Alt+P, `chat:undo` Ctrl+Z
 and Ctrl+_, `chat:cancel` Escape, `history:search` Ctrl+R, `history:previous` Up and Ctrl+P,
 `history:next` Down and Ctrl+N, `chat:externalEditor` Ctrl+G and Ctrl+X Ctrl+E, `chat:stash` Ctrl+S,
-`chat:imagePaste` Alt+V on Windows and Ctrl+V elsewhere; `autocomplete:accept` Tab,
+`chat:imagePaste` Alt+V on Windows, both Alt+V and Ctrl+V on WSL (as Claude Code; found at Task 5's
+spec review: Windows Terminal never passes Ctrl+V on), and Ctrl+V elsewhere; `autocomplete:accept` Tab,
 `autocomplete:dismiss` Escape, `autocomplete:previous`/`next` Up/Down; `confirm:yes` y,
 `confirm:no` n and Escape; `historySearch:next` Ctrl+R, `historySearch:accept` Escape and Tab,
 `historySearch:cancel` Ctrl+C, `historySearch:execute` Enter; `select:next`/`previous`
@@ -431,7 +432,14 @@ view's Home and End stay `transcript:top`/`bottom`.
 waits, the next key goes to `bindings.press` before anything below, so a chord ending in a plain
 letter completes in a search or the model list's filter too. A key that does not complete it drops
 the chord and is then handled as if no chord had waited (typed into the field, or bound); after
-3 s the chord is dropped and the next key is handled as usual.
+3 s the chord is dropped and the next key is handled as usual. `press` returns null both for a
+dropped chord and for a key with no binding, so App asks `bindings.waiting(now)` first, sends the
+key to `press` only while a chord waits or once the text-field rule has passed it, and after a
+dropped chord handles the key again from the top (Task 5 as built; found at its spec review).
+
+**The wheel** never reaches `useInput` (the input filter takes mouse reports out), so the mouse
+handler makes `wheelup` and `wheeldown` strokes from wheel events, with the modifiers the report
+carries, and presses them in the contexts in force (found at Task 5's spec review).
 
 **Before any other binding** (found at the plan's second review), two kinds of key go straight to
 what is being typed, as Claude Code's "Text fields" rule says: while a Ctrl+R query, a detail-view
@@ -618,7 +626,9 @@ Actions only Claude Code has (a list from Claude Code's keybindings page, read 2
 `chat:fastMode`, `chat:thinkingToggle`, `chat:killAgents`, `chat:queueSubmit`, `chat:sendNow`,
 `chat:clearInput`, `chat:clearScreen`, `task:background`, and the contexts Tachikoma lacks) are
 counted in one line: `keybindings.json: 3 entries skipped: Tachikoma has no chat:fastMode,
-task:background, Footer`. Bad JSON at launch keeps the defaults and says so; during a session it
+task:background, Footer`. A key with a modifier Tachikoma cannot read (`cmd`, `command`, `super`,
+`win`; Task 5) is counted the same way, `Tachikoma has no cmd+ keys`, not one line an entry, so a
+Claude Code file made on a Mac is not noisy (found at Task 5's spec review). Bad JSON at launch keeps the defaults and says so; during a session it
 keeps the last good keys. Live, through the same watcher as Task 9 (one folder, two files).
 
 **Tests:** each problem's line; the skipped count with Claude Code's own example file from its
