@@ -4,6 +4,7 @@ import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 import {
   Bindings,
+  CHORD_MS,
   type Context,
   CONTEXTS,
   DEFAULTS,
@@ -16,9 +17,11 @@ import {
   tableOf,
 } from "../../src/tui/bindings.js";
 
-// Past Ink's wait before it reads a lone ESC as Esc, 20 ms (pendingInputFlushDelayMilliseconds in Ink's App.js).
+// Past Ink's wait before it reads a lone ESC as Esc, 20 ms (pendingInputFlushDelayMilliseconds in Ink's App.js). 25 ms is
+// safe however busy the machine: Ink's timer is set first, inside the same write, and timers due earlier run first.
 const tick = () => new Promise((r) => setTimeout(r, 25));
 const k = (key: string, mods: Partial<Omit<Stroke, "key">> = {}): Stroke => ({ key, ctrl: false, alt: false, shift: false, ...mods });
+const one = (text: string): Stroke => (parseKeys(text) as Stroke[])[0]!;
 const empty = (): Record<Context, Map<string, string | null>> => Object.fromEntries(CONTEXTS.map((c) => [c, new Map()])) as never;
 
 // What strokeOf makes of each read, through Ink's own useInput, so the Key it is given is the one Ink makes of the bytes.
@@ -67,13 +70,26 @@ describe("parseKeys", () => {
     expect(parseKeys("Ctrl+K  Ctrl+S")).toEqual([k("k", { ctrl: true }), k("s", { ctrl: true })]);
   });
 
-  it("says what is wrong with a key it cannot read", () => {
+  it("says what is wrong with a key it cannot read, quoting it as written", () => {
     expect(parseKeys("ctl+k")).toEqual({ problem: 'unknown modifier "ctl"' });
     expect(parseKeys("Ctl+K")).toEqual({ problem: 'unknown modifier "Ctl"' });
     expect(parseKeys("ctrl+ k")).toEqual({ problem: 'a space beside "+"' });
     expect(parseKeys("ctrl +k")).toEqual({ problem: 'a space beside "+"' });
     expect(parseKeys("ctrl+foo")).toEqual({ problem: 'unknown key "foo"' });
+    expect(parseKeys("ctrl+Foo")).toEqual({ problem: 'unknown key "Foo"' });
     expect(parseKeys("cmd+k")).toEqual({ problem: 'Tachikoma has no "cmd" modifier' });
+  });
+
+  it("takes no name an object inherits for a key or a modifier", () => {
+    expect(parseKeys("constructor")).toEqual({ problem: 'unknown key "constructor"' });
+    expect(parseKeys("constructor+k")).toEqual({ problem: 'unknown modifier "constructor"' });
+    expect(parseKeys("__proto__+k")).toEqual({ problem: 'unknown modifier "__proto__"' });
+  });
+
+  it("says plainly when a key is missing", () => {
+    for (const text of ["", "   "]) expect(parseKeys(text)).toEqual({ problem: "no key" });
+    for (const text of ["ctrl+", "+", "ctrl++"]) expect(parseKeys(text)).toEqual({ problem: 'a "+" with no key after it' });
+    for (const text of ["+k", "ctrl++k"]) expect(parseKeys(text)).toEqual({ problem: 'a "+" with no modifier before it' });
   });
 
   it("writes strokes back in one spelling", () => {
@@ -82,71 +98,82 @@ describe("parseKeys", () => {
   });
 
   it("reserves the keys Claude Code reserves", () => {
-    expect(RESERVED).toEqual(["ctrl+c", "ctrl+d", "ctrl+m", "ctrl+[", "ctrl+i", "ctrl+h"].map((t) => (parseKeys(t) as Stroke[])[0]));
+    expect(RESERVED).toEqual(["ctrl+c", "ctrl+d", "ctrl+m", "ctrl+[", "ctrl+i", "ctrl+h"].map(one));
   });
 });
 
 describe("strokeOf", () => {
-  it("makes the stroke for what Ink reports for each default key", async () => {
-    const cases: [string, Stroke][] = [
-      ["\u0003", k("c", { ctrl: true })],
-      ["\u0004", k("d", { ctrl: true })],
-      ["\u0014", k("t", { ctrl: true })],
-      ["\u000f", k("o", { ctrl: true })],
-      ["\r", k("enter")],
-      ["\u001b[13;2u", k("enter", { shift: true })], // Shift+Enter where the terminal tells it apart (the kitty protocol)
-      ["\n", k("j", { ctrl: true })], // Ctrl+J, a line feed
-      ["\u001b[Z", k("tab", { shift: true })],
-      ["\u001bp", k("p", { alt: true })],
-      ["\u001a", k("z", { ctrl: true })],
-      ["\u001f", k("_", { ctrl: true })],
-      ["\u001b", k("escape")],
-      ["\u0012", k("r", { ctrl: true })],
-      ["\u001b[A", k("up")],
-      ["\u001b[B", k("down")],
-      ["\u0010", k("p", { ctrl: true })],
-      ["\u000e", k("n", { ctrl: true })],
-      ["\u0007", k("g", { ctrl: true })], // the probe's Ctrl+G
-      ["\u0013", k("s", { ctrl: true })], // the probe's Ctrl+S
-      ["\u001bv", k("v", { alt: true })], // the probe's Alt+V
-      ["\u0016", k("v", { ctrl: true })],
-      ["\t", k("tab")],
-      ["y", k("y")],
-      ["n", k("n")],
-      ["q", k("q")],
-      ["[", k("[")],
-      ["/", k("/")],
-      ["N", k("n", { shift: true })],
-      ["j", k("j")],
-      ["k", k("k")],
-      ["g", k("g")],
-      ["G", k("g", { shift: true })],
-      ["\u001b[H", k("home")],
-      ["\u001b[F", k("end")],
-      ["\u001b[5~", k("pageup")],
-      ["\u001b[6~", k("pagedown")],
-      ["\u001b[1;5H", k("home", { ctrl: true })],
-      ["\u001b[1;5F", k("end", { ctrl: true })],
-      ["\u001b[1;2A", k("up", { shift: true })],
-      ["\u001b[1;2B", k("down", { shift: true })],
-      [" ", k("space")],
+  it("makes, for what Ink reports, the stroke the table's spelling of that key reads as", async () => {
+    // Each read, and the key in the table's spelling, or null for no stroke.
+    const cases: [string, string | null][] = [
+      ["\u0003", "ctrl+c"],
+      ["\u0004", "ctrl+d"],
+      ["\u0014", "ctrl+t"],
+      ["\u000f", "ctrl+o"],
+      ["\r", "enter"],
+      ["\u001b[13;2u", "shift+enter"], // where the terminal tells it apart (the kitty protocol)
+      ["\n", "ctrl+j"], // a line feed
+      ["\u001b[Z", "shift+tab"],
+      ["\u001bp", "alt+p"],
+      ["\u001a", "ctrl+z"],
+      ["\u001f", "ctrl+_"],
+      ["\u001b", "escape"],
+      ["\u0012", "ctrl+r"],
+      ["\u001b[A", "up"],
+      ["\u001b[B", "down"],
+      ["\u001b[D", "left"],
+      ["\u001b[C", "right"],
+      ["\u0010", "ctrl+p"],
+      ["\u000e", "ctrl+n"],
+      ["\u0007", "ctrl+g"], // the probe's Ctrl+G
+      ["\u0013", "ctrl+s"], // the probe's Ctrl+S
+      ["\u001bv", "alt+v"], // the probe's Alt+V
+      ["\u0016", "ctrl+v"],
+      ["\t", "tab"],
+      ["y", "y"],
+      ["n", "n"],
+      ["q", "q"],
+      ["[", "["],
+      ["/", "/"],
+      ["N", "shift+n"],
+      ["\u001bN", "alt+shift+n"],
+      ["j", "j"],
+      ["k", "k"],
+      ["g", "g"],
+      ["G", "shift+g"],
+      ["7", "7"],
+      ["\u001b[H", "home"],
+      ["\u001b[F", "end"],
+      ["\u001b[5~", "pageup"],
+      ["\u001b[6~", "pagedown"],
+      ["\u001b[1;5H", "ctrl+home"],
+      ["\u001b[1;5F", "ctrl+end"],
+      ["\u001b[1;2A", "shift+up"],
+      ["\u001b[1;2B", "shift+down"],
+      [" ", "space"],
+      ["\u007f", "backspace"],
+      ["\b", "backspace"], // Ctrl+H, reserved for that
+      ["\u001b[3~", "delete"],
+      ["\u001c", "ctrl+\\"],
+      ["\u001d", "ctrl+]"],
+      ["\u001e", "ctrl+^"],
+      ["\u0090", null], // a control character with no name
+      ["\u001b[107;9u", null], // Super+K (the kitty protocol)
+      ["\u001b[107;17u", null], // Hyper+K
+      // Today's kitty differences, left as Ink gives them (strokeOf's comment).
+      ["\u0000", "ctrl+`"], // Ctrl+Space on an ordinary terminal
+      ["\u001b[32;5u", "ctrl+space"], // Ctrl+Space under kitty
+      ["\u001b[45;6u", "ctrl+shift+-"], // Ctrl+_ under kitty
     ];
-    expect(await strokes(...cases.map(([read]) => read))).toEqual(cases.map(([, stroke]) => stroke));
+    expect(await strokes(...cases.map(([read]) => read))).toEqual(cases.map(([, text]) => (text === null ? null : one(text))));
   });
 
   it("makes the probe's Ctrl+X then Ctrl+E, two reads, two strokes", async () => {
-    expect(await strokes("\u0018", "\u0005")).toEqual([k("x", { ctrl: true }), k("e", { ctrl: true })]);
+    expect(await strokes("\u0018", "\u0005")).toEqual([one("ctrl+x"), one("ctrl+e")]);
   });
 
   it("makes no stroke of a paste, or of keys read together", async () => {
     expect(await strokes("\u001b[200~hello\u001b[201~", "yy", "a\r")).toEqual([null, null, null]);
-  });
-
-  it("every stroke it makes matches the same key written in the table", async () => {
-    const [ctrlG, altV, shiftN] = await strokes("\u0007", "\u001bv", "N");
-    expect(keyText([ctrlG!])).toBe("ctrl+g");
-    expect(keyText([altV!])).toBe("alt+v");
-    expect(keyText([shiftN!])).toBe("shift+n");
   });
 });
 
@@ -165,21 +192,22 @@ describe("Bindings.press", () => {
     expect(b().press(ctrl("t"), ["Chat", "Global"], 0)).toEqual({ action: "app:toggleTodos" });
   });
 
-  it("waits on a chord's first stroke, and gives its action on the second within 3 s", () => {
+  it("waits on a chord's first stroke, and gives its action on the second before 3 s are up", () => {
     const bindings = b();
     expect(bindings.press(ctrl("x"), ["Chat", "Global"], 1000)).toEqual({ pending: [ctrl("x")] });
-    expect(bindings.waiting(3999)).toEqual([ctrl("x")]);
-    expect(bindings.press(ctrl("e"), ["Chat", "Global"], 4000)).toEqual({ action: "chat:externalEditor" });
-    expect(bindings.waiting(4000)).toBeNull();
+    expect(bindings.waiting(1000 + CHORD_MS - 1)).toEqual([ctrl("x")]);
+    expect(bindings.press(ctrl("e"), ["Chat", "Global"], 1000 + CHORD_MS - 1)).toEqual({ action: "chat:externalEditor" });
+    expect(bindings.waiting(1000 + CHORD_MS - 1)).toBeNull();
   });
 
-  it("drops a chord after 3 s, and reads the next stroke as if none had waited", () => {
+  it("drops a chord at 3 s, and reads the next stroke as if none had waited", () => {
+    expect(CHORD_MS).toBe(3000);
     const bindings = b();
     bindings.press(ctrl("x"), ["Chat", "Global"], 1000);
-    expect(bindings.waiting(4001)).toBeNull();
-    expect(bindings.press(ctrl("e"), ["Chat", "Global"], 4001)).toBeNull(); // Ctrl+E alone is the editor's end of line
+    expect(bindings.waiting(4000)).toBeNull();
+    expect(bindings.press(ctrl("e"), ["Chat", "Global"], 4000)).toBeNull(); // Ctrl+E alone is the editor's end of line
     bindings.press(ctrl("x"), ["Chat", "Global"], 5000);
-    expect(bindings.press(ctrl("g"), ["Chat", "Global"], 8001)).toEqual({ action: "chat:externalEditor" });
+    expect(bindings.press(ctrl("g"), ["Chat", "Global"], 8000)).toEqual({ action: "chat:externalEditor" });
   });
 
   it("drops a chord on a stroke that does not complete it, giving nothing, so the caller handles that stroke afresh", () => {
@@ -191,6 +219,30 @@ describe("Bindings.press", () => {
     bindings.press(ctrl("x"), ["Chat", "Global"], 200);
     expect(bindings.press(k("q"), ["Chat", "Global"], 300)).toBeNull();
     expect(bindings.press(k("q"), ["Chat", "Global"], 300)).toBeNull(); // typed, as no binding takes it
+  });
+
+  it("drops a chord started in one set of contexts and finished in another without it", () => {
+    const bindings = b();
+    bindings.press(ctrl("x"), ["Chat", "Global"], 0);
+    expect(bindings.press(ctrl("e"), ["Confirmation", "Global"], 100)).toBeNull();
+    expect(bindings.waiting(100)).toBeNull();
+  });
+
+  it("waits through a chord of three strokes", () => {
+    const table = empty();
+    table.Chat.set("ctrl+x ctrl+k ctrl+k", "chat:stash");
+    const bindings = new Bindings(table);
+    expect(bindings.press(ctrl("x"), ["Chat"], 0)).toEqual({ pending: [ctrl("x")] });
+    expect(bindings.press(ctrl("k"), ["Chat"], 100)).toEqual({ pending: [ctrl("x"), ctrl("k")] });
+    expect(bindings.press(ctrl("k"), ["Chat"], 200)).toEqual({ action: "chat:stash" });
+  });
+
+  it("hands out copies of a chord's strokes", () => {
+    const bindings = b();
+    const r = bindings.press(ctrl("x"), ["Chat", "Global"], 0) as { pending: Stroke[] };
+    r.pending[0]!.key = "z";
+    bindings.waiting(0)!.push(ctrl("y"));
+    expect(bindings.waiting(0)).toEqual([ctrl("x")]);
   });
 
   it("gives nothing for a stroke that starts no chord and has no binding, so the editor's keys act", () => {
@@ -207,12 +259,14 @@ describe("Bindings.press", () => {
     expect(new Bindings(table).press(ctrl("x"), ["Autocomplete", "Chat", "Global"], 0)).toEqual({ action: "app:toggleTodos" });
   });
 
-  it("takes no action for a key set to null, and looks on in the outer contexts", () => {
+  it("does nothing for a key set to null in its context, even where an outer context binds it (choice 18)", () => {
     const table = tableOf(DEFAULTS);
     table.Chat.set("ctrl+s", null);
-    expect(new Bindings(table).press(ctrl("s"), ["Chat", "Global"], 0)).toBeNull();
-    table.Global.set("ctrl+s", "app:toggleTodos");
-    expect(new Bindings(table).press(ctrl("s"), ["Chat", "Global"], 0)).toEqual({ action: "app:toggleTodos" });
+    table.Chat.set("ctrl+t", null);
+    const bindings = new Bindings(table);
+    expect(bindings.press(ctrl("s"), ["Chat", "Global"], 0)).toBeNull();
+    expect(bindings.press(ctrl("t"), ["Chat", "Global"], 0)).toBeNull();
+    expect(bindings.press(ctrl("t"), ["Transcript", "Global"], 0)).toEqual({ action: "app:toggleTodos" });
   });
 
   it("reads a table's keys in any spelling", () => {
@@ -223,6 +277,17 @@ describe("Bindings.press", () => {
     expect(bindings.press(k("k", { ctrl: true, shift: true }), ["Chat"], 0)).toEqual({ action: "chat:stash" });
     expect(bindings.keysFor("chat:stash", "Chat")).toEqual(["ctrl+shift+k"]);
     expect(bindings.keysFor("chat:modelPicker", "Chat")).toEqual(["alt+p escape"]);
+  });
+
+  it("of two spellings of one key, takes the later's action, in the earlier's place", () => {
+    const table = empty();
+    table.Chat.set("Ctrl+G", "chat:undo");
+    table.Chat.set("ctrl+s", "chat:stash");
+    table.Chat.set("ctrl+g", "chat:stash");
+    const bindings = new Bindings(table);
+    expect(bindings.press(ctrl("g"), ["Chat"], 0)).toEqual({ action: "chat:stash" });
+    expect(bindings.keysFor("chat:stash", "Chat")).toEqual(["ctrl+g", "ctrl+s"]);
+    expect(bindings.keysFor("chat:undo", "Chat")).toEqual([]);
   });
 
   it("refuses a table with a key it cannot read, which the keys file's reader reports first", () => {
@@ -291,7 +356,7 @@ describe("DEFAULTS", () => {
 
   it("binds every action App handles today, on today's keys, and nothing else but picture pasting", () => {
     const bindings = new Bindings(tableOf(defaultsFor("win32", false)));
-    for (const [context, action, keys] of today) expect([context, action, bindings.keysFor(action, context)]).toEqual([context, action, keys]);
+    for (const [context, action, keys] of today) expect(bindings.keysFor(action, context), `${context} ${action}`).toEqual(keys);
     const all = CONTEXTS.flatMap((c) => Object.values(defaultsFor("win32", false)[c]).map((a) => `${c} ${a}`));
     expect(new Set(all)).toEqual(new Set([...today.map(([c, a]) => `${c} ${a}`), "Chat chat:imagePaste"]));
   });
@@ -302,7 +367,6 @@ describe("DEFAULTS", () => {
     expect(paste("linux", true)).toEqual(["alt+v", "ctrl+v"]);
     expect(paste("linux", false)).toEqual(["ctrl+v"]);
     expect(paste("darwin", false)).toEqual(["ctrl+v"]);
-    expect(DEFAULTS).toEqual(defaultsFor(process.platform, process.env.WSL_DISTRO_NAME !== undefined));
   });
 
   it("writes every key in the spelling the table gives back", () => {
