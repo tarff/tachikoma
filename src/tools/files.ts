@@ -64,6 +64,12 @@ export function settingsName(name: string): boolean {
   return [SETTINGS, KEYBINDINGS].some((file) => n === file || n.startsWith(`${file}.`));
 }
 
+// Whether two paths are one folder's by their spelling on a system whose disks ignore case, Windows and
+// macOS: by path alone, before ~/.tachikoma is made, path.relative ignores case only on Windows, so on
+// macOS .TACHIKOMA/settings.json passed (release 6 plan, choice 30, the security review's finding 5).
+export const sameIgnoringCase = (a: string, b: string, platform: NodeJS.Platform = process.platform) =>
+  (platform === "win32" || platform === "darwin") && a.toLowerCase() === b.toLowerCase();
+
 // Whether `real` is one of the settings folder's protected files, or a path inside one (which would
 // make it a folder). As for the data folder: the folder by path, which covers one not made yet, or by
 // what it is. An existing file is also compared by what it is with each protected file: one in the
@@ -71,7 +77,7 @@ export function settingsName(name: string): boolean {
 // anywhere with more than one name, since a hard link is another name for it.
 function inSettings(folder: string, real: string): boolean {
   const id = statSync(folder, { bigint: true, throwIfNoEntry: false });
-  const isFolder = (p: string) => path.relative(folder, p) === "" || (id !== undefined && same(folderOf(p), id));
+  const isFolder = (p: string) => path.relative(folder, p) === "" || sameIgnoringCase(folder, p) || (id !== undefined && same(folderOf(p), id));
   for (let p = real; path.dirname(p) !== p; p = path.dirname(p)) {
     if (settingsName(path.basename(p)) && isFolder(path.dirname(p))) return true;
   }

@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
-import { editFileTool, programEnvironment, readFileTool, resolveIn, writeFileTool } from "../../src/tools/files.js";
+import { editFileTool, programEnvironment, readFileTool, resolveIn, sameIgnoringCase, writeFileTool } from "../../src/tools/files.js";
 import { shortName, tempContext } from "../helpers.js";
 
 describe("resolveIn", () => {
@@ -187,6 +187,24 @@ describe("the settings and keys files", () => {
       await expect(writeFileTool.run({ path: p, content: "{}" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
     }
     expect(existsSync(path.join(ctx.root, ".tachikoma"))).toBe(false);
+  });
+
+  // The security review's finding 5 (release 6 plan, choice 30): before ~/.tachikoma is made only its path can match it,
+  // and macOS's disks, as Windows', ignore case, so .TACHIKOMA is the same folder there.
+  it("match their folder's path ignoring case on Windows and macOS, and exactly elsewhere", () => {
+    expect(sameIgnoringCase("/Users/me/.tachikoma", "/Users/me/.TACHIKOMA", "darwin")).toBe(true);
+    expect(sameIgnoringCase("C:\\Users\\me\\.tachikoma", "c:\\users\\ME\\.Tachikoma", "win32")).toBe(true);
+    expect(sameIgnoringCase("/home/me/.tachikoma", "/home/me/.TACHIKOMA", "linux")).toBe(false);
+    expect(sameIgnoringCase("/Users/me/.tachikoma", "/Users/me/.tachikoma2", "darwin")).toBe(false);
+  });
+
+  it.runIf(process.platform === "win32" || process.platform === "darwin")("are refused before they exist by another case of their folder", async () => {
+    const ctx = await tempContext("never");
+    vi.stubEnv("USERPROFILE", ctx.root);
+    vi.stubEnv("HOME", ctx.root);
+    const p = path.join(".TACHIKOMA", "settings.json");
+    await expect(writeFileTool.run({ path: p, content: "{}" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+    expect(existsSync(path.join(ctx.root, ".TACHIKOMA"))).toBe(false);
   });
 
   it.each(["ask", "project", "never"] as const)("are refused through a link to their folder, and through a hard link to one, in %s mode", async (mode) => {
