@@ -1,4 +1,5 @@
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
+import type { Cache } from "../providers/pictures.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { Declined } from "./permissions.js";
@@ -26,6 +27,9 @@ export class Session {
   #lead: Provider;
   #fallback: Provider | undefined;
   #running = false;
+  // Shrunk copies of the conversation's pictures, kept for the session; each request, to the lead or the fallback,
+  // still builds its own set from them (release 6 design, "What is sent, request by request").
+  readonly #shrunk: Cache = new Map();
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -125,7 +129,10 @@ export class Session {
   async #request(provider: Provider, signal?: AbortSignal): Promise<Turn | undefined> {
     const { bus, tools, system } = this.opts;
     try {
-      const turn = await provider.complete({ system, messages: this.messages, tools: tools.map((t) => t.spec), signal });
+      // The line for pictures left out (release 6 design, "The whole request"); the conversation keeps them all.
+      const leftOut = (n: number, over: string) =>
+        bus.emit("note", `${n} ${n === 1 ? "picture was" : "pictures were"} left out of this request to fit ${over}.`);
+      const turn = await provider.complete({ system, messages: this.messages, tools: tools.map((t) => t.spec), signal, shrunk: this.#shrunk, leftOut });
       for (const d of turn.declined ?? []) bus.emit("usage", d);
       bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage }); // last: it sets the context size
       return turn;

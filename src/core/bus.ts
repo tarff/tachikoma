@@ -24,6 +24,7 @@ export interface Events {
   "tool-end": [{ id: string; outcome: ToolOutcome }];
   todo: [TodoItem[]]; // the lead's new to-do list
   tasks: []; // a subagent started, changed or finished
+  note: [string]; // a line for the user that is neither a failure nor the conversation, such as pictures left out
 }
 
 // The session emits; the interface, status line, headless output and error log listen.

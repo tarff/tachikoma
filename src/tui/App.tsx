@@ -539,6 +539,7 @@ export function App({
       todos.current = { items, hidden: false };
       rerender((n) => n + 1);
     };
+    const onNote = (text: string) => latest.current.say(gray(text));
     bus.on("message", onMessage);
     bus.on("error", onError);
     bus.on("usage", onUsage);
@@ -547,6 +548,7 @@ export function App({
     bus.on("tool-end", onToolEnd);
     bus.on("todo", onTodo);
     bus.on("tasks", onTasks);
+    bus.on("note", onNote);
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
     // stderr is seen, and they are not said twice.
@@ -592,6 +594,7 @@ export function App({
       bus.off("tool-end", onToolEnd);
       bus.off("todo", onTodo);
       bus.off("tasks", onTasks);
+      bus.off("note", onNote);
       // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
       // Ink ending on a drawing error would leave with nothing on screen.
       tasks.stop();

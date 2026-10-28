@@ -1,6 +1,7 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { ResponseStreamEvent } from "openai/resources/responses/responses";
+import sharp from "sharp";
 import { describe, expect, it, onTestFinished } from "vitest";
 import type { ChatGPTAuth } from "../../src/auth/access.js";
 import { Session } from "../../src/core/session.js";
@@ -212,6 +213,19 @@ describe("ChatGPTProvider", () => {
     expect(header).toBe("Bearer tok-1");
     expect(body).toMatchObject({ model: "gpt-6.1-sol", instructions: "be brief", stream: true, store: false, input: [{ role: "user", content: "hi" }], tools: [{ type: "namespace" }] });
     for (const refused of ["temperature", "max_output_tokens", "previous_response_id", "metadata", "user", "prompt"]) expect(body).not.toHaveProperty(refused);
+  });
+
+  it("sends an animated GIF as its first frame in PNG, made by sharp in memory", async () => {
+    const api = await fakeApi((_, res) => sse(res, [done(text), completed]));
+    const frames = Buffer.alloc(4 * 8 * 3);
+    frames.fill(255, 0, 4 * 4 * 3); // a white frame, then a black one: two frames the same would be stored as one
+    const gif = await sharp(frames, { raw: { width: 4, height: 8, channels: 3, pageHeight: 4 } }).gif().toBuffer();
+    const messages: Message[] = [{ role: "user", parts: [{ type: "image", id: 1, mediaType: "image/gif", data: gif }] }];
+    await new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete({ ...request, messages });
+    const input = api.seen[0]!.body.input as { content: { type: string; image_url?: string }[] }[];
+    const url = input[0]!.content.find((c) => c.type === "input_image")!.image_url!;
+    expect(url.startsWith("data:image/png;base64,")).toBe(true);
+    expect(await sharp(Buffer.from(url.slice("data:image/png;base64,".length), "base64")).metadata()).toMatchObject({ format: "png", width: 4, height: 4 });
   });
 
   it("reads the login again after fetching the model list, so a logout in the meantime stops the request", async () => {

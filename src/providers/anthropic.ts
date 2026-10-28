@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaContentBlock, BetaContentBlockParam, BetaMessage, BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { type CompletionRequest, connectReason, type Message, marker, type Part, type Prepared, type Provider, type Turn } from "../core/types.js";
+import { LIMITS, prepare } from "./pictures.js";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -10,6 +11,9 @@ export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 const FALLBACK_MODELS = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"]);
 // The claude-api skill's default max_tokens for streamed requests.
 const MAX_TOKENS = 64_000;
+// Pictures a request for a model with a 200k-token window (platform.claude.com/docs/en/build-with-claude/vision,
+// "Request limits"); other models take LIMITS.anthropic.maxCount.
+const SMALL_WINDOW_PICTURES = 100;
 
 // Tool-call ids from other providers may hold characters Anthropic rejects.
 const safeId = (id: string) => id.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -152,23 +156,35 @@ export class AnthropicProvider implements Provider {
     }
   }
 
-  async #complete({ system, messages, tools, signal }: CompletionRequest): Promise<Turn> {
-    const stream = this.#client.beta.messages.stream(
-      {
-        model: this.model,
-        max_tokens: MAX_TOKENS,
-        system,
-        // No eager_input_streaming: only finalMessage() is read, so streaming tool input early gains
-        // nothing here, and it would move input validation from the API to us (claude-api skill, tool-use-concepts.md).
-        tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema as BetaTool["input_schema"] })),
-        messages: toAnthropic(messages),
-        cache_control: { type: "ephemeral" },
-        ...(this.#effort ? { output_config: { effort: this.#effort } } : {}),
-        ...(FALLBACK_MODELS.has(this.model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
-      },
-      { signal },
-    );
+  async #complete({ system, messages, tools, signal, shrunk, leftOut }: CompletionRequest): Promise<Turn> {
+    const effort = this.#effort; // read once, so the request measured is the request sent
+    const params = (prepared: Prepared) => ({
+      model: this.model,
+      max_tokens: MAX_TOKENS,
+      system,
+      // No eager_input_streaming: only finalMessage() is read, so streaming tool input early gains
+      // nothing here, and it would move input validation from the API to us (claude-api skill, tool-use-concepts.md).
+      tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema as BetaTool["input_schema"] })),
+      messages: toAnthropic(messages, prepared),
+      cache_control: { type: "ephemeral" as const },
+      ...(effort ? { output_config: { effort } } : {}),
+      ...(FALLBACK_MODELS.has(this.model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
+    });
+    const limits = { ...LIMITS.anthropic, maxCount: await this.#maxPictures(messages) };
+    const sent = await prepare(messages, limits, (p) => Buffer.byteLength(JSON.stringify(params(p))), shrunk ?? new Map());
+    if (sent.leftOut) leftOut?.(sent.leftOut, sent.over);
+    const stream = this.#client.beta.messages.stream(params(sent.prepared), { signal });
     return fromAnthropic(await stream.finalMessage());
+  }
+
+  // Anthropic's vision page, "Request limits": 100 pictures a request "for models with a 200k-token context window",
+  // 600 for all others. The window is looked up only when the request holds more than 100; one that cannot be found
+  // counts as 200k, since leaving a picture out costs less than a refused request.
+  async #maxPictures(messages: Message[]): Promise<number> {
+    const count = messages.reduce((n, m) => n + m.parts.filter((p) => p.type === "image").length, 0);
+    if (count <= SMALL_WINDOW_PICTURES) return LIMITS.anthropic.maxCount!;
+    const window = await this.contextWindow();
+    return window !== null && window > 200_000 ? LIMITS.anthropic.maxCount! : SMALL_WINDOW_PICTURES;
   }
 
   // Only a successful lookup is kept; a failed one (offline, say) is tried again next time.

@@ -39,7 +39,7 @@ export class Held implements Provider {
   #pending: ((t: Turn) => void)[] = [];
   constructor(readonly id = "fake:held") {}
   complete(req: CompletionRequest): Promise<Turn> {
-    this.asked.push(structuredClone({ ...req, signal: undefined }));
+    this.asked.push(structuredClone({ ...req, signal: undefined, shrunk: undefined, leftOut: undefined })); // neither can be cloned
     return new Promise((resolve, reject) => {
       this.#pending.push(resolve);
       req.signal?.addEventListener("abort", () => reject(new Error("aborted")));

@@ -665,6 +665,21 @@ describe("App", () => {
     expect(app.lastFrame()).toContain("0 errors");
   });
 
+  it("says how many pictures a request left out to fit its provider", async () => {
+    const lead: Provider = {
+      id: "fake:a",
+      complete: async (req) => {
+        req.leftOut?.(2, "Anthropic's 32 MB");
+        return reply("seen");
+      },
+    };
+    const { app } = await mount([], { lead });
+    await type(app, "hi");
+    await until(app, "seen");
+    expect(app.lastFrame()).toContain("2 pictures were left out of this request to fit Anthropic's 32 MB.");
+    expect(app.lastFrame()).toContain("0 errors");
+  });
+
   it("summarises the error log with /errors", async () => {
     const { app } = await mount([]);
     await type(app, "/errors");

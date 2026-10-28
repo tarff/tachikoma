@@ -1,4 +1,5 @@
 import type { Effort } from "../providers/anthropic.js";
+import type { Cache } from "../providers/pictures.js";
 
 // The conversation format Tachikoma stores. No provider owns it; each adapter converts to and from it.
 
@@ -66,6 +67,11 @@ export interface CompletionRequest {
   messages: Message[];
   tools: ToolSpec[];
   signal?: AbortSignal;
+  // The session's shrunk copies of its pictures, shared by every request it makes (providers/pictures.ts); a request
+  // without one shrinks for itself alone.
+  shrunk?: Cache;
+  // Told when the request left out pictures to fit its provider's limit, `over` naming it: "Anthropic's 32 MB".
+  leftOut?: (count: number, over: string) => void;
 }
 
 export interface Provider {

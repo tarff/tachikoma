@@ -11,6 +11,7 @@ import {
   type Provider,
   type Turn,
 } from "../core/types.js";
+import { LIMITS, prepare } from "./pictures.js";
 import { openaiWindow } from "./windows.js";
 
 // Providers that accept OpenAI's chat-completions format. Base URLs checked 2026-10-22 against each
@@ -137,13 +138,19 @@ export class OpenAIProvider implements Provider {
     this.id = `${kind}:${model}`;
   }
 
-  async complete({ system, messages, tools, signal }: CompletionRequest): Promise<Turn> {
+  async complete({ system, messages, tools, signal, shrunk, leftOut }: CompletionRequest): Promise<Turn> {
     const specs: ChatCompletionTool[] = tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
+    const body = (prepared: Prepared) => ({
+      model: this.model,
+      messages: toOpenAI(system, messages, this.kind, prepared),
+      ...(specs.length ? { tools: specs } : {}),
+    });
+    // The constructor took only PRESETS' names, each of which has its limits.
+    const limits = LIMITS[this.kind as keyof typeof LIMITS];
+    const sent = await prepare(messages, limits, (p) => Buffer.byteLength(JSON.stringify(body(p))), shrunk ?? new Map());
+    if (sent.leftOut) leftOut?.(sent.leftOut, sent.over);
     try {
-      const res = await this.#client.chat.completions.create(
-        { model: this.model, messages: toOpenAI(system, messages, this.kind), ...(specs.length ? { tools: specs } : {}) },
-        { signal },
-      );
+      const res = await this.#client.chat.completions.create(body(sent.prepared), { signal });
       return fromOpenAI(res, this.kind);
     } catch (err) {
       // The timeout error is a subclass of the connection error, so it is checked first.
