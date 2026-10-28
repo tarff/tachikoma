@@ -862,6 +862,9 @@ in `tests/providers/*.test.ts`, `tests/core/session.test.ts`.
   pictures it stays one string, as today.
 - `toResponses`: `{role: "user", content: [{type: "input_text", text}, {type: "input_image",
   image_url: "data:..."}]}` for a message with pictures.
+- Each picture sent goes right after a text `[Image #N]` (its marker), in all three, so the model
+  sees the number the design says the user can "point it at" later; a note in a picture's place
+  gets no label (found at Task 16's build).
 - Each converter takes the pictures as Task 17 prepared them (a map from id to the data to send,
   or a note's text): `toX(messages, prepared)`.
 - Errors (choice 10): a `ProviderError extends Error` with `status?: number`, thrown by chatgpt.ts

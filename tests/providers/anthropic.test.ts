@@ -42,22 +42,24 @@ describe("toAnthropic", () => {
   const tool = { type: "tool_result", callId: "c1", output: "ok", isError: false } as const;
   const parts: Message["parts"] = [tool, { type: "text", text: "compare " }, png, { type: "text", text: " with " }, jpeg];
 
-  it("sends each picture as an image block with its data inline, in its place", () => {
+  it("sends each picture as an image block with its data inline, in its place after its label", () => {
     expect(toAnthropic([{ role: "user", parts }])).toEqual([
       {
         role: "user",
         content: [
           { type: "tool_result", tool_use_id: "c1", content: "ok", is_error: false },
           { type: "text", text: "compare " },
+          { type: "text", text: "[Image #1]" },
           { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw==" } },
           { type: "text", text: " with " },
+          { type: "text", text: "[Image #2]" },
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "/9j/" } },
         ],
       },
     ]);
   });
 
-  it("sends each picture as the request prepared it, and a note in a left-out picture's place as text", () => {
+  it("sends each picture as the request prepared it, and a note in a left-out picture's place as text with no label", () => {
     const prepared: Prepared = new Map<number, string | { mediaType: "image/png"; data: Buffer }>([
       [1, "[Image #1 left out: the request was over Anthropic's 32 MB]"],
       [2, { mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }],
@@ -67,6 +69,7 @@ describe("toAnthropic", () => {
         role: "user",
         content: [
           { type: "text", text: "[Image #1 left out: the request was over Anthropic's 32 MB]" },
+          { type: "text", text: "[Image #2]" },
           { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw==" } },
         ],
       },

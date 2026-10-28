@@ -8,7 +8,7 @@ import type { Span } from "./editor.js";
 export type Picture = Pick<Extract<Part, { type: "image" }>, "mediaType" | "data">;
 export type Read = Picture | "none" | { failed: string };
 
-export const marker = (id: number) => `[Image #${id}]`;
+export { marker } from "../core/types.js";
 
 export class Pictures {
   #last = 0;

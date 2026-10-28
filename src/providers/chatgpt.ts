@@ -13,7 +13,7 @@ import {
   type ToolSpec,
   type Turn,
 } from "../core/types.js";
-import { dataUrl, parseArgs } from "./openai.js";
+import { dataUrl, inOrder, parseArgs } from "./openai.js";
 
 // A ChatGPT plan leading, through OpenAI's Responses API (release 2 design, "Requests"; OpenAI's
 // "models and inference" and "preview limitations" pages, read 2026-10-23).
@@ -110,11 +110,10 @@ export function toResponses(messages: Message[], prepared: Prepared = new Map())
     for (const p of m.parts) {
       if (p.type === "tool_result") out.push({ type: "function_call_output", call_id: p.callId, output: p.isError ? `Error: ${p.output}` : p.output });
     }
-    // The text and pictures in order, a note in a left-out picture's place being text. With a picture to send they go
-    // as one user item of `input_text` and `input_image` parts, the picture's data inline (release 6 design, "In the
-    // conversation"); without one each text is its own item, so a request whose pictures were all left out is sent as
-    // before them.
-    const pieces = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : p.type === "image" ? [prepared.get(p.id) ?? p] : []));
+    // With a picture to send, the text and pictures go as one user item of `input_text` and `input_image` parts, the
+    // picture's data inline (release 6 design, "In the conversation"); without one each text is its own item, so a
+    // request whose pictures were all left out is sent as before them.
+    const pieces = inOrder(m, prepared);
     if (pieces.some((s) => typeof s !== "string")) {
       // No `detail`: the API then takes "auto" (the openai package's ResponseInputImage, 7.30.0), though the type
       // marks it required.

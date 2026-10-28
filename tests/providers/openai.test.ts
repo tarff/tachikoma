@@ -43,7 +43,7 @@ describe("toOpenAI", () => {
   const parts: Message["parts"] = [tool, { type: "text", text: "compare " }, png, { type: "text", text: " with " }, jpeg];
   const note = (id: number) => `[Image #${id} left out: fake:x refused pictures]`;
 
-  it("sends a message with pictures as a list of parts in order, each picture's data inline", () => {
+  it("sends a message with pictures as a list of parts in order, each picture's data inline after its label", () => {
     expect(toOpenAI("s", [{ role: "user", parts }], "openai")).toEqual([
       { role: "system", content: "s" },
       { role: "tool", tool_call_id: "c1", content: "ok" },
@@ -51,15 +51,17 @@ describe("toOpenAI", () => {
         role: "user",
         content: [
           { type: "text", text: "compare " },
+          { type: "text", text: "[Image #1]" },
           { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw==" } },
           { type: "text", text: " with " },
+          { type: "text", text: "[Image #2]" },
           { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/" } },
         ],
       },
     ]);
   });
 
-  it("sends a note in a left-out picture's place as text, and one string when no picture is left to send", () => {
+  it("sends a note in a left-out picture's place as text with no label, and one string when no picture is left to send", () => {
     const one: Prepared = new Map([[1, note(1)]]);
     expect(toOpenAI("s", [{ role: "user", parts }], "openai", one)[2]).toEqual({
       role: "user",
@@ -67,6 +69,7 @@ describe("toOpenAI", () => {
         { type: "text", text: "compare " },
         { type: "text", text: note(1) },
         { type: "text", text: " with " },
+        { type: "text", text: "[Image #2]" },
         { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/" } },
       ],
     });

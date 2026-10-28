@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import type { ChatCompletion, ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
-import { type CompletionRequest, connectReason, type Image, type Message, type Part, type Prepared, type Provider, type Turn } from "../core/types.js";
+import { type CompletionRequest, connectReason, type Image, type Message, marker, type Part, type Prepared, type Provider, type Turn } from "../core/types.js";
 import { openaiWindow } from "./windows.js";
 
 // Providers that accept OpenAI's chat-completions format. Base URLs checked 2026-10-22 against each
@@ -22,11 +22,22 @@ const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_details"]
 // developers.openai.com/api/docs/guides/images-vision).
 export const dataUrl = (p: Pick<Image, "mediaType" | "data">) => `data:${p.mediaType};base64,${p.data.toString("base64")}`;
 
+// A message's text and pictures in order, for this adapter and chatgpt.ts. A picture sent goes after its marker, so a
+// later message can point the model at it by its number (release 6 design, "Which pictures a message carries"); a note
+// in a left-out picture's place is text, naming the picture itself.
+export function inOrder(m: Message, prepared: Prepared): (string | Pick<Image, "mediaType" | "data">)[] {
+  return m.parts.flatMap((p) => {
+    if (p.type === "text") return [p.text];
+    if (p.type !== "image") return [];
+    const sent = prepared.get(p.id) ?? p;
+    return typeof sent === "string" ? [sent] : [marker(p.id), sent];
+  });
+}
+
 export function toOpenAI(system: string, messages: Message[], kind: string, prepared: Prepared = new Map()): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [{ role: "system", content: system }];
   for (const m of messages) {
-    // The text and pictures in order, a note in a left-out picture's place being text.
-    const pieces = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : p.type === "image" ? [prepared.get(p.id) ?? p] : []));
+    const pieces = inOrder(m, prepared);
     const text = pieces.flatMap((s) => (typeof s === "string" ? [s] : [])).join("\n");
     if (m.role === "assistant") {
       const calls = m.parts.flatMap((p) => (p.type === "tool_call" ? [p] : []));

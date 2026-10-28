@@ -16,6 +16,9 @@ export type ToolCall = Extract<Part, { type: "tool_call" }>;
 export type ToolResult = Extract<Part, { type: "tool_result" }>;
 export type Image = Extract<Part, { type: "image" }>;
 
+// A picture's marker, in the prompt and before the picture in each request (release 6 design, "Pictures").
+export const marker = (id: number) => `[Image #${id}]`;
+
 // The pictures of one request, by number, as that request sends them: shrunk to its provider's limits, or a note's
 // text in a left-out picture's place (release 6 design, "What is sent, request by request"). A picture not in the map
 // goes as it was read.

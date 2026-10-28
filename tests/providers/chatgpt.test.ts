@@ -44,22 +44,24 @@ describe("toResponses", () => {
   const parts: Message["parts"] = [tool, { type: "text", text: "compare " }, png, { type: "text", text: " with " }, jpeg];
   const note = (id: number) => `[Image #${id} left out: fake:x refused pictures]`;
 
-  it("sends a message with pictures as one user item of parts in order, each picture's data inline", () => {
+  it("sends a message with pictures as one user item of parts in order, each picture's data inline after its label", () => {
     expect(toResponses([{ role: "user", parts }])).toEqual([
       { type: "function_call_output", call_id: "c1", output: "ok" },
       {
         role: "user",
         content: [
           { type: "input_text", text: "compare " },
+          { type: "input_text", text: "[Image #1]" },
           { type: "input_image", image_url: "data:image/png;base64,iVBORw==" },
           { type: "input_text", text: " with " },
+          { type: "input_text", text: "[Image #2]" },
           { type: "input_image", image_url: "data:image/jpeg;base64,/9j/" },
         ],
       },
     ]);
   });
 
-  it("sends a note in a left-out picture's place as text, and items as before when no picture is left to send", () => {
+  it("sends a note in a left-out picture's place as text with no label, and items as before when no picture is left to send", () => {
     const one: Prepared = new Map([[1, note(1)]]);
     expect(toResponses([{ role: "user", parts }], one)[1]).toEqual({
       role: "user",
@@ -67,6 +69,7 @@ describe("toResponses", () => {
         { type: "input_text", text: "compare " },
         { type: "input_text", text: note(1) },
         { type: "input_text", text: " with " },
+        { type: "input_text", text: "[Image #2]" },
         { type: "input_image", image_url: "data:image/jpeg;base64,/9j/" },
       ],
     });
