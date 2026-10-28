@@ -273,8 +273,9 @@ describe("Bindings.press", () => {
     const table = empty();
     table.Global.set("ctrl+x ctrl+e", "app:toggleTodos");
     table.Chat.set("ctrl+x ctrl+e", null);
-    expect(new Bindings(table).press(ctrl("x"), ["Chat", "Global"], 0)).toBeNull();
-    expect(new Bindings(table).waiting(0)).toBeNull();
+    const inner = new Bindings(table);
+    expect(inner.press(ctrl("x"), ["Chat", "Global"], 0)).toBeNull();
+    expect(inner.waiting(0)).toBeNull();
     table.Chat.set("ctrl+x", "chat:stash");
     expect(new Bindings(table).press(ctrl("x"), ["Chat", "Global"], 0)).toEqual({ action: "chat:stash" });
     const outer = new Bindings(table);
