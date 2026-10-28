@@ -484,7 +484,8 @@ user. Unmarked items are fixes from the reviews that keep to the design.
 - **The final review (2026-10-28).**
   - A `[` read with the Enter that sends `/screen` from classic, after a Ctrl+O, ended the
     session: Ink was already suspended for the switch. `[` now does nothing while a switch has Ink
-    suspended.
+    suspended. The other way round, a `/screen` sent while the view is still coming back from `[`
+    no longer lets the keyboard go in the middle of its switch.
   - Ink ending lets the keyboard go whatever held it, a switch too: a signal ends the process
     before the switch's own ending can. It also stops a running turn, which would otherwise go on
     paying with nothing on screen.

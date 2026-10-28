@@ -4139,6 +4139,45 @@ describe("App's /screen", () => {
     expect(p.steps.filter((x) => x.startsWith("hold(")).at(-1)).toBe("hold(false)");
   });
 
+  // Found at the final review: a /screen sent while coming back from `[` is still drawing (Ctrl+O closing the view, then
+  // the prompt, in one read) starts a switch before comeBack's resume ends, and comeBack must not let the keyboard go in
+  // the middle of it. Deterministic, as only setTimeout is faked: Ink's resume here waits on setImmediate alone (ink.js,
+  // waitUntilRenderFlush, with a terminal that has no writable state), while the switch waits on a setTimeout before it
+  // suspends Ink (switchScreen), so comeBack's resume always ends first.
+  it("keeps the keyboard held through a /screen sent while coming back from [ is still drawing", async () => {
+    let p: Awaited<ReturnType<typeof onTerminal>> | undefined;
+    let armed = false;
+    const step = (s: string) => {
+      if (!armed || s !== PASTE_ON) return;
+      armed = false;
+      setImmediate(() => p!.now("\u000f", "/screen", "\r")); // Ink's resume reads keys again, then waits
+    };
+    p = await onTerminal(new FakeProvider("a", []), { step });
+    await p.key("\u000f", "[");
+    await waitFor(() => p!.steps.at(-1) === "divert(reader)");
+    const from = p.steps.length;
+    armed = true;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const back = p.out("q");
+      const turn = () => new Promise((resolve) => setImmediate(resolve));
+      for (let i = 0; i < 10; i++) await turn(); // comeBack's resume ends; the switch waits on its setTimeout
+      expect(p.steps.slice(from)).toContain("hold(true)"); // the switch started
+      for (let i = 0; i < 20; i++) {
+        await vi.advanceTimersByTimeAsync(50);
+        await turn();
+      }
+      await back;
+    } finally {
+      vi.useRealTimers();
+    }
+    await waitFor(() => text(p.steps.slice(from)).includes("screen is now classic"));
+    const s = since(p.steps, "hold(true)");
+    // The switch's own release, after its resume turned bracketed paste on again on the normal screen; none before.
+    expect(holds(s)).toEqual(["hold(true)", "hold(false)"]);
+    expect(s.indexOf("hold(false)")).toBeGreaterThan(s.indexOf(PASTE_ON, s.indexOf(FIRST_SCREEN)));
+  });
+
   // Found at Task 14's spec review: a reply of several lines is one line said but several kept, and going back to full
   // screen must still find every line said in classic mode (release 5 design, "The two modes": both modes keep every line).
   it("keeps every line, once and in order, going full to classic and back, with a reply of several lines", async () => {

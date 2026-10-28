@@ -177,6 +177,7 @@ export function App({
   const waitingList = useRef<ModelGroup[] | null>(null);
   const ended = useRef(false); // Ink has unmounted the App (the cleanup below)
   const suspending = useRef(false); // /screen is suspending Ink, or has, and has not yet resumed it (switchScreen, below)
+  const switchRunning = useRef(false); // from switchScreen's start to its end, for comeBack, below
   // What is set up once, at mount (the bus listeners, bindAsk, History's warning, the mouse listener), keeps the first
   // render's functions, and what they call, `say`, `next` and the rest, reads the mode from here, not from the first
   // render's `full` (found at Task 5's review); so do the keys' functions, alike. /screen sets it as the switch starts,
@@ -639,7 +640,8 @@ export function App({
   // end before keys reach Ink, so a y in it never answers a question, nor a pasted q closes the view (the user's choice,
   // 2026-10-28); what follows its end marker in the same read goes with it. A `[` read once Ink reads keys again, before
   // its drawing is done, prints the view out again (found at Task 13's review), and that print-out keeps the hold and
-  // what waits.
+  // what waits. So does a switch a /screen sent then started (Ctrl+O closing the view, then the prompt, in one read): its
+  // own ending lets go, as letting go in its middle would let Ink's suspend turn raw mode off (found at the final review).
   const comeBack = async () => {
     const p = printed.current;
     if (!p?.resume) return;
@@ -660,7 +662,7 @@ export function App({
     screen.suspended = false;
     await p.resume();
     if (printed.current) return;
-    input!.hold(false); // also when Ink ended meanwhile, after its cleanup let go: again is harmless (input.ts, hold)
+    if (!switchRunning.current) input!.hold(false); // also when Ink ended meanwhile, after its cleanup let go: again is harmless (input.ts, hold)
     // Ink ending during the resume (a crash in its redraw) starts nothing that waited: no screen would show it, and a
     // turn would go on paying with none (found at round 3's check of Task 13).
     if (ended.current) return;
@@ -699,6 +701,7 @@ export function App({
   const switchScreen = async () => {
     const toFull = !fullNow.current;
     working.current = true;
+    switchRunning.current = true;
     input?.hold(true);
     unselect();
     wheel.current = 0;
@@ -736,7 +739,8 @@ export function App({
       suspending.current = false;
       setSwitching(false);
       working.current = false;
-      if (!printed.current) input?.hold(false);
+      switchRunning.current = false;
+      if (!printed.current) input?.hold(false); // also for a comeBack that ended during the switch (comeBack, above)
     }
     if (!ended.current) say({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
   };
