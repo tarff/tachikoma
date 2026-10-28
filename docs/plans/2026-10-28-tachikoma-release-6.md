@@ -217,8 +217,9 @@ export class TerminalOwner {
   get suspended(): boolean;    // a `[` then does nothing, as it would suspend Ink again, which throws (replaces `suspending`)
   get busy(): boolean;         // a hand-over is held, or a program runs or waits (Task 12's queue waits on it)
   // A program in the terminal: waits until nothing is held, suspends without the hold, so Ink's raw mode off goes
-  // through, calls release() before the body, then retake() and resume after it, also when it throws. take() is
-  // not called while a program runs: Ink reads no keys then, and the queue waits on `busy` (Task 12).
+  // through, calls release() before the body, then retake() and resume after it, also when it throws. A take() can
+  // come once its resume starts, Ink reading keys again (a `[`), never before: Ink reads none while suspended, and
+  // what would hand the terminal over from the queue waits on `busy` (Task 12; found at Task 1's code review).
   program<T>(body: () => Promise<T>): Promise<T | undefined>;
   end(): void;                 // unmount: divert(null), hold(false); a program's ending then touches nothing
 }
@@ -638,9 +639,11 @@ Both start the editor with stdio inherited, inside `owner.program()` (Task 1), s
 runs in the terminal reads the keys itself and Tachikoma reads none until it ends. Under the shell
 (choice 4) a missing command is the shell's "not found" exit (9009 from `cmd.exe`, 127 from `sh`).
 
-`chat:externalEditor` runs `owner.program(...)` (Task 1), and the queue starts nothing while
-`owner.busy` is true, so a turn ending while the editor is open runs no queued `/screen` until it
-closes (found at Task 1's build): full screen leaves the second screen and
+`chat:externalEditor` runs `owner.program(...)` (Task 1). While `owner.busy` is true the queue
+starts no queued `/screen`, `/settings` or `/keybindings`, the commands that hand the terminal
+over, so a turn ending while the editor is open runs none of them until it closes; messages and
+other commands go on, as they do while the view is printed out (found at Task 1's build and code
+review). Full screen leaves the second screen and
 the mouse as `[` does, and comes back. While away, Ink's renders are dropped as for `[`, the turn goes on, and a
 permission question waits (it is shown on return). On return: the prompt becomes the text,
 without one trailing `\n` or `\r\n`, the cursor at the end, as one undo step. On failure the
