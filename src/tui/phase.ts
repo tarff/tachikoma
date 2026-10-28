@@ -1,6 +1,6 @@
 // What is happening now, in one place (release 6 design, "Tidying the screen code first"; plan, Task 2): who takes the
 // keys, and what runs beside them. App's flags stay where their writers set them; useInput, usePaste, next() and the mouse
-// read them through now().
+// read them through now(), and a paste through pasteTo().
 //
 // Not a phase: /screen switching to classic. Today's keys, pastes, queue and mouse never ask it: a key read while the
 // switch runs acts as in classic mode (App.tsx, switchScreen), and a question asked meanwhile is answered as ever. The
@@ -57,4 +57,15 @@ function phaseOf(s: PhaseInputs): Phase {
   if (s.detail) return { kind: "detail", searching: s.detail.search?.typing === true };
   if (s.search) return { kind: "search" };
   return s.menu() ? { kind: "menu" } : { kind: "prompt" };
+}
+
+// Where a paste goes: into a search typed in the detail view, into the prompt, or nowhere (null). Release 5's path, kept
+// apart from the keys' order: usePaste is off while the model list is drawn (App.tsx, isActive), so the list is not asked,
+// and in the moment before Ink turns it off a paste went into the prompt; and a search typed in the detail view takes it
+// before a question is asked (found at Task 2's review). The menu is never asked: a paste goes into the prompt either way.
+export function pasteTo(s: PhaseInputs): "search" | "prompt" | null {
+  if (s.printed) return null;
+  if (s.detail?.search?.typing) return "search";
+  if (s.question || s.search || s.detail) return null;
+  return "prompt";
 }

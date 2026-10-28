@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type PhaseInputs, now } from "../../src/tui/phase.js";
+import { type PhaseInputs, now, pasteTo } from "../../src/tui/phase.js";
 
 // Nothing happening: the prompt takes the keys, nothing runs and nothing waits.
 const idle: PhaseInputs = {
@@ -96,5 +96,36 @@ describe("now", () => {
     { name: "nothing", given: {}, waiting: false },
   ])("says the queue waits for $name: $waiting", ({ given, waiting }) => {
     expect(now({ ...idle, ...given }).waiting).toBe(waiting);
+  });
+});
+
+// A paste keeps release 5's path, not the keys' order: the model list drawn is not asked, as usePaste is off while it is
+// drawn (isActive), and in the moment before Ink turns it off a paste went into the prompt (found at Task 2's review).
+describe("pasteTo", () => {
+  it.each([
+    { name: "printed out", given: { printed: true }, to: null },
+    { name: "printed out, with a search typed in the detail view", given: { printed: true, detail: searching }, to: null },
+    { name: "a search typed in the detail view", given: { detail: searching }, to: "search" },
+    { name: "a search typed in the detail view, with a question drawn", given: { detail: searching, question: true }, to: "search" },
+    { name: "a search typed in the detail view, with the model list drawn", given: { detail: searching, picker: true }, to: "search" },
+    { name: "a question", given: { question: true }, to: null },
+    { name: "Ctrl+R's search", given: { search: true }, to: null },
+    { name: "the detail view", given: { detail: open }, to: null },
+    { name: "a search kept in the detail view", given: { detail: { search: { typing: false } } }, to: null },
+    { name: "the model list drawn", given: { picker: true }, to: "prompt" },
+    { name: "the model list drawn, with a question", given: { picker: true, question: true }, to: null },
+    { name: "the model list drawn, with Ctrl+R's search", given: { picker: true, search: true }, to: null },
+    { name: "the model list drawn, with the detail view", given: { picker: true, detail: open }, to: null },
+    { name: "a menu", given: { menu: () => true }, to: "prompt" },
+    { name: "the prompt, a turn running", given: { working: true }, to: "prompt" },
+    { name: "the prompt", given: {}, to: "prompt" },
+  ])("sends a paste to $to for $name", ({ given, to }) => {
+    expect(pasteTo({ ...idle, ...given })).toBe(to);
+  });
+
+  it("never asks for the menu", () => {
+    let asked = 0;
+    pasteTo({ ...idle, menu: () => ++asked > 0 });
+    expect(asked).toBe(0);
   });
 });

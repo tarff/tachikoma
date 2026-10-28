@@ -22,7 +22,7 @@ import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
 import { ModelPicker, rows as listRows } from "./ModelPicker.js";
 import { type Hand, type Handover, TerminalOwner } from "./owner.js";
-import { now as nowOf } from "./phase.js";
+import { now as nowOf, type PhaseInputs, pasteTo } from "./phase.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -450,20 +450,21 @@ export function App({
   // take the keys (phase.ts, PhaseInputs, says why). Set up once, the mouse listener and the bus's handlers call the first
   // render's: they ask only what the refs answer, ended, printed out, working and waiting. Only the keys ask for the menu,
   // where it was found before: finding an `@` menu can list a folder (menuFor); without it, a menu counts as the prompt.
-  const happening = (findMenu = () => false) =>
-    nowOf({
-      ended: ended.current,
-      printed: printed.current !== null,
-      picker: picker !== null,
-      listOpen: listOpen.current,
-      question: question !== null,
-      questions: questions.current.length,
-      detail: detail.current,
-      search: search.current !== null,
-      menu: findMenu,
-      working: working.current,
-      queued: queue.current.length,
-    });
+  // A paste asks pasteTo() of the same inputs.
+  const inputs = (findMenu = () => false): PhaseInputs => ({
+    ended: ended.current,
+    printed: printed.current !== null,
+    picker: picker !== null,
+    listOpen: listOpen.current,
+    question: question !== null,
+    questions: questions.current.length,
+    detail: detail.current,
+    search: search.current !== null,
+    menu: findMenu,
+    working: working.current,
+    queued: queue.current.length,
+  });
+  const happening = (findMenu = () => false) => nowOf(inputs(findMenu));
 
   // Background answers waiting go first, in a turn of their own (release 4 design, "Background
   // subagents"). Then the queue's entries, taken from the front: a command alone, as if typed then;
@@ -889,18 +890,19 @@ export function App({
   // picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
-      const h = happening();
-      if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // as for keys, above
+      const given = inputs();
+      if (given.printed) return; // as for keys, above
       clearCopied();
+      const to = pasteTo(given);
       // In the detail view a paste goes into a search being typed, up to its first line break, without the control
       // characters typed text loses (keys.ts, commands); otherwise it does nothing there (the user's choice at Task 12's
       // review).
       const d = detail.current;
-      if (h.phase.kind === "detail" && h.phase.searching && d?.search) {
+      if (to === "search" && d?.search) {
         searchFor(d, d.search.query + text.split(/\r\n?|\n/, 1)[0]!.replace(/\p{Cc}/gu, ""), viewHeight);
         return rerender((n) => n + 1);
       }
-      if (h.phase.kind !== "menu" && h.phase.kind !== "prompt") return;
+      if (to === null) return;
       run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       rerender((n) => n + 1);
     },
