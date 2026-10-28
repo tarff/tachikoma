@@ -1584,10 +1584,10 @@ export function App({
     keep(e.text);
     editor.current = load(e, "");
   };
-  // Ctrl+S (release 6 design, "Stash"): a prompt with text goes into the slot whole, cursor and undo steps (and Task
-  // 14's spans) with it, and an empty prompt takes the slot back; with text and a full slot the two swap, so nothing is
-  // lost (the design's call). What the last delete took stays with the prompt, as load() keeps it; the cursor was left
-  // for Ctrl+S, so typing after it is a step of its own.
+  // Ctrl+S (release 6 design, "Stash"): a prompt with text goes into the slot whole, cursor and undo steps with it, and
+  // an empty prompt takes the slot back; with text and a full slot the two swap, so nothing is lost (the design's
+  // call). What the last delete took stays with the prompt, as load() keeps it. `typing: false`, so what is typed after
+  // a restore is an undo step of its own, not part of the stashed prompt's last one.
   const swapStash = (e: Editor) => {
     const back = stash.current;
     if (!e.text && !back) return;
@@ -1742,7 +1742,8 @@ export function App({
               ? `${previous} to edit queued messages`
               : `${queue.current.length} queued`
             : stash.current
-              ? hints("Stashed", said(keyOf("chat:stash", "Chat", "ctrl+s"), "to bring back")) // during a turn too, no other hint taking the row (plan, Task 13)
+              ? // during a turn too, no other hint taking the row (release 6 plan, Task 13)
+                hints("Stashed", said(keyOf("chat:stash", "Chat", "ctrl+s"), "to bring back"))
               : busy
                 ? null
                 : "? for shortcuts";

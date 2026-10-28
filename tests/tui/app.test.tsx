@@ -4961,6 +4961,8 @@ describe("App's external editor", () => {
 describe("App's stash", () => {
   const CTRL_S = "\u0013";
   const LEFT = "\u001b[D";
+  const CTRL_Q = "\u0011";
+  const CTRL_Z = "\u001a";
   const STASHED = "Stashed · Ctrl+S to bring back";
 
   it("puts the prompt aside on Ctrl+S and brings it back on an empty prompt, the cursor where it was", async () => {
@@ -4980,7 +4982,7 @@ describe("App's stash", () => {
   });
 
   it("shows the hint while the slot is full and no other hint takes the row: a menu's and the queue's come first", async () => {
-    const { lead, release } = gated([reply("r1")]);
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
     const { app } = await mount([], { lead });
     await press(app, "aside", CTRL_S);
     expect(app.lastFrame()).toContain(`›\n${STASHED}\n`);
@@ -4993,7 +4995,7 @@ describe("App's stash", () => {
     await press(app, "later", "\r");
     expect(app.lastFrame()).toContain("›\n↑ to edit queued messages");
     release();
-    await until(app, "r1");
+    await until(app, "r2");
     await press(app, CTRL_S);
     expect(app.lastFrame()).toContain("› aside\n? for shortcuts");
   });
@@ -5003,19 +5005,30 @@ describe("App's stash", () => {
     const { app } = await mount([], { bindings });
     await press(app, "aside", CTRL_S);
     expect(app.lastFrame()).toContain("› aside\n? for shortcuts"); // Ctrl+S is bound to nothing now
-    await press(app, "\u0011");
+    await press(app, CTRL_Q);
     expect(app.lastFrame()).toContain("›\nStashed · Ctrl+Q to bring back");
   });
 
   it("undoes within the text brought back", async () => {
     const { app } = await mount([]);
     // Backspace is a step of its own. On the cleared prompt Ctrl+Z takes nothing back: the steps went aside too.
-    await press(app, "abc", "\u007f", CTRL_S, "\u001a");
+    await press(app, "abc", "\u007f", CTRL_S, CTRL_Z);
     expect(app.lastFrame()).toMatch(/^›$/m);
-    await press(app, CTRL_S, "\u001a");
+    await press(app, CTRL_S, CTRL_Z);
     expect(app.lastFrame()).toContain("› abc\n");
-    await press(app, "\u001a", "\u001a");
+    await press(app, CTRL_Z);
     expect(app.lastFrame()).toMatch(/^›$/m);
+  });
+
+  // Up after a stash starts again from the newest prompt, as after a clear: where Up had got to went with the text.
+  it("steps back through the history from the newest prompt after a stash", async () => {
+    const { app } = await mount([reply("r1"), reply("r2")]);
+    await type(app, "one");
+    await until(app, "r1");
+    await type(app, "two");
+    await until(app, "r2");
+    await press(app, "\u001b[A", CTRL_S, "\u001b[A");
+    expect(app.lastFrame()).toContain(`› two\n${STASHED}`);
   });
 
   it("does nothing on Ctrl+S with an empty prompt and an empty slot", async () => {
