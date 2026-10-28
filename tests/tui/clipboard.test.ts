@@ -258,7 +258,10 @@ describe("imageReader", () => {
     const reader = imageReader("darwin", {})!;
     expect(reader).toMatchObject({
       command: "osascript",
-      args: ["-e", "try", "-e", "get the clipboard as «class PNGf»", "-e", "on error number -1700", "-e", "end try"],
+      args: [
+        ...["-e", "try", "-e", "return (the clipboard as «class PNGf»)"],
+        ...["-e", "on error number -1700", "-e", 'return ""', "-e", "end try"],
+      ],
       name: "osascript",
     });
     expect(reader.output(Buffer.from(`«data PNGf${PNG.toString("hex").toUpperCase()}»\n`, "utf8"))).toEqual(PNG);
@@ -363,7 +366,15 @@ describe("readImage", () => {
     await expect(readImage(noPatterns)).resolves.toEqual(failed("Nothing is copied"));
   });
 
-  it("is none when osascript answers nothing, as after the caught -1700", async () => {
+  it("still fails when a tool's words for no PNG come on a later line, as only the first is read", async () => {
+    const stderr = "Failed to connect to a Wayland server\nNothing is copied\n";
+    const failed = { failed: "stand-in failed: Failed to connect to a Wayland server" };
+    await expect(readImage(linux(WAYLAND, stderr))).resolves.toEqual(failed);
+  });
+
+  // Only how an empty answer is read: the script's catching of -1700 runs on a Mac alone, and imageReader's test checks
+  // the script itself.
+  it("is none when osascript answers an empty line", async () => {
     const reader = { ...standIn('process.stdout.write("\\n")'), output: imageReader("darwin", {})!.output };
     await expect(readImage(reader)).resolves.toBe("none");
   });
@@ -432,6 +443,20 @@ describe("imagePaths", () => {
 
   it("takes the whole line as one path when its words are not all pictures", () => {
     expect(imagePaths("/a/b /c.png", "linux")).toEqual(["/a/b /c.png"]);
+  });
+
+  // Windows Terminal quotes a dropped path only when it has a space, and then with " (microsoft/terminal,
+  // TermControl::_DragDropHandler), so an apostrophe in a Windows path is part of its name.
+  it("on Windows, takes an apostrophe as part of a name, not a quote", () => {
+    expect(imagePaths("C:\\a\\it's.png C:\\b\\it's.png", "win32")).toEqual(["C:\\a\\it's.png", "C:\\b\\it's.png"]);
+    const bob = ["C:\\it's.png", "C:\\Bob's pics\\c.png"];
+    expect(imagePaths(`C:\\it's.png "C:\\Bob's pics\\c.png"`, "win32")).toEqual(bob);
+    expect(imagePaths("'C:\\x y\\a.png'", "win32")).toEqual(["C:\\x y\\a.png"]);
+  });
+
+  // 130,000 words: enough for spreading them into push() to overflow the stack, as it did.
+  it("takes a line of very many paths without overflowing the stack", () => {
+    expect(imagePaths(" /a.png".repeat(130_000).trim(), "linux")).toHaveLength(130_000);
   });
 
   it("is null when the words are not all pictures and the line is no picture; words run together are one", () => {

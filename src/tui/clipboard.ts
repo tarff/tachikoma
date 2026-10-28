@@ -93,9 +93,11 @@ export const GET_IMAGE = "[Windows.Forms.Clipboard]::GetImage()";
 //
 // No PNG on the clipboard is "none", not a failure, on every system. On macOS the coercion to PNG fails with error
 // -1700 ("a failure while performing a coercion", AppleScript Language Guide, "Error Numbers and Error Messages", B-3),
-// which the script itself catches, `on error number -1700` handling that number alone (the guide's "try" statement),
-// so osascript answers nothing; its man page: "Multiple -e options may be given to build up a multi-line script." On
-// Linux the tool's own words, each tool exiting with 1: wl-paste's bail() and complain_no_suitable_type()
+// which the script itself catches, `on error number -1700` handling that number alone (the guide's "try" statement).
+// Each branch returns its answer, the data or "", from the script's implicit run handler, its statements outside any
+// handler (the guide's "About Handlers", "run Handlers", and "return"), so osascript answers an empty line for no PNG;
+// its man page: "Multiple -e options may be given to build up a multi-line script."
+// On Linux the tool's own words, each tool exiting with 1: wl-paste's bail() and complain_no_suitable_type()
 // (wl-clipboard's src/wl-paste.c and src/util/misc.h, "No selection" and "No suitable type of content copied" in
 // v2.0.0 and v2.1.0, "Nothing is copied" and the first line 'Clipboard content is not available as requested type
 // "image/png"' from v2.2.0 to v2.3.0 and master, 2026-09-15); xclip's doOut() in 0.13, its last release ("Error:
@@ -123,7 +125,7 @@ export function imageReader(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): 
   const bytes = (out: Buffer) => out;
   if (platform === "darwin") {
     const output = (out: Buffer) => Buffer.from(/PNGf([0-9a-f]*)/i.exec(out.toString("latin1"))?.[1] ?? "", "hex");
-    const script = ["try", "get the clipboard as «class PNGf»", "on error number -1700", "end try"];
+    const script = ["try", "return (the clipboard as «class PNGf»)", "on error number -1700", 'return ""', "end try"];
     return { command: "osascript", args: script.flatMap((line) => ["-e", line]), output, name: "osascript" };
   }
   // Each tool's words for no PNG, as a whole first line, each a pattern.
@@ -172,18 +174,22 @@ export function readImage(tool: Reader): Promise<Read> {
 // The words of a line of dragged paths. A line splits where Claude Code 2.1.312's paste handler, dut(), splits one
 // (~/.local/bin/claude.exe, read 2026-10-29), at / (?=["']?(?:\/|[A-Za-z]:\\))/: a space before a path starting with /
 // or a drive letter, after a quote or not. A space inside quotes, or after a backslash except on Windows, where a
-// backslash is the path's separator, stays in its word; any other space is part of a word too.
+// backslash is the path's separator, stays in its word; any other space is part of a word too. On Windows only "
+// quotes: Windows Terminal quotes a dropped path only when it has a space, and then with " (microsoft/terminal,
+// TermControl::_DragDropHandler), so an apostrophe there is part of a name.
 const NO_SPLIT = String.raw` (?!["']?(?:\/|[A-Za-z]:\\))`;
 const WORD = new RegExp(String.raw`(?:"[^"]*"|'[^']*'|\\.?|[^\\ ]|${NO_SPLIT})+`, "g");
-const WINDOWS_WORD = new RegExp(String.raw`(?:"[^"]*"|'[^']*'|[^ ]|${NO_SPLIT})+`, "g");
+const WINDOWS_WORD = new RegExp(String.raw`(?:"[^"]*"|[^ ]|${NO_SPLIT})+`, "g");
 
 // A paste that is only paths to pictures (release 6 design, "From pasted paths"): the paths, or null. Whether the files
 // are there is the caller's to ask. Each path as Claude Code 2.1.312 reads one (its macOS, Linux and Windows builds,
 // read 2026-10-29): its blanks and outer quotes go; on macOS and Linux a backslash then gives the character after it, a
 // doubled one leaving one, except in a path starting with a drive letter or \\ (Claude Code's exception under WSL,
-// which writes Windows' paths so; here on any system but Windows, as no other has such paths), while its Windows build
-// leaves backslashes as they are; and a picture's path ends in .png, .jpg, .jpeg, .gif or .webp. A line whose words
-// are all pictures is those; any other line is one path, and the paste is text unless every line is pictures.
+// whose terminals write Windows' paths so), while its Windows build leaves backslashes as they are; and a picture's
+// path ends in .png, .jpg, .jpeg, .gif or .webp. Off Windows such a path keeps its backslashes on any system, only so
+// it is not garbled: it is not turned into a path of this system, as Claude Code does under WSL alone (cDs()), so no
+// file is found there and the paste stays text. A line whose words are all pictures is those; any other line is one
+// path, and the paste is text unless every line is pictures.
 export function imagePaths(paste: string, platform: NodeJS.Platform = process.platform): string[] | null {
   const windows = platform === "win32";
   const path = (word: string) => {
@@ -194,7 +200,7 @@ export function imagePaths(paste: string, platform: NodeJS.Platform = process.pl
   const paths: string[] = [];
   for (const line of paste.split(/\r\n?|\n/).map((l) => l.trim()).filter(Boolean)) {
     const words = line.match(windows ? WINDOWS_WORD : WORD)!.map(path);
-    if (words.every(picture)) paths.push(...words);
+    if (words.every(picture)) for (const w of words) paths.push(w);
     else if (picture(path(line))) paths.push(path(line));
     else return null;
   }
