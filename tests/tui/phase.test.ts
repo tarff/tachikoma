@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type PhaseInputs, now, pasteTo } from "../../src/tui/phase.js";
+import { type PhaseInputs, type PhaseRefs, now, pasteTo, phaseInputs } from "../../src/tui/phase.js";
 
 // Nothing happening: the prompt takes the keys, nothing runs and nothing waits.
 const idle: PhaseInputs = {
@@ -46,6 +46,7 @@ describe("now", () => {
     { name: "a question beats the detail view", given: { question: true, detail: searching }, kind: "question" },
     { name: "the detail view beats Ctrl+R's search", given: { detail: open, search: true }, kind: "detail" },
     { name: "Ctrl+R's search beats a menu", given: { search: true, menu: () => true }, kind: "search" },
+    { name: "a menu beats the prompt", given: { menu: () => true }, kind: "menu" },
   ])("$name", ({ given, kind }) => {
     expect(now({ ...idle, ...given }).phase.kind).toBe(kind);
   });
@@ -59,7 +60,10 @@ describe("now", () => {
   // Finding an `@` menu can list a folder (App.tsx, menuFor), so it is asked only where the keys would reach it.
   it("asks for the menu only when nothing before it takes the keys", () => {
     let asked = 0;
-    const menu = () => ++asked > 0;
+    const menu = () => {
+      asked++;
+      return true;
+    };
     const before: Partial<PhaseInputs>[] = [{ ended: true }, { printed: true }, { picker: true }, { question: true }, { detail: open }, { search: true }];
     for (const given of before) now({ ...idle, ...given, menu });
     expect(asked).toBe(0);
@@ -99,8 +103,7 @@ describe("now", () => {
   });
 });
 
-// A paste keeps release 5's path, not the keys' order: the model list drawn is not asked, as usePaste is off while it is
-// drawn (isActive), and in the moment before Ink turns it off a paste went into the prompt (found at Task 2's review).
+// Release 5's paste rule (phase.ts, pasteTo).
 describe("pasteTo", () => {
   it.each([
     { name: "printed out", given: { printed: true }, to: null },
@@ -125,7 +128,72 @@ describe("pasteTo", () => {
 
   it("never asks for the menu", () => {
     let asked = 0;
-    pasteTo({ ...idle, menu: () => ++asked > 0 });
+    pasteTo({
+      ...idle,
+      menu: () => {
+        asked++;
+        return true;
+      },
+    });
     expect(asked).toBe(0);
+  });
+});
+
+// App's refs as App holds them, nothing happening.
+function refs(): PhaseRefs {
+  return {
+    ended: { current: false },
+    printed: { current: null },
+    drawn: { current: { picker: false, question: false } },
+    listOpen: { current: false },
+    questions: { current: [] },
+    detail: { current: null },
+    search: { current: null },
+    working: { current: false },
+    queue: { current: [] },
+  };
+}
+
+describe("phaseInputs", () => {
+  // The mouse listener is set up at mount: what it reads must come from the refs when it reads, never from then.
+  it("reads the screen as last drawn when asked, for a listener made before it was drawn", () => {
+    const r = refs();
+    const mouse = () => now(phaseInputs(r)).phase.kind; // made once, as App's mouse listener is
+    expect(mouse()).toBe("prompt");
+    r.drawn.current = { picker: true, question: false }; // the model list drawn
+    expect(mouse()).toBe("picker");
+    r.drawn.current = { picker: false, question: true };
+    expect(mouse()).toBe("question");
+  });
+
+  it("reads each ref as it is", () => {
+    const r = refs();
+    r.printed.current = {};
+    r.listOpen.current = true;
+    r.questions.current = [{}, {}];
+    r.detail.current = { search: { typing: true } };
+    r.search.current = {};
+    r.working.current = true;
+    r.queue.current = ["a", "b", "c"];
+    expect(phaseInputs(r)).toEqual({
+      ended: false,
+      printed: true,
+      picker: false,
+      listOpen: true,
+      question: false,
+      questions: 2,
+      detail: { search: { typing: true } },
+      search: true,
+      menu: expect.any(Function),
+      working: true,
+      queued: 3,
+    });
+    r.ended.current = true;
+    expect(phaseInputs(r).ended).toBe(true);
+  });
+
+  it("counts a menu as the prompt unless asked to find it", () => {
+    expect(now(phaseInputs(refs())).phase.kind).toBe("prompt");
+    expect(now(phaseInputs(refs(), () => true)).phase.kind).toBe("menu");
   });
 });

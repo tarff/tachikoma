@@ -22,7 +22,7 @@ import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
 import { ModelPicker, rows as listRows } from "./ModelPicker.js";
 import { type Hand, type Handover, TerminalOwner } from "./owner.js";
-import { now as nowOf, type PhaseInputs, pasteTo } from "./phase.js";
+import { now as nowOf, pasteTo, phaseInputs as inputsOf } from "./phase.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -199,7 +199,8 @@ export function App({
   // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row and how many it draws, and
   // the menu's under it, no prompt rows while a question, the model list, Ctrl+R's search, whose prompt shows a match, or
   // the detail view takes their place; the prompt as typed and the menu's choice when they were drawn, which keys
-  // replace, never change; and the detail view drawn, if any.
+  // replace, never change; the detail view drawn, if any; and whether the model list and a question are drawn, which take
+  // the keys (phase.ts, PhaseInputs).
   const frame = useRef({
     columns,
     viewHeight: 1,
@@ -209,6 +210,8 @@ export function App({
     editor: empty,
     chosen: chosen.current,
     detail: null as Detail | null,
+    picker: false,
+    question: false,
   });
   const promptTop = useRef(0); // the prompt's and the menu's windows (layout.ts, scroll), as last drawn
   const menuTop = useRef(0);
@@ -446,25 +449,14 @@ export function App({
     if (!(await perform(raw, answers))) next();
   };
 
-  // What is happening now (phase.ts): from the refs, and from this drawing the model list and the question shown, which
-  // take the keys (phase.ts, PhaseInputs, says why). Set up once, the mouse listener and the bus's handlers call the first
-  // render's: they ask only what the refs answer, ended, printed out, working and waiting. Only the keys ask for the menu,
-  // where it was found before: finding an `@` menu can list a folder (menuFor); without it, a menu counts as the prompt.
-  // A paste asks pasteTo() of the same inputs.
-  const inputs = (findMenu = () => false): PhaseInputs => ({
-    ended: ended.current,
-    printed: printed.current !== null,
-    picker: picker !== null,
-    listOpen: listOpen.current,
-    question: question !== null,
-    questions: questions.current.length,
-    detail: detail.current,
-    search: search.current !== null,
-    menu: findMenu,
-    working: working.current,
-    queued: queue.current.length,
-  });
-  const happening = (findMenu = () => false) => nowOf(inputs(findMenu));
+  // What is happening now (phase.ts), from the refs only, the model list and the question as last drawn among them
+  // (`frame`), so the mouse listener and the bus's handlers, set up once, read the screen as it is. Keys see the same as
+  // this drawing's values: Ink's root is non-concurrent (above), so React draws and commits in one go, and useInput's and
+  // usePaste's handler is the committed drawing's (useEffectEvent). Only the keys ask for the menu, where it was found
+  // before: finding an `@` menu can list a folder (menuFor). A paste asks pasteTo() of the same inputs.
+  const phaseInputs = (findMenu?: () => boolean) =>
+    inputsOf({ ended, printed, drawn: frame, listOpen, questions, detail, search, working, queue }, findMenu);
+  const happening = (findMenu?: () => boolean) => nowOf(phaseInputs(findMenu));
 
   // Background answers waiting go first, in a turn of their own (release 4 design, "Background
   // subagents"). Then the queue's entries, taken from the front: a command alone, as if typed then;
@@ -809,24 +801,24 @@ export function App({
   };
 
   // Once Ink has ended no key comes here, nor a paste or a mouse report below: Ink's cleanup takes their listeners away
-  // with the App's, which sets `ended` (above).
+  // with the App's, which sets `ended` (above). It is checked all the same, as the first phase, which hides the others.
   useInput((ch, key) => {
     const h = happening(() => menuFor(editor.current) !== null);
-    if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // a key read with the `[` that printed the view out, which Ink reads before it is out
+    if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // printed out: a key read with the `[` that printed the view out
     clearCopied();
     if (h.phase.kind === "picker") return; // the picker reads the keys while it is open
-    if (h.phase.kind === "question" && question) {
+    if (h.phase.kind === "question") {
       // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent.
       if (key.ctrl && ch === "c") {
-        question.answer(false, "declined (cancelled)");
-        if (question.owner) question.owner.stop();
+        question!.answer(false, "declined (cancelled)");
+        if (question!.owner) question!.owner.stop();
         else {
           abort.current?.abort();
           restore();
         }
-      } else if (key.escape) question.answer(false, "declined"); // that action only; the turn goes on
+      } else if (key.escape) question!.answer(false, "declined"); // that action only; the turn goes on
       else if (fullNow.current && scrollKey(ch, key)) rerender((n) => n + 1); // a long detail can be read before answering
-      else if (ch === "y" || ch === "n") question.answer(ch === "y", ch === "y" ? "allowed" : "declined");
+      else if (ch === "y" || ch === "n") question!.answer(ch === "y", ch === "y" ? "allowed" : "declined");
       return;
     }
     // In the detail view Ctrl-C stops a turn, and its queue comes back into the prompt, as below; with nothing running it
@@ -834,8 +826,8 @@ export function App({
     // review). No press-twice count waits while the view is open: the key that opens it is read below, starting the count
     // again, and a queued `/tasks t3` runs only from `next()`, after a turn, an answer or the model list, when no count
     // was started.
-    if (h.phase.kind === "detail" && detail.current) {
-      if (!(key.ctrl && ch === "c")) detailKey(detail.current, ch, key);
+    if (h.phase.kind === "detail") {
+      if (!(key.ctrl && ch === "c")) detailKey(detail.current!, ch, key);
       else if (!h.working) closeDetail();
       else {
         restore();
@@ -890,8 +882,8 @@ export function App({
   // picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
-      const given = inputs();
-      if (given.printed) return; // as for keys, above
+      const given = phaseInputs();
+      if (given.printed) return; // as for keys, above; before clearCopied(), which pasteTo() cannot say
       clearCopied();
       const to = pasteTo(given);
       // In the detail view a paste goes into a search being typed, up to its first line break, without the control
@@ -955,8 +947,10 @@ export function App({
   // come after a question closed it, belongs to a screen that is gone, and is dropped, as clickAt drops a click read with
   // a key that changed the prompt (found at Task 10's review).
   const onMouse = (m: Mouse) => {
+    // `ended` never comes here (useInput says why), and is checked as the first phase. Printed out: a report read with its
+    // `[`, as for keys.
     const { phase } = happening();
-    if (!fullNow.current || phase.kind === "ended" || phase.kind === "printed") return; // printed out: a report read with its `[`, as for keys
+    if (!fullNow.current || phase.kind === "ended" || phase.kind === "printed") return;
     const { columns, viewHeight } = frame.current;
     if (frame.current.detail !== detail.current) return;
     const p = pane();
@@ -1380,6 +1374,8 @@ export function App({
     editor: editor.current,
     chosen: chosen.current,
     detail: d,
+    picker: picker !== null,
+    question: question !== null,
   };
   const workingLine = busy && (
     <WorkingLine
