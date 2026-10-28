@@ -5668,6 +5668,25 @@ describe("App's vim mode", () => {
     await gone(app, "Esc to stop");
   });
 
+  // Final review: in INSERT, and with a command half typed, the first Esc goes to vim and only the second stops the
+  // turn, so the working line names Esc twice there (choice 31).
+  it("says Esc Esc to stop in INSERT and with d half typed, and Esc to stop in NORMAL", async () => {
+    const { app } = await mount([], { lead: hanging() });
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await type(app, "hi");
+    await until(app, "· Esc Esc to stop");
+    await press(app, ESC);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    expect(app.lastFrame()).toContain("· Esc to stop");
+    await press(app, "d");
+    expect(app.lastFrame()).toContain("· Esc Esc to stop");
+    await press(app, ESC);
+    expect(app.lastFrame()).toContain("· Esc to stop");
+    await press(app, ESC);
+    await gone(app, "to stop");
+  });
+
   it("sends on Enter in NORMAL", async () => {
     const { app, session } = await mount([reply("ok")]);
     await normal(app, "hi");

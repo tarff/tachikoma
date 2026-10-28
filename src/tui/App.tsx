@@ -2134,10 +2134,16 @@ export function App({
     picker: picker !== null,
     question: question !== null,
   };
+  // In vim mode Esc goes to vim first in INSERT and VISUAL, and while a command or count is half typed (route): the
+  // first only goes to NORMAL, the second stops the turn, so the line names it twice then. A key chat:cancel has with
+  // Ctrl or Alt never goes to vim (choice 31).
+  const stop = keyOf("chat:cancel", "Chat", "escape");
+  const v = vim.current;
+  const escFirst = v !== null && (v.mode !== "NORMAL" || v.pending !== "" || v.count !== "") && table.keysFor("chat:cancel", "Chat").includes("escape");
   const workingLine = busy && (
     <WorkingLine
       label={doing.current.label}
-      stop={keyOf("chat:cancel", "Chat", "escape")}
+      stop={escFirst ? `${stop} ${stop}` : stop}
       ms={Math.max(0, now - doing.current.at)}
       spend={
         doing.current.from && {
