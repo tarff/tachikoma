@@ -5687,6 +5687,16 @@ describe("App's vim mode", () => {
     await gone(app, "to stop");
   });
 
+  it("lists Esc twice to stop the turn on ? in INSERT, and once in NORMAL", async () => {
+    const { app } = await mount([]);
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await press(app, "?");
+    await until(app, "  Esc Esc  stop the turn · Esc Esc Esc  clear the prompt");
+    await press(app, ESC, "?");
+    expect(app.lastFrame()).toContain("  Esc  stop the turn · Esc Esc  clear the prompt");
+  });
+
   it("sends on Enter in NORMAL", async () => {
     const { app, session } = await mount([reply("ok")]);
     await normal(app, "hi");

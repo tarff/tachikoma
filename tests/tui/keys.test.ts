@@ -137,6 +137,15 @@ describe("the keys named in help and hints", () => {
     ]);
   });
 
+  // Final review: where Esc goes to vim first (INSERT), the first Esc only goes to NORMAL (choice 31). A key held with
+  // Ctrl never goes to vim.
+  it("names Esc twice to stop the turn and three times to clear the prompt where Esc goes to vim first", () => {
+    expect(keyList(defaults(), undefined, true)).toContain("  Esc Esc  stop the turn · Esc Esc Esc  clear the prompt");
+    expect(keyList(over("Chat", { escape: null, "ctrl+q": "chat:cancel" }), undefined, true)).toContain(
+      "  Ctrl+Q  stop the turn · Ctrl+Q Ctrl+Q  clear the prompt",
+    );
+  });
+
   // Release 6 plan, Task 23: the editor, stash and picture keys name every key bound to them, as the command keys do.
   it("lists the picture key each system binds: Ctrl+V on macOS and Linux, both under WSL", () => {
     const pictures = (platform: NodeJS.Platform, wsl: boolean) => keyList(new Bindings(tableOf(defaultsFor(platform, wsl))));

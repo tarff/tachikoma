@@ -1462,7 +1462,7 @@ export function App({
     editor.current = r.e;
     vimText.current = r.e.text;
     goal.current = null;
-    if (r.act === "help") show(...keyList(table, contextsOf("prompt", fullNow.current)).map(gray));
+    if (r.act === "help") show(...keyList(table, contextsOf("prompt", fullNow.current), vimFirst()).map(gray));
     else if (r.act) run(r.act === "submit" ? "submit" : ACTIONS[r.act]!); // history:previous, :next or :search
     return true;
   };
@@ -1478,6 +1478,12 @@ export function App({
       const { anchor, ...rest } = v;
       vim.current = { ...rest, mode: "NORMAL", pending: "", count: "" };
     } else if (v.pending || v.count) vim.current = { ...v, pending: "", count: "" };
+  };
+  // Vim takes a plain Esc first in INSERT and VISUAL, and while a command or count is half typed (route), so the first
+  // Esc only goes to NORMAL and the working line and `?` name the Esc that stops or clears after it (choice 31).
+  const vimFirst = () => {
+    const v = vim.current;
+    return v !== null && (v.mode !== "NORMAL" || v.pending !== "" || v.count !== "");
   };
   // Claude Code ends a remap pair's wait at every key (its cancelPendingRemap): `press` ends it at the keys it takes,
   // and App at the rest (plan, Task 21).
@@ -1803,7 +1809,7 @@ export function App({
     if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
     // A message starting with `?` needs a space typed first.
     if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text)
-      return show(...keyList(table, contextsOf("prompt", fullNow.current)).map((text) => ({ text, color: "gray" })));
+      return show(...keyList(table, contextsOf("prompt", fullNow.current), vimFirst()).map((text) => ({ text, color: "gray" })));
     if (c === "up" && !e.text && queue.current.length) return restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);
@@ -2134,12 +2140,10 @@ export function App({
     picker: picker !== null,
     question: question !== null,
   };
-  // In vim mode Esc goes to vim first in INSERT and VISUAL, and while a command or count is half typed (route): the
-  // first only goes to NORMAL, the second stops the turn, so the line names it twice then. A key chat:cancel has with
-  // Ctrl or Alt never goes to vim (choice 31).
+  // Where vim takes Esc first (vimFirst) the line names it twice; a key chat:cancel has with Ctrl or Alt never goes to
+  // vim (choice 31).
   const stop = keyOf("chat:cancel", "Chat", "escape");
-  const v = vim.current;
-  const escFirst = v !== null && (v.mode !== "NORMAL" || v.pending !== "" || v.count !== "") && table.keysFor("chat:cancel", "Chat").includes("escape");
+  const escFirst = vimFirst() && table.keysFor("chat:cancel", "Chat").includes("escape");
   const workingLine = busy && (
     <WorkingLine
       label={doing.current.label}

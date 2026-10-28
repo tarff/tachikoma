@@ -69,8 +69,9 @@ const either = (items: string[]) => (items.length < 3 ? items.join(" or ") : `${
 
 // What `?` on an empty prompt prints, grey, in the scrollback: the editor's own keys that no binding in `prompt`, the
 // contexts the prompt obeys (App.tsx, contextsOf: Scroll too in full screen), takes, the rest from the table. Ctrl-C and
-// Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them.
-export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"]): string[] {
+// Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them. With `vimFirst`, vim takes
+// a plain Esc first, as in INSERT (App.tsx, route), so the first Esc only goes to NORMAL (choice 31).
+export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"], vimFirst = false): string[] {
   // A key is named only where it runs its action at the prompt; Scroll's as full screen's prompt runs them, Chat, Scroll
   // and Global (App.tsx, contextsOf), as the list names them "(full screen)".
   const fullScreen: Context[] = prompt.includes("Scroll") ? prompt : [...prompt.slice(0, -1), "Scroll", ...prompt.slice(-1)];
@@ -110,6 +111,7 @@ export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"]): st
   const line = (...parts: (string | false)[]) => (parts.some(Boolean) ? `  ${parts.filter(Boolean).join(" · ")}` : null);
   const [submit] = k("chat:submit", "Chat", "enter");
   const [cancel] = k("chat:cancel", "Chat", "escape");
+  const toNormal = vimFirst && cancel === spelled("escape") ? `${cancel} ` : ""; // the Esc vim takes first
   const [newline, ...newlines] = k("chat:newline", "Chat", "shift+enter", "ctrl+j");
   const previous = k("history:previous", "Chat", "up", "ctrl+p");
   const next = k("history:next", "Chat", "down", "ctrl+n");
@@ -118,7 +120,7 @@ export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"]): st
   const list = [
     "Keys:",
     line(part([submit], "send"), part([newline, submit && `\\ then ${submit}`, ...newlines], "new line", either)),
-    line(part([cancel], "stop the turn"), part([cancel && `${cancel} ${cancel}`], "clear the prompt")),
+    line(part([cancel && toNormal + cancel], "stop the turn"), part([cancel && `${toNormal}${cancel} ${cancel}`], "clear the prompt")),
     "  Ctrl-C  stop the turn and take back the queue, or clear the prompt · twice when empty  exit",
     "  Ctrl-D twice on an empty prompt  exit",
     line(
