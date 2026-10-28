@@ -25,7 +25,7 @@ import {
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
-import { type Ask, type Mode, PermissionGate } from "./core/permissions.js";
+import { type Ask, type Mode, PermissionGate, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { Session } from "./core/session.js";
 import { Stats } from "./core/stats.js";
@@ -152,10 +152,11 @@ if (parsed.help) {
 }
 
 // Release 6 design, "The settings file": a broken file stops the launch as a bad flag does; its warnings come first. Then
-// release 5's order: no lead, a blank -p, --raw, then the flags.
+// release 5's order: no lead, a blank -p, --raw, then the flags. What the file holds is escaped, so a value such as an
+// OSC 52 cannot act on the terminal (release 6 plan, choice 30).
 const loaded = loadSettings();
-if ("problem" in loaded) fail(loaded.problem);
-for (const warning of loaded.warnings) console.error(warning);
+if ("problem" in loaded) fail(visible(loaded.problem));
+for (const warning of loaded.warnings) console.error(visible(warning));
 const leadSpec = leadOf(parsed, process.env, loaded.settings);
 if (!leadSpec) fail(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${shownFile()}.\n\n${HELP}`);
 if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
@@ -184,26 +185,27 @@ const stats = new Stats(bus);
 const makeProvider = (spec: string): Provider => createProvider(spec, { effort });
 // A value came from the settings file when no flag gave it, nor a variable where it has one (an empty variable is unset).
 const fromFile = (flag: string | undefined, variable?: string) => flag === undefined && !variable;
-// A spec the settings file gave names its entry, as one from a flag or variable names the flag (the plan's choice 8).
+// A spec the settings file gave names its entry, as one from a flag or variable names the flag (the plan's choice 8). The
+// message is escaped, as the spec may come from the file (choice 30).
 const named = (entry: string, file: boolean, flag = "") => (file ? `${SETTINGS}: "${entry}": ` : flag);
 let lead: Provider;
 let fallback: Provider | undefined;
 try {
   lead = makeProvider(leadSpec);
 } catch (err) {
-  fail(`${named("lead", fromFile(parsed.lead, process.env.TACHI_LEAD))}${errorText(err)}`);
+  fail(visible(`${named("lead", fromFile(parsed.lead, process.env.TACHI_LEAD))}${errorText(err)}`));
 }
 try {
   if (options.fallback) fallback = makeProvider(options.fallback);
 } catch (err) {
-  fail(`${named("fallback", fromFile(parsed.fallback), "--fallback: ")}${errorText(err)}`); // otherwise it reads like a bad lead
+  fail(visible(`${named("fallback", fromFile(parsed.fallback), "--fallback: ")}${errorText(err)}`)); // otherwise it reads like a bad lead
 }
 // Without --worker, a subagent uses the model leading when it starts.
 let worker: Provider | undefined;
 try {
   if (options.worker) worker = makeProvider(options.worker);
 } catch (err) {
-  fail(`${named("worker", fromFile(parsed.worker, process.env.TACHI_WORKER), "--worker: ")}${errorText(err)}`);
+  fail(visible(`${named("worker", fromFile(parsed.worker, process.env.TACHI_WORKER), "--worker: ")}${errorText(err)}`));
 }
 
 const interactive = parsed.print === undefined;

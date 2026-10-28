@@ -212,6 +212,25 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(tachi("--help").stdout).toMatch(/^ {2}--mode <mode> +when to ask before acting: ask \| project \(default: ask\);\n +never is switched off until release 7\n/m);
   });
 
+  // The security review's finding 2: a bad value in the settings file reaches stderr with its control characters as
+  // escapes, so an OSC 52 in it cannot set the clipboard, nor any other code act on the terminal. Nine starts.
+  it("prints the settings file's problems and warnings with control characters as escapes", { timeout: 60_000 }, () => {
+    const osc = "\\u001b]52;c;ZWNobyBwd25lZA==\\u0007"; // ESC and BEL, as JSON writes them
+    const runs = [
+      ...["mode", "effort", "screen", "editorMode"].map((name) => tachi("--lead", "ollama:none", "-p", "hi", homeWith(`{"${name}": "${osc}"}`))),
+      tachi("--lead", "ollama:none", "-p", "hi", homeWith(`{"status": ["${osc}"]}`)),
+      tachi("-p", "hi", homeWith(`{"lead": "${osc}"}`)),
+      tachi("--lead", "ollama:none", "-p", "hi", homeWith(`{"fallback": "${osc}"}`)),
+      tachi("--lead", "ollama:none", "-p", "", homeWith(`{"${osc}": 1}`)), // a warning, then -p's own problem
+      tachi("--lead", "ollama:none", "-p", "hi", homeWith("\u001b]52;c;ZWNobyBwd25lZA==\u0007")), // not JSON: the parser quotes its first 10 characters
+    ];
+    for (const r of runs) {
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("\\u001b]52;c;ZWN");
+      expect(r.stderr).not.toMatch(/[\u001b\u0007]/);
+    }
+  });
+
   it("warns of an unknown settings entry on stderr, and starts", () => {
     const r = tachi(homeWith('{"lead": "ollama:none", "leed": "x"}'));
     expect(r.stderr).toContain('settings.json: "leed" is not a setting; it was left out\n');
