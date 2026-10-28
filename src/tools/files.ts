@@ -47,13 +47,14 @@ function inData(data: string, real: string): boolean {
   return readdirSync(data).some((name) => same(statSync(path.join(data, name), { bigint: true, throwIfNoEntry: false }), file));
 }
 
-// Whether `name`, in the settings folder, is the settings file, the keys file, or a lock or temporary
-// file that saving the settings makes beside it (settings.json.lock, settings.json.<pid>.<hex>.tmp).
-// Compared as Windows reads a name, so another spelling cannot make one: ignoring case (as macOS does),
-// the dots and spaces it drops from the end, and a ":stream" after it.
+// Whether `name`, in the settings folder, is the settings file, the keys file, or a companion of either:
+// the lock and temporary files saving the settings makes beside it (settings.json.lock,
+// settings.json.<pid>.<hex>.tmp), or what an editor saving one leaves there. Compared as Windows reads a
+// name, so another spelling cannot make one: ignoring case (as macOS does), the dots and spaces it drops
+// from the end, and a ":stream" after it.
 export function settingsName(name: string): boolean {
   const n = name.replace(/:.*/s, "").replace(/[. ]+$/, "").toLowerCase();
-  return n === SETTINGS || n === KEYBINDINGS || n.startsWith(`${SETTINGS}.`);
+  return [SETTINGS, KEYBINDINGS].some((file) => n === file || n.startsWith(`${file}.`));
 }
 
 // Whether `real` is one of the settings folder's protected files, or a path inside one (which would

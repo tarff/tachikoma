@@ -136,6 +136,18 @@ describe("the settings and keys files", () => {
     expect(existsSync(path.join(ctx.root, ".tachikoma", "settings.json.1234.0a1b2c3d.tmp"))).toBe(false);
   });
 
+  // An editor saving the keys file can leave companions beside it, as a settings save does.
+  it("refuse the keys file's companions too", async () => {
+    const ctx = await home("never", ["keybindings.json.bak"]);
+    for (const name of ["keybindings.json.bak", "keybindings.json.1234.0a1b2c3d.tmp"]) {
+      const p = path.join(".tachikoma", name);
+      await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+    }
+    expect(await readFile(path.join(ctx.root, ".tachikoma", "keybindings.json.bak"), "utf8")).toBe("{}");
+    expect(existsSync(path.join(ctx.root, ".tachikoma", "keybindings.json.1234.0a1b2c3d.tmp"))).toBe(false);
+  });
+
   it("are refused before they exist, so a write cannot make them", async () => {
     const ctx = await tempContext("never");
     vi.stubEnv("USERPROFILE", ctx.root);
