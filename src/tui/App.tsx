@@ -37,7 +37,7 @@ import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 // the first and last of the conversation's lines its detail went to, the heading's line first; `following`: whether the
 // view was following when it was first drawn, undefined until then (release 5 plan, Task 11). `label`: who asks, a
 // subagent by its id alone, and the action's first word ("t2 to run"); `short`, for a question too long to fit, what its
-// line names in place of its text (the user's choices at Task 11's reviews).
+// line names in place of its text (the user's choices, release 5).
 type Question = {
   text: string;
   label: string;
@@ -190,11 +190,10 @@ export function App({
         retake: () => input?.retake(),
       }),
   );
-  // What is set up once, at mount (the bus listeners, bindAsk, History's warning, the mouse listener), keeps the first
-  // render's functions, and what they call, `say`, `next` and the rest, reads the mode from here, not from the first
-  // render's `full` (found at Task 5's review); so do the keys' functions, alike. /screen sets it as the switch starts,
-  // `full` following (switchScreen, below). The mouse listener reads the frame's shape from `frame`, below, for the same
-  // reason.
+  // The mode as it is now, which `say`, `next` and the rest read from here, not from `full`: /screen sets it as the
+  // switch starts, `full` following (switchScreen, below), and a drawing's functions can run after a later drawing:
+  // History's warning is the first drawing's, and a turn or a command, once it ends, calls the next() of the drawing that
+  // started it. The mouse listener reads the frame's shape from `frame`, below, the screen as last drawn.
   const fullNow = useRef(full);
   // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row, how many it draws and
   // which of its rows they are (layout.ts, frame), and the menu's under it, no prompt rows while a question, the model
@@ -262,7 +261,7 @@ export function App({
   });
   // The next key, paste or click takes away the line about the last copy (release 5 design, "Copying"), but a failure only
   // once it has been on screen: one that came while Ctrl+R's search or the exit warning held the row waits for it, as a
-  // failed copy is always reported (the user's choice at Task 9's review, 2026-10-27).
+  // failed copy is always reported (the user's choice, release 5).
   const clearCopied = () => {
     const c = copied.current;
     if (c === null || (c.failed && !c.shown)) return;
@@ -288,8 +287,8 @@ export function App({
     setLines((l) => [...l, ...shown.map((x) => ({ ...x, id: nextId.current++ }))]);
   };
   // What the user asks to see (the key list, the mode, `/model`) brings the view to the bottom, following, so it is seen;
-  // output arriving on its own leaves a held view where it is (the user's choice, 2026-10-27, at Task 5's review). The
-  // last turn opens the detail view instead (plan, Task 12).
+  // output arriving on its own leaves a held view where it is (the user's choice, release 5). The last turn opens the
+  // detail view instead (plan, Task 12).
   const show = (...add: Line[]) => {
     view.current = FOLLOWING;
     say(...add);
@@ -320,7 +319,7 @@ export function App({
       if (detail !== undefined) {
         const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
         const from = kept.lines.length;
-        say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
+        latest.current.say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
         if (fullNow.current) range = [from, kept.lines.length - 1];
       }
       return new Promise((resolve) => {
@@ -341,34 +340,34 @@ export function App({
             signal?.removeEventListener("abort", cancel);
             questions.current = questions.current.filter((x) => x !== q);
             if (q.detail && q.following) view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
-            say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
+            latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
             resolve(ok);
             rerender((n) => n + 1);
-            next(); // an answer may have waited for this question to close
+            latest.current.next(); // an answer may have waited for this question to close
           },
         };
         signal?.addEventListener("abort", cancel, { once: true });
         // A question closes the detail view: y and n answer it, and n is "next match" there (release 5 design, "The detail
         // view"). Closed here, before it is drawn, so its first drawing places the conversation's view (Task 11).
-        closeDetail();
+        latest.current.closeDetail();
         questions.current.push(q);
         rerender((n) => n + 1);
-        void comeBack(); // printed out, the view comes back at once, as on q, and the question shows (plan, Task 13)
+        void latest.current.comeBack(); // printed out, the view comes back at once, as on q, and the question shows (plan, Task 13)
       });
     });
-    const onMessage = (m: Message) => say(...describe(m));
+    const onMessage = (m: Message) => latest.current.say(...describe(m));
     const onError = (e: ErrorEvent) => {
       if (e.kind === "tool") rerender((n) => n + 1);
-      else if (e.kind === "fallback") say({ text: `↪ ${e.message}`, color: "magenta" });
-      else say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
+      else if (e.kind === "fallback") latest.current.say({ text: `↪ ${e.message}`, color: "magenta" });
+      else latest.current.say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
     };
     const onUsage = () => {
       rerender((n) => n + 1);
-      lookUpWindow(false);
+      latest.current.lookUpWindow(false);
     };
     const onLead = (id: string) => {
-      say({ text: `lead is now ${id}`, color: "magenta" });
-      lookUpWindow();
+      latest.current.say({ text: `lead is now ${id}`, color: "magenta" });
+      latest.current.lookUpWindow();
     };
     const onToolStart = ({ id, name, input }: Events["tool-start"][0]) => {
       calls.current.push({ id, name, target: brief(name, input) });
@@ -384,10 +383,10 @@ export function App({
       for (const t of tasks.all) {
         if (!t.background || t.state === "running" || t.state === "waiting" || announced.current.has(t.id)) continue;
         announced.current.add(t.id);
-        say({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "gray" });
+        latest.current.say({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "gray" });
       }
       rerender((n) => n + 1);
-      next();
+      latest.current.next();
     };
     const onTodo = (items: TodoItem[]) => {
       todos.current = { items, hidden: false };
@@ -405,18 +404,19 @@ export function App({
     history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
-    mouse?.on("mouse", onMouse);
+    const onReport = (m: Mouse) => latest.current.onMouse(m);
+    mouse?.on("mouse", onReport);
     return () => {
       ended.current = true;
       // Ink ending (a crash, or a signal) lets the keyboard go, so raw mode goes off and the process can end (input.ts,
       // hold), whatever held it: the view printed out, the rest of a paste dropped after it, or a switch, whose own ending
-      // a signal never lets come (found at the final review). Letting go again later, as a switch or comeBack does, is
+      // a signal never lets come. Letting go again later, as a switch or comeBack does, is
       // harmless. Bracketed paste needs nothing here: Ink's own cleanups turn it off as they end, suspended or not (Ink's
       // components/App.js).
       printed.current = null;
       dropping.current = null;
       owner.end();
-      mouse?.off("mouse", onMouse);
+      mouse?.off("mouse", onReport);
       clearInterval(minutes);
       clearTimeout(first.current?.timer);
       bus.off("message", onMessage);
@@ -428,7 +428,7 @@ export function App({
       bus.off("todo", onTodo);
       bus.off("tasks", onTasks);
       // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
-      // Ink ending on a drawing error would leave with nothing on screen (found at the final review).
+      // Ink ending on a drawing error would leave with nothing on screen.
       tasks.stop();
       abort.current?.abort();
     };
@@ -464,9 +464,9 @@ export function App({
   // command that finished after a turn started, both typed in one read of the terminal, leaves the
   // queue to that turn), nor while a question or the model list is open. While the detail view is printed out, a
   // subagent's record waits for it to come back, and what is queued after it, as it would take the printed view's place
-  // unseen; the model list waits in perform, below (the user's choices, 2026-10-28). So does /screen, which would change
+  // unseen; the model list waits in perform, below (the user's choices, release 5). So does /screen, which would change
   // the screen under the printed view, and could not suspend Ink, suspended already. Messages and other commands go on.
-  // Nothing starts once Ink has ended, a turn going on paying with no screen to show it (found at Task 13's round 3).
+  // Nothing starts once Ink has ended, a turn going on paying with no screen to show it.
   const next = () => {
     const h = happening();
     if (h.phase.kind === "ended" || h.working || h.waiting) return;
@@ -499,7 +499,7 @@ export function App({
         return exit();
       }
       if (alone("/errors")) return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
-      // Not to full screen where it can't draw (found at the final review): classic, as at the start (clilib.ts, screenMode).
+      // Not to full screen where it can't draw: classic, as at the start (clilib.ts, screenMode).
       if (alone("/screen") && !fullNow.current && !fullPossible)
         return say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
       if (alone("/screen")) return await switchScreen();
@@ -535,7 +535,7 @@ export function App({
           if (!signal.aborted) {
             listOpen.current = true;
             // A list read while the detail view is printed out, sent before `[` or from the queue, waits for it to come back
-            // (the user's choice, 2026-10-28): opening, it would end the paste hook (usePaste, below), and Ink would turn
+            // (the user's choice, release 5): opening, it would end the paste hook (usePaste, below), and Ink would turn
             // bracketed paste off at once, suspended or not, so a paste would come as keys. listOpen holds the queue meanwhile.
             if (printed.current) waitingList.current = groups;
             else setPicker(groups);
@@ -598,7 +598,7 @@ export function App({
   };
 
   // The detail view opens over the conversation, though not over a question, which closes it (bindAsk, above): what a key
-  // read before a question is first drawn asks for is said in the conversation instead (found at Task 12's review).
+  // read before a question is first drawn asks for is said in the conversation instead.
   // Opening and closing clear the selection, which belongs to the other pane's lines, and end a drag, a grab of the bar
   // and a run of clicks.
   const unselect = () => {
@@ -627,7 +627,7 @@ export function App({
   // Text takes no row, and without a colour, whose codes would keep the space at the line's end. Then the keys go to a
   // reader of the App's own: q, Esc or Ctrl-C come back, other keys do nothing. Ink's suspend turns the kitty keyboard
   // protocol off, so q comes as q, and bracketed paste, which is turned on again, so a paste comes marked and does nothing
-  // (the user's choice, 2026-10-28). Meanwhile the work goes on, and nothing is drawn, as Ink drops every render while
+  // (the user's choice, release 5). Meanwhile the work goes on, and nothing is drawn, as Ink drops every render while
   // suspended. A question that arrived while going out brings the view back at once.
   const printOut = async (d: Detail) => {
     const p: Printed = {};
@@ -662,10 +662,10 @@ export function App({
   // Coming back undoes going out in reverse; bracketed paste goes off as Ink's suspend left it, and Ink's resume turns it on
   // again. A paste still coming in, when a question or the key coming back brought the view back, is dropped up to its
   // end before keys reach Ink, so a y in it never answers a question, nor a pasted q closes the view (the user's choice,
-  // 2026-10-28); what follows its end marker in the same read goes with it. A `[` read once Ink reads keys again, before
-  // its drawing is done, prints the view out again (found at Task 13's review), and that print-out keeps the hold and
+  // release 5); what follows its end marker in the same read goes with it. A `[` read once Ink reads keys again, before
+  // its drawing is done, prints the view out again, and that print-out keeps the hold and
   // what waits. So does a switch a /screen sent then started (Ctrl+O closing the view, then the prompt, in one read): its
-  // own ending lets go, as letting go in its middle would let Ink's suspend turn raw mode off (found at the final review).
+  // own ending lets go, as letting go in its middle would let Ink's suspend turn raw mode off.
   const comeBack = async () => {
     const p = printed.current;
     if (!p?.resume) return;
@@ -688,7 +688,7 @@ export function App({
     p.handover!.done(); // also when Ink ended meanwhile, after its cleanup let go: again is harmless (input.ts, hold)
     if (printed.current) return;
     // Ink ending during the resume (a crash in its redraw) starts nothing that waited: no screen would show it, and a
-    // turn would go on paying with none (found at round 3's check of Task 13).
+    // turn would go on paying with none.
     if (ended.current) return;
     const list = waitingList.current;
     waitingList.current = null;
@@ -705,23 +705,22 @@ export function App({
   // <Static> mounts and prints the whole conversation (plan, choice 17). The mode is classic from the start, nothing being
   // drawn meanwhile, so a key read then (Ctrl+O, a scroll key) acts as in classic mode. The wait matters for a /screen run
   // from the queue: set outside any key, its state is drawn only later, by React's scheduler, and without the wait Ink's
-  // resume would draw the full-screen frame again on the normal screen (found at Task 14's re-review).
+  // resume would draw the full-screen frame again on the normal screen.
   // To full screen: the view is given the lines said in classic mode, wrapped at the width it is drawn at, so not wrapped
   // again at its first drawing, and the mode is full from then on, so a question asked while the switch runs keeps its
-  // detail's place and is brought to it (found at Task 14's spec review); Ink is suspended, the second screen entered, and
+  // detail's place and is brought to it; Ink is suspended, the second screen entered, and
   // once React has drawn the full-screen frame, Ink resumes and draws it there, never the classic frame. Ink drops every
   // render while suspended, so nothing is drawn before. `full` follows only once the second screen is on, so React draws no
   // full-screen frame on the normal screen; `fullNow` is set just before the suspend, so the keys Ink read with the Enter
-  // that sent /screen, which it handles next, act as in full screen: a Ctrl+O among them opens the detail view (found at
-  // the final review). A `[` does nothing while `owner.suspended`, from the suspend to the resume, either way, as it
+  // that sent /screen, which it handles next, act as in full screen: a Ctrl+O among them opens the detail view.
+  // A `[` does nothing while `owner.suspended`, from the suspend to the resume, either way, as it
   // would suspend Ink again, which throws. The view follows the bottom: sending /screen, or the queue running it, put it
   // there, and nothing moves it in classic mode. What the switch says at the end is said, not shown, so a question asked
   // meanwhile keeps the view on its detail.
   // If Ink ends meanwhile (a render error), nothing more is switched, the terminal being put back as it is then
   // (terminal.ts, restoreWhenInkEnds), and the keyboard is let go, so raw mode goes off and the process can end. A `[` read
   // while Ink resumes, before its drawing is done, keeps the hold, as in comeBack. Should the suspend throw going to full
-  // screen, the mode goes back to classic, as the screen is (perform says why); `switching` ends however the switch does
-  // (found at Task 14's code review).
+  // screen, the mode goes back to classic, as the screen is (perform says why); `switching` ends however the switch does.
   const switchScreen = async () => {
     const toFull = !fullNow.current;
     working.current = true;
@@ -822,8 +821,8 @@ export function App({
       return;
     }
     // In the detail view Ctrl-C stops a turn, and its queue comes back into the prompt, as below; with nothing running it
-    // only closes the view, never clearing the hidden prompt nor counting toward exiting (the user's choice at Task 12's
-    // review). No press-twice count waits while the view is open: the key that opens it is read below, starting the count
+    // only closes the view, never clearing the hidden prompt nor counting toward exiting (the user's choice, release 5).
+    // No press-twice count waits while the view is open: the key that opens it is read below, starting the count
     // again, and a queued `/tasks t3` runs only from `next()`, after a turn, an answer or the model list, when no count
     // was started.
     if (h.phase.kind === "detail") {
@@ -887,8 +886,7 @@ export function App({
       clearCopied();
       const to = pasteTo(given);
       // In the detail view a paste goes into a search being typed, up to its first line break, without the control
-      // characters typed text loses (keys.ts, commands); otherwise it does nothing there (the user's choice at Task 12's
-      // review).
+      // characters typed text loses (keys.ts, commands); otherwise it does nothing there (the user's choice, release 5).
       const d = detail.current;
       if (to === "search" && d?.search) {
         searchFor(d, d.search.query + text.split(/\r\n?|\n/, 1)[0]!.replace(/\p{Cc}/gu, ""), viewHeight);
@@ -945,7 +943,7 @@ export function App({
   // "Selecting"); one below it clicks the prompt or a menu entry (clickAt). All of it acts on the detail view in the
   // conversation's place while it is open (plan, Task 12). A report read with a key that opened or closed the view, or
   // come after a question closed it, belongs to a screen that is gone, and is dropped, as clickAt drops a click read with
-  // a key that changed the prompt (found at Task 10's review).
+  // a key that changed the prompt.
   const onMouse = (m: Mouse) => {
     // `ended` never comes here (useInput says why), and is checked as the first phase. Printed out: a report read with its
     // `[`, as for keys.
@@ -983,7 +981,7 @@ export function App({
       held.current = null;
       clearCopied();
       // A selection stays until a click: any press but one on the scroll bar, which scrolls as the wheel does (the user's
-      // choice at Task 9's review, 2026-10-27).
+      // choice, release 5).
       if (!onBar && selection.current) {
         selection.current = null;
         rerender((n) => n + 1);
@@ -1041,7 +1039,7 @@ export function App({
   // "↑ N more" and "↓ N more", and every other row do nothing (release 5 plan, choice 10). The prompt during Ctrl+R's
   // search shows a match, not what is typed, so the frame gives it no prompt rows then. A click read with a key that
   // replaced the prompt or the menu's choice is dropped: React draws nothing between them, so the screen is still the one
-  // from before the key (found at Task 10's review). A click that acts starts the press-twice count again, as a key
+  // from before the key. A click that acts starts the press-twice count again, as a key
   // between the presses does.
   const clickAt = (x: number, y: number) => {
     const f = frame.current;
@@ -1071,8 +1069,7 @@ export function App({
   // A drag while selecting grows the selection to the pointer's cell. Below the conversation the view first scrolls a row
   // for each report, so a selection can be longer than the screen (release 5 design, "Selecting"). The frame starts at
   // the terminal's top, so the pointer cannot go above the conversation: its top row stands for above it, for a drag
-  // started lower down; one started on the top row selects within it and never scrolls (the user's choice at Task 9's
-  // review, 2026-10-27).
+  // started lower down; one started on the top row selects within it and never scrolls (the user's choice, release 5).
   const dragTo = (h: Held, x: number, y: number) => {
     const { viewHeight } = frame.current;
     const p = pane();
@@ -1221,7 +1218,7 @@ export function App({
     if (key.tab || key.escape) return endSearch(shown());
     for (const c of commands(ch, key)) {
       if (typeof c === "object") Object.assign(s, { query: s.query + c.text, skip: 0 });
-      // In full screen the conversation behind the search scrolls (the user's choice, 2026-10-27, at Task 5's review);
+      // In full screen the conversation behind the search scrolls (the user's choice, release 5);
       // in classic mode the scroll keys do nothing here, as in release 4.
       else if (fullNow.current && isScroll(c)) scroll(c);
       else if (c === "search") s.skip = Math.max(0, Math.min(s.skip + 1, matches(history.current!.entries, s.query).length - 1));
@@ -1234,6 +1231,13 @@ export function App({
       }
     }
   };
+
+  // What the listeners set up once, at mount (the bus's, bindAsk's and the mouse's), call: the latest drawing's
+  // functions, set at each, so what they read is the screen as last drawn, never what it was when they were set up
+  // (release 6 design, "Tidying the screen code first"). Set while drawing, safe with Ink's non-concurrent root (above).
+  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse };
+  const latest = useRef(handlers);
+  latest.current = handlers;
 
   const d = detail.current; // the detail view drawn, which hides the prompt, its menu and what goes with them (Task 12)
   const prompt = search.current ? shown() : editor.current;
@@ -1267,9 +1271,9 @@ export function App({
               : "? for shortcuts";
   // The line about the last copy, until the next key or click (release 5 design, "Copying"), takes the hint row's place
   // only while one shows, so a copy never moves the conversation; a failed copy shows anyway, adding the row. Ctrl+R's
-  // search and the exit warning keep the row (the user's choice at Task 9's review, 2026-10-27), and so does the detail
+  // search and the exit warning keep the row (the user's choice, release 5), and so does the detail
   // view's search while it is typed, as Ctrl+R's does. A failure on a terminal too short for a hint row waits until one
-  // fits (accepted at Task 9's review).
+  // fits (accepted, release 5).
   const hintFor = (left: number) => {
     const usual = usualHint(left);
     const c = copied.current;
@@ -1312,14 +1316,14 @@ export function App({
   const queued = q.length <= shownQueued ? q : shownQueued > 0 ? [...q.slice(0, shownQueued - 1), `+${q.length - shownQueued + 1} more`] : [];
   const hint = f.hinted ? hintFor(f.left) : null;
   // A successful copy's line that is not on screen is dropped, so it never turns up later, when a hint row comes back; only
-  // a failure waits to be shown (the user's choice at Task 9's review, 2026-10-27). Changed while drawing, which is safe as
+  // a failure waits to be shown (the user's choice, release 5). Changed while drawing, which is safe as
   // Ink renders with React's non-concurrent root (ink.js, `concurrent` defaults to false); a concurrent root could drop
   // or mark shown a line it never drew.
   if (copied.current && !copied.current.failed && hint !== copied.current.text) copied.current = null;
   if (copied.current && hint === copied.current.text) copied.current.shown = true; // from now the next key or click takes it away
 
   // A question too long to fit, whose rows would leave the conversation less than its one row, has its line point above
-  // instead (the user's choices at Task 11's reviews): at a write's preview, whose heading holds the whole path, or else
+  // instead (the user's choices, release 5): at a write's preview, whose heading holds the whole path, or else
   // at all of its text, put in the conversation under a heading as a preview is. Nothing of a command is ever cut
   // (permissions.ts, visible), and the placement below brings it into view, to scroll through before answering. Checked
   // on every draw, as a resize can leave a question too long; once moved it stays, and its heading counts characters, as

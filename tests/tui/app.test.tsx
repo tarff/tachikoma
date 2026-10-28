@@ -3323,6 +3323,63 @@ describe("App's detail view in full screen", () => {
     expect(rows[4]).toMatch(/^said 1\. word/);
   });
 
+  // A record opened by the queue going on from a listener set up once, at mount: a question's answer (bindAsk), and the
+  // end of a command clicked in the menu (the mouse's listener). Either way it wraps at the width the terminal has then.
+  const narrow = async (app: ReturnType<typeof render>) => {
+    Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
+    app.stdout.emit("resize");
+    await tick();
+  };
+  const wrappedAt60 = (app: ReturnType<typeof render>) => {
+    const rows = shown(app, 60);
+    expect(rows[0]).toBe("t1 (find x), done: 0 tool calls");
+    expect(rows[2]).toMatch(/^said 0\. word/);
+    expect(rows[3]).toMatch(/^word/);
+    expect(rows[4]).toMatch(/^said 1\. word/);
+  };
+  const long = (i: number) => `said ${i}. ${"word ".repeat(14).trimEnd()}`; // under 80 columns: one row at 99, two at 59
+
+  it("wraps a record opened after a resize at the new width, when a question's answer lets the queue go on", async () => {
+    const lead = new Held();
+    const worker = new FakeProvider("w", [reply(lines(3, long))]);
+    const { app, ask, session } = await mount([], { full: true, lead, worker });
+    await type(app, "go");
+    lead.answer(callTool("c1", "delegate", { description: "find x", task: "find x" }));
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("done");
+    await gone(app, "Esc to stop");
+    await type(app, "hi");
+    await type(app, "/tasks t1"); // queued: a turn is running
+    const answer = ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n]");
+    lead.answer("ok"); // the turn ends, and the queue waits for the question
+    await waitFor(() => session.messages.at(-1)?.role === "assistant");
+    await narrow(app);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    await until(app, "t1 (find x), done: 0 tool calls");
+    wrappedAt60(app);
+  });
+
+  it("wraps a record opened after a resize at the new width, when a command clicked in the menu lets the queue go on", async () => {
+    let signedIn!: () => void;
+    const login: Login = () => new Promise<void>((resolve) => (signedIn = resolve));
+    const worker = new FakeProvider("w", [reply(lines(3, long))]);
+    const { app, mouse } = await mount([callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")], { full: true, worker, login });
+    await type(app, "go");
+    await until(app, "done");
+    await narrow(app);
+    await press(app, "/lo");
+    const row = shown(app, 60).findIndex((r) => r.startsWith("  /login chatgpt"));
+    expect(row).toBeGreaterThan(-1);
+    await pointer(mouse, ...click(4, row));
+    await until(app, "Waiting for the browser");
+    await type(app, "/tasks t1"); // queued while signing in
+    signedIn();
+    await until(app, "t1 (find x), done: 0 tool calls");
+    wrappedAt60(app);
+  });
+
   it("goes round to the first match when every match is above the view", async () => {
     const { app } = await record(logins());
     await press(app, "G", "/", "login 30");
@@ -3505,6 +3562,7 @@ async function onTerminal(
   return {
     steps,
     ink,
+    terminal,
     session,
     bus,
     // Each key in its own read, to Ink.
@@ -3575,6 +3633,18 @@ describe("App's detail view printed out", () => {
       expect(steps[first + 2]).toBe(PASTE_ON); // so a paste comes marked, and the reader can drop it
       expect(steps[first + 3]).toBe("divert(reader)");
     });
+  });
+
+  it("prints the view at the terminal's width after a resize", async () => {
+    const { steps, key, terminal } = await record();
+    terminal.columns = 60;
+    terminal.emit("resize");
+    await tick();
+    steps.length = 0;
+    await key("[");
+    const first = steps.indexOf(FIRST_SCREEN);
+    const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "one", "", "three", LONG.slice(0, 60), LONG.slice(60, 120), LONG.slice(120), LAST, ""];
+    expect(stripVTControlCharacters(steps[first + 1]!)).toBe(lines.join("\n"));
   });
 
   it("comes back on q, not on other keys: the reader let go, the second screen, the mouse on, the view drawn again, then the keyboard", async () => {
