@@ -148,8 +148,8 @@ Each is marked in its task. None approved yet.
    (`cmd /c` alone exits 1 for it; found at Task 12's build, measured).
 5. **The editor's file** is `prompt.md` in a fresh `mkdtemp` folder in the system's temporary
    folder (the user's own on Windows), opened with mode 0o600, removed with its folder after.
-6. **`/vim` alone switches vim mode on or off (Task 21)** and saves it; `/vim on` and `/vim off`
-   set it. Words other than those get the usage line.
+6. **`/vim` alone switches vim mode on or off (Task 21)**, this window only (choice 26); `/vim on`
+   and `/vim off` set it. Words other than those get the usage line.
 7. **`status` in the settings file is a list of names (Task 7),** `["lead", "context"]`, as
    `--status` takes them comma-separated; `screen` is `"full"` or `"classic"`.
 8. **Settings messages name the file and the entry (Task 7):** `settings.json: "mode" must be one
@@ -236,20 +236,23 @@ Each is marked in its task. None approved yet.
     fallback is the one asked about and marked; the lead keeps getting pictures. The question
     shows plainly, without "Allow " in front, though it uses the permission question's line
     (found at Task 18's build and spec review; the coordinator's call, for the user to review).
-26. **A missing settings file is skipped, and `/lead`, a `/model` pick and `/screen` change this
-    window only (Tasks 8 and 9; the user's answers, 2026-10-29).** A settings file found missing
-    while the session watches it is skipped, as an empty one is (choice 3), so the settings in
-    force stay: an editor that saves by renaming a new file over the old one leaves none for a
-    moment, which used to reset every setting and set it again. Deleting the file on purpose keeps the
-    settings until a restart; a removed keys file is still the default keys. `/lead`, a `/model`
-    pick and `/screen` change only the window they are typed in and save nothing, since every open
-    window watches the file and would follow a save; to make a change last, the user edits the file
-    (`/settings` opens it). A later edit of the file's `lead` or `screen` applies as any edit does.
-    This replaces all of Task 8 (`saveSetting`, its lock and private write, the failed save's line,
-    its tests and commit), and with it choice 2 except for the blank file `/settings` makes, and the
-    design's "Saving" bullet. In Task 9 and the design's "Live edits", the watcher no longer passes
-    over Tachikoma's own save (Task 9's test 6 goes), and a removed settings file is no longer `{}`,
-    nor is it in choice 3. `/vim` (choice 6, Task 21) changes this window only too.
+26. **A missing settings or keys file is skipped, and `/lead`, a `/model` pick and `/screen`
+    change this window only (Tasks 8, 9 and 11; the user's answers, 2026-10-29).** A settings or
+    keys file found missing while the session watches it is skipped, as an empty one is (choice
+    3), so the settings and keys in force stay: an editor that saves by renaming a new file over
+    the old one leaves none for a moment, which used to reset every setting, or every key, and set
+    it again, saying the keys file's problems again each time. Deleting either file on purpose, or
+    the whole folder, keeps them until a restart. Should `/settings` then make a new blank `{}`
+    file, every setting goes back to its default at that moment, as a blank file sets nothing; the
+    user expects this. `/lead`, a `/model` pick and `/screen` change only the window they are typed
+    in and save nothing, since every open window watches the file and would follow a save; to make
+    a change last, the user edits the file (`/settings` opens it). A later edit of the file's
+    `lead` or `screen` applies as any edit does. This replaces all of Task 8 (`saveSetting`, its
+    lock and private write, the failed save's line, its tests and commit), and with it choice 2
+    except for the blank file `/settings` makes, and the design's "Saving" bullet. In Task 9 and
+    the design's "Live edits", the watcher no longer passes over Tachikoma's own save (Task 9's
+    test 6 goes), and a removed file is no longer `{}`, nor is it in choice 3. `/vim` (choice 6,
+    Task 21) changes this window only too.
 
 ---
 
@@ -632,6 +635,8 @@ save leaves the change in force and says `The change holds for this session, but
 Commit: `feat: /lead, /model and /screen save their choice to the settings file`.
 
 ## Task 9: Live settings
+
+**Partly replaced by choice 26 (the user's answers, 2026-10-29): no own save, a removed file skipped.**
 
 **Files:** create `src/settingsWatch.ts`, `tests/settingsWatch.test.ts`; modify `src/cli.tsx`,
 `src/tui/App.tsx`, `src/core/session.ts`, `src/core/tasks.ts`, `src/providers/anthropic.ts`,

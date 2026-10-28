@@ -149,6 +149,8 @@ Every entry is optional; one that is absent keeps today's default.
   one was given, otherwise the default. Removing the whole file is the same as `{}`. Tachikoma's own
   saves are not counted as changes. A file broken by an edit keeps the last good settings and says
   what is wrong in one line.
+  **Removing the file, and Tachikoma's own saves: replaced by the plan's choice 26 (a missing
+  settings or keys file is skipped, keeping what is in force; nothing is saved).**
 
 | Entry | When a live change applies |
 |---|---|
@@ -322,9 +324,9 @@ Claude Code's table does not list counts, but the option the user chose did).
   waiting for its character), the last f/t search, the last change and the yank register. One
   function takes the state and a key and returns the new state, so every row of Claude Code's
   table is a test fed key by key. `u` uses the editor's undo steps.
-- **On:** `"editorMode": "vim"` in the settings file, or `/vim`, which saves it. It starts in
-  INSERT. The mode shows in the hint row (`-- NORMAL --`). The mode and cursor are kept across
-  Ctrl+O, the detail view and the menus.
+- **On:** `"editorMode": "vim"` in the settings file, or `/vim`, for this window only (the plan's
+  choice 26). It starts in INSERT. The mode shows in the hint row (`-- NORMAL --`). The mode and
+  cursor are kept across Ctrl+O, the detail view and the menus.
 - **As Claude Code's docs say:** Esc in INSERT or VISUAL goes to NORMAL and does not stop the turn;
   Esc in NORMAL does what Esc does today; Ctrl+C always stops. Enter sends from NORMAL too.
   `j`/`k` and Up/Down at the first or last line move through prompt history. `/` in NORMAL opens
@@ -363,6 +365,7 @@ Each row is checked against its page again when the table is written into the co
 - A broken settings or keys file: at launch, the reason and a stop for settings; one line and the
   rest applied for keys; during a session, the last good version and one line.
 - A save that fails: the change holds for the session; one line says so.
+  **Replaced by the plan's choice 26: nothing is saved.**
 - An editor that is missing or fails: the prompt as it was; one line naming how to set one.
 - No picture on the clipboard, or no clipboard reader on Linux: one line.
 - A provider refusing a request with pictures as invalid: its words, then the question whether to
@@ -385,10 +388,10 @@ OpenAI table. sharp is installed through sfw, pinned to the version checked then
   key before the prompt's editing keys (Ctrl+E); each problem in a keys file with its exact
   message; chords and their 3 seconds under fake timers; `?` and the hints
   following a rebind.
-- **Settings:** the order of precedence; each check's message naming the file; a save keeping the
-  user's other entries; two sessions saving at once; live edits with a real file, one test for each
-  row of the live-change table, removals included; a live `never` refused; a broken edit keeping
-  the last good settings.
+- **Settings:** the order of precedence; each check's message naming the file; `/lead`, `/model`
+  and `/screen` leaving the file as it was (the plan's choice 26); live edits with a real file, one
+  test for each row of the live-change table, removals included; a live `never` refused; a broken
+  edit keeping the last good settings.
 - **The editor:** the hand-over with a stand-in editor program; trailing line break; a failing and a
   missing editor; a turn's output arriving meanwhile.
 - **Pictures:** each adapter's shape against its provider's documented form; shrinking to each

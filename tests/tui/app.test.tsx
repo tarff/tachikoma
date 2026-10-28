@@ -5987,7 +5987,8 @@ describe("App's live settings", () => {
     expect(app.lastFrame()).toContain("› ab");
   });
 
-  it("gives the default keys once ~/.tachikoma is removed with a keys file in it, then says it is no longer watched", async () => {
+  // Choice 26, the user's: the keys file goes with the folder, and a missing one keeps the keys in force.
+  it("keeps the keys file's keys once ~/.tachikoma is removed with it, and says it is no longer watched", async () => {
     const home = freshHome();
     const { app, bus, where } = await watching([], {}, {}, {}, home);
     const read = readsOf(where);
@@ -5999,8 +6000,24 @@ describe("App's live settings", () => {
     expect(app.lastFrame()).toContain("write the fix");
     rmSync(path.dirname(where), { recursive: true });
     await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json and keybindings.json are no longer watched this session`);
-    await press(app, "\u0014"); // Ctrl+T, the default's again
-    expect(app.lastFrame()).not.toContain("write the fix");
+    await press(app, "\u0014"); // Ctrl+T, still unbound
+    expect(app.lastFrame()).toContain("write the fix");
+  });
+
+  // Choice 26, the user's: an editor that saves by renaming a new file over the old one leaves no keys file for a
+  // moment, which is skipped, so the keys stay and the file's problems are not said again.
+  it("keeps the keys while the keys file is missing, and says its problems once when it is back the same", async () => {
+    const home = freshHome();
+    const { app, where, write } = await watching([], {}, {}, {}, home);
+    const reserved = 'keybindings.json: Global "ctrl+c" is a reserved key; it was left out';
+    writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null }));
+    await sees(app, reserved);
+    const read = readsOf(where);
+    await read(() => unlinkSync(keysIn(home)));
+    await read(() => writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null })));
+    write({ mode: "project" });
+    await sees(app, `mode is now project ${FROM}`); // drawn after anything the reads above said
+    expect(flat(app).split(reserved).length - 1).toBe(1);
   });
 
   it("says the keys file's problems in the conversation, each once while it stays, and keeps the keys before a broken edit", async () => {

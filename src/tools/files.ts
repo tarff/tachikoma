@@ -54,9 +54,9 @@ function inData(data: string, real: string): boolean {
   return readdirSync(data).some((name) => same(statSync(path.join(data, name), { bigint: true, throwIfNoEntry: false }), file));
 }
 
-// Whether `name`, in the settings folder, is the settings file, the keys file, or a companion of either:
-// the lock and temporary files saving the settings makes beside it (settings.json.lock,
-// settings.json.<pid>.<hex>.tmp), or what an editor saving one leaves there. Compared as Windows reads a
+// Whether `name`, in the settings folder, is the settings file, the keys file, or a companion of either
+// whose name starts with the file's and a dot, such as what an editor saving one leaves there (Tachikoma
+// itself saves neither, release 6 plan, choice 26). Compared as Windows reads a
 // name, so another spelling cannot make one: ignoring case (as macOS does), the dots and spaces it drops
 // from the end, and a ":stream" after it.
 export function settingsName(name: string): boolean {
