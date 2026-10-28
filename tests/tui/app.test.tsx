@@ -13,7 +13,7 @@ import { Models } from "@anthropic-ai/sdk/resources/models";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import type { Given } from "../../src/clilib.js";
-import { type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
+import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { system32 } from "../../src/exec/env.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
@@ -119,11 +119,19 @@ async function mount(
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
-  let ask: (s: string, d?: string, o?: Owner) => Promise<boolean> = async () => false;
+  let ask: Ask = async () => false;
   const gate = new PermissionGate(opts.mode ?? "ask", (s, d, o) => ask(s, d, o));
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
-  const session = new Session({ lead, tools: [...TOOLS, delegateTool(tasks, { headless: false })], system: "t", ctx: { ...ctx, gate }, bus, inbox: () => tasks.take() });
+  const session = new Session({
+    lead,
+    tools: [...TOOLS, delegateTool(tasks, { headless: false })],
+    system: "t",
+    ctx: { ...ctx, gate },
+    bus,
+    inbox: () => tasks.take(),
+    ask: (...a) => ask(...a), // as cli.tsx gives it
+  });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
   if (opts.past) writeFileSync(historyFile, opts.past.map((p) => `${JSON.stringify(p)}\n`).join(""));
   const screen = new Screen(
@@ -5285,6 +5293,47 @@ describe("App's pictures", () => {
     await until(app, "ok");
     expect(userParts(session)).toEqual([[{ type: "text", text: "look" }]]);
     expect(pictures.get(1)).toEqual({ failed: "stopped" });
+  });
+
+  // Release 6 plan, Task 18: a request with pictures refused as invalid asks, on the permission question's line with no
+  // owner, before sending again without them.
+  const invalid = () => Object.assign(new Error("400 invalid image"), { status: 400 });
+  const looked = [{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }];
+
+  it("asks after a 400 to a request with pictures; y sends it again, says pictures are left out, and the queue goes on", async () => {
+    const pictures = new Pictures();
+    const { lead, fake, release } = gated([invalid(), reply("seen"), reply("next one")]);
+    const { app, session } = await mount([], { lead, pictures });
+    await press(app, "look ", PICTURE, "\r");
+    pictures.set(1, PNG);
+    await until(app, "Esc to stop");
+    await press(app, "queued", "\r");
+    release();
+    await until(app, "Send again without the pictures? [y/n] · Esc to decline");
+    expect(app.lastFrame()).toContain("✗ provider: 400 invalid image\n");
+    await press(app, "y");
+    await until(app, "next one");
+    expect(app.lastFrame()).toContain("Send again without the pictures: allowed\nPictures are left out for fake:a from now on.\nseen");
+    expect(fake.seen).toHaveLength(3);
+    expect(userParts(session)).toEqual([looked, [{ type: "text", text: "queued" }]]); // the conversation is never changed
+  });
+
+  it("ends the turn on n, as after any failure, and the queue goes on", async () => {
+    const pictures = new Pictures();
+    const { lead, fake, release } = gated([invalid(), reply("next one")]);
+    const { app, session } = await mount([], { lead, pictures, full: true });
+    await press(app, "look ", PICTURE, "\r");
+    pictures.set(1, PNG);
+    await until(app, "Esc to stop");
+    await press(app, "queued", "\r");
+    release();
+    await until(app, "Send again without the pictures? [y/n] · Esc to decline");
+    await press(app, "n");
+    await until(app, "next one");
+    expect(app.lastFrame()).toContain("Send again without the pictures: declined");
+    expect(app.lastFrame()).not.toContain("Pictures are left out");
+    expect(fake.seen).toHaveLength(2);
+    expect(userParts(session)).toEqual([looked, [{ type: "text", text: "queued" }]]);
   });
 });
 

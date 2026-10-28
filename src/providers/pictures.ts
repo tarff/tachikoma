@@ -180,6 +180,12 @@ export async function prepare(
 // The body of one request, with its pictures fitted to `limits` and the session told of any left out. `body` builds the
 // request as the adapter sends it, from a set of prepared pictures; it is serialised to measure the request.
 export async function fitted<T>(req: CompletionRequest, limits: Limits, body: (prepared: Prepared) => T): Promise<T> {
+  // A provider that refused pictures gets none, so there is nothing to shrink or leave out for its caps (design, "When
+  // the provider refuses").
+  if (req.refusedBy !== undefined) {
+    const images = req.messages.flatMap((m) => m.parts.filter((p) => p.type === "image"));
+    return body(new Map(images.map((p) => [p.id, `[Image #${p.id} left out: ${req.refusedBy} refused pictures]`])));
+  }
   const sent = await prepare(req.messages, limits, (p) => Buffer.byteLength(JSON.stringify(body(p))), req.shrunk ?? new Map());
   if (sent.leftOut) req.leftOut?.(sent.leftOut, sent.over);
   return body(sent.prepared);

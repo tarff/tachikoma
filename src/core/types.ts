@@ -72,6 +72,9 @@ export interface CompletionRequest {
   shrunk?: Cache;
   // Told when the request left out pictures to fit its provider's limit, `over` naming it: "Anthropic's 32 MB".
   leftOut?: (count: number, over: string) => void;
+  // This provider's id, when it refused a request with pictures and the user said to send again without them: every
+  // picture then goes as a note naming it, and none is shrunk (release 6 plan, Task 18).
+  refusedBy?: string;
 }
 
 export interface Provider {

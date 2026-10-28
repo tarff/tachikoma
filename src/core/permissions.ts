@@ -43,7 +43,9 @@ export interface Owner {
   stop: () => void;
 }
 
-export type Ask = (summary: string, detail?: string, owner?: Owner) => Promise<boolean>;
+// `plain`: the summary is a question of its own, not an action to allow, such as the session's "Send again without the
+// pictures" (release 6 plan, Task 18), so it is asked without "Allow" before it.
+export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean) => Promise<boolean>;
 
 export class PermissionGate {
   #mode: Mode;

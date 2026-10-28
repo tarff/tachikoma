@@ -8,7 +8,7 @@ import { Session } from "../../src/core/session.js";
 import type { Image, Message, Picture } from "../../src/core/types.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
-import { type Cache, LIMITS, type Limits, prepare } from "../../src/providers/pictures.js";
+import { type Cache, fitted, LIMITS, type Limits, prepare } from "../../src/providers/pictures.js";
 import { Bus, tempContext, twoFrameGif } from "../helpers.js";
 
 // Every picture here is made by sharp in memory; none is written to disk.
@@ -191,6 +191,23 @@ describe("prepare", () => {
     expect(prepared.get(3)).not.toBeTypeOf("string");
     expect(leftOut).toBe(2);
     expect(calls).toHaveLength(1);
+  });
+});
+
+// Release 6 plan, Task 18: a provider that refused pictures, once the user said to go on without them.
+describe("fitted, for a provider that refused pictures", () => {
+  it("sends every picture as a note naming the provider, shrinking none and leaving none out for a cap", async () => {
+    const cache: Cache = new Map();
+    const leftOut: number[] = [];
+    const messages = [user(image(1, big)), { role: "assistant" as const, parts: [] }, user(image(2, await png(9000, 100)))];
+    const req = { system: "", messages, tools: [], shrunk: cache, leftOut: (n: number) => leftOut.push(n), refusedBy: "anthropic:claude-opus-5-5" };
+    const prepared = await fitted(req, { ...LIMITS.anthropic, maxCount: 1 }, (p) => p);
+    expect([...prepared]).toEqual([
+      [1, "[Image #1 left out: anthropic:claude-opus-5-5 refused pictures]"],
+      [2, "[Image #2 left out: anthropic:claude-opus-5-5 refused pictures]"],
+    ]);
+    expect(cache.size).toBe(0);
+    expect(leftOut).toEqual([]);
   });
 });
 

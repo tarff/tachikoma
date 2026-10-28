@@ -235,7 +235,16 @@ const tasks = new Tasks({
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus.
 const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items)), delegateTool(tasks, { headless: !interactive })];
-const session: Session = new Session({ lead, fallback, tools, system, ctx: { root, executor, gate }, bus, inbox: () => tasks.take() });
+const session: Session = new Session({
+  lead,
+  fallback,
+  tools,
+  system,
+  ctx: { root, executor, gate },
+  bus,
+  inbox: () => tasks.take(),
+  ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
+});
 
 // The executor stops running commands from an "exit" handler, which dying by a signal skips.
 for (const sig of exitSignals(process.platform)) process.on(sig, () => process.exit(128 + constants.signals[sig]));

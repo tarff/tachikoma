@@ -55,6 +55,7 @@ type Question = {
   owner?: Owner;
   detail?: [number, number];
   following?: boolean;
+  plain?: boolean; // a question of its own, asked without "Allow" (permissions.ts, Ask)
   answer: (ok: boolean, how: string) => void;
 };
 // While the left button is held after a press in the conversation: what the press took (the pressed character, or a
@@ -453,7 +454,7 @@ export function App({
   };
 
   useEffect(() => {
-    bindAsk((text, detail, owner) => {
+    bindAsk((text, detail, owner, plain) => {
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped, nor a
       // stopped subagent about anything.
       const signal = owner ? owner.signal : abort.current?.signal;
@@ -479,6 +480,7 @@ export function App({
           label: `${owner ? `${visible(owner.name.split(" ", 1)[0]!)} to ` : ""}${text.split(/[\s:]/, 1)[0]}`,
           ...(owner ? { owner } : {}),
           ...(range ? { detail: range } : {}),
+          ...(plain ? { plain } : {}),
           answer: (ok, how) => {
             if (!open) return;
             open = false;
@@ -1891,9 +1893,9 @@ export function App({
   // models" line when it has no models, in a box that tall, so the status line stays put while typing filters the list.
   // A question's line is wrapped and drawn a row a Text in full screen, so its rows are known; the line it moves to when
   // too long to fit is its short one, below.
-  const allow = (what: string) =>
+  const allow = (what: string, plain?: boolean) =>
     hints(
-      `Allow ${what}? [${keyOf("confirm:yes", "Confirmation", "y") ?? ""}/${keyOf("confirm:no", "Confirmation", "n") ?? ""}]`,
+      `${plain ? "" : "Allow "}${what}? [${keyOf("confirm:yes", "Confirmation", "y") ?? ""}/${keyOf("confirm:no", "Confirmation", "n") ?? ""}]`,
       said(keyOf("confirm:no", "Confirmation", "escape"), "to decline"),
     );
   const shortOf = (q: Question) => `${q.label} (shown above)`;
@@ -1917,8 +1919,8 @@ export function App({
     queued: queue.current.length,
     pickerNeeded: picker ? offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1) : null,
     question: question !== null,
-    askedText: full && question && !picker ? allow(question.short ?? question.text) : null,
-    askedShort: movable ? allow(shortOf(question)) : null,
+    askedText: full && question && !picker ? allow(question.short ?? question.text, question.plain) : null,
+    askedShort: movable ? allow(shortOf(question), question.plain) : null,
   });
   const { tooled, menuRows, panel, promptSpace, promptShown, todoShown, pickerRows, viewHeight, promptFirst } = f;
   const q = queue.current.map((e) => visible(e.text));
@@ -2046,7 +2048,7 @@ export function App({
             </Text>
           ))
         ) : (
-          <Text color="yellow">{allow(question.text)}</Text>
+          <Text color="yellow">{allow(question.text, question.plain)}</Text>
         )
       ) : d ? (
         workingLine // the working line stays under the detail view while a turn runs (release 5 plan, choice 12)

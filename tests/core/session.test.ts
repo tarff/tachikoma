@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { Declined } from "../../src/core/permissions.js";
+import { type Ask, Declined } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
+import type { Part, Provider, Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
+import { fitted, LIMITS } from "../../src/providers/pictures.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Bus, FakeProvider, callTool, collectErrors, reply, tempContext, usage } from "../helpers.js";
 
@@ -379,5 +381,161 @@ describe("Session, for subagents", () => {
     const session = new Session({ lead, tools: [together, echo], system: "t", ctx: await tempContext(), bus: new Bus() });
     await session.send("go");
     expect(session.messages[2]!.parts.map((p) => (p.type === "tool_result" ? p.output : ""))).toEqual(["t1", "e", "t2"]);
+  });
+});
+
+// Release 6 plan, Task 18: a request with pictures refused as invalid (400) asks before sending again without them.
+describe("Session, when a request with pictures is refused", () => {
+  const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
+  const look: Part[] = [{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }, { type: "image", id: 2, ...PNG }];
+  const failure = (status?: number) => Object.assign(new Error(`failed with ${status ?? "no status"}`), status === undefined ? {} : { status });
+
+  // A provider that fits each request's pictures as the adapters do (providers/pictures.ts, fitted), keeping what each
+  // request sent for each picture: "picture", or the note in its place.
+  function picturing(name: string, turns: (Turn | Error)[]) {
+    const sent: string[][] = [];
+    const provider: Provider = {
+      id: `fake:${name}`,
+      complete: async (req) => {
+        const prepared = await fitted(req, LIMITS.ollama, (p) => p);
+        const images = req.messages.flatMap((m) => m.parts.filter((p) => p.type === "image"));
+        sent.push(images.map((p) => (typeof prepared.get(p.id) === "string" ? (prepared.get(p.id) as string) : "picture")));
+        const next = turns.shift();
+        if (!next) throw new Error(`fake:${name} ran out of turns`);
+        if (next instanceof Error) throw next;
+        return next;
+      },
+    };
+    return { provider, sent };
+  }
+
+  async function setupAsked(answers: boolean[], lead: Provider, more: { fallback?: Provider; inbox?: () => string[] } = {}) {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const notes: string[] = [];
+    bus.on("note", (n) => notes.push(n));
+    const asked: unknown[][] = [];
+    const shown: number[] = []; // how many errors had been emitted at each question
+    const ask: Ask = async (...a) => {
+      asked.push(a);
+      shown.push(errors.length);
+      return answers.shift() ?? false;
+    };
+    const session = new Session({ lead, ...more, tools: [], system: "t", ctx: await tempContext(), bus, ask });
+    return { session, errors, notes, asked, shown };
+  }
+
+  it("asks, with no owner, after a 400 to a request carrying pictures, once the error is shown", async () => {
+    const { provider } = picturing("a", [failure(400)]);
+    const { session, errors, asked, shown } = await setupAsked([false], provider);
+    await session.send(look);
+    expect(errors.map((e) => [e.kind, e.message, e.status])).toEqual([["provider", "failed with 400", 400]]);
+    expect(asked).toEqual([["Send again without the pictures", undefined, undefined, true]]);
+    expect(shown).toEqual([1]);
+  });
+
+  it("on y sends the request again with every picture as a note, and leaves pictures out for that lead", async () => {
+    const { provider, sent } = picturing("a", [failure(400), reply("seen")]);
+    const { session, errors, notes } = await setupAsked([true], provider);
+    await session.send(look);
+    expect(sent).toEqual([
+      ["picture", "picture"],
+      ["[Image #1 left out: fake:a refused pictures]", "[Image #2 left out: fake:a refused pictures]"],
+    ]);
+    expect(notes).toEqual(["Pictures are left out for fake:a from now on."]);
+    expect(errors).toHaveLength(1);
+    // The conversation is never changed (release 6 design, "When the provider refuses"): the pictures stay in it.
+    expect(session.messages).toEqual([
+      { role: "user", parts: look },
+      { role: "assistant", parts: [{ type: "text", text: "seen" }] },
+    ]);
+  });
+
+  it("sends notes in every later request to a marked lead, without asking or saying so again, and pictures to another lead", async () => {
+    const { provider: a, sent: toA } = picturing("a", [failure(400), reply("one"), failure(400), reply("three")]);
+    const { provider: b, sent: toB } = picturing("b", [reply("two")]);
+    const { session, notes, asked, errors } = await setupAsked([true], a);
+    await session.send(look);
+    session.setLead(b);
+    await session.send("again");
+    session.setLead(a);
+    await session.send("and again"); // refused as invalid once more, now with no picture in it: nothing is asked
+    await session.send("last");
+    const note = (n: number) => `[Image #${n} left out: fake:a refused pictures]`;
+    expect(toA.slice(1)).toEqual([
+      [note(1), note(2)],
+      [note(1), note(2)],
+      [note(1), note(2)],
+    ]);
+    expect(toB).toEqual([["picture", "picture"]]);
+    expect(asked).toHaveLength(1);
+    expect(notes).toEqual(["Pictures are left out for fake:a from now on."]);
+    expect(errors.map((e) => e.status)).toEqual([400, 400]);
+  });
+
+  it("on n changes nothing and ends the turn as after any failure", async () => {
+    const { provider, sent } = picturing("a", [failure(400), reply("later")]);
+    const { session, errors, notes, asked } = await setupAsked([false], provider);
+    await session.send(look);
+    expect(sent).toHaveLength(1);
+    expect(errors).toHaveLength(1);
+    expect(notes).toEqual([]);
+    expect(session.messages).toEqual([{ role: "user", parts: look }]);
+    await session.send("again"); // not marked: the pictures still go, and nothing is asked
+    expect(sent[1]).toEqual(["picture", "picture"]);
+    expect(asked).toHaveLength(1);
+  });
+
+  it("asks nothing after a 400 without pictures, a 429, a 500, a network error or a stop", async () => {
+    const { provider, sent } = picturing("a", [failure(400), failure(429), failure(500), failure(), failure(400)]);
+    const { session, errors, asked } = await setupAsked([true, true, true, true, true], provider);
+    await session.send("no pictures");
+    for (const text of ["two", "three", "four"]) await session.send([{ type: "text", text }, { type: "image", id: 1, ...PNG }]);
+    const stop = new AbortController();
+    stop.abort();
+    await session.send(look, stop.signal);
+    expect(sent).toHaveLength(5);
+    expect(errors.map((e) => e.status)).toEqual([400, 429, 500, undefined]); // a stop is not a failure
+    expect(asked).toEqual([]);
+  });
+
+  it("asks about the fallback when its request is the one refused, and leaves pictures out for the fallback alone", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const { provider: a, sent: toA } = picturing("a", [refused, reply("two")]);
+    const { provider: b, sent: toB } = picturing("b", [failure(400), reply("rescued")]);
+    const { session, notes, asked } = await setupAsked([true], a, { fallback: b });
+    await session.send(look);
+    expect(asked).toHaveLength(1);
+    expect(toB).toEqual([
+      ["picture", "picture"],
+      ["[Image #1 left out: fake:b refused pictures]", "[Image #2 left out: fake:b refused pictures]"],
+    ]);
+    expect(notes).toEqual(["Pictures are left out for fake:b from now on."]);
+    expect(session.messages.at(-1)!.parts).toEqual([{ type: "text", text: "rescued" }]);
+    await session.send("again");
+    expect(toA).toEqual([
+      ["picture", "picture"],
+      ["picture", "picture"],
+    ]);
+  });
+
+  it("leaves the subagents' waiting answers waiting, on y and on n", async () => {
+    for (const answer of [true, false]) {
+      const box: string[] = [];
+      const lead: Provider = {
+        id: "fake:a",
+        complete: async () => {
+          if (!box.length) {
+            box.push("t3 finished: found it"); // arrives while the refused request runs
+            throw failure(400);
+          }
+          return reply("seen");
+        },
+      };
+      const { session } = await setupAsked([answer], lead, { inbox: () => box.splice(0) });
+      await session.send(look);
+      expect(box).toEqual(["t3 finished: found it"]);
+      expect(session.messages[0]).toEqual({ role: "user", parts: look });
+    }
   });
 });
