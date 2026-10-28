@@ -529,7 +529,7 @@ export function App({
           (read) => latest.current.onKeys(read),
         );
     } catch (err) {
-      say(gray(`${path.dirname(shownFile())} is not watched this session (${errorText(err)})`));
+      say(gray(`${SETTINGS} and ${KEYBINDINGS} are not watched this session (${errorText(err)})`));
     }
     history.current!.load();
     lookUpWindow();

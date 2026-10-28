@@ -1,4 +1,5 @@
 import type { Key } from "ink";
+import { COMMANDS } from "../keybindings.js";
 import { type Bindings, type Context, parseKeys, type Stroke } from "./bindings.js";
 import type { Action } from "./editor.js";
 
@@ -106,6 +107,8 @@ export function keyList(b: Bindings): string[] {
     ),
     line(part(k("app:toggleTranscript", "Global", "ctrl+o"), "the last turn's tool calls in full"), "a space first starts a message with ?"),
     line(part(k("app:toggleTodos", "Global", "ctrl+t"), "show or hide the to-do list")),
+    // The keys file's command:<name> keys, which run at the prompt (release 6 plan, Task 11), one line a command.
+    ...COMMANDS.map((n) => line(part([...b.keysFor(`command:${n}`, "Chat"), ...b.keysFor(`command:${n}`, "Global")].map(spelled), `/${n}`))),
     line(
       part([scroll("pageUp", "pageup"), scroll("pageDown", "pagedown")], "half a screen"),
       part([scroll("top", "ctrl+home"), scroll("bottom", "ctrl+end")], "top, latest"),

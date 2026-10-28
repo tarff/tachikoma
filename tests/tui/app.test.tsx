@@ -5135,7 +5135,7 @@ describe("App's live settings", () => {
       reason = (err as Error).message;
     }
     const { app } = await mount([reply("still here")], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
-    expect(flat(app)).toContain(`${path.dirname(shownFile())} is not watched this session (${reason})`);
+    expect(flat(app)).toContain(`settings.json and keybindings.json are not watched this session (${reason})`);
     await type(app, "hi");
     await until(app, "still here");
   });
@@ -5231,6 +5231,30 @@ describe("App's live settings", () => {
     lead.answer("done");
     await sees(app, "screen is now full");
     expect(app.lastFrame()).toContain("› ab");
+  });
+
+  it("lists a key bound to a command on ?, and runs it at once when idle, leaving the prompt as typed", async () => {
+    writeKeys(savingHome, { bindings: [{ context: "Chat", bindings: { "ctrl+y": "command:screen" } }] });
+    onTestFinished(() => unlinkSync(keysIn(savingHome)));
+    const { app } = await watching([], {}, {}, {}, savingHome);
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("  Ctrl+Y  /screen");
+    await press(app, "ab", "\u0019");
+    await sees(app, "screen is now full");
+    expect(app.lastFrame()).toContain("› ab");
+  });
+
+  it("gives the default keys once ~/.tachikoma is removed with a keys file in it, then says it is no longer watched", async () => {
+    const home = freshHome();
+    const { app, bus, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf();
+    await read(() => writeKeys(home, global({ "ctrl+t": null })));
+    rmSync(path.dirname(where), { recursive: true });
+    await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json and keybindings.json are no longer watched this session`);
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0014"); // Ctrl+T, the default's again
+    expect(app.lastFrame()).not.toContain("write the fix");
   });
 
   it("says the keys file's problems in the conversation, each once while it stays, and keeps the keys before a broken edit", async () => {

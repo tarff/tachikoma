@@ -58,9 +58,12 @@ const CLAUDE_CODE_ACTIONS = new Set([
   ...["copy", "clear", "extendLeft", "extendRight", "extendUp", "extendDown", "extendLineStart", "extendLineEnd"].map((a) => `selection:${a}`),
   ...["toggle", "focus", "next", "previous", "press", "leave", "highlightNext", "highlightPrevious"].map((a) => `abovePrompt:${a}`),
   ...["scrollUp", "scrollDown", "pageUp", "pageDown", "top", "bottom", "grow", "shrink", "close", "next", "previous"].map((a) => `pane:${a}`),
+  // Names from before Claude Code v2.1.283 that its page says keep working.
+  ...["up", "down", "top", "bottom", "select"].map((a) => `messageSelector:${a}`),
+  "diff:viewDetails",
 ]);
 // The slash commands that take nothing after them, which `command:<name>` runs (release 6 plan, Task 11).
-const COMMANDS = ["exit", "errors", "model", "screen", "tasks", "vim", "settings", "keybindings"];
+export const COMMANDS = ["exit", "errors", "model", "screen", "tasks", "vim", "settings", "keybindings"];
 // Tachikoma's actions: every one the default table binds somewhere (bindings.ts, DEFAULTS). An action bound in a
 // context where the screen does not use it does nothing there, as Claude Code checks only that an action exists
 // (choice 21).
@@ -86,9 +89,13 @@ export function readKeybindings(text: string): KeysLoaded {
   if (!isObject(data) || (data.bindings !== undefined && !Array.isArray(data.bindings))) {
     return { problem: `${KEYBINDINGS} must be one object with a "bindings" list, such as {"bindings": []} (got ${JSON.stringify(data)})` };
   }
+  const problems: string[] = [];
+  // The file's own entries beside "bindings", which Claude Code's shape allows only $schema and $docs (choice 21).
+  for (const name of Object.keys(data)) {
+    if (!["bindings", "$schema", "$docs"].includes(name)) problems.push(`${KEYBINDINGS}: ${JSON.stringify(name)} is not an entry; it was left out`);
+  }
   const table = tableOf(DEFAULTS);
   const bound = Object.fromEntries(CONTEXTS.map((c) => [c, new Set<string>()])) as Record<Context, Set<string>>; // the file's own keys
-  const problems: string[] = [];
   const skipped = { count: 0, names: new Set<string>() };
   const skip = (name: string, count = 1) => {
     skipped.count += count;

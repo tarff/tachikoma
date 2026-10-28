@@ -75,10 +75,15 @@ describe("readKeybindings", () => {
       }),
     ).toEqual(["keybindings.json: 6 entries skipped: Tachikoma has no chat:fastMode, cmd+ keys, Footer, confirm:toggle"]);
     expect(problemsOf(chat({ "win+k": "chat:submit" }))).toEqual(["keybindings.json: 1 entry skipped: Tachikoma has no cmd+ keys"]);
+    // A name from before Claude Code v2.1.283 that its page says keeps working.
+    expect(problemsOf({ bindings: [{ context: "Select", bindings: { o: "messageSelector:select" } }] })).toEqual([
+      "keybindings.json: 1 entry skipped: Tachikoma has no messageSelector:select",
+    ]);
   });
 
   it("says each problem in one line, and applies the rest of the file", () => {
     const { table, problems } = read({
+      bindingz: [],
       bindings: [
         { context: "Chatt", bindings: { "ctrl+y": "app:toggleTodos" } },
         "Chat",
@@ -101,6 +106,7 @@ describe("readKeybindings", () => {
       ],
     });
     expect(problems).toEqual([
+      'keybindings.json: "bindingz" is not an entry; it was left out',
       'keybindings.json: "Chatt" is not a context; its block was left out',
       'keybindings.json: block 2 needs a "context" and a "bindings" object; it was left out',
       'keybindings.json: block 3 needs a "context" and a "bindings" object; it was left out',

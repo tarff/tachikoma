@@ -201,8 +201,10 @@ Each is marked in its task. None approved yet.
     Every action and context on Claude Code's keybindings page that Tachikoma lacks is counted in the
     one skipped line, each key one entry, `cmd+ keys` for all four Super names. `command:` takes only
     Task 11's eight names, acts at the prompt, and waits in the queue during a turn, as Alt+P does.
-    Of one key bound twice in a context the first stays, a chord with a reserved key in it is
-    refused, and `null` on a reserved key too. The keys are read by the watcher's first read, not in
+    Of one key bound twice in a context the first stays, though one spelled the same twice in one
+    block is not caught, as JSON keeps its last copy; a chord with a reserved key in it is refused,
+    and `null` on a reserved key too; a top-level name other than `bindings`, `$schema` and `$docs`
+    gets a line. `?` lists the keys bound to a command. The keys are read by the watcher's first read, not in
     cli.tsx, so `-p` never reads them; problems show in the conversation in both modes, each once
     while it stays; a good rebind says nothing. The watcher's lines name both files, and a watch
     that cannot start still reads both files once.
