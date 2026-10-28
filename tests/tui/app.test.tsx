@@ -3329,8 +3329,9 @@ describe("App's detail view in full screen", () => {
     expect(app.lastFrame()).toContain("› next\n");
   });
 
+  const long = (i: number) => `said ${i}. ${"word ".repeat(14).trimEnd()}`; // under 80 columns: one row at 99, two at 59
+
   it("wraps the view's lines again on a resize", async () => {
-    const long = (i: number) => `said ${i}. ${"word ".repeat(14).trimEnd()}`; // under 80 columns: one row at 99, two at 59
     const { app } = await record(lines(3, long));
     expect(shown(app)[3]).toBe(long(1));
     Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
@@ -3344,7 +3345,10 @@ describe("App's detail view in full screen", () => {
 
   // A record opened by the queue going on from a listener set up once, at mount: a question's answer (bindAsk), the end
   // of a turn the bus's tasks event started, and the end of a command clicked in the menu (the mouse's listener). Each
-  // way it wraps at the width the terminal has then.
+  // way it wraps at the width the terminal has then. They pass on the code as it is because each drawing wraps an open
+  // view again (App.tsx, `detail`'s re-wrap); they catch a listener reading an old drawing only if that re-wrap goes.
+  // The last, a turn started before the resize opening the record from its own next(), is the one that pins
+  // openDetail reading the width from `frame`.
   const narrow = async (app: ReturnType<typeof render>) => {
     Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
     app.stdout.emit("resize");
@@ -3357,7 +3361,6 @@ describe("App's detail view in full screen", () => {
     expect(rows[3]).toMatch(/^word/);
     expect(rows[4]).toMatch(/^said 1\. word/);
   };
-  const long = (i: number) => `said ${i}. ${"word ".repeat(14).trimEnd()}`; // under 80 columns: one row at 99, two at 59
 
   it("wraps a record opened after a resize at the new width, when a question's answer lets the queue go on", async () => {
     const lead = new Held();
@@ -3414,6 +3417,23 @@ describe("App's detail view in full screen", () => {
     await until(app, "Waiting for the browser");
     await type(app, "/tasks t1"); // queued while signing in
     signedIn();
+    await until(app, "t1 (find x), done: 0 tool calls");
+    wrappedAt60(app);
+  });
+
+  it("wraps a record opened after a resize at the new width, when the turn it waited for ends", async () => {
+    const lead = new Held();
+    const worker = new FakeProvider("w", [reply(lines(3, long))]);
+    const { app } = await mount([], { full: true, lead, worker });
+    await type(app, "go");
+    lead.answer(callTool("c1", "delegate", { description: "find x", task: "find x" }));
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("done");
+    await gone(app, "Esc to stop");
+    await type(app, "hi");
+    await type(app, "/tasks t1"); // queued: a turn is running
+    await narrow(app);
+    lead.answer("ok"); // the turn, started at 100 columns, ends, and its own next() opens the record
     await until(app, "t1 (find x), done: 0 tool calls");
     wrappedAt60(app);
   });

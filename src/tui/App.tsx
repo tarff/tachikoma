@@ -193,7 +193,7 @@ export function App({
   // The mode as it is now, which `say`, `next` and the rest read from here, not from `full`: /screen sets it as the
   // switch starts, `full` following (switchScreen, below), and a drawing's functions can run after a later drawing:
   // History's warning is the first drawing's, and a turn or a command, once it ends, calls the next() of the drawing
-  // that started it. The mouse listener reads the frame's shape from `frame`, below, the screen as last drawn.
+  // that started it.
   const fullNow = useRef(full);
   // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row, how many it draws and
   // which of its rows they are (layout.ts, frame), and the menu's under it, no prompt rows while a question, the model

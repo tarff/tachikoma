@@ -1,6 +1,6 @@
-// What is happening now, in one place (release 6 design, "Tidying the screen code first", and plan, Task 2): who takes
-// the keys, and what runs beside them. App's flags stay where their writers set them; useInput, next() and the mouse
-// read them through now(); usePaste through pasteTo().
+// What is happening now, in one place (release 6 design, "Tidying the screen code first"; release 6 plan, Task 2): who
+// takes the keys, and what runs beside them. App's flags stay where their writers set them; useInput, next() and the
+// mouse read them through now(); usePaste through pasteTo().
 //
 // Not a phase: /screen switching to classic. Today's keys, pastes, queue and mouse never ask it: a key read while the
 // switch runs acts as in classic mode (App.tsx, switchScreen), and a question asked meanwhile is answered as ever. The
