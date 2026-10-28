@@ -510,15 +510,22 @@ export function App({
     bus.on("todo", onTodo);
     bus.on("tasks", onTasks);
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
-    // they show here too (found at Task 7's code review); in classic mode stderr is seen, and they are not said twice.
+    // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
+    // stderr is seen, and they are not said twice.
     say(...(fullNow.current ? (live?.loaded.warnings ?? []).map(gray) : []), ...intro);
-    const unwatch =
-      live &&
-      watchSettings(
-        home,
-        (read) => latest.current.onSettings(read),
-        () => latest.current.say(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} is no longer watched this session`)),
-      );
+    // A watch that cannot start leaves the session as the launch set it, and says so.
+    let unwatch: (() => void) | undefined;
+    try {
+      unwatch =
+        live &&
+        watchSettings(
+          home,
+          (read) => latest.current.onSettings(read),
+          () => latest.current.say(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} is no longer watched this session`)),
+        );
+    } catch (err) {
+      say(gray(`${shownFile()} is not watched this session (${errorText(err)})`));
+    }
     history.current!.load();
     lookUpWindow();
     const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
@@ -727,6 +734,9 @@ export function App({
     listOpen.current = false;
     setPicker(null);
     view.current = FOLLOWING;
+    // The pick comes after any edit of the file's lead made while the list was open, so it wins, as a /lead typed
+    // then would.
+    waiting.current.lead = undefined;
     try {
       session.setLead(make(spec));
       save("lead", spec);
@@ -954,8 +964,7 @@ export function App({
     } else if (key === "effort") {
       effortNow.current = { effort: now.effort };
       session.lead.setEffort?.(now.effort);
-      // As at launch (cli.tsx), the fallback and the subagents' worker too: the coordinator's call at Task 9's spec
-      // review.
+      // As at launch (cli.tsx, makeProvider), the fallback and the subagents' worker take it too.
       session.fallback?.setEffort?.(now.effort);
       tasks.worker.setEffort?.(now.effort);
       line(now.effort ?? "the model's default");
@@ -978,6 +987,7 @@ export function App({
       line(now.segments.join(", "));
     } else if (key === "screen") waiting.current.screen = s.screen ?? "full"; // full unless asked for classic (clilib.ts, screenMode)
     else {
+      // scrollSpeed, the last of LIVE
       setSpeed(now.speed);
       line(String(now.speed));
     }
@@ -990,7 +1000,7 @@ export function App({
     } catch (err) {
       return say({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "red" });
     }
-    leadFromFile.current = true;
+    leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
     session.setLead(provider);
     leadFromFile.current = false;
   };

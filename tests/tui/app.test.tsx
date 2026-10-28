@@ -4944,8 +4944,8 @@ describe("App's live settings", () => {
     expect(await tasks.start("two", { background: false }).done).toEqual({ state: "failed", text: "declined" });
   });
 
-  // The coordinator's call at Task 9's spec review: as at launch (cli.tsx), the effort reaches the fallback and the
-  // subagents' worker too, not only the lead.
+  // As at launch (cli.tsx, makeProvider), the fallback and the subagents' worker take the effort too, not only the
+  // lead.
   it("sends a changed effort to the fallback and the subagents' worker as well as the lead", async () => {
     // Records the effort each request goes with, as AnthropicProvider sends it.
     class Effortful extends FakeProvider {
@@ -5123,6 +5123,49 @@ describe("App's live settings", () => {
     await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json is no longer watched this session`);
   });
 
+  // mkdir and fs.watch can fail: a home that cannot be written, or Linux's limit on watches. Here `.tachikoma` is a
+  // file, so no permission is changed.
+  it("says the file is not watched when watching cannot start, and the session runs on", async () => {
+    const home = freshHome();
+    writeFileSync(settingsDir(home), "");
+    let reason = "";
+    try {
+      mkdirSync(settingsDir(home), { recursive: true });
+    } catch (err) {
+      reason = (err as Error).message;
+    }
+    const { app } = await mount([reply("still here")], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    expect(flat(app)).toContain(`${shownFile()} is not watched this session (${reason})`);
+    await type(app, "hi");
+    await until(app, "still here");
+  });
+
+  // The pick comes after the file's edit, so it wins, as a /lead typed then would.
+  it("keeps the lead picked from the model list over one the file set while the list was open", async () => {
+    const made: string[] = [];
+    const { app, where, write } = await watching([], {}, { models: [{ provider: "fake", models: ["c"] }], made }, {}, savingHome);
+    const read = readsOf();
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await read(() => write({ lead: "ollama:y" }));
+    app.stdin.write("\r");
+    await vi.waitFor(() => expect(JSON.parse(readFileSync(where, "utf8")).lead).toBe("fake:c"), WATCHED);
+    expect(made).toEqual(["fake:c"]); // the file's lead was never made, though the pick's closing the list ran next()
+    expect(flat(app)).not.toContain(FROM);
+  });
+
+  // During the instruction files' question, say: the launch has read the file, and the watcher starts later.
+  it("applies an edit made before watching started, without saying the launch's warnings again", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeFileSync(path.join(settingsDir(home), "settings.json"), '{"leed": 1, "mode": "project"}');
+    const loaded = readSettings('{"leed": 1}');
+    if ("problem" in loaded) throw new Error(loaded.problem);
+    const { app } = await mount([], { home, live: { loaded, given: {} } });
+    await sees(app, `mode is now project ${FROM}`);
+    expect(flat(app)).not.toContain('"leed"');
+  });
+
   it("says a new unknown entry's warning once", async () => {
     const warning = 'settings.json: "leed" is not a setting; it was left out';
     const { app, write } = await watching([], {});
@@ -5133,7 +5176,8 @@ describe("App's live settings", () => {
     expect(flat(app).split(warning).length - 1).toBe(1);
   });
 
-  // Found at Task 7's code review: full screen hides stderr, where the launch printed them, until the user quits.
+  // Release 6 plan, Task 9, "The launch's warnings show in the session too": full screen hides stderr, where the
+  // launch printed them, until the user quits.
   it("shows the launch's settings warnings in full screen, but not in classic mode, where stderr is seen", async () => {
     const loaded = readSettings('{"leed": 1}');
     if ("problem" in loaded) throw new Error(loaded.problem);

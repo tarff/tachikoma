@@ -112,7 +112,7 @@ export async function saveSetting<K extends keyof Settings>(key: K, value: Requi
 
 // An empty file, or one of only whitespace after a byte-order mark: nothing set, not a broken file (the coordinator's
 // decision, 2026-10-28, in the spirit of the plan's choice 3). The settings watcher skips the same texts.
-export const emptyText = (text: string) => !(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text).trim();
+export const emptyText = (text: string) => !text.trim(); // trim takes a byte-order mark (U+FEFF) as white space too (ECMA-262, WhiteSpace)
 
 // The file's entries, before any is checked. A byte-order mark at the start, which Windows PowerShell 5.1's Out-File
 // and Set-Content -Encoding utf8 write, is skipped; an empty file is {} (emptyText).

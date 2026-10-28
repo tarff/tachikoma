@@ -36,7 +36,9 @@ export interface Task {
 export interface TasksOptions {
   bus: Bus; // the lead's: subagents' spend and errors are reported there, marked with the subagent
   max: number; // --max-tasks
-  worker: () => Provider; // the model for a new subagent; throws when none can be made
+  // The model for a new subagent: the same one on every call until setWorker, so a setting made on it (App's effort)
+  // holds; throws when none can be made, which cli.tsx's never does.
+  worker: () => Provider;
   fallback?: Provider;
   system: string; // the subagents' system prompt, instructions included
   tools: Tool[];
@@ -63,7 +65,7 @@ export class Tasks {
     this.#fallback = opts.fallback;
   }
 
-  // The model a subagent started now would get.
+  // The model a subagent started now would get (TasksOptions.worker: the same one on every call).
   get worker(): Provider {
     return this.#worker();
   }
@@ -177,7 +179,14 @@ export class Tasks {
     });
     const owner: Owner = { name: `${t.id} (${t.description})`, signal, stop: () => this.stop(t.id) };
     const { ctx } = this.opts;
-    const session = new Session({ lead: provider, ...(fallback ? { fallback } : {}), tools: this.opts.tools, system: this.opts.system, ctx: { ...ctx, gate: ctx.gate.for(owner) }, bus });
+    const session = new Session({
+      lead: provider,
+      ...(fallback ? { fallback } : {}),
+      tools: this.opts.tools,
+      system: this.opts.system,
+      ctx: { ...ctx, gate: ctx.gate.for(owner) },
+      bus,
+    });
     t.messages = session.messages;
     t.state = "running";
     this.#changed();
