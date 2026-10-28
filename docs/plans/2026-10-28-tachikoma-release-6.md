@@ -288,7 +288,10 @@ mouse handler call `now()` instead of reading the flags one by one. The refs sta
 check reads `switching` today (keys act in the mode it goes to); the inputs keep what is drawn
 (`picker`, `question`) apart from what is open (`listOpen`, the questions waiting), as keys follow
 the screen and the queue what is open; and the menu is found only when nothing before it takes
-the key, as finding an `@` menu can list a folder.
+the key, as finding an `@` menu can list a folder. A paste does not follow the keys' order: a
+search typed in the detail view takes it before a question, and the list is never asked, as
+`usePaste` is off while it is drawn. So `pasteTo(inputs)`, beside `now()` over the same inputs,
+gives release 5's paste rule, and later tasks keep the two apart (found at Task 2's build).
 
 **Tests:**
 1. `now()` gives each phase for its inputs, and the precedence: printed beats everything but
