@@ -1,13 +1,9 @@
 import { type BigIntStats, existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { dataDir } from "../core/datadir.js";
+import { dataDir, KEYBINDINGS, SETTINGS, settingsDir } from "../core/datadir.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
-import { SETTINGS, settingsDir } from "../settings.js";
 import { defineTool } from "./tool.js";
-
-// The keys file, beside the settings file in the settings folder.
-const KEYBINDINGS = "keybindings.json";
 
 // Where a path really leads, following symlinks and Windows junctions. Parts that don't exist yet
 // (a new file in a new folder) are added back onto the deepest part that does. Null for a link that

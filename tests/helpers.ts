@@ -75,5 +75,5 @@ export { Bus };
 export function shortName(folder: string, name: string): string | undefined {
   if (process.platform !== "win32") return undefined;
   const listing = execFileSync("cmd", ["/c", "dir", "/x", "/a", folder], { encoding: "utf8" });
-  return new RegExp(`(\\S+~\\d+\\S*) +${name.replaceAll(".", "\\.")}\\s*$`, "im").exec(listing)?.[1];
+  return new RegExp(`(\\S+~\\d+\\S*) +${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "im").exec(listing)?.[1];
 }

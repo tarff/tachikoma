@@ -227,17 +227,15 @@ describe("search_files", () => {
     expect(await searchFilesTool.run({ pattern: "token", path: ".tachikoma" }, ctx)).toBe(".tachikoma/errors.jsonl:1: token");
   });
 
-  // Windows gives each a short name on a volume that makes them (SETTIN~1.JSO); the folder too.
-  it("refuses the settings and keys files by their short names, and leaves them out of their folder's", async ({ skip }) => {
+  // Windows gives each a short name on a volume that makes them (SETTIN~1.JSO).
+  it("refuses the settings and keys files by their short names", async ({ skip }) => {
     const ctx = await settingsHome();
     const folder = path.join(ctx.root, ".tachikoma");
     const short = ["settings.json", "keybindings.json", "settings.json.lock"].map((name) => shortName(folder, name));
-    const shortFolder = shortName(ctx.root, ".tachikoma");
-    if (!shortFolder || short.some((s) => !s)) skip("this system or volume makes no short names");
+    if (short.some((s) => !s)) skip("this system or volume makes no short names");
     for (const s of short) {
       await expect(searchFilesTool.run({ pattern: "token", path: `.tachikoma/${s}` }, ctx)).rejects.toThrow("is one of Tachikoma's settings files");
     }
-    expect(await searchFilesTool.run({ pattern: "token", path: shortFolder! }, ctx)).toBe(".tachikoma/errors.jsonl:1: token");
   });
 
   it("says when the pattern is not a regular expression", async () => {

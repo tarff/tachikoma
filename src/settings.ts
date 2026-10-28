@@ -2,23 +2,18 @@ import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { oneOf, speedValue, statusSegments, taskCount } from "./clilib.js";
+import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode } from "./core/permissions.js";
 import { errorText } from "./core/types.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import type { Segment } from "./tui/StatusLine.js";
 
-// The settings file (release 6 design, "The settings file"): ~/.tachikoma/settings.json, the only one read, so a
-// repository the user clones can never change how Tachikoma behaves.
-export const SETTINGS = "settings.json";
-const DIR = ".tachikoma";
-
-export function settingsDir(home = os.homedir()): string {
-  return path.join(home, DIR);
-}
+// The names live beside the data folder's, so the file tools can refuse them without loading this module.
+export { SETTINGS, settingsDir };
 
 // The file's place as a message shows it: ~ for the home folder, with the system's own separator.
 export function shownFile(platform: NodeJS.Platform = process.platform): string {
-  return (platform === "win32" ? path.win32 : path.posix).join("~", DIR, SETTINGS);
+  return (platform === "win32" ? path.win32 : path.posix).join("~", SETTINGS_DIR, SETTINGS);
 }
 
 // Every entry is optional; one that is absent keeps the default. The names follow the flags, or Claude Code's where it
