@@ -7,7 +7,6 @@ import { stripVTControlCharacters } from "node:util";
 import { type Instance, render as renderInk } from "ink";
 import { render } from "ink-testing-library";
 import chalk from "chalk";
-import type { ChatCompletion } from "openai/resources/chat/completions";
 import { Completions } from "openai/resources/chat/completions";
 import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
@@ -554,11 +553,10 @@ describe("App", () => {
       vi.unstubAllEnvs();
       vi.restoreAllMocks();
     });
-    const res = {
+    vi.spyOn(Completions.prototype, "create").mockResolvedValue({
       choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "there", refusal: null } }],
       usage: { prompt_tokens: 209_000, completion_tokens: 1_000, total_tokens: 210_000 },
-    } as unknown as ChatCompletion;
-    vi.spyOn(Completions.prototype, "create").mockResolvedValue(res as never);
+    } as never);
     const { app } = await mount([], { lead: new OpenAIProvider("openai", "gpt-5.5") });
     await type(app, "hi");
     await until(app, "there");

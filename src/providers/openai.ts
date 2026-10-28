@@ -123,8 +123,9 @@ export class OpenAIProvider implements Provider {
     }
   }
 
-  // OpenAI's table, so only for openai: leads at OpenAI's own address: another one, set by OPENAI_BASE_URL,
-  // may serve other models under the same names, as OpenRouter, Kimi and Ollama do. Null shows the tokens in use.
+  // The table is OpenAI's, so it answers only for openai leads at OpenAI's own address. Another address, set by
+  // OPENAI_BASE_URL, may serve other models under the same names, as OpenRouter, Kimi and Ollama do. Null shows the tokens
+  // in use.
   async contextWindow(): Promise<number | null> {
     if (this.kind !== "openai" || !/^https:\/\/api\.openai\.com\/v1\/?$/.test(this.#client.baseURL)) return null;
     return openaiWindow(this.model);

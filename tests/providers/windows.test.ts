@@ -92,6 +92,7 @@ describe("OpenAIProvider.contextWindow", () => {
   it("answers null at another address, which may serve other models under the same names", async () => {
     expect(await lead("openai", "gpt-5.5", "https://proxy.example/v1").contextWindow()).toBeNull();
     expect(await lead("openai", "gpt-5.5", "http://api.openai.com/v1").contextWindow()).toBeNull();
+    expect(await lead("openai", "gpt-5.5", "https://api.openai.com/v1/extra").contextWindow()).toBeNull();
     expect(await lead("openrouter", "gpt-5.5").contextWindow()).toBeNull();
     expect(await lead("kimi", "gpt-5.5").contextWindow()).toBeNull();
     expect(await lead("ollama", "gpt-oss-20b").contextWindow()).toBeNull();
