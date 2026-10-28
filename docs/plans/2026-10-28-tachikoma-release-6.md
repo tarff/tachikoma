@@ -259,13 +259,22 @@ Each is marked in its task. None approved yet.
     first, whatever is half typed, as Claude Code 2.1.312's vim hook does (`if(a.ctrl||a.meta)
     {if(l.mode==="VISUAL"){...}}`, read 2026-10-29); then a key the table binds does its action
     (Ctrl+T, Ctrl+O, Ctrl-C), and an editor key no binding takes (Ctrl+A, Ctrl+K, Alt+B) does
-    nothing more, since Claude Code marks the key handled there and its text field skips it. In
+    nothing more, since Claude Code marks the key handled there and its text field skips it; so
+    Ctrl+D in VISUAL with text leaves VISUAL and then deletes the character after the cursor, as
+    `app:exit` does on a prompt with text. In
     NORMAL and INSERT those editor keys keep working, as in Claude Code. Enter, bound to
-    `chat:submit`, sends from VISUAL too, as bindings come first; Claude Code moves down a line
-    there, which vim.ts does only after a count (`2` Enter). Every other key no binding takes,
+    `chat:submit`, sends from VISUAL too, as bindings come first, and the mode is then NORMAL;
+    Claude Code moves down a line there, which vim.ts does only after a count (`2` Enter). Any
+    change App makes to the prompt's text in VISUAL (a message sent, a recall, a paste, a
+    picture's marker taken out) leaves VISUAL for NORMAL, since VISUAL's anchor is a place in the
+    old text; moving the cursor alone keeps VISUAL (found at Task 21's code review, where `o`
+    after such a change crashed the screen). Every other key no binding takes,
     without Ctrl or Alt, goes to vim in NORMAL and VISUAL, so Home, End, Delete and Tab, which
-    vim.ts does not use, do nothing there; a half-typed command's Enter drops the command (Task
-    6's rule), where Claude Code's Enter sends. `?` on an empty prompt in INSERT still lists the
+    vim.ts does not use, do nothing there. A half-typed operator, find, `r` or `g` then Enter
+    drops the command (Task 6's rule), where Claude Code's Enter sends whatever is half typed
+    (2.1.312: `if(a.name==="return"&&l.mode!=="VISUAL"){f.handleKeyDown(a);return}`); a count
+    alone then Enter sends, as Claude Code's does, the count dropped (vim.ts's Enter in NORMAL;
+    found at Task 21's code review). `?` on an empty prompt in INSERT still lists the
     keys. j and k at the first or last line, and `/`, act as Up, Down and Ctrl+R do, so k on an
     empty prompt with messages queued takes them back, as Up does. Text read together is split
     into keys only at the prompt and its menus. Where App puts new text in the prompt, `.`

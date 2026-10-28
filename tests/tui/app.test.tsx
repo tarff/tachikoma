@@ -5553,6 +5553,8 @@ describe("App's vim mode", () => {
     await press(app, ...(text ? [text] : []), ESC);
     await until(app, "-- NORMAL --");
   };
+  // The text drawn in reverse colours on the prompt's first row.
+  const onPrompt = (app: ReturnType<typeof render>) => reverse(app.lastFrame()!.split("\n").find((r) => /^›( |$)/.test(r))!);
 
   it("switches on and off with /vim, /vim on and /vim off, saying so, in this window only", async () => {
     const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
@@ -5707,11 +5709,76 @@ describe("App's vim mode", () => {
       expect(reversed(app)).toContain("one");
       await press(app, ESC);
       expect(app.lastFrame()).toContain("-- NORMAL --");
-      expect(reversed(app)).not.toContain("one");
+      expect(onPrompt(app)).toBe("");
       await press(app, "v", "h", CTRL_T); // leaving on a Ctrl key clears it too
       expect(app.lastFrame()).toContain("-- NORMAL --");
-      expect(reversed(app)).not.toContain("ne");
+      expect(onPrompt(app)).toBe("");
+      await press(app, "0", "l", "v", "h"); // the anchor after the cursor: from the cursor to the anchor's character
+      expect(onPrompt(app)).toBe("on");
     });
+  });
+
+  // Code review of Task 21: App changing the prompt's text under VISUAL left its anchor in the old text, and `o` then put
+  // the cursor where the new text has no place, which threw while drawing. Changed text leaves VISUAL for NORMAL.
+  it.each([
+    { name: "a message sent", keys: ["\r"] },
+    { name: "a past prompt recalled", keys: ["\u{1b}[A"] },
+    { name: "a paste", keys: ["\u{1b}[200~\u{1f600}\u{1b}[201~"] },
+  ])("leaves VISUAL for NORMAL when $name changes the text, and o then works", async ({ keys }) => {
+    await inColour(async () => {
+      // On from the settings file, so no /vim is in the history for Up to bring back.
+      const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+      onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+      const live = { loaded: { settings: { editorMode: "vim" as const }, warnings: [] }, given: {} };
+      const { app } = await mount([reply("ok")], { past: ["hi"], home, live });
+      await press(app, "hello world", ESC, "v", "0", ...keys);
+      expect(app.lastFrame()).toContain("-- NORMAL --");
+      expect(onPrompt(app)).toBe("");
+      await press(app, "o");
+      expect(app.lastFrame()).toContain("-- INSERT --");
+    });
+  });
+
+  it("leaves VISUAL for NORMAL when a picture's failed read takes its marker out", async () => {
+    await inColour(async () => {
+      const pictures = new Pictures();
+      const { app } = await mount([], { pictures });
+      await type(app, "/vim");
+      await until(app, "-- INSERT --");
+      await press(app, PICTURE, "ab", ESC, "v", "0");
+      expect(onPrompt(app)).toBe("[Image #1]ab");
+      pictures.set(1, "none");
+      await until(app, "No picture on the clipboard.");
+      expect(app.lastFrame()).toContain("-- NORMAL --");
+      expect(onPrompt(app)).toBe("");
+      await press(app, "o");
+      expect(app.lastFrame()).toContain("-- INSERT --");
+    });
+  });
+
+  // Claude Code's Enter in NORMAL goes to its text field, which sends, whatever is half typed (2.1.312's
+  // `if(a.name==="return"&&l.mode!=="VISUAL"){f.handleKeyDown(a);return}`); here an operator's Enter drops the command
+  // (choice 27), and a count's sends, as there.
+  it("drops d on Enter, and sends after a count, in NORMAL", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await normal(app, "hi");
+    await press(app, "d", "\r");
+    await tick();
+    expect(session.messages).toEqual([]);
+    expect(app.lastFrame()).toContain("› hi\n");
+    await press(app, "2", "\r");
+    await until(app, "ok");
+    expect(sent(session)).toEqual({ type: "text", text: "hi" });
+  });
+
+  // Code review of Task 21: new text in the prompt starts what `.` repeats afresh (App.tsx, freshText).
+  it("repeats on . an insert typed after a message was sent from INSERT", async () => {
+    const { app } = await mount([reply("ok")]);
+    await normal(app, "foo");
+    await press(app, "A", "bar", "\r");
+    await until(app, "ok");
+    await press(app, "baz", ESC, ".");
+    expect(app.lastFrame()).toContain("› babazz\n");
   });
 
   it("draws VISUAL LINE's selection over whole lines", async () => {
@@ -6396,6 +6463,28 @@ describe("App's live settings", () => {
       await wait(10);
       expect(app.lastFrame()).toContain("› a\n");
       expect(app.lastFrame()).toContain("-- NORMAL --");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Code review of Task 21: a key App handles itself ends a remap pair's wait (App.tsx, dropRemap).
+  it("types both keys of a vimInsertModeRemaps pair with Ctrl+T between them", async () => {
+    const { app } = await watching([], { editorMode: "vim", vimInsertModeRemaps: { jj: "<Esc>" } });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const wait = async (ms: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    try {
+      app.stdin.write("j");
+      await wait(10);
+      app.stdin.write("\u{14}"); // Ctrl+T
+      await wait(10);
+      app.stdin.write("j");
+      await wait(10);
+      expect(app.lastFrame()).toContain("› jj\n");
+      expect(app.lastFrame()).toContain("-- INSERT --");
     } finally {
       vi.useRealTimers();
     }

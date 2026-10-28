@@ -1,7 +1,7 @@
 import type { Key } from "ink";
 import { describe, expect, it } from "vitest";
 import { Bindings, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
-import { commands, keyList, named } from "../../src/tui/keys.js";
+import { commands, keyList, named, pieces, vimKey } from "../../src/tui/keys.js";
 
 // A key as Ink's useInput reports it: no flags but the ones given.
 const key = (flags: Partial<Key> = {}): Key => ({
@@ -144,5 +144,27 @@ describe("the keys named in help and hints", () => {
     expect(list).toHaveLength(keyList(defaults()).length - 1);
     expect(list.join("\n")).not.toContain("to-do list");
     expect(list).not.toContain("  ");
+  });
+});
+
+// Release 6 plan, Task 21: vim mode's keys.
+describe("vim mode's keys", () => {
+  it("splits text read together into one key a character, Enter and Ctrl+J apart, other control characters dropped", () => {
+    expect(pieces("dw")).toEqual(["d", "w"]);
+    expect(pieces("a\r\nb")).toEqual(["a", "\r", "\n", "b"]);
+    expect(pieces("e\u{301}")).toEqual(["e\u{301}"]); // e with a combining accent: one character on screen
+    expect(pieces("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}")).toEqual(["\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}"]);
+    expect(pieces("x\u{7}y")).toEqual(["x", "y"]);
+  });
+
+  it("names a key for vim: a character as typed, a named key by its name, none held with Ctrl or Alt but Esc", () => {
+    expect(vimKey("k", key({ ctrl: true }))).toBeNull();
+    expect(vimKey("b", key({ meta: true }))).toBeNull();
+    expect(vimKey("", key({ escape: true, meta: true }))).toBe("escape"); // two Escs read together
+    expect(vimKey(" ", key())).toBe(" ");
+    expect(vimKey("A", key({ shift: true }))).toBe("A");
+    expect(vimKey("", key({ upArrow: true }))).toBe("up");
+    expect(vimKey("e\u{301}", key())).toBe("e\u{301}");
+    expect(vimKey("dw", key())).toBeNull();
   });
 });
