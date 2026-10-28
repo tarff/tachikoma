@@ -29,8 +29,8 @@ import { OpenAIProvider } from "../../src/providers/openai.js";
 import { lastSaved, readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
-import { Clipboard } from "../../src/tui/clipboard.js";
-import { Pictures } from "../../src/tui/pictures.js";
+import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
+import { Pictures, type Read } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
@@ -113,6 +113,7 @@ async function mount(
     home?: string; // the folder holding the settings file; sharedHome when not given
     live?: AppProps["live"]; // the settings file as launch read it, which the App then watches; not watched when not given
     pictures?: Pictures; // the session's pictures, whose reads the test ends
+    readPicture?: AppProps["readPicture"]; // Alt+V's read; one that never answers when not given, null for no reader
   } = {},
 ) {
   const bus = new Bus();
@@ -175,6 +176,9 @@ async function mount(
       home={opts.home ?? sharedHome}
       live={opts.live}
       pictures={opts.pictures}
+      // No test reads the user's clipboard: unless a test gives its own reader, Alt+V's read never answers, and the
+      // test ends it through the session's Pictures.
+      readPicture={"readPicture" in opts ? opts.readPicture : () => new Promise(() => {})}
     />,
   );
   mounted.push(app);
@@ -5242,7 +5246,7 @@ describe("App's pictures", () => {
     const pictures = new Pictures();
     const { app } = await mount([], { pictures });
     await press(app, " ", PICTURE, CTRL_S, "b ", PICTURE); // the stash, left with a blank only, empties
-    expect(app.lastFrame()).toContain("Stashed");
+    expect(app.lastFrame()).toContain("Reading picture..."); // in the hint row, over "Stashed", while a read runs (Task 15)
     pictures.set(1, "none");
     pictures.set(2, "none");
     await until(app, "No picture on the clipboard.\nNo picture on the clipboard.");
@@ -5260,6 +5264,176 @@ describe("App's pictures", () => {
     await until(app, "ok");
     expect(userParts(session)).toEqual([[{ type: "text", text: "look" }]]);
     expect(pictures.get(1)).toEqual({ failed: "stopped" });
+  });
+});
+
+// Release 6 plan, Task 15: Alt+V's read, through a reader the test gives (no test reads the user's clipboard), and a
+// pasted path to a picture file, in a folder the test made.
+describe("App's picture reads", () => {
+  const PICTURE = process.platform === "win32" ? "\u001bv" : "\u0016"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+  const READING = "Reading picture...";
+  const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]) }; // PNG's signature
+  const OTHER = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 2]) };
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0]); // JPEG's SOI marker, then another (ITU-T T.81, Table B.1)
+  const userParts = (session: Session) => session.messages.filter((m) => m.role === "user").map((m) => m.parts);
+  const paste = (text: string) => `\u001b[200~${text}\u001b[201~`;
+  // Reads the test answers one by one, in the order Alt+V started them.
+  const answered = () => {
+    const answers: ((r: Read) => void)[] = [];
+    return { read: () => new Promise<Read>((resolve) => answers.push(resolve)), answers };
+  };
+  const folder = () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-paste-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    return dir;
+  };
+  // A stand-in reader (clipboard.ts, readImage) that fails as a real one does, run only once the test lets it start.
+  const failing = () => {
+    const file = path.join(folder(), "reader.mjs");
+    writeFileSync(file, `console.error("no access"); process.exit(1);`);
+    const reader: Reader = { command: process.execPath, args: [file], output: (b) => b, name: "stand-in" };
+    let go!: () => void;
+    const start = new Promise<void>((resolve) => (go = resolve));
+    return { read: () => start.then(() => readImage(reader)), go };
+  };
+
+  it("puts the marker in at once, says it is reading, and fills the picture in when the read ends", async () => {
+    const { read, answers } = answered();
+    const { app, session } = await mount([reply("seen")], { readPicture: read });
+    await press(app, "look ", PICTURE);
+    expect(app.lastFrame()).toContain(`› look [Image #1]\n${READING}`);
+    answers[0]!(PNG);
+    await gone(app, READING);
+    expect(app.lastFrame()).toContain("› look [Image #1]\n? for shortcuts");
+    await press(app, "\r");
+    await until(app, "seen");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }]]);
+  });
+
+  it("keeps two pictures in the order asked for when the later read ends first, saying it is reading until both end", async () => {
+    const { read, answers } = answered();
+    const { app, session } = await mount([reply("ok")], { readPicture: read });
+    await press(app, PICTURE, " and ", PICTURE);
+    answers[1]!(OTHER);
+    await tick();
+    expect(app.lastFrame()).toContain(READING);
+    answers[0]!(PNG);
+    await gone(app, READING);
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "image", id: 1, ...PNG }, { type: "text", text: " and " }, { type: "image", id: 2, ...OTHER }]]);
+  });
+
+  it("keeps the picture of a marker deleted during its read when undo brings the marker back, reading only once", async () => {
+    const { read, answers } = answered();
+    let reads = 0;
+    const { app, session } = await mount([reply("ok")], {
+      readPicture: () => {
+        reads++;
+        return read();
+      },
+    });
+    await press(app, "see ", PICTURE, "\u007f"); // Backspace takes the whole marker (choice 14)
+    expect(app.lastFrame()).toMatch(/› see ?\n/);
+    await press(app, "\u001a"); // Ctrl+Z
+    expect(app.lastFrame()).toContain("› see [Image #1]");
+    answers[0]!(PNG);
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]]);
+    expect(reads).toBe(1);
+  });
+
+  it("takes a marker out of a queued message when the clipboard has no picture, and the message goes without it", async () => {
+    const { read, answers } = answered();
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session } = await mount([], { lead, readPicture: read });
+    await press(app, "first", "\r");
+    await until(app, "Esc to stop");
+    await press(app, PICTURE, " later", "\r");
+    answers[0]!("none");
+    await until(app, "No picture on the clipboard.");
+    release();
+    await until(app, "r2");
+    expect(userParts(session)[1]).toEqual([{ type: "text", text: "later" }]);
+  });
+
+  it("sends a message without the picture when the reader fails after Enter, leaving nothing waiting", async () => {
+    const { read, go } = failing();
+    const { app, session } = await mount([reply("ok")], { readPicture: read });
+    await press(app, "look ", PICTURE, " here", "\r");
+    expect(app.lastFrame()).toContain(READING);
+    go();
+    await until(app, "Could not read the clipboard: stand-in failed: no access; [Image #1] was sent without it.");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look  here" }]]);
+    await gone(app, "Esc to stop");
+    expect(app.lastFrame()).not.toContain(READING);
+  });
+
+  it("takes the marker out of a queued message when the reader fails, and the message goes without it", async () => {
+    const { read, go } = failing();
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session } = await mount([], { lead, readPicture: read });
+    await press(app, "first", "\r");
+    await until(app, "Esc to stop");
+    await press(app, PICTURE, " later", "\r");
+    go();
+    await until(app, "Could not read the clipboard: stand-in failed: no access");
+    expect(app.lastFrame()).not.toContain("was sent without it");
+    release();
+    await until(app, "r2");
+    expect(userParts(session)[1]).toEqual([{ type: "text", text: "later" }]);
+    await gone(app, "Esc to stop");
+    expect(app.lastFrame()).not.toContain(READING);
+  });
+
+  it("says so in red where there is no clipboard reader, and puts no marker in", async () => {
+    await inColour(async () => {
+      const { app } = await mount([], { readPicture: null });
+      await press(app, "see ", PICTURE);
+      await until(app, "\u001b[31mNo clipboard reader here: install wl-paste or xclip.");
+      expect(app.lastFrame()).not.toContain("[Image #1]");
+      expect(app.lastFrame()).not.toContain(READING);
+    });
+  });
+
+  it("makes a paste of paths to picture files those pictures, with or without quotes, each typed by its first bytes", async () => {
+    const dir = folder();
+    const shot = path.join(dir, "shot one.png");
+    const photo = path.join(dir, "photo.png"); // a JPEG named .png
+    writeFileSync(shot, PNG.data);
+    writeFileSync(photo, JPEG);
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, "see ", paste(`"${shot}"\n${photo}\n`));
+    expect(app.lastFrame()).toContain("› see [Image #1][Image #2]");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([
+      [{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }, { type: "image", id: 2, mediaType: "image/jpeg", data: JPEG }],
+    ]);
+  });
+
+  it("keeps a paste of paths as text when a file it names is missing", async () => {
+    const dir = folder();
+    const shot = path.join(dir, "shot.png");
+    writeFileSync(shot, PNG.data);
+    const text = `${shot}\n${path.join(dir, "missing.png")}`;
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, paste(text), "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text }]]);
+  });
+
+  it("says in red that a pasted file that is not a picture could not be read, naming the file, and takes its marker out", async () => {
+    await inColour(async () => {
+      const { app, ctx } = await mount([]);
+      writeFileSync(path.join(ctx.root, "notes.png"), "hello"); // a path in the project, as typed relative to it
+      onTestFinished(() => rmSync(path.join(ctx.root, "notes.png"), { force: true }));
+      await press(app, "see ", paste("notes.png"));
+      await until(app, "\u001b[31mCould not read notes.png: not a PNG, JPEG, GIF or WebP picture");
+      expect(app.lastFrame()).toMatch(/› see ?\n/);
+    });
   });
 });
 

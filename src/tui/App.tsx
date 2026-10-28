@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Box, type Key, renderToString, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
@@ -17,7 +17,7 @@ import { type Loaded, SETTINGS, saveSetting, type Settings, settingsDir, shownFi
 import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
 import { Bindings, CHORD_MS, type Context, DEFAULTS, keyText, type Stroke, strokeOf, tableOf } from "./bindings.js";
-import type { Clipboard } from "./clipboard.js";
+import { type Clipboard, imagePaths, imageReader, pictureFile, readImage } from "./clipboard.js";
 import { Conversation } from "./Conversation.js";
 import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
 import { type Detail, DetailView, keyRow, opened, searchFor, step as stepMatch } from "./DetailView.js";
@@ -32,7 +32,7 @@ import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu 
 import { ModelPicker, type PickerKey, rows as listRows } from "./ModelPicker.js";
 import { type Hand, type Handover, TerminalOwner } from "./owner.js";
 import { type Now, now as nowOf, pasteTo, type Phase, phaseInputs } from "./phase.js";
-import { type Draft, joined, marker, messageParts, Pictures, spansIn, trimmed, without } from "./pictures.js";
+import { type Draft, joined, marker, messageParts, Pictures, type Read, spansIn, trimmed, without } from "./pictures.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -110,7 +110,25 @@ export interface AppProps {
   // The session's pictures (pictures.ts; release 6 plan, choice 9); the App makes its own when not given. Tests give
   // one to end its reads.
   pictures?: Pictures;
+  // chat:imagePaste's read of the clipboard's picture, null where there is no reader; the system's reader when not
+  // given (clipboard.ts, imageReader). Tests give a stand-in, so none reads the user's clipboard.
+  readPicture?: (() => Promise<Read>) | null;
 }
+
+// The system's clipboard reader as a read, or null where there is none (release 6 plan, choice 11).
+const fromClipboard = () => {
+  const tool = imageReader(process.platform, process.env);
+  return tool && (() => readImage(tool));
+};
+// Whether a pasted path names a file, not a folder; one that cannot be looked at, as a name Windows does not allow, is
+// not one.
+const isFile = (file: string) => {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    return false;
+  }
+};
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /settings, /keybindings, /exit";
 // "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
@@ -214,6 +232,7 @@ export function App({
   home,
   live,
   pictures: picturesGiven,
+  readPicture,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -323,6 +342,7 @@ export function App({
   const [pictures] = useState(() => picturesGiven ?? new Pictures());
   // The message waiting for its pictures' reads to end before it is sent, as the reads leave it (perform, below).
   const reading = useRef<Draft | null>(null);
+  const reads = useRef(0); // the pictures' reads running, for the hint row's "Reading picture..." (newPicture, below)
   // What is running, since when, and for a turn the totals it started from; and the turn's tool calls,
   // kept after it until the next turn starts.
   const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
@@ -752,8 +772,9 @@ export function App({
   };
   // A read has ended (release 6 design, "While a read runs"). With no picture, its marker goes from wherever it is: the
   // prompt, the stash, the draft Up keeps, the prompt Ctrl+R gives back, the queue and the message waiting on it; and
-  // one line says so, naming the marker when that message goes without it (plan, choice 17), in Task 15's words.
-  const settle = (id: number) => {
+  // one line says so, naming the marker when that message goes without it (plan, choice 17), in Task 15's words. A
+  // failed read names where it read from: the clipboard, or a pasted path (`from`).
+  const settle = (id: number, from = "the clipboard") => {
     const read = pictures.get(id);
     if (read !== "none" && !(typeof read === "object" && "failed" in read)) return;
     editor.current = cutPicture(editor.current, id);
@@ -766,20 +787,42 @@ export function App({
     if (reading.current) reading.current = without(reading.current, id);
     // A message that was only pictures, left empty, sends nothing (session.ts, send).
     const ending = !waits ? "" : reading.current!.text.trim() ? `; ${marker(id)} was sent without it.` : "; nothing was sent.";
-    const why = read === "none" ? "No picture on the clipboard" : `Could not read the clipboard: ${read.failed}`;
+    const why = read === "none" ? "No picture on the clipboard" : `Could not read ${from}: ${read.failed}`;
     say({ text: ending ? why + ending : read === "none" ? `${why}.` : why, color: read === "none" ? "gray" : "red" });
   };
-  // A new picture's number, its read running, with settle set to run when the read ends. Every read starts here:
-  // Alt+V's and, from the release 6 plan's Task 15, a pasted path's.
-  const newPicture = () => {
+  // A new picture's number, its read running, with settle set to run when the read ends, and the hint row drawn again,
+  // as "Reading picture..." shows while any read runs (release 6 design, "Pictures"). Every read starts here: Alt+V's
+  // and a pasted path's, whose `from` names it.
+  const newPicture = (from?: string) => {
     const id = pictures.next();
-    void pictures.settled(id).then(() => latest.current.settle(id));
+    reads.current++;
+    void pictures.settled(id).then(() => {
+      reads.current--;
+      latest.current.settle(id, from);
+      rerender((n) => n + 1);
+    });
     return id;
   };
-  // chat:imagePaste: the next picture's marker at the cursor at once, so pictures keep the order they were asked for
-  // (design, "While a read runs"). The read itself is the release 6 plan's Task 15's.
+  // chat:imagePaste: the next picture's marker at the cursor at once, so pictures keep the order they were asked for,
+  // and the picture filled in under its number when the read ends, wherever the marker is by then (design, "While a
+  // read runs"). With no reader, as on Linux with neither tool, no marker goes in (plan, Task 15).
   const imagePaste = (e: Editor) => {
-    editor.current = insertPicture(e, newPicture());
+    const read = readPicture === undefined ? fromClipboard() : readPicture;
+    if (!read) return say({ text: "No clipboard reader here: install wl-paste or xclip.", color: "red" });
+    const id = newPicture();
+    editor.current = insertPicture(e, id);
+    goal.current = null;
+    void read().then((r) => pictures.set(id, r));
+  };
+  // A paste of paths to picture files that are all there becomes those pictures, read as Alt+V's are, each failure
+  // naming its path as pasted (release 6 design, "From pasted paths"). A path not absolute is taken in the project, as
+  // the tools take one.
+  const pastePictures = (files: string[]) => {
+    for (const file of files) {
+      const id = newPicture(file);
+      editor.current = insertPicture(editor.current, id);
+      void pictureFile(path.resolve(root, file)).then((r) => pictures.set(id, r));
+    }
     goal.current = null;
   };
 
@@ -1375,8 +1418,8 @@ export function App({
     first.current = null;
   };
 
-  // A pasted block goes in whole, its line breaks as new lines: it is never sent by them. While the
-  // picker is open, pastes reach it as typed text, as before.
+  // A pasted block goes in whole, its line breaks as new lines: it is never sent by them; one of only paths to picture
+  // files becomes those pictures (pastePictures). While the picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
       const given = phaseInputs(phaseRefs);
@@ -1393,7 +1436,9 @@ export function App({
         return rerender((n) => n + 1);
       }
       if (to === null) return;
-      run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
+      const files = imagePaths(text);
+      if (files?.every((f) => isFile(path.resolve(root, f)))) pastePictures(files);
+      else run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       rerender((n) => n + 1);
     },
     { isActive: !picker },
@@ -1815,6 +1860,8 @@ export function App({
                   : [said(fillKeys.filter(Boolean).join(" or ") || undefined, "fill")]),
                 said(keyOf("autocomplete:dismiss", "Autocomplete", "escape"), "close"),
               )
+            : reads.current
+            ? "Reading picture..." // over the queue's and the stash's hints, for the moment it lasts (release 6 design, "Pictures")
             : queue.current.length
             ? left > 0 && previous
               ? `${previous} to edit queued messages`

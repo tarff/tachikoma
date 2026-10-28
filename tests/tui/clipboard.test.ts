@@ -1,9 +1,22 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
-import { Clipboard, DECODE, osc52, runTool, systemTool, type Tool } from "../../src/tui/clipboard.js";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import {
+  Clipboard,
+  DECODE,
+  GET_IMAGE,
+  imagePaths,
+  imageReader,
+  osc52,
+  pictureFile,
+  type Reader,
+  readImage,
+  runTool,
+  systemTool,
+  type Tool,
+} from "../../src/tui/clipboard.js";
 import { system32 } from "../../src/exec/env.js";
 
 // Each tool's process, so a test can see what runTool left open.
@@ -210,5 +223,147 @@ describe("Clipboard", () => {
     expect(reports).toEqual([]);
     expect(clipboard.terminalOnly).toBe(true);
     expect(standIn().clipboard.terminalOnly).toBe(false);
+  });
+});
+
+// A 1×1 PNG, made for these tests; it never comes from the clipboard.
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+const tempFolder = () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "tachi-pictures-"));
+  onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+};
+
+// Release 6 plan, choice 11. Only the command lines are checked: no test reads the user's clipboard.
+describe("imageReader", () => {
+  it("on Windows, reads the picture through Windows Forms in PowerShell under -STA, writing it as PNG in base64", () => {
+    const reader = imageReader("win32", {})!;
+    expect(reader.command.toLowerCase()).toMatch(/powershell\.exe$/);
+    expect(reader.command).toBe(system32("WindowsPowerShell/v1.0/powershell.exe"));
+    expect(reader.args).toEqual([
+      "-NoProfile",
+      "-NonInteractive",
+      "-STA",
+      "-Command",
+      "[Console]::OutputEncoding = [Text.Encoding]::UTF8; try { Add-Type -AssemblyName System.Windows.Forms, System.Drawing; " +
+        `$img = ${GET_IMAGE}; if ($img) { $ms = New-Object IO.MemoryStream; $img.Save($ms, [Drawing.Imaging.ImageFormat]::Png); ` +
+        "[Console]::Out.Write([Convert]::ToBase64String($ms.ToArray())) } } " +
+        "catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }",
+    ]);
+    expect(GET_IMAGE).toBe("[Windows.Forms.Clipboard]::GetImage()");
+    expect(reader.name).toBe("PowerShell");
+    expect(reader.output(Buffer.from(PNG.toString("base64")))).toEqual(PNG);
+  });
+
+  it("on macOS asks osascript for the clipboard as PNG, which answers in hex", () => {
+    const reader = imageReader("darwin", {})!;
+    expect(reader).toMatchObject({ command: "osascript", args: ["-e", "get the clipboard as «class PNGf»"], name: "osascript" });
+    expect(reader.output(Buffer.from(`«data PNGf${PNG.toString("hex").toUpperCase()}»\n`, "utf8"))).toEqual(PNG);
+  });
+
+  it("on Linux is wl-paste with Wayland, otherwise xclip with X, each asked for PNG and giving its bytes as they are", () => {
+    const wayland = imageReader("linux", { WAYLAND_DISPLAY: "wayland-0", DISPLAY: ":0" })!;
+    expect(wayland).toMatchObject({ command: "wl-paste", args: ["--type", "image/png"], name: "wl-paste" });
+    const x = imageReader("linux", { DISPLAY: ":0" })!;
+    expect(x).toMatchObject({ command: "xclip", args: ["-selection", "clipboard", "-t", "image/png", "-o"], name: "xclip" });
+    expect(wayland.output(PNG)).toEqual(PNG);
+    expect(x.output(PNG)).toEqual(PNG);
+  });
+
+  it("is none on Linux with no display, and elsewhere", () => {
+    expect(imageReader("linux", {})).toBeNull();
+    expect(imageReader("aix", {})).toBeNull();
+  });
+
+  // The reader's own script with a picture made in PowerShell, or none, where the clipboard is read, so the script's
+  // writing of the PNG runs without touching the user's clipboard.
+  it.runIf(process.platform === "win32")("on Windows, writes a picture as PNG in base64, and nothing for no picture", { timeout: 15_000 }, async () => {
+    const reader = imageReader("win32", {})!;
+    const instead = (with_: string): Reader => ({ ...reader, args: reader.args.map((a) => a.replace(GET_IMAGE, with_)) });
+    const made = instead("(New-Object Drawing.Bitmap 3, 2)");
+    expect(made.args.join(" ")).not.toContain("Clipboard");
+    const read = await readImage(made);
+    expect(read).toMatchObject({ mediaType: "image/png" });
+    const data = (read as { data: Buffer }).data;
+    // The PNG signature's 8 bytes, then the IHDR chunk's length and type (4 each), then its width and height (PNG
+    // specification, "PNG signature" and "IHDR Image header").
+    expect(data.subarray(0, 8)).toEqual(PNG.subarray(0, 8));
+    expect([data.readUInt32BE(16), data.readUInt32BE(20)]).toEqual([3, 2]);
+    expect(await readImage(instead("$null"))).toBe("none");
+  });
+});
+
+describe("readImage", () => {
+  // A stand-in for a reader: a Node script in the test's own folder, its output read as Windows' reader reads its own.
+  const standIn = (script: string): Reader => {
+    const file = path.join(tempFolder(), "reader.mjs");
+    writeFileSync(file, script);
+    return { command: process.execPath, args: [file], output: imageReader("win32", {})!.output, name: "stand-in" };
+  };
+
+  it("gives the PNG the tool writes", async () => {
+    await expect(readImage(standIn(`process.stdout.write(${JSON.stringify(PNG.toString("base64"))})`))).resolves.toEqual({ mediaType: "image/png", data: PNG });
+  });
+
+  it("is none when the tool writes nothing", async () => {
+    await expect(readImage(standIn(""))).resolves.toBe("none");
+  });
+
+  it("fails with the first line of the tool's stderr, or its exit code, when it exits with another", async () => {
+    await expect(readImage(standIn(`console.error("no access\\nmore"); process.exit(2)`))).resolves.toEqual({ failed: "stand-in failed: no access" });
+    await expect(readImage(standIn("process.exit(3)"))).resolves.toEqual({ failed: "stand-in failed: exit code 3" });
+  });
+
+  it("fails as not found for a command that does not exist", async () => {
+    const reader: Reader = { command: "tachikoma-no-such-tool-7f3a", args: [], output: (b) => b, name: "xclip" };
+    await expect(readImage(reader)).resolves.toEqual({ failed: "xclip not found" });
+  });
+});
+
+// Release 6 design, "From pasted paths".
+describe("imagePaths", () => {
+  it("takes a path with or without quotes, a Windows one with spaces included", () => {
+    expect(imagePaths(`"C:\\Users\\me\\My Pictures\\shot one.png"`)).toEqual(["C:\\Users\\me\\My Pictures\\shot one.png"]);
+    expect(imagePaths("'/home/me/a b.webp'")).toEqual(["/home/me/a b.webp"]);
+    expect(imagePaths("/home/me/a.gif")).toEqual(["/home/me/a.gif"]);
+  });
+
+  it("takes several, one a line, any letter case, blanks around them and blank lines left out", () => {
+    expect(imagePaths("/a/one.PNG\r\n  \"/b/two.jpg\"  \n\n/c/three.jpeg\n")).toEqual(["/a/one.PNG", "/b/two.jpg", "/c/three.jpeg"]);
+  });
+
+  it("is null when any line is not a path to a picture, or there is none", () => {
+    expect(imagePaths("/a/one.png\n/b/notes.txt")).toBeNull();
+    expect(imagePaths("look at this")).toBeNull();
+    expect(imagePaths("/a/one.png.txt")).toBeNull();
+    expect(imagePaths(" \n ")).toBeNull();
+  });
+});
+
+describe("pictureFile", () => {
+  // The first bytes of each format, then a few more: PNG specification, "PNG signature"; ITU-T T.81 (JPEG), Table
+  // B.1 (SOI) and B.1.1.2 (each marker starts with X'FF'); GIF89a specification, "17. Header"; RFC 9649 (WebP), "RIFF
+  // Header".
+  const KINDS = [
+    ["image/png", PNG],
+    ["image/jpeg", Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10])],
+    ["image/gif", Buffer.from("GIF87a\u0001\u0000", "latin1")],
+    ["image/gif", Buffer.from("GIF89a\u0001\u0000", "latin1")],
+    ["image/webp", Buffer.concat([Buffer.from("RIFF"), Buffer.from([4, 0, 0, 0]), Buffer.from("WEBPVP8 ")])],
+  ] as const;
+
+  it.each(KINDS)("takes %s from the file's first bytes, not its name", async (mediaType, data) => {
+    const file = path.join(tempFolder(), "named.png");
+    writeFileSync(file, data);
+    await expect(pictureFile(file)).resolves.toEqual({ mediaType, data });
+  });
+
+  it("fails for a file that is none of them, and for one it cannot read", async () => {
+    const dir = tempFolder();
+    const text = path.join(dir, "notes.png");
+    writeFileSync(text, "hello");
+    await expect(pictureFile(text)).resolves.toEqual({ failed: "not a PNG, JPEG, GIF or WebP picture" });
+    const missing = path.join(dir, "missing.png");
+    await expect(pictureFile(missing)).resolves.toEqual({ failed: `ENOENT: no such file or directory, open '${missing}'` });
   });
 });
