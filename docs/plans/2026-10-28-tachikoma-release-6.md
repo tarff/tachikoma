@@ -43,8 +43,8 @@ pull request.
 
 Tests that start PowerShell (`tests/auth/keychain.test.ts`, `private.test.ts`, `access.test.ts`,
 `chatgpt.test.ts`, `store.test.ts`, `tests/providers/registry.test.ts`, `tests/tui/history.test.ts`,
-`statusline.test.tsx`) sometimes run past Vitest's 5 s limit when the machine is busy. A time-out
-there is not a failure of this release if the file passes run alone.
+`statusline.test.tsx`, `tests/settings.test.ts`) sometimes run past Vitest's 5 s limit when the
+machine is busy. A time-out there is not a failure of this release if the file passes run alone.
 
 **Rules for every task:**
 - Tests first, seen failing for the right reason, then the code. One commit per task, plus `fix:`

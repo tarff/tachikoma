@@ -8,6 +8,7 @@ import type { Stats } from "../core/stats.js";
 import type { Task, Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
+import { saveSetting, type Settings, shownFile } from "../settings.js";
 import type { TodoItem } from "../tools/todo.js";
 import { Bindings, CHORD_MS, type Context, DEFAULTS, keyText, type Stroke, strokeOf, tableOf } from "./bindings.js";
 import type { Clipboard } from "./clipboard.js";
@@ -92,6 +93,7 @@ export interface AppProps {
   input?: Pick<Hand, "divert" | "hold" | "release" | "retake">;
   // The table of keys (bindings.ts); the default table when not given. Task 11 lays the keys file over it.
   bindings?: Bindings;
+  home: string; // the user's folder, which holds the settings file (release 6 design, "The settings file")
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /exit";
@@ -187,6 +189,7 @@ export function App({
   clipboard,
   input,
   bindings,
+  home,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -355,6 +358,13 @@ export function App({
   };
   const history = useRef<History | null>(null);
   history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
+  // Release 6 design, "Saving": /lead, a /model pick and /screen save their choice once it is in force, which a failed
+  // save leaves as it is; the line saying so is in History's colour.
+  const save = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+    saveSetting(key, value, home).catch((err) => {
+      say({ text: `The change holds for this session, but saving it to ${shownFile()} failed (${errorText(err)}).`, color: "magenta" });
+    });
+  };
 
   // Only the latest lookup's answer is shown: a late one, for the previous lead or from before a
   // request, must not replace it. Asked again after each request, without clearing what is shown: a
@@ -572,7 +582,11 @@ export function App({
         return t ? openDetail(recordOf(t)) : say(...tasksCommand(words));
       }
       if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
-      if (command === "/lead") return session.setLead(makeProvider(words.join(" ")));
+      if (command === "/lead") {
+        const spec = words.join(" ");
+        session.setLead(makeProvider(spec));
+        return save("lead", spec);
+      }
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
@@ -650,6 +664,7 @@ export function App({
     view.current = FOLLOWING;
     try {
       session.setLead(makeProvider(spec));
+      save("lead", spec);
     } catch (err) {
       say({ text: errorText(err), color: "red" });
     }
@@ -823,7 +838,9 @@ export function App({
       working.current = false;
       handover.done(); // a print-out started during the switch keeps the hold (comeBack, above)
     }
-    if (!ended.current) say({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
+    if (ended.current) return;
+    say({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
+    save("screen", toFull ? "full" : "classic");
   };
   // Who takes a key (release 6 plan, Task 6): while a field is typed (a Ctrl+R query, a detail-view search, the model
   // list's filter), a printable key goes into it, after a chord under way (lookUp). Keys match the table exactly

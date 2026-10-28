@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withLock } from "./auth/lock.js";
+import { privateDir, writePrivate } from "./auth/private.js";
 import { oneOf, speedValue, statusSegments, taskCount } from "./clilib.js";
 import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode } from "./core/permissions.js";
@@ -38,25 +40,11 @@ export type Loaded = { settings: Settings; warnings: string[] } | { problem: str
 // Each value gets its flag's check and words, after the file's and the entry's names (the plan's choice 8); a value of the
 // wrong JSON type is a problem too. An unknown name is a warning and the rest applies. $schema, which editors use to check
 // the file, is allowed and ignored. The lead, fallback and worker are checked by createProvider at use, as flags are.
-// A byte-order mark at the start, which Windows PowerShell 5.1's Out-File and Set-Content -Encoding utf8 write, is skipped;
-// an empty file, or one of only whitespace, means nothing set, not a broken file (the coordinator's decision, 2026-10-28,
-// in the spirit of the plan's choice 3).
 export function readSettings(text: string): Loaded {
-  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-  if (!text.trim()) return { settings: {}, warnings: [] };
-  let data: unknown;
-  try {
-    data = JSON.parse(text);
-  } catch (err) {
-    return { problem: `${SETTINGS} is not valid JSON: ${errorText(err)}` };
-  }
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    return { problem: `${SETTINGS} must be one object, such as {"lead": "ollama:qwen3:8b"} (got ${JSON.stringify(data)})` };
-  }
   const settings: Settings = {};
   const warnings: string[] = [];
   try {
-    for (const [name, value] of Object.entries(data)) {
+    for (const [name, value] of Object.entries(entriesOf(text))) {
       const entry = `${SETTINGS}: ${JSON.stringify(name)}`;
       if (name === "$schema") continue;
       else if (name === "lead" || name === "fallback" || name === "worker" || name === "editor") settings[name] = textOf(entry, value);
@@ -93,6 +81,45 @@ export function loadSettings(home = os.homedir()): Loaded {
     return { problem: `${SETTINGS} could not be read: ${errorText(err)}` };
   }
   return readSettings(text);
+}
+
+// Release 6 design, "The settings file", "Saving": one entry set, every other kept as it was, entries the user added
+// included, in their order. The file is read again under the lock, so two sessions saving at once lose nothing, and
+// written as JSON with two-space indents (the plan's choice 2). A file that is not one object is left as it is, and the
+// promise rejects with why.
+export async function saveSetting<K extends keyof Settings>(key: K, value: Settings[K], home = os.homedir()): Promise<void> {
+  const dir = settingsDir(home);
+  const file = path.join(dir, SETTINGS);
+  privateDir(dir); // the lock file goes there too
+  await withLock(`${file}.lock`, async () => {
+    let text = "";
+    try {
+      text = readFileSync(file, "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    const data = entriesOf(text);
+    data[key] = value;
+    writePrivate(file, `${JSON.stringify(data, null, 2)}\n`);
+  });
+}
+
+// The file's entries, before any is checked. A byte-order mark at the start, which Windows PowerShell 5.1's Out-File
+// and Set-Content -Encoding utf8 write, is skipped; an empty file, or one of only whitespace, means nothing set, not a
+// broken file (the coordinator's decision, 2026-10-28, in the spirit of the plan's choice 3).
+function entriesOf(text: string): Record<string, unknown> {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  if (!text.trim()) return {};
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${SETTINGS} is not valid JSON: ${errorText(err)}`);
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    throw new Error(`${SETTINGS} must be one object, such as {"lead": "ollama:qwen3:8b"} (got ${JSON.stringify(data)})`);
+  }
+  return data as Record<string, unknown>;
 }
 
 const wrongType = (entry: string, what: string, value: unknown) => new Error(`${entry} must be ${what} (got ${JSON.stringify(value)})`);

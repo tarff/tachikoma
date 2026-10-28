@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -21,6 +21,7 @@ import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import { History } from "../../src/tui/history.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
+import { settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard } from "../../src/tui/clipboard.js";
@@ -64,6 +65,10 @@ const histories = path.join(mkdtempSync(path.join(tmpdir(), "tachi-")), "history
 mkdirSync(histories);
 beforeAll(() => privateDir(histories)); // so the first test does not wait for it
 let nextHistory = 0;
+// The home folder whose settings file /lead, /model and /screen save to (release 6 plan, Task 8), shared by the tests
+// that do not look at the file; made private once, as the histories' folder is.
+const sharedHome = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+beforeAll(() => privateDir(settingsDir(sharedHome)));
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
@@ -91,6 +96,7 @@ async function mount(
     run?: ((text: string) => Promise<void>) | null; // the clipboard's stand-in tool; null for none, as on Linux over SSH
     written?: (s: string) => void; // called with each of the screen's writes, as it is made
     bindings?: Bindings; // the table of keys; the default table when not given
+    home?: string; // the folder holding the settings file; sharedHome when not given
   } = {},
 ) {
   const bus = new Bus();
@@ -150,6 +156,7 @@ async function mount(
       scrollSpeed={opts.scrollSpeed ?? 3}
       clipboard={(report) => new Clipboard(write, run, report)}
       bindings={opts.bindings}
+      home={opts.home ?? sharedHome}
     />,
   );
   mounted.push(app);
@@ -392,6 +399,51 @@ describe("App", () => {
     await type(app, "/model gpt");
     await until(app, "/model takes nothing after it.");
     expect(session.messages).toEqual([]);
+  });
+
+  // Release 6 plan, Task 8: /lead, a /model pick and /screen save their choice; Shift+Tab's mode is not saved.
+  const savedIn = (home: string) => {
+    const file = path.join(settingsDir(home), "settings.json");
+    return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : null;
+  };
+
+  it("saves the lead /lead and a /model pick set and the screen /screen set, but not Shift+Tab's mode", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    const { app } = await mount([], { models, full: true, home });
+    await press(app, "\u001b[Z");
+    await until(app, "mode is now project");
+    await type(app, "/lead ollama:a");
+    await waitFor(() => savedIn(home)?.lead === "ollama:a");
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick(); // the picker starts reading keys just after it first appears
+    app.stdin.write("c");
+    await tick();
+    app.stdin.write("\r");
+    await waitFor(() => savedIn(home)?.lead === "fake:c");
+    await type(app, "/screen");
+    await until(app, "screen is now classic");
+    await waitFor(() => savedIn(home)?.screen === "classic");
+    expect(savedIn(home)).toEqual({ lead: "fake:c", screen: "classic" });
+  });
+
+  it("keeps the new lead for the session when it cannot be saved, and says so", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    const file = path.join(settingsDir(home), "settings.json");
+    mkdirSync(file, { recursive: true }); // a folder where the file goes, so it cannot be written, with no permission changed
+    let reason = "";
+    try {
+      readFileSync(file, "utf8");
+    } catch (err) {
+      reason = (err as Error).message;
+    }
+    const { app, session } = await mount([], { home });
+    await type(app, "/lead ollama:a");
+    expect(session.lead.id).toBe("fake:b");
+    const line = `The change holds for this session, but saving it to ${shownFile()} failed (${reason}).`;
+    const said = () => app.lastFrame()!.replaceAll("\n", " ");
+    await waitFor(() => said().includes(line));
+    expect(said()).toContain(`lead is now fake:b ${line}`);
   });
 
   it("moves both ways, unfilters on Backspace, says when nothing matches, and closes on Ctrl-C", async () => {
@@ -1748,6 +1800,7 @@ describe("App in full screen", () => {
         fullPossible
         scrollSpeed={3}
         clipboard={(report) => new Clipboard(() => {}, null, report)}
+        home={sharedHome}
       />,
       { stdout: stdout as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
     );
@@ -3644,6 +3697,7 @@ async function onTerminal(
       input={input}
       scrollSpeed={3}
       clipboard={(report) => new Clipboard(() => {}, null, report)}
+      home={sharedHome}
     />,
     { stdout: terminal as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
   );

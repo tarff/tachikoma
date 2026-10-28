@@ -313,6 +313,7 @@ if (parsed.print !== undefined) {
       input={keys}
       scrollSpeed={speed}
       clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
+      home={os.homedir()}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
