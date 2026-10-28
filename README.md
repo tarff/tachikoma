@@ -1,6 +1,6 @@
 # Tachikoma
 
-> **Work in progress.** Release 5 of 14 is done; the rest is being built. Expect missing
+> **Work in progress.** Release 6 of 14 is done; the rest is being built. Expect missing
 > features and changes that break things, and don't rely on it for real work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
@@ -8,9 +8,10 @@ providers can lead a session. Later releases add handing work to other models an
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, a Docker
 sandbox, and lessons learned from its own error log.
 
-This is release 5 of 14: the core; signing in with ChatGPT; Claude Code's keys and screen;
-subagents that read, with a to-do list and your instruction files; and a full screen with its own
-scrolling and mouse selection. The command is `tachi`.
+This is release 6 of 14: the core; signing in with ChatGPT; Claude Code's keys and screen;
+subagents that read, with a to-do list and your instruction files; a full screen with its own
+scrolling and mouse selection; and a settings file, keys you can move, and Claude Code's external
+editor, stash, pictures and vim mode. The command is `tachi`.
 
 ## What it does
 
@@ -30,8 +31,8 @@ scrolling and mouse selection. The command is `tachi`.
   - `project`: writes inside the project without asking; asks before shell commands and anything
     outside the project.
   - `never`: never asks. It is meant for the Docker sandbox, which arrives in release 7. Without the
-    sandbox it means no checks at all, apart from keeping the keys and the data folder from the
-    tools.
+    sandbox it means no checks at all, apart from keeping the keys, the data folder and the
+    settings files from the tools.
 - **Search tools:** `find_files` lists files by a pattern such as `src/**/*.ts`, and `search_files`
   searches their contents with a regular expression. Both skip `.git` and what the project's
   `.gitignore` files list, follow no links, and run no program.
@@ -53,7 +54,8 @@ scrolling and mouse selection. The command is `tachi`.
   unless it is your own; Tachikoma's data folder is never read.
 - **Your keys and login are kept from the model's tools, against accidents:** shell commands do not
   get the API keys, and the file tools refuse Tachikoma's own data folder, where the ChatGPT login
-  is kept. A shell command can still read the login; see [Known limits](#known-limits).
+  is kept, and the [settings](#settings) and [keys](#keys) files. A shell command can still read the
+  login; see [Known limits](#known-limits).
 - **A terminal interface with Claude Code's keys:** Esc stops a turn, the prompt edits as a shell
   line does, prompts can run over several lines, Up and Ctrl+R bring back past prompts, and what you
   type while it works waits its turn. `/` lists the commands, `@` the project's files, Shift+Tab
@@ -62,6 +64,14 @@ scrolling and mouse selection. The command is `tachi`.
   bar; the mouse selects and copies; Ctrl+O (the last turn's tool calls in full) and `/tasks t3`
   (a subagent's full record) open in place, with a search. Quitting leaves the terminal as it was.
   `--classic` keeps the terminal's own scrollback instead. See [Full screen](#full-screen).
+- **A settings file,** `~/.tachikoma/settings.json`, for every option, so a plain `tachi` starts the
+  way you want; edits apply while it runs. See [Settings](#settings).
+- **Keys you can move:** every key is a named action, and a keys file in Claude Code's format
+  rebinds them. See [Keys](#keys).
+- **Claude Code's prompt extras:** Ctrl+G opens the prompt in your editor, Ctrl+S puts it aside,
+  Alt+V (Ctrl+V on macOS and Linux) and dragged-in picture files add pictures, shrunk to what each
+  provider takes, and there is a vim mode. See [The external editor](#the-external-editor),
+  [Stash](#stash), [Pictures](#pictures) and [Vim mode](#vim-mode).
 - **A status line** showing the lead, how much of the context window is left (with a bar), tokens,
   cost (or "ChatGPT plan"), mode, error count, the project folder and git branch, how long the
   session has run, and how many subagents run, its parts coloured as
@@ -90,8 +100,8 @@ node dist/cli.js --lead <provider:model>
 any folder.
 
 Run it from the folder you want it to work in, for example
-`node /path/to/tachikoma/dist/cli.js --lead ...`. You can set `TACHI_LEAD` instead of passing
-`--lead`.
+`node /path/to/tachikoma/dist/cli.js --lead ...`. You can set `TACHI_LEAD`, or `"lead"` in the
+[settings file](#settings), instead of passing `--lead`.
 
 One example per provider:
 
@@ -131,11 +141,14 @@ tachi logout chatgpt                               sign out of ChatGPT
 
 In a session, `/lead <provider:model>` switches the lead model, `/model` picks it from a list,
 `/login chatgpt` and `/logout chatgpt` sign in and out, `/tasks` lists the subagents, `/errors`
-summarises the error log, `/screen` switches between full screen and classic, and `/exit` quits;
-commands ignore case. Esc or Ctrl-C stops the current turn and the subagents it waits for;
+summarises the error log, `/screen` switches between full screen and classic, `/settings` and
+`/keybindings` open the settings and keys files in your editor, `/vim` switches vim mode, and
+`/exit` quits; commands ignore case. `/lead`, `/model`, `/screen` and `/vim` change only the window
+you type them in. Esc or Ctrl-C stops the current turn and the subagents it waits for;
 background subagents go on until `/tasks stop` or you quit.
 When idle, Ctrl-C clears the prompt, and pressed twice on an empty prompt it quits. Ctrl+T hides or
-shows the to-do list. `?` on an empty prompt lists every key.
+shows the to-do list. Esc and Ctrl+T can be moved in the keys file; Ctrl-C and Ctrl-D cannot. `?`
+on an empty prompt lists every key.
 
 ## Full screen
 
@@ -192,6 +205,219 @@ started.
   classic, Ctrl+O and `/tasks t3` print below as before; Shift+Up and Shift+Down act as Up and
   Down, Ctrl+Home and Ctrl+End as Home and End, and PgUp and PgDn do nothing. `-p` runs have no
   screen at all.
+
+## Settings
+
+`~/.tachikoma/settings.json` (on Windows `%USERPROFILE%\.tachikoma\settings.json`) holds the
+options you would otherwise type each time, so a plain `tachi` starts the way you want. It is the
+only settings file Tachikoma reads: a project has none of its own, so a repository you clone cannot
+change how Tachikoma behaves. `/settings` opens it in your editor, making it first if it is missing.
+
+```json
+{
+  "lead": "anthropic:claude-opus-5-5",
+  "mode": "ask",
+  "status": ["lead", "context", "cost"],
+  "editorMode": "vim",
+  "vimInsertModeRemaps": { "jj": "<Esc>" },
+  "editor": "code --wait"
+}
+```
+
+Every entry is optional; one left out keeps its default.
+
+| Entry | What it sets | Default | An edit while Tachikoma runs applies |
+|---|---|---|---|
+| `lead` | the lead model, as `--lead` | none | as `/lead`: at once when idle, otherwise when the turn ends. Taken out, the session keeps its lead |
+| `mode` | `"ask"`, `"project"` or `"never"`, as `--mode` | `"ask"` | at once, as Shift+Tab, between `ask` and `project`; `never` only at launch (below) |
+| `effort` | as `--effort` | the model's own | from the next request, the fallback's and the subagents' too |
+| `fallback` | as `--fallback` | off | from the next refusal; a rescue under way finishes on the old one |
+| `worker` | as `--worker` | the lead's model | for subagents started after it; running ones keep theirs |
+| `maxTasks` | as `--max-tasks`, a number | 8 | for subagents started after it; lowering it stops none |
+| `status` | the status line's parts, as `--status`, as a list: `["lead", "context"]` | all of them | at once |
+| `screen` | `"full"` or `"classic"`, as `--classic` | `"full"` | as `/screen`, waiting where `/screen` waits |
+| `scrollSpeed` | lines a wheel notch scrolls, as `--scroll-speed` | 3 | from the next notch |
+| `editorMode` | `"vim"` or `"normal"`: see [Vim mode](#vim-mode) | `"normal"` | at once, as `/vim` |
+| `vimInsertModeRemaps` | two characters that leave vim's INSERT mode, mapped to `"<Esc>"` | none | from the next key |
+| `editor` | the command for [the external editor](#the-external-editor) | Notepad on Windows, `vi` elsewhere | from the next Ctrl+G, `/settings` or `/keybindings` |
+
+- **Which wins:** a flag, then its variable where it has one (`TACHI_LEAD`, `TACHI_WORKER`,
+  `TACHI_CLASSIC`, `TACHI_SCROLL_SPEED`; an empty one counts as unset), then the file, then the
+  default. `-p` runs read the file too. With no lead anywhere, `tachi` says how to put one in the
+  file.
+- **Mistakes:** a value its flag would refuse stops Tachikoma at launch, in the flag's words, naming
+  the entry: `settings.json: "mode" must be one of: ask, project, never (got "x")`. An entry
+  Tachikoma does not know gets a grey line, and the rest applies.
+- **Nothing is saved to the file.** `/lead`, a `/model` pick, `/screen`, `/vim` and Shift+Tab change
+  only the window you use them in, since every open window follows the file. To make a change last,
+  edit the file.
+- **Edits apply while Tachikoma runs,** in every open window, each with a grey line such as
+  `lead is now ollama:qwen3:8b (from settings.json)`. An entry a flag or variable gave at launch
+  stays as given for that session, and the line says so: `settings.json's "mode" was left as --mode
+  set it for this session`. Taking an entry out goes back to the flag's value, or the default. An
+  edit that breaks the file keeps the last good settings, and a red line says what is wrong. An
+  empty or missing file changes nothing, as editors such as Notepad empty the file, or put a new one
+  in its place, while they save; so deleting the file keeps the settings in force until the next
+  start.
+- **`"mode": "never"` applies only at launch,** like `--mode never`: an edit to it during a session
+  is refused with a line, and the mode stays. An edit away from it applies. See
+  [Known limits](#known-limits).
+- **The file tools never touch the settings file or the keys file,** in any mode, even when the
+  project is your home folder, so the model cannot change them with its file tools. A shell command
+  is not stopped: it asks first in `ask` and `project` mode, as every command does, and in `never`
+  mode it does not.
+
+## Keys
+
+Every key Tachikoma reacts to is a named action, with Claude Code's names where Claude Code has the
+same thing. `~/.tachikoma/keybindings.json` moves them, in Claude Code's own format, so a Claude
+Code `keybindings.json` can be copied across as it is. `/keybindings` opens it in your editor,
+making it first if it is missing.
+
+```json
+{
+  "bindings": [
+    { "context": "Chat", "bindings": { "ctrl+e": "chat:externalEditor", "ctrl+s": null } }
+  ]
+}
+```
+
+- **Contexts** say where a key acts: `Global` everywhere, `Chat` at the prompt, `Autocomplete` in
+  the `/` and `@` menus, `Confirmation` at a question, `HistorySearch` in Ctrl+R's search, `Select`
+  in the model list, `Transcript` in the detail view, and `Scroll` in full screen. A context's own
+  binding comes before Global's.
+- **Keys** are written as Claude Code writes them: `ctrl`, `alt` (or `meta`, `opt`, `option`) and
+  `shift`, joined to a key by `+`, case ignored, with special keys by name (`escape`, `enter`,
+  `tab`, `space`, `up`, `down`, `left`, `right`, `pageup`, `pagedown`, `home`, `end`, `backspace`,
+  `delete`, and `wheelup` and `wheeldown` for the mouse wheel). A key matches only with exactly the
+  modifiers written: `up` is not Ctrl+Up.
+- **Chords** are keys separated by a space, such as `"ctrl+x ctrl+e"`, each within 3 seconds of the
+  one before. The keys pressed so far show in the hint row (`ctrl+x ...`).
+- **`null` unbinds** a key in its context, even where an outer context binds it: `"ctrl+t": null`
+  under `Chat` stops Ctrl+T at the prompt, and Global's Ctrl+T still works elsewhere.
+  **`command:<name>`** runs `/exit`, `/errors`, `/model`, `/screen`, `/tasks`, `/vim`, `/settings`
+  or `/keybindings`; during a turn it waits its turn, as a typed command does.
+- **Bindings come first.** The prompt's editing keys (Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, Alt+B,
+  Alt+F and the rest) act only on a key no binding takes, so binding Ctrl+E to
+  `chat:externalEditor` replaces end-of-line. The editing keys themselves, and vim's, cannot be
+  moved.
+- **Reserved:** Ctrl+C and Ctrl+D, and Ctrl+M, Ctrl+[, Ctrl+I and Ctrl+H, which arrive as Enter,
+  Esc, Tab and Backspace, cannot be bound or unbound.
+- **Help follows the file:** `?`'s list and every hint that names a key, such as "Esc to stop", name
+  the keys bound now.
+- **Problems** each get one grey line in the conversation, and the rest of the file applies: a
+  context or action Tachikoma does not have, a misspelled modifier, a space beside `+`, a reserved
+  key, a command a key cannot run, or the same key twice in one context (the first stays). Actions
+  and contexts only Claude Code has, such as `chat:fastMode`, are counted in one line instead
+  (`3 entries skipped: Tachikoma has no chat:fastMode, ...`), as are keys held with Cmd or Super,
+  which Tachikoma cannot read. A file that is not valid JSON keeps the default keys at launch, and
+  the last good keys after.
+- **Edits apply at once,** as for the settings file, and an empty or missing file changes nothing
+  until the next start.
+
+The default keys:
+
+| Context | Keys and their actions |
+|---|---|
+| Global | `ctrl+c` app:interrupt, `ctrl+d` app:exit, `ctrl+t` app:toggleTodos, `ctrl+o` app:toggleTranscript |
+| Chat | `enter` chat:submit, `shift+enter` chat:newline, `ctrl+j` chat:newline, `shift+tab` chat:cycleMode, `alt+p` chat:modelPicker, `ctrl+z` chat:undo, `ctrl+_` chat:undo, `escape` chat:cancel, `ctrl+r` history:search, `up` history:previous, `ctrl+p` history:previous, `down` history:next, `ctrl+n` history:next, `ctrl+g` chat:externalEditor, `ctrl+x ctrl+e` chat:externalEditor, `ctrl+s` chat:stash, `alt+v` chat:imagePaste (Windows; `ctrl+v` on macOS and Linux, and both under WSL) |
+| Autocomplete | `tab` autocomplete:accept, `escape` autocomplete:dismiss, `up` autocomplete:previous, `down` autocomplete:next |
+| Confirmation | `y` confirm:yes, `n` confirm:no, `escape` confirm:no |
+| HistorySearch | `ctrl+r` historySearch:next, `escape` historySearch:accept, `tab` historySearch:accept, `ctrl+c` historySearch:cancel, `enter` historySearch:execute |
+| Select | `down` select:next, `up` select:previous, `enter` select:accept, `escape` select:cancel |
+| Transcript | `q` transcript:exit, `ctrl+c` transcript:exit, `escape` transcript:exit, `[` transcript:print, `/` transcript:search, `n` transcript:nextMatch, `shift+n` transcript:previousMatch, `j` transcript:lineDown, `down` transcript:lineDown, `k` transcript:lineUp, `up` transcript:lineUp, `g` transcript:top, `home` transcript:top, `shift+g` transcript:bottom, `end` transcript:bottom |
+| Scroll | `pageup` scroll:pageUp, `pagedown` scroll:pageDown, `ctrl+home` scroll:top, `ctrl+end` scroll:bottom, `shift+up` scroll:lineUp, `wheelup` scroll:lineUp, `shift+down` scroll:lineDown, `wheeldown` scroll:lineDown |
+
+## The external editor
+
+Ctrl+G, or Ctrl+X then Ctrl+E, opens the prompt in an editor. When the editor closes, what you saved
+becomes the prompt, with the cursor at the end; Ctrl+Z brings back the text before.
+
+- **Which editor:** `VISUAL`, then `EDITOR`, then the settings file's `"editor"`, then Notepad on
+  Windows and `vi` elsewhere. It runs through the system's shell (`cmd.exe` on Windows, `/bin/sh`
+  elsewhere), as Git runs its editor, so the entry can carry its own options: `"code --wait"`.
+- **The file** is `prompt.md` in a new folder in the system's temporary folder (your own on
+  Windows; on macOS and Linux only you can read it), deleted afterwards. An editor that runs in the
+  terminal, such as vim or nano, gets the whole terminal; full screen steps aside and comes back
+  after, as for `[`. The editor gets the environment shell commands get, without the API keys.
+- **Meanwhile** a turn already running carries on, and its output is there when you come back; a
+  permission question waits until you are back. A queued `/screen`, `/settings` or `/keybindings`
+  waits for the editor to close.
+- **If the editor fails or is not found,** the prompt stays as it was and a line says why:
+  `The editor failed (<reason>). Set VISUAL or EDITOR, or "editor" in ~/.tachikoma/settings.json.`
+- **Pictures:** a picture's `[Image #2]` marker is plain text in the file; back in the prompt it
+  carries its picture again if the prompt held that picture when the editor opened.
+- **`/settings` and `/keybindings`** open those files in the same editor, making a missing one first
+  (`{}`, and `{"bindings": []}`). Saving is enough: the change applies while the editor is still
+  open.
+
+## Stash
+
+Ctrl+S, as in Claude Code: with text in the prompt, the text, its cursor and any pictures go aside,
+the prompt clears, and the hint row shows `Stashed · Ctrl+S to bring back`. Ctrl+S on an empty
+prompt brings them back. With text in the prompt and something already stashed, the two swap, so
+nothing is lost. There is one slot, kept until you quit.
+
+## Pictures
+
+Pictures go to the model with your message.
+
+- **From the clipboard:** Alt+V on Windows, Ctrl+V on macOS and Linux, and either under WSL. An
+  `[Image #1]` marker goes in at the cursor at once, and the hint row shows `Reading picture...`
+  until the picture is read. Windows reads it through Windows PowerShell, macOS through `osascript`,
+  and Linux through `wl-paste` or `xclip`; with neither, the key says `No clipboard reader here:
+  install wl-paste or xclip.` With no picture on the clipboard, the marker goes and a line says
+  `No picture on the clipboard.`
+- **From files:** pasting, or dragging into the terminal, paths to .png, .jpg, .jpeg, .gif or .webp
+  files, one or several, with or without quotes, adds those pictures, when every file is there. A
+  file's type is read from its contents, not its name. A typed path stays text.
+- **Which pictures a message carries:** each picture has a number for the session, and its marker in
+  the prompt carries it: delete the marker and the picture is left out, and undo brings both back. A
+  picture goes once, at its first marker; a later copy, a marker you type yourself, and one brought
+  back from prompt history are only text. The stash and the queue keep their pictures. The model can
+  be pointed at an earlier picture by its number.
+- **What is sent:** pictures stay in the conversation and go again with each later turn, to the lead
+  and the fallback, never to subagents. Each request shrinks them, from the originals, to what its
+  provider takes, in the table below. A format the provider does not list goes as PNG, and an
+  animated GIF goes to OpenAI and the ChatGPT plan as its first frame. A request still over its
+  limit leaves out its oldest pictures, each replaced by a note (`[Image #2 left out: the request
+  was over Anthropic's 32 MB]`), and a grey line says how many.
+- **When a provider refuses:** a request with pictures that gets an invalid-request answer (HTTP
+  400) shows the provider's words and asks `Send again without the pictures? [y/n]`, since that
+  answer does not say whether the pictures caused it. y sends it again with a note in each picture's
+  place, and that model gets notes instead of pictures for the rest of the session; n changes
+  nothing.
+- **Pictures are kept in memory** until you quit, never on disk. Prompt history keeps a message's
+  words and markers, not its pictures.
+
+| Provider | Each picture | Each request |
+|---|---|---|
+| Anthropic | under 10 MB as base64 and 8000×8000 pixels; 2000 a side once a request holds more than 20 pictures, earlier turns' included | under 32 MB; 600 pictures, or 100 for models with a 200k-token window |
+| OpenAI | as it is: OpenAI resizes | under 512 MB; 1,500 pictures |
+| Kimi | within 4096×2160, Kimi's recommendation | under 100 MB |
+| OpenRouter, Ollama, the ChatGPT plan | as it is | no limit documented |
+
+## Vim mode
+
+All of Claude Code's vim mode: its modes, motions, `f`/`t`/`;`/`,`, `%`, operators with motions and
+text objects, VISUAL and VISUAL LINE, `p`/`P`, `.` to repeat, `u` to undo, and counts (`3w`, `2dd`,
+`d3w`).
+
+- **On:** `"editorMode": "vim"` in the settings file, or `/vim` for this window only (`/vim on` and
+  `/vim off` set it). It starts in INSERT. The mode shows in the hint row (`-- NORMAL --`) whenever
+  no other hint takes it.
+- **Esc** in INSERT or VISUAL goes to NORMAL and does not stop a turn; in NORMAL it does what Esc
+  does without vim mode. Ctrl-C always stops. Enter sends from NORMAL too. `j` and `k` at the first
+  or last line go through prompt history, `/` in NORMAL opens Ctrl+R's search, and `?` lists the
+  keys.
+- **Keys bound in the keys file keep their actions,** Ctrl and Alt keys among them; vim's own keys
+  cannot be moved. In VISUAL a Ctrl or Alt key goes back to NORMAL first, as in Claude Code.
+- **`vimInsertModeRemaps`** in the settings file: two characters typed within a second, such as
+  `"jj": "<Esc>"`, go to NORMAL and leave neither in the text. Each is a letter, digit, punctuation
+  mark or symbol, not a space; `"<Esc>"` is the only target.
+- **VISUAL's selection** shows in reverse colours.
+- **Yanks stay inside Tachikoma,** never on the system clipboard, as in Claude Code. A paste always
+  goes in as text, in any mode. Counts stop at 10,000, as Claude Code's do.
 
 ## Using your ChatGPT plan
 
@@ -266,6 +492,11 @@ subagent runs in the foreground, since there is no later turn to read its answer
 Costs are shown only for models with a known price. Others show `?`; Ollama counts as free, and a
 ChatGPT plan shows as "ChatGPT plan".
 
+For `openai:` leads at OpenAI's own address (no `OPENAI_BASE_URL`, or `https://api.openai.com/v1`),
+the status line shows how much of the context window is left from a table of OpenAI's model pages
+as they stood on 2026-10-28; a dated name such as `gpt-5.5-2026-04-23` finds its model's row. A
+model not in the table, or another address, shows the tokens in use.
+
 Shell commands never see these API keys, so a command cannot print one back to the model. A command
 that needs one of them does not get it either.
 
@@ -282,9 +513,10 @@ Each is fixed in a later release, unless it says otherwise.
   (release 7) keeps commands away from the login.
 - **On a ChatGPT plan, `--effort` does nothing yet.** Whether the plan accepts a reasoning setting is
   still to be measured, and no release is set for it yet.
-- **The context left is shown only for models whose window is known:** Anthropic models, and
-  ChatGPT-plan models (from the account's model list, once the first reply arrives). Other models
-  show the tokens in use; no release is set for them yet.
+- **The context left is shown only for models whose window is known:** Anthropic models,
+  ChatGPT-plan models (from the account's model list, once the first reply arrives), and the OpenAI
+  API models in a table as of 2026-10-28 (see [Providers](#providers)). Other models show the
+  tokens in use; no release is set for them yet.
 - **If a Tachikoma is killed while changing the login,** a renewal it had already sent can be lost,
   and you sign in again. So is a renewal that cannot be saved, such as when another program holds
   the login file for over a second or the disk is full; Tachikoma then says to sign out and in again.
@@ -336,6 +568,19 @@ Each is fixed in a later release, unless it says otherwise.
 - **Instruction files are read once, at the start.** A file edited during a session counts from the
   next, and files in subfolders, which Claude Code reads as it works there, are not read: both need
   the system prompt to change during a session, which prompt caching rules out (no release is set).
+- **Prompt history keeps a message's words, not its pictures.** Up or Ctrl+R brings back
+  `[Image #1]` as plain text, which carries no picture; add the picture again to send it (no release
+  is set).
+- **Windows Terminal keeps Ctrl+V** and pastes the clipboard's text itself, so Tachikoma never sees
+  it: pictures are Alt+V there, under WSL too, and binding `ctrl+v` in the keys file does nothing in
+  it (not planned to change).
+- **`"mode": "never"` in the settings file means every plain `tachi` starts with no checks,** not
+  only the session you meant, until you take it out of the file; without the sandbox (release 7),
+  that is no checks at all. `--mode ask` on the command line still wins for one session (not
+  planned to change).
+- **On Windows, a `%` in a path given to the editor can be changed on the way:** the editor runs
+  through `cmd.exe`, which reads `%NAME%` as a variable, so a user folder with `%` signs in its name
+  could give the editor the wrong file for Ctrl+G or `/settings` (no release is set).
 
 ## What comes next
 
@@ -349,9 +594,9 @@ Each is fixed in a later release, unless it says otherwise.
 4. Read-only subagents, with a panel under the prompt, and the to-do list; reading the project's and
    your own instruction files (AGENTS.md, CLAUDE.md) (done).
 5. Full screen with its own scrolling: a scroll bar, selecting and copying with the mouse, and
-   Ctrl+O and `/tasks t3` opening in place (this release).
+   Ctrl+O and `/tasks t3` opening in place (done).
 6. A settings file, so a plain `tachi` starts the way you want; key extras: vim mode, image
-   paste, an external editor, stash, rebinding keys in a file.
+   paste, an external editor, stash, rebinding keys in a file (this release).
 7. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is
    applied); auto mode, where a second model judges each action instead of asking you.
 8. MCP tools and long-term memory (MemPalace); transcripts saved to disk; shortening the history;

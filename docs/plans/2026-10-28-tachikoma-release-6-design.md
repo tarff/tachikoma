@@ -424,3 +424,154 @@ OpenAI table. sharp is installed through sfw, pinned to the version checked then
 - Moving between pictures with the arrow keys (Claude Code's Attachments context).
 - Ctrl+R's scope cycling.
 - Ctrl+X Ctrl+K and Claude Code's other keys for features Tachikoma does not have.
+
+## As built
+
+Where the code differs from the design above, or settles what it left open, and why. The plan
+(`2026-10-28-tachikoma-release-6.md`) lists the 29 choices it made, each marked in its task, and
+each task's "found at" notes. Choice 26 (nothing is saved, and a missing settings or keys file is
+skipped) is already written into "Saving", "Live edits", "When something goes wrong" and "Vim mode"
+above, and Task 1's hand-overs into "Tidying the screen code first"; the rest follows, task by
+task. "The user's choice" marks the user's answers; "the build's call" marks a call the plan or the
+build made, for the user to review at the final review.
+
+- **What is happening now (Task 2).** App's flags stay where they are, and one function reads them
+  (`phase.ts`), so "who takes this key?" is still asked of one thing. A paste does not follow the
+  keys' order, so it has its own rule beside it (`pasteTo`), and a `/screen` switch is no phase, as
+  keys act in the mode it goes to (found at Task 2's build).
+- **Keys as actions (Tasks 5 and 6):**
+  - Under WSL both Alt+V and Ctrl+V paste a picture, Alt+V first, as Claude Code binds both there
+    (found at Task 5's spec review).
+  - A key set to `null` in a context does nothing there, even where an outer context binds it:
+    `"ctrl+t": null` under Chat stops Ctrl+T at the prompt, and Global's Ctrl+T still works
+    elsewhere (choice 18, the user's choice).
+  - Global's actions act wherever Global is in force: at a question, in a Ctrl+R search, in the
+    model list and in the detail view, Ctrl+T toggles the to-do list, Ctrl+O does
+    `app:toggleTranscript` and Ctrl+D exits on its double press; Ctrl-C keeps each phase's own rule
+    (choice 19, the user's choice).
+  - Keys match the table exactly, so keys that acted only because release 4 ignored a held modifier
+    do nothing: Ctrl+Up and Alt+Up, Alt+Enter, Shift+Up and Shift+Down in the model list in full
+    screen, and a wheel notch with Shift, Ctrl or Alt held. Classic mode still reads Shift+Up and
+    Shift+Down as Up and Down, and Ctrl+Home and Ctrl+End as Home and End. Esc with Alt is still
+    Esc, as two fast Escs look like it, so `alt+escape` binds only under the kitty protocol (choice
+    20, the user's choice).
+  - While a Ctrl+R query, a detail-view search or the model list's filter is typed, a printable key
+    goes into it before any binding, as Claude Code's text fields take it (Task 6).
+  - A key held with Cmd or Super cannot be named, as Ink reports Super only under the kitty
+    protocol. Under that protocol Ctrl+_ arrives as `ctrl+shift+-`, so `chat:undo`'s Ctrl+_ does
+    not fire there, while its Ctrl+Z does (Task 5).
+- **The settings file (Tasks 7, 9 and 10):**
+  - `status` is a list of names, `["lead", "context"]`, and `screen` is `"full"` or `"classic"`
+    (choice 7, the build's call). Each message names the file and the entry before the flag's own
+    words: `settings.json: "mode" must be one of: ask, project, never (got "x")` (choice 8, the
+    build's call). `$schema` is allowed and ignored.
+  - An empty file, or one with a byte-order mark as Windows PowerShell 5.1 writes, reads as
+    Windows editors save it: empty is `{}` at launch, and the mark is skipped (the build's call,
+    2026-10-28). During a session an empty file changes nothing, as Notepad empties a file before
+    writing it (choice 3, the build's call).
+  - The launch's warnings, printed to stderr, also show as grey lines when full screen opens, which
+    would otherwise hide them until the user quits (found at Task 7's code review).
+  - `~/.tachikoma` is made at launch when missing, with a plain `mkdir`, so the watcher has a folder
+    to watch from the first session (choice 16, the build's call). Once the folder is removed, the
+    watch closes with one line; a watch that cannot start still reads both files once, and says so.
+  - An empty `--fallback` or `--worker` still wins over the file, turning its model off. `-p`
+    ignores the file's `scrollSpeed`, as it ignores `TACHI_SCROLL_SPEED`, but a bad one still stops
+    it, as the file is checked whole.
+  - A live `effort` reaches the fallback and the subagents' worker too, as the launch's does
+    (found at Task 9's spec review). A live `editor` is left as `VISUAL` or `EDITOR` set it, as an
+    entry a flag gave is, and the line names the variable.
+  - **Safety:** the file tools refuse the settings and keys files, and files named after them
+    (`settings.json.*`, `keybindings.json.*`), in every mode, `never` included, by real path and
+    file identity, as they refuse the data folder, and the search tools skip them: when the project
+    is the home folder, `project` mode would otherwise let the model rewrite them unasked (choice 1,
+    the build's call). This replaces the "Safety" bullet's `never` case; a shell command is not
+    stopped, and the README says so.
+  - `vimInsertModeRemaps` pairs are two letters, digits, punctuation marks or symbols, with no
+    space, that are also two characters on screen (choice 24, the user's choice; found at Task 7's
+    and Task 20's code reviews).
+- **The keys file (Task 11)** settles its words and rules in choice 21 (the build's call): each
+  problem's words are in `src/keybindings.ts` and its tests; a broken file keeps the default keys at
+  launch and the last good keys after; an action is unknown only when Tachikoma has it in no
+  context; `command:` takes only `/exit`, `/errors`, `/model`, `/screen`, `/tasks`, `/vim`,
+  `/settings` and `/keybindings`, and waits in the queue during a turn; of one key bound twice the
+  first stays; a top-level name other than `bindings`, `$schema` and `$docs` gets a line. The keys
+  are read by the watcher's first read, so `-p` never reads them, and their problems show in the
+  conversation in both screen modes.
+- **The external editor (Task 12):**
+  - It runs through the system's shell, as Git runs `core.editor`: `cmd.exe /d /s /c` on Windows,
+    `/bin/sh -c` elsewhere, with the file's path quoted after the entry, so `code --wait` (a `.cmd`
+    on Windows) works. On Windows `& exit` follows, so cmd's exit is the editor's, and a missing
+    command gives 9009 (choice 4, the build's call; found at Task 12's build, measured). Its
+    environment is the shell commands', without the keys.
+  - The file is `prompt.md` in a fresh folder in the system's temporary folder (the user's own on
+    Windows), opened with mode 0o600, removed with its folder after (choice 5, the build's call).
+    Its line breaks are read as a paste's, as Notepad and VS Code on Windows save `\r\n`.
+  - While the editor is open, a queued `/screen`, `/settings` or `/keybindings` waits, as each
+    would hand the terminal over again; messages and other commands go on (Task 12).
+  - Found and not settled: through `cmd.exe`, a `%` in the path given to the editor can be expanded
+    (found at Task 12's build; a known limit in the README); Windows 11's tabbed Notepad may hand
+    the file to a Notepad window already open and exit at once (found at Task 12's code review);
+    and what Ctrl-C typed in the terminal while the editor runs does to a running turn (found at
+    Task 12's spec review). The plan's terminal checklist tries the last two.
+- **Pictures (Tasks 14 to 18):**
+  - Pictures live in memory for the session, never on disk; quitting drops them (choice 9, the
+    build's call).
+  - A marker deletes as one character: Backspace at its end or Delete at its start removes all of
+    `[Image #2]`, so no broken marker text is left behind, where the design has a span go when any
+    of its characters is deleted (choice 14, the build's call).
+  - A message waiting on a read that fails or finds nothing is sent without that picture, its marker
+    removed and a line saying so, rather than held back or put back in the prompt; Esc or Ctrl-C
+    while it waits ends the wait the same way (choice 17, the build's call).
+  - A picture shows in the conversation as its marker inside the user's line, in the line's colour,
+    not grey (choice 22, the build's call).
+  - Each picture sent goes right after a text `[Image #N]`, in all three adapters, so the model sees
+    the number the user can point it at later (found at Task 16's build).
+  - Provider errors keep their HTTP status, on the thrown error and on the bus's error event, so the
+    400 question never reads an error's words (choice 10, the build's call).
+  - The clipboard readers: Windows as the probe read it; macOS through `osascript`, whose script
+    catches the coercion's error -1700 alone as no picture; Linux `wl-paste --type image/png` with
+    `WAYLAND_DISPLAY`, else `xclip` with `DISPLAY`, a tool's own words for no PNG counting as none
+    (choice 11, the build's call; choice 29, the user's choice). The macOS script was not run on a
+    Mac. With no reader on Linux, no marker goes in, and one line says to install one.
+  - A pasted line splits into paths where Claude Code 2.1.312's paste handler splits one, so two
+    dragged files at once are two pictures; on Windows only `"` quotes, so an apostrophe is part of
+    a name. A shell's `'\''` inside single quotes stays in the path as written, a gap Claude Code
+    has too (choice 29, the user's choice). A pasted file's type is read from its first bytes, not
+    its name (Task 15).
+  - Anthropic's limit of 600 pictures a request, 100 for models with a 200k-token window, is
+    applied too (the plan's numbers, from the same page). A megabyte is read as 1,000,000 bytes, as
+    the pages do not say which, and the smaller keeps a request within either.
+  - A format a provider does not list goes as PNG (choice 12). An animated GIF becomes its first
+    frame in PNG only for OpenAI and the ChatGPT plan, where animation is documented as refused;
+    the other providers get it as it is, and one shrunk in its own format keeps its frames. Kimi's
+    "4k (4096×2160)" is read as a size class, so an upright picture fits inside 2160×4096. A
+    picture sharp cannot read, or one over the limit even at one pixel, is sent as it is, so the
+    provider decides. The line saying how many pictures a request left out goes out as a `note` on
+    the bus, shown as a grey line (choice 23, the build's call).
+  - The 400 question can come when Task 17 already turned every picture into a note, as the
+    conversation still has picture parts; y then sends once more, and a second 400 ends the turn.
+    When the lead refuses and the fallback's own request then gets a 400, the fallback is the one
+    asked about and marked. The question shows without "Allow " in front (choice 25, the build's
+    call).
+- **Vim mode (Tasks 19 to 21):**
+  - `/vim` alone switches vim mode on or off, and `/vim on` and `/vim off` set it, this window only;
+    other words get `Usage: /vim, /vim on, /vim off` (choices 6 and 26, the build's call and the
+    user's).
+  - One yank register, as Claude Code's table describes, with no named registers (choice 13, the
+    build's call).
+  - The mode shows in the hint row in every mode, INSERT included, so vim mode can always be seen
+    to be on; another hint takes the row first (choice 15, the build's call).
+  - VISUAL's selection is drawn in reverse colours, as Claude Code 2.1.312 draws it; a picture's
+    marker inside it is reversed like the rest (choice 28, the user's choice).
+  - In VISUAL any Ctrl or Alt key goes to NORMAL first, then a bound key does its action and an
+    editing key does nothing more; Enter sends from VISUAL too; a half-typed operator then Enter
+    drops the command, where Claude Code's Enter sends; a change App makes to the prompt's text in
+    VISUAL leaves it for NORMAL; `j`, `k` and `/` at the edges act as Up, Down and Ctrl+R do; `/vim`
+    and live edits say `editorMode is now vim` and the like (choice 27, the build's call).
+  - Counts stop at 10,000, as Claude Code's own code caps them (found at Task 20's code review).
+    Claude Code's code also takes `` ` ``, `b`, `B`, `<`, `>`, `)`, `]` and `}` as text objects;
+    they are not built, as the plan lists the docs' set (found at Task 20's code review).
+- **OpenAI API context windows (Task 22).** `OPENAI_BASE_URL` set to `https://api.openai.com/v1`,
+  with or without the trailing slash, counts as OpenAI's own address. Each row was checked against
+  its page again on 2026-10-28.
+- **Testing.** The user's terminal checklist is in the plan's Task 23, to be run after the build.

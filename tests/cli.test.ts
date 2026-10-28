@@ -116,6 +116,12 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(help).toMatch(/\/settings opens the settings file in your editor,\s+\/keybindings opens the\s+keys file in your editor/);
   });
 
+  // Release 6 plan, Task 23: Esc and Ctrl+T are actions the keys file can move (release 6 design, "Keys become named
+  // actions"); Ctrl-C and Ctrl-D are reserved (bindings.ts, RESERVED).
+  it("says in the help that Esc and Ctrl+T can be moved in the keys file, and Ctrl-C and Ctrl-D cannot", () => {
+    expect(tachi("--help").stdout).toMatch(/Esc\s+and\s+Ctrl\+T\s+can\s+be\s+moved\s+in\s+the\s+keys\s+file;\s+Ctrl-C\s+and\s+Ctrl-D\s+cannot\./);
+  });
+
   it("lists --scroll-speed in the help, and stops on a bad one, from the option or, in interactive mode, TACHI_SCROLL_SPEED", () => {
     expect(tachi("--help").stdout).toMatch(/^ {2}--scroll-speed <n> /m);
     let r = tachi("--lead", "ollama:none", "--scroll-speed", "abc", "-p", "hi");
