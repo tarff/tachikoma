@@ -172,9 +172,10 @@ Each is marked in its task. None approved yet.
     can always see vim mode is on; another hint (a search, the exit warning, "Copied") takes the
     row first, as today.
 16. **`~/.tachikoma` is made at launch when missing (Task 9),** with a plain `mkdir` (no
-    permission change; `privateDir` runs only when a save writes there), so the watcher has a
-    folder to watch from the first session (found at the plan's second review). Watching the home
-    folder itself instead would wake on every change there.
+    permission change; `privateDir` runs only when a save writes there, and settings are never
+    saved, choice 26), so the watcher has a folder to watch from the first session (found at the
+    plan's second review). Watching the home folder itself instead would wake on every change
+    there.
 17. **A message waiting on a read that fails is sent without that picture (Task 14),** its marker
     removed and a line saying so, rather than held back or put back in the prompt, so the queue's
     order and newer typing are never disturbed (found at the plan's third review). Esc or Ctrl-C
