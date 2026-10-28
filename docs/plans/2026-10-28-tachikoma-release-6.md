@@ -580,6 +580,12 @@ and for an entry given by a flag or variable at launch, `settings.json's "mode" 
 --mode set it for this session`. A live change to `never` says `"mode": "never" applies only when
 a session starts; the mode stays <mode>` (the user's choice, design).
 
+**The launch's warnings show in the session too** (found at Task 7's code review): Task 7 prints
+an unknown entry's warning to stderr before the session starts, but full screen then switches to
+the second screen, so the line is not seen until the user quits. App shows the launch's warnings
+as grey lines when it opens, as it shows the instruction files' line; classic mode and `-p` keep
+stderr only, so nothing prints twice where stderr is already seen.
+
 What becomes changeable: `Session.setFallback(p | undefined)`; `Tasks.setWorker(fn)` and
 `Tasks.setMax(n)` (lowering holds back new starts, stops none); `AnthropicProvider.setEffort(e)`,
 read by each `complete()`, so a change made while a turn runs its tools applies from the very next
@@ -920,6 +926,14 @@ another key or a later second leaves both (design). Yank and put copy picture sp
 **Tests:** one per row of Claude Code's "Text objects" and "Visual mode" tables; `.` after `dw`,
 `3x`, `ciwfoo<Esc>`; the remap with fake times on each side of 1 s; a yanked marker put twice
 gives two spans of one id.
+
+**Before building, settle which pairs Task 7 accepts** (found at Task 7's code review): its
+check (`settings.ts`, two code points outside Unicode's control group) keeps a letter with a
+combining accent, which is one character on screen but two code points, a line separator, and
+spaces. A remap pair is two keys typed in turn, so each code point must be a key a user can type
+alone; the reviewer suggests letters, digits, punctuation and symbols only
+(`^[\p{L}\p{N}\p{P}\p{S}]{2}$`, with the `u` flag). Whether a space may be one of the two is
+a choice to put to the user.
 
 Commit: `feat: vim mode's text objects, VISUAL modes, repeat and INSERT remaps`.
 
