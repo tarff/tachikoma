@@ -64,7 +64,8 @@ export function pathMenu(text: string, cursor: number, list: (folder: string) =>
 }
 
 // A folder of the project, or one a path leads to: folders first, then files, each by name. What the
-// file tools refuse (Tachikoma's data folder, a program's environment) is left out, by the same check.
+// file tools refuse (Tachikoma's data folder, its settings files, a program's environment) is left out,
+// by the same check.
 export function listFolder(root: string, folder: string): Listing {
   try {
     const dir = resolveIn(root, folder || ".").abs;

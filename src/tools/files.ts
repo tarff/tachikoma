@@ -59,16 +59,17 @@ export function settingsName(name: string): boolean {
 
 // Whether `real` is one of the settings folder's protected files, or a path inside one (which would
 // make it a folder). As for the data folder: the folder by path, which covers one not made yet, or by
-// what it is, and a file with more than one name compared with each protected file directly.
+// what it is. An existing file is also compared by what it is with each protected file: one in the
+// folder, since Windows gives each a short name (SETTIN~1.JSO) that the real path keeps, and one
+// anywhere with more than one name, since a hard link is another name for it.
 function inSettings(folder: string, real: string): boolean {
   const id = statSync(folder, { bigint: true, throwIfNoEntry: false });
+  const isFolder = (p: string) => path.relative(folder, p) === "" || (id !== undefined && same(statSync(p, { bigint: true, throwIfNoEntry: false }), id));
   for (let p = real; path.dirname(p) !== p; p = path.dirname(p)) {
-    if (!settingsName(path.basename(p))) continue;
-    const parent = path.dirname(p);
-    if (path.relative(folder, parent) === "" || (id && same(statSync(parent, { bigint: true, throwIfNoEntry: false }), id))) return true;
+    if (settingsName(path.basename(p)) && isFolder(path.dirname(p))) return true;
   }
   const file = statSync(real, { bigint: true, throwIfNoEntry: false });
-  if (!id || !file || !file.isFile() || file.nlink < 2n) return false;
+  if (!id || !file || !file.isFile() || (file.nlink < 2n && !isFolder(path.dirname(real)))) return false;
   return readdirSync(folder).some((name) => settingsName(name) && same(statSync(path.join(folder, name), { bigint: true, throwIfNoEntry: false }), file));
 }
 

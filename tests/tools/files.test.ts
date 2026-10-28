@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { editFileTool, programEnvironment, readFileTool, resolveIn, writeFileTool } from "../../src/tools/files.js";
-import { tempContext } from "../helpers.js";
+import { shortName, tempContext } from "../helpers.js";
 
 describe("resolveIn", () => {
   it("marks paths that leave the project", () => {
@@ -134,6 +134,26 @@ describe("the settings and keys files", () => {
       expect(await readFile(path.join(ctx.root, ".tachikoma", name), "utf8")).toBe("{}");
     }
     expect(existsSync(path.join(ctx.root, ".tachikoma", "settings.json.1234.0a1b2c3d.tmp"))).toBe(false);
+  });
+
+  // Windows gives each a short name on a volume that makes them (SETTIN~1.JSO), and the real path keeps
+  // that spelling, so only what the file is shows it is one of them. The folder's short name too.
+  it.for(["ask", "project", "never"] as const)("are refused by their short names in %s mode", async (mode, { skip }) => {
+    const ctx = await home(mode);
+    const folder = path.join(ctx.root, ".tachikoma");
+    const short = ["settings.json", "keybindings.json", "settings.json.lock"].map((name) => shortName(folder, name));
+    const shortFolder = shortName(ctx.root, ".tachikoma");
+    if (!shortFolder || short.some((s) => !s)) skip("this system or volume makes no short names");
+    for (const p of [...short.map((s) => path.join(".tachikoma", s!)), path.join(shortFolder!, short[0]!)]) {
+      const message = refused(path.join(ctx.root, p));
+      await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow(message);
+      await expect(editFileTool.run({ path: p, old_text: "{}", new_text: "[]" }, ctx)).rejects.toThrow(message);
+      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(message);
+    }
+    expect(ctx.asked).toEqual([]);
+    for (const name of ["settings.json", "keybindings.json", "settings.json.lock"]) {
+      expect(await readFile(path.join(folder, name), "utf8")).toBe("{}");
+    }
   });
 
   // An editor saving the keys file can leave companions beside it, as a settings save does.

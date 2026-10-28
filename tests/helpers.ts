@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -68,3 +69,11 @@ export async function tempContext(mode: Mode = "never", answers: boolean[] = [])
 
 export const texts = (m: Message) => m.parts.flatMap((p: Part) => (p.type === "text" ? [p.text] : []));
 export { Bus };
+
+// The short (8.3) name Windows gave `name` in `folder`, such as SETTIN~1.JSO, as `dir /x` lists it.
+// Undefined on other systems, and on a volume that makes none.
+export function shortName(folder: string, name: string): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  const listing = execFileSync("cmd", ["/c", "dir", "/x", "/a", folder], { encoding: "utf8" });
+  return new RegExp(`(\\S+~\\d+\\S*) +${name.replaceAll(".", "\\.")}\\s*$`, "im").exec(listing)?.[1];
+}
