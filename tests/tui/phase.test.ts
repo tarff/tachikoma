@@ -156,7 +156,7 @@ function refs(): PhaseRefs {
 
 describe("phaseInputs", () => {
   // The mouse listener is set up at mount: what it reads must come from the refs when it reads, never from then.
-  it("reads the screen as last drawn when asked, for a listener made before it was drawn", () => {
+  it("reads the model list and the question from `drawn` each time it is asked", () => {
     const r = refs();
     const mouse = () => now(phaseInputs(r)).phase.kind; // made once, as App's mouse listener is
     expect(mouse()).toBe("prompt");

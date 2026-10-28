@@ -22,7 +22,7 @@ import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
 import { ModelPicker, rows as listRows } from "./ModelPicker.js";
 import { type Hand, type Handover, TerminalOwner } from "./owner.js";
-import { now as nowOf, pasteTo, phaseInputs as inputsOf } from "./phase.js";
+import { now as nowOf, pasteTo, phaseInputs } from "./phase.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -454,9 +454,8 @@ export function App({
   // this drawing's values: Ink's root is non-concurrent (above), so React draws and commits in one go, and useInput's and
   // usePaste's handler is the committed drawing's (useEffectEvent). Only the keys ask for the menu, where it was found
   // before: finding an `@` menu can list a folder (menuFor). A paste asks pasteTo() of the same inputs.
-  const phaseInputs = (findMenu?: () => boolean) =>
-    inputsOf({ ended, printed, drawn: frame, listOpen, questions, detail, search, working, queue }, findMenu);
-  const happening = (findMenu?: () => boolean) => nowOf(phaseInputs(findMenu));
+  const phaseRefs = { ended, printed, drawn: frame, listOpen, questions, detail, search, working, queue };
+  const happening = (findMenu?: () => boolean) => nowOf(phaseInputs(phaseRefs, findMenu));
 
   // Background answers waiting go first, in a turn of their own (release 4 design, "Background
   // subagents"). Then the queue's entries, taken from the front: a command alone, as if typed then;
@@ -882,7 +881,7 @@ export function App({
   // picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
-      const given = phaseInputs();
+      const given = phaseInputs(phaseRefs);
       if (given.printed) return; // as for keys, above; before clearCopied(), which pasteTo() cannot say
       clearCopied();
       const to = pasteTo(given);
