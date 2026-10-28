@@ -30,6 +30,8 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/tasks", run: "/tasks", note: "List the subagents; /tasks t1 shows one, /tasks stop stops them" },
   { label: "/errors", run: "/errors", note: "Summarise the error log" },
   { label: "/screen", run: "/screen", note: "Switch between full screen and classic" },
+  { label: "/settings", run: "/settings", note: "Open the settings file in your editor" },
+  { label: "/keybindings", run: "/keybindings", note: "Open the keys file in your editor" },
   { label: "/exit", run: "/exit", note: "Quit" },
 ];
 

@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Box, type Key, renderToString, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
@@ -12,7 +13,7 @@ import { errorText, type Message, type Provider } from "../core/types.js";
 import { KEYBINDINGS, type KeysLoaded } from "../keybindings.js";
 import type { Effort } from "../providers/anthropic.js";
 import type { ModelGroup } from "../providers/models.js";
-import { type Loaded, SETTINGS, saveSetting, type Settings, shownFile } from "../settings.js";
+import { type Loaded, SETTINGS, saveSetting, type Settings, settingsDir, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
 import { Bindings, CHORD_MS, type Context, DEFAULTS, keyText, type Stroke, strokeOf, tableOf } from "./bindings.js";
@@ -20,7 +21,8 @@ import type { Clipboard } from "./clipboard.js";
 import { Conversation } from "./Conversation.js";
 import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
 import { type Detail, DetailView, keyRow, opened, searchFor, step as stepMatch } from "./DetailView.js";
-import { apply, type Editor, empty, load, move, replace, segmenter } from "./editor.js";
+import { apply, change, type Editor, empty, load, move, replace, segmenter } from "./editor.js";
+import { editFile, editorCommand, editText, NOT_FOUND } from "./external.js";
 import { History, matches } from "./history.js";
 import { type Mouse, readOut } from "./input.js";
 import { both, type Command, commands, isScroll, keyList, named, type Scroll } from "./keys.js";
@@ -106,7 +108,7 @@ export interface AppProps {
   live?: { loaded: { settings: Settings; warnings: string[] }; given: Given };
 }
 
-const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /exit";
+const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /settings, /keybindings, /exit";
 // "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
 const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
@@ -116,12 +118,13 @@ const characters = (text: string) => [...segmenter.segment(text)].length;
 
 // What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
 // is a message).
-const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen"];
+const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen", "/settings", "/keybindings"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
 // The settings file's entries a live edit applies here, in the design's table's order ("When a live change applies");
-// editorMode, vimInsertModeRemaps and editor apply where they are used, from the release 6 plan's Tasks 12 and 21.
-const LIVE = ["lead", "mode", "effort", "fallback", "worker", "maxTasks", "status", "screen", "scrollSpeed"] as const;
+// editorMode and vimInsertModeRemaps apply where they are used, from the release 6 plan's Task 21. The editor is read
+// at each Ctrl+G, /settings and /keybindings, and is here for its line (plan, Task 12).
+const LIVE = ["lead", "mode", "effort", "fallback", "worker", "maxTasks", "status", "screen", "scrollSpeed", "editor"] as const;
 const FROM = ` (from ${SETTINGS})`;
 
 // The contexts in force in each phase (phase.ts), innermost first (release 6 plan, Task 6's table). Printed out and
@@ -351,6 +354,7 @@ export function App({
   const [branch, setBranch] = useState(gitBranch);
   const abort = useRef<AbortController | null>(null);
   const nextId = useRef(0);
+  const printUpTo = useRef<number | null>(null); // while an editor has the terminal in classic mode (away, below)
   const lookups = useRef(0);
   // Live edits of the settings file (release 6 design, "Live edits"): the status line's parts and the wheel's speed
   // as the file last set them; the file's settings and warnings as last applied, to tell which entries an edit
@@ -597,16 +601,18 @@ export function App({
   // subagent's record waits for it to come back, and what is queued after it, as it would take the printed view's place
   // unseen; the model list waits in perform, below (the user's choices, release 5). So does /screen, which would change
   // the screen under the printed view, and could not suspend Ink, suspended already. Messages and other commands go on.
-  // Nothing starts once Ink has ended, a turn going on paying with no screen to show it.
+  // Nothing starts once Ink has ended, a turn going on paying with no screen to show it. While the terminal is handed
+  // over (owner.ts, busy), to an editor too, /screen, /settings and /keybindings wait, as each would hand it over
+  // again; messages and other commands go on (release 6 plan, Task 12).
   // A lead or screen the settings file set waits here as `/lead` and `/screen` would in the queue, the screen also
-  // while the view is printed out (release 6 design, "When a live change applies").
+  // while the terminal is handed over (release 6 design, "When a live change applies").
   const next = () => {
     const h = happening();
     if (h.phase.kind === "ended" || h.working || h.waiting) return;
     const w = waiting.current;
     if (w.lead !== undefined) fileLead(w.lead);
     w.lead = undefined;
-    if (w.screen && h.phase.kind !== "printed") {
+    if (w.screen && !owner.busy) {
       const to = w.screen;
       w.screen = undefined;
       if (to === "full" && !fullNow.current && !fullPossible) say(gray("Full screen needs a terminal (the output is not one, or CI is set)"));
@@ -624,6 +630,7 @@ export function App({
     const command = q.findIndex(isCommand);
     if (!h.queued) return;
     if (h.phase.kind === "printed" && command === 0 && (recordToOpen(q[0]!) || /^\/screen$/i.test(q[0]!))) return;
+    if (owner.busy && command === 0 && /^\/(screen|settings|keybindings)$/i.test(q[0]!)) return;
     view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
   };
@@ -652,6 +659,8 @@ export function App({
       if (alone("/screen") && !fullNow.current && !fullPossible)
         return say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
       if (alone("/screen")) return await switchScreen();
+      if (alone("/settings")) return await openFile(SETTINGS, {});
+      if (alone("/keybindings")) return await openFile(KEYBINDINGS, { bindings: [] });
       // In full screen a subagent's record opens in the detail view (release 5 plan, Task 12); the list, stopping and
       // mistakes print.
       if (command === "/tasks") {
@@ -668,7 +677,8 @@ export function App({
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
       if (!account && !alone("/model") && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
-      if (words.length && ["/exit", "/errors", "/model", "/screen"].includes(command)) return say({ text: `${command} takes nothing after it.`, color: "red" });
+      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings"].includes(command))
+        return say({ text: `${command} takes nothing after it.`, color: "red" });
       abort.current = new AbortController();
       const turn = !account && !alone("/model");
       const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(tasks.answering())}` : turn ? "Working" : "Reading the model lists";
@@ -923,6 +933,68 @@ export function App({
     if (!file) save("screen", toFull ? "full" : "classic");
   };
 
+  // The editor in the terminal (release 6 design, "The external editor"; plan, Task 12), through the owner, which waits
+  // for a hand-over under way, suspends Ink and lets go of the keyboard (owner.ts, program). Full screen steps aside as
+  // for `[` (printOut, comeBack): the mouse and the second screen go, with the selection, and come back before Ink
+  // resumes, unless Ink ended meanwhile and the terminal was put back. They go once the program's turn comes, as a
+  // switch it waited for may have changed the screen. Meanwhile Ink drops every render, the turn goes on, and a
+  // question waits; both show on return. The editor is read as it starts, so a live edit of "editor" applies from the
+  // next one. In classic mode the lines said meanwhile reach <Static> only once Ink has resumed: it counts as printed
+  // what a render Ink drops held, so they would never be printed.
+  const away = async <T,>(edit: (command: string) => Promise<T>) => {
+    const ran = await owner.program(async () => {
+      const full = screen.full;
+      unselect();
+      if (full) screen.leave();
+      else printUpTo.current = nextId.current;
+      screen.suspended = true;
+      const command = editorCommand(process.env, fileNow.current.editor, process.platform);
+      try {
+        return { command, got: await edit(command) };
+      } finally {
+        if (full && !ended.current) screen.enter();
+        screen.suspended = false;
+      }
+    });
+    printUpTo.current = null;
+    rerender((n) => n + 1);
+    return ran;
+  };
+  // The one line for an editor that failed or was not found, naming how to set one (design, "On return").
+  const editorFailed = (command: string, failed: string) => {
+    const why = failed === NOT_FOUND ? `${command} was not found` : `The editor failed (${failed})`;
+    say({ text: `${why}. Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`, color: "red" });
+  };
+  // Ctrl+G and Ctrl+X Ctrl+E: the prompt as it is when the editor starts goes to it, and what it saved becomes the
+  // prompt, the cursor at the end, as one step Ctrl+Z takes back; on failure the prompt stays (design, "On return").
+  // Then the queue goes on: a /screen, /settings or /keybindings may have waited for the editor (next, above).
+  const externalEditor = async () => {
+    const ran = await away((command) => editText(editor.current.text, command));
+    if (!ran) return; // Ink ended meanwhile
+    if ("failed" in ran.got) editorFailed(ran.command, ran.got.failed);
+    else {
+      const e = editor.current;
+      editor.current = change(e, 0, e.text.length, ran.got.text);
+      goal.current = null;
+      rerender((n) => n + 1);
+    }
+    next();
+  };
+  // /settings and /keybindings open the real file, so each save reaches the watcher while the editor is still open
+  // (plan, Task 12). A missing one is made first, `empty` in two-space JSON as a save writes it (choice 2), with a
+  // save's mode, 0o600 (auth/private.ts, writePrivate), never over one made meanwhile.
+  const openFile = async (name: string, empty: object) => {
+    const file = path.join(settingsDir(home), name);
+    mkdirSync(path.dirname(file), { recursive: true });
+    try {
+      writeFileSync(file, `${JSON.stringify(empty, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    }
+    const ran = await away((command) => editFile(file, command));
+    if (ran && "failed" in ran.got) editorFailed(ran.command, ran.got.failed);
+  };
+
   // A live edit of the settings file (release 6 design, "Live edits"): a broken file keeps the last good settings
   // and says what is wrong; a warning is said once, while its entry stays; each entry the edit changed applies by the
   // design's table, or, given by a flag or variable at launch, stays as given. Removing an entry is a change to what
@@ -936,7 +1008,8 @@ export function App({
     const now = resolve({}, {}, read.settings);
     for (const key of LIVE) {
       if (JSON.stringify(before[key]) === JSON.stringify(read.settings[key])) continue;
-      const flag = live?.given[key];
+      // VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
+      const flag = key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : live?.given[key];
       if (flag) say(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
       else applyEntry(key, read.settings, now);
     }
@@ -1003,8 +1076,9 @@ export function App({
       setSegments(now.segments);
       line(now.segments.join(", "));
     } else if (key === "screen") waiting.current.screen = s.screen ?? "full"; // full unless asked for classic (clilib.ts, screenMode)
+    else if (key === "editor") line(editorCommand(process.env, s.editor, process.platform)); // read again at each use (away)
     else {
-      // scrollSpeed, the last of LIVE
+      // scrollSpeed
       setSpeed(now.speed);
       line(String(now.speed));
     }
@@ -1144,6 +1218,7 @@ export function App({
     if (action === "app:exit" && e.text) run("delete");
     else if (!name) {
       if (action && ACTIONS[action]) run(ACTIONS[action]);
+      else if (action === "chat:externalEditor") void externalEditor();
       else if (action?.startsWith("command:")) command(`/${action.slice("command:".length)}`);
       else if (!got) for (const c of commands(ch, key)) run(c);
     } else if (name === "Ctrl-C" && e.text) clear(e); // one press clears
@@ -1788,7 +1863,7 @@ export function App({
           bottom={keyOf("scroll:bottom", "Scroll", "ctrl+end")}
         />
       ) : (
-        <Static items={lines}>
+        <Static items={printUpTo.current === null ? lines : lines.slice(0, printUpTo.current)}>
           {(l) => (
             <Text key={l.id} color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
               {l.text}

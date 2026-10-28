@@ -143,7 +143,9 @@ Each is marked in its task. None approved yet.
    is reported once for the same broken text.
 4. **The editor runs through the system's shell (Task 12),** as Git runs `core.editor`: `cmd.exe
    /d /s /c` on Windows, `/bin/sh -c` elsewhere, with the file's path quoted after the entry, so
-   `code --wait` (a `.cmd` on Windows) works. The environment is `commandEnv()`, keys removed.
+   `code --wait` (a `.cmd` on Windows) works. The environment is `commandEnv()`, keys removed. On
+   Windows `& exit` is appended, so cmd's exit is the editor's, and a missing command gives 9009
+   (`cmd /c` alone exits 1 for it; found at Task 12's build, measured).
 5. **The editor's file** is `prompt.md` in a fresh `mkdtemp` folder in the system's temporary
    folder (the user's own on Windows), opened with mode 0o600, removed with its folder after.
 6. **`/vim` alone switches vim mode on or off (Task 21)** and saves it; `/vim on` and `/vim off`
@@ -1030,7 +1032,8 @@ launch only, the files out of the tools' reach), "Keys" (the file, contexts, the
 `?` shows it, chords, problems), the editor, stash, pictures (keys, paths, limits, the 400
 question, history keeping only words), vim mode (on, the hint, Esc), the OpenAI table's date;
 known limits (pictures not in prompt history; Ctrl+V eaten by Windows Terminal; `never` from the
-file means every plain `tachi` starts unchecked); the release list's release 5 "(done)" and 6
+file means every plain `tachi` starts unchecked; a `%` in a Windows path given to the editor would
+be expanded by cmd, found at Task 12's build); the release list's release 5 "(done)" and 6
 "(this release)". The design gains "As built" for every change from it. cli.tsx's `--help` text
 still names Esc, Ctrl-C and Ctrl+T as fixed keys: say they can be rebound in the keys file (found
 at Task 6's spec review).

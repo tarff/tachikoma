@@ -10,10 +10,11 @@ import chalk from "chalk";
 import { Completions } from "openai/resources/chat/completions";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { Models } from "@anthropic-ai/sdk/resources/models";
-import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import type { Given } from "../../src/clilib.js";
 import { type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
+import { system32 } from "../../src/exec/env.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import type { Provider } from "../../src/core/types.js";
@@ -33,7 +34,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
-import { Bus, FakeProvider, Held, callTool, reply, tempContext, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, reply, standInEditor, tempContext, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 
@@ -59,6 +60,14 @@ const mounted: ReturnType<typeof render>[] = [];
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount();
 });
+
+// No test opens a real editor (release 6 plan, Task 12): Ctrl+G, Ctrl+X Ctrl+E, /settings and /keybindings run VISUAL,
+// which a test that opens one sets to a stand-in (helpers.ts, standInEditor), and which names no program elsewhere.
+beforeEach(() => {
+  vi.stubEnv("VISUAL", "tachi-test-no-editor");
+  vi.stubEnv("EDITOR", "");
+});
+afterEach(() => void vi.unstubAllEnvs());
 
 type Login = AppProps["login"];
 
@@ -170,7 +179,7 @@ async function mount(
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
+  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, gate, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -4135,7 +4144,7 @@ describe("App's /screen", () => {
     expect(app.lastFrame()).not.toContain("screen is now");
     await type(app, "/nope");
     await until(app, "Unknown command: /nope.");
-    expect(app.lastFrame()).toContain("/errors, /screen, /exit");
+    expect(app.lastFrame()!.replaceAll("\n", " ")).toContain("/errors, /screen, /settings, /keybindings, /exit"); // a long line wraps
     await press(app, "/", "s");
     expect(app.lastFrame()).toContain("› /s\n  /screen  Switch between full screen and classic\n");
   });
@@ -4504,9 +4513,13 @@ describe("App's keys from the table of actions", () => {
   const CTRL_X = "\u0018";
 
   it("takes Ctrl+E from the editor's end-of-line when the table binds it to chat:externalEditor", async () => {
+    const editor = standInEditor();
+    editor.next("edited");
+    vi.stubEnv("VISUAL", editor.command("keep"));
     const { app } = await mount([], { bindings: table("Chat", { "ctrl+e": "chat:externalEditor" }) });
-    await press(app, "ab", "\u0001", "\u0005", "x"); // Ctrl+A, then Ctrl+E: the cursor stays at the start, nothing typed
-    expect(app.lastFrame()).toContain("› xab\n");
+    await press(app, "ab", "\u0001", "\u0005"); // Ctrl+A, then Ctrl+E: the editor opens on the prompt
+    await until(app, "› edited\n");
+    expect(editor.given()!.text).toBe("ab");
     const { app: usual } = await mount([]);
     await press(usual, "ab", "\u0001", "\u0005", "x");
     expect(usual.lastFrame()).toContain("› abx\n");
@@ -4547,13 +4560,15 @@ describe("App's keys from the table of actions", () => {
     }
   };
 
+  // Ctrl+X Ctrl+E is bound to a quiet action here: chat:externalEditor hands the terminal to an editor, which is tested
+  // with the editor ("App's external editor").
   it("shows a chord's first key in the hint row until the second key, or for 3 s", async () => {
-    const { app } = await mount([]);
+    const { app } = await mount([], { bindings: table("Chat", { "ctrl+x ctrl+e": "app:toggleTodos" }) });
     await onFakeClock(async (wait) => {
       app.stdin.write(CTRL_X);
       await wait(10);
       expect(app.lastFrame()).toContain("\nctrl+x ...\n");
-      app.stdin.write("\u0005"); // Ctrl+X Ctrl+E: chat:externalEditor
+      app.stdin.write("\u0005"); // Ctrl+X Ctrl+E
       await wait(10);
       expect(app.lastFrame()).not.toContain("ctrl+x");
       expect(app.lastFrame()).toContain("? for shortcuts");
@@ -4803,6 +4818,124 @@ describe("App's keys from the table of actions", () => {
     const { app, ask } = await mount([], { bindings: table("Confirmation", { escape: null }) });
     void ask("write a.txt");
     await until(app, "Allow write a.txt? [y/n] · n to decline");
+  });
+});
+
+// Release 6 design, "The external editor"; plan, Task 12. Each test's editor is a stand-in (helpers.ts, standInEditor),
+// set as VISUAL. While it runs Ink draws nothing (Ink's suspend), so the screen is looked at once it is back.
+describe("App's external editor", () => {
+  const CTRL_G = "\u0007";
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll("\n", " "); // a long line wraps
+  const SET = `Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`;
+
+  it("opens the prompt in the editor on Ctrl+G and takes its text back, the cursor at the end, Ctrl+Z giving the text before", async () => {
+    const editor = standInEditor();
+    editor.next("after the edit\n");
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { app } = await mount([]);
+    await press(app, "before", "\u0001", CTRL_G); // Ctrl+A first: the cursor at the start
+    await until(app, "› after the edit\n");
+    expect(editor.given()!.text).toBe("before");
+    await press(app, "!");
+    expect(app.lastFrame()).toContain("› after the edit!\n");
+    await press(app, "\u001a", "\u001a"); // Ctrl+Z: the typing, then the edit
+    expect(app.lastFrame()).toContain("› before\n");
+  });
+
+  it("does the same on Ctrl+X Ctrl+E", async () => {
+    const editor = standInEditor();
+    editor.next("edited");
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { app } = await mount([]);
+    await press(app, "before", "\u0018", "\u0005");
+    await until(app, "› edited\n");
+  });
+
+  it("shows what the turn said and a question it asked while the editor was open, once it is back", async () => {
+    const editor = standInEditor();
+    editor.next("edited");
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const { app, bus, ask } = await mount([]);
+    await press(app, CTRL_G);
+    await waitFor(editor.started);
+    bus.emit("message", { role: "assistant", parts: [{ type: "text", text: "said while away" }] });
+    const answer = ask("write a.txt");
+    await tick();
+    editor.go();
+    await until(app, "Allow write a.txt? [y/n]");
+    expect(app.lastFrame()).toContain("said while away");
+    await press(app, "n");
+    expect(await answer).toBe(false);
+    expect(app.lastFrame()).toContain("› edited\n");
+  });
+
+  it("leaves the prompt as it was and says why when the editor fails, or is not found", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("fail"));
+    const { app } = await mount([]);
+    await press(app, "keep me", CTRL_G);
+    await waitFor(() => flat(app).includes(`The editor failed (exit code 1). ${SET}`));
+    expect(app.lastFrame()).toContain("› keep me\n");
+    vi.stubEnv("VISUAL", "tachi-no-such-editor"); // cmd.exe prints its own "is not recognized" line to the inherited stderr
+    await press(app, CTRL_G);
+    await waitFor(() => flat(app).includes(`tachi-no-such-editor was not found. ${SET}`));
+    expect(app.lastFrame()).toContain("› keep me\n");
+  });
+
+  // The queue starts none of the commands that hand the terminal over while the editor has it; messages go on.
+  // /screen saves its choice, so it runs in the home made private once. /keybindings makes its file as it starts, then
+  // opens the editor VISUAL names by then, the failing stand-in, whose line shows that run has ended.
+  type Shown = ReturnType<typeof render>;
+  const keysFile = (home: string) => path.join(settingsDir(home), "keybindings.json");
+  it.each([
+    {
+      command: "/screen",
+      home: () => sharedHome,
+      started: (app: Shown, _home: string) => flat(app).includes("screen is now full"),
+      ended: (app: Shown, _home: string) => flat(app).includes("screen is now full"),
+    },
+    {
+      command: "/keybindings",
+      home: () => mkdtempSync(path.join(tmpdir(), "tachi-home-")),
+      started: (_app: Shown, home: string) => existsSync(keysFile(home)),
+      ended: (app: Shown, home: string) => existsSync(keysFile(home)) && flat(app).includes("The editor failed (exit code 1)"),
+    },
+  ])("holds a queued $command while the editor is open, and runs it once it closes", async ({ command, started, ended, ...made }) => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const lead = new Held();
+    const home = made.home();
+    const { app, session } = await mount([], { lead, home });
+    await type(app, "go");
+    await type(app, command);
+    await press(app, CTRL_G);
+    await waitFor(editor.started);
+    vi.stubEnv("VISUAL", editor.command("fail"));
+    lead.answer("done");
+    await waitFor(() => session.messages.at(-1)?.role === "assistant");
+    await tick();
+    expect(started(app, home)).toBe(false);
+    editor.go();
+    await waitFor(() => ended(app, home));
+    expect(flat(app)).not.toContain("suspended");
+  });
+
+  // As `[` does (printOut, comeBack): the mouse and the second screen go, and come back, Ink suspended meanwhile. A
+  // program waits for no hold: the keyboard is let go of instead (owner.ts, program).
+  it.each([
+    { mode: "full screen", classic: false, marks: ["release", MOUSE_OFF, FIRST_SCREEN, SECOND_SCREEN, MOUSE_ON, "retake"] },
+    { mode: "classic mode", classic: true, marks: ["release", "retake"] },
+  ])("lets the keyboard go to the editor in $mode, leaving and coming back as [ does", async ({ classic, marks }) => {
+    const editor = standInEditor();
+    editor.next("edited");
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { steps, key } = await onTerminal(new FakeProvider("a", []), { classic });
+    steps.length = 0;
+    await key(CTRL_G);
+    await waitFor(() => steps.includes("retake"));
+    const MARKS = ["release", "retake", "hold(true)", "hold(false)", MOUSE_OFF, MOUSE_ON, FIRST_SCREEN, SECOND_SCREEN];
+    expect(steps.filter((s) => MARKS.includes(s))).toEqual(marks);
+    await waitFor(() => text(since(steps, "retake")).includes("› edited"));
   });
 });
 
@@ -5278,5 +5411,94 @@ describe("App's live settings", () => {
     await tick();
     await press(app, "\u0019"); // Ctrl+Y, from the last good keys
     expect(app.lastFrame()).not.toContain("write the fix");
+  });
+
+  // Release 6 plan, Task 12: a live edit of "editor" says its line, as the entries above do; VISUAL and EDITOR come
+  // before the file (release 6 design, "The external editor"), as a flag does.
+  it("says a changed editor, the one that applies once the entry is removed, and that EDITOR keeps its own", async () => {
+    vi.stubEnv("VISUAL", "");
+    const { app, write } = await watching([], {});
+    write({ editor: "code --wait" });
+    await sees(app, `editor is now code --wait ${FROM}`);
+    write({});
+    await sees(app, `editor is now ${process.platform === "win32" ? system32("notepad.exe") : "vi"} ${FROM}`);
+    vi.stubEnv("EDITOR", "nano");
+    write({ editor: "vim" });
+    await sees(app, `settings.json's "editor" was left as EDITOR set it for this session`);
+  });
+
+  // Release 6 plan, Task 12: the real file opens in the editor, made first when missing, so each save reaches the
+  // watcher while the editor is still open. The stand-in saves, then waits for `go`.
+  it("makes a missing settings file on /settings and opens it, the watcher applying a save while the editor is open", async () => {
+    const editor = standInEditor();
+    editor.next('{"mode": "project"}\n');
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const home = freshHome();
+    const { app, gate } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    await type(app, "/settings");
+    await vi.waitFor(() => expect(editor.started()).toBe(true), WATCHED);
+    expect(editor.given()).toEqual({ file: path.join(settingsDir(home), "settings.json"), text: "{}\n" });
+    await vi.waitFor(() => expect(gate.mode).toBe("project"), WATCHED);
+    editor.go();
+    await sees(app, `mode is now project ${FROM}`);
+  });
+
+  it("makes a missing keys file on /keybindings, with two-space indents, and opens it", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const home = freshHome();
+    const { app } = await mount([], { home });
+    await type(app, "/keybindings");
+    const file = path.join(settingsDir(home), "keybindings.json");
+    await vi.waitFor(() => expect(editor.given()).toEqual({ file, text: '{\n  "bindings": []\n}\n' }), WATCHED);
+  });
+
+  it("opens the settings file as it is when there is one", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { app, where } = await watching([], { mode: "project" });
+    await type(app, "/settings");
+    await vi.waitFor(() => expect(editor.given()).toEqual({ file: where, text: '{"mode":"project"}' }), WATCHED);
+  });
+
+  it("names /settings and /keybindings in the unknown command's list and the / menu", async () => {
+    const { app } = await mount([]);
+    await type(app, "/nope");
+    await sees(app, "/errors, /screen, /settings, /keybindings, /exit");
+    await press(app, "/", "k");
+    expect(app.lastFrame()).toContain("› /k\n  /keybindings  Open the keys file in your editor\n");
+    await press(app, "\u007f", "s", "e");
+    expect(app.lastFrame()).toContain("› /se\n  /settings  Open the settings file in your editor\n");
+  });
+
+  it("says /settings and /keybindings take nothing after them", async () => {
+    const { app } = await mount([]);
+    await type(app, "/settings now");
+    await until(app, "/settings takes nothing after it.");
+    await type(app, "/keybindings now");
+    await until(app, "/keybindings takes nothing after it.");
+  });
+
+  it("says the editor failed on /settings as on Ctrl+G", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("fail"));
+    const { app } = await mount([], { home: freshHome() });
+    await type(app, "/settings");
+    await sees(app, `The editor failed (exit code 1). Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`);
+  });
+
+  // "screen" applies as /screen does, waiting where /screen waits (release 6 design's table): here for the editor the
+  // edit was made in to close.
+  it("switches the screen a save in /settings's editor asks for once the editor closes", async () => {
+    const editor = standInEditor();
+    editor.next('{"screen": "classic", "mode": "project"}\n');
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const { app, gate } = await mount([], { full: true, home: freshHome(), live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    await type(app, "/settings");
+    await vi.waitFor(() => expect(gate.mode).toBe("project"), WATCHED); // the save read, its screen waiting
+    await tick();
+    editor.go();
+    await sees(app, `screen is now classic ${FROM}`);
+    expect(flat(app)).not.toContain("suspended");
   });
 });
