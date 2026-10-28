@@ -204,7 +204,10 @@ export function imagePaths(paste: string, platform: NodeJS.Platform = process.pl
     else if (picture(path(line))) paths.push(path(line));
     else return null;
   }
-  return paths.length ? paths : null;
+  // A path starting with two slashes of either kind is never a picture, so the caller never looks at it (release 6 plan,
+  // choice 30, the user's: "Leave it as text"): on Windows it names another machine, which looking at the file would
+  // reach, handing it the user's Windows login, or wait on when it does not answer; \\?\ and \\.\ too.
+  return paths.length && !paths.some((p) => /^[\\/]{2}/.test(p)) ? paths : null;
 }
 
 const startsWith = (data: Buffer, at: number, bytes: number[] | string) => {

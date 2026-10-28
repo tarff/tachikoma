@@ -379,6 +379,10 @@ Pictures go to the model with your message.
 - **From files:** pasting, or dragging into the terminal, paths to .png, .jpg, .jpeg, .gif or .webp
   files, one or several, with or without quotes, adds those pictures, when every file is there. A
   file's type is read from its contents, not its name. A typed path stays text.
+- **A pasted path starting with two slashes stays text,** such as `\\server\share\cat.png` or
+  `//server/share/cat.png`, and Tachikoma never looks at the file: on Windows looking would connect
+  to that machine, which could capture a hashed copy of your Windows login, or freeze the screen
+  while it fails to answer.
 - **Which pictures a message carries:** each picture has a number for the session, and its marker in
   the prompt carries it: delete the marker and the picture is left out, and undo brings both back. A
   picture goes once, at its first marker; a later copy, a marker you type yourself, and one brought

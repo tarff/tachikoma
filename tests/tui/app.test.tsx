@@ -5535,6 +5535,21 @@ describe("App's picture reads", () => {
     expect(userParts(session)).toEqual([[{ type: "text", text: folderPath }]]);
   });
 
+  // The security review's finding 3 (release 6 plan, choice 30): a path starting with two slashes is pasted as text and
+  // never looked at, so a pasted \\server\share\cat.png cannot reach that machine. This one leads to a real picture on
+  // this machine (\\?\ before it on Windows, a doubled / elsewhere), which would be a picture without the rule.
+  it("keeps a pasted path starting with two slashes as text, though it leads to a picture", async () => {
+    const shot = path.join(folder(), "shot.png");
+    writeFileSync(shot, PNG.data);
+    const text = process.platform === "win32" ? `\\\\?\\${shot}` : `/${shot}`;
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, paste(text));
+    expect(app.lastFrame()).not.toContain("[Image #");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text }]]);
+  });
+
   it("says in red that a pasted file that is not a picture could not be read, naming the file, and takes its marker out", async () => {
     await inColour(async () => {
       const { app, ctx } = await mount([]);

@@ -412,7 +412,25 @@ describe("imagePaths", () => {
   it("on macOS and Linux, keeps the backslashes of a Windows path, as WSL gives it", () => {
     expect(imagePaths("C:\\Users\\me\\pic.png", "linux")).toEqual(["C:\\Users\\me\\pic.png"]);
     expect(imagePaths('"C:\\x y\\a.png"', "linux")).toEqual(["C:\\x y\\a.png"]);
-    expect(imagePaths("\\\\server\\share\\a.png", "linux")).toEqual(["\\\\server\\share\\a.png"]);
+  });
+
+  // The security review's finding 3 (release 6 plan, choice 30): a path starting with two slashes of either kind names
+  // another machine on Windows, which looking at the file would reach, handing it the user's Windows login, or wait on
+  // when it does not answer; \\?\ and \\.\ too. Such a paste is text, so the caller looks at no file.
+  it("takes no path starting with two slashes of either kind, on any system, so the paste stays text", () => {
+    const everywhere = [
+      "\\\\server\\share\\cat.png",
+      "//server/share/cat.png",
+      '"\\\\server\\share\\a b.png"',
+      "\\\\?\\C:\\pics\\cat.png",
+      "\\\\.\\C:\\cat.png",
+      "C:\\a.png\n\\\\server\\b.png",
+      "/a.png //server/b.png",
+    ];
+    for (const platform of ["win32", "linux", "darwin"] as const) {
+      for (const paste of everywhere) expect(imagePaths(paste, platform), `${paste} on ${platform}`).toBeNull();
+    }
+    for (const paste of ["/\\server\\share\\cat.png", "\\/server/cat.png"]) expect(imagePaths(paste, "win32"), paste).toBeNull();
   });
 
   it("takes several on a line, split at a space before a path starting with / or a drive letter, quoted or not", () => {
