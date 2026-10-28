@@ -21,6 +21,7 @@ import { layout, placeOn, scroll as windowOf, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
 import { ModelPicker, rows as listRows } from "./ModelPicker.js";
+import { type Hand, type Handover, TerminalOwner } from "./owner.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -49,7 +50,7 @@ type Question = {
 // double or triple click's word or line); `copy`: a drag, or a double or triple click, made a selection to copy on release;
 // `top`: the press was on the conversation's top row.
 type Held = { press: [Pos, Pos]; copy: boolean; top: boolean };
-type Printed = { resume?: () => Promise<void>; paste?: string };
+type Printed = { handover?: Handover; resume?: () => Promise<void>; paste?: string };
 
 export interface AppProps {
   session: Session;
@@ -84,8 +85,9 @@ export interface AppProps {
   // hint row.
   clipboard: (report: (problem: string) => void) => Clipboard;
   // The InputFilter's hold on raw mode and its diverting of the keys, for `[` (release 5 design, "The detail view"); /screen
-  // holds raw mode too. With none, `[` does nothing.
-  input?: { divert(to: ((keys: string) => void) | null): void; hold(on: boolean): void };
+  // holds raw mode too. With none, `[` does nothing. Letting go of stdin and taking it back are for a program in the
+  // terminal (owner.ts, program).
+  input?: Pick<Hand, "divert" | "hold"> & Partial<Pick<Hand, "release" | "retake">>;
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /exit";
@@ -176,8 +178,17 @@ export function App({
   const dropping = useRef<Printed | null>(null);
   const waitingList = useRef<ModelGroup[] | null>(null);
   const ended = useRef(false); // Ink has unmounted the App (the cleanup below)
-  const suspending = useRef(false); // /screen is suspending Ink, or has, and has not yet resumed it (switchScreen, below)
-  const switchRunning = useRef(false); // from switchScreen's start to its end, for comeBack, below
+  // Who has the terminal (owner.ts): how many hand-overs hold the keyboard, and whether Ink is suspended.
+  const [owner] = useState(
+    () =>
+      new TerminalOwner({
+        suspend: () => suspendTerminal(),
+        hold: (on) => input?.hold(on),
+        divert: (to) => input?.divert(to),
+        release: () => input?.release?.(),
+        retake: () => input?.retake?.(),
+      }),
+  );
   // What is set up once, at mount (the bus listeners, bindAsk, History's warning, the mouse listener), keeps the first
   // render's functions, and what they call, `say`, `next` and the rest, reads the mode from here, not from the first
   // render's `full` (found at Task 5's review); so do the keys' functions, alike. /screen sets it as the switch starts,
@@ -399,8 +410,7 @@ export function App({
       // components/App.js).
       printed.current = null;
       dropping.current = null;
-      input?.divert(null);
-      input?.hold(false);
+      owner.end();
       mouse?.off("mouse", onMouse);
       clearInterval(minutes);
       clearTimeout(first.current?.timer);
@@ -609,9 +619,9 @@ export function App({
     const p: Printed = {};
     printed.current = p;
     unselect();
-    input!.hold(true);
+    p.handover = owner.take();
     screen.setMouse(false);
-    const { resume } = await suspendTerminal();
+    const { resume } = await p.handover.suspend();
     if (printed.current !== p) return; // Ink ended meanwhile, and the cleanup above let the keyboard go
     screen.setSecond(false);
     screen.suspended = true;
@@ -661,8 +671,8 @@ export function App({
     screen.setMouse(true);
     screen.suspended = false;
     await p.resume();
+    p.handover!.done(); // also when Ink ended meanwhile, after its cleanup let go: again is harmless (input.ts, hold)
     if (printed.current) return;
-    if (!switchRunning.current) input!.hold(false); // also when Ink ended meanwhile, after its cleanup let go: again is harmless (input.ts, hold)
     // Ink ending during the resume (a crash in its redraw) starts nothing that waited: no screen would show it, and a
     // turn would go on paying with none (found at round 3's check of Task 13).
     if (ended.current) return;
@@ -689,7 +699,7 @@ export function App({
   // render while suspended, so nothing is drawn before. `full` follows only once the second screen is on, so React draws no
   // full-screen frame on the normal screen; `fullNow` is set just before the suspend, so the keys Ink read with the Enter
   // that sent /screen, which it handles next, act as in full screen: a Ctrl+O among them opens the detail view (found at
-  // the final review). A `[` does nothing while `suspending` is set, from the suspend to the resume, either way, as it
+  // the final review). A `[` does nothing while `owner.suspended`, from the suspend to the resume, either way, as it
   // would suspend Ink again, which throws. The view follows the bottom: sending /screen, or the queue running it, put it
   // there, and nothing moves it in classic mode. What the switch says at the end is said, not shown, so a question asked
   // meanwhile keeps the view on its detail.
@@ -701,8 +711,7 @@ export function App({
   const switchScreen = async () => {
     const toFull = !fullNow.current;
     working.current = true;
-    switchRunning.current = true;
-    input?.hold(true);
+    const handover = owner.take();
     unselect();
     wheel.current = 0;
     try {
@@ -712,14 +721,12 @@ export function App({
         kept.add(unkept.current);
         unkept.current = [];
         fullNow.current = true;
-        suspending.current = true;
-        const { resume } = await suspendTerminal();
+        const { resume } = await handover.suspend();
         if (ended.current) return;
         screen.enter();
         setFull(true);
         await new Promise((resolve) => setTimeout(resolve, 0));
         if (ended.current) return;
-        suspending.current = false; // resume() ends the suspension before its first await (Ink's ink.js, endSuspend)
         await resume();
       } else {
         closeDetail();
@@ -728,19 +735,15 @@ export function App({
         setSwitching(true);
         await new Promise((resolve) => setTimeout(resolve, 0));
         if (ended.current) return;
-        suspending.current = true;
-        const { resume } = await suspendTerminal();
+        const { resume } = await handover.suspend();
         screen.leave();
-        suspending.current = false;
         await resume();
       }
     } finally {
       if (toFull && !screen.full) fullNow.current = false; // the suspend threw, or Ink ended first
-      suspending.current = false;
       setSwitching(false);
       working.current = false;
-      switchRunning.current = false;
-      if (!printed.current) input?.hold(false); // also for a comeBack that ended during the switch (comeBack, above)
+      handover.done(); // a print-out started during the switch keeps the hold (comeBack, above)
     }
     if (!ended.current) say({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
   };
@@ -777,7 +780,7 @@ export function App({
     if (detail.current !== d || printed.current) return;
     if (s?.typing) searchFor(d, s.query + letter, viewHeight);
     else if (letter === "q") closeDetail();
-    else if (letter === "[" && input && !suspending.current) void printOut(d); // switchScreen says why
+    else if (letter === "[" && input && !owner.suspended) void printOut(d); // switchScreen says why
     else if (letter === "/") d.search = { query: "", found: [], at: 0, typing: true, before: d.view.current };
     else if ((letter === "n" || letter === "N") && s) stepMatch(d, letter === "n" ? 1 : -1, viewHeight);
     else if (LETTERS[letter]) scroll(LETTERS[letter]);

@@ -15,7 +15,7 @@ export interface Mouse {
 }
 export type Piece = { keys: string } | { mouse: Mouse };
 type State = { held: string; pasting: boolean; tail: string };
-type Source = Pick<NodeJS.ReadStream, "on" | "off" | "setRawMode" | "setEncoding" | "ref" | "unref">;
+type Source = Pick<NodeJS.ReadStream, "on" | "off" | "setRawMode" | "setEncoding" | "ref" | "unref" | "pause" | "resume">;
 
 // The markers Ink reads pastes by (`pasteStart` and `pasteEnd` in Ink's input-parser.js).
 const PASTE_START = "\u001b[200~";
@@ -144,6 +144,7 @@ export class InputFilter extends EventEmitter {
   #rawOff = false;
   #unrefd = false;
   #divert: ((keys: string) => void) | null = null;
+  readonly #onData = (chunk: string | Buffer) => this.#take(String(chunk));
 
   // wait: 20 ms by default, Ink's own wait for the rest of a key (`pendingInputFlushDelayMilliseconds` in Ink's
   // components/App.js). Reading the source as utf8 makes a character split across reads arrive whole.
@@ -152,7 +153,7 @@ export class InputFilter extends EventEmitter {
     this.#source = source;
     this.#wait = wait;
     source.setEncoding("utf8");
-    source.on("data", (chunk: string | Buffer) => this.#take(String(chunk)));
+    source.on("data", this.#onData);
     // A stream tells a readable listener added while data waits, on the next tick. Ink removes its listener in
     // suspendTerminal() and adds it back on resume, and adds it first when useInput mounts: keys typed meanwhile would
     // otherwise wait for the next key.
@@ -201,6 +202,21 @@ export class InputFilter extends EventEmitter {
     if (on) return;
     if (this.#rawOff) this.#source.setRawMode(false);
     if (this.#unrefd) this.#source.unref();
+  }
+
+  // For a program in the terminal (release 6 plan, Task 1; owner.ts, program): the filter stops reading the source, so
+  // the program reads every key itself, and raw mode goes off on the source, whatever Ink's last word was, for a program
+  // that reads whole lines. retake() puts both back, before Ink resumes.
+  release(): void {
+    this.#source.off("data", this.#onData);
+    this.#source.pause();
+    this.#source.setRawMode(false);
+  }
+
+  retake(): void {
+    this.#source.setRawMode(true);
+    this.#source.on("data", this.#onData);
+    this.#source.resume();
   }
 
   read(): string | null {

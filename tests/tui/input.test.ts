@@ -294,6 +294,43 @@ describe("InputFilter", () => {
     expect(reads).toEqual(["e"]);
     expect(mice).toHaveLength(1);
   });
+
+  // For a program in the terminal (release 6 plan, Task 1): while released, the keys are the program's, read from the
+  // source, and none reaches Ink or the App.
+  it("leaves the source's keys to it while released, and reads them again once retaken", () => {
+    class Flowing extends Source {
+      pause() {
+        this.calls.push("pause");
+        return this;
+      }
+      resume() {
+        this.calls.push("resume");
+        return this;
+      }
+    }
+    const source = new Flowing();
+    const filter = new InputFilter(source as never);
+    const reads: string[] = [];
+    const data: string[] = [];
+    let readable = 0;
+    filter.on("readable", () => {
+      readable++;
+      let s: string | null;
+      while ((s = filter.read()) !== null) reads.push(s);
+    });
+    filter.on("data", (d: string) => data.push(d));
+    source.calls = [];
+    filter.release();
+    expect(source.calls).toEqual(["pause", "setRawMode(false)"]);
+    expect(source.listenerCount("data")).toBe(0);
+    source.emit("data", "vim keys");
+    expect([reads, data, readable]).toEqual([[], [], 0]);
+    filter.retake();
+    expect(source.calls).toEqual(["pause", "setRawMode(false)", "setRawMode(true)", "resume"]);
+    expect(source.listenerCount("data")).toBe(1);
+    source.emit("data", "k");
+    expect([reads, data]).toEqual([["k"], ["k"]]);
+  });
 });
 
 describe("InputFilter with Ink", () => {
