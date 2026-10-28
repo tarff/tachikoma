@@ -144,13 +144,13 @@ function numberOf(entry: string, value: unknown): number {
 }
 
 // Release 6 design, "Vim mode": two printable characters typed together go to NORMAL, and <Esc> is the only target. Other
-// entries are left out with a warning, and the rest kept. Printable: no control, format, private-use or unassigned
-// character.
+// entries are left out with a warning, and the rest kept. The two are keys typed in turn, so each must be one a
+// user can type alone: a letter, digit, punctuation mark or symbol, and for now no space (release 6 plan, choice 24).
 function remaps(entry: string, value: unknown, warnings: string[]): Record<string, "<Esc>"> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw wrongType(entry, 'an object, such as {"jj": "<Esc>"}', value);
   const kept: Record<string, "<Esc>"> = {};
   for (const [keys, target] of Object.entries(value)) {
-    if (/^\P{C}{2}$/u.test(keys) && target === "<Esc>") kept[keys] = target;
+    if (/^[\p{L}\p{N}\p{P}\p{S}]{2}$/u.test(keys) && target === "<Esc>") kept[keys] = target;
     else warnings.push(`${entry} entry ${JSON.stringify(keys)} is not two printable characters mapped to "<Esc>"; it was left out`);
   }
   return kept;

@@ -214,6 +214,8 @@ Each is marked in its task. None approved yet.
     line's colour, not grey: grey inside a line needs coloured pieces through describe, Rows,
     Conversation and classic mode, about 50-80 lines (found at Task 14's build; the coordinator's
     call, for the user to review).
+24. **Remap pairs are two letters, digits, punctuation or symbols; a space is not accepted for now**
+    (found at Task 7's code review; the coordinator's call pending the user's answer on spaces).
 
 ---
 

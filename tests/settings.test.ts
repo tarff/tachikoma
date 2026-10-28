@@ -102,6 +102,15 @@ describe("readSettings", () => {
     });
   });
 
+  // A pair is two keys typed in turn, so each must be a key typed alone: a letter, digit, punctuation mark or
+  // symbol (release 6 plan, choice 24). A space is not one for now.
+  it("leaves out a remap pair with a space, a combining accent, a line separator or a control character", () => {
+    const pairs = ["j ", " j", `e${String.fromCharCode(0x301)}`, `j${String.fromCharCode(0x2028)}`, `j${String.fromCharCode(7)}`];
+    const r = read({ vimInsertModeRemaps: Object.fromEntries(pairs.map((k) => [k, "<Esc>"])) });
+    const words = (k: string) => `settings.json: "vimInsertModeRemaps" entry ${JSON.stringify(k)} is not two printable characters mapped to "<Esc>"`;
+    expect(r).toEqual({ settings: { vimInsertModeRemaps: {} }, warnings: pairs.map((k) => `${words(k)}; it was left out`) });
+  });
+
   it("says when the file is not valid JSON, in the parser's words", () => {
     let words = "";
     try {

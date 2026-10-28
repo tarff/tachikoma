@@ -3,105 +3,162 @@
 // Where Claude Code's docs leave a key's exact behaviour open, this does what Claude Code 2.1.312's own
 // code does where that was read (2026-10-28), and otherwise what Vim does. Every change is one undo
 // step through editor.ts's `change`, and `u` is the editor's undo.
-import { after, apply, before, boundaries, change, changes, type Editor, lineEnd, lineStart, move } from "./editor.js";
+import { after, apply, before, boundaries, change, changes, type Editor, lineEnd, lineStart, move, type Span } from "./editor.js";
 
 export type VimMode = "INSERT" | "NORMAL" | "VISUAL" | "VISUAL LINE";
 type Find = "f" | "F" | "t" | "T";
+// A yank or delete, with the spans of the pictures' markers wholly inside it, counted from its start, so a put
+// copies them (release 6 plan, Task 20).
+type Register = { text: string; linewise: boolean; spans: readonly Span[] };
+// The last change, for `.`: its keys without their count, the count apart so one typed before `.` can take its
+// place, what the INSERT it began typed, and for a VISUAL change how many characters or lines it covered and what
+// its p put, as Claude Code 2.1.312's own code keeps them (read 2026-10-29).
+export type Change = { keys: string[]; count: string; typed?: string; selected?: { line: boolean; size: number }; put?: Register };
 export interface Vim {
   mode: VimMode;
-  pending: string; // the command typed so far after its count: an operator, its own count, a `g`, `r` or f/F/t/T
+  pending: string; // the command typed so far after its count: an operator, its own count, a `g`, `r`, f/F/t/T or i/a
   count: string; // the digits typed before it
   lastFind?: { op: Find; ch: string }; // for ; and ,
-  lastChange?: string[]; // the keys of the last change, with its count, for `.`
-  register: { text: string; linewise: boolean }; // the last yank or delete, kept here and never on the clipboard
-  anchor?: number; // VISUAL's (release 6 plan, Task 20)
+  lastChange?: Change;
+  register: Register; // the last yank or delete, kept here and never on the clipboard
+  anchor?: number; // where VISUAL's selection began; the cursor is its other end
+  // The text before and after the cursor when a command went into INSERT. At Esc, what lies between them is what was
+  // typed, for `.`, whatever App's own keys did in between: Backspace, the arrows and pastes are App's (plan, Task 21).
+  entered?: { head: string; tail: string };
+  // A remap pair's first character, typed at `at` (ms), with the editor before it and the text and cursor it left.
+  remap?: { ch: string; at: number; before: Editor; text: string; cursor: number };
   // The column, in characters, that j and k keep across a shorter line (Infinity after $, the line's
   // end), kept with the cursor and text it was set at and used only while both are unchanged, so a
   // change App makes forgets it (Claude Code 2.1.312's own code, read 2026-10-28).
   goal?: { column: number; cursor: number; text: string };
 }
 
-export const start: Vim = { mode: "INSERT", pending: "", count: "", register: { text: "", linewise: false } };
+export const start: Vim = { mode: "INSERT", pending: "", count: "", register: { text: "", linewise: false, spans: [] } };
 
 type Result = { v: Vim; e: Editor; act?: string };
+
+// The settings file's vimInsertModeRemaps and the time a key came, in ms, which App passes in.
+export type Remaps = { pairs: Readonly<Record<string, "<Esc>">>; now: number };
 
 // One key: a character, or a named key ("escape", "enter", "left", ...). The act is for App to do:
 // "submit", "history:previous", "history:next", "history:search" or "help".
 // Not every key is vim's. In INSERT only a typed character and Esc are; any other key comes back
 // unchanged, and App edits with `commands()` as without vim mode. In NORMAL a lone Esc, with nothing
 // half typed, is App's own Esc, so App checks `v.pending || v.count` before giving NORMAL's Esc to vim.
-export function press(v: Vim, e: Editor, key: string): Result {
-  return v.mode === "INSERT" ? insert(v, e, key) : normal(v, onChar(e), key);
+// VISUAL's cursor is not put on a character first: there `$` selects the line break too, as in Vim.
+export function press(v: Vim, e: Editor, key: string, remaps?: Remaps): Result {
+  if (v.mode === "INSERT") return insert(v, e, key, remaps);
+  return v.mode === "NORMAL" ? normal(v, onChar(e), key) : visual(v, e, key);
 }
 
-// A character typed in INSERT goes in through editor.ts, as typing, so the release 6 plan's Task 20's
-// remaps see it. Esc goes to NORMAL, the cursor back onto the character before, as in Vim.
-function insert(v: Vim, e: Editor, key: string): Result {
-  if (isChar(key)) return { v, e: apply(e, { type: "insert", text: key }) };
-  if (key !== "escape") return { v, e };
+// Claude Code's docs, "Remap INSERT-mode key sequences": the second character "within one second". Its own code counts
+// 1000 ms itself as within (2.1.312, read 2026-10-29).
+const REMAP_MS = 1000;
+
+// A character typed in INSERT goes in through editor.ts, as typing. A remap pair's first character goes in at once; the
+// second within REMAP_MS, with nothing changed between, takes the first out, as if never typed, and goes to NORMAL. Any
+// other key ends the wait, App's included, and so does App changing the text or cursor between.
+function insert(v: Vim, e: Editor, key: string, remaps?: Remaps): Result {
+  const { remap, ...rest } = v;
+  if (!isChar(key)) return key === "escape" ? toNormal(rest, e) : { v: rest, e };
+  if (remap && remaps?.pairs[remap.ch + key] === "<Esc>" && remaps.now - remap.at <= REMAP_MS && e.text === remap.text && e.cursor === remap.cursor) {
+    return toNormal(rest, remap.before);
+  }
+  const d = apply(e, { type: "insert", text: key });
+  if (!remaps || !Object.keys(remaps.pairs).some((p) => p.startsWith(key))) return { v: rest, e: d };
+  return { v: { ...rest, remap: { ch: key, at: remaps.now, before: e, text: d.text, cursor: d.cursor } }, e: d };
+}
+
+// Esc: NORMAL, the cursor back onto the character before, as in Vim. What lies between the text before and after
+// where a command went into INSERT joins that command's change for `.`; when either is gone, the INSERT reached past
+// where it began, and `.` has nothing to repeat rather than a part of it.
+function toNormal(v: Vim, e: Editor): Result {
+  const { entered, ...rest } = v;
+  let { lastChange } = rest;
+  if (entered && lastChange) {
+    const { head, tail } = entered;
+    const kept = e.text.length >= head.length + tail.length && e.text.startsWith(head) && e.text.endsWith(tail);
+    lastChange = kept ? { ...lastChange, typed: e.text.slice(head.length, e.text.length - tail.length) } : undefined;
+  }
   const c = e.cursor;
-  return { v: { ...v, mode: "NORMAL" }, e: onChar(move(e, c === lineStart(e.text, c) ? c : before(e.text, c))) };
+  return { v: { ...rest, mode: "NORMAL", lastChange }, e: onChar(move(e, c === lineStart(e.text, c) ? c : before(e.text, c))) };
 }
 
 const MOTIONS = new Set(["h", "j", "k", "l", " ", "backspace", "left", "right", "up", "down", "w", "e", "b", "0", "$", "^", "G", ";", ",", "%"]);
 // Keys that are an operator and a motion, as Vim defines them.
 const SHORT = new Map([["x", "dl"], ["s", "cl"], ["D", "d$"], ["C", "c$"], ["S", "cc"], ["Y", "yy"]]);
 
-function normal(v: Vim, e: Editor, key: string, keys = [...v.count, ...v.pending, key]): Result {
-  const [, op = "", opCount = "", prefix = ""] = /^([dcy<>]?)(\d*)([gfFtTr]?)$/u.exec(v.pending)!;
+// The keys of the command, for `.`, are kept without its counts: `count` holds them, multiplied.
+function normal(v: Vim, e: Editor, key: string, keys = [...v.pending.replace(/\d/gu, ""), key]): Result {
+  const [, op = "", opCount = "", prefix = ""] = /^([dcy<>]?)(\d*)([gfFtTria]?)$/u.exec(v.pending)!;
   const { goal, ...rest } = v; // a finished command forgets the column j and k keep, unless it is j, k or $
   const done: Vim = { ...rest, pending: "", count: "" };
   const n = Number(v.count || 1) * Number(opCount || 1); // `2d3w` is six words, as in Vim
+  const counted = v.count + opCount !== "";
+  const last: Change = { keys, count: counted ? String(n) : "" };
   const go = (name: string, lastFind = v.lastFind): Result => {
     const next = { ...done, lastFind };
     const kept = goal?.cursor === e.cursor && goal.text === e.text ? goal.column : undefined;
-    const m = motion(e, name, n, v.count + opCount !== "", op, lastFind, kept);
-    if (!m && !op && (name === "j" || name === "down")) return { v: next, e, act: "history:next" };
-    if (!m && !op && (name === "k" || name === "up")) return { v: next, e, act: "history:previous" };
+    const m = motion(e, name, n, counted, op, lastFind, kept);
+    const browse = !m && !op && v.mode === "NORMAL"; // VISUAL's j and k stop at the first and last line
+    if (browse && (name === "j" || name === "down")) return { v: next, e, act: "history:next" };
+    if (browse && (name === "k" || name === "up")) return { v: next, e, act: "history:previous" };
     if (!m) return { v: next, e };
-    if (op) return operate(next, e, op, m, keys);
-    const to = onChar(move(e, m.to));
+    if (op) return operate(next, e, op, m, last);
+    const to = v.mode === "NORMAL" ? onChar(move(e, m.to)) : move(e, m.to);
     return { v: m.goal === undefined ? next : { ...next, goal: { column: m.goal, cursor: to.cursor, text: to.text } }, e: to };
   };
-  if (prefix === "r") return isChar(key) ? replaceChars(done, e, key, n, keys) : { v: done, e };
+  if (prefix === "r") return isChar(key) ? replaceChars(done, e, key, n, last) : { v: done, e };
   if (prefix === "g") return key === "g" ? go("gg") : { v: done, e };
+  if (prefix === "i" || prefix === "a") {
+    const o = textObject(e.text, e.cursor, prefix, key);
+    return o ? operate(done, move(e, o[0]), op, { to: o[1], kind: "object" }, last) : { v: done, e };
+  }
   if (prefix) return isChar(key) ? go("find", { op: prefix as Find, ch: key }) : { v: done, e };
   // A digit adds to the count, after an operator to its own; 0 with no digits before it is the line's start.
   if (/^\d$/u.test(key) && op && (key !== "0" || opCount)) return { v: { ...v, pending: v.pending + key }, e };
   if (/^\d$/u.test(key) && !op && (key !== "0" || v.count)) return { v: { ...v, count: v.count + key }, e };
-  if (/^[gfFtT]$/u.test(key) || (!op && /^[dcy<>r]$/u.test(key))) return { v: { ...v, pending: v.pending + key }, e };
+  // A text object follows d, c or y; Claude Code's > and < take only themselves again (2.1.312's own code).
+  const object = /^[dcy]$/u.test(op) && /^[ia]$/u.test(key);
+  if (object || /^[gfFtT]$/u.test(key) || (!op && /^[dcy<>r]$/u.test(key))) return { v: { ...v, pending: v.pending + key }, e };
   if (op && key === op) return go("line"); // dd cc yy >> <<
   const short = op ? undefined : SHORT.get(key);
   if (short) return normal({ ...v, pending: short[0]! }, e, short.slice(1), keys);
   if (MOTIONS.has(key)) return go(key);
-  return op ? { v: done, e } : command(done, e, key, n, keys); // an operator then a key that is no motion drops both
+  if (op) return { v: done, e }; // an operator then a key that is no motion drops both
+  // VISUAL keeps the column j and k keep, as Claude Code's does; a count before v or V is dropped, as there.
+  if (key === "v" || key === "V") return { v: { ...v, pending: "", count: "", mode: VISUALS[key], anchor: e.cursor }, e };
+  if (key === ".") return repeat(done, e, v.count);
+  return command(done, e, key, n, last);
 }
 
-function command(v: Vim, e: Editor, key: string, n: number, keys: string[]): Result {
+const VISUALS = { v: "VISUAL", V: "VISUAL LINE" } as const;
+
+function command(v: Vim, e: Editor, key: string, n: number, last: Change): Result {
   const { text, cursor: c } = e;
   switch (key) {
     case "i":
-      return toInsert(v, e, keys);
+      return toInsert(v, e, last);
     case "a":
-      return toInsert(v, move(e, Math.min(after(text, c), lineEnd(text, c))), keys);
+      return toInsert(v, move(e, Math.min(after(text, c), lineEnd(text, c))), last);
     case "I":
-      return toInsert(v, move(e, firstNonBlank(text, c)), keys);
+      return toInsert(v, move(e, firstNonBlank(text, c)), last);
     case "A":
-      return toInsert(v, move(e, lineEnd(text, c)), keys);
+      return toInsert(v, move(e, lineEnd(text, c)), last);
     case "o": {
       const at = lineEnd(text, c);
-      return toInsert(v, change(e, at, at, "\n", { typing: true }), keys);
+      return toInsert(v, change(e, at, at, "\n", { typing: true }), last);
     }
     case "O": {
       // The cursor before the new line break, the step still open for the typing to join.
       const at = lineStart(text, c);
-      return toInsert(v, { ...change(e, at, at, "\n", { typing: true }), cursor: at }, keys);
+      return toInsert(v, { ...change(e, at, at, "\n", { typing: true }), cursor: at }, last);
     }
     case "p":
     case "P":
-      return put(v, e, key === "p", n, keys);
+      return put(v, e, key === "p", n, last);
     case "J":
-      return join(v, e, n, keys);
+      return join(v, e, n, last);
     case "u": {
       // The editor's undo, `n` steps or as many as there are; each puts back the text and the cursor
       // from before its step.
@@ -121,8 +178,9 @@ function command(v: Vim, e: Editor, key: string, n: number, keys: string[]): Res
 
 // INSERT where the editor's cursor is. A command that changed the text made its step with `typing`, so
 // what is typed now joins it: `cw` and the word typed in its place undo together, as in Vim.
-function toInsert(v: Vim, e: Editor, keys: string[]): Result {
-  return { v: { ...v, mode: "INSERT", lastChange: keys }, e };
+function toInsert(v: Vim, e: Editor, last: Change): Result {
+  const entered = { head: e.text.slice(0, e.cursor), tail: e.text.slice(e.cursor) };
+  return { v: { ...v, mode: "INSERT", lastChange: last, entered }, e };
 }
 
 // In NORMAL the cursor is on a character, so never on a line's end unless the line is empty (Vim); App's
@@ -132,12 +190,14 @@ function onChar(e: Editor): Editor {
   return move(e, (c === text.length || text[c] === "\n") && c !== lineStart(text, c) ? before(text, c) : c);
 }
 
-type Motion = { to: number; kind: "exclusive" | "inclusive" | "line"; goal?: number };
+// "object" is a text object's start (the cursor) to its end, taken as they are.
+type Motion = { to: number; kind: "exclusive" | "inclusive" | "line" | "object"; goal?: number };
 
 // An operator over the text from the cursor to where the motion goes, by Vim's rules: an inclusive
 // motion takes the character it lands on, and an exclusive one ending at a line's start ends at the
-// line before's end instead, taking whole lines when it began in its line's indent.
-function operate(v: Vim, e: Editor, op: string, m: Motion, keys: string[]): Result {
+// line before's end instead, taking whole lines when it began in its line's indent. `times` is how often
+// VISUAL's > and < shift (Claude Code 2.1.312's own code, read 2026-10-29).
+function operate(v: Vim, e: Editor, op: string, m: Motion, last: Change, times = 1): Result {
   const { text, cursor: c } = e;
   let from = Math.min(c, m.to);
   let to = Math.max(c, m.to);
@@ -148,16 +208,24 @@ function operate(v: Vim, e: Editor, op: string, m: Motion, keys: string[]): Resu
     line = from <= firstNonBlank(text, from);
   }
   if (line || op === ">" || op === "<") [from, to] = [lineStart(text, from), lineEnd(text, to)];
-  const register = to > from || line ? { text: text.slice(from, to), linewise: line } : v.register;
+  // A yank reaching into a picture's marker takes all of it and its span, as a delete does (editor.ts, change).
+  const [rf, rt] = cover(e.spans, from, to);
+  const register = to > from || line ? { text: text.slice(rf, rt), linewise: line, spans: within(e.spans, rf, rt) } : v.register;
   if (op === "y") return { v: { ...v, register }, e: onChar(move(e, Math.min(c, m.to))) }; // the cursor to the yank's start
-  if (op === "c") return toInsert({ ...v, register }, change(e, from, to, "", { typing: true }), keys);
-  const changed = { ...v, register: op === "d" ? register : v.register, lastChange: keys };
+  if (op === "c") return toInsert({ ...v, register }, change(e, from, to, "", { typing: true }), last);
+  const changed = { ...v, register: op === "d" ? register : v.register, lastChange: last };
   if (op === ">" || op === "<") {
-    // Each line's own change at its start, as one step (editor.ts, changes); nothing to take off: no undo step.
+    // Each line's own change at its start, as one step (editor.ts, changes); nothing to take off: no undo step. A count
+    // too big for the text to hold shifts nothing, as `put` refuses one.
     const edits: [number, number, string][] = [];
-    for (let s = from; s <= to; s = lineEnd(text, s) + 1) {
-      const [cut, add] = shift(text.slice(s, lineEnd(text, s)), op);
-      if (cut || add) edits.push([s, s + cut, add]);
+    try {
+      for (let s = from; s <= to; s = lineEnd(text, s) + 1) {
+        const [cut, add] = shift(text.slice(s, lineEnd(text, s)), op, times);
+        if (cut || add) edits.push([s, s + cut, add]);
+      }
+    } catch (err) {
+      if (err instanceof RangeError) return { v, e };
+      throw err;
     }
     const d = changes(e, edits);
     return { v: changed, e: onChar(move(d, firstNonBlank(d.text, from))) };
@@ -172,35 +240,41 @@ function operate(v: Vim, e: Editor, op: string, m: Motion, keys: string[]): Resu
 // >> and << as Claude Code 2.1.312's own code does them (read 2026-10-28; the user's choice, two
 // spaces): >> puts two spaces before a line; << takes off two spaces, else a tab, else up to two
 // leading blanks, a blank being what `\s` matches, as Claude Code's `/\s/.test(i[u])` has it. An empty
-// line is left alone. What to take off the line's start, and what to put there.
-function shift(line: string, op: string): [number, string] {
+// line is left alone. What to take off the line's start, and what to put there, shifting `times` times.
+function shift(line: string, op: string, times: number): [number, string] {
   if (!line) return [0, ""];
-  if (op === ">") return [0, "  "];
-  if (line.startsWith("  ")) return [2, ""];
-  if (line.startsWith("\t")) return [1, ""];
-  return [/^\s{0,2}/u.exec(line)![0].length, ""];
+  if (op === ">") return [0, "  ".repeat(times)];
+  let cut = 0;
+  for (let i = 0; i < times; i++) {
+    const rest = line.slice(cut);
+    const step = rest.startsWith("  ") ? 2 : rest.startsWith("\t") ? 1 : /^\s{0,2}/u.exec(rest)![0].length;
+    if (!step) break;
+    cut += step;
+  }
+  return [cut, ""];
 }
 
 // `r`: `n` characters from the cursor, each made `ch`, or nothing when the line has fewer (Vim).
-function replaceChars(v: Vim, e: Editor, ch: string, n: number, keys: string[]): Result {
+function replaceChars(v: Vim, e: Editor, ch: string, n: number, last: Change): Result {
   const t = chars(e.text);
   const k = t.at.indexOf(e.cursor);
   if (k + n > t.ch.length || t.ch.slice(k, k + n).includes("\n")) return { v, e };
   // The cursor on the last character put: from where the change ended, as a change reaching into a picture's marker
   // takes the whole marker (editor.ts, change).
   const d = change(e, t.at[k]!, t.at[k + n]!, ch.repeat(n));
-  return { v: { ...v, lastChange: keys }, e: move(d, d.cursor - ch.length) };
+  return { v: { ...v, lastChange: last }, e: move(d, d.cursor - ch.length) };
 }
 
 // `p` and `P`: the register `n` times, after or before the cursor, or below or above its line for a
 // yanked line. The cursor goes where Vim puts it: a line's first non-blank, or the last character put
 // unless that was more than one line. A count too big for the text to hold puts nothing, as Vim
-// refuses it (E1240).
-function put(v: Vim, e: Editor, below: boolean, n: number, keys: string[]): Result {
-  const { text: reg, linewise } = v.register;
+// refuses it (E1240). Each copy has the register's pictures' spans, and the cursor on a marker puts after
+// or before all of it, so the marker stays whole.
+function put(v: Vim, e: Editor, below: boolean, n: number, last: Change): Result {
+  const { text: reg, linewise, spans } = v.register;
   if (!reg && !linewise) return { v, e };
   const { text, cursor: c } = e;
-  const done = { ...v, lastChange: keys };
+  const done = { ...v, lastChange: last };
   let block: string;
   try {
     block = linewise ? `${reg}\n`.repeat(n) : reg.repeat(n);
@@ -210,18 +284,39 @@ function put(v: Vim, e: Editor, below: boolean, n: number, keys: string[]): Resu
   }
   if (linewise) {
     const at = below ? lineEnd(text, c) : lineStart(text, c);
-    const d = change(e, at, at, below ? `\n${block.slice(0, -1)}` : block);
+    const d = withCopies(change(e, at, at, below ? `\n${block.slice(0, -1)}` : block), spans, below ? at + 1 : at, reg.length + 1, n);
     return { v: done, e: onChar(move(d, firstNonBlank(d.text, below ? at + 1 : at))) };
   }
-  const at = below ? Math.min(after(text, c), lineEnd(text, c)) : c;
-  const d = change(e, at, at, block);
+  let at = below ? Math.min(after(text, c), lineEnd(text, c)) : c;
+  const inside = e.spans.find((s) => s.from < at && at < s.to);
+  if (inside) at = below ? inside.to : inside.from;
+  const d = withCopies(change(e, at, at, block), spans, at, reg.length, n);
   return { v: done, e: onChar(move(d, block.includes("\n") ? at : before(d.text, at + block.length))) };
+}
+
+// The register's spans in `n` copies put in, the first from `at` and each `step` after the one before (release 6
+// plan, Task 20: yank and put copy pictures' spans).
+function withCopies(d: Editor, spans: readonly Span[], at: number, step: number, n: number): Editor {
+  if (!spans.length) return d;
+  const copies = Array.from({ length: n }, (_, i) => spans.map((s) => ({ ...s, from: s.from + at + i * step, to: s.to + at + i * step })));
+  return { ...d, spans: [...d.spans, ...copies.flat()].sort((a, b) => a.from - b.from) };
+}
+
+// The range widened to the whole of any picture's marker it reaches into, as editor.ts's `change` widens a delete.
+function cover(spans: readonly Span[], from: number, to: number): [number, number] {
+  for (const s of spans) if (from < to && s.from < to && s.to > from) [from, to] = [Math.min(from, s.from), Math.max(to, s.to)];
+  return [from, to];
+}
+
+// The spans wholly from `from` to `to`, counted from `from`, for the register.
+function within(spans: readonly Span[], from: number, to: number): Span[] {
+  return spans.filter((s) => s.from >= from && s.to <= to).map((s) => ({ ...s, from: s.from - from, to: s.to - from }));
 }
 
 // `J`: `n` lines (two at least) made one, as Claude Code 2.1.312's own code does it (read 2026-10-28).
 // Each joined line loses its indent and gets one space before it, but none when it is empty or starts
 // with ")", or the text before is empty or ends in a blank. The cursor goes to the last join.
-function join(v: Vim, e: Editor, n: number, keys: string[]): Result {
+function join(v: Vim, e: Editor, n: number, last: Change): Result {
   const { text, cursor: c } = e;
   const from = lineStart(text, c);
   let to = lineEnd(text, c);
@@ -241,7 +336,200 @@ function join(v: Vim, e: Editor, n: number, keys: string[]): Result {
     to = end;
   }
   const d = changes(e, edits);
-  return { v: { ...v, lastChange: keys }, e: onChar(move(d, from + at)) };
+  return { v: { ...v, lastChange: last }, e: onChar(move(d, from + at)) };
+}
+
+// VISUAL and VISUAL LINE (Claude Code's "Visual mode" table): motions move the cursor, the anchor stays,
+// and the selection is all from one to the other, whole lines in VISUAL LINE. Counts, f F t T, g and the
+// motions are NORMAL's. As Claude Code 2.1.312's own code has it (read 2026-10-29): Enter moves down a line,
+// a text object is found from the cursor alone, and any other key does nothing.
+function visual(v: Vim, e: Editor, key: string): Result {
+  const done: Vim = { ...v, pending: "", count: "" };
+  const { text, cursor: c } = e;
+  if (v.pending === "i" || v.pending === "a") {
+    const o = textObject(text, c, v.pending, key);
+    return o ? { v: { ...done, anchor: o[0] }, e: move(e, o[1] > o[0] ? before(text, o[1]) : o[0]) } : { v: done, e };
+  }
+  const replacing = v.pending === "r"; // the next key is the character, even a digit or a motion's
+  if (replacing && !isChar(key)) return { v: done, e };
+  if (!replacing && (v.pending || /^\d$/u.test(key) || /^[gfFtT]$/u.test(key) || MOTIONS.has(key))) return normal(v, e, key);
+  if (key === "enter") return normal(v, e, "j");
+  if (key === "escape") return v.count ? { v: done, e } : leave(done, e);
+  if (!v.pending && /^[ria]$/u.test(key)) return { v: { ...v, pending: key }, e };
+  const a = v.anchor ?? c;
+  const line = v.mode === "VISUAL LINE";
+  const from = line ? lineStart(text, Math.min(a, c)) : Math.min(a, c);
+  const end = Math.max(a, c); // where the last character selected starts
+  const to = line ? lineEnd(text, end) : after(text, end);
+  const { anchor, ...rest } = done;
+  const out: Vim = { ...rest, mode: "NORMAL" };
+  const lines = text.slice(from, end).split("\n").length;
+  // For `.`: as many characters, or lines, from the cursor (Claude Code 2.1.312's own code).
+  const size = line ? lines : chars(text.slice(from, to)).ch.length;
+  const last: Change = { keys: replacing ? ["r", key] : [key], count: v.count, selected: { line, size } };
+  const sel: Motion = { to: end, kind: line ? "line" : "inclusive" };
+  if (replacing) return remake({ ...out, lastChange: last }, e, from, to, () => key, key);
+  switch (key) {
+    case "d":
+    case "x":
+      return operate(out, move(e, from), "d", sel, last);
+    case "c":
+    case "s":
+      return operate(out, move(e, from), "c", sel, last);
+    case "y":
+      return operate(out, move(e, from), "y", sel, last);
+    case ">":
+    case "<":
+      return operate(out, move(e, from), key, sel, last, Number(v.count || 1));
+    case "~":
+    case "u":
+    case "U":
+      return remake({ ...out, lastChange: last }, e, from, to, CASES[key]);
+    case "p":
+      return v.register.text || v.register.linewise ? putOver(out, e, from, to, line, last) : { v: done, e };
+    case "J":
+      return join(out, onChar(move(e, from)), Math.max(2, lines), last);
+    case "o":
+      return { v: { ...done, anchor: c }, e: move(e, a) };
+    case "v":
+    case "V":
+      return VISUALS[key] === v.mode ? leave(done, e) : { v: { ...done, mode: VISUALS[key] }, e };
+  }
+  return { v: done, e };
+}
+
+// Out of VISUAL to NORMAL, the cursor onto a character.
+function leave(v: Vim, e: Editor): Result {
+  const { anchor, ...rest } = v;
+  return { v: { ...rest, mode: "NORMAL" }, e: onChar(e) };
+}
+
+const CASES = {
+  "~": (ch: string) => (ch === ch.toUpperCase() ? ch.toLowerCase() : ch.toUpperCase()),
+  u: (ch: string) => ch.toLowerCase(),
+  U: (ch: string) => ch.toUpperCase(),
+};
+
+// VISUAL's r, ~, u and U: each character from `from` to `to` made anew by `f`, line breaks kept, a run at a time
+// between pictures' markers, as one step. A marker is one character (release 6 plan, choice 14) with no case: r
+// makes it one `marker`, and ~ u U leave it and its span. The cursor goes to the selection's start (Claude Code
+// 2.1.312's own code), or to a marker's start that began before it.
+function remake(v: Vim, e: Editor, from: number, to: number, f: (ch: string) => string, marker?: string): Result {
+  const edits: [number, number, string][] = [];
+  let at = from;
+  const run = (end: number) => {
+    const old = e.text.slice(at, end);
+    const made = chars(old).ch.map((ch) => (ch === "\n" ? ch : f(ch))).join("");
+    if (made !== old) edits.push([at, end, made]);
+  };
+  for (const s of e.spans) {
+    if (s.to <= from || s.from >= to) continue;
+    if (s.from > at) run(s.from);
+    if (marker !== undefined) edits.push([s.from, s.to, marker]);
+    at = Math.max(at, s.to);
+  }
+  if (to > at) run(to);
+  return { v, e: onChar(move(changes(e, edits), Math.min(from, edits[0]?.[0] ?? from))) };
+}
+
+// VISUAL's p, as Claude Code 2.1.312's own code does it (read 2026-10-29): the selection replaced by the register's
+// text, less a line break at its end, with a line break after it when the selection ended with one; the register
+// then holds what was replaced. The cursor goes to the first line's first non-blank in VISUAL LINE, else to the
+// last character put, or to its start when what was put ends with a line break.
+function putOver(v: Vim, e: Editor, from: number, to: number, line: boolean, last: Change): Result {
+  const reg = v.register;
+  [from, to] = cover(e.spans, from, to);
+  const old = e.text.slice(from, to);
+  const body = reg.text.endsWith("\n") ? reg.text.slice(0, -1) : reg.text;
+  const put = old.endsWith("\n") ? `${body}\n` : body;
+  const d = withCopies(change(e, from, to, put), reg.spans, from, 0, 1);
+  const at = line ? firstNonBlank(d.text, from) : put.endsWith("\n") ? from : Math.max(from, before(d.text, from + put.length));
+  const register = { text: old, linewise: line, spans: within(e.spans, from, to) };
+  return { v: { ...v, register, lastChange: { ...last, put: reg } }, e: move(d, at) };
+}
+
+// `.`: the last change again from the cursor, with its count or one typed before `.`, which takes its place (Vim's
+// ":help .": "the count replaces the original count"), and with what its INSERT typed. A VISUAL change is made over
+// as many characters or lines from the cursor, and its p puts what it put then, as Claude Code 2.1.312's own code
+// repeats them (read 2026-10-29).
+function repeat(v: Vim, e: Editor, count: string): Result {
+  const last = v.lastChange;
+  if (!last) return { v, e };
+  const n = count || last.count;
+  let r: Result = { v: last.put ? { ...v, register: last.put } : v, e };
+  if (last.selected) r = reselect(r.v, e, last.selected);
+  for (const k of [...n, ...last.keys]) r = press(r.v, r.e, k);
+  if (r.v.mode === "INSERT") r = press(r.v, apply(r.e, { type: "insert", text: last.typed ?? "" }), "escape");
+  return { v: { ...r.v, lastChange: { ...last, count: n } }, e: r.e };
+}
+
+// VISUAL from the cursor over `size` characters, or lines, for `.`.
+function reselect(v: Vim, e: Editor, { line, size }: { line: boolean; size: number }): Result {
+  const { text, cursor: c } = e;
+  const t = chars(text);
+  const k = t.at.indexOf(c);
+  const to = line ? (vertical(text, c, size - 1)?.to ?? c) : t.at[Math.max(k, Math.min(k + size, t.ch.length) - 1)]!;
+  return { v: { ...v, mode: line ? "VISUAL LINE" : "VISUAL", anchor: c }, e: move(e, to) };
+}
+
+// Text objects (Claude Code's "Text objects" table), found as Claude Code 2.1.312's own code finds them (read
+// 2026-10-29): where the object around `c` starts and ends, or nothing. A count does not change them, as there.
+function textObject(text: string, c: number, scope: string, kind: string): [number, number] | undefined {
+  const inner = scope === "i";
+  if (kind === "w" || kind === "W") return word(text, c, inner, kind === "W");
+  if (kind === '"' || kind === "'") return quoted(text, c, kind, inner);
+  const close = BRACKETS.get(kind);
+  return close ? bracketed(text, c, kind, close, inner) : undefined;
+}
+const BRACKETS = new Map([["(", ")"], ["[", "]"], ["{", "}"]]);
+
+// `iw` and `aw`: the run of word characters, other marks or blanks the cursor is on (for `iW` and `aW`, of
+// non-blanks or blanks). `aw` adds the blanks after, or when there are none those before; on blanks both take
+// the blanks alone.
+function word(text: string, c: number, inner: boolean, big: boolean): [number, number] | undefined {
+  const t = chars(text);
+  const len = t.ch.length;
+  if (!len) return undefined;
+  const kind = (i: number) => (big ? Math.min(cls(t, i), 1) : cls(t, i));
+  const k = Math.min(t.at.indexOf(c), len - 1);
+  const own = kind(k);
+  let [s, f] = [k, k + 1];
+  while (s > 0 && kind(s - 1) === own) s--;
+  while (f < len && kind(f) === own) f++;
+  if (own !== 0 && !inner) {
+    if (kind(f) === 0) while (kind(f) === 0) f++;
+    else while (s > 0 && kind(s - 1) === 0) s--;
+  }
+  return [t.at[s]!, t.at[f]!];
+}
+
+// `i"` and `a"`, `i'` and `a'`: the quotes on the cursor's line paired in order, the first with the second, the
+// third with the fourth, and the pair the cursor is on or between; `a` takes the quotes too, and no blanks.
+function quoted(text: string, c: number, q: string, inner: boolean): [number, number] | undefined {
+  const at: number[] = [];
+  for (let i = lineStart(text, c), end = lineEnd(text, c); i < end; i++) if (text[i] === q) at.push(i);
+  for (let i = 0; i + 1 < at.length; i += 2) {
+    const [open, close] = [at[i]!, at[i + 1]!];
+    if (open <= c && c <= close) return inner ? [open + 1, close] : [open, close + 1];
+  }
+  return undefined;
+}
+
+// `i(` `a(`, `i[` `a[`, `i{` `a{`: the nearest `open` at or before the cursor that is not closed before it,
+// and the `close` matching it, over lines; `a` takes the brackets too.
+function bracketed(text: string, c: number, open: string, close: string, inner: boolean): [number, number] | undefined {
+  let s = c;
+  for (let depth = 0; s >= 0; s--) {
+    if (text[s] === close && s !== c) depth++;
+    else if (text[s] === open && depth-- === 0) break;
+  }
+  if (s < 0) return undefined;
+  let f = s + 1;
+  for (let depth = 0; f < text.length; f++) {
+    if (text[f] === open) depth++;
+    else if (text[f] === close && depth-- === 0) break;
+  }
+  return f < text.length ? (inner ? [s + 1, f] : [s, f + 1]) : undefined;
 }
 
 // Where a motion goes from `c`, `n` times, or nothing when it cannot go (Vim beeps then and the whole

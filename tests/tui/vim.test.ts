@@ -17,8 +17,16 @@ function keys(text: string, typed: string | string[], shown: string, mode: VimMo
 }
 
 // One test per row of Claude Code's "Vim editor mode" tables (code.claude.com/docs/en/interactive-mode,
-// read 2026-10-28). `v`, `V` and `.` are the release 6 plan's Task 20's.
+// read 2026-10-28; the "Text objects" and "Visual mode" tables and the `v`, `V` and `.` rows read again 2026-10-29).
 describe("vim: mode switching", () => {
+  it("v: VISUAL, the selection anchored at the cursor", () => {
+    expect(keys("a|bc", "v", "a|bc", "VISUAL").v.anchor).toBe(1);
+  });
+
+  it("V: VISUAL LINE, the selection anchored at the cursor", () => {
+    expect(keys("a|bc", "V", "a|bc", "VISUAL LINE").v.anchor).toBe(1);
+  });
+
   it("Esc: INSERT to NORMAL, the cursor back onto the character before", () => {
     keys("ab|c", ["escape"], "a|bc", "NORMAL", start);
     keys("ab\n|c", ["escape"], "ab\n|c", "NORMAL", start);
@@ -209,7 +217,7 @@ describe("vim: editing", () => {
   it("dd: deletes the line", () => {
     keys("a\nb|b\nc", "dd", "a\n|c");
     keys("a\n  b|b\n  c", "dd", "a\n  |c"); // at the next line's first non-blank
-    expect(keys("a\nb|b", "dd", "|a").v.register).toEqual({ text: "bb", linewise: true });
+    expect(keys("a\nb|b", "dd", "|a").v.register).toEqual({ text: "bb", linewise: true, spans: [] });
   });
 
   it("D: deletes to the line's end", () => {
@@ -246,13 +254,13 @@ describe("vim: editing", () => {
   it("d0 c0 y0: back to the line's start", () => {
     keys("ab|cd", "d0", "|cd");
     keys("ab|cd", "c0", "|cd", "INSERT");
-    expect(keys("ab|cd", "y0", "|abcd").v.register).toEqual({ text: "ab", linewise: false });
+    expect(keys("ab|cd", "y0", "|abcd").v.register).toEqual({ text: "ab", linewise: false, spans: [] });
   });
 
   it("d% c% y%: through the bracket % goes to", () => {
     keys("x|(a)y", "d%", "x|y");
     keys("x|(a)y", "c%", "x|y", "INSERT");
-    expect(keys("x(a|)y", "y%", "x|(a)y").v.register).toEqual({ text: "(a)", linewise: false });
+    expect(keys("x(a|)y", "y%", "x|(a)y").v.register).toEqual({ text: "(a)", linewise: false, spans: [] });
   });
 
   it("cc: changes the line", () => {
@@ -280,7 +288,7 @@ describe("vim: editing", () => {
   });
 
   it("yy Y: yank the line, the text and cursor staying", () => {
-    for (const k of ["yy", "Y"]) expect(keys("a\nb|c", k, "a\nb|c").v.register).toEqual({ text: "bc", linewise: true });
+    for (const k of ["yy", "Y"]) expect(keys("a\nb|c", k, "a\nb|c").v.register).toEqual({ text: "bc", linewise: true, spans: [] });
   });
 
   it("yw ye yb: yank a word, to its end, back, the cursor going to the yank's start", () => {
@@ -335,6 +343,221 @@ describe("vim: editing", () => {
     keys("|foo bar", ["c", "w", "x", "y", "escape", "u"], "|foo bar");
     keys("a|b", ["o", "x", "escape", "u"], "a|b");
     keys("a|b", ["a", "x", "escape", "i", "y", "escape", "u"], "ab|x");
+  });
+
+  it(".: repeats the last change: dw, 3x, a put", () => {
+    keys("|foo bar baz", "dw.", "|baz");
+    keys("|abcdefg", "3x.", "|g");
+    keys("|ab", "ylp.", "aa|ab");
+    keys("a|b", ".", "a|b"); // no change yet
+  });
+
+  it(".: repeats a change into INSERT with what was typed there: ciwfoo<Esc>", () => {
+    keys("|a b", ["c", "i", "w", "f", "o", "o", "escape", "w", "."], "foo fo|o");
+    keys("|a\nb", ["o", "x", "escape", "."], "a\nx\n|x\nb");
+  });
+
+  it(".: a count before it takes the place of the change's own count, as in Vim", () => {
+    keys("|a b c d e", "dw2.", "|d e");
+    keys("|a b c d e", "dw2..", "|");
+  });
+
+  it(".: the change and its typing are one undo step", () => {
+    keys("|foo bar", ["c", "w", "x", "escape", "w", ".", "u"], "x |bar");
+  });
+
+  // App, not vim, makes INSERT's other edits (the release 6 plan's Task 21): `edit` is App's action between two keys.
+  function typed(text: string, before: string[], edit: Parameters<typeof apply>[1], after: string[]) {
+    let r: ReturnType<typeof press> = { v: NORMAL, e: at(text) };
+    for (const k of before) r = press(r.v, r.e, k);
+    r = { ...r, e: apply(r.e, edit) };
+    for (const k of after) r = press(r.v, r.e, k);
+    return r;
+  }
+
+  it(".: what INSERT typed is the text left between where it began and what followed, whatever App's keys did there", () => {
+    let r = typed("|foo bar", ["c", "w", "a", "b", "c"], "backspace", ["d", "escape", "w", "."]);
+    expect(show(r.e)).toBe("abd ab|d");
+    r = typed("|foo bar", ["c", "w", "a", "c"], "left", ["b", "escape", "w", "."]);
+    expect(show(r.e)).toBe("abc ab|c");
+    r = typed("|foo bar", ["c", "w", "a"], { type: "paste", text: "b\nc" }, ["escape", "w", "."]);
+    expect(show(r.e)).toBe("ab\nc ab\n|c");
+  });
+
+  it(".: an INSERT whose edits reached past where it began has nothing to repeat, rather than repeating part of it", () => {
+    const r = typed("foo |bar", ["i"], "backspace", ["x", "escape", "$", "."]);
+    expect(show(r.e)).toBe("fooxba|r");
+    expect(r.v.lastChange).toBeUndefined();
+  });
+});
+
+// Where the docs' table leaves a text object's edges open, they are Claude Code 2.1.312's own (read 2026-10-29).
+describe("vim: text objects", () => {
+  it("iw aw: inner or around word; aw takes the blanks after, else those before; on blanks both take the blanks", () => {
+    keys("foo b|ar baz", "diw", "foo | baz");
+    keys("foo b|ar baz", "daw", "foo |baz");
+    keys("foo b|ar", "daw", "fo|o");
+    keys("foo-b|ar", "diw", "foo|-");
+    keys("foo |  bar", "daw", "foo|bar");
+    keys("foo b|ar baz", "ciw", "foo | baz", "INSERT");
+    expect(keys("foo b|ar baz", "yiw", "foo |bar baz").v.register.text).toBe("bar");
+  });
+
+  it("iW aW: inner or around WORD, any run of non-blanks", () => {
+    keys("a foo-b|ar b", "diW", "a | b");
+    keys("a foo-b|ar b", "daW", "a |b");
+    keys("a foo-b|ar b", "ciW", "a | b", "INSERT");
+    expect(keys("a foo-b|ar b", "yaW", "a |foo-bar b").v.register.text).toBe("foo-bar ");
+  });
+
+  it('i" a": inner or around double quotes, a pair on the cursor\'s line', () => {
+    keys('say "hi |there" now', 'di"', 'say "|" now');
+    keys('say "hi |there" now', 'da"', "say | now");
+    keys('say |"hi" now', 'di"', 'say "|" now');
+    keys('say "hi |there" now', 'ci"', 'say "|" now', "INSERT");
+    expect(keys('say "hi |there" now', 'yi"', 'say "|hi there" now').v.register.text).toBe("hi there");
+    keys('x|y "a"', 'di"', 'x|y "a"'); // not inside a pair
+  });
+
+  it("i' a': inner or around single quotes, paired in order along the line", () => {
+    keys("say 'a|b' ok", "di'", "say '|' ok");
+    keys("say 'a|b' ok", "da'", "say | ok");
+    keys("say 'a|b' ok", "ci'", "say '|' ok", "INSERT");
+    expect(keys("say 'a|b' ok", "ya'", "say |'ab' ok").v.register.text).toBe("'ab'");
+    keys("it's 'a|b'", "di'", "it's 'a|b'"); // the apostrophe pairs with the first quote, as in Claude Code
+  });
+
+  it("i( a(: inner or around parentheses, the nearest pair around the cursor, over lines", () => {
+    keys("f(a, (b|) c)", "di(", "f(a, (|) c)");
+    keys("f(a, (b|) c)", "da(", "f(a, | c)");
+    keys("f(|a, (b) c)", "di(", "f(|)");
+    keys("f(a|)", "di(", "f(|)"); // on the closing one
+    keys("f(\n  a|b\n)", "di(", "f(|)");
+    keys("f(a|)", "ci(", "f(|)", "INSERT");
+    expect(keys("f(a, (b|) c)", "ya(", "f(a, |(b) c)").v.register.text).toBe("(b)");
+    keys("a|b", "di(", "a|b"); // none around
+  });
+
+  it("i[ a[: inner or around brackets", () => {
+    keys("x[1, [|2]]", "di[", "x[1, [|]]");
+    keys("x[1, [|2]]", "da[", "x[1, |]");
+    keys("x[1, [|2]]", "ci[", "x[1, [|]]", "INSERT");
+    expect(keys("x[1, [|2]]", "yi[", "x[1, [|2]]").v.register.text).toBe("2");
+  });
+
+  it("i{ a{: inner or around braces", () => {
+    keys("if {a|b}", "di{", "if {|}");
+    keys("if {a|b}", "da{", "if| ");
+    keys("if {a|b}", "ci{", "if {|}", "INSERT");
+    expect(keys("if {a|b}", "ya{", "if |{ab}").v.register.text).toBe("{ab}");
+  });
+
+  it("only after d, c and y; with nothing to take the command is dropped", () => {
+    expect(keys("foo b|ar", ">i", "foo b|ar").v.pending).toBe(""); // Claude Code's > takes only a second >
+    expect(keys("a|b", "di(h", "|ab").v.pending).toBe("");
+  });
+});
+
+describe("vim: VISUAL", () => {
+  it("motions extend the selection from the anchor, either way", () => {
+    expect(keys("a|bc def", "vw", "abc |def", "VISUAL").v.anchor).toBe(1);
+    keys("a|bc def", "vwd", "a|ef");
+    keys("abc|d", "vhhd", "|a");
+    keys("a|b\ncd", ["v", "enter"], "ab\nc|d", "VISUAL"); // Enter goes down a line, as Claude Code's does
+    expect(keys("a|b", "vj", "a|b", "VISUAL").act).toBeUndefined(); // no prompt history from VISUAL
+  });
+
+  it("$ selects up to and with the line break, as in Vim", () => {
+    keys("a|bc\nde", "v$", "abc|\nde", "VISUAL");
+    keys("a|bc\nde", "v$d", "a|de");
+    keys("a|bc", "v$d", "|a");
+  });
+
+  it("d x: delete the selection; in VISUAL LINE its lines", () => {
+    for (const k of ["d", "x"]) keys("a|bcd", `vl${k}`, "a|d");
+    const { v } = keys("a|bcd", "vld", "a|d");
+    expect(v.register).toEqual({ text: "bc", linewise: false, spans: [] });
+    expect(v).not.toHaveProperty("anchor");
+    keys("a\nb|c\nd", "Vd", "a\n|d");
+    keys("a\nb|c\nd\ne", "Vjd", "a\n|e");
+  });
+
+  it("y: yanks the selection, the cursor to its start; in VISUAL LINE the first line's start", () => {
+    expect(keys("a|bcd", "vly", "a|bcd").v.register).toEqual({ text: "bc", linewise: false, spans: [] });
+    keys("abc|d", "vhy", "ab|cd");
+    expect(keys("a\nb|c", "Vy", "a\n|bc").v.register).toEqual({ text: "bc", linewise: true, spans: [] });
+  });
+
+  it("c s: change the selection, in INSERT", () => {
+    for (const k of ["c", "s"]) keys("a|bcd", `vl${k}`, "a|d", "INSERT");
+    keys("a\nb|c\nd", "Vc", "a\n|\nd", "INSERT");
+  });
+
+  it("p: replaces the selection with the register, which then holds what was replaced", () => {
+    const yanked = (text: string, linewise = false): Vim => ({ ...NORMAL, register: { text, linewise, spans: [] } });
+    expect(keys("a|bcd", "vlp", "aX|Yd", "NORMAL", yanked("XY")).v.register).toEqual({ text: "bc", linewise: false, spans: [] });
+    expect(keys("a\nb|c\nd", "Vp", "a\n|X\nd", "NORMAL", yanked("X", true)).v.register).toEqual({ text: "bc", linewise: true, spans: [] });
+    keys("a|bc\nd", "v$p", "a|X\nd", "NORMAL", yanked("X")); // the line break selected is kept
+    keys("a|b", "vp", "a|b", "VISUAL"); // nothing yanked: nothing to put
+  });
+
+  it("r{char}: replaces every selected character, line breaks kept", () => {
+    keys("a|bcd", "vlrx", "a|xxd");
+    keys("a|b\ncd", "Vjrx", "|xx\nxx");
+    keys("a|bcd", "vlrh", "a|hhd"); // a motion's key, or a digit, is the character
+    keys("a|bcd", "vlr1", "a|11d");
+  });
+
+  it("~ u U: toggles, lowers or raises the selection's case", () => {
+    keys("a|bCd", "vl~", "a|Bcd");
+    keys("A|BCD", "vlu", "A|bcD");
+    keys("a|bcd", "vlU", "a|BCd");
+  });
+
+  it("> <: indent or dedent the selected lines, a count times", () => {
+    keys("a|b\ncd", "Vj>", "  |ab\n  cd");
+    keys("    a|b\n  cd", "vj<", "  |ab\ncd");
+    keys("a|b", "v2>", "    |ab");
+  });
+
+  it("J: joins the selected lines, two at least", () => {
+    keys("a|b\ncd\nef", "VjjJ", "ab cd| ef");
+    keys("a|b\ncd", "vJ", "ab| cd");
+    keys("a|bcd\ne\nf", "vllJ", "abcd| e\nf"); // three characters on one line: two lines joined
+    keys("a|b", "VJ", "|ab"); // no line below: VISUAL LINE leaves the cursor at the line's start, as Claude Code's does
+  });
+
+  it("o: swaps the cursor and the anchor", () => {
+    expect(keys("a|bcd", "vllo", "a|bcd", "VISUAL").v.anchor).toBe(3);
+    keys("a|bcde", "vllohd", "|e");
+  });
+
+  it('iw aw i" ...: select a text object, the anchor at its start', () => {
+    expect(keys("foo b|ar baz", "viw", "foo ba|r baz", "VISUAL").v.anchor).toBe(4);
+    keys("foo b|ar baz", "vawd", "foo |baz");
+    keys('say "a|b" ok', 'vi"d', 'say "|" ok');
+    keys("a|b", "vi(", "a|b", "VISUAL"); // none: the selection stays
+  });
+
+  it("v V: switch between VISUAL and VISUAL LINE, the anchor kept, or leave to NORMAL", () => {
+    expect(keys("a|b\ncd", "vlV", "ab|\ncd", "VISUAL LINE").v.anchor).toBe(1);
+    expect(keys("a|b\ncd", "Vv", "a|b\ncd", "VISUAL").v.anchor).toBe(1);
+    expect(keys("a|b", "vv", "a|b").v.anchor).toBeUndefined();
+    keys("a|b", "VV", "a|b");
+    keys("a|b", "v$v", "a|b"); // back onto a character
+  });
+
+  it("Esc: NORMAL, or with a count or command half typed, drops only that", () => {
+    keys("a|bc", ["v", "l", "escape"], "ab|c");
+    expect(keys("a|bc", ["v", "2", "escape"], "a|bc", "VISUAL").v.count).toBe("");
+    keys("a|bc", ["v", "r", "escape", "d"], "a|c");
+  });
+
+  it(".: repeats a VISUAL change over as many characters or lines from the cursor", () => {
+    keys("|abcdef", "vld.", "|ef");
+    keys("|ab cd", ["v", "l", "c", "x", "escape", "w", "."], "x |x");
+    keys("|a\nb\nc\nd\ne", "Vjd.", "|e");
+    keys("|abcd", "vlrx2l.", "xx|xx");
   });
 });
 
@@ -430,12 +653,76 @@ describe("vim: INSERT", () => {
   });
 });
 
-describe("vim: the last change, for the release 6 plan's Task 20's .", () => {
-  it("is the keys of the command, with its count", () => {
-    expect(keys("|foo bar", "dw", "|bar").v.lastChange).toEqual(["d", "w"]);
-    expect(keys("|abcd", "3x", "|d").v.lastChange).toEqual(["3", "x"]);
-    expect(keys("|foo bar", ["2", "c", "w", "x", "escape"], "|x").v.lastChange).toEqual(["2", "c", "w"]);
+describe("vim: the last change, for .", () => {
+  it("is the keys of the command, its count apart, and what the INSERT it began typed", () => {
+    expect(keys("|foo bar", "dw", "|bar").v.lastChange).toEqual({ keys: ["d", "w"], count: "" });
+    expect(keys("|abcd", "3x", "|d").v.lastChange).toEqual({ keys: ["x"], count: "3" });
+    expect(keys("|a b c d e", "2d2w", "|e").v.lastChange).toEqual({ keys: ["d", "w"], count: "4" });
+    expect(keys("|foo bar", ["2", "c", "w", "x", "escape"], "|x").v.lastChange).toEqual({ keys: ["c", "w"], count: "2", typed: "x" });
     expect(keys("|abcd", "yw", "|abcd").v.lastChange).toBeUndefined();
+  });
+});
+
+// Claude Code's docs, "Remap INSERT-mode key sequences" (read 2026-10-29): the first character is inserted, the second
+// within one second takes it out and goes to NORMAL; after the second, or another key between, both stay.
+describe("vim: vimInsertModeRemaps", () => {
+  const pairs = { jj: "<Esc>", jk: "<Esc>" } as const;
+  // Keys typed in INSERT from `text`, each [key, the time in ms], as App passes them.
+  function timed(text: string, typed: [string, number][], v: Vim = start) {
+    let r: ReturnType<typeof press> = { v, e: at(text) };
+    for (const [k, now] of typed) r = press(r.v, r.e, k, { pairs, now });
+    return r;
+  }
+
+  it("inserts the first character at once", () => {
+    const r = timed("ab|", [["j", 0]]);
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "abj|", mode: "INSERT" });
+  });
+
+  it("takes the first out and goes to NORMAL when the second comes within 1 s, 1000 ms itself included as Claude Code's own code has it", () => {
+    for (const later of [1, 1000]) {
+      const r = timed("ab|", [["j", 5000], ["j", 5000 + later]]);
+      expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "a|b", mode: "NORMAL" });
+    }
+    const r = timed("ab|", [["j", 0], ["k", 10]]);
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "a|b", mode: "NORMAL" });
+  });
+
+  it("leaves both after 1 s, and the second can then begin the pair again", () => {
+    let r = timed("ab|", [["j", 0], ["j", 1001]]);
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "abjj|", mode: "INSERT" });
+    r = timed("ab|", [["j", 0], ["j", 1001], ["j", 1500]]);
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "ab|j", mode: "NORMAL" });
+  });
+
+  it("leaves both when another key comes between, or the pair is the other way round", () => {
+    let r = timed("ab|", [["j", 0], ["x", 1], ["j", 2]]);
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "abjxj|", mode: "INSERT" });
+    r = timed("ab|", [["k", 0], ["j", 1]]);
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "abkj|", mode: "INSERT" });
+  });
+
+  it("leaves both when App's key or edit came between: Left, or a paste", () => {
+    const first = timed("ab|", [["j", 0]]);
+    const left = press(first.v, first.e, "left", { pairs, now: 1 }); // given back for App, which moves the cursor
+    let r = press(left.v, apply(left.e, "left"), "j", { pairs, now: 2 });
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "abj|j", mode: "INSERT" });
+    r = press(first.v, apply(first.e, { type: "paste", text: "x" }), "j", { pairs, now: 1 });
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "abjxj|", mode: "INSERT" });
+  });
+
+  it("leaves no undo step of its own, and . repeats what was typed before it", () => {
+    const r = timed("a|b", [["i", 0], ["x", 1], ["j", 2], ["j", 3]], NORMAL);
+    expect({ shown: show(r.e), mode: r.v.mode }).toEqual({ shown: "a|xb", mode: "NORMAL" });
+    expect(show(press(r.v, r.e, "u").e)).toBe("a|b");
+    expect(show(press(r.v, r.e, ".").e)).toBe("a|xxb");
+  });
+
+  it("does nothing without pairs, or outside INSERT", () => {
+    let r = press(start, at("ab|"), "j");
+    r = press(r.v, r.e, "j");
+    expect(show(r.e)).toBe("abjj|");
+    expect(show(timed("a|b", [["j", 0], ["j", 1]], NORMAL).e)).toBe("a|b");
   });
 });
 
@@ -469,5 +756,54 @@ describe("vim: pictures' markers", () => {
     const e = pressed(withPicture("go ", " end", 4), "rZ").e;
     expect(show(e)).toBe("go |Z end");
     expect(e.spans).toEqual([]);
+  });
+
+  // The release 6 plan, Task 20: yank and put copy pictures' spans.
+  it("a deleted marker put twice gives two spans of one id", () => {
+    const e = pressed(withPicture("go ", "", 3), "xpp").e;
+    expect(e.text).toBe("go [Image #1][Image #1]");
+    expect(spans(e)).toEqual(["1:[Image #1]", "1:[Image #1]"]);
+  });
+
+  it("a yanked marker put twice, and a count, give a span in every copy", () => {
+    expect(spans(pressed(withPicture("go ", "", 3), "yl$pp").e)).toEqual(["1:[Image #1]", "1:[Image #1]", "1:[Image #1]"]);
+    const e = pressed(withPicture("go ", "", 3), "yl$2p").e;
+    expect(e.text).toBe("go [Image #1][Image #1][Image #1]");
+    expect(spans(e)).toHaveLength(3);
+  });
+
+  it("a yanked line with a marker put gives the marker's span on the new line", () => {
+    const e = pressed(withPicture("go ", "", 0), "yyp").e;
+    expect(e.text).toBe("go [Image #1]\ngo [Image #1]");
+    expect(e.spans.map((s) => [s.id, s.from])).toEqual([[1, 3], [1, 17]]);
+  });
+
+  it("a yank reaching into a marker takes the whole marker, as a delete does (choice 14)", () => {
+    const r = pressed(withPicture("go ", " end", 3), "yl");
+    expect(r.v.register).toEqual({ text: "[Image #1]", linewise: false, spans: [{ id: 1, from: 0, to: 10 }] });
+  });
+
+  it("p after the cursor on a marker puts after the whole marker, leaving it whole", () => {
+    const e = pressed(withPicture("go ", "", 3), "ylp").e;
+    expect(e.text).toBe("go [Image #1][Image #1]");
+    expect(spans(e)).toHaveLength(2);
+  });
+
+  it("diw in a marker deletes the whole marker, which the register keeps with its span", () => {
+    const r = pressed(withPicture("go ", " end", 5), "diw");
+    expect(show(r.e)).toBe("go | end");
+    expect(r.v.register.spans).toEqual([{ id: 1, from: 0, to: 10 }]);
+  });
+
+  it("VISUAL y and p carry the span; ~ keeps a marker and its span; r makes a marker one character", () => {
+    const e = withPicture("go ", " x", 3);
+    expect(spans(pressed(e, "v9ly$P").e)).toEqual(["1:[Image #1]", "1:[Image #1]"]);
+    expect(spans(pressed(e, "yl$vp").e)).toEqual(["1:[Image #1]", "1:[Image #1]"]);
+    const raised = pressed(e, "0v$~").e;
+    expect(raised.text).toBe("GO [Image #1] X");
+    expect(spans(raised)).toEqual(["1:[Image #1]"]);
+    const replaced = pressed(e, "0v$rz").e;
+    expect(show(replaced)).toBe("|zzzzzz");
+    expect(replaced.spans).toEqual([]);
   });
 });
