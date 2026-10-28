@@ -73,6 +73,9 @@ export interface AppProps {
   // `/model`: every provider's models, and where to show what reading the saved login says.
   listModels: (signal: AbortSignal, warn: (line: string) => void) => Promise<ModelGroup[]>;
   screen: Screen; // full screen or classic, as the terminal is when the App starts (release 5 design, "The two modes")
+  // Whether full screen can draw here, for /screen: not where the output is not a terminal, or in CI (clilib.ts,
+  // fullPossible).
+  fullPossible: boolean;
   // The terminal's mouse reports, taken out of the keys by the InputFilter (release 5 design, "The mouse"), and the rows a
   // wheel notch scrolls (clilib.ts, scrollSpeed).
   mouse?: { on(e: "mouse", f: (m: Mouse) => void): unknown; off(e: "mouse", f: (m: Mouse) => void): unknown };
@@ -80,8 +83,8 @@ export interface AppProps {
   // Copying (release 5 design, "Copying"): the App makes the clipboard with its own report, so a failure shows in the
   // hint row.
   clipboard: (report: (problem: string) => void) => Clipboard;
-  // The InputFilter's hold on raw mode and its diverting of the keys, for `[` (release 5 design, "The detail view"). With
-  // none, `[` does nothing.
+  // The InputFilter's hold on raw mode and its diverting of the keys, for `[` (release 5 design, "The detail view"); /screen
+  // holds raw mode too. With none, `[` does nothing.
   input?: { divert(to: ((keys: string) => void) | null): void; hold(on: boolean): void };
 }
 
@@ -89,6 +92,9 @@ const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgp
 // "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
 const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
+const gray = (text: string): Line => ({ text, color: "gray" });
+// Characters as a person sees them, as the prompt counts them (release 5 plan, choice 7).
+const characters = (text: string) => [...segmenter.segment(text)].length;
 
 // What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
 // is a message).
@@ -122,6 +128,7 @@ export function App({
   login,
   listModels,
   screen,
+  fullPossible,
   mouse,
   scrollSpeed,
   clipboard,
@@ -169,6 +176,7 @@ export function App({
   const dropping = useRef<Printed | null>(null);
   const waitingList = useRef<ModelGroup[] | null>(null);
   const ended = useRef(false); // Ink has unmounted the App (the cleanup below)
+  const suspending = useRef(false); // /screen is suspending Ink, or has, and has not yet resumed it (switchScreen, below)
   // What is set up once, at mount (the bus listeners, bindAsk, History's warning, the mouse listener), keeps the first
   // render's functions, and what they call, `say`, `next` and the rest, reads the mode from here, not from the first
   // render's `full` (found at Task 5's review); so do the keys' functions, alike. /screen sets it as the switch starts,
@@ -232,7 +240,7 @@ export function App({
   // Made once, while drawing: safe with Ink's non-concurrent root (ink.js, `concurrent` defaults to false), which never
   // throws a render away; a concurrent root could make one clipboard for a render it drops.
   board.current ??= clipboard((problem) => {
-    copied.current = { text: `Copied with the terminal only; ${problem}`, failed: true };
+    copied.current = { text: `Copied with the terminal only; ${visible(problem)}`, failed: true }; // the tool's own output (clipboard.ts, runTool)
     rerender((n) => n + 1);
   });
   // The next key, paste or click takes away the line about the last copy (release 5 design, "Copying"), but a failure only
@@ -383,15 +391,15 @@ export function App({
     mouse?.on("mouse", onMouse);
     return () => {
       ended.current = true;
-      // Ink ending while the view is printed out (a crash), or while the rest of a paste is dropped after it, lets the
-      // keyboard go, so raw mode goes off and the process can end (input.ts, hold). Bracketed paste needs nothing here: Ink's
-      // own cleanups turn it off as they end, suspended or not (Ink's components/App.js).
-      if (printed.current || dropping.current) {
-        printed.current = null;
-        dropping.current = null;
-        input!.divert(null);
-        input!.hold(false);
-      }
+      // Ink ending (a crash, or a signal) lets the keyboard go, so raw mode goes off and the process can end (input.ts,
+      // hold), whatever held it: the view printed out, the rest of a paste dropped after it, or a switch, whose own ending
+      // a signal never lets come (found at the final review). Letting go again later, as a switch or comeBack does, is
+      // harmless. Bracketed paste needs nothing here: Ink's own cleanups turn it off as they end, suspended or not (Ink's
+      // components/App.js).
+      printed.current = null;
+      dropping.current = null;
+      input?.divert(null);
+      input?.hold(false);
       mouse?.off("mouse", onMouse);
       clearInterval(minutes);
       clearTimeout(first.current?.timer);
@@ -403,8 +411,10 @@ export function App({
       bus.off("tool-end", onToolEnd);
       bus.off("todo", onTodo);
       bus.off("tasks", onTasks);
-      // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending.
+      // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
+      // Ink ending on a drawing error would leave with nothing on screen (found at the final review).
       tasks.stop();
+      abort.current?.abort();
     };
   }, []);
 
@@ -439,14 +449,15 @@ export function App({
     const q = queue.current;
     const command = q.findIndex(isCommand);
     if (!q.length) return;
-    if (printed.current && command === 0 && (opensRecord(q[0]!) || /^\/screen$/i.test(q[0]!))) return;
+    if (printed.current && command === 0 && (recordToOpen(q[0]!) || /^\/screen$/i.test(q[0]!))) return;
     view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void submit(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command).join("\n\n"));
   };
-  // In full screen, `/tasks t3` with a subagent of that id opens its record in the detail view (perform, below).
-  const opensRecord = (text: string) => {
+  // The subagent whose record `text` opens in the detail view: in full screen, `/tasks t3` with a subagent of that id
+  // (perform, below).
+  const recordToOpen = (text: string) => {
     const [first = "", ...words] = text.split(/\s+/);
-    return fullNow.current && first.toLowerCase() === "/tasks" && words.length === 1 && tasks.all.some((t) => t.id === words[0]);
+    return fullNow.current && first.toLowerCase() === "/tasks" && words.length === 1 ? tasks.all.find((t) => t.id === words[0]) : undefined;
   };
 
   // True when it opened the model list.
@@ -463,10 +474,13 @@ export function App({
         return exit();
       }
       if (alone("/errors")) return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
+      // Not to full screen where it can't draw (found at the final review): classic, as at the start (clilib.ts, screenMode).
+      if (alone("/screen") && !fullNow.current && !fullPossible)
+        return say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
       if (alone("/screen")) return await switchScreen();
       // In full screen a subagent's record opens in the detail view (plan, Task 12); the list, stopping and mistakes print.
       if (command === "/tasks") {
-        const t = fullNow.current && words.length === 1 ? tasks.all.find((x) => x.id === words[0]) : undefined;
+        const t = recordToOpen(text);
         return t ? openDetail(recordOf(t)) : say(...tasksCommand(words));
       }
       if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
@@ -516,7 +530,6 @@ export function App({
   // `/tasks` lists the session's subagents, `/tasks t3` prints one's tool calls and answer in full,
   // and `/tasks stop` stops all of them, or with a number one (release 4 design, "Background subagents").
   const tasksCommand = (words: string[]): Line[] => {
-    const gray = (text: string): Line => ({ text, color: "gray" });
     const none = (id: string): Line => ({ text: `No subagent ${id}. /tasks lists them.`, color: "red" });
     const [verb, id, ...rest] = words;
     if (verb === undefined) {
@@ -535,7 +548,6 @@ export function App({
   };
   // `/tasks t3`'s record: the subagent's tool calls and answer in full.
   const recordOf = (t: Task): Line[] => {
-    const gray = (text: string): Line => ({ text, color: "gray" });
     const calls = callLines(t.messages);
     const end = t.state === "done" ? `Answer:\n${t.answer}` : t.state === "failed" ? `Failed: ${t.answer}` : t.answer ?? "(still running)";
     return [gray(`${t.id} (${t.description}), ${t.state}: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`), ...calls, gray(end)];
@@ -648,7 +660,7 @@ export function App({
     screen.suspended = false;
     await p.resume();
     if (printed.current) return;
-    input!.hold(false); // also when Ink ended meanwhile: its cleanup found nothing printed out to let go
+    input!.hold(false); // also when Ink ended meanwhile, after its cleanup let go: again is harmless (input.ts, hold)
     // Ink ending during the resume (a crash in its redraw) starts nothing that waited: no screen would show it, and a
     // turn would go on paying with none (found at round 3's check of Task 13).
     if (ended.current) return;
@@ -673,10 +685,12 @@ export function App({
   // detail's place and is brought to it (found at Task 14's spec review); Ink is suspended, the second screen entered, and
   // once React has drawn the full-screen frame, Ink resumes and draws it there, never the classic frame. Ink drops every
   // render while suspended, so nothing is drawn before. `full` follows only once the second screen is on, so React draws no
-  // full-screen frame on the normal screen; `fullNow` is set the few microtasks of the suspend's await earlier, which no key
-  // or mouse report can come between. The view follows the bottom: sending /screen, or the queue running it, put it there,
-  // and nothing moves it in classic mode. What the switch says at the end is said, not shown, so a question asked meanwhile
-  // keeps the view on its detail.
+  // full-screen frame on the normal screen; `fullNow` is set just before the suspend, so the keys Ink read with the Enter
+  // that sent /screen, which it handles next, act as in full screen: a Ctrl+O among them opens the detail view (found at
+  // the final review). A `[` does nothing while `suspending` is set, from the suspend to the resume, either way, as it
+  // would suspend Ink again, which throws. The view follows the bottom: sending /screen, or the queue running it, put it
+  // there, and nothing moves it in classic mode. What the switch says at the end is said, not shown, so a question asked
+  // meanwhile keeps the view on its detail.
   // If Ink ends meanwhile (a render error), nothing more is switched, the terminal being put back as it is then
   // (terminal.ts, restoreWhenInkEnds), and the keyboard is let go, so raw mode goes off and the process can end. A `[` read
   // while Ink resumes, before its drawing is done, keeps the hold, as in comeBack. Should the suspend throw going to full
@@ -695,12 +709,14 @@ export function App({
         kept.add(unkept.current);
         unkept.current = [];
         fullNow.current = true;
+        suspending.current = true;
         const { resume } = await suspendTerminal();
         if (ended.current) return;
         screen.enter();
         setFull(true);
         await new Promise((resolve) => setTimeout(resolve, 0));
         if (ended.current) return;
+        suspending.current = false; // resume() ends the suspension before its first await (Ink's ink.js, endSuspend)
         await resume();
       } else {
         closeDetail();
@@ -709,12 +725,15 @@ export function App({
         setSwitching(true);
         await new Promise((resolve) => setTimeout(resolve, 0));
         if (ended.current) return;
+        suspending.current = true;
         const { resume } = await suspendTerminal();
         screen.leave();
+        suspending.current = false;
         await resume();
       }
     } finally {
       if (toFull && !screen.full) fullNow.current = false; // the suspend threw, or Ink ended first
+      suspending.current = false;
       setSwitching(false);
       working.current = false;
       if (!printed.current) input?.hold(false);
@@ -754,7 +773,7 @@ export function App({
     if (detail.current !== d || printed.current) return;
     if (s?.typing) searchFor(d, s.query + letter, viewHeight);
     else if (letter === "q") closeDetail();
-    else if (letter === "[" && input) void printOut(d);
+    else if (letter === "[" && input && !suspending.current) void printOut(d); // switchScreen says why
     else if (letter === "/") d.search = { query: "", found: [], at: 0, typing: true, before: d.view.current };
     else if ((letter === "n" || letter === "N") && s) stepMatch(d, letter === "n" ? 1 : -1, viewHeight);
     else if (LETTERS[letter]) scroll(LETTERS[letter]);
@@ -885,8 +904,7 @@ export function App({
     const text = s ? textOf(pane().rows.lines, ...s) : "";
     if (!text) return;
     board.current!.copy(text);
-    let n = 0;
-    for (const _character of segmenter.segment(text)) n++;
+    const n = characters(text);
     copied.current = { text: `Copied ${n} character${n === 1 ? "" : "s"}${board.current!.terminalOnly ? " with the terminal only" : ""}`, failed: false };
   };
   // The wheel and the scroll bar (release 5 design, "Scrolling"), in full screen only. The wheel scrolls the conversation
@@ -1292,8 +1310,7 @@ export function App({
   const moved = full && question && !picker && !question.short && !fits(question);
   if (moved) {
     if (!question.detail) {
-      let n = 0;
-      for (const _character of segmenter.segment(question.text)) n++;
+      const n = characters(question.text);
       const from = kept.lines.length;
       say({ text: `┌ ${question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" }, { text: question.text, color: "gray" });
       question.detail = [from, kept.lines.length - 1];

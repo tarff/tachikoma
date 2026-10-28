@@ -91,6 +91,11 @@ describe("StatusLine's pieces", () => {
     ]);
   });
 
+  // Found at the final review: a lead's id can come from the command line or the model list.
+  it("escape the lead's id", () => {
+    expect(pieces("lead", { ...info, lead: "a\u001b[2Jb" }).map((p) => p.text)).toEqual(["lead", " ", "a\\u001b[2Jb"]);
+  });
+
   // contextBar's thresholds: yellow from 70% used, red from 85% (claude-hud's getContextColor).
   it.each([
     [690_000, "31% left", "green"],

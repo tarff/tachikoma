@@ -46,15 +46,20 @@ export function statusSegments(value: string | undefined): Segment[] {
 }
 
 // Full screen unless asked for classic (release 5 design, "The two modes"). An empty TACHI_CLASSIC or 0 reads as unset
-// (the plan's choice 14), so `TACHI_CLASSIC=0` turns it off.
-// Classic too where Ink would not use its own second screen (the user's choice, 2026-10-27, at Task 6's build): output
-// that is not a terminal, or CI, which Ink counts as not interactive even on a terminal (ink.js, resolveInteractiveOption
-// and resolveAlternateScreenOption, lines 706-713). CI as Ink's is-in-ci reads it: CI or CONTINUOUS_INTEGRATION set to
-// anything but 0 or false (node_modules/is-in-ci/index.js).
+// (the plan's choice 14), so `TACHI_CLASSIC=0` turns it off. Classic too where full screen can't draw (fullPossible).
 export function screenMode(classic: boolean | undefined, env: NodeJS.ProcessEnv, tty: boolean): "full" | "classic" {
   const value = env.TACHI_CLASSIC ?? "";
+  return classic || (value !== "" && value !== "0") || !fullPossible(env, tty) ? "classic" : "full";
+}
+
+// Where Ink would not use its own second screen (the user's choice, 2026-10-27, at Task 6's build), full screen can't
+// draw: output that is not a terminal, or CI, which Ink counts as not interactive even on a terminal (ink.js,
+// resolveInteractiveOption and resolveAlternateScreenOption, lines 706-713). CI as Ink's is-in-ci reads it: CI or
+// CONTINUOUS_INTEGRATION set to anything but 0 or false (node_modules/is-in-ci/index.js). /screen asks it too (found at
+// the final review).
+export function fullPossible(env: NodeJS.ProcessEnv, tty: boolean): boolean {
   const ci = ["CI", "CONTINUOUS_INTEGRATION"].some((key) => key in env && env[key] !== "0" && env[key] !== "false");
-  return classic || (value !== "" && value !== "0") || !tty || ci ? "classic" : "full";
+  return tty && !ci;
 }
 
 // Rows a wheel notch scrolls (release 5 design, "Scrolling"): 3 unless given, the probe's Windows setting and Claude

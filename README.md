@@ -176,13 +176,15 @@ started.
   leaves the view open; with nothing running it closes the view. A permission question closes the
   view, so y and n go to the question.
 - **Searching the detail view:** `/` searches as you type, ignoring case. Esc while typing drops the
-  search, and Enter keeps it, after which n and N go to the next and previous match. With a search
+  search, and Enter keeps it, or drops it when nothing matches; once it is kept, n and N go to the
+  next and previous match. With a search
   kept, q, Esc and Ctrl+O still close the view.
 - **`[`** in the detail view prints it into the terminal's normal scrollback, for the terminal's own
   search, selecting and scrolling. A running turn, and any subagents, go on meanwhile, out of
   sight. q, Esc or Ctrl-C bring the view back, and so does a permission question. A paste does
   nothing while the view is printed out.
-- **`/screen`** switches between full screen and classic during a session. Going to classic prints
+- **`/screen`** switches between full screen and classic during a session, but not to full screen
+  when the output is not a terminal or under CI. Going to classic prints
   the whole conversation into the terminal's scrollback, so anything already printed there in
   classic mode earlier in the session shows twice; going to full screen shows everything so far.
 - **Classic mode** is the screen from before release 5: finished lines go into the terminal's own

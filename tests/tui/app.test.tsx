@@ -82,6 +82,7 @@ async function mount(
     worker?: Provider; // the subagents' model
     mode?: Mode; // the mode the session starts in
     full?: boolean; // full screen; classic when not given
+    fullPossible?: boolean; // whether full screen can draw, for /screen; true when not given
     scrollSpeed?: number; // rows a wheel notch scrolls; 3 when not given, the session's default
     leadFails?: string; // what /lead and the picker throw, in place of making a lead
     run?: ((text: string) => Promise<void>) | null; // the clipboard's stand-in tool; null for none, as on Linux over SSH
@@ -140,6 +141,7 @@ async function mount(
         ask = fn;
       }}
       screen={screen}
+      fullPossible={opts.fullPossible ?? true}
       mouse={mouse}
       scrollSpeed={opts.scrollSpeed ?? 3}
       clipboard={(report) => new Clipboard(write, run, report)}
@@ -797,6 +799,23 @@ describe("App's keys for stopping and exiting", () => {
     await type(app, "hi");
     await until(app, "Esc to stop");
     expect(app.lastFrame()).not.toContain("? for shortcuts");
+  });
+
+  // Found at the final review: Ink ending during a turn (a drawing error) leaves nothing on screen to show it, and the
+  // turn would go on paying.
+  it("stops a turn when Ink ends during it", async () => {
+    const lead = new Held();
+    let signal: AbortSignal | undefined;
+    const complete = lead.complete.bind(lead);
+    lead.complete = (req) => {
+      signal = req.signal;
+      return complete(req);
+    };
+    const { app } = await mount([], { lead });
+    await type(app, "hi");
+    await until(app, "Esc to stop");
+    app.unmount();
+    expect(signal?.aborted).toBe(true);
   });
 });
 
@@ -1704,6 +1723,7 @@ describe("App in full screen", () => {
         listModels={async () => []}
         bindAsk={() => {}}
         screen={screen}
+        fullPossible
         scrollSpeed={3}
         clipboard={(report) => new Clipboard(() => {}, null, report)}
       />,
@@ -2168,6 +2188,14 @@ describe("App's selecting and copying in full screen", () => {
     const { app, mouse } = await mount([], { full: true, intro: said(80), run: async () => Promise.reject(new Error("xclip not found")) });
     await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
     await until(app, "Copied with the terminal only; xclip not found");
+  });
+
+  // Found at the final review: the reason comes from the tool's own error output.
+  it("escapes the clipboard tool's reason for failing", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(80), run: async () => Promise.reject(new Error("xclip failed: a\u001b[2Jb")) });
+    await pointer(mouse, at("press", 0, 3), at("drag", 7, 3), at("release", 7, 3));
+    await until(app, "Copied with the terminal only; xclip failed: a\\u001b[2Jb");
+    expectNoRawControls(app.lastFrame());
   });
 
   it("says the terminal alone copied, with no failure, where there is no tool, as on Linux over SSH", async () => {
@@ -3463,6 +3491,7 @@ async function onTerminal(
         ask = fn;
       }}
       screen={screen}
+      fullPossible
       input={input}
       scrollSpeed={3}
       clipboard={(report) => new Clipboard(() => {}, null, report)}
@@ -3484,9 +3513,10 @@ async function onTerminal(
         await tick();
       }
     },
-    // A key read at once, with nothing else let run before the next step.
-    now: (k: string) => {
-      typed.push(k);
+    // Keys read at once, with nothing else let run before the next step. Several wait together, and Ink reads and handles
+    // each in turn with nothing let run between them (Ink's components/App.js, handleReadable).
+    now: (...keys: string[]) => {
+      typed.push(...keys);
       keyboard.emit("readable");
     },
     // A read while the view is printed out, to the reader the App diverted the keys to, or to Ink once it has let them
@@ -3878,6 +3908,20 @@ describe("App's /screen", () => {
     expect(app.lastFrame()).toContain("› /s\n  /screen  Switch between full screen and classic\n");
   });
 
+  // Found at the final review: where the session started in classic as full screen can't draw (the output is not a
+  // terminal, or CI), /screen says so in grey, as a note, and stays in classic.
+  it("stays in classic, saying why, where full screen can't draw", async () => {
+    await inColour(async () => {
+      const writes: string[] = [];
+      const { app } = await mount([], { fullPossible: false, written: (s) => writes.push(s) });
+      await type(app, "/screen");
+      await until(app, "Full screen needs a terminal (the output is not one, or CI is set)");
+      expect(app.lastFrame()).toContain("\u001b[90mFull screen needs a terminal");
+      expect(app.lastFrame()).not.toContain("screen is now");
+      expect(writes).not.toContain(SECOND_SCREEN);
+    });
+  });
+
   // Found at Task 5's review: the bus listeners keep the first render's `say`, which must read the mode as it is now.
   it("shows a reply that comes after /screen to full screen in the conversation view", async () => {
     const { app } = await mount([reply("the reply")], { intro: said(3) });
@@ -4032,14 +4076,48 @@ describe("App's /screen", () => {
     await waitFor(() => end === null);
     await tick();
     const s = since(p.steps, "hold(true)");
-    expect(holds(s)).toEqual(["hold(true)", "hold(false)"]);
+    expect(holds(s)).toEqual(["hold(true)", "hold(false)", "hold(false)"]); // Ink's cleanup's, then the switch's (input.ts, hold)
     expect(text(s)).not.toContain("screen is now");
     for (const code of unwritten) expect(since(s, mark).slice(1)).not.toContain(code); // nothing more switched, never resumed
     expect(lead.asked).toHaveLength(1);
   });
 
+  // Found at the final review: a signal ends the process as Ink unmounts, so the switch's own ending, later, never comes,
+  // and the cleanup lets the keyboard go itself.
+  it("lets the keyboard go as Ink ends during a switch, before the switch's own ending", async () => {
+    let p: Awaited<ReturnType<typeof onTerminal>> | undefined;
+    let atEnd: string[] | undefined;
+    const step = (s: string) => {
+      if (s !== "hold(true)" || atEnd) return;
+      const from = p!.steps.length;
+      p!.ink.unmount();
+      atEnd = p!.steps.slice(from).filter((x) => x.startsWith("hold(") || x.startsWith("divert("));
+    };
+    p = await onTerminal(new FakeProvider("a", []), { step });
+    await p.key("/screen", "\r");
+    expect(atEnd).toEqual(["divert(null)", "hold(false)"]);
+  });
+
+  // Found at the final review: going to full screen suspends Ink in the handler of the Enter that sends /screen, and Ink
+  // goes on through the keys it read with it. A Ctrl+O among them opens the detail view, and a `[` would suspend Ink
+  // again, which throws, ending the process; so it does nothing.
+  it("does nothing on a [ read with the Enter that sends /screen from classic", async () => {
+    const p = await onTerminal(new FakeProvider("a", []), { classic: true });
+    await p.key("/screen");
+    p.now("\r", "\u000f", "[");
+    await waitFor(() => p.steps.includes(SECOND_SCREEN) && holds(since(p.steps, "hold(true)")).includes("hold(false)"));
+    expect(holds(since(p.steps, "hold(true)"))).toEqual(["hold(true)", "hold(false)"]); // the switch's, nothing printed out
+    expect(p.steps).not.toContain("divert(reader)");
+    expect(text(since(p.steps, SECOND_SCREEN))).toContain("q Esc close"); // the detail view the Ctrl+O opened
+    await p.key("q");
+    await waitFor(() => text(p.steps).includes("screen is now full"));
+    expect(text(p.steps)).not.toContain("Printed.");
+  });
+
   // As in coming back from `[` (found at Task 13's review): a `[` read once Ink reads keys again, before the redraw of the
   // switch to full screen is done, prints the view out, and the switch then leaves the keyboard held.
+  // This relies on Ink 7.1.1's timing of resume: the setImmediate below lands inside its waitUntilRenderFlush. An upgrade
+  // of Ink may need the test reworked.
   it("keeps the keyboard held when [ prints the view out while going to full screen is still drawing", async () => {
     let p: Awaited<ReturnType<typeof onTerminal>> | undefined;
     let entered = false;

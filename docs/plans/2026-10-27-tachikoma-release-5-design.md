@@ -481,6 +481,17 @@ user. Unmarked items are fixes from the reviews that keep to the design.
   only the lines that changed (`incrementalRendering`); at 60 frames a second the wheel felt as
   smooth as Claude Code's, with or without the second, so Ink now draws up to 60 frames a second,
   not its default 30 (the user's choice), and the whole frame as before.
+- **The final review (2026-10-28).**
+  - A `[` read with the Enter that sends `/screen` from classic, after a Ctrl+O, ended the
+    session: Ink was already suspended for the switch. `[` now does nothing while a switch has Ink
+    suspended.
+  - Ink ending lets the keyboard go whatever held it, a switch too: a signal ends the process
+    before the switch's own ending can. It also stops a running turn, which would otherwise go on
+    paying with nothing on screen.
+  - `/screen` stays in classic where full screen can't draw (the output is not a terminal, or CI),
+    saying so in grey (the build's call on the message's words, told to the user).
+  - The lead's id in the status line, and the clipboard tool's reason for failing in the hint row,
+    are escaped, as everything else from outside is.
 
 ## Not in this release
 

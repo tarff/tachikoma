@@ -73,7 +73,8 @@ const MODE_COLOR: Record<Mode, Piece["color"]> = { ask: "green", project: "yello
 export function pieces(s: LineSegment, i: StatusInfo): Piece[] {
   switch (s) {
     case "lead":
-      return [{ text: "lead", dim: true }, { text: " " }, { text: i.lead, color: "cyan" }];
+      // Escaped as the folder and branch are below: the id comes from the command line or a provider's model list.
+      return [{ text: "lead", dim: true }, { text: " " }, { text: visible(i.lead), color: "cyan" }];
     case "context": {
       // How much is left, as Codex shows it (main design, "Status line"), in the bar's colour, the bar saying what
       // the part is (the user's choice, 2026-10-27); the tokens in use when the window is not known.

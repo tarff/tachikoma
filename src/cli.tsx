@@ -9,6 +9,7 @@ import {
   approvalQuestion,
   endOnEpipe,
   exitSignals,
+  fullPossible,
   headlessAnswer,
   headlessExit,
   headlessLeftOut,
@@ -315,6 +316,7 @@ if (parsed.print !== undefined) {
         ask = fn;
       }}
       screen={screen}
+      fullPossible={fullPossible(process.env, process.stdout.isTTY === true)}
       mouse={keys}
       input={keys}
       scrollSpeed={speed}

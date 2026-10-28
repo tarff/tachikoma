@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   approvalQuestion,
   exitSignals,
+  fullPossible,
   headlessAnswer,
   headlessExit,
   headlessLeftOut,
@@ -144,6 +145,17 @@ describe("screenMode", () => {
     expect(screenMode(undefined, {}, false)).toBe("classic");
     for (const env of [{ CI: "true" }, { CI: "1" }, { CI: "" }, { CONTINUOUS_INTEGRATION: "yes" }]) expect(screenMode(undefined, env, true)).toBe("classic");
     for (const env of [{ CI: "0" }, { CI: "false" }, { CONTINUOUS_INTEGRATION: "false" }]) expect(screenMode(undefined, env, true)).toBe("full");
+  });
+});
+
+describe("fullPossible", () => {
+  // Found at the final review: /screen asks it, whatever --classic or TACHI_CLASSIC chose at the start.
+  it("is false where the output is not a terminal, or in CI, as screenMode reads them, and true otherwise", () => {
+    expect(fullPossible({}, true)).toBe(true);
+    expect(fullPossible({ TACHI_CLASSIC: "1" }, true)).toBe(true);
+    expect(fullPossible({}, false)).toBe(false);
+    expect(fullPossible({ CI: "true" }, true)).toBe(false);
+    expect(fullPossible({ CI: "0" }, true)).toBe(true);
   });
 });
 
