@@ -220,22 +220,14 @@ Each is marked in its task. None approved yet.
     PNG only where a provider documents refusing animation: OpenAI ("non-animated GIF") and the
     ChatGPT plan, which reaches OpenAI's models through the same Responses API. Kimi takes animated
     GIF as it is, Anthropic uses only the first frame anyway, and Ollama and OpenRouter document
-<<<<<<< HEAD
-    nothing, so all four get it as it is (this refines choice 12). Kimi's "4k (4096×2160)" is read
-    as a size class, so an upright picture fits inside 2160×4096. A picture sharp cannot read is
-    sent as it is, never cached as a failure, so the provider decides and a refusal there goes to
-    Task 18's question (found at Task 17's build and spec review; the coordinator's call, for the
-    user to review).
-24. **Remap pairs are two letters, digits, punctuation or symbols; a space is not accepted for now**
-    (found at Task 7's code review; the coordinator's call pending the user's answer on spaces).
-=======
     nothing, so all four get it as it is (this refines choice 12); an animated GIF or WebP that is
     shrunk and keeps its format keeps its frames. Kimi's "4k (4096×2160)" is read as a size class,
     so an upright picture fits inside 2160×4096. A picture sharp cannot read, or one over the limit
     even at one pixel, is sent as it is, never cached as a failure, so the provider decides and a
     refusal there goes to Task 18's question (found at Task 17's build, spec review and code
     review; the coordinator's call, for the user to review).
->>>>>>> 90d433f (fix: Task 17's code review: leaving pictures out measures the request twice, not once a picture; the shrink loop gives up at one pixel and sends the original; an animated GIF or WebP keeps its frames when it keeps its format; one fitted() helper for the three adapters; a test that every OpenAI-format provider has limits; sharp's defaults and the cache's unused copies named; Shape from Limits; twoFrameGif() shared by the tests)
+24. **Remap pairs are two letters, digits, punctuation or symbols; a space is not accepted for now**
+    (found at Task 7's code review; the coordinator's call pending the user's answer on spaces).
 
 ---
 
