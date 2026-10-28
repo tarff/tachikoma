@@ -11,18 +11,24 @@ describe("workingText", () => {
   const spend = { lead: "anthropic:claude-opus-5-5", output: 0, cost: 0, costUnknown: false };
 
   it("shows the label, the turn's time in seconds, its tokens and cost, and Esc, the spinner moving every 80 ms", () => {
-    expect(workingText("Working", 0, spend)).toBe("⠋ Working · 0s · ↓ 0 tokens · $0.00 · Esc to stop");
-    expect(workingText("Working", 80, spend)).toBe("⠙ Working · 0s · ↓ 0 tokens · $0.00 · Esc to stop");
-    expect(workingText("Working", 72_400, { ...spend, output: 2_345, cost: 0.0412 })).toBe("⠴ Working · 1m 12s · ↓ 2.3k tokens · $0.04 · Esc to stop");
+    expect(workingText("Working", 0, spend, "Esc")).toBe("⠋ Working · 0s · ↓ 0 tokens · $0.00 · Esc to stop");
+    expect(workingText("Working", 80, spend, "Esc")).toBe("⠙ Working · 0s · ↓ 0 tokens · $0.00 · Esc to stop");
+    expect(workingText("Working", 72_400, { ...spend, output: 2_345, cost: 0.0412 }, "Esc")).toBe(
+      "⠴ Working · 1m 12s · ↓ 2.3k tokens · $0.04 · Esc to stop",
+    );
   });
 
   it("follows the status line's rules for the cost: the ChatGPT plan, and a model without a price", () => {
-    expect(workingText("Working", 1_000, { ...spend, lead: "chatgpt:gpt-6.1-sol" })).toBe("⠹ Working · 1s · ↓ 0 tokens · ChatGPT plan · Esc to stop");
-    expect(workingText("Working", 1_000, { ...spend, lead: "ollama:x", costUnknown: true })).toBe("⠹ Working · 1s · ↓ 0 tokens · $0.00 + ? · Esc to stop");
+    expect(workingText("Working", 1_000, { ...spend, lead: "chatgpt:gpt-6.1-sol" }, "Esc")).toBe(
+      "⠹ Working · 1s · ↓ 0 tokens · ChatGPT plan · Esc to stop",
+    );
+    expect(workingText("Working", 1_000, { ...spend, lead: "ollama:x", costUnknown: true }, "Esc")).toBe(
+      "⠹ Working · 1s · ↓ 0 tokens · $0.00 + ? · Esc to stop",
+    );
   });
 
   it("leaves out tokens and cost for what is not a turn", () => {
-    expect(workingText("Waiting for the browser", 5_000, null)).toBe("⠹ Waiting for the browser · 5s · Esc to stop");
+    expect(workingText("Waiting for the browser", 5_000, null, "Esc")).toBe("⠹ Waiting for the browser · 5s · Esc to stop");
   });
 });
 

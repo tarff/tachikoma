@@ -1,6 +1,7 @@
 import type { Key } from "ink";
 import { describe, expect, it } from "vitest";
-import { commands } from "../../src/tui/keys.js";
+import { Bindings, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
+import { commands, keyList, named } from "../../src/tui/keys.js";
 
 // A key as Ink's useInput reports it: no flags but the ones given.
 const key = (flags: Partial<Key> = {}): Key => ({
@@ -28,15 +29,6 @@ const key = (flags: Partial<Key> = {}): Key => ({
 });
 
 describe("commands", () => {
-  it("sends on Enter, and makes a new line on Shift+Enter where the terminal tells them apart", () => {
-    expect(commands("\r", key({ return: true }))).toEqual(["submit"]);
-    expect(commands("\r", key({ return: true, shift: true }))).toEqual(["newline"]);
-  });
-
-  it("makes a new line on Ctrl+J, which arrives as a line feed", () => {
-    expect(commands("\n", key())).toEqual(["newline"]);
-  });
-
   it("moves with the arrows, Home and End, Ctrl+A and Ctrl+E, and by word with Ctrl or Alt", () => {
     expect(commands("", key({ leftArrow: true }))).toEqual(["left"]);
     expect(commands("", key({ rightArrow: true }))).toEqual(["right"]);
@@ -48,35 +40,20 @@ describe("commands", () => {
     expect(commands("e", key({ ctrl: true }))).toEqual(["end"]);
     expect(commands("b", key({ meta: true }))).toEqual(["wordLeft"]);
     expect(commands("f", key({ meta: true }))).toEqual(["wordRight"]);
-    expect(commands("", key({ upArrow: true }))).toEqual(["up"]);
-    expect(commands("", key({ downArrow: true }))).toEqual(["down"]);
-    expect(commands("p", key({ ctrl: true }))).toEqual(["up"]);
-    expect(commands("n", key({ ctrl: true }))).toEqual(["down"]);
-  });
-
-  it("shows or hides the to-do list with Ctrl+T", () => {
-    expect(commands("t", key({ ctrl: true }))).toEqual(["todos"]);
-  });
-
-  it("searches the history with Ctrl+R", () => {
-    expect(commands("r", key({ ctrl: true }))).toEqual(["search"]);
   });
 
   it("deletes with the keys the user's terminal sends for them", () => {
     expect(commands("", key({ backspace: true }))).toEqual(["backspace"]); // Backspace, Ctrl+Backspace and Ctrl+H alike
     expect(commands("", key({ backspace: true, meta: true }))).toEqual(["deleteWord"]); // Alt+Backspace
     expect(commands("", key({ delete: true }))).toEqual(["delete"]);
-    expect(commands("d", key({ ctrl: true }))).toEqual(["delete"]);
     expect(commands("w", key({ ctrl: true }))).toEqual(["deleteToSpace"]);
     expect(commands("d", key({ meta: true }))).toEqual(["deleteWordAfter"]);
     expect(commands("k", key({ ctrl: true }))).toEqual(["deleteToEnd"]);
     expect(commands("u", key({ ctrl: true }))).toEqual(["deleteToStart"]);
   });
 
-  it("puts back with Ctrl+Y, and undoes with Ctrl+Z or Ctrl+_", () => {
+  it("puts back with Ctrl+Y", () => {
     expect(commands("y", key({ ctrl: true }))).toEqual(["yank"]);
-    expect(commands("z", key({ ctrl: true }))).toEqual(["undo"]);
-    expect(commands("\u001f", key())).toEqual(["undo"]);
   });
 
   it("types text, and reads keys typed fast enough to arrive together one after another", () => {
@@ -92,35 +69,72 @@ describe("commands", () => {
     expect(commands("", key({ escape: true }))).toEqual([]);
     expect(commands("a\u0007b", key())).toEqual([{ type: "insert", text: "ab" }]);
   });
+
+  // The keys the table holds are its actions' (release 6 design, "Bindings come first"; plan, Task 6), so a key the
+  // keys file unbinds does nothing, and none of them comes here.
+  it("gives nothing for the keys in the table", () => {
+    expect(commands("\r", key({ return: true }))).toEqual([]); // Enter
+    expect(commands("\r", key({ return: true, shift: true }))).toEqual([]); // Shift+Enter
+    expect(commands("\n", key())).toEqual([]); // Ctrl+J, a line feed alone
+    expect(commands("", key({ tab: true, shift: true }))).toEqual([]); // Shift+Tab
+    expect(commands("p", key({ meta: true }))).toEqual([]); // Alt+P
+    for (const letter of ["o", "t", "r", "p", "n", "z", "d"]) expect(commands(letter, key({ ctrl: true }))).toEqual([]);
+    expect(commands("\u001f", key())).toEqual([]); // Ctrl+_
+    expect(commands("", key({ upArrow: true }))).toEqual([]);
+    expect(commands("", key({ downArrow: true }))).toEqual([]);
+    expect(commands("", key({ pageUp: true }))).toEqual([]);
+    expect(commands("", key({ pageDown: true }))).toEqual([]);
+    expect(commands("", key({ upArrow: true, shift: true }))).toEqual([]);
+    expect(commands("", key({ downArrow: true, shift: true }))).toEqual([]);
+  });
+
+  // Release 4's Home and End, read with Ctrl held: Ctrl+Home and Ctrl+End reach here only in classic mode, where
+  // Scroll is never in force (plan, Task 6), and in the model list, where these keys do nothing.
+  it("takes Ctrl+Home and Ctrl+End as Home and End", () => {
+    expect(commands("", key({ home: true, ctrl: true }))).toEqual(["home"]);
+    expect(commands("", key({ end: true, ctrl: true }))).toEqual(["end"]);
+  });
 });
 
-describe("commands for the modes, the model list and the last turn", () => {
-  it("switches the permission mode on Shift+Tab, which arrives as Tab with Shift", () => {
-    expect(commands("", key({ tab: true, shift: true }))).toEqual(["mode"]);
-    expect(commands("", key({ tab: true }))).toEqual([]); // Tab alone is the menus'
+describe("the keys named in help and hints", () => {
+  const defaults = () => new Bindings(tableOf(DEFAULTS));
+  const without = (context: keyof typeof DEFAULTS, keys: Record<string, string | null>) =>
+    new Bindings(tableOf({ ...DEFAULTS, [context]: { ...DEFAULTS[context], ...keys } }));
+
+  it("names the key today's words name while it is bound to the action, else the first key bound, else none", () => {
+    expect(named(defaults(), "confirm:no", "Confirmation", ["escape"])).toEqual(["Esc"]);
+    expect(named(defaults(), "historySearch:accept", "HistorySearch", ["tab"])).toEqual(["Tab"]);
+    expect(named(defaults(), "transcript:exit", "Transcript", ["q", "escape"])).toEqual(["q", "Esc"]);
+    expect(named(defaults(), "transcript:bottom", "Transcript", ["shift+g", "end"])).toEqual(["G", "End"]);
+    expect(named(without("Transcript", { q: null }), "transcript:exit", "Transcript", ["q", "escape"])).toEqual(["Esc"]);
+    expect(named(without("Confirmation", { escape: null }), "confirm:no", "Confirmation", ["escape"])).toEqual(["n"]);
+    expect(named(without("Chat", { escape: null, "ctrl+q": "chat:cancel" }), "chat:cancel", "Chat", ["escape"])).toEqual(["Ctrl+Q"]);
+    expect(named(without("Chat", { escape: null }), "chat:cancel", "Chat", ["escape"])).toEqual([]);
+    expect(named(defaults(), "chat:externalEditor", "Chat", ["ctrl+x ctrl+e"])).toEqual(["Ctrl+X Ctrl+E"]);
   });
 
-  it("opens the model list on Alt+P, and shows the last turn's tool calls on Ctrl+O", () => {
-    expect(commands("p", key({ meta: true }))).toEqual(["models"]);
-    expect(commands("o", key({ ctrl: true }))).toEqual(["lastTurn"]);
+  // `?`'s list, word for word as release 5 wrote it by hand (plan, Task 6, test 1).
+  it("lists the keys with the default table in release 5's words", () => {
+    expect(keyList(defaults())).toEqual([
+      "Keys:",
+      "  Enter  send · Shift+Enter, \\ then Enter, or Ctrl+J  new line",
+      "  Esc  stop the turn · Esc Esc  clear the prompt",
+      "  Ctrl-C  stop the turn and take back the queue, or clear the prompt · twice when empty  exit",
+      "  Ctrl-D twice on an empty prompt  exit",
+      "  ↑ ↓ or Ctrl+P Ctrl+N  past prompts (↑ takes back a queue) · Ctrl+R  search them",
+      "  Home End or Ctrl+A Ctrl+E  line start, end · Alt+B Alt+F or Ctrl+← Ctrl+→  by word",
+      "  Ctrl+W  delete back to a space · Alt+Backspace  the word before · Alt+D  the word after",
+      "  Ctrl+K  delete to the line's end · Ctrl+U  to its start · Ctrl+Y  put it back · Ctrl+Z  undo",
+      "  /  commands · @  project paths · Shift+Tab  permission mode · Alt+P  pick the model",
+      "  Ctrl+O  the last turn's tool calls in full · a space first starts a message with ?",
+      "  Ctrl+T  show or hide the to-do list",
+      "  PgUp PgDn  half a screen · Ctrl+Home Ctrl+End  top, latest · Shift+↑ Shift+↓  a line (full screen)",
+    ]);
   });
-});
 
-describe("commands for scrolling the conversation", () => {
-  // As Ink's parse-keypress reads ESC[5~, ESC[6~, ESC[1;5H, ESC[1;5F, ESC[1;2A and ESC[1;2B (release 5 plan, "Before you start").
-  it("scrolls by half a screen on PgUp and PgDn, to the top and the latest on Ctrl+Home and Ctrl+End, and a line on Shift+Up and Shift+Down", () => {
-    expect(commands("", key({ pageUp: true }))).toEqual(["pageUp"]);
-    expect(commands("", key({ pageDown: true }))).toEqual(["pageDown"]);
-    expect(commands("", key({ home: true, ctrl: true }))).toEqual(["top"]);
-    expect(commands("", key({ end: true, ctrl: true }))).toEqual(["bottom"]);
-    expect(commands("", key({ upArrow: true, shift: true }))).toEqual(["lineUp"]);
-    expect(commands("", key({ downArrow: true, shift: true }))).toEqual(["lineDown"]);
-  });
-
-  it("leaves plain Up, Down, Home and End to the prompt", () => {
-    expect(commands("", key({ upArrow: true }))).toEqual(["up"]);
-    expect(commands("", key({ downArrow: true }))).toEqual(["down"]);
-    expect(commands("", key({ home: true }))).toEqual(["home"]);
-    expect(commands("", key({ end: true }))).toEqual(["end"]);
+  it("lists the keys a table binds in place of the defaults", () => {
+    const list = keyList(without("Chat", { "ctrl+n": null, enter: null, "alt+enter": "chat:submit", "ctrl+j": null }));
+    expect(list[1]).toBe("  Alt+Enter  send · Shift+Enter or \\ then Alt+Enter  new line");
+    expect(list[5]).toBe("  ↑ ↓ or Ctrl+P  past prompts (↑ takes back a queue) · Ctrl+R  search them");
   });
 });

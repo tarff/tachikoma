@@ -181,6 +181,16 @@ Each is marked in its task. None approved yet.
     binds it: `"ctrl+t": null` under Chat stops Ctrl+T at the prompt, and Global's Ctrl+T still
     works elsewhere (found at Task 5's spec review; Claude Code's docs leave it open; user: "Sure
     b").
+19. **Global's actions act wherever Global is in force (Task 6),** as in Claude Code: at a
+    question, in a Ctrl+R search, in the model list and in the detail view, Ctrl+T toggles the
+    to-do list, Ctrl+O does `app:toggleTranscript` (it still closes the detail view) and Ctrl+D
+    exits on its double press; Ctrl-C keeps each phase's own rule, as it is reserved (found at
+    Task 6's build, where these keys did nothing outside the prompt; user: "All three everywhere").
+20. **Keys match the table exactly (Task 6),** with no second try without a modifier, so keys that
+    acted only because release 4 ignored a held modifier do nothing: Ctrl+Up and Alt+Up, Alt+Enter,
+    Esc with Alt, Shift+Up and Shift+Down in the model list in full screen, and a wheel notch with
+    Shift, Ctrl or Alt held. Classic mode still reads Shift+Up and Shift+Down as Up and Down, and
+    Ctrl+Home and Ctrl+End as Home and End (found at Task 6's build; user: "Exact match").
 
 ---
 

@@ -9,6 +9,7 @@ import type { Task, Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { TodoItem } from "../tools/todo.js";
+import { Bindings, CHORD_MS, type Context, DEFAULTS, keyText, type Stroke, strokeOf, tableOf } from "./bindings.js";
 import type { Clipboard } from "./clipboard.js";
 import { Conversation } from "./Conversation.js";
 import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
@@ -16,13 +17,13 @@ import { type Detail, DetailView, keyRow, opened, searchFor, step as stepMatch }
 import { apply, type Editor, empty, load, move, replace, segmenter } from "./editor.js";
 import { History, matches } from "./history.js";
 import { type Mouse, readOut } from "./input.js";
-import { type Command, commands, isScroll, KEY_LIST, type Scroll } from "./keys.js";
+import { type Command, commands, isScroll, keyList, named, type Scroll } from "./keys.js";
 import { frame as frameOf, layout, placeOn, scroll as windowOf, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
 import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
-import { ModelPicker, rows as listRows } from "./ModelPicker.js";
+import { ModelPicker, type PickerKey, rows as listRows } from "./ModelPicker.js";
 import { type Hand, type Handover, TerminalOwner } from "./owner.js";
-import { now as nowOf, pasteTo, phaseInputs } from "./phase.js";
+import { type Now, now as nowOf, pasteTo, type Phase, phaseInputs } from "./phase.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
@@ -89,6 +90,8 @@ export interface AppProps {
   // holds raw mode too. With none, `[` does nothing. Letting go of stdin and taking it back are for a program in the
   // terminal (owner.ts, program).
   input?: Pick<Hand, "divert" | "hold" | "release" | "retake">;
+  // The table of keys (bindings.ts); the default table when not given. Task 11 lays the keys file over it.
+  bindings?: Bindings;
 }
 
 const COMMANDS = "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /exit";
@@ -104,13 +107,60 @@ const characters = (text: string) => [...segmenter.segment(text)].length;
 const NAMES = ["/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen"];
 const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
-// In classic mode the scroll keys are release 4's keys (release 5 plan, choice 16): Shift+Up and Shift+Down are Up and
-// Down, Ctrl+Home and Ctrl+End are Home and End, and PgUp and PgDn do nothing.
-const CLASSIC: Record<Scroll, Command | null> = { lineUp: "up", lineDown: "down", top: "home", bottom: "end", pageUp: null, pageDown: null };
-
-// The detail view's own keys for moving, beside the scroll keys (release 5 design, "The detail view").
-const LETTERS: Record<string, Scroll> = { j: "lineDown", k: "lineUp", g: "top", G: "bottom" };
-const MOVES: Record<string, Scroll> = { down: "lineDown", up: "lineUp", home: "top", end: "bottom" };
+// The contexts in force in each phase (phase.ts), innermost first (release 6 plan, Task 6's table). Printed out and
+// ended, keys go where they went before the table: to the reader of the printed view, or nowhere.
+const CONTEXTS: Record<Phase["kind"], Context[]> = {
+  prompt: ["Chat", "Global"],
+  menu: ["Autocomplete", "Chat", "Global"],
+  question: ["Confirmation", "Global"],
+  search: ["HistorySearch", "Global"],
+  detail: ["Transcript", "Global"],
+  picker: ["Select", "Global"],
+  printed: [],
+  ended: [],
+};
+// In full screen Scroll comes after the phase's own context, so that context's bindings win (the detail view's Home and
+// End stay transcript:top and transcript:bottom); in the model list only for the wheel, which scrolls the conversation
+// there while keys do not (release 5 plan, choice 3). In classic mode Scroll is never in force.
+const contextsOf = (kind: Phase["kind"], full: boolean, wheel = false): Context[] => {
+  const c = CONTEXTS[kind];
+  return full && c.length && (kind !== "picker" || wheel) ? [...c.slice(0, -1), "Scroll", "Global"] : c;
+};
+// The actions the prompt runs as commands (keys.ts); Global's toggles and Scroll's actions run so everywhere.
+const ACTIONS: Record<string, Command> = {
+  "chat:submit": "submit",
+  "chat:newline": "newline",
+  "chat:cycleMode": "mode",
+  "chat:modelPicker": "models",
+  "chat:undo": "undo",
+  "history:search": "search",
+  "history:previous": "up",
+  "history:next": "down",
+  "autocomplete:previous": "up",
+  "autocomplete:next": "down",
+  "app:toggleTodos": "todos",
+  "app:toggleTranscript": "lastTurn",
+  "scroll:pageUp": "pageUp",
+  "scroll:pageDown": "pageDown",
+  "scroll:top": "top",
+  "scroll:bottom": "bottom",
+  "scroll:lineUp": "lineUp",
+  "scroll:lineDown": "lineDown",
+};
+// The detail view's own moves (release 5 design, "The detail view"), beside Scroll's.
+const MOVES: Record<string, Scroll> = {
+  "transcript:lineDown": "lineDown",
+  "transcript:lineUp": "lineUp",
+  "transcript:top": "top",
+  "transcript:bottom": "bottom",
+};
+// What a key does, found in the table (route, below): an action, a chord's first strokes waiting, or a key typed into a
+// field; null for a key no binding takes.
+type Got = { action: string } | { pending: Stroke[] } | { typed: string } | null;
+// A key typed into a field: printable, without Ctrl or Alt (release 6 plan, Task 6, Claude Code's "Text fields" rule).
+const printable = (s: Stroke) => !s.ctrl && !s.alt && (s.key === "space" || [...s.key].length === 1);
+// The wheel's reports carry no key, so no flag of one is set.
+const NO_KEY = {} as Key;
 
 export function App({
   session,
@@ -136,6 +186,7 @@ export function App({
   scrollSpeed,
   clipboard,
   input,
+  bindings,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -144,6 +195,14 @@ export function App({
   const editor = useRef(empty);
   const goal = useRef<number | null>(null);
   const first = useRef<{ name: string; timer: NodeJS.Timeout } | null>(null); // a key waiting for its second press
+  // The table of keys (release 6 design, "Keys become named actions"), and the timer that draws the hint row again once
+  // a chord's 3 s are up (bindings.ts, CHORD_MS).
+  const [defaultTable] = useState(() => new Bindings(tableOf(DEFAULTS)));
+  const table = bindings ?? defaultTable;
+  const chordTimer = useRef<NodeJS.Timeout | undefined>(undefined);
+  // The keys a hint names for an action (keys.ts, named).
+  const keyOf = (action: string, context: Context, usual: string) => named(table, action, context, [usual])[0];
+  const pickerKey = useRef<((k: PickerKey) => void) | null>(null); // the model list's, while it is drawn (ModelPicker.tsx)
   const step = useRef<{ at: number; draft: string } | null>(null); // where Up has gone in the history, and what was typed before
   // Ctrl+R: what is searched for, how many older matches Ctrl+R has passed, and the prompt to give back.
   const search = useRef<{ query: string; skip: number; before: Editor } | null>(null);
@@ -420,6 +479,7 @@ export function App({
       mouse?.off("mouse", onReport);
       clearInterval(minutes);
       clearTimeout(first.current?.timer);
+      clearTimeout(chordTimer.current);
       bus.off("message", onMessage);
       bus.off("error", onError);
       bus.off("usage", onUsage);
@@ -764,43 +824,31 @@ export function App({
     }
     if (!ended.current) say({ text: `screen is now ${toFull ? "full" : "classic"}`, color: "gray" });
   };
-  // The detail view's keys (release 5 design, "The detail view"; release 5 plan, Task 12): the conversation's scroll
-  // keys; j and k, or Down and Up, a row; g or Home the top, G or End the bottom; q, Esc and Ctrl+O close it; `/`
-  // starts a search, and n and N go to the next and previous match of one kept; `[` prints it out (release 5 plan,
-  // Task 13). While a search is typed, text goes into it, `[` too, Backspace edits it, Enter keeps it, or drops it when
-  // nothing matches, and Esc drops it, the view going back to where it was; the other keys act as above. Backspace
-  // takes away a whole character, as the prompt's does. Any other key does nothing: the prompt is hidden, and Alt+P's
-  // model list, Ctrl+R's search and the like wait for the view to close. Ctrl-C is not taken here (useInput, below).
-  // Several keys can come in one read, so each checks the view is still open and not printed out.
-  const detailKey = (d: Detail, ch: string, key: Key) => {
-    if (key.escape) {
-      if (d.search?.typing) {
-        d.view.current = d.search.before;
-        d.search = null;
-      } else closeDetail();
-      return;
-    }
-    for (const c of commands(ch, key)) {
-      const s = d.search;
-      if (detail.current !== d || printed.current) return;
-      if (c === "lastTurn") closeDetail();
-      else if (typeof c === "object") for (const letter of c.text) detailLetter(d, letter);
-      else if (s?.typing && c === "backspace") searchFor(d, s.query.slice(0, [...segmenter.segment(s.query)].at(-1)?.index ?? 0), viewHeight);
-      else if (s?.typing && c === "submit") {
-        if (s.found.length) s.typing = false;
-        else d.search = null;
-      } else if (typeof c === "string" && (isScroll(c) || MOVES[c])) scroll(isScroll(c) ? c : MOVES[c]!);
-    }
+  // Who takes a key (release 6 plan, Task 6): a chord under way first, so one ending in a plain letter completes in
+  // a field too; then, while a field is typed (a Ctrl+R query, a detail-view search, the model list's filter), a
+  // printable key goes into it; then the table, in the contexts in force. A key that drops a chord is then handled as
+  // if none had waited (bindings.ts, press). Keys match the table exactly (choice 20, the user's: "Exact match"), but
+  // in classic mode Shift+Up and Shift+Down are Up and Down, as release 4 read them (release 5 plan, choice 16);
+  // Ctrl+Home and Ctrl+End reach the editor's Home and End there (keys.ts, commands).
+  const route = (kind: Phase["kind"], field: boolean, ch: string, key: Key): Got => {
+    let stroke = strokeOf(ch, key);
+    if (!stroke) return null;
+    if (!fullNow.current && stroke.shift && !stroke.ctrl && !stroke.alt && (stroke.key === "up" || stroke.key === "down")) stroke = { ...stroke, shift: false };
+    const contexts = contextsOf(kind, fullNow.current);
+    const at = Date.now();
+    const chord = table.waiting(at) && table.press(stroke, contexts, at);
+    if (chord) return pressed(chord);
+    if (field && printable(stroke)) return { typed: ch };
+    const got = table.press(stroke, contexts, at);
+    return got && pressed(got);
   };
-  const detailLetter = (d: Detail, letter: string) => {
-    const s = d.search;
-    if (detail.current !== d || printed.current) return;
-    if (s?.typing) searchFor(d, s.query + letter, viewHeight);
-    else if (letter === "q") closeDetail();
-    else if (letter === "[" && input && !owner.suspended) void printOut(d); // switchScreen says why
-    else if (letter === "/") d.search = { query: "", found: [], at: 0, typing: true, before: d.view.current };
-    else if ((letter === "n" || letter === "N") && s) stepMatch(d, letter === "n" ? 1 : -1, viewHeight);
-    else if (LETTERS[letter]) scroll(LETTERS[letter]);
+  // A chord's first strokes show in the hint row until the next key or 3 s (release 6 design, "The keys file").
+  const pressed = (got: { action: string } | { pending: Stroke[] }) => {
+    if ("pending" in got) {
+      clearTimeout(chordTimer.current);
+      chordTimer.current = setTimeout(() => rerender((n) => n + 1), CHORD_MS);
+    }
+    return got;
   };
 
   // Once Ink has ended no key comes here, nor a paste or a mouse report below: Ink's cleanup takes their listeners away
@@ -809,49 +857,76 @@ export function App({
     const h = happening(() => menuFor(editor.current) !== null);
     if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // printed out: a key read with the `[` that printed the view out
     clearCopied();
-    if (h.phase.kind === "picker") return; // the picker reads the keys while it is open
-    if (h.phase.kind === "question") {
+    const field = h.phase.kind === "search" || h.phase.kind === "picker" || (h.phase.kind === "detail" && h.phase.searching);
+    onKey(h, route(h.phase.kind, field, ch, key), ch, key);
+  });
+  // What a key does in each phase. `ch` and `key` are for a key no binding takes (`got` null), which the prompt's
+  // editor, a field or the model list may still take; and for Ctrl-C, which is reserved (bindings.ts, RESERVED), so
+  // the detail view's rule for it stays its own.
+  const onKey = (h: Now, got: Got, ch: string, key: Key) => {
+    const action = got && "action" in got ? got.action : null;
+    const kind = h.phase.kind;
+    if (kind === "prompt" || kind === "menu") return promptKey(h, got, ch, key);
+    // Any other key starts the press-twice count again, as at the prompt (below).
+    if (action !== "app:exit") forget();
+    if (kind === "picker") {
+      const to = pickerKey.current;
+      if (got && "typed" in got) to?.({ text: got.typed });
+      else if (action === "app:interrupt") to?.({ action: "select:cancel" }); // Ctrl-C closes the list, as Esc does
+      else if (action?.startsWith("select:")) to?.({ action });
+      else if (action) everywhere(action, h);
+      else if (!got && (key.backspace || key.delete)) to?.("backspace");
+      else if (!got && !key.ctrl && !key.meta && ch) to?.({ text: ch }); // typed text read together, or a paste (usePaste, below)
+    } else if (kind === "question") {
       // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent.
-      if (key.ctrl && ch === "c") {
+      if (action === "app:interrupt") {
         question!.answer(false, "declined (cancelled)");
         if (question!.owner) question!.owner.stop();
         else {
           abort.current?.abort();
           restore();
         }
-      } else if (key.escape) question!.answer(false, "declined"); // that action only; the turn goes on
-      else if (fullNow.current && scrollKey(ch, key)) rerender((n) => n + 1); // a long detail can be read before answering
-      else if (ch === "y" || ch === "n") question!.answer(ch === "y", ch === "y" ? "allowed" : "declined");
-      return;
-    }
-    // In the detail view Ctrl-C stops a turn, and its queue comes back into the prompt, as below; with nothing running it
-    // only closes the view, never clearing the hidden prompt nor counting toward exiting (the user's choice,
-    // release 5). No press-twice count waits while the view is open: the key that opens it is read below, starting the
-    // count again, and a queued `/tasks t3` runs only from `next()`, after a turn, an answer or the model list, when no
-    // count was started.
-    if (h.phase.kind === "detail") {
-      if (!(key.ctrl && ch === "c")) detailKey(detail.current!, ch, key);
-      else if (!h.working) closeDetail();
-      else {
-        restore();
-        abort.current?.abort();
-      }
-      return rerender((n) => n + 1);
-    }
-    if (h.phase.kind === "search") {
-      searchKey(ch, key);
-      return rerender((n) => n + 1);
-    }
+      } else if (action === "confirm:yes" || action === "confirm:no") {
+        question!.answer(action === "confirm:yes", action === "confirm:yes" ? "allowed" : "declined"); // Esc, as n: that action only; the turn goes on
+      } else if (action) everywhere(action, h);
+    } else if (kind === "detail") detailKey(detail.current!, h, got, ch, key);
+    else if (kind === "search") searchKey(h, got, ch, key);
+    rerender((n) => n + 1);
+  };
+  // Global's actions, and Scroll's in full screen, outside the prompt: wherever Global is in force (choice 19, the
+  // user's: "All three everywhere"). The detail view closes on app:toggleTranscript itself (detailKey), and each phase
+  // keeps its own rule for app:interrupt, Ctrl-C being reserved. Scroll is in force at a question too, where a long
+  // detail can be read before answering.
+  const everywhere = (action: string, h: Now) => {
+    if (action === "app:exit") return twice("Ctrl-D", h);
+    const c = ACTIONS[action];
+    if (c === "todos" || c === "lastTurn" || (c && isScroll(c))) run(c);
+  };
+  // Ctrl-D (app:exit) twice on an empty prompt exits, never during a turn (release 3 design); outside the prompt too,
+  // and only with nothing typed in it, hidden or not, so no draft is lost unseen.
+  const twice = (name: string, h: Now) => {
+    if (h.working || editor.current.text) return;
+    const again = first.current?.name === name;
+    forget();
+    if (again) exit();
+    else remember(name);
+  };
+
+  // The prompt's keys, a menu's among them. Esc (chat:cancel), Ctrl-C (app:interrupt) and Ctrl-D (app:exit) on an
+  // empty prompt keep release 3's rules: during a turn the prompt still edits; Esc stops the turn and the queue goes
+  // on, Ctrl-C stops it and the queue comes back. Ctrl-D does not exit while a turn is running; with text it deletes
+  // the character after the cursor, as before. The rest run as commands (ACTIONS), and a key no binding takes goes to
+  // the editor.
+  const promptKey = (h: Now, got: Got, ch: string, key: Key) => {
+    const action = got && "action" in got ? got.action : null;
     const e = editor.current;
-    if (h.phase.kind === "menu" && ((key.tab && !key.shift) || key.escape)) {
-      if (key.escape) closed.current = e.text;
+    if (action === "autocomplete:accept" || action === "autocomplete:dismiss") {
+      if (action === "autocomplete:dismiss") closed.current = e.text;
       else fill(menuFor(e)!, e); // the menu happening() found: the same text, its folder's listing kept (menuFor, list)
       forget();
       return rerender((n) => n + 1);
     }
-    const name = key.escape ? "Esc" : key.ctrl && ch === "c" ? "Ctrl-C" : key.ctrl && ch === "d" && !e.text ? "Ctrl-D" : null;
-    // During a turn the prompt still edits; Esc stops the turn and the queue goes on, Ctrl-C stops it
-    // and the queue comes back. Ctrl-D does not exit while a turn is running.
+    const name = action === "chat:cancel" ? "Esc" : action === "app:interrupt" ? "Ctrl-C" : action === "app:exit" && !e.text ? "Ctrl-D" : null;
     if (h.working && name) {
       if (name === "Ctrl-C") restore();
       if (name !== "Ctrl-D") abort.current?.abort();
@@ -859,13 +934,68 @@ export function App({
     }
     const again = name !== null && first.current?.name === name;
     forget();
-    if (!name) for (const c of commands(ch, key)) run(c);
-    else if (name === "Ctrl-C" && e.text) clear(e); // one press clears
+    if (action === "app:exit" && e.text) run("delete");
+    else if (!name) {
+      if (action && ACTIONS[action]) run(ACTIONS[action]);
+      else if (!got) for (const c of commands(ch, key)) run(c);
+    } else if (name === "Ctrl-C" && e.text) clear(e); // one press clears
     else if (!again) remember(name);
     else if (name !== "Esc") return exit();
     else if (e.text) clear(e); // Esc Esc; on an empty prompt it does nothing
     rerender((n) => n + 1);
-  });
+  };
+
+  // The detail view's keys (release 5 design, "The detail view"; release 5 plan, Task 12): the conversation's scroll
+  // keys; j and k, or Down and Up, a row; g or Home the top, G or End the bottom; q, Esc and Ctrl+O close it; `/`
+  // starts a search, and n and N go to the next and previous match of one kept; `[` prints it out (release 5 plan,
+  // Task 13). While a search is typed, text goes into it, `[` too, Backspace edits it, Enter keeps it, or drops it when
+  // nothing matches, and Esc drops it, the view going back to where it was; the other keys act as above. Backspace
+  // takes away a whole character, as the prompt's does. Ctrl-C stops a turn, and its queue comes back into the
+  // prompt, as at the prompt; with nothing running it only closes the view, never clearing the hidden prompt nor
+  // counting toward exiting (the user's choice, release 5). Any other key does nothing: the prompt is hidden, and
+  // Alt+P's model list, Ctrl+R's search and the like wait for the view to close. Several keys can come in one read,
+  // each its own key here, so each checks the view is still open and not printed out.
+  const detailKey = (d: Detail, h: Now, got: Got, ch: string, key: Key) => {
+    if (detail.current !== d || printed.current) return;
+    const s = d.search;
+    if (!got) {
+      // Enter is no action here, and keys.ts leaves it to chat:submit: it keeps a search being typed, as before.
+      for (const c of key.return ? ["submit" as const] : commands(ch, key)) {
+        if (detail.current !== d || printed.current) return;
+        if (typeof c === "object")
+          for (const letter of c.text) {
+            const as = { ...key, shift: letter !== letter.toLowerCase() };
+            const one = route("detail", d.search?.typing === true, letter, as);
+            if (one) detailKey(d, h, one, letter, as);
+          }
+        else if (s?.typing && c === "backspace") searchFor(d, s.query.slice(0, [...segmenter.segment(s.query)].at(-1)?.index ?? 0), viewHeight);
+        else if (s?.typing && c === "submit") {
+          if (s.found.length) s.typing = false;
+          else d.search = null;
+        }
+      }
+      return;
+    }
+    if ("typed" in got) return searchFor(d, s!.query + got.typed, viewHeight);
+    if ("pending" in got) return;
+    const a = got.action;
+    const move = MOVES[a] ?? ACTIONS[a];
+    if ((a === "transcript:exit" || a === "app:interrupt") && key.ctrl && ch === "c") {
+      if (!h.working) closeDetail();
+      else {
+        restore();
+        abort.current?.abort();
+      }
+    } else if (a === "transcript:exit" && s?.typing) {
+      d.view.current = s.before;
+      d.search = null;
+    } else if (a === "transcript:exit" || a === "app:toggleTranscript") closeDetail();
+    else if (a === "transcript:print" && input && !owner.suspended) void printOut(d); // switchScreen says why
+    else if (a === "transcript:search") d.search = { query: "", found: [], at: 0, typing: true, before: d.view.current };
+    else if ((a === "transcript:nextMatch" || a === "transcript:previousMatch") && s) stepMatch(d, a === "transcript:nextMatch" ? 1 : -1, viewHeight);
+    else if (move && isScroll(move)) scroll(move);
+    else everywhere(a, h);
+  };
 
   // Esc, Ctrl-C and Ctrl-D count twice when the second press comes within 800 ms of the first, the
   // window Claude Code's docs give for Ctrl+D. Any other key in between starts the count again.
@@ -962,8 +1092,14 @@ export function App({
       p.view.current = scrollTo(p.rows, p.view.current, viewHeight, to);
       rerender((n) => n + 1);
     };
+    // A wheel notch is a stroke of its own, pressed in the contexts in force (release 6 plan, Task 6), Scroll's among
+    // them in the model list too. scroll:lineUp and scroll:lineDown move by the notch, as release 5's wheel did;
+    // another action acts as its key would.
     if (m.kind === "wheel") {
-      const step = notch(wheel.current, scrollSpeed, m.wheel === "up" ? -1 : 1);
+      const got = table.press({ key: `wheel${m.wheel}`, ctrl: m.ctrl, alt: m.alt, shift: m.shift }, contextsOf(phase.kind, true, true), Date.now());
+      if (!got) return;
+      if ("pending" in got || (got.action !== "scroll:lineUp" && got.action !== "scroll:lineDown")) return onKey(happening(), pressed(got), "", NO_KEY);
+      const step = notch(wheel.current, scrollSpeed, got.action === "scroll:lineUp" ? -1 : 1);
       wheel.current = step.carry;
       const from = firstRow(p.rows, p.view.current, viewHeight);
       if (step.rows && (step.rows < 0 ? from > 0 : p.view.current.at !== null)) goTo(from + step.rows); // not up at the top, nor down following
@@ -1087,20 +1223,9 @@ export function App({
     rerender((n) => n + 1);
   };
 
-  const scrollKey = (ch: string, key: Key) => {
-    const [c] = commands(ch, key);
-    if (c === undefined || !isScroll(c)) return false;
-    scroll(c);
-    return true;
-  };
-
+  // Scroll's actions come only in full screen, where Scroll is in force (contextsOf, above).
   const run = (c: Command) => {
-    if (isScroll(c)) {
-      if (fullNow.current) return scroll(c);
-      const as = CLASSIC[c];
-      if (as) run(as);
-      return;
-    }
+    if (isScroll(c)) return scroll(c);
     const e = editor.current;
     const menu = menuFor(e);
     if (menu && (c === "up" || c === "down")) {
@@ -1122,7 +1247,7 @@ export function App({
     if (c === "lastTurn") return fullNow.current ? openDetail(lastTurn(session.messages)) : show(...lastTurn(session.messages)); // release 5 plan, Task 12
     if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
     // A message starting with `?` needs a space typed first.
-    if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return show(...KEY_LIST.map((text) => ({ text, color: "gray" })));
+    if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text) return show(...keyList(table).map((text) => ({ text, color: "gray" })));
     if (c === "up" && !e.text && queue.current.length) return restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);
@@ -1217,17 +1342,25 @@ export function App({
   };
   // Ctrl+R's keys, as Claude Code's search has them (interactive-mode.md): typing searches, Ctrl+R
   // finds an older match, Enter sends the match, Tab or Esc puts it in the prompt to edit, and Ctrl-C,
-  // or Backspace with nothing searched for, gives back what was typed before.
-  const searchKey = (ch: string, key: Key) => {
+  // or Backspace with nothing searched for, gives back what was typed before. In full screen the conversation behind
+  // the search scrolls (the user's choice, release 5); in classic mode Scroll is not in force, and the scroll keys do
+  // nothing here, as in release 4.
+  const searchKey = (h: Now, got: Got, ch: string, key: Key) => {
     const s = search.current!;
-    if (key.ctrl && ch === "c") return endSearch(s.before);
-    if (key.tab || key.escape) return endSearch(shown());
+    if (got && "typed" in got) return void Object.assign(s, { query: s.query + got.typed, skip: 0 });
+    if (got && "pending" in got) return;
+    const a = got?.action;
+    if (a === "historySearch:cancel") return endSearch(s.before);
+    if (a === "historySearch:accept") return endSearch(shown());
+    if (a === "historySearch:next") return void (s.skip = Math.max(0, Math.min(s.skip + 1, matches(history.current!.entries, s.query).length - 1)));
+    if (a === "historySearch:execute") {
+      const e = shown();
+      endSearch(e);
+      return send(e);
+    }
+    if (a) return everywhere(a, h);
     for (const c of commands(ch, key)) {
       if (typeof c === "object") Object.assign(s, { query: s.query + c.text, skip: 0 });
-      // In full screen the conversation behind the search scrolls (the user's choice, release 5); in classic mode the
-      // scroll keys do nothing here, as in release 4.
-      else if (fullNow.current && isScroll(c)) scroll(c);
-      else if (c === "search") s.skip = Math.max(0, Math.min(s.skip + 1, matches(history.current!.entries, s.query).length - 1));
       else if (c === "backspace" && !s.query) return endSearch(s.before);
       else if (c === "backspace") Object.assign(s, { query: [...s.query].slice(0, -1).join(""), skip: 0 });
       else if (c === "submit") {
@@ -1258,21 +1391,41 @@ export function App({
   // The detail view's row naming its keys, or its search, stands in the hint row's place (release 5 plan, Task 12), as
   // the row over the status line; Ctrl+R's search waits under the view, and a model list queued as `/model` during a
   // turn, which takes the keys, takes the row away while it is open.
+  // Each hint names the key bound to its action (keys.ts, named), in the words release 5 wrote; Ctrl-C and Ctrl-D are
+  // reserved (bindings.ts, RESERVED), and written as release 5 wrote them. A chord's first strokes take the row first,
+  // in the table's spelling, until the next key or 3 s (release 6 design, "The keys file").
   const searching = !d && search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
+  const said = (key: string | undefined, words: string) => key !== undefined && `${key} ${words}`;
+  const hints = (...parts: (string | false | null)[]) => parts.filter(Boolean).join(" · ");
+  const chord = table.waiting(Date.now());
+  const fillKeys = [keyOf("autocomplete:accept", "Autocomplete", "tab"), keyOf("chat:submit", "Chat", "enter")];
+  const previous = keyOf("history:previous", "Chat", "up");
   const usualHint = (left: number) =>
-    d && !picker
-      ? keyRow(d)
+    chord
+      ? `${keyText(chord)} ...`
+      : d && !picker
+      ? keyRow(d, table)
       : searching
-      ? `${searching} · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel`
+      ? hints(
+          searching,
+          said(keyOf("historySearch:next", "HistorySearch", "ctrl+r"), "older"),
+          said(keyOf("historySearch:execute", "HistorySearch", "enter"), "send"),
+          said(keyOf("historySearch:accept", "HistorySearch", "tab"), "edit"),
+          "Ctrl-C cancel",
+        )
       : exitKey
         ? `Press ${exitKey} again to exit`
         : picker || question
           ? null
           : menu
-            ? `↑↓ choose · ${menu.kind === "command" ? "Tab fill · Enter run" : "Tab or Enter fill"} · Esc close`
+            ? hints(
+                `${keyOf("autocomplete:previous", "Autocomplete", "up") ?? ""}${keyOf("autocomplete:next", "Autocomplete", "down") ?? ""} choose`,
+                ...(menu.kind === "command" ? [said(fillKeys[0], "fill"), said(fillKeys[1], "run")] : [`${fillKeys.filter(Boolean).join(" or ")} fill`]),
+                said(keyOf("autocomplete:dismiss", "Autocomplete", "escape"), "close"),
+              )
             : queue.current.length
-            ? left > 0
-              ? "↑ to edit queued messages"
+            ? left > 0 && previous
+              ? `${previous} to edit queued messages`
               : `${queue.current.length} queued`
             : busy
               ? null
@@ -1292,7 +1445,11 @@ export function App({
   // models" line when it has no models, in a box that tall, so the status line stays put while typing filters the list.
   // A question's line is wrapped and drawn a row a Text in full screen, so its rows are known; the line it moves to when
   // too long to fit is its short one, below.
-  const allow = (what: string) => `Allow ${what}? [y/n] · Esc to decline`;
+  const allow = (what: string) =>
+    hints(
+      `Allow ${what}? [${keyOf("confirm:yes", "Confirmation", "y") ?? ""}/${keyOf("confirm:no", "Confirmation", "n") ?? ""}]`,
+      said(keyOf("confirm:no", "Confirmation", "escape"), "to decline"),
+    );
   const shortOf = (q: Question) => `${q.label} (shown above)`;
   const laid = layout(prompt.text, promptWidth(columns));
   const offered = full && picker ? listRows(picker, "") : [];
@@ -1380,6 +1537,7 @@ export function App({
   const workingLine = busy && (
     <WorkingLine
       label={doing.current.label}
+      stop={keyOf("chat:cancel", "Chat", "escape")}
       ms={Math.max(0, now - doing.current.at)}
       spend={
         doing.current.from && {
@@ -1405,6 +1563,7 @@ export function App({
           unseen={unseenBelow(kept, view.current, viewHeight)}
           following={view.current.at === null}
           selection={selected()}
+          bottom={keyOf("scroll:bottom", "Scroll", "ctrl+end")}
         />
       ) : (
         <Static items={lines}>
@@ -1423,13 +1582,15 @@ export function App({
               current={session.lead.id}
               onPick={pick}
               onClose={closePicker}
+              keys={pickerKey}
+              bindings={table}
               maxRows={pickerRows}
               mouse={mouse}
               bottom={viewHeight + pickerRows} // the box's last row
             />
           </Box>
         ) : (
-          <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} />
+          <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} keys={pickerKey} bindings={table} />
         )
       ) : question ? (
         full ? (
@@ -1439,7 +1600,7 @@ export function App({
             </Text>
           ))
         ) : (
-          <Text color="yellow">Allow {question.text}? [y/n] · Esc to decline</Text>
+          <Text color="yellow">{allow(question.text)}</Text>
         )
       ) : d ? (
         workingLine // the working line stays under the detail view while a turn runs (release 5 plan, choice 12)

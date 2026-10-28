@@ -77,7 +77,8 @@ describe("Conversation", () => {
     expect(draw({ rows, first: 2, height: 10, unseen: 2, following: false }).at(-1)).toMatch(/^↓ 2 new/);
     const wide = new Rows(40);
     wide.add(Array.from({ length: 20 }, (_, i) => ({ text: `line ${i}` })));
-    expect(draw({ rows: wide, first: 2, height: 10, unseen: 1, following: false }).at(-1)!.trimEnd().slice(0, 40).trimEnd()).toBe("↓ 1 new line · Ctrl+End");
+    const note = draw({ rows: wide, first: 2, height: 10, unseen: 1, following: false, bottom: "Ctrl+End" }).at(-1)!;
+    expect(note.trimEnd().slice(0, 40).trimEnd()).toBe("↓ 1 new line · Ctrl+End");
     expect(draw({ rows: wide, first: 2, height: 10, unseen: 0, following: false }).at(-1)!.slice(0, 40).trimEnd()).toBe("line 11");
     expect(draw({ rows: wide, first: 10, height: 10, unseen: 3, following: true }).at(-1)!.slice(0, 40).trimEnd()).toBe("line 19");
   });

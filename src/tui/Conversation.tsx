@@ -9,7 +9,8 @@ import { bar, type Pos, type Row, type Rows } from "./view.js";
 // 1), and that column takes the scroll bar once the lines are longer than the view. While the view does not follow, its
 // last row counts the lines that came in (choice 5). Each row is a Box one row tall, as an empty Text takes no row. The
 // selection shows in reverse colours on the text only, never on the bar's column (release 5 design, "Selecting"), and so
-// do the detail view's search matches, `found` (DetailView.tsx; plan, choice 12).
+// do the detail view's search matches, `found` (DetailView.tsx; plan, choice 12). `bottom` is the key bound to
+// scroll:bottom, which the count names (release 6 plan, Task 6), if any.
 export function Conversation({
   rows,
   first,
@@ -18,6 +19,7 @@ export function Conversation({
   following,
   selection = null,
   found = [],
+  bottom,
 }: {
   rows: Rows;
   first: number;
@@ -26,9 +28,10 @@ export function Conversation({
   following: boolean;
   selection?: [Pos, Pos] | null;
   found?: readonly Found[];
+  bottom?: string;
 }) {
   const thumb = bar(rows.total, height, first);
-  const note = !following && unseen > 0 ? `↓ ${unseen} new line${unseen === 1 ? "" : "s"} · Ctrl+End` : null;
+  const note = !following && unseen > 0 ? `↓ ${unseen} new line${unseen === 1 ? "" : "s"}${bottom === undefined ? "" : ` · ${bottom}`}` : null;
   const marks = found.map((m): [Pos, Pos] => [
     { line: m.line, offset: m.start },
     { line: m.line, offset: m.end },

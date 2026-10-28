@@ -20,13 +20,14 @@ export function elapsed(ms: number): string {
 }
 
 // The line over the prompt while something runs (release 3 design, "On screen"): what it is, for how
-// long, and for a turn its tokens and cost so far, which change after each model reply.
-export function workingText(label: string, ms: number, spend: Spend | null): string {
+// long, and for a turn its tokens and cost so far, which change after each model reply; and `stop`, the key bound to
+// chat:cancel (release 6 plan, Task 6), if any.
+export function workingText(label: string, ms: number, spend: Spend | null, stop: string | undefined): string {
   const time = elapsed(ms);
   const turn = spend ? ` · ↓ ${k(spend.output)} tokens · ${costText(spend.lead, spend.cost, spend.costUnknown)}` : "";
-  return `${FRAMES[Math.floor(ms / SPIN_MS) % FRAMES.length]} ${label} · ${time}${turn} · Esc to stop`;
+  return `${FRAMES[Math.floor(ms / SPIN_MS) % FRAMES.length]} ${label} · ${time}${turn}${stop === undefined ? "" : ` · ${stop} to stop`}`;
 }
 
-export function WorkingLine({ label, ms, spend }: { label: string; ms: number; spend: Spend | null }) {
-  return <Text wrap="truncate-end">{workingText(label, ms, spend)}</Text>;
+export function WorkingLine({ label, ms, spend, stop }: { label: string; ms: number; spend: Spend | null; stop: string | undefined }) {
+  return <Text wrap="truncate-end">{workingText(label, ms, spend, stop)}</Text>;
 }

@@ -22,6 +22,7 @@ import { History } from "../../src/tui/history.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
 import { App, type AppProps } from "../../src/tui/App.js";
+import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard } from "../../src/tui/clipboard.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
@@ -89,6 +90,7 @@ async function mount(
     leadFails?: string; // what /lead and the picker throw, in place of making a lead
     run?: ((text: string) => Promise<void>) | null; // the clipboard's stand-in tool; null for none, as on Linux over SSH
     written?: (s: string) => void; // called with each of the screen's writes, as it is made
+    bindings?: Bindings; // the table of keys; the default table when not given
   } = {},
 ) {
   const bus = new Bus();
@@ -147,6 +149,7 @@ async function mount(
       mouse={mouse}
       scrollSpeed={opts.scrollSpeed ?? 3}
       clipboard={(report) => new Clipboard(write, run, report)}
+      bindings={opts.bindings}
     />,
   );
   mounted.push(app);
@@ -3162,6 +3165,35 @@ describe("App's detail view in full screen", () => {
     });
   });
 
+  // The text-field rule (plan, Task 6): while a search is typed, a printable key goes into it.
+  it("types q, n and / into a search, the view staying open and no match stepped, and drops the search on Esc", async () => {
+    const { app } = await record(logins());
+    await press(app, "/", "login", "\r", "/"); // a search kept, then a new one typed
+    await press(app, "n");
+    expect(plain(app)[20]).toBe("/n");
+    await press(app, "q");
+    expect(plain(app)[20]).toBe("/nq (no match)");
+    await press(app, "/");
+    expect(plain(app)[20]).toBe("/nq/ (no match)");
+    expect(plain(app)[0]).toBe("the login 30."); // where the kept search left it: n stepped to no other match
+    await press(app, "\u001b");
+    expect(plain(app)[20]).toBe(KEYS);
+    expect(plain(app)[0]).toBe("the login 30.");
+  });
+
+  it("scrolls on PgUp, PgDn, Ctrl+Home and Ctrl+End", async () => {
+    const { app } = await record(lines(100));
+    const top = () => shown(app)[0];
+    await press(app, PG_DOWN, PG_DOWN); // half of 20, twice
+    expect(top()).toBe("line 18.");
+    await press(app, PG_UP);
+    expect(top()).toBe("line 8.");
+    await press(app, CTRL_END);
+    expect(top()).toBe("line 80.");
+    await press(app, CTRL_HOME);
+    expect(top()).toBe("t1 (find x), done: 0 tool calls");
+  });
+
   it("closes the view for a question, which then brings its detail into the conversation's view, and takes n as its answer", async () => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
     await press(app, "\u000f");
@@ -4381,5 +4413,202 @@ describe("App in classic mode", () => {
     const frame = app.lastFrame();
     await press(app, PG_UP, PG_DOWN, SHIFT_UP, SHIFT_DOWN, CTRL_HOME, CTRL_END);
     expect(app.lastFrame()).toBe(frame);
+  });
+
+  it("does nothing on the scroll keys at a question, as release 4 did", async () => {
+    const { app, ask } = await mount([], { intro: said(60) });
+    void ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    const frame = app.lastFrame();
+    await press(app, PG_UP, PG_DOWN, SHIFT_UP, SHIFT_DOWN, CTRL_HOME, CTRL_END);
+    expect(app.lastFrame()).toBe(frame);
+  });
+});
+
+// The keys as a table of actions (release 6 design, "Keys become named actions", "Bindings come first"; plan, Task 6).
+describe("App's keys from the table of actions", () => {
+  // The default table with `keys` laid over one context's.
+  const table = (context: Context, keys: Record<string, string | null>) =>
+    new Bindings(tableOf({ ...DEFAULTS, [context]: { ...DEFAULTS[context], ...keys } }));
+  const todo: TodoItem[] = [{ text: "write the fix", status: "pending" }];
+  const CTRL_X = "\u0018";
+
+  it("takes Ctrl+E from the editor's end-of-line when the table binds it to chat:externalEditor", async () => {
+    const { app } = await mount([], { bindings: table("Chat", { "ctrl+e": "chat:externalEditor" }) });
+    await press(app, "ab", "\u0001", "\u0005", "x"); // Ctrl+A, then Ctrl+E: the cursor stays at the start, nothing typed
+    expect(app.lastFrame()).toContain("› xab\n");
+    const { app: usual } = await mount([]);
+    await press(usual, "ab", "\u0001", "\u0005", "x");
+    expect(usual.lastFrame()).toContain("› abx\n");
+  });
+
+  it("moves the to-do list's key to Ctrl+Y, Ctrl+T doing nothing, and lists Ctrl+Y on ?", async () => {
+    const { app, bus } = await mount([], { bindings: table("Global", { "ctrl+t": null, "ctrl+y": "app:toggleTodos" }) });
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0014");
+    expect(app.lastFrame()).toContain("☐ write the fix");
+    await press(app, "\u0019");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("  Ctrl+Y  show or hide the to-do list");
+    expect(app.lastFrame()).not.toContain("Ctrl+T");
+  });
+
+  it("names the key chat:cancel is on in the working line, and stops the turn on it", async () => {
+    const { app } = await mount([], { lead: hanging(), bindings: table("Chat", { escape: null, "ctrl+q": "chat:cancel" }) });
+    await type(app, "hi");
+    await until(app, "· Ctrl+Q to stop");
+    await press(app, "\u0011");
+    await gone(app, "Ctrl+Q to stop");
+  });
+
+  it("shows a chord's first key in the hint row until the second key, or for 3 s", async () => {
+    const { app } = await mount([]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      // Then one turn of the event loop (setImmediate is not faked), in which the screen is drawn again.
+      const wait = async (ms: number) => {
+        await vi.advanceTimersByTimeAsync(ms);
+        await new Promise((resolve) => setImmediate(resolve));
+      };
+      app.stdin.write(CTRL_X);
+      await wait(10);
+      expect(app.lastFrame()).toContain("\nctrl+x ...\n");
+      app.stdin.write("\u0005"); // Ctrl+X Ctrl+E: chat:externalEditor
+      await wait(10);
+      expect(app.lastFrame()).not.toContain("ctrl+x");
+      expect(app.lastFrame()).toContain("? for shortcuts");
+      app.stdin.write(CTRL_X);
+      await wait(2_980);
+      expect(app.lastFrame()).toContain("\nctrl+x ...\n");
+      await wait(20); // 3 s since Ctrl+X
+      expect(app.lastFrame()).not.toContain("ctrl+x");
+      expect(app.lastFrame()).toContain("? for shortcuts");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Each of the four keys moves the conversation: back up from the bottom, to the top, down from it, and to the bottom.
+  const scrolls = async (app: ReturnType<typeof render>) => {
+    const bottom = shown(app)[0];
+    await press(app, PG_UP);
+    expect(shown(app)[0]).not.toBe(bottom);
+    await press(app, CTRL_HOME);
+    expect(shown(app)[0]).toBe("said 0.");
+    await press(app, PG_DOWN);
+    expect(shown(app)[0]).not.toBe("said 0.");
+    await press(app, CTRL_END);
+    expect(shown(app)[0]).toBe(bottom);
+  };
+
+  it("scrolls on PgUp, PgDn, Ctrl+Home and Ctrl+End in full screen at the prompt, with a menu open, at a question and in Ctrl+R's search", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60), past: ["about"] });
+    await scrolls(app);
+    await press(app, "/");
+    await until(app, "↑↓ choose");
+    await scrolls(app);
+    await press(app, "\u007f", "\u0012");
+    await until(app, "search:");
+    await scrolls(app);
+    await press(app, "\u0003");
+    const answer = ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await scrolls(app);
+    await press(app, "n");
+    expect(await answer).toBe(false);
+  });
+
+  it("takes a letter bound in Chat as its action at the prompt, and types it into Ctrl+R's query", async () => {
+    const { app, bus } = await mount([], { bindings: table("Chat", { x: "app:toggleTodos" }) });
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "x");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    await press(app, "\u0012", "x");
+    expect(app.lastFrame()).toContain("search: x (no match) ·");
+  });
+
+  it("types q into Ctrl+R's query, and Esc still puts the match in the prompt", async () => {
+    const { app } = await mount([], { past: ["quit now"] });
+    await press(app, "\u0012", "q");
+    expect(app.lastFrame()).toContain("› quit now\nsearch: q · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel");
+    await press(app, "\u001b");
+    expect(app.lastFrame()).toContain("› quit now\n? for shortcuts");
+  });
+
+  // A chord ending in a plain letter (plan, Task 6, "A chord under way comes first").
+  const chord = () => table("Global", { "ctrl+x t": "app:toggleTodos" });
+
+  it("completes a chord ending in a letter in Ctrl+R's query, and types a letter that does not complete it or comes after 3 s", async () => {
+    const { app, bus } = await mount([], { bindings: chord(), past: ["quit now"] });
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0012", CTRL_X, "t");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    expect(app.lastFrame()).toContain("search:  ·");
+    await press(app, CTRL_X, "q");
+    expect(app.lastFrame()).toContain("search: q ·");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      app.stdin.write(CTRL_X);
+      await vi.advanceTimersByTimeAsync(3_000);
+      app.stdin.write("t");
+      await vi.advanceTimersByTimeAsync(10);
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(app.lastFrame()).toContain("search: qt (no match) ·");
+    expect(app.lastFrame()).not.toContain("write the fix");
+  });
+
+  it("completes a chord ending in a letter in the model list's filter, and types a letter that does not complete it or comes after 3 s", async () => {
+    const { app, bus } = await mount([], { bindings: chord(), models: [{ provider: "fake", models: ["quick", "slow"] }] });
+    bus.emit("todo", todo);
+    await type(app, "/model");
+    await until(app, "fake:quick");
+    await tick(); // the picker starts reading keys just after it first appears
+    await press(app, CTRL_X, "t");
+    expect(app.lastFrame()).toContain("Filter: (type to filter)");
+    await press(app, CTRL_X, "q");
+    expect(app.lastFrame()).toContain("Filter: q ·");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      app.stdin.write(CTRL_X);
+      await vi.advanceTimersByTimeAsync(3_000);
+      app.stdin.write("u");
+      await vi.advanceTimersByTimeAsync(10);
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(app.lastFrame()).toContain("Filter: qu ·");
+    await press(app, "\u001b");
+    await gone(app, "Filter:");
+    expect(app.lastFrame()).not.toContain("write the fix"); // hidden by the first chord
+  });
+
+  // Global's actions act wherever Global is in force (choice 19, the user's: "All three everywhere").
+  it("shows the last turn on Ctrl+O at a question, in the conversation, the question staying", async () => {
+    const { app, ask } = await mount([], { full: true });
+    void ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await press(app, "\u000f");
+    expect(shown(app)[0]).toBe("No turn yet, so no tool calls to show.");
+    expect(app.lastFrame()).toContain("Allow write a.txt? [y/n] · Esc to decline");
+  });
+
+  it("exits on Ctrl-D pressed twice at a question", async () => {
+    const { app, ask } = await mount([]);
+    let answered = false;
+    void ask("write a.txt").then(() => (answered = true));
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await press(app, "\u0004");
+    expect(app.lastFrame()).toContain("Allow write a.txt? [y/n] · Esc to decline\nPress Ctrl-D again to exit");
+    await press(app, "\u0004", "y"); // gone: y answers nothing
+    expect(answered).toBe(false);
   });
 });
