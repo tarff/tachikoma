@@ -322,6 +322,45 @@ Each is marked in its task. None approved yet.
     words are all pictures is those pictures; any other line is one path. A known gap, as in Claude
     Code: a shell's `'\''` inside single quotes stays in the path as written, so such a file is
     not found and the paste stays text.
+30. **The final security review's fixes (the user's answers, 2026-10-29).**
+    - **`never` is switched off until release 7** (the user: "we can't have never mode deleting a
+      filesystem"; options chosen: "Switch never off (Recommended)", then "Off now, checks in 7",
+      then "not just file deletion, any other dangerous commands too"). `--mode never` or
+      `"mode": "never"` in the settings file stops `tachi` and `tachi -p` at launch, as a bad flag
+      does, with `--mode: never is switched off until release 7, which adds the safety checks it
+      needs; use ask or project` (or `settings.json: "mode": ` before it), one check in
+      `src/cli.tsx` once the mode is resolved. A live edit to it is refused with `"mode": "never"
+      is switched off until release 7; the mode stays ask`. `never` stays in the `Mode` type and in
+      `needsApproval`, so release 7 can bring it back behind the sandbox, auto mode and a check on
+      dangerous commands of every kind (main design, "`never` mode switched off"). This supersedes
+      the review's finding 4, a launch notice when `never` came from the file, which the user had
+      said yes to.
+    - **Keys that answer a question apply at launch only** (finding 1; the user: "Next launch only
+      (Recommended)"). A shell command could rewrite the keys file so that n and Esc answer yes,
+      and the watcher would apply it at once. After the launch's read, every key answers a
+      permission question as it did then: a question reads Confirmation, then Scroll in full
+      screen, then Global, and a key or chord is looked up only among the bindings that are, or
+      start with, the strokes read so far. So a live edit keeps all of Confirmation as at launch,
+      and in Scroll and Global every binding holding, at any place in a chord, a stroke that begins
+      an answer (a key of the launch's Confirmation, or the first stroke of a key bound to
+      `confirm:yes` or `confirm:no` in Scroll or Global, at launch or in the edit). Strokes holding
+      none of those answer nothing, at launch or after; strokes holding one are looked up only among
+      bindings kept as at launch, a chord the prompt started included (`Bindings.keepAnswers`). The
+      rest of the edit applies, and one grey line, said once while it stays, as a problem is, says
+      `keybindings.json: changes to the keys that answer a question take effect at the next
+      launch; the rest apply now`. At launch the file applies whole, as the user's own choice.
+    - **Escape codes in launch messages** (finding 2, the coordinator's approval): the settings
+      file's problem and warnings, and the lead, fallback and worker messages that may quote its
+      values, go through `visible()` before `fail` or stderr, so an OSC 52 in a value cannot set the
+      clipboard.
+    - **Pasted network paths stay text** (finding 3; the user: "Leave it as text (Recommended)"): a
+      pasted path starting with two slashes of either kind, `\\?\` and `\\.\` included, is never a
+      picture, so no file is looked at, which on Windows would reach that machine, handing it a
+      hash of the user's login, or freeze the screen on one that does not answer.
+    - **Case-insensitive folder match** (finding 5, the coordinator's approval): before
+      `~/.tachikoma` is made, the file tools match its path ignoring case on macOS as on Windows.
+    - Not done: finding 6, a size cap on a pasted picture, waits for measured sizes, as a cap
+      needs a number taken from data first.
 
 ---
 

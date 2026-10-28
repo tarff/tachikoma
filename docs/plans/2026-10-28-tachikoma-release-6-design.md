@@ -580,4 +580,9 @@ build made, for the user to review at the final review.
   before. This replaces "`never` only at launch" in the table above. Release 7 brings the sandbox,
   auto mode and a check on dangerous commands of every kind before `never` returns (main design,
   "`never` mode switched off").
+- **The final security review's other fixes** (choice 30): after a live edit of the keys file,
+  every key answers a permission question as at launch, the rest of the edit applying, with a
+  line (the user's choice); the settings file's problems print at launch with control characters
+  escaped; a pasted path starting with two slashes stays text and is never looked at (the user's
+  choice); and before `~/.tachikoma` is made its path matches ignoring case on macOS too.
 - **Testing.** The user's terminal checklist is in the plan's Task 23, to be run after the build.
