@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { loadSettings, readSettings, saveSetting, settingsDir, shownFile } from "../src/settings.js";
 
 const read = (data: unknown) => readSettings(JSON.stringify(data));
@@ -167,6 +167,11 @@ describe("saveSetting", () => {
     await saveSetting("fallback", "ollama:b", home);
     const all = { $schema: "x", mode: "project", leed: 1, lead: "ollama:a", screen: "full", fallback: "ollama:b" };
     expect(readFileSync(fileOf(home), "utf8")).toBe(written(all));
+  });
+
+  // A type check, which tsc makes: undefined would make JSON.stringify drop the entry (Task 8's code review).
+  it("takes a value for the entry, never undefined", () => {
+    expectTypeOf(saveSetting<"lead">).parameter(1).toEqualTypeOf<string>();
   });
 
   it("makes the file, and its folder, when there is none", async () => {

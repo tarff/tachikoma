@@ -360,7 +360,7 @@ export function App({
   history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
   // Release 6 design, "Saving": /lead, a /model pick and /screen save their choice once it is in force, which a failed
   // save leaves as it is; the line saying so is in History's colour.
-  const save = <K extends keyof Settings>(key: K, value: Settings[K]) => {
+  const save = <K extends keyof Settings>(key: K, value: Required<Settings>[K]) => {
     saveSetting(key, value, home).catch((err) => {
       say({ text: `The change holds for this session, but saving it to ${shownFile()} failed (${errorText(err)}).`, color: "magenta" });
     });

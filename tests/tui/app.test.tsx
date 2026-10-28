@@ -430,7 +430,7 @@ describe("App", () => {
   it("keeps the new lead for the session when it cannot be saved, and says so", async () => {
     const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
     const file = path.join(settingsDir(home), "settings.json");
-    mkdirSync(file, { recursive: true }); // a folder where the file goes, so it cannot be written, with no permission changed
+    mkdirSync(file, { recursive: true }); // a folder where the file goes, so it cannot be read or written, with no permission changed
     let reason = "";
     try {
       readFileSync(file, "utf8");
@@ -438,12 +438,22 @@ describe("App", () => {
       reason = (err as Error).message;
     }
     const { app, session } = await mount([], { home });
-    await type(app, "/lead ollama:a");
+    await type(app, "/lead fake:b");
     expect(session.lead.id).toBe("fake:b");
     const line = `The change holds for this session, but saving it to ${shownFile()} failed (${reason}).`;
     const said = () => app.lastFrame()!.replaceAll("\n", " ");
     await waitFor(() => said().includes(line));
     expect(said()).toContain(`lead is now fake:b ${line}`);
+  });
+
+  it("saves no lead that could not be made", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    const { app } = await mount([], { leadFails: "no such model", full: true, home });
+    await type(app, "/lead ollama:a");
+    await until(app, "no such model");
+    await type(app, "/screen");
+    await waitFor(() => savedIn(home)?.screen !== undefined);
+    expect(savedIn(home)).toEqual({ screen: "classic" });
   });
 
   it("moves both ways, unfilters on Backspace, says when nothing matches, and closes on Ctrl-C", async () => {

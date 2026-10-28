@@ -553,7 +553,7 @@ Commit: `feat: a settings file supplies every launch option, flags still winning
 
 ```ts
 // Sets one entry and keeps every other as it was; under withLock(`${file}.lock`), read again inside the lock.
-export function saveSetting<K extends keyof Settings>(key: K, value: Settings[K], home?: string): Promise<void>;
+export function saveSetting<K extends keyof Settings>(key: K, value: Required<Settings>[K], home?: string): Promise<void>;
 ```
 
 The file is written with `writePrivate` after `privateDir(settingsDir)`, as JSON with two-space

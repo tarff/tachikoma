@@ -86,8 +86,8 @@ export function loadSettings(home = os.homedir()): Loaded {
 // Release 6 design, "The settings file", "Saving": one entry set, every other kept as it was, entries the user added
 // included, in their order. The file is read again under the lock, so two sessions saving at once lose nothing, and
 // written as JSON with two-space indents (the plan's choice 2). A file that is not one object is left as it is, and the
-// promise rejects with why.
-export async function saveSetting<K extends keyof Settings>(key: K, value: Settings[K], home = os.homedir()): Promise<void> {
+// promise rejects with why. The value cannot be undefined, which JSON.stringify would leave out, removing the entry.
+export async function saveSetting<K extends keyof Settings>(key: K, value: Required<Settings>[K], home = os.homedir()): Promise<void> {
   const dir = settingsDir(home);
   const file = path.join(dir, SETTINGS);
   privateDir(dir); // the lock file goes there too
