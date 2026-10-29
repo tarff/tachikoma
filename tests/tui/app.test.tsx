@@ -6437,12 +6437,18 @@ describe("App's live settings", () => {
     const read = readsOf(where);
     await read(() => writeKeys(home, { bindings: [launchKeys, { context: "Chat", bindings: { "a b": "chat:stash" } }] }));
     await tick();
-    await press(app, "a"); // Chat's chord a b waits
-    expect(app.lastFrame()).toContain("a ...");
-    const answer = ask("write a.txt");
-    await until(app, "Allow write a.txt? [y/n]");
-    await press(app, "n");
-    expect(await answer).toBe(false);
+    // The clock stands still from here (timers still run), so the chord's 3 s cannot end it however slow the machine,
+    // and only the question's opening can (found at the re-review).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await press(app, "a"); // Chat's chord a b waits
+      expect(app.lastFrame()).toContain("a ...");      const answer = ask("write a.txt");
+      await until(app, "Allow write a.txt? [y/n]");
+      await press(app, "n");
+      expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
