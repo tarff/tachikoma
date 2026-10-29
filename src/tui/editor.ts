@@ -125,11 +125,14 @@ export function insertPicture(e: Editor, id: number): Editor {
 
 // Picture `id`'s markers taken out, as one step, the cursor staying where it was among the rest: its read found
 // nothing or failed (release 6 plan, Task 14). Undo brings them back, but with no picture to send they are only text
-// (pictures.ts, messageParts).
+// (pictures.ts, messageParts). They go from what the last delete took too, so Ctrl+Y puts none back, with no step when
+// the text has none (found at the combined review).
 export function cutPicture(e: Editor, id: number): Editor {
+  const k = without(e.killed, id);
+  const killed = k.text === e.killed.text ? e.killed : { text: k.text, spans: k.spans };
   const d = without(e, id);
-  if (d.text === e.text) return e;
-  return { ...e, text: d.text, spans: d.spans, cursor: d.at(e.cursor), undo: [...e.undo, state(e)], typing: false };
+  if (d.text === e.text) return killed === e.killed ? e : { ...e, killed };
+  return { ...e, text: d.text, spans: d.spans, cursor: d.at(e.cursor), undo: [...e.undo, state(e)], typing: false, killed };
 }
 
 // Several changes as one step, each [from, to, insert] in the text as it is, apart and in order. Vim's >>, << and J

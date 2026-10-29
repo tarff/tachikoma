@@ -172,6 +172,17 @@ describe("pictures", () => {
     expect(show(run(cut, "undo"))).toBe(show(e));
     expect(cutPicture(cut, 1)).toBe(cut); // none left: no step
   });
+
+  // Found at the combined review: what the last delete took keeps its pictures' spans for Ctrl+Y, so a failed read's
+  // marker goes from there too, even with none left in the text, and is no step.
+  it("takes a picture's marker out of what the last delete took, so Ctrl+Y puts back none", () => {
+    const e = run(insertPicture(load(empty, "a "), 1), "deleteToStart");
+    expect(e.killed.spans).toHaveLength(1);
+    const cut = cutPicture(e, 1);
+    expect(cut.killed).toEqual({ text: "a ", spans: [] });
+    expect(cut.undo).toBe(e.undo);
+    expect(apply(cut, "yank")).toMatchObject({ text: "a ", spans: [] });
+  });
 });
 
 describe("replace", () => {

@@ -813,7 +813,10 @@ export function App({
   const settle = (id: number, from = "the clipboard") => {
     const read = pictures.get(id);
     if (read !== "none" && !(typeof read === "object" && "failed" in read)) return;
-    editor.current = cutPicture(editor.current, id);
+    editor.current = cutPicture(editor.current, id); // what Ctrl+K and the rest took too (editor.ts)
+    const v = vim.current; // and vim's register, so p puts none back (found at the combined review)
+    const r = v && without(v.register, id);
+    if (v && r) vim.current = { ...v, register: { ...v.register, text: r.text, spans: r.spans } };
     const s = stash.current;
     if (s) {
       const prompt = cutPicture(s.prompt, id);

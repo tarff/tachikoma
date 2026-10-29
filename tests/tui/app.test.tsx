@@ -5297,6 +5297,32 @@ describe("App's pictures", () => {
     expect(app.lastFrame()).toMatch(/› b ?\n\? for shortcuts/); // the stash, left empty, is gone too
   });
 
+  // Found at the combined review: what Ctrl+K took, and vim's register, kept a failed read's marker, so Ctrl+Y or p put
+  // back a marker for a picture that is gone.
+  it("takes a failed read's marker out of what Ctrl+K took, so Ctrl+Y puts back none", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures });
+    await press(app, "a ", PICTURE, "\u0001", "\u000b"); // Ctrl+A, then Ctrl+K takes the line, marker and all
+    pictures.set(1, { failed: "access denied" });
+    await until(app, "Could not read the clipboard: access denied");
+    await press(app, "\u0019", "\r"); // Ctrl+Y puts it back
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "a" }]]); // a message is sent trimmed
+  });
+
+  it("takes a failed read's marker out of vim's register, so p puts back none", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures });
+    await press(app, "/vim", "\r");
+    await until(app, "editorMode is now vim");
+    await press(app, "a ", PICTURE, ESC, "d", "d"); // dd takes the line, marker and all, into the register
+    pictures.set(1, { failed: "access denied" });
+    await until(app, "Could not read the clipboard: access denied");
+    await press(app, "p", "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "a" }]]);
+  });
+
   it.each([
     ["Esc", ESC],
     ["Ctrl-C", "\u0003"],
