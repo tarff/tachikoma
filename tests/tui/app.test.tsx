@@ -6675,6 +6675,29 @@ describe("App's live settings", () => {
     }
   });
 
+  // The outside review of PR #5's second round: a question waiting in the line, not on screen, that is cancelled leaves
+  // a chord half typed at the one on screen as it is, so z y still reads as the launch's z y (no), not y (yes).
+  it("keeps a chord half typed at the question on screen when one waiting behind it is cancelled", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, globalKeys({ "z y": "confirm:no" }));
+    const { app, ask } = await watching([], {}, {}, {}, home);
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const first = ask("write a.txt");
+      const stop = new AbortController();
+      const second = ask("write b.txt", undefined, { name: "t1", signal: stop.signal, stop: () => stop.abort() });
+      await until(app, "Allow write a.txt? [y/n]");
+      await press(app, "z");
+      stop.abort();
+      expect(await second).toBe(false);
+      await press(app, "y"); // ends z y: no
+      expect(await first).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));

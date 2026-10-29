@@ -512,10 +512,13 @@ export function App({
             if (!open) return;
             open = false;
             signal?.removeEventListener("abort", cancel);
+            const onScreen = questions.current[0] === q;
             questions.current = questions.current.filter((x) => x !== q);
-            // As at the opening (below): a chord half typed at a question, which one cancelled can leave, never runs on
-            // into the next question's keys nor the live ones (choice 32 and its code review).
-            latest.current.dropChord();
+            // As at the opening (below): a chord half typed at the question on screen, which one cancelled can leave,
+            // never runs on into the next question's keys nor the live ones (choice 32 and its code review). One
+            // waiting behind it, cancelled, leaves the chord to the question on screen, whose keys it was typed for
+            // (the outside review's second round).
+            if (onScreen) latest.current.dropChord();
             if (q.detail && q.following) view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
             latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
             resolve(ok);
