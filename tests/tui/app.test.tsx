@@ -6880,6 +6880,17 @@ describe("App's live settings", () => {
     expect(hintRow(app)).toBe(`lead is now fake:b ${FROM} (+1 more above)`);
   });
 
+  // The user's: "Notice wins (Recommended)": over vim's mode until a key, which then shows again.
+  it("shows a live edit's line over vim's mode until a key, and vim's mode after", async () => {
+    const { app, write } = await watching([], { editorMode: "vim" });
+    expect(hintRow(app)).toBe("-- INSERT --");
+    write({ editorMode: "vim", maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    expect(hintRow(app)).toBe(`maxTasks is now 3 ${FROM}`);
+    await press(app, "x");
+    expect(hintRow(app)).toBe("-- INSERT --");
+  });
+
   // What ranks over the line keeps the row: here the queue's hint, during a turn.
   it("leaves the hint row to the queue's hint while a live edit's line waits", async () => {
     const lead = new Held();
@@ -7082,7 +7093,8 @@ describe("App's live settings", () => {
     await until(app, "-- INSERT --");
     write({ editorMode: "vim" });
     await sees(app, `editorMode is now vim ${FROM}`);
-    expect(app.lastFrame()).toContain("-- INSERT --");
+    await press(app, "\u001b"); // the edit's line holds the hint row until a key (choice 35); vim takes Esc
+    expect(app.lastFrame()).toContain("-- NORMAL --");
     write({ editorMode: "normal", vimInsertModeRemaps: { jj: "<Esc>", jk: "<Esc>" } });
     await sees(app, `editorMode is now normal ${FROM}`);
     await sees(app, `vimInsertModeRemaps is now jj, jk ${FROM}`);

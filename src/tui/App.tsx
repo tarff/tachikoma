@@ -2103,10 +2103,10 @@ export function App({
             : stash.current
               ? // during a turn too, no other hint taking the row (release 6 plan, Task 13)
                 hints("Stashed", said(keyOf("chat:stash", "Chat", "ctrl+s"), "to bring back"))
-              : vim.current
-                ? `-- ${vim.current.mode} --` // every mode, in a turn too, when no other hint takes the row (choice 15)
-                : noticeText
-                  ? noticeText // over nothing but "? for shortcuts", and the empty row of a turn (choice 35)
+              : noticeText
+                ? noticeText // over vim's mode too, until a key (choice 35, the user's: "Notice wins")
+                : vim.current
+                  ? `-- ${vim.current.mode} --` // every mode, in a turn too, when no other hint takes the row (choice 15)
                   : busy
                     ? null
                     : "? for shortcuts";
