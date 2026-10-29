@@ -604,5 +604,6 @@ build made, for the user to review at the final review.
   chord could still get round; a live edit of `"mode"` never changes the mode ("Pin at launch",
   as the `mode` row above says); and a keystroke switches the mode only where the launch's keys
   switch it too, so a live edit cannot bind `chat:cycleMode` to a key typed anyway ("Yes, close
-  it"), while taking it out applies at once. One grey line says what stays as at launch.
+  it"), while taking it out applies at once. One grey line says the keys at a question stay as at
+  launch and a key newly bound to switch the mode does nothing, until the next launch.
 - **Testing.** The user's terminal checklist is in the plan's Task 23, to be run after the build.

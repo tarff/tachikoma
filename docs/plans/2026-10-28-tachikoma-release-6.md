@@ -375,8 +375,19 @@ Each is marked in its task. None approved yet.
     - **Case-insensitive folder match** (finding 5, the coordinator's approval): the file tools
       match the paths of `~/.tachikoma` and the data folder ignoring case on macOS as on Windows,
       made yet or not, so a folder not made yet is covered too.
-    - Not done: finding 6, a size cap on a pasted picture, waits for measured sizes, as a cap
-      needs a number taken from data first.
+    - Finding 6, a size cap on a pasted picture, was measured and decided on 2026-10-30: no cap
+      (the user: "No limit"). Measured: 2,212 picture files (PNG, JPEG, GIF and WebP by extension)
+      in the user's Pictures (Screenshots included), OneDrive's Pictures (none), Downloads and
+      Desktop. Screenshots: 234 files, median 0.10 MB, largest 2.63 MB. Phone photos in Pictures:
+      4032×3024 (12.2 megapixels), largest 8.03 MB. All files: median 0.04 MB, 90% at most
+      1.67 MB, 99% at most 5.84 MB, largest 73.42 MB (13789×9144, 126.1 megapixels). Memory,
+      measured by running Tachikoma's own `prepare()` (`src/providers/pictures.ts`) on one picture
+      per fresh Node 24 process after loading sharp, with Anthropic's then Kimi's limits, as extra
+      memory over the process's own: the 1.7 MB file (the 90th percentile) peaked at +113 MB in
+      0.2 s; the 5.8 MB file (the 99th) at +89 MB in 0.3 s; the largest, 73.4 MB, at +566 MB in
+      7.3 s, sent at 7.2 MB to Anthropic and 1.0 MB to Kimi; the five largest (55 to 73 MB) all at
+      +465 to +566 MB, in 2.9 to 7.3 s, on a machine with 64 GB. sharp already refuses a picture
+      over 268,402,689 pixels, about twice the largest found.
 31. **Three calls from the final review (2026-10-29; the coordinator's, for the user to review).**
     Ctrl-C typed in the terminal while the editor runs, where raw mode is off so it comes as
     SIGINT, is ignored, and Ctrl-\ (SIGQUIT) too where it exists, as Git's
@@ -405,16 +416,20 @@ Each is marked in its task. None approved yet.
       the question's contexts; the live table is not read there. The question's hint
       (`[y/n] · Esc to decline`) names the launch's keys, so it never names a key that does not
       answer. No chord runs on between the two tables: a question opening when none is open, and
-      the last one closing, answered or cancelled, drop any chord waiting in either, and so does
-      the first stroke read at a question or after one (`asked`, in `lookUp`), whatever came
-      between.
+      every question closing, answered or cancelled, drop any chord waiting in either (so none
+      half typed at a cancelled question joins the next one's keys), and so does the first stroke
+      read at a question or after one (`asked`, in `lookUp`), whatever came between, such as a
+      question waiting under the model list whose closing key starts a chord in the launch's keys
+      only. The hint row names a chord only when the keys drawn would go on with it, so a chord
+      still waiting when a click picks from the model list is not named over the question.
       `Bindings.keepAnswers` and its tests are gone, and with it choice 30's known limit. The grey
-      line is now `keybindings.json: at a permission question, and for the key that switches the
-      mode, the keys stay as at launch until the next launch; the rest apply now`, said once while
-      it stays, as a problem is, when a live edit differs from the launch's keys in Confirmation,
-      Scroll or Global, all a question reads, or binds `chat:cycleMode` to a key the launch's keys
-      do not (`Bindings.heldBack`). So any edit of Global shows it, as Global's keys too stay as at
-      launch at a question.
+      line is now `keybindings.json: at a permission question the keys stay as at launch, and a key
+      newly bound to switch the mode does nothing, until the next launch; the rest apply now`, said
+      once while it stays, as a problem is, when a live edit differs from the launch's keys in
+      Confirmation, Scroll or Global, all a question reads, or lets a key or chord switch the mode
+      at the prompt or its menu, in either screen mode, where the launch's keys do not
+      (`Bindings.heldBack`, by what the key does, `acts`, not how the file writes it). So any edit
+      of Global shows it, as Global's keys too stay as at launch at a question.
     - **A live `"mode"` edit never changes the mode** (finding 2; the user: "Pin at launch"). A
       shell command the user allowed could rewrite `settings.json` to put the session in `project`
       mode, where writes inside the project are no longer asked. A live edit of `"mode"`, removing
@@ -428,9 +443,8 @@ Each is marked in its task. None approved yet.
       switches the mode only when both give `chat:cycleMode`. A stroke only the live keys give it
       does nothing, not even type its character. So a live edit cannot add or move the mode key;
       one taking it out applies at once, as it weakens nothing. `?` names a key for the mode only
-      where both switch it. The line's words are not exact for one edit: taking Shift+Tab out and
-      binding another key stops Shift+Tab at once while the new key does nothing, though the line
-      says the key stays as at launch; an edit that only takes the mode key out shows no line.
+      where both switch it. An edit that only takes the mode key out shows no line, as nothing in
+      it waits for the next launch.
 
 ---
 
@@ -1324,5 +1338,12 @@ at Task 6's spec review).
 12. Only if a Mac is to hand (choice 29's script was not run on one): a screenshot copied with
     Cmd+Ctrl+Shift+4, Ctrl+V (macOS's default, bindings.ts): a marker, and the answer is about
     it; then text copied, Ctrl+V: `No picture on the clipboard.`
+13. While `tachi` runs, set `"mode": "project"` in `settings.json` and save: a grey line says
+    `"mode" changes in settings.json take effect at the next launch; the mode stays ask`, and the
+    status line still says `perm ask`; Shift+Tab still switches to `project` (choice 32).
+14. While `tachi` runs, bind `space` to `chat:cycleMode` in `keybindings.json` (Chat) and save: a
+    grey line says `keybindings.json: at a permission question the keys stay as at launch, and a
+    key newly bound to switch the mode does nothing, until the next launch; the rest apply now`;
+    Space does nothing, not even a space typed; Shift+Tab still switches the mode (choice 32).
 
 Commit: `docs: release 6 in the README, the design's as built, and the terminal checklist`.

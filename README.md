@@ -320,13 +320,16 @@ making it first if it is missing.
   the last good keys after.
 - **Edits apply at once,** as for the settings file, and an empty or missing file changes nothing
   until the next start.
-- **Except at a permission question, and for the key that switches the mode,** where the keys stay
-  as they were at launch, so a command that rewrites the file cannot make a key answer yes, nor
-  bind the mode switch to a key you type anyway. A question reads the keys you started with, all of
+- **Except at a permission question, where the keys stay as they were at launch, and for a key
+  newly bound to switch the mode, which does nothing until the next launch,** so a command that
+  rewrites the file cannot make a key answer yes, nor bind the mode switch to a key you type
+  anyway. A question reads the keys you started with, all of
   them, and names them in its hint; a key switches the mode only where the keys you started with
   switch it too, so one an edit adds does nothing, while taking the mode key out works at once.
   A grey line says so when an edit changes what a question reads (`Confirmation`, `Scroll` or
-  `Global`) or adds a mode key; the rest applies at once.
+  `Global`) or lets a key switch the mode that did not at launch: `keybindings.json: at a
+  permission question the keys stay as at launch, and a key newly bound to switch the mode does
+  nothing, until the next launch; the rest apply now`. The rest applies at once.
 
 The default keys:
 
