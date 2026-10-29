@@ -5028,6 +5028,17 @@ describe("App's external editor", () => {
     expect(text(since(steps, "retake"))).not.toContain("Waiting for your editor"); // never in what Ink draws
   });
 
+  // The code review of choice 33: an editor the shell cannot find still had the line written, and erased, and Tachikoma
+  // comes back saying so. The shell's own error goes to the real terminal, after the line, which no test sees.
+  it("writes and erases the waiting line for an editor that cannot start, and says it was not found", async () => {
+    vi.stubEnv("VISUAL", "tachi-no-such-editor");
+    const { steps, key } = await onTerminal(new FakeProvider("a", []), { classic: true });
+    steps.length = 0;
+    await key(CTRL_G);
+    await waitFor(() => text(since(steps, "retake")).includes("tachi-no-such-editor was not found"));
+    expect(steps.filter((s) => s === WAITING || s === ERASE || s === "retake")).toEqual([WAITING, ERASE, "retake"]);
+  });
+
   // The code review of choice 33: a line wider than the terminal would wrap, and the erase take only its last row, so it
   // is cut to the width the App draws at, a column short.
   it("cuts the waiting line to a narrow terminal's width", async () => {

@@ -1131,12 +1131,17 @@ export function App({
   // what a render Ink drops held, so they would never be printed.
   // While the editor runs, one line says what Tachikoma waits for (choice 33, the user's: "Say Ctrl-C too", then "Say
   // Tachikoma (Recommended)", as an editor such as `code --wait` may act on Ctrl-C itself), as an editor in its own
-  // window leaves the terminal showing only the screen from before. As Git's editor.c (launch_specified_editor, read
-  // 2026-10-30): written once the terminal is handed over, ending in a space with no line break, and erased with
-  // "\r\x1b[K" (pager.c, term_clear_line) when the editor returns, so a terminal editor's screen and the frame Ink
-  // draws again are left as they were. Written straight to the terminal, never said, so it is in no printed output nor
-  // <Static>. Git's dumb-terminal case (a line break, nothing erased) is not followed: Ink's frame needs the same
-  // codes.
+  // window leaves the terminal showing only the screen from before. Git's editor.c (launch_specified_editor, read
+  // 2026-10-30) writes its hint once the editor starts, ending in a space with no line break, and erases it with
+  // "\r\x1b[K" (pager.c, term_clear_line) once the editor has exited, succeeded or not; it does not when the editor
+  // could not be started, nor when it died of Ctrl-C or Ctrl-\, which Git then raises itself. Tachikoma writes its line
+  // once the terminal is handed over, cut to a row, and erases it in the same way every time the editor returns, so an
+  // editor in the terminal leaves its screen and the frame Ink draws again as they were. A command the shell cannot
+  // find still starts the shell, whose own error is printed after the line, on its row, and ends with a line break, so
+  // the erase clears the row below it: the line and the shell's error stay on the normal screen, and Tachikoma says the
+  // editor was not found once it is back. A resize while the editor is open can leave part of the line, as with Git.
+  // Written straight to the terminal, never said, so it is in no printed output nor <Static>. Git's dumb-terminal case
+  // (a line break, nothing erased) is not followed: Ink's frame needs the same codes.
   const away = async <T,>(edit: (command: string) => Promise<T>) => {
     try {
       return await owner.program(async () => {
