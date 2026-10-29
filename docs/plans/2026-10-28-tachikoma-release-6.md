@@ -344,7 +344,8 @@ Each is marked in its task. None approved yet.
       start with, the strokes read so far. So a live edit keeps all of Confirmation as at launch,
       and in Scroll and Global every binding holding, at any place in a chord, a stroke that begins
       an answer (a key of the launch's Confirmation, or the first stroke of a key bound to
-      `confirm:yes` or `confirm:no` in Scroll or Global, at launch or in the edit). Strokes holding
+      `confirm:yes`, `confirm:no` or `app:interrupt`, which declines at a question as Ctrl-C does,
+      in Scroll or Global, at launch or in the edit; found at the combined review). Strokes holding
       none of those answer nothing, at launch or after; strokes holding one are looked up only among
       bindings kept as at launch, a chord the prompt started included (`Bindings.keepAnswers`). The
       rest of the edit applies, and one grey line, said once while it stays, as a problem is, says

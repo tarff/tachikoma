@@ -394,7 +394,7 @@ describe("Bindings.keepAnswers", () => {
   // Ctrl+X Ctrl+E) as the question comes.
   const answers = (b: Bindings) =>
     ASKING.map((contexts) => {
-      const keys = ["y", "n", "escape", "enter", "x", "z"].map((key) => (b.drop(), lookUp(b, one(key), contexts)));
+      const keys = ["y", "n", "escape", "enter", "x", "z", "q"].map((key) => (b.drop(), lookUp(b, one(key), contexts)));
       b.drop();
       b.press(one("ctrl+x"), ["Chat", "Global"], 0);
       return [...keys, lookUp(b, one("y"), contexts)];
@@ -409,6 +409,8 @@ describe("Bindings.keepAnswers", () => {
     ["a Global chord starting with y, which y would wait on", over({ Global: { "y z": "app:toggleTodos" } })],
     ["a Scroll key answering yes in full screen", over({ Scroll: { x: "confirm:yes" } })],
     ["a Global chord that holds y after the prompt's Ctrl+X", over({ Global: { "ctrl+x y z": "app:toggleTodos" } })],
+    // At a question app:interrupt declines and stops the turn (App.tsx, onKey), as Ctrl-C does (the combined review).
+    ["a Global key bound to app:interrupt, which would decline", over({ Global: { q: "app:interrupt" } })],
   ])("keeps every answer as at launch against %s, and says it held some back", (_, file) => {
     const next = new Bindings(tableOf(file));
     expect(answers(next)).not.toEqual(answers(launch)); // the edit would change an answer
@@ -441,6 +443,14 @@ describe("Bindings.keepAnswers", () => {
   it("keeps the launch's own answers, as its keys file set them, when an edit takes them out", () => {
     const fromFile = new Bindings(tableOf(PAYLOAD));
     const kept = launch.keepAnswers(fromFile); // the edit goes back to the defaults
+    expect(kept.held).toBe(true);
+    expect(answers(kept.table)).toEqual(answers(fromFile));
+  });
+
+  it("keeps a launch key bound to app:interrupt declining when an edit takes it out", () => {
+    const fromFile = new Bindings(tableOf(over({ Global: { q: "app:interrupt" } })));
+    expect(answers(launch)).not.toEqual(answers(fromFile));
+    const kept = launch.keepAnswers(fromFile);
     expect(kept.held).toBe(true);
     expect(answers(kept.table)).toEqual(answers(fromFile));
   });

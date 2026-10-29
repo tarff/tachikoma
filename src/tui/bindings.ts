@@ -299,12 +299,14 @@ export class Bindings {
   // then Scroll in full screen, then Global (App.tsx, contextsOf), and press reads only the keys that are, or start
   // with, the strokes read so far, a chord the prompt started included. So Confirmation is kept whole; and in Scroll and
   // Global, every key holding a stroke that begins an answer: a key of launch's Confirmation, or one bound to
-  // confirm:yes or confirm:no in launch's or this Scroll or Global. Strokes read that hold none of those can answer
-  // nothing, at launch or now; strokes that hold one are read only among keys kept as at launch.
+  // confirm:yes, confirm:no or app:interrupt (which declines at a question, App.tsx, onKey) in launch's or this Scroll
+  // or Global. Strokes read that hold none of those can answer nothing, at launch or now; strokes that hold one are read
+  // only among keys kept as at launch.
   keepAnswers(launch: Bindings): { table: Bindings; held: boolean } {
     const first = (text: string) => text.split(" ")[0]!;
+    const ANSWERS = ["confirm:yes", "confirm:no", "app:interrupt"];
     const answers = (t: Table) =>
-      (["Scroll", "Global"] as const).flatMap((c) => [...t[c]].filter(([, a]) => a === "confirm:yes" || a === "confirm:no").map(([text]) => first(text)));
+      (["Scroll", "Global"] as const).flatMap((c) => [...t[c]].filter(([, a]) => a !== null && ANSWERS.includes(a)).map(([text]) => first(text)));
     const starts = new Set([...[...launch.#table.Confirmation.keys()].map(first), ...answers(launch.#table), ...answers(this.#table)]);
     const table: Table = { ...this.#table, Confirmation: new Map(launch.#table.Confirmation) };
     for (const c of ["Scroll", "Global"] as const) {
