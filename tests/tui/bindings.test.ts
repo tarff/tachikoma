@@ -402,6 +402,15 @@ describe("Bindings.heldBack", () => {
     expect(new Bindings(tableOf(over({ Chat: { "shift+tab": null } }))).heldBack(launch)).toBe(false); // taking the mode key out applies at once
     expect(new Bindings(tableOf(DEFAULTS)).heldBack(launch)).toBe(false);
   });
+
+  // The code review of choice 32: the mode key is held back by what a key does at the prompt, not by how the file
+  // writes it, so an edit that frees a key the launch's keys bind to chat:cycleMode, but do not let switch, is held too.
+  it.each([
+    ["a launch chord starting with the mode key, taken out", { Chat: { "shift+tab x": "chat:stash" } }, { Chat: { "shift+tab x": null } }],
+    ["a launch Chat null over a Global mode key, taken out", { Chat: { "ctrl+t": null }, Global: { "ctrl+t": "chat:cycleMode" } }, { Global: { "ctrl+t": "chat:cycleMode" } }],
+  ])("holds back an edit that lets a key switch the mode where the launch's keys did not: %s", (_, atLaunch: Partial<File>, edit: Partial<File>) => {
+    expect(new Bindings(tableOf(over(edit))).heldBack(new Bindings(tableOf(over(atLaunch))))).toBe(true);
+  });
 });
 
 describe("DEFAULTS", () => {

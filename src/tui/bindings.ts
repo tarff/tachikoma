@@ -295,15 +295,21 @@ export class Bindings {
 
   // Whether this table, a live edit of the keys file, differs from `launch` where App goes on reading the launch's
   // keys, for its line (App.tsx, onKeys; release 6 plan, choice 32): in a context a permission question reads, whole
-  // (Confirmation, then Scroll in full screen, then Global; App.tsx, contextsOf and lookUp), or in a key bound to
-  // chat:cycleMode that launch does not bind to it there, which switches the mode only where launch's keys do too.
+  // (Confirmation, then Scroll in full screen, then Global; App.tsx, contextsOf and lookUp), or in a key that switches
+  // the mode at the prompt or its menu, in either screen mode, where launch's keys do not, as `acts` says (App
+  // switches the mode only where both tables do). By what the key does, not how the file writes it, so freeing a key
+  // the launch's keys bind to chat:cycleMode but take in a chord, or set to null, counts too (choice 32's code review).
   heldBack(launch: Bindings): boolean {
     const same = (a: Map<string, string | null>, b: Map<string, string | null>) => a.size === b.size && [...a].every(([text, action]) => b.has(text) && b.get(text) === action);
-    const modeKeys = (t: Table) => CONTEXTS.flatMap((c) => [...t[c]].filter(([, a]) => a === "chat:cycleMode").map(([text]) => `${c} ${text}`));
-    const atLaunch = new Set(modeKeys(launch.#table));
-    return (
-      (["Confirmation", "Scroll", "Global"] as const).some((c) => !same(this.#table[c], launch.#table[c])) ||
-      modeKeys(this.#table).some((k) => !atLaunch.has(k))
+    const PROMPT: Context[][] = [
+      ["Chat", "Global"],
+      ["Chat", "Scroll", "Global"],
+      ["Autocomplete", "Chat", "Global"],
+      ["Autocomplete", "Chat", "Scroll", "Global"],
+    ];
+    const switches = PROMPT.some((contexts) =>
+      contexts.some((c) => this.keysFor("chat:cycleMode", c).some((k) => this.acts(k, "chat:cycleMode", contexts) && !launch.acts(k, "chat:cycleMode", contexts))),
     );
+    return (["Confirmation", "Scroll", "Global"] as const).some((c) => !same(this.#table[c], launch.#table[c])) || switches;
   }
 }
