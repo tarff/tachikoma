@@ -115,6 +115,7 @@ describe("the data folder", () => {
   it("matches its path, and paths inside it, ignoring case on Windows and macOS, and exactly elsewhere", () => {
     expect(inData("/Users/me/.tachikoma-data", "/Users/me/.TACHIKOMA-DATA", "darwin")).toBe(true);
     expect(inData("/Users/me/.tachikoma-data", "/Users/me/.Tachikoma-Data/auth/chatgpt.json", "darwin")).toBe(true);
+    expect(inData("C:\\Users\\me\\tachikoma", "c:\\users\\ME\\TACHIKOMA\\x", "win32")).toBe(true);
     expect(inData("/home/me/.tachikoma-data", "/home/me/.TACHIKOMA-DATA/chatgpt.json", "linux")).toBe(false);
     expect(inData("/home/me/.tachikoma-data", "/home/me/.tachikoma-data/chatgpt.json", "linux")).toBe(true);
     expect(inData("/Users/me/.tachikoma-data", "/Users/me/.tachikoma-data2/x", "darwin")).toBe(false);
