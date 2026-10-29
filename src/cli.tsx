@@ -189,8 +189,8 @@ const stats = new Stats(bus);
 const makeProvider = (spec: string): Provider => createProvider(spec, { effort });
 // A value came from the settings file when no flag gave it, nor a variable where it has one (an empty variable is unset).
 const fromFile = (flag: string | undefined, variable?: string) => flag === undefined && !variable;
-// A spec the settings file gave names its entry, as one from a flag or variable names the flag (the plan's choice 8). The
-// message is escaped, as the spec may come from the file (choice 30).
+// A spec the settings file gave names its entry, as one from a flag or variable names the flag (the plan's choice 8). Each
+// caller escapes the whole message with visible(), as the spec may come from the file (choice 30).
 const named = (entry: string, file: boolean, flag = "") => (file ? `${SETTINGS}: "${entry}": ` : flag);
 let lead: Provider;
 let fallback: Provider | undefined;
