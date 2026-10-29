@@ -266,6 +266,49 @@ describe("watchSettings", () => {
     expect(keys).toHaveLength(2); // no other callback, the settings file's events among them
   });
 
+  // Release 6 plan, choice 35's code review: `begin` marks each read that changed anything, once, before either
+  // callback, so App takes what both files said in one read as one edit.
+  it("calls begin once, before both callbacks, for a read that changed both files", () => {
+    const home = temp();
+    mkdirSync(settingsDir(home));
+    writeFileSync(fileOf(home), '{"maxTasks": 2}');
+    writeFileSync(keysOf(home), MOVED);
+    const log: string[] = [];
+    onTestFinished(
+      watchSettings(
+        home,
+        () => log.push("settings"),
+        () => log.push("keys"),
+        () => {},
+        () => log.push("begin"),
+      ),
+    );
+    expect(log).toEqual(["begin", "settings", "keys"]); // the first read, at once
+  });
+
+  it("does not call begin for a read that changed nothing", async () => {
+    const home = temp();
+    mkdirSync(settingsDir(home));
+    writeFileSync(fileOf(home), '{"maxTasks": 2}');
+    const log: string[] = [];
+    onTestFinished(
+      watchSettings(
+        home,
+        () => log.push("settings"),
+        () => log.push("keys"),
+        () => {},
+        () => log.push("begin"),
+      ),
+    );
+    // The folder watch's own listener, set first, has read the folder by the time this one hears the same event.
+    const read = new Promise((resolve) => watches.at(-1)!.once("change", resolve));
+    writeFileSync(fileOf(home), '{"maxTasks": 2}'); // the same text
+    await read;
+    expect(log).toEqual(["begin", "settings"]);
+    writeFileSync(keysOf(home), MOVED);
+    await vi.waitFor(() => expect(log).toEqual(["begin", "settings", "begin", "keys"]), WATCHED);
+  });
+
   // Linux's limit on watches, say: the files as they are still apply, unwatched (choice 21).
   it("reads both files once when the watch cannot start, then throws", () => {
     const home = temp();
