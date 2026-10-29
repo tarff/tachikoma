@@ -600,13 +600,13 @@ Each is fixed in a later release, unless it says otherwise.
 - **Windows Terminal keeps Ctrl+V** and pastes the clipboard's text itself, so Tachikoma never sees
   it: pictures are Alt+V there, under WSL too, and binding `ctrl+v` in the keys file does nothing in
   it (not planned to change).
-- **A key typed as one question gives way to the next can answer the next.** When the question on
-  screen closes without your answer (cancelled, for example because its subagent stopped) while you
-  are part way through a two-key shortcut, the next question appears and your next key is read by it
-  alone, so it can answer that question (for example `y`, as yes). The same holds for a key pressed
-  just as one question replaces another. Carrying the half-typed shortcut into the next question
-  instead was worse in a test of random keys: 1,627 of 100,000 runs answered the next question with
-  keys typed for the one before, against 63 now (no release is set).
+- **A key meant for one question can answer the next one.** When the question on screen closes
+  without your answer (cancelled, for example because its subagent stopped) while you are part way
+  through a two-key shortcut, the next question appears and your next key is read by it alone, so it
+  can answer that question (for example `y`, as yes). The same holds for a key pressed just as one
+  question replaces another. Carrying the half-typed shortcut into the next question instead was
+  worse in a test of random keys: 1,627 of 100,000 runs answered the next question with keys typed
+  for the one before, against 63 now (no release is set).
 - **On Windows, a `%` in a path given to the editor can be changed on the way:** the editor runs
   through `cmd.exe`, which reads `%NAME%` as a variable, so a user folder with `%` signs in its name
   could give the editor the wrong file for Ctrl+G or `/settings` (no release is set).
