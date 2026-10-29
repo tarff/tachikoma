@@ -261,7 +261,9 @@ Every entry is optional; one left out keeps its default.
   edit that breaks the file keeps the last good settings, and a red line says what is wrong. An
   empty or missing file changes nothing, as editors such as Notepad empty the file, or put a new one
   in its place, while they save; so deleting the file keeps the settings in force until the next
-  start.
+  start. Each line an edit says also shows in the hint row (the row over the status line, where
+  `? for shortcuts` shows) until your next key, in its own colour: the edit's last line, with
+  `(+2 more above)` or the like when it said more.
 - **Except `"mode"`, which applies at the next launch only,** so a shell command you allowed cannot
   rewrite the file to put the session in `project` mode. An edit to it gets a grey line, `"mode"
   changes in settings.json take effect at the next launch; the mode stays ask`, and the mode stays;
@@ -319,7 +321,8 @@ making it first if it is missing.
   which Tachikoma cannot read. A file that is not valid JSON keeps the default keys at launch, and
   the last good keys after.
 - **Edits apply at once,** as for the settings file, and an empty or missing file changes nothing
-  until the next start.
+  until the next start. As there, each line an edit says also shows in the hint row until your next
+  key.
 - **Except at a permission question, where the keys stay as they were at launch, and for a key
   newly bound to switch the mode, which does nothing until the next launch,** so a command that
   rewrites the file cannot make a key answer yes, nor bind the mode switch to a key you type

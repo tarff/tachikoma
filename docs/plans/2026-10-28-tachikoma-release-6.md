@@ -487,6 +487,22 @@ Each is marked in its task. None approved yet.
     opens the same model list `/model` opens, as `/model` does in every respect: during a turn it
     waits in the queue, the list and a pick are the same, and so is what it says. `/lead
     <provider:model>` is unchanged. The `/` menu's note for `/lead` and `--help` say so.
+35. **A live edit's lines show in the hint row too (the user's terminal checklist, 2026-10-30; the
+    user, on the settings and keys files' lines, "isn't very clear" where they appear: "Hint row,
+    until a key", "Before this merge").** Every line a live edit of `settings.json` or
+    `keybindings.json` says (an entry's `is now ... (from settings.json)`, a warning, a red problem
+    such as `not valid JSON` or `must be one of`, a model that cannot be made, the lines for
+    `"mode"`, `never` and the keys kept as at launch, and a lead or screen the file set once it
+    applies) is still said in the conversation, and also shows in the hint row until the next key:
+    the edit's last line, in its own colour (red for a problem, grey otherwise), followed by `(+N
+    more above)` when the edit said N more. A newer edit replaces it; a long line gives up its
+    middle rather than its count. In the hint row's order it comes just over `? for shortcuts` and
+    the row's emptiness during a turn: a chord under way, the exit warning, the detail view's keys,
+    Ctrl+R's search, a question or the model list (which leave the row empty), the menu's keys,
+    `Reading picture...`, the queue's and the stash's hints and vim's mode all keep the row first,
+    and the working line (`Esc to stop`) is a row of its own, which it never takes. So it shows
+    during a turn, when edits are likely, where the row was empty. A line said while the editor is
+    open is there when Tachikoma comes back, as the editor reads the keys meanwhile.
 
 ---
 
@@ -1358,7 +1374,8 @@ at Task 6's spec review).
 1. `tachi` with only `"lead"` in `~/.tachikoma/settings.json` starts; `/settings`, change `"status"`
    in Notepad, save. While Notepad is open, full screen is set aside and the terminal shows `Waiting
    for your editor to close the file... (Ctrl-C does nothing until then)` (choice 33); once Notepad
-   is closed, the line is gone and the status line shows the change.
+   is closed, the line is gone and the status line shows the change, with `status is now ... (from
+   settings.json)` in the hint row until a key is pressed (choice 35).
 2. `/lead`, quit, `tachi`: the file's lead again, as `/lead` changes this window only (choice 26).
 3. `/keybindings`, bind `ctrl+e` to `chat:externalEditor`: Ctrl+E opens Notepad; `?` shows it.
 4. Ctrl+G on a two-line prompt, with another Notepad window already open (Windows 11's tabbed
@@ -1386,10 +1403,12 @@ at Task 6's spec review).
     it; then text copied, Ctrl+V: `No picture on the clipboard.`
 13. While `tachi` runs, set `"mode": "project"` in `settings.json` and save: a grey line says
     `"mode" changes in settings.json take effect at the next launch; the mode stays ask`, and the
-    status line still says `perm ask`; Shift+Tab still switches to `project` (choice 32).
+    status line still says `perm ask`, the line shown in the hint row too until a key; Shift+Tab
+    still switches to `project` (choices 32 and 35).
 14. While `tachi` runs, bind `space` to `chat:cycleMode` in `keybindings.json` (Chat) and save: a
     grey line says `keybindings.json: at a permission question the keys stay as at launch, and a
     key newly bound to switch the mode does nothing, until the next launch; the rest apply now`;
-    Space does nothing, not even a space typed; Shift+Tab still switches the mode (choice 32).
+    the line shows in the hint row too until a key; Space does nothing, not even a space typed;
+    Shift+Tab still switches the mode (choices 32 and 35).
 
 Commit: `docs: release 6 in the README, the design's as built, and the terminal checklist`.
