@@ -29,6 +29,12 @@ export function headlessAnswer(text: string, opts: { raw: boolean; tty: boolean 
 // (C1, DEL, bidi overrides) as the \uXXXX escapes JSON itself uses, so the line parses to the same value.
 export const jsonLine = (event: string, data: unknown) => visible(JSON.stringify({ event, data }));
 
+// The line for an action a -p run declines, as nobody can approve it: why, then the subagent that asked, if one did, and
+// the action, already escaped by the gate (permissions.ts, require).
+export function headlessDeclined(summary: string, owner?: string): string {
+  return `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused): ${owner ? `${prose(owner)}: ` : ""}${summary}`;
+}
+
 // Stopped wins: an aborted request reports no error, and the shell reads 128 + n as "stopped by signal n".
 // A declined action fails the run, or a script would take a run that did nothing for success.
 export function headlessExit(run: { aborted: boolean; failed: boolean; declined: boolean }): number {

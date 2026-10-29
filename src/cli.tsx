@@ -13,6 +13,7 @@ import {
   fullPossible,
   givenBy,
   headlessAnswer,
+  headlessDeclined,
   headlessExit,
   headlessLeftOut,
   instructionsLine,
@@ -231,9 +232,7 @@ const system = [systemPrompt(root), instructions.text].filter(Boolean).join("\n\
 let declined = false;
 let ask: Ask = async (summary, _detail, owner) => {
   declined = true;
-  console.error(
-    `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused):${owner ? `${prose(owner.name)}: ` : ""}${summary}`,
-  );
+  console.error(headlessDeclined(summary, owner?.name));
   return false;
 };
 const gate = new PermissionGate(mode, (summary, detail, owner) => ask(summary, detail, owner), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it");

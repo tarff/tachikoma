@@ -9,6 +9,7 @@ import {
   fullPossible,
   givenBy,
   headlessAnswer,
+  headlessDeclined,
   headlessExit,
   headlessLeftOut,
   instructionsLine,
@@ -60,6 +61,16 @@ describe("the instruction files on screen", () => {
     expect(headlessLeftOut([{ path: path.resolve("/elsewhere/x.md"), how: "imported by CLAUDE.md" }])).toBe(
       `note: 1 instruction file from outside the project left out, since nobody can approve it in -p mode: ${path.resolve("/elsewhere/x.md")}, imported by CLAUDE.md`,
     );
+  });
+});
+
+// The line a -p run prints for each action it declines, naming the subagent that asked, if one did (found at the
+// combined review: its space after the colon was lost).
+describe("headlessDeclined", () => {
+  const why = "declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused)";
+  it("says why, then the action, after a space, its subagent's name escaped before it", () => {
+    expect(headlessDeclined("run: ls")).toBe(`${why}: run: ls`);
+    expect(headlessDeclined("run: ls", "t2 (a\u001b[2Jb)")).toBe(`${why}: t2 (a\\u001b[2Jb): run: ls`);
   });
 });
 
