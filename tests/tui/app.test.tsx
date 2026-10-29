@@ -6552,7 +6552,9 @@ describe("App's live settings", () => {
     await tick();
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
-      await press(app, "a", "\u001b[Z");
+      await press(app, "a");
+      expect(app.lastFrame()).toContain("› a"); // the edit landed: only the live keys type a, the launch's wait on it
+      await press(app, "\u001b[Z");
       expect(gate.mode).toBe("ask");
       await press(app, "\u001b[Z");
       expect(gate.mode).toBe("project");
