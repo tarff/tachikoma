@@ -142,7 +142,7 @@ tachi logout chatgpt                               sign out of ChatGPT
 Options --lead to --scroll-speed can also be set in ~/.tachikoma/settings.json; a flag or variable wins.
 ```
 
-In a session, `/lead <provider:model>` switches the lead model, `/model` picks it from a list,
+In a session, `/lead <provider:model>` switches the lead model, `/lead` or `/model` lists them,
 `/login chatgpt` and `/logout chatgpt` sign in and out, `/tasks` lists the subagents, `/errors`
 summarises the error log, `/screen` switches between full screen and classic, `/settings` and
 `/keybindings` open the settings and keys files in your editor, `/vim` switches vim mode, and

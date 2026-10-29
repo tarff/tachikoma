@@ -482,6 +482,11 @@ Each is marked in its task. None approved yet.
     The line goes straight to the terminal and is never said, so it is in no printed output and not
     in classic mode's scrollback. Git's dumb-terminal case is not followed, as Ink's own drawing
     needs the same codes.
+34. **`/lead` alone lists the models (the user's terminal checklist, 2026-10-30; the user: "can we
+    have lead list the models?").** `/lead` typed alone said `Usage: /lead <provider:model>`. It now
+    opens the same model list `/model` opens, as `/model` does in every respect: during a turn it
+    waits in the queue, the list and a pick are the same, and so is what it says. `/lead
+    <provider:model>` is unchanged. The `/` menu's note for `/lead` and `--help` say so.
 
 ---
 
