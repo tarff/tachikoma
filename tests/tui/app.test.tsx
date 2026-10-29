@@ -5956,7 +5956,8 @@ describe("App's live settings", () => {
   // fs.watch reported each of 400 writes within 5 ms on this machine (measured 2026-10-28); 2 s is as long as until()
   // waits (40 ticks of 50 ms), room for a busy machine.
   const WATCHED = { timeout: 2_000 };
-  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll("\n", " "); // a long line wraps
+  // A long line wraps, and Ink can carry the space it broke at onto the next row.
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
   const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
   const freshHome = () => mkdtempSync(path.join(tmpdir(), "tachi-home-"));
   const PINNED = (mode: string) => `"mode" changes in settings.json take effect at the next launch; the mode stays ${mode}`;
@@ -6381,17 +6382,19 @@ describe("App's live settings", () => {
     await press(app, "?");
     expect(app.lastFrame()).toContain("  Ctrl+Y  show or hide the to-do list");
     expect(app.lastFrame()).not.toContain("Ctrl+T");
-    expect(flat(app)).not.toContain("take effect at the next launch"); // no key that answers a question was touched
+    // Global is read at a question too, where Ctrl+T still does as at launch (choice 32).
+    expect(flat(app)).toContain(HELD);
   });
 
   // Release 6 plan, choice 30 (security review finding 1): a shell command could rewrite the keys file so that n and Esc
   // answer yes. After a live edit every key answers a question as at launch, the rest of the edit applies, and a line
-  // says so; at launch the file applies whole, as the user's own choice.
+  // says so; at launch the file applies whole, as the user's own choice. Since choice 32 a question reads the launch's
+  // keys whole, and its hint names them.
   const PAYLOAD = [
     { context: "Confirmation", bindings: { n: "confirm:yes", escape: "confirm:yes" } },
     { context: "Global", bindings: { enter: "confirm:yes" } },
   ];
-  const HELD = "keybindings.json: changes to the keys that answer a question take effect at the next launch; the rest apply now";
+  const HELD = "keybindings.json: at a permission question, and for the key that switches the mode, the keys stay as at launch until the next launch; the rest apply now";
 
   it("keeps the keys that answer a question as at launch after a live edit, says so, and applies the rest", async () => {
     const home = freshHome();
@@ -6400,7 +6403,7 @@ describe("App's live settings", () => {
     await read(() => writeKeys(home, { bindings: [...PAYLOAD, { context: "Global", bindings: { "ctrl+y": "app:toggleTodos" } }] }));
     await sees(app, HELD);
     let answer = ask("write a.txt");
-    await until(app, "Allow write a.txt? [y/n]");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
     await press(app, "\r"); // Enter answers nothing
     expect(app.lastFrame()).toContain("Allow write a.txt? [y/n]");
     await press(app, "n");
@@ -6452,6 +6455,62 @@ describe("App's live settings", () => {
       await until(app, "Allow write a.txt? [y/n]");
       await press(app, "n");
       expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Release 6 plan, choice 32 (the outside review of PR #5): the reviewer's repro. At launch, z x x a b at a question
+  // reads z x (Global's z x a waiting), drops it at the second x, which then starts x a, and b answers nothing. A live
+  // edit adding a harmless Global z x x passed choice 30's check, and regrouped the same keys into z x x, then a b, the
+  // launch's own yes. A question now reads the launch's keys whole, so it is not answered.
+  it("answers a question from the launch's keys whole, so a live chord cannot regroup keys into a launch answer", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    const launchFile = [
+      { context: "Confirmation", bindings: { "a b": "confirm:yes" } },
+      { context: "Global", bindings: { "z x a": "app:toggleTodos", "x a": "app:toggleTodos" } },
+    ];
+    writeKeys(home, { bindings: launchFile });
+    const { app, ask, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [...launchFile, { context: "Global", bindings: { "z x x": "app:toggleTodos" } }] }));
+    await sees(app, HELD);
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const answer = ask("write a.txt");
+      await until(app, "Allow write a.txt? [y/n]");
+      await press(app, "z", "x", "x", "a", "b");
+      expect(app.lastFrame()).toContain("Allow write a.txt? [y/n]"); // still asked
+      await press(app, "n");
+      expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Choice 32: a chord half typed at a question that closes without the key ending it (its owner stopped) is dropped
+  // as the question closes, so it neither runs on into the prompt's keys nor stays in the hint row.
+  it("drops a chord half typed at a question when the question closes", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, globalKeys({ "z x": "app:toggleTodos" }));
+    const { app, ask, bus } = await watching([], {}, {}, {}, home);
+    bus.emit("todo", todo);
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so only the closing can end the chord
+    try {
+      const stop = new AbortController();
+      const answer = ask("write a.txt", undefined, { name: "t1", signal: stop.signal, stop: () => stop.abort() });
+      await until(app, "write a.txt? [y/n]");
+      await press(app, "z");
+      expect(app.lastFrame()).toContain("z ...");
+      stop.abort();
+      expect(await answer).toBe(false);
+      await tick();
+      expect(app.lastFrame()).not.toContain("z ...");
+      await press(app, "x"); // typed, not the chord's end
+      expect(app.lastFrame()).toContain("› x");
+      expect(app.lastFrame()).toContain("write the fix");
     } finally {
       vi.useRealTimers();
     }

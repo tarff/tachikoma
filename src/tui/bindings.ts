@@ -293,34 +293,11 @@ export class Bindings {
     return [...this.#table[context]].filter(([, a]) => a === action).map(([k]) => k);
   }
 
-  // This table, a live edit of the keys file, with every binding that could change how a key answers a permission
-  // question put back as `launch` has it, so each key answers yes, no or nothing as at launch, and with whether any was
-  // (release 6 plan, choice 30: a shell command could rewrite the file so n answers yes). A question reads Confirmation,
-  // then Scroll in full screen, then Global (App.tsx, contextsOf), and press reads only the keys that are, or start
-  // with, the strokes read so far at the question (App drops a chord the prompt started as a question opens, found at
-  // the combined review). So Confirmation is kept whole; and in Scroll and
-  // Global, every key holding a stroke that begins an answer: a key of launch's Confirmation, or one bound to
-  // confirm:yes, confirm:no or app:interrupt (which declines at a question, App.tsx, onKey) in launch's or this Scroll
-  // or Global. Strokes read that hold none of those can answer nothing, at launch or now; strokes that hold one are read
-  // only among keys kept as at launch.
-  keepAnswers(launch: Bindings): { table: Bindings; held: boolean } {
-    const first = (text: string) => text.split(" ")[0]!;
-    const ANSWERS = ["confirm:yes", "confirm:no", "app:interrupt"];
-    const answers = (t: Table) =>
-      (["Scroll", "Global"] as const).flatMap((c) => [...t[c]].filter(([, a]) => a !== null && ANSWERS.includes(a)).map(([text]) => first(text)));
-    const starts = new Set([...[...launch.#table.Confirmation.keys()].map(first), ...answers(launch.#table), ...answers(this.#table)]);
-    const table: Table = { ...this.#table, Confirmation: new Map(launch.#table.Confirmation) };
-    for (const c of ["Scroll", "Global"] as const) {
-      const keys = new Map(this.#table[c]);
-      for (const text of new Set([...keys.keys(), ...launch.#table[c].keys()])) {
-        if (!text.split(" ").some((s) => starts.has(s))) continue;
-        if (launch.#table[c].has(text)) keys.set(text, launch.#table[c].get(text) as string | null);
-        else keys.delete(text);
-      }
-      table[c] = keys;
-    }
+  // Whether this table, a live edit of the keys file, differs from `launch` where App goes on reading the launch's
+  // keys, for its line (App.tsx, onKeys; release 6 plan, choice 32): in a context a permission question reads, whole
+  // (Confirmation, then Scroll in full screen, then Global; App.tsx, contextsOf and lookUp).
+  heldBack(launch: Bindings): boolean {
     const same = (a: Map<string, string | null>, b: Map<string, string | null>) => a.size === b.size && [...a].every(([text, action]) => b.has(text) && b.get(text) === action);
-    const held = CONTEXTS.some((c) => !same(table[c], this.#table[c]));
-    return { table: held ? new Bindings(table) : this, held };
+    return (["Confirmation", "Scroll", "Global"] as const).some((c) => !same(this.#table[c], launch.#table[c]));
   }
 }

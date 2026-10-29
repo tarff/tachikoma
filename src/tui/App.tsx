@@ -431,9 +431,12 @@ export function App({
   const keysWarned = useRef<string[]>([]);
   const keysRead = useRef(false);
   // The keys as the launch's read of the keys file left them, the table given if it read none, and whether that read
-  // is done: after it, a key answers a permission question as it did then (onKeys; release 6 plan, choice 30).
+  // is done: after it, a permission question reads these keys, whole, whatever a live edit did (onKeys, lookUp;
+  // release 6 plan, choice 32). `asked`: whether the last stroke was read at a question, so no chord runs on between
+  // the launch's keys and the live ones (lookUp).
   const launchKeys = useRef(table);
   const launched = useRef(false);
+  const asked = useRef(false);
 
   // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
   // design, "Scrolling"); setting `lines` draws them either way.
@@ -506,6 +509,9 @@ export function App({
             open = false;
             signal?.removeEventListener("abort", cancel);
             questions.current = questions.current.filter((x) => x !== q);
+            // As at the opening (below): a chord half typed at the last question, which one cancelled can leave, never
+            // runs on into the live keys (choice 32).
+            if (!questions.current.length) latest.current.dropChord();
             if (q.detail && q.following) view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
             latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
             resolve(ok);
@@ -519,7 +525,7 @@ export function App({
         // Task 11).
         latest.current.closeDetail();
         // A chord half typed for the prompt is dropped as the question opens, so no stroke typed for the prompt joins the
-        // question's keys, which answer as at launch (release 6 plan, choice 30; found at the combined review).
+        // question's keys, the launch's (release 6 plan, choices 30 and 32; found at the combined review).
         if (!questions.current.length) latest.current.dropChord();
         questions.current.push(q);
         rerender((n) => n + 1);
@@ -1181,18 +1187,17 @@ export function App({
       return say({ text: `${read.problem}; ${keysRead.current ? "the last good keys still apply" : "the default keys apply"}`, color: "red" });
     }
     keysRead.current = true;
-    // After the launch, the parts of an edit that would change how a key answers a question wait for the next launch,
-    // so a shell command that rewrites the file cannot make n answer yes (choice 30); their line is said as a problem is.
-    let { table: keys, problems } = read;
-    if (!launched.current) launchKeys.current = keys;
-    else {
-      const kept = keys.keepAnswers(launchKeys.current);
-      keys = kept.table;
-      if (kept.held) problems = [...problems, `${KEYBINDINGS}: changes to the keys that answer a question take effect at the next launch; the rest apply now`];
+    // After the launch, a question reads the launch's keys, whole (lookUp), so a shell command that rewrites the file
+    // cannot make a key answer it (choice 32, which replaced choice 30's keepAnswers); a line says so when the edit
+    // differs from them where they still apply, said as a problem is.
+    let problems = read.problems;
+    if (!launched.current) launchKeys.current = read.table;
+    else if (read.table.heldBack(launchKeys.current)) {
+      problems = [...problems, `${KEYBINDINGS}: at a permission question, and for the key that switches the mode, the keys stay as at launch until the next launch; the rest apply now`];
     }
     for (const p of problems) if (!keysWarned.current.includes(p)) say(gray(p));
     keysWarned.current = problems;
-    setTable(keys);
+    setTable(read.table);
   };
   // One entry's new value, `s` the file's and `now` what applies (above), with its line. A lead or a screen waits for
   // next() (above). A model the file names that cannot be made is said, as at launch (cli.tsx), and the one before is
@@ -1278,7 +1283,7 @@ export function App({
   const route = (kind: Phase["kind"], field: boolean, ch: string, key: Key): Got => {
     let stroke = strokeOf(ch, key);
     if (!stroke) {
-      table.drop();
+      dropChords();
       return null;
     }
     // Two Escs read together reach Ink as one Esc with Alt (Ink's parse-keypress.js), which release 5 took as Esc; the
@@ -1296,18 +1301,30 @@ export function App({
       !stroke.ctrl &&
       !stroke.alt &&
       (v.pending !== "" || v.count !== "" || (stroke.key === "escape" && v.mode !== "NORMAL"));
-    return lookUp(stroke, contextsOf(kind, fullNow.current), (field && printable(stroke)) || toVim ? ch : null);
+    return lookUp(stroke, contextsOf(kind, fullNow.current), (field && printable(stroke)) || toVim ? ch : null, kind === "question");
   };
   // A stroke in the table (release 6 plan, Task 6): a chord under way first, so one ending in a plain letter completes
   // in a field too; then `typed`, the text of a key that goes into a field; then the table, in the contexts in force. A
-  // stroke that drops a chord is then looked up as if none had waited (bindings.ts, press).
-  const lookUp = (stroke: Stroke, contexts: Context[], typed: string | null): Got => {
+  // stroke that drops a chord is then looked up as if none had waited (bindings.ts, press). At a question the table is
+  // the launch's, whole, so a live edit changes nothing a question reads: choice 30 kept the launch's answering keys
+  // in the live table, where a live chord could still regroup strokes into a launch answer (choice 32, the outside
+  // review of PR #5). The first stroke read at a question, or after one, drops any chord waiting in either table.
+  const lookUp = (stroke: Stroke, contexts: Context[], typed: string | null, question: boolean): Got => {
     const at = Date.now();
-    const chord = table.waiting(at) && table.press(stroke, contexts, at);
+    if (question !== asked.current) dropChords();
+    asked.current = question;
+    const keys = question ? launchKeys.current : table;
+    const chord = keys.waiting(at) && keys.press(stroke, contexts, at);
     if (chord) return pressed(chord);
     if (typed !== null) return { typed };
-    const got = table.press(stroke, contexts, at);
+    const got = keys.press(stroke, contexts, at);
     return got && pressed(got);
+  };
+  // The table a chord may be waiting in, for the hint row: the launch's after a stroke read at a question (lookUp).
+  const chordKeys = () => (asked.current ? launchKeys.current : table);
+  const dropChords = () => {
+    table.drop();
+    launchKeys.current.drop();
   };
   // A chord's first strokes show in the hint row until the next key or 3 s (release 6 design, "The keys file").
   const pressed = (got: { action: string } | { pending: Stroke[] }) => {
@@ -1579,7 +1596,7 @@ export function App({
       const given = phaseInputs(phaseRefs);
       if (given.printed) return; // as for keys, above; before clearCopied(), which pasteTo() cannot say
       clearCopied();
-      table.drop(); // a paste is text, which drops a waiting chord as text read together does (route)
+      dropChords(); // a paste is text, which drops a waiting chord as text read together does (route)
       const to = pasteTo(given);
       // In the detail view a paste goes into a search being typed, up to its first line break, without the control
       // characters typed text loses (keys.ts, commands); otherwise it does nothing there (the user's choice,
@@ -1665,8 +1682,8 @@ export function App({
       const stroke = { key: `wheel${m.wheel}`, ctrl: m.ctrl, alt: m.alt, shift: m.shift };
       // A notch that drops a waiting chord is then looked up as if none had waited, as a key is (lookUp), and the chord
       // leaves the hint row even when the notch has nowhere to scroll.
-      const waited = table.waiting(Date.now()) !== null;
-      const got = lookUp(stroke, contextsOf(phase.kind, true, true), null);
+      const waited = chordKeys().waiting(Date.now()) !== null;
+      const got = lookUp(stroke, contextsOf(phase.kind, true, true), null, phase.kind === "question");
       if (waited) rerender((n) => n + 1);
       if (!got) return;
       if (!("action" in got) || (got.action !== "scroll:lineUp" && got.action !== "scroll:lineDown")) return onKey(h, got, "", NO_KEY);
@@ -1972,7 +1989,7 @@ export function App({
   // functions, set at each, so what they read is the screen as last drawn, never what it was when they were set up
   // (release 6 design, "Tidying the screen code first"). Set while drawing, safe with Ink's non-concurrent root
   // (above).
-  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys, settle, dropChord: () => table.drop() };
+  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys, settle, dropChord: dropChords };
   const latest = useRef(handlers);
   latest.current = handlers;
 
@@ -1997,7 +2014,7 @@ export function App({
   const searching = !d && search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
   const said = (key: string | undefined, words: string) => key !== undefined && `${key} ${words}`;
   const hints = (...parts: (string | false | null)[]) => parts.filter(Boolean).join(" · ");
-  const chord = table.waiting(Date.now());
+  const chord = chordKeys().waiting(Date.now());
   const fillKeys = [keyOf("autocomplete:accept", "Autocomplete", "tab"), keyOf("chat:submit", "Chat", "enter")];
   const previous = keyOf("history:previous", "Chat", "up");
   const usualHint = (left: number) =>
@@ -2054,12 +2071,14 @@ export function App({
   // models" line when it has no models, in a box that tall, so the status line stays put while typing filters the list.
   // A question's line is wrapped and drawn a row a Text in full screen, so its rows are known; the line it moves to when
   // too long to fit is its short one, below.
+  // A question names the launch's keys, the ones that answer it (lookUp; choice 32).
   const allow = (what: string, plain?: boolean) => {
-    const yes = keyOf("confirm:yes", "Confirmation", "y") ?? "";
-    const no = keyOf("confirm:no", "Confirmation", "n") ?? "";
+    const answer = (action: string, usual: string) => named(launchKeys.current, action, "Confirmation", [usual])[0];
+    const yes = answer("confirm:yes", "y") ?? "";
+    const no = answer("confirm:no", "n") ?? "";
     return hints(
       `${plain ? "" : "Allow "}${what}? [${yes}/${no}]`,
-      said(keyOf("confirm:no", "Confirmation", "escape"), "to decline"),
+      said(answer("confirm:no", "escape"), "to decline"),
     );
   };
   const shortOf = (q: Question) => `${q.label} (shown above)`;

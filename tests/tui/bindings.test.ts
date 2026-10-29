@@ -377,76 +377,27 @@ describe("Bindings.takes and Bindings.acts", () => {
   });
 });
 
-// Release 6 plan, choice 30 (security review finding 1): after a live edit of the keys file, every key answers a
-// permission question as it did at launch, and the rest of the edit applies.
-describe("Bindings.keepAnswers", () => {
+// Release 6 plan, choice 32 (the outside review of PR #5): App answers a question from the launch's keys, whole, and
+// says so when a live edit differs from them there; keepAnswers, choice 30's, is gone.
+describe("Bindings.heldBack", () => {
   type File = Record<Context, Record<string, string | null>>;
   const over = (layers: Partial<File>, base: File = DEFAULTS): File =>
     Object.fromEntries(CONTEXTS.map((c) => [c, { ...base[c], ...layers[c] }])) as File;
-  // The question's contexts in classic mode and in full screen (App.tsx, contextsOf), and a key read there as App's lookUp
-  // reads it: a key that drops a chord waiting is read again on its own.
-  const ASKING: Context[][] = [
-    ["Confirmation", "Global"],
-    ["Confirmation", "Scroll", "Global"],
-  ];
-  const lookUp = (b: Bindings, stroke: Stroke, contexts: Context[]) => (b.waiting(0) && b.press(stroke, contexts, 0)) || b.press(stroke, contexts, 0);
-  // What each key does at a question, in each screen mode. Each starts afresh: App drops a chord the prompt started as
-  // a question opens (App.tsx, bindAsk; found at the combined review), so none carries into the question's keys.
-  const answers = (b: Bindings) =>
-    ASKING.map((contexts) => ["y", "n", "escape", "enter", "x", "z", "q"].map((key) => (b.drop(), lookUp(b, one(key), contexts))));
   const launch = new Bindings(tableOf(DEFAULTS));
-  // The security review's payload: n and Esc answer yes, and Enter too.
-  const PAYLOAD = over({ Confirmation: { n: "confirm:yes", escape: "confirm:yes" }, Global: { enter: "confirm:yes" } });
 
   it.each([
-    ["the security review's payload", PAYLOAD],
+    ["the security review's payload", over({ Confirmation: { n: "confirm:yes", escape: "confirm:yes" }, Global: { enter: "confirm:yes" } })],
     ["y set to null", over({ Confirmation: { y: null } })],
-    ["a Global chord starting with y, which y would wait on", over({ Global: { "y z": "app:toggleTodos" } })],
-    ["a Scroll key answering yes in full screen", over({ Scroll: { x: "confirm:yes" } })],
-    // At a question app:interrupt declines and stops the turn (App.tsx, onKey), as Ctrl-C does (the combined review).
-    ["a Global key bound to app:interrupt, which would decline", over({ Global: { q: "app:interrupt" } })],
-  ])("keeps every answer as at launch against %s, and says it held some back", (_, file) => {
-    const next = new Bindings(tableOf(file));
-    expect(answers(next)).not.toEqual(answers(launch)); // the edit would change an answer
-    const kept = next.keepAnswers(launch);
-    expect(kept.held).toBe(true);
-    expect(answers(kept.table)).toEqual(answers(launch));
+    ["the outside review's harmless Global chord", over({ Global: { "z x x": "app:toggleTodos" } })],
+    ["a Scroll key, read at a question in full screen", over({ Scroll: { "ctrl+up": "scroll:lineUp" } })],
+    ["a Global key taken out", over({ Global: { "ctrl+t": null } })],
+  ])("holds back an edit of a context a question reads: %s", (_, file) => {
+    expect(new Bindings(tableOf(file)).heldBack(launch)).toBe(true);
   });
 
-  it("answers n and Esc as no, and y as yes, against the payload, and Enter not at all", () => {
-    const { table } = new Bindings(tableOf(PAYLOAD)).keepAnswers(launch);
-    for (const contexts of ASKING) {
-      expect(table.press(one("n"), contexts, 0)).toEqual({ action: "confirm:no" });
-      expect(table.press(one("escape"), contexts, 0)).toEqual({ action: "confirm:no" });
-      expect(table.press(one("y"), contexts, 0)).toEqual({ action: "confirm:yes" });
-      expect(table.press(one("enter"), contexts, 0)).toBeNull();
-    }
-  });
-
-  it("applies the rest of the edit, and an edit that touches no answer whole", () => {
-    const harmless = { Global: { "ctrl+t": null, "ctrl+y": "app:toggleTodos" }, Chat: { y: "chat:stash" }, Scroll: { "ctrl+up": "scroll:lineUp" } };
-    const next = new Bindings(tableOf(over(harmless)));
-    expect(next.keepAnswers(launch)).toEqual({ table: next, held: false });
-    const { table } = new Bindings(tableOf(over(harmless, PAYLOAD))).keepAnswers(launch);
-    expect(table.press(one("ctrl+y"), ["Chat", "Global"], 0)).toEqual({ action: "app:toggleTodos" });
-    expect(table.press(one("ctrl+t"), ["Chat", "Global"], 0)).toBeNull();
-    expect(table.press(one("y"), ["Chat", "Global"], 0)).toEqual({ action: "chat:stash" });
-    expect(table.press(one("ctrl+up"), ["Chat", "Scroll", "Global"], 0)).toEqual({ action: "scroll:lineUp" });
-  });
-
-  it("keeps the launch's own answers, as its keys file set them, when an edit takes them out", () => {
-    const fromFile = new Bindings(tableOf(PAYLOAD));
-    const kept = launch.keepAnswers(fromFile); // the edit goes back to the defaults
-    expect(kept.held).toBe(true);
-    expect(answers(kept.table)).toEqual(answers(fromFile));
-  });
-
-  it("keeps a launch key bound to app:interrupt declining when an edit takes it out", () => {
-    const fromFile = new Bindings(tableOf(over({ Global: { q: "app:interrupt" } })));
-    expect(answers(launch)).not.toEqual(answers(fromFile));
-    const kept = launch.keepAnswers(fromFile);
-    expect(kept.held).toBe(true);
-    expect(answers(kept.table)).toEqual(answers(fromFile));
+  it("holds back nothing for an edit of contexts a question does not read, nor for the same keys", () => {
+    expect(new Bindings(tableOf(over({ Chat: { y: "chat:stash" }, Transcript: { x: "transcript:exit" } }))).heldBack(launch)).toBe(false);
+    expect(new Bindings(tableOf(DEFAULTS)).heldBack(launch)).toBe(false);
   });
 });
 
