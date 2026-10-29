@@ -6700,8 +6700,9 @@ describe("App's live settings", () => {
     }
   });
 
-  // The code re-check of choice 32: a question under the model list is not on screen, so its cancelling leaves a chord
-  // half typed in the list to the list's keys, and Ctrl+K Enter still toggles the to-do list rather than Enter picking.
+  // The code re-check of choice 32: the last key was read in the model list, not at a question, so cancelling the
+  // question under it leaves the chord half typed in the list to the list's keys, and Ctrl+K Enter still toggles the
+  // to-do list rather than Enter picking.
   it("keeps a chord half typed in the model list when the question under it is cancelled", async () => {
     const bindings = new Bindings(tableOf({ ...DEFAULTS, Global: { ...DEFAULTS.Global, "ctrl+k enter": "app:toggleTodos" } }));
     const made: string[] = [];

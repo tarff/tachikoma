@@ -605,10 +605,10 @@ Each is fixed in a later release, unless it says otherwise.
   through a shortcut of two or more keys, the next question appears and your next key is read by it
   alone, so it can answer that question (for example `y`, as yes). The same holds for a key pressed
   just as one question replaces another. Carrying the half-typed shortcut into the next question
-  instead was worse in a test of random keys, with far more shortcuts and cancels than real use, so
-  these are the test's rates, not real use's: of 100,000 runs, 1,627 answered the next question with
-  a shortcut begun at the one before (607 of them yes), against 191 where the next key, read alone,
-  answered differently than the shortcut would have (63 of them yes) (no release is set).
+  instead was worse in a test of random keys. The test has far more shortcuts and cancels than real
+  use, so these are its rates, not real use's: of 100,000 runs, 1,627 answered the next question
+  with a shortcut begun at the one before (607 of them yes), against 191 where the next key, read
+  alone, answered differently than the shortcut would have, 63 of them yes (no release is set).
 - **On Windows, a `%` in a path given to the editor can be changed on the way:** the editor runs
   through `cmd.exe`, which reads `%NAME%` as a variable, so a user folder with `%` signs in its name
   could give the editor the wrong file for Ctrl+G or `/settings` (no release is set).
