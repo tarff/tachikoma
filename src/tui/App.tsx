@@ -512,14 +512,15 @@ export function App({
             if (!open) return;
             open = false;
             signal?.removeEventListener("abort", cancel);
-            const onScreen = questions.current[0] === q && !listOpen.current;
+            const typedAt = questions.current[0] === q && asked.current;
             questions.current = questions.current.filter((x) => x !== q);
             // As at the opening (below): a chord half typed at the question on screen, which one cancelled can leave,
-            // never runs on into the next question's keys nor the live ones (choice 32 and its code review). One
-            // waiting behind it, cancelled, leaves the chord to the question on screen, whose keys it was typed for
-            // (the outside review's second round); one under the model list leaves it to the list's keys, and the
-            // first key read at a question once the list closes drops it (lookUp; the code re-check).
-            if (onScreen) latest.current.dropChord();
+            // never runs on into the next question's keys nor the live ones (choice 32 and its code review). A chord
+            // waiting was typed there exactly when it is the first in the line and the last key was read at a
+            // question (lookUp, `asked`), the model list open over it since or not. One waiting behind it, cancelled,
+            // leaves the chord to the question on screen (the outside review's second round); one under the model
+            // list, a chord typed in the list to the list's keys (the code re-checks).
+            if (typedAt) latest.current.dropChord();
             if (q.detail && q.following) view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
             latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
             resolve(ok);

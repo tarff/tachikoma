@@ -104,6 +104,7 @@ async function mount(
     models?: ModelGroup[];
     note?: string;
     slow?: boolean;
+    listing?: Promise<void>; // what the model lists' read waits on before it answers; nothing when not given
     made?: string[];
     segments?: Segment[];
     branches?: string[];
@@ -181,6 +182,7 @@ async function mount(
       listModels={async (signal, warn) => {
         if (opts.note) warn(opts.note);
         if (opts.slow) await new Promise((resolve) => signal.addEventListener("abort", resolve)); // until Ctrl-C
+        await opts.listing;
         return opts.models ?? [];
       }}
       bindAsk={(fn) => {
@@ -6724,6 +6726,39 @@ describe("App's live settings", () => {
       await press(app, "\u001b");
       await until(app, "? for shortcuts");
       expect(app.lastFrame()).not.toContain("write the fix"); // the chord hid the to-do list
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The code re-check of choice 32 (its fuzz's rare path): z typed at question A, the model list then opening over A
+  // with no key between (its read ending), A cancelled under the list, and the list closed by a click, no key between
+  // either. The chord z was typed at the question on screen, the last key read there, so A's closing drops it, and n at
+  // the next question declines rather than ending the launch's z n (yes).
+  it("drops a chord typed at a question that the model list then opened over, when that question is cancelled", async () => {
+    const bindings = new Bindings(tableOf({ ...DEFAULTS, Global: { ...DEFAULTS.Global, "z n": "confirm:yes" } }));
+    let list = () => {};
+    const listing = new Promise<void>((resolve) => (list = resolve));
+    const made: string[] = [];
+    const { app, ask, mouse } = await mount([], { full: true, bindings, made, listing, models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "/model"); // its read waits
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const stop = new AbortController();
+      const first = ask("write a.txt", undefined, { name: "t1", signal: stop.signal, stop: () => stop.abort() });
+      const second = ask("write b.txt");
+      await until(app, "write a.txt? [y/n]");
+      await press(app, "z"); // the launch's chord z n waits
+      list();
+      await until(app, "fake:b"); // the list opens over the question
+      await tick(); // the picker starts reading keys just after it first appears
+      stop.abort();
+      expect(await first).toBe(false);
+      await pointer(mouse, ...click(4, shown(app).indexOf("  fake:b")));
+      await until(app, "Allow write b.txt? [y/n]");
+      expect(made).toEqual(["fake:b"]);
+      await press(app, "n"); // n alone: no
+      expect(await second).toBe(false);
     } finally {
       vi.useRealTimers();
     }
