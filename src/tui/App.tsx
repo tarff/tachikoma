@@ -727,6 +727,9 @@ export function App({
     const [first = "", ...words] = text.split(/\s+/);
     const command = first.toLowerCase();
     const alone = (name: string) => command === name && !words.length;
+    // `/lead` alone opens the model list, as `/model` does, in every respect (release 6 plan, choice 34, the user's:
+    // "can we have lead list the models?"); `/lead <provider:model>` switches as before.
+    const listing = alone("/model") || alone("/lead");
     try {
       if (alone("/exit")) {
         queue.current = [];
@@ -752,8 +755,7 @@ export function App({
         const t = recordToOpen(text);
         return t ? openDetail(recordOf(t)) : say(...tasksCommand(words));
       }
-      if (alone("/lead")) return say({ text: "Usage: /lead <provider:model>" });
-      if (command === "/lead") {
+      if (command === "/lead" && !listing) {
         const spec = words.join(" ");
         session.setLead(make(spec)); // this window only, saving nothing (choice 26, the user's)
         return;
@@ -761,11 +763,11 @@ export function App({
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
-      if (!account && !alone("/model") && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
+      if (!account && !listing && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
       if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings"].includes(command))
         return say({ text: `${command} takes nothing after it.`, color: "red" });
       abort.current = new AbortController();
-      const turn = !account && !alone("/model");
+      const turn = !account && !listing;
       const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(tasks.answering())}` : turn ? "Working" : "Reading the model lists";
       doing.current = { label, at: Date.now(), from: turn ? { output: stats.output, cost: stats.cost, unpriced: stats.unpriced } : null };
       if (turn) calls.current = [];
@@ -778,7 +780,7 @@ export function App({
       try {
         // Signing in waits on the browser; Ctrl-C stops it, as it stops a turn.
         if (account) await login(account, words, (line) => say({ text: line, color: "magenta" }), abort.current.signal, "/");
-        else if (alone("/model")) {
+        else if (listing) {
           const { signal } = abort.current; // this command's own, read before the wait
           const groups = await listModels(signal, (line) => say({ text: line, color: "magenta" }));
           if (!signal.aborted) {

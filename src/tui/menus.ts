@@ -23,7 +23,7 @@ export interface Menu {
 
 // The commands, as the README lists them, with what each does.
 const COMMANDS: { label: string; run: string; note: string }[] = [
-  { label: "/lead <provider:model>", run: "/lead", note: "Switch the lead model" },
+  { label: "/lead <provider:model>", run: "/lead", note: "Switch the lead model; alone, pick it from a list" },
   { label: "/model", run: "/model", note: "Pick the lead model from a list" },
   { label: "/login chatgpt", run: "/login chatgpt", note: "Sign in to ChatGPT" },
   { label: "/logout chatgpt", run: "/logout chatgpt", note: "Sign out of ChatGPT" },

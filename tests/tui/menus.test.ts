@@ -17,7 +17,7 @@ describe("commandMenu", () => {
       ...["/lead <provider:model>", "/model", "/login chatgpt", "/logout chatgpt", "/tasks", "/errors", "/screen"],
       ...["/settings", "/keybindings", "/vim", "/exit"],
     ]);
-    expect(m!.entries[0]).toMatchObject({ note: "Switch the lead model", fill: "/lead ", run: "/lead" });
+    expect(m!.entries[0]).toMatchObject({ note: "Switch the lead model; alone, pick it from a list", fill: "/lead ", run: "/lead" });
     expect(m!.entries[7]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
     expect(m!.entries[8]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
   });

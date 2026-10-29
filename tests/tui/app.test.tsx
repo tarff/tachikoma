@@ -318,10 +318,19 @@ describe("App", () => {
     expect(app.lastFrame()).toContain("lead is now fake:b");
   });
 
-  it("shows how to use /lead, and does not send it to the model", async () => {
-    const { app, session } = await mount([]);
+  // Release 6 plan, choice 34 (the user: "can we have lead list the models?"): /lead alone opens the model list, as
+  // /model does; /lead with a model is unchanged (above).
+  it("opens the model list on /lead alone, as /model does, and does not send it to the model", async () => {
+    const made: string[] = [];
+    const { app, session } = await mount([], { made, models: [{ provider: "fake", models: ["a", "b"] }] });
     await type(app, "/lead");
-    expect(app.lastFrame()).toContain("Usage: /lead <provider:model>");
+    await until(app, "● fake:a");
+    await tick(); // the picker starts reading keys just after it first appears
+    app.stdin.write("\u001b[B"); // down
+    await tick();
+    app.stdin.write("\r");
+    await until(app, "lead is now fake:b");
+    expect(made).toEqual(["fake:b"]);
     expect(session.messages).toEqual([]);
   });
 
@@ -375,8 +384,11 @@ describe("App", () => {
     const { app, session } = await mount([], { lead, login, made });
     await type(app, "/LOGIN chatgpt");
     await until(app, "signed in");
-    await type(app, "/Lead");
-    await until(app, "Usage: /lead");
+    await type(app, "/Lead"); // the model list, as /lead opens it
+    await until(app, "Filter:");
+    await tick(); // the picker starts reading keys just after it first appears
+    await press(app, "\u001b");
+    await until(app, "? for shortcuts");
     await type(app, "/Errors");
     await until(app, "No errors logged yet.");
     await type(app, "/Tmp is full");
@@ -493,8 +505,8 @@ describe("App", () => {
     app.stdin.write("\u0003");
     await until(app, "›");
     expect(app.lastFrame()).not.toContain("fake:c");
-    await type(app, "/lead"); // still running
-    await until(app, "Usage: /lead");
+    await type(app, "/lead"); // still running: the list opens again
+    await until(app, "fake:c");
   });
 
   it("shows a provider with no models, and what signing in says while the lists are read", async () => {
@@ -1157,12 +1169,12 @@ describe("App's queue", () => {
     expect(app.lastFrame()).not.toContain("queued");
   });
 
-  it("waits after a queued /model until the list is closed", async () => {
+  it.each(["/model", "/lead"])("waits after a queued %s until the list is closed", async (command) => {
     const { lead, release } = gated([reply("r1"), reply("r2")]);
     const { app, session } = await mount([], { lead, models: [{ provider: "fake", models: ["a", "c"] }] });
     await type(app, "one");
     await until(app, "Esc to stop");
-    await press(app, "/model", "\r", "two", "\r");
+    await press(app, command, "\r", "two", "\r");
     release();
     await until(app, "fake:c");
     await tick();
@@ -1508,7 +1520,7 @@ describe("App's menus", () => {
   it("lists the commands for / at the start of an empty prompt, narrowing as the command is typed", async () => {
     const { app } = await mount([]);
     await press(app, "/");
-    expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model\n  /model  Pick the lead model from a list\n");
+    expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model; alone, pick it from a list\n  /model  Pick the lead model from a list\n");
     expect(app.lastFrame()).toContain("↑↓ choose · Tab fill · Enter run · Esc close");
     await press(app, "e");
     expect(app.lastFrame()).toContain("› /e\n  /errors  Summarise the error log\n  /exit  Quit\n");

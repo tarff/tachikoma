@@ -79,7 +79,7 @@ Options:
   -h, --help        show this help
   Options --lead to --scroll-speed can also be set in ${shownFile()}; a flag or variable wins.
 
-In a session: /lead <provider:model> switches the lead model, /model picks it from a list,
+In a session: /lead <provider:model> switches the lead model, /lead or /model picks from a list,
 /login chatgpt and /logout chatgpt sign in and out, /tasks lists the subagents (/tasks t1 shows one,
 /tasks stop stops them), /errors summarises the error log, /screen switches between full
 screen and classic, /settings opens the settings file in your editor, /keybindings opens the
