@@ -47,7 +47,7 @@ describe("readSettings", () => {
   });
 
   it("refuses a value its flag would refuse, in the flag's words after the file and the entry", () => {
-    expect(problem({ mode: "x" })).toBe('settings.json: "mode" must be one of: ask, project, never (got "x")');
+    expect(problem({ mode: "x" })).toBe('settings.json: "mode" must be one of: ask, project (got "x")');
     expect(problem({ effort: "huge" })).toBe('settings.json: "effort" must be one of: low, medium, high, xhigh, max (got "huge")');
     expect(problem({ screen: "half" })).toBe('settings.json: "screen" must be one of: full, classic (got "half")');
     expect(problem({ editorMode: "emacs" })).toBe('settings.json: "editorMode" must be one of: normal, vim (got "emacs")');

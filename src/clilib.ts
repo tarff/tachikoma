@@ -1,7 +1,7 @@
 import { constants } from "node:os";
 import path from "node:path";
 import type { Instructions, Reached } from "./core/instructions.js";
-import { MODES, type Mode, visible } from "./core/permissions.js";
+import { MODES, type Mode, OFFERED, visible } from "./core/permissions.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import type { Settings } from "./settings.js";
 import { screen } from "./tui/describe.js";
@@ -41,10 +41,11 @@ export function headlessExit(run: { aborted: boolean; failed: boolean; declined:
 export const MAX_TASKS = 8;
 
 // The flags' own checks take the name to put before their words: `--mode`, or the settings file's `settings.json: "mode"`
-// (release 6 plan, choice 8), so a flag and the file get the same rule and the same words.
-export function oneOf<T extends string>(name: string, value: string | undefined, allowed: readonly T[]): T | undefined {
+// (release 6 plan, choice 8), so a flag and the file get the same rule and the same words. `shown` is the list the words
+// name, where a value is read but not offered, as `never` is until release 7 (choice 30).
+export function oneOf<T extends string>(name: string, value: string | undefined, allowed: readonly T[], shown: readonly T[] = allowed): T | undefined {
   if (value === undefined) return undefined;
-  if (!(allowed as readonly string[]).includes(value)) throw new Error(`${name} must be one of: ${allowed.join(", ")} (got "${value}")`);
+  if (!(allowed as readonly string[]).includes(value)) throw new Error(`${name} must be one of: ${shown.join(", ")} (got "${value}")`);
   return value as T;
 }
 
@@ -121,7 +122,7 @@ export interface Flags {
 // The flags are checked in release 5's order. The lead is leadOf's.
 export function resolve(flags: Flags, env: NodeJS.ProcessEnv, settings: Settings) {
   return {
-    mode: oneOf<Mode>("--mode", flags.mode, MODES) ?? settings.mode ?? "ask", // the safest mode is the default
+    mode: oneOf<Mode>("--mode", flags.mode, MODES, OFFERED) ?? settings.mode ?? "ask", // the safest mode is the default
     effort: oneOf<Effort>("--effort", flags.effort, EFFORTS) ?? settings.effort,
     fallback: flags.fallback ?? settings.fallback,
     worker: flags.worker ?? (env.TACHI_WORKER || undefined) ?? settings.worker,

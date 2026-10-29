@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { oneOf, speedValue, statusSegments, taskCount } from "./clilib.js";
 import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
-import { MODES, type Mode } from "./core/permissions.js";
+import { MODES, type Mode, OFFERED } from "./core/permissions.js";
 import { errorText } from "./core/types.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import type { Segment } from "./tui/StatusLine.js";
@@ -46,7 +46,7 @@ export function readSettings(text: string): Loaded {
       const entry = `${SETTINGS}: ${JSON.stringify(name)}`;
       if (name === "$schema") continue;
       else if (name === "lead" || name === "fallback" || name === "worker" || name === "editor") settings[name] = textOf(entry, value);
-      else if (name === "mode") settings.mode = oneOf(entry, textOf(entry, value), MODES);
+      else if (name === "mode") settings.mode = oneOf(entry, textOf(entry, value), MODES, OFFERED);
       else if (name === "effort") settings.effort = oneOf(entry, textOf(entry, value), EFFORTS);
       else if (name === "screen") settings.screen = oneOf(entry, textOf(entry, value), ["full", "classic"] as const);
       else if (name === "editorMode") settings.editorMode = oneOf(entry, textOf(entry, value), ["normal", "vim"] as const);

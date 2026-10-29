@@ -3,6 +3,9 @@
 // never:   never ask (meant for the Docker sandbox)
 export type Mode = "ask" | "project" | "never";
 export const MODES: Mode[] = ["ask", "project", "never"];
+// The modes a mistake's words offer: `never` is still read, so the launch can say it is switched off until release 7
+// (release 6 plan, choice 30).
+export const OFFERED: Mode[] = ["ask", "project"];
 
 export interface Action {
   kind: "read" | "write" | "shell";

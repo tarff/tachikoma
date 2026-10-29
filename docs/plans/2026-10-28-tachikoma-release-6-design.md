@@ -463,7 +463,7 @@ build made, for the user to review at the final review.
 - **The settings file (Tasks 7, 9 and 10):**
   - `status` is a list of names, `["lead", "context"]`, and `screen` is `"full"` or `"classic"`
     (choice 7, the build's call). Each message names the file and the entry before the flag's own
-    words: `settings.json: "mode" must be one of: ask, project, never (got "x")` (choice 8, the
+    words: `settings.json: "mode" must be one of: ask, project (got "x")` (choice 8, the
     build's call). `$schema` is allowed and ignored.
   - An empty file, or one with a byte-order mark as Windows PowerShell 5.1 writes, reads as
     Windows editors save it: empty is `{}` at launch, and the mark is skipped (the build's call,

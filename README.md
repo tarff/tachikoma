@@ -248,7 +248,7 @@ Every entry is optional; one left out keeps its default.
   default. `-p` runs read the file too. With no lead anywhere, `tachi` says how to put one in the
   file.
 - **Mistakes:** a value its flag would refuse stops Tachikoma at launch, in the flag's words, naming
-  the entry: `settings.json: "mode" must be one of: ask, project, never (got "x")`. An entry
+  the entry: `settings.json: "mode" must be one of: ask, project (got "x")`. An entry
   Tachikoma does not know gets a grey line, and the rest applies.
 - **Nothing is saved to the file.** `/lead`, a `/model` pick, `/screen`, `/vim` and Shift+Tab change
   only the window you use them in, since every open window follows the file. To make a change last,

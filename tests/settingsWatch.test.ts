@@ -73,7 +73,7 @@ describe("changes", () => {
     expect(broken && "problem" in broken && broken.problem).toMatch(/^settings\.json is not valid JSON: /);
     expect(step("")).toBeNull();
     expect(step('{"mode": ')).toBeNull(); // the same broken text again, after the editor's empty write
-    expect(step('{"mode": "x"}')).toEqual({ problem: 'settings.json: "mode" must be one of: ask, project, never (got "x")' });
+    expect(step('{"mode": "x"}')).toEqual({ problem: 'settings.json: "mode" must be one of: ask, project (got "x")' });
     expect(step('{"mode": "project"}')).toEqual({ settings: { mode: "project" }, warnings: [] });
     expect(step('{"mode": ')).toEqual(broken);
   });

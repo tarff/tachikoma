@@ -189,7 +189,7 @@ describe("tachi", { timeout: 15_000 }, () => {
   it("stops on a broken settings file, with its problem", () => {
     let r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"mode": "x"}'));
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/^settings\.json: "mode" must be one of: ask, project, never \(got "x"\)/);
+    expect(r.stderr).toMatch(/^settings\.json: "mode" must be one of: ask, project \(got "x"\)/);
     r = tachi("--lead", "ollama:none", "-p", "hi", homeWith("{"));
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/^settings\.json is not valid JSON: /);

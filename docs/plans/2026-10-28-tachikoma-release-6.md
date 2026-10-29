@@ -334,7 +334,8 @@ Each is marked in its task. None approved yet.
       `needsApproval`, so release 7 can bring it back behind the sandbox, auto mode and a check on
       dangerous commands of every kind (main design, "`never` mode switched off"). This supersedes
       the review's finding 4, a launch notice when `never` came from the file, which the user had
-      said yes to.
+      said yes to. A mode that is none of them is told `must be one of: ask, project`, choice 8's
+      words without `never`, which is still read so that it gets its own line.
     - **Keys that answer a question apply at launch only** (finding 1; the user: "Next launch only
       (Recommended)"). A shell command could rewrite the keys file so that n and Esc answer yes,
       and the watcher would apply it at once. After the launch's read, every key answers a

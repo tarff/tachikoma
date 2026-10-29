@@ -273,7 +273,9 @@ describe("resolve", () => {
   });
 
   it("still checks a flag given over the file, in the flag's words", () => {
-    expect(() => resolve({ mode: "x" }, {}, { mode: "ask" })).toThrow('--mode must be one of: ask, project, never (got "x")');
+    expect(() => resolve({ mode: "x" }, {}, { mode: "ask" })).toThrow('--mode must be one of: ask, project (got "x")');
+    // `never` is not offered, but still read, so the launch can say it is switched off (release 6 plan, choice 30).
+    expect(resolve({ mode: "never" }, {}, {}).mode).toBe("never");
     expect(() => resolve({ effort: "x" }, {}, {})).toThrow('--effort must be one of: low, medium, high, xhigh, max (got "x")');
     expect(() => resolve({ "max-tasks": "1e1" }, {}, { maxTasks: 2 })).toThrow('--max-tasks must be a whole number from 1 (got "1e1")');
     expect(() => resolve({ status: "nope" }, {}, { status: ["lead"] })).toThrow(
