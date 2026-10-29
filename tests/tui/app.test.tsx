@@ -6651,6 +6651,30 @@ describe("App's live settings", () => {
     }
   });
 
+  // The code review of choice 32: a click picks from the model list without a key, so a chord the list's keys started
+  // still waits when the question under it is drawn. The question's keys are not waiting on it (the first key there
+  // drops it, as above), so the hint row does not name it.
+  it("names no chord over a question that the question's keys are not waiting on", async () => {
+    const bindings = new Bindings(tableOf({ ...DEFAULTS, Global: { ...DEFAULTS.Global, "ctrl+k ctrl+x": "app:toggleTodos" } }));
+    const { app, ask, mouse } = await mount([], { full: true, bindings, models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "/model");
+    await until(app, "fake:b");
+    await tick(); // the picker starts reading keys just after it first appears
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const answer = ask("write a.txt");
+      await tick();
+      await press(app, "\u000b"); // Ctrl+K: the chord ctrl+k ctrl+x waits
+      await pointer(mouse, ...click(4, shown(app).indexOf("  fake:b")));
+      await until(app, "Allow write a.txt? [y/n]");
+      expect(app.lastFrame()).not.toContain("ctrl+k ...");
+      await press(app, "n");
+      expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));

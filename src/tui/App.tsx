@@ -2027,7 +2027,9 @@ export function App({
   const searching = !d && search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
   const said = (key: string | undefined, words: string) => key !== undefined && `${key} ${words}`;
   const hints = (...parts: (string | false | null)[]) => parts.filter(Boolean).join(" · ");
-  const chord = chordKeys().waiting(Date.now());
+  // Only a chord the keys drawn would go on with: none read at the prompt's side once a question is drawn, as a click on
+  // the model list can bring one there with no key between (lookUp drops it at the next key; choice 32's code review).
+  const chord = asked.current === (!!question && !picker) ? chordKeys().waiting(Date.now()) : null;
   const fillKeys = [keyOf("autocomplete:accept", "Autocomplete", "tab"), keyOf("chat:submit", "Chat", "enter")];
   const previous = keyOf("history:previous", "Chat", "up");
   const usualHint = (left: number) =>
