@@ -324,12 +324,12 @@ making it first if it is missing.
   newly bound to switch the mode, which does nothing until the next launch,** so a command that
   rewrites the file cannot make a key answer yes, nor bind the mode switch to a key you type
   anyway. A question reads the keys you started with, all of them, and names them in its hint; a
-  key switches the mode only where the keys you started with
-  switch it too, so one an edit adds does nothing, while taking the mode key out works at once.
-  A grey line says so when an edit changes what a question reads (`Confirmation`, `Scroll` or
-  `Global`) or lets a key switch the mode that did not at launch: `keybindings.json: at a
-  permission question the keys stay as at launch, and a key newly bound to switch the mode does
-  nothing, until the next launch; the rest apply now`. The rest applies at once.
+  key switches the mode only where the keys you started with switch it too, so one an edit adds does
+  nothing, while taking the mode key out works at once. A grey line says so when an edit changes
+  what a question reads (`Confirmation`, `Scroll` or `Global`) or lets a key switch the mode that
+  did not at launch: `keybindings.json: at a permission question the keys stay as at launch, and a
+  key newly bound to switch the mode does nothing, until the next launch; the rest apply now`. The
+  rest applies at once.
 
 The default keys:
 
