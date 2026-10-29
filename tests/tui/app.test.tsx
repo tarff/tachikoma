@@ -3672,6 +3672,7 @@ async function onTerminal(
     classic?: boolean;
     intro?: AppProps["intro"];
     step?: (s: string) => void;
+    home?: string; // the folder holding the settings file; sharedHome when not given
   } = {},
 ) {
   const worker = opts.worker ?? new FakeProvider("w", []);
@@ -3738,7 +3739,7 @@ async function onTerminal(
       scrollSpeed={3}
       clipboard={(report) => new Clipboard(() => {}, null, report)}
       readPicture={() => new Promise(() => {})} // never answers: no test reads the user's clipboard
-      home={sharedHome}
+      home={opts.home ?? sharedHome}
     />,
     { stdout: terminal as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
   );
@@ -4982,6 +4983,36 @@ describe("App's external editor", () => {
     const MARKS = ["release", "retake", "hold(true)", "hold(false)", MOUSE_OFF, MOUSE_ON, FIRST_SCREEN, SECOND_SCREEN];
     expect(steps.filter((s) => MARKS.includes(s))).toEqual(marks);
     await waitFor(() => text(since(steps, "retake")).includes("› edited"));
+  });
+
+  // Release 6 plan, choice 33 (the user's terminal checklist): with the editor in its own window, the terminal showed the
+  // screen from before Tachikoma and nothing else, so it looked dead. A line says what it waits for, as Git does
+  // (editor.c), once the screen is handed over, and is erased before Ink and full screen come back.
+  const WAITING = "Waiting for your editor to close the file... (Ctrl-C does nothing until then) ";
+  const ERASE = "\r\u001b[K";
+  it.each([
+    { how: "Ctrl+G", mode: "full screen", classic: false },
+    { how: "Ctrl+G", mode: "classic mode", classic: true },
+    { how: "/settings", mode: "full screen", classic: false },
+    { how: "/settings", mode: "classic mode", classic: true },
+  ])("says it waits for the editor $how opens in $mode, and erases the line before the screen comes back", async ({ how, classic }) => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const { steps, key } = await onTerminal(new FakeProvider("a", []), { classic, home });
+    steps.length = 0;
+    if (how === "Ctrl+G") await key(CTRL_G);
+    else await key("/settings", "\r");
+    await waitFor(editor.started);
+    expect(steps.filter((s) => s === WAITING || s === ERASE)).toEqual([WAITING]); // said while the editor runs
+    editor.go();
+    await waitFor(() => steps.includes("retake"));
+    const MARKS = ["release", "retake", MOUSE_OFF, MOUSE_ON, FIRST_SCREEN, SECOND_SCREEN, WAITING, ERASE];
+    const handed = classic ? [] : [MOUSE_OFF, FIRST_SCREEN];
+    const back = classic ? [] : [SECOND_SCREEN, MOUSE_ON];
+    expect(steps.filter((s) => MARKS.includes(s))).toEqual(["release", ...handed, WAITING, ERASE, ...back, "retake"]);
+    expect(text(since(steps, "retake"))).not.toContain("Waiting for your editor"); // never in what Ink draws
   });
 });
 
