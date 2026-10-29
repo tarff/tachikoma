@@ -1113,11 +1113,11 @@ describe("App's queue", () => {
     const { app, session } = await mount([], { lead });
     await type(app, "one");
     await until(app, "Esc to stop");
-    await press(app, "two", "\r", "/lead", "\r", "three", "\r", "\u001b");
+    await press(app, "two", "\r", "/tasks", "\r", "three", "\r", "\u001b");
     await until(app, "last");
     release();
     expect(prompts(session)).toEqual(["one", "two", "three"]);
-    expect(app.lastFrame()).toMatch(/boom[\s\S]*Usage: \/lead[\s\S]*> three/);
+    expect(app.lastFrame()).toMatch(/boom[\s\S]*No subagents yet.[\s\S]*> three/);
   });
 
   it("brings the queue back into the prompt on Ctrl-C, after what is typed, one entry a line, and sends nothing more", async () => {
