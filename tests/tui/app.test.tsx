@@ -6623,6 +6623,34 @@ describe("App's live settings", () => {
     }
   });
 
+  // The code review of choice 32: a question asked while the model list is open waits under it, and the key that
+  // closes the list is read by both tables. Here the launch's keys start their chord Esc n on it, which the live keys
+  // no longer have; the first key read at the question drops it (App.tsx, lookUp's `asked`), so n still declines.
+  it("drops a chord the launch's keys started in the model list before the question under it reads a key", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, globalKeys({ "escape n": "confirm:yes" }));
+    const { app, ask, where } = await watching([], {}, { models: [{ provider: "fake", models: ["c"] }] }, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, globalKeys({ "ctrl+y": "app:toggleTodos" })));
+    await sees(app, HELD);
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick(); // the picker starts reading keys just after it first appears
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const answer = ask("write a.txt");
+      await tick();
+      expect(app.lastFrame()).not.toContain("Allow write a.txt"); // the list is drawn over it
+      await press(app, "\u001b"); // the live keys close the list
+      await until(app, "Allow write a.txt? [y/n]");
+      await press(app, "n");
+      expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));
