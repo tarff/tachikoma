@@ -404,9 +404,10 @@ Each is marked in its task. None approved yet.
       stroke read while a question is drawn goes to the launch's table (`launchKeys`), whole, in
       the question's contexts; the live table is not read there. The question's hint
       (`[y/n] · Esc to decline`) names the launch's keys, so it never names a key that does not
-      answer. No chord runs on between the two tables: a question's opening, and the closing of
-      the last one, answered or cancelled, drop any chord waiting in either, and so does the first
-      stroke read at a question or after one (`asked`, in `lookUp`), whatever came between.
+      answer. No chord runs on between the two tables: a question opening when none is open, and
+      the last one closing, answered or cancelled, drop any chord waiting in either, and so does
+      the first stroke read at a question or after one (`asked`, in `lookUp`), whatever came
+      between.
       `Bindings.keepAnswers` and its tests are gone, and with it choice 30's known limit. The grey
       line is now `keybindings.json: at a permission question, and for the key that switches the
       mode, the keys stay as at launch until the next launch; the rest apply now`, said once while
