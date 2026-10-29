@@ -6599,6 +6599,30 @@ describe("App's live settings", () => {
     }
   });
 
+  // The code review of choice 32: every question's closing drops a chord waiting, not only the last's, so one half typed
+  // at a question that is cancelled never joins the keys of the next question in the line.
+  it("drops a chord half typed at a cancelled question before the next question in the line reads a key", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, globalKeys({ "z n": "confirm:yes" }));
+    const { app, ask } = await watching([], {}, {}, {}, home);
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so only the closing can end the chord
+    try {
+      const stop = new AbortController();
+      const first = ask("write a.txt", undefined, { name: "t1", signal: stop.signal, stop: () => stop.abort() });
+      const second = ask("write b.txt");
+      await until(app, "write a.txt? [y/n]");
+      await press(app, "z");
+      stop.abort();
+      expect(await first).toBe(false);
+      await until(app, "Allow write b.txt? [y/n]");
+      await press(app, "n"); // n alone: no
+      expect(await second).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));

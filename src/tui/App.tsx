@@ -513,9 +513,9 @@ export function App({
             open = false;
             signal?.removeEventListener("abort", cancel);
             questions.current = questions.current.filter((x) => x !== q);
-            // As at the opening (below): a chord half typed at the last question, which one cancelled can leave, never
-            // runs on into the live keys (choice 32).
-            if (!questions.current.length) latest.current.dropChord();
+            // As at the opening (below): a chord half typed at a question, which one cancelled can leave, never runs on
+            // into the next question's keys nor the live ones (choice 32 and its code review).
+            latest.current.dropChord();
             if (q.detail && q.following) view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
             latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
             resolve(ok);
