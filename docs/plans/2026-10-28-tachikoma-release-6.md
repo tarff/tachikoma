@@ -416,23 +416,30 @@ Each is marked in its task. None approved yet.
       the question's contexts; the live table is not read there. The question's hint
       (`[y/n] · Esc to decline`) names the launch's keys, so it never names a key that does not
       answer. No chord runs on between the two tables. A question opening when none is open drops
-      any chord waiting in either, and so does the question on screen closing, answered or
-      cancelled, so none half typed at a cancelled question joins the next one's keys. A question
-      waiting behind the one on screen, or under the model list, is not on screen: cancelled, it
-      leaves the chord to the keys it was typed for. Found at the outside review's second round,
+      any chord waiting in either, and so does a question closing, answered or cancelled, when a
+      chord waiting was typed at it: when it is the first in the line and the last key was read at a
+      question (`asked`), whether the model list opened over it since or not. So none half typed at
+      a cancelled question joins the next one's keys, while a question waiting behind the one on
+      screen, cancelled, leaves the chord to the one on screen, and one under the model list leaves
+      a chord typed in the list to the list's keys. Found at the outside review's second round,
       where a launch `"z y"` to `confirm:no` read as `y`, a yes, once the question behind was
-      cancelled after z; and at the code re-check, where Enter then picked a model from the list on
-      its own. The first stroke read at a question, or after one, drops any chord too (`asked`, in
-      `lookUp`), whatever came between, such as a question waiting under the model list whose
-      closing key starts a chord in the launch's keys only. The hint row names a chord only when the
-      keys drawn would go on with it, so a chord still waiting when a click picks from the model
-      list is not named over the question. A known limit, which the user chose to record: when the
-      question on screen closes without an answer (cancelled, for example because its subagent
-      stopped) while a two-key shortcut is half typed, the next question appears and the next key is
-      read by it alone, so it can answer that question (y as yes, say); so can a key pressed just as
-      one question replaces another. Carrying the half-typed shortcut into the next question was
-      worse in the code review's fuzz test: 1,627 of 100,000 runs answered the next question with
-      keys typed for the one before, against 63 for this rule. No release is set.
+      cancelled after z; and at the code re-checks, where Enter then picked a model from the list on
+      its own, and where z typed at a question the list then opened over, cancelled under the list
+      and the list closed by a click, ended the launch's `"z n"` at the next question. The first
+      stroke read at a question, or after one, drops any chord too (`asked`, in `lookUp`), whatever
+      came between, such as a question waiting under the model list whose closing key starts a chord
+      in the launch's keys only. The hint row names a chord only when the keys drawn would go on
+      with it, so a chord still waiting when a click picks from the model list is not named over the
+      question. A known limit, which the user chose to record: when the question on screen closes
+      without an answer (cancelled, for example because its subagent stopped) while a shortcut of
+      two or more keys is half typed, the next question appears and the next key is read by it
+      alone, so it can answer that question (y as yes, say); so can a key pressed just as one
+      question replaces another. Carrying the half-typed shortcut into the next question instead was
+      worse in a test of random keys, with far more shortcuts and cancels than real use, so these
+      are rates in the test, not in real use: of 100,000 runs, 1,627 answered the next question with
+      a shortcut begun at the one before (607 of them yes), against 191 where the next key, read
+      alone, answered differently than the shortcut would have (63 of them yes); other seeds agree.
+      No release is set.
       `Bindings.keepAnswers` and its tests are gone, and with it choice 30's known limit. The grey
       line is now `keybindings.json: at a permission question the keys stay as at launch, and a key
       newly bound to switch the mode does nothing, until the next launch; the rest apply now`, said
