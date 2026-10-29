@@ -474,6 +474,10 @@ export function App({
     notes.current = [...(newEdit.current ? [] : notes.current), ...add.map(escaped)];
     newEdit.current = false;
   };
+  const noteAlone = (line: Line) => {
+    newEdit.current = true;
+    note(line);
+  };
   const history = useRef<History | null>(null);
   history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
   // Every model made in the session takes a changed effort (release 6 plan, Task 9).
@@ -617,7 +621,8 @@ export function App({
           home,
           (read) => latest.current.onSettings(read),
           (read) => latest.current.onKeys(read),
-          () => latest.current.say(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} and ${KEYBINDINGS} are no longer watched this session`)),
+          // A live file's line, as an edit's, of its own (note; choice 35).
+          () => latest.current.noteAlone(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} and ${KEYBINDINGS} are no longer watched this session`)),
         );
     } catch (err) {
       say(gray(`${SETTINGS} and ${KEYBINDINGS} are not watched this session (${errorText(err)})`));
@@ -2036,7 +2041,7 @@ export function App({
   // functions, set at each, so what they read is the screen as last drawn, never what it was when they were set up
   // (release 6 design, "Tidying the screen code first"). Set while drawing, safe with Ink's non-concurrent root
   // (above).
-  const handlers = { say, note, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys, settle, dropChord: dropChords };
+  const handlers = { say, note, noteAlone, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys, settle, dropChord: dropChords };
   const latest = useRef(handlers);
   latest.current = handlers;
 
