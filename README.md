@@ -359,7 +359,9 @@ becomes the prompt, with the cursor at the end; Ctrl+Z brings back the text befo
 - **Meanwhile** a turn already running carries on, and its output is there when you come back; a
   permission question waits until you are back. A queued `/screen`, `/settings` or `/keybindings`
   waits for the editor to close. Ctrl-C typed in the terminal while the editor is open is the
-  editor's: Tachikoma ignores it, as Git does, so the session and a running turn go on.
+  editor's: Tachikoma ignores it, as Git does, so the session and a running turn go on. Until the
+  editor closes, the terminal shows `Waiting for your editor to close the file... (Ctrl-C does
+  nothing until then)`, as Git does too; the line goes when you come back.
 - **If the editor fails or is not found,** the prompt stays as it was and a line says why, either
   `The editor failed (<reason>). Set VISUAL or EDITOR, or "editor" in ~/.tachikoma/settings.json.`
   or `<command> was not found. Set VISUAL or EDITOR, or "editor" in ~/.tachikoma/settings.json.`

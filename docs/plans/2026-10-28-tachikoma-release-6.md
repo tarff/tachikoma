@@ -464,6 +464,25 @@ Each is marked in its task. None approved yet.
       where both switch it. An edit that only takes the mode key out shows no line, as nothing in
       it waits for the next launch.
 
+33. **The editor's waiting line (the user's terminal checklist, step 1, 2026-10-30; the user: "Say
+    Ctrl-C too").** `/settings` opened Notepad in its own window, and Tachikoma had left full
+    screen, so the terminal showed the PowerShell screen from before with no prompt, and Ctrl-C,
+    which choice 31 ignores while the editor runs, did nothing: it looked dead, though it was
+    waiting for Notepad, and closing Notepad brought it back. While Ctrl+G, Ctrl+X Ctrl+E,
+    `/settings` or `/keybindings` has the editor open, one line now says `Waiting for your editor to
+    close the file... (Ctrl-C does nothing until then)`. Git's `editor.c`
+    (`launch_specified_editor`, read 2026-10-30 at
+    raw.githubusercontent.com/git/git/master/editor.c) prints `hint: Waiting for your editor to
+    close the file...` on stderr when stderr is a terminal, ending it with a space and no line
+    break, and once the editor returns erases it with `\r\033[K` (`term_clear_line`, `pager.c`); on
+    a dumb terminal it ends it with a line break and erases nothing. Tachikoma does the same where
+    it fits: it writes its line once the terminal is handed over (after leaving full screen, or once
+    Ink is suspended in classic mode), ending in a space, and erases it the same way before full
+    screen and Ink come back, so a terminal editor's screen and Ink's frame are left as they were.
+    The line goes straight to the terminal and is never said, so it is in no printed output and not
+    in classic mode's scrollback. Git's dumb-terminal case is not followed, as Ink's own drawing
+    needs the same codes.
+
 ---
 
 ## Task 1: One owner for the terminal
@@ -1331,8 +1350,10 @@ still names Esc, Ctrl-C and Ctrl+T as fixed keys: say they can be rebound in the
 at Task 6's spec review).
 
 **The terminal checklist** (the user runs it once, in Windows Terminal, PowerShell):
-1. `tachi` with only `"lead"` in `~/.tachikoma/settings.json` starts; `/settings`, change
-   `"status"` in Notepad, save: the status line changes.
+1. `tachi` with only `"lead"` in `~/.tachikoma/settings.json` starts; `/settings`, change `"status"`
+   in Notepad, save. While Notepad is open, full screen is set aside and the terminal shows `Waiting
+   for your editor to close the file... (Ctrl-C does nothing until then)` (choice 33); once Notepad
+   is closed, the line is gone and the status line shows the change.
 2. `/lead`, quit, `tachi`: the file's lead again, as `/lead` changes this window only (choice 26).
 3. `/keybindings`, bind `ctrl+e` to `chat:externalEditor`: Ctrl+E opens Notepad; `?` shows it.
 4. Ctrl+G on a two-line prompt, with another Notepad window already open (Windows 11's tabbed
@@ -1340,6 +1361,8 @@ at Task 6's spec review).
    Notepad opens, edit, close: the prompt has the edit. Then with
    `"editor": "\"C:\\Program Files\\Git\\usr\\bin\\vim.exe\""` (Git for Windows' vim,
    if installed): vim takes every key, `:wq` brings the edit back, and the keyboard works after.
+   With Notepad the waiting line shows while it is open; after vim's `:wq` no trace of the line is
+   left on Tachikoma's screen (choice 33).
 5. Ctrl+S, type, Ctrl+S: swap; Ctrl+S on empty: back.
 6. Win+Shift+S, Alt+V, "what is in this picture?" to an Anthropic lead: it answers about it.
 7. PrtScn over both monitors, Alt+V, send: the answer comes (shrunk or not, no error).

@@ -512,6 +512,10 @@ build made, for the user to review at the final review.
     then, is ignored, and SIGQUIT too, as Git's editor launch ignores both: the session and a
     running turn go on (found at Task 12's spec review; settled at the final review, choice 31, the
     build's call).
+  - While the editor runs, one line says `Waiting for your editor to close the file... (Ctrl-C does
+    nothing until then)`, written once the terminal is handed over and erased with `\r\033[K` before
+    full screen and Ink come back, as Git's editor launch does (choice 33, from the user's terminal
+    checklist).
   - Found and not settled: through `cmd.exe`, a `%` in the path given to the editor can be expanded
     (found at Task 12's build; a known limit in the README); and Windows 11's tabbed Notepad may hand
     the file to a Notepad window already open and exit at once (found at Task 12's code review).
