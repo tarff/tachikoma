@@ -166,7 +166,7 @@ export function useAppState({
   const [pictures] = useState(() => picturesGiven ?? new Pictures());
   // The message waiting for its pictures' reads to end before it is sent, as the reads leave it (perform, App.tsx).
   const reading = useRef<Draft | null>(null);
-  const reads = useRef(0); // the pictures' reads running, for the hint row's "Reading picture..." (newPicture, App.tsx)
+  const reads = useRef(0); // the pictures' reads running, for the hint row's "Reading picture..." (newPicture, pictureReads.ts)
   // What is running, since when, and for a turn the totals it started from; and the turn's tool calls,
   // kept after it until the next turn starts.
   const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
