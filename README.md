@@ -262,10 +262,10 @@ Every entry is optional; one left out keeps its default.
   empty or missing file changes nothing, as editors such as Notepad empty the file, or put a new one
   in its place, while they save; so deleting the file keeps the settings in force until the next
   start. Each line an edit says also shows in the hint row (the row over the status line, where
-  `? for shortcuts` shows) until your next key, in its own colour: the edit's last line, with
-  `(+2 more above)` or the like when it said more. It shows over vim's mode, which comes back after
-  the key; other hints, such as a question's or the queue's, keep the row. Warnings found as
-  Tachikoma starts are printed then, not in the hint row.
+  `? for shortcuts` shows) until your next key or paste, in its own colour: the edit's last line,
+  with `(+2 more above)` or the like when it said more. It shows over vim's mode, which comes back
+  after the key or paste; other hints, such as a question's or the queue's, keep the row. Warnings
+  found as Tachikoma starts are printed then, not in the hint row.
 - **Except `"mode"`, which applies at the next launch only,** so a shell command you allowed cannot
   rewrite the file to put the session in `project` mode. An edit to it gets a grey line, `"mode"
   changes in settings.json take effect at the next launch; the mode stays ask`, and the mode stays;
@@ -324,7 +324,7 @@ making it first if it is missing.
   the last good keys after.
 - **Edits apply at once,** as for the settings file, and an empty or missing file changes nothing
   until the next start. As there, each line an edit says also shows in the hint row until your next
-  key, and so does a problem in the keys file found as Tachikoma starts.
+  key or paste, and so does a problem in the keys file found as Tachikoma starts.
 - **Except at a permission question, where the keys stay as they were at launch, and for a key
   newly bound to switch the mode, which does nothing until the next launch,** so a command that
   rewrites the file cannot make a key answer yes, nor bind the mode switch to a key you type
@@ -364,9 +364,10 @@ becomes the prompt, with the cursor at the end; Ctrl+Z brings back the text befo
 - **Meanwhile** a turn already running carries on, and its output is there when you come back; a
   permission question waits until you are back. A queued `/screen`, `/settings` or `/keybindings`
   waits for the editor to close. Ctrl-C typed in the terminal while the editor is open is the
-  editor's: Tachikoma ignores it, as Git does, so the session and a running turn go on. Until the
-  editor closes, the terminal shows `Waiting for your editor to close the file... (Ctrl-C does
-  nothing until then)`, as Git does too; the line goes when you come back.
+  editor's: Tachikoma ignores it, as Git does, so the session and a running turn go on; some
+  editors, such as `code --wait`, may act on Ctrl-C themselves. Until the editor closes, the
+  terminal shows `Waiting for your editor to close the file... (Tachikoma ignores Ctrl-C until
+  then)`, as Git does too; the line goes when you come back.
 - **If the editor fails or is not found,** the prompt stays as it was and a line says why, either
   `The editor failed (<reason>). Set VISUAL or EDITOR, or "editor" in ~/.tachikoma/settings.json.`
   or `<command> was not found. Set VISUAL or EDITOR, or "editor" in ~/.tachikoma/settings.json.`

@@ -465,23 +465,31 @@ Each is marked in its task. None approved yet.
       it waits for the next launch.
 
 33. **The editor's waiting line (the user's terminal checklist, step 1, 2026-10-30; the user: "Say
-    Ctrl-C too").** `/settings` opened Notepad in its own window, and Tachikoma had left full
-    screen, so the terminal showed the PowerShell screen from before with no prompt, and Ctrl-C,
-    which choice 31 ignores while the editor runs, did nothing: it looked dead, though it was
-    waiting for Notepad, and closing Notepad brought it back. While Ctrl+G, Ctrl+X Ctrl+E,
-    `/settings` or `/keybindings` has the editor open, one line now says `Waiting for your editor to
-    close the file... (Ctrl-C does nothing until then)`. Git's `editor.c`
-    (`launch_specified_editor`, read 2026-10-30 at
-    raw.githubusercontent.com/git/git/master/editor.c) prints `hint: Waiting for your editor to
-    close the file...` on stderr when stderr is a terminal, ending it with a space and no line
-    break, and once the editor returns erases it with `\r\033[K` (`term_clear_line`, `pager.c`); on
-    a dumb terminal it ends it with a line break and erases nothing. Tachikoma does the same where
-    it fits: it writes its line once the terminal is handed over (after leaving full screen, or once
-    Ink is suspended in classic mode), ending in a space, and erases it the same way before full
-    screen and Ink come back, so a terminal editor's screen and Ink's frame are left as they were.
-    The line goes straight to the terminal and is never said, so it is in no printed output and not
-    in classic mode's scrollback. Git's dumb-terminal case is not followed, as Ink's own drawing
-    needs the same codes.
+    Ctrl-C too", then "Say Tachikoma (Recommended)").** `/settings` opened Notepad in its own
+    window, and Tachikoma had left full screen, so the terminal showed the PowerShell screen from
+    before with no prompt, and Ctrl-C, which choice 31 ignores while the editor runs, did nothing:
+    it looked dead, though it was waiting for Notepad, and closing Notepad brought it back. While
+    Ctrl+G, Ctrl+X Ctrl+E, `/settings` or `/keybindings` has the editor open, one line now says
+    `Waiting for your editor to close the file... (Tachikoma ignores Ctrl-C until then)`. It first
+    said Ctrl-C did nothing until then; the user chose to say it is Tachikoma that ignores Ctrl-C,
+    as an editor may not: `code --wait` runs through `code.cmd` under `cmd.exe`, so Ctrl-C can end
+    the wait or ask `Terminate batch job (Y/N)?`. Git's `editor.c` (`launch_specified_editor`, read
+    2026-10-30 at raw.githubusercontent.com/git/git/master/editor.c) prints `hint: Waiting for your
+    editor to close the file...` on stderr when stderr is a terminal, ending it with a space and no
+    line break, and once the editor has exited, succeeded or not, erases it with `\r\033[K`
+    (`term_clear_line`, `pager.c`); it does not when the editor could not be started, nor when the
+    editor died of Ctrl-C or Ctrl-\, which Git then raises itself; on a dumb terminal it ends the
+    hint with a line break and erases nothing. Tachikoma writes its line once the terminal is handed
+    over (after leaving full screen, or once Ink is suspended in classic mode), ending in a space
+    and cut to the width it draws at, a column short, so it never wraps onto a second row (the code
+    review's); it erases it in the same way every time the editor returns, before full screen and
+    Ink come back, so a terminal editor's screen and Ink's frame are left as they were. A command
+    the shell cannot find still starts the shell, whose own error is printed after the line on its
+    row and ends with a line break, so the erase clears the row below: the line and the shell's
+    error stay on the normal screen, and Tachikoma says the editor was not found once it is back. A
+    resize while the editor is open can leave part of the line, as with Git. The line goes straight
+    to the terminal and is never said, so it is in no printed output and not in classic mode's
+    scrollback. Git's dumb-terminal case is not followed, as Ink's own drawing needs the same codes.
 34. **`/lead` alone lists the models (the user's terminal checklist, 2026-10-30; the user: "can we
     have lead list the models?").** `/lead` typed alone said `Usage: /lead <provider:model>`. It now
     opens the same model list `/model` opens, as `/model` does in every respect: during a turn it
@@ -493,22 +501,26 @@ Each is marked in its task. None approved yet.
     `keybindings.json` says (an entry's `is now ... (from settings.json)`, a warning, a red problem
     such as `not valid JSON` or `must be one of`, a model that cannot be made, the lines for
     `"mode"`, `never` and the keys kept as at launch, and a lead or screen the file set once it
-    applies) is still said in the conversation, and also shows in the hint row until the next key:
-    the edit's last line, in its own colour (red for a problem, grey otherwise), followed by `(+N
-    more above)` when the edit said N more. A newer edit replaces it; a long line gives up its
-    middle rather than its count. The line saying `~/.tachikoma` was removed and the files are no
-    longer watched shows there too, as a line of its own. In the hint row's order it comes over
-    vim's mode (the user: "Notice wins (Recommended)"; vim's mode comes back after the key), over
-    the row's usual words and over its emptiness during a turn: a chord under way, the exit warning,
-    the detail view's keys, Ctrl+R's search, a question or the model list (which leave the row
-    empty), the menu's keys, `Reading picture...`, and the queue's and the stash's hints all keep
-    the row first, and the working line (`Esc to stop`) is a row of its own, which it never takes.
-    So it shows during a turn, when edits are likely, where the row was empty. A line said while the
-    editor is open is there when Tachikoma comes back, as the editor reads the keys meanwhile. At
-    launch the two files differ: the keys file's problems are first said by the watcher's first
-    read, so they show in the hint row too; the settings file's warnings were printed as Tachikoma
-    started (on stderr, and in full screen also as grey lines in the conversation) and are not said
-    again, so they do not, and a broken settings file stops the launch.
+    applies) is still said in the conversation, and also shows in the hint row until the next key or
+    paste (a paste is keys pressed; a click or the wheel leaves it, so scrolling up to read keeps
+    it): the edit's last line, in its own colour (red for a problem, grey otherwise), followed by
+    `(+N more above)` when the edit said N more. A newer edit replaces it, and one read of the
+    folder that changed both files is one edit, its count covering both files' lines (the code
+    review's); a long line gives up its middle rather than its count. The line saying `~/.tachikoma`
+    was removed and the files are no longer watched shows there too, as a line of its own. A line
+    Node's JSON error carries line breaks in, quoting the file, is one line there, each break one
+    space, as the row is one row. In the hint row's order it comes over vim's mode (the user:
+    "Notice wins (Recommended)"; vim's mode comes back after the key or paste), over the row's usual
+    words and over its emptiness during a turn: a chord under way, the exit warning, the detail
+    view's keys, Ctrl+R's search, a question or the model list (which leave the row empty), the
+    menu's keys, `Reading picture...`, and the queue's and the stash's hints all keep the row first,
+    and the working line (`Esc to stop`) is a row of its own, which it never takes. So it shows
+    during a turn, when edits are likely, where the row was empty. A line said while the editor is
+    open is there when Tachikoma comes back, as the editor reads the keys meanwhile. At launch the
+    two files differ: the keys file's problems are first said by the watcher's first read, so they
+    show in the hint row too; the settings file's warnings were printed as Tachikoma started (on
+    stderr, and in full screen also as grey lines in the conversation) and are not said again, so
+    they do not, and a broken settings file stops the launch.
 
 ---
 
@@ -1379,9 +1391,9 @@ at Task 6's spec review).
 **The terminal checklist** (the user runs it once, in Windows Terminal, PowerShell):
 1. `tachi` with only `"lead"` in `~/.tachikoma/settings.json` starts; `/settings`, change `"status"`
    in Notepad, save. While Notepad is open, full screen is set aside and the terminal shows `Waiting
-   for your editor to close the file... (Ctrl-C does nothing until then)` (choice 33); once Notepad
-   is closed, the line is gone and the status line shows the change, with `status is now ... (from
-   settings.json)` in the hint row until a key is pressed (choice 35).
+   for your editor to close the file... (Tachikoma ignores Ctrl-C until then)` (choice 33); once
+   Notepad is closed, the line is gone and the status line shows the change, with `status is now ...
+   (from settings.json)` in the hint row until a key is pressed (choice 35).
 2. `/lead`, quit, `tachi`: the file's lead again, as `/lead` changes this window only (choice 26).
 3. `/keybindings`, bind `ctrl+e` to `chat:externalEditor`: Ctrl+E opens Notepad; `?` shows it.
 4. Ctrl+G on a two-line prompt, with another Notepad window already open (Windows 11's tabbed
@@ -1389,8 +1401,9 @@ at Task 6's spec review).
    Notepad opens, edit, close: the prompt has the edit. Then with
    `"editor": "\"C:\\Program Files\\Git\\usr\\bin\\vim.exe\""` (Git for Windows' vim,
    if installed): vim takes every key, `:wq` brings the edit back, and the keyboard works after.
-   With Notepad the waiting line shows while it is open; after vim's `:wq` no trace of the line is
-   left on Tachikoma's screen (choice 33).
+   With Notepad, `Waiting for your editor to close the file... (Tachikoma ignores Ctrl-C until
+   then)` shows while it is open; after vim's `:wq` no trace of the line is left on Tachikoma's
+   screen (choice 33).
 5. Ctrl+S, type, Ctrl+S: swap; Ctrl+S on empty: back.
 6. Win+Shift+S, Alt+V, "what is in this picture?" to an Anthropic lead: it answers about it.
 7. PrtScn over both monitors, Alt+V, send: the answer comes (shrunk or not, no error).
@@ -1404,8 +1417,8 @@ at Task 6's spec review).
     session and the running turn going, as Git ignores Ctrl-C while its editor runs (found at
     Task 12's spec review; choice 31). Then the same with `"editor": "code --wait"`, where cmd may
     ask `Terminate batch job (Y/N)?`: whatever the editor does, Tachikoma goes on.
-    While Notepad is open the terminal shows `Waiting for your editor to close the file... (Ctrl-C
-    does nothing until then)`, and the line is gone once Notepad closes (choice 33).
+    While Notepad is open the terminal shows `Waiting for your editor to close the file...
+    (Tachikoma ignores Ctrl-C until then)`, and the line is gone once Notepad closes (choice 33).
 12. Only if a Mac is to hand (choice 29's script was not run on one): a screenshot copied with
     Cmd+Ctrl+Shift+4, Ctrl+V (macOS's default, bindings.ts): a marker, and the answer is about
     it; then text copied, Ctrl+V: `No picture on the clipboard.`

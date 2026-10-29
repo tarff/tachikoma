@@ -512,10 +512,11 @@ build made, for the user to review at the final review.
     then, is ignored, and SIGQUIT too, as Git's editor launch ignores both: the session and a
     running turn go on (found at Task 12's spec review; settled at the final review, choice 31, the
     build's call).
-  - While the editor runs, one line says `Waiting for your editor to close the file... (Ctrl-C does
-    nothing until then)`, written once the terminal is handed over and erased with `\r\033[K` before
-    full screen and Ink come back, as Git's editor launch does (choice 33, from the user's terminal
-    checklist).
+  - While the editor runs, one line says `Waiting for your editor to close the file... (Tachikoma
+    ignores Ctrl-C until then)`, cut to the terminal's width, written once the terminal is handed
+    over and erased with `\r\033[K` every time the editor returns, before full screen and Ink come
+    back, as Git's editor launch erases its own (choice 33, from the user's terminal checklist: "Say
+    Ctrl-C too", then "Say Tachikoma (Recommended)").
   - Found and not settled: through `cmd.exe`, a `%` in the path given to the editor can be expanded
     (found at Task 12's build; a known limit in the README); and Windows 11's tabbed Notepad may hand
     the file to a Notepad window already open and exit at once (found at Task 12's code review).
@@ -612,9 +613,9 @@ build made, for the user to review at the final review.
   launch and a key newly bound to switch the mode does nothing, until the next launch.
 - **A live edit's lines in the hint row** (choice 35, from the user's terminal checklist: "Hint row,
   until a key"): every line a live edit of the settings or keys file says, and the line saying the
-  folder was removed, also shows in the hint row until the next key, the edit's last line in its own
-  colour with `(+N more above)` when it said more. In the row's order it comes over vim's mode (the
-  user: "Notice wins (Recommended)"), `? for shortcuts` and a turn's empty row, under everything
-  else, and survives the editor being open. The keys file's problems at launch show there too; the
-  settings file's launch warnings, printed as it starts, do not.
+  folder was removed, also shows in the hint row until the next key or paste, the edit's last line
+  in its own colour with `(+N more above)` when it said more. In the row's order it comes over vim's
+  mode (the user: "Notice wins (Recommended)"), `? for shortcuts` and a turn's empty row, under
+  everything else, and survives the editor being open. The keys file's problems at launch show there
+  too; the settings file's launch warnings, printed as it starts, do not.
 - **Testing.** The user's terminal checklist is in the plan's Task 23, to be run after the build.
