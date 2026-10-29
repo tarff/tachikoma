@@ -155,7 +155,7 @@ Every entry is optional; one that is absent keeps today's default.
 | Entry | When a live change applies |
 |---|---|
 | `lead` | as `/lead`: at once when idle, otherwise when the turn ends. Removed with no flag or variable: the session keeps its lead, since a session cannot be without one |
-| `mode` | at once, as Shift+Tab, between `ask` and `project`. `never` only at launch, like `--mode never` (user: "At launch only, like the flag"): a live change to `never` is refused with one line and the mode stays; a live change away from `never` applies |
+| `mode` | at once, as Shift+Tab, between `ask` and `project`. `never` only at launch, like `--mode never` (user: "At launch only, like the flag"): a live change to `never` is refused with one line and the mode stays; a live change away from `never` applies. **Replaced by the plan's choice 32 (the user: "Pin at launch"): a live change never applies, and one line says the mode stays until the next launch; Shift+Tab still switches it.** |
 | `effort` | from the lead's next request |
 | `fallback` | from the next refusal; a rescue already under way finishes on the old one |
 | `worker` | for subagents started after the change; running ones keep theirs |
@@ -598,4 +598,11 @@ build made, for the user to review at the final review.
   line (the user's choice); the settings file's problems print at launch with control characters
   escaped; a pasted path starting with two slashes stays text and is never looked at (the user's
   choice); and the paths of `~/.tachikoma` and the data folder match ignoring case on macOS too.
+- **The outside review of PR #5** (choice 32, the user's answers): a permission question reads the
+  launch's keys whole, so no live edit of the keys file changes what answers it or what its hint
+  names, replacing choice 30's way of keeping the answering keys in the live table, which a live
+  chord could still get round; a live edit of `"mode"` never changes the mode ("Pin at launch",
+  as the `mode` row above says); and a keystroke switches the mode only where the launch's keys
+  switch it too, so a live edit cannot bind `chat:cycleMode` to a key typed anyway ("Yes, close
+  it"), while taking it out applies at once. One grey line says what stays as at launch.
 - **Testing.** The user's terminal checklist is in the plan's Task 23, to be run after the build.

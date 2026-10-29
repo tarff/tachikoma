@@ -232,7 +232,7 @@ Every entry is optional; one left out keeps its default.
 | Entry | What it sets | Default | An edit while Tachikoma runs applies |
 |---|---|---|---|
 | `lead` | the lead model, as `--lead` | none | as `/lead`: at once when idle, otherwise when the turn ends. Taken out, the session keeps its lead |
-| `mode` | `"ask"` or `"project"`, as `--mode`; `"never"` is switched off until release 7 | `"ask"` | at once, as Shift+Tab, between `ask` and `project`; `never` is refused (below) |
+| `mode` | `"ask"` or `"project"`, as `--mode`; `"never"` is switched off until release 7 | `"ask"` | at the next launch only (below); Shift+Tab still switches the mode |
 | `effort` | as `--effort` | the model's own | from the next request, the fallback's and the subagents' too |
 | `fallback` | as `--fallback` | off | from the next refusal; a rescue under way finishes on the old one |
 | `worker` | as `--worker` | the lead's model | for subagents started after it; running ones keep theirs |
@@ -262,6 +262,10 @@ Every entry is optional; one left out keeps its default.
   empty or missing file changes nothing, as editors such as Notepad empty the file, or put a new one
   in its place, while they save; so deleting the file keeps the settings in force until the next
   start.
+- **Except `"mode"`, which applies at the next launch only,** so a shell command you allowed cannot
+  rewrite the file to put the session in `project` mode. An edit to it gets a grey line, `"mode"
+  changes in settings.json take effect at the next launch; the mode stays ask`, and the mode stays;
+  Shift+Tab still switches it.
 - **`"mode": "never"` is refused until release 7,** as `--mode never` is: at launch Tachikoma
   stops with one line, and an edit to it during a session gets a line, and the mode stays.
 - **The file tools never touch the settings file or the keys file,** in any mode, even when the
@@ -316,11 +320,13 @@ making it first if it is missing.
   the last good keys after.
 - **Edits apply at once,** as for the settings file, and an empty or missing file changes nothing
   until the next start.
-- **Except the keys that answer a question,** which stay as they were at launch, so a command that
-  rewrites the file cannot make `n` answer yes. The parts of an edit that would change which key
-  answers yes or no, or stop one answering (all of `Confirmation`, and any `Global` or `Scroll`
-  binding that uses an answering key, even in a chord), take effect at the next launch, and a grey
-  line says so; the rest applies at once.
+- **Except at a permission question, and for the key that switches the mode,** where the keys stay
+  as they were at launch, so a command that rewrites the file cannot make a key answer yes, nor
+  bind the mode switch to a key you type anyway. A question reads the keys you started with, all of
+  them, and names them in its hint; a key switches the mode only where the keys you started with
+  switch it too, so one an edit adds does nothing, while taking the mode key out works at once.
+  A grey line says so when an edit changes what a question reads (`Confirmation`, `Scroll` or
+  `Global`) or adds a mode key; the rest applies at once.
 
 The default keys:
 
@@ -591,10 +597,6 @@ Each is fixed in a later release, unless it says otherwise.
 - **Windows Terminal keeps Ctrl+V** and pastes the clipboard's text itself, so Tachikoma never sees
   it: pictures are Alt+V there, under WSL too, and binding `ctrl+v` in the keys file does nothing in
   it (not planned to change).
-- **An edit to the keys file during a session can still change how keys group into chords at a
-  question,** but only when the keys file you started with puts y, n, Esc or another answering key
-  inside a chord: then a key that a chord took in at launch can act on its own, for example
-  declining. No key answers yes unless it did on its own at launch (no release is set).
 - **On Windows, a `%` in a path given to the editor can be changed on the way:** the editor runs
   through `cmd.exe`, which reads `%NAME%` as a variable, so a user folder with `%` signs in its name
   could give the editor the wrong file for Ctrl+G or `/settings` (no release is set).

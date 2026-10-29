@@ -337,7 +337,9 @@ Each is marked in its task. None approved yet.
       said yes to. A mode that is none of them is told `must be one of: ask, project`, choice 8's
       words without `never`, which is still read so that it gets its own line.
     - **Keys that answer a question apply at launch only** (finding 1; the user: "Next launch only
-      (Recommended)"). A shell command could rewrite the keys file so that n and Esc answer yes,
+      (Recommended)"). Superseded by choice 32: an outside review showed `keepAnswers`, below,
+      unsound, and a question now reads the launch's keys whole; what follows is what was built
+      first. A shell command could rewrite the keys file so that n and Esc answer yes,
       and the watcher would apply it at once. After the launch's read, every key answers a
       permission question as it did then: a question reads Confirmation, then Scroll in full
       screen, then Global, and a key or chord is looked up only among the bindings that are, or
@@ -361,7 +363,7 @@ Each is marked in its task. None approved yet.
       put y, n, Esc or another answering key inside a chord; from the default keys at launch,
       2,000 random edits changed nothing; and no key answers yes unless it answers yes on its own
       at launch. The fully sound fix, answering questions from the launch's whole table, is left
-      for the user to decide.
+      for the user to decide (built in choice 32, which closes this limit).
     - **Escape codes in launch messages** (finding 2, the coordinator's approval): the settings
       file's problem and warnings, and the lead, fallback and worker messages that may quote its
       values, go through `visible()` before `fail` or stderr, so an OSC 52 in a value cannot set the
@@ -391,6 +393,43 @@ Each is marked in its task. None approved yet.
     list `Esc Esc  stop the turn · Esc Esc Esc  clear the prompt`, as the first Esc only goes to
     NORMAL; the key is still the one the table binds to `chat:cancel`, and one held with Ctrl or
     Alt, which never goes to vim, is named once.
+32. **The outside review of PR #5 (2026-10-30; the user's answers the same day).** Two findings,
+    both P1, and one the user added.
+    - **A question reads the launch's keys, whole** (finding 1; the user's decision). The reviewer
+      showed choice 30's `keepAnswers` unsound. A launch keys file binding Confirmation `"a b"` to
+      `confirm:yes`, and Global `"z x a"` and `"x a"` to harmless actions, reads `z x x a b` at a
+      question as `z x` (dropped at the second x), then `x a`, then `b`: nothing answers. A live
+      edit adding a harmless Global `"z x x"` passed `keepAnswers`, since none of its strokes
+      begins an answer, and the same keys then read as `z x x`, then `a b`: yes. Built: every
+      stroke read while a question is drawn goes to the launch's table (`launchKeys`), whole, in
+      the question's contexts; the live table is not read there. The question's hint
+      (`[y/n] · Esc to decline`) names the launch's keys, so it never names a key that does not
+      answer. No chord runs on between the two tables: a question's opening, and the closing of
+      the last one, answered or cancelled, drop any chord waiting in either, and so does the first
+      stroke read at a question or after one (`asked`, in `lookUp`), whatever came between.
+      `Bindings.keepAnswers` and its tests are gone, and with it choice 30's known limit. The grey
+      line is now `keybindings.json: at a permission question, and for the key that switches the
+      mode, the keys stay as at launch until the next launch; the rest apply now`, said once while
+      it stays, as a problem is, when a live edit differs from the launch's keys in Confirmation,
+      Scroll or Global, all a question reads, or binds `chat:cycleMode` to a key the launch's keys
+      do not (`Bindings.heldBack`). So any edit of Global shows it, as Global's keys too stay as at
+      launch at a question.
+    - **A live `"mode"` edit never changes the mode** (finding 2; the user: "Pin at launch"). A
+      shell command the user allowed could rewrite `settings.json` to put the session in `project`
+      mode, where writes inside the project are no longer asked. A live edit of `"mode"`, removing
+      it included, now changes nothing and says `"mode" changes in settings.json take effect at the
+      next launch; the mode stays ask` (the mode in force); `never` keeps choice 30's line, and a
+      mode given by `--mode` at launch keeps its own. Shift+Tab is unchanged.
+    - **The mode key** (the user's addition; the user: "Yes, close it"). A shell command could as
+      well bind `chat:cycleMode` to space, a letter or a chord in `keybindings.json`, so that the
+      user's own typing switches `ask` to `project`. Outside a question the launch's keys read
+      every stroke too, beside the live ones, each table keeping its own chords, and a stroke
+      switches the mode only when both give `chat:cycleMode`. A stroke only the live keys give it
+      does nothing, not even type its character. So a live edit cannot add or move the mode key;
+      one taking it out applies at once, as it weakens nothing. `?` names a key for the mode only
+      where both switch it. The line's words are not exact for one edit: taking Shift+Tab out and
+      binding another key stops Shift+Tab at once while the new key does nothing, though the line
+      says the key stays as at launch; an edit that only takes the mode key out shows no line.
 
 ---
 
@@ -792,7 +831,8 @@ kept. App applies each changed entry by the design's table ("The settings file",
 change applies"), saying one grey line per change (`lead is now ollama:b (from settings.json)`),
 and for an entry given by a flag or variable at launch, `settings.json's "mode" was left as
 --mode set it for this session`. A live change to `never` says `"mode": "never" applies only when
-a session starts; the mode stays <mode>` (the user's choice, design).
+a session starts; the mode stays <mode>` (the user's choice, design). Since choice 32 no live
+change of `"mode"` applies (the outside review of PR #5).
 
 **The launch's warnings show in the session too** (found at Task 7's code review): Task 7 prints
 an unknown entry's warning to stderr before the session starts, but full screen then switches to
