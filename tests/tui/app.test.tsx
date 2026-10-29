@@ -3685,6 +3685,7 @@ async function onTerminal(
     intro?: AppProps["intro"];
     step?: (s: string) => void;
     home?: string; // the folder holding the settings file; sharedHome when not given
+    columns?: number; // the terminal's width; 100 when not given
   } = {},
 ) {
   const worker = opts.worker ?? new FakeProvider("w", []);
@@ -3693,7 +3694,7 @@ async function onTerminal(
     steps.push(s);
     opts.step?.(s);
   };
-  const terminal = Object.assign(new EventEmitter(), { isTTY: true, columns: 100, rows: 24, write: (s: string) => (record(s), true) });
+  const terminal = Object.assign(new EventEmitter(), { isTTY: true, columns: opts.columns ?? 100, rows: 24, write: (s: string) => (record(s), true) });
   const typed: string[] = [];
   const keyboard = Object.assign(new EventEmitter(), {
     isTTY: true,
@@ -5025,6 +5026,19 @@ describe("App's external editor", () => {
     const back = classic ? [] : [SECOND_SCREEN, MOUSE_ON];
     expect(steps.filter((s) => MARKS.includes(s))).toEqual(["release", ...handed, WAITING, ERASE, ...back, "retake"]);
     expect(text(since(steps, "retake"))).not.toContain("Waiting for your editor"); // never in what Ink draws
+  });
+
+  // The code review of choice 33: a line wider than the terminal would wrap, and the erase take only its last row, so it
+  // is cut to the width the App draws at, a column short.
+  it("cuts the waiting line to a narrow terminal's width", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { steps, key } = await onTerminal(new FakeProvider("a", []), { classic: true, columns: 40 });
+    steps.length = 0;
+    await key(CTRL_G);
+    await waitFor(() => steps.includes("retake"));
+    expect(steps).toContain(WAITING.slice(0, 39));
+    expect(steps).not.toContain(WAITING);
   });
 });
 

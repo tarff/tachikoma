@@ -1146,7 +1146,8 @@ export function App({
         else printUpTo.current = nextId.current;
         screen.suspended = true;
         const command = editorCommand(process.env, fileNow.current.editor, process.platform);
-        screen.write(WAITING);
+        // Cut to the width the App draws at, a column short, so it never wraps onto a row the erase leaves.
+        screen.write(WAITING.slice(0, Math.max(0, frame.current.columns - 1)));
         try {
           return { command, got: await edit(command) };
         } finally {
