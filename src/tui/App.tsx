@@ -2179,6 +2179,7 @@ export function App({
   const shownQueued = f.queuedShown;
   const queued = q.length <= shownQueued ? q : shownQueued > 0 ? [...q.slice(0, shownQueued - 1), `+${q.length - shownQueued + 1} more`] : [];
   const hint = f.hinted ? hintFor(f.left) : null;
+  const noticeShown = notice !== undefined && hint === noticeText; // the hint row shows a live edit's line (choice 35)
   // A successful copy's line that is not on screen is dropped, so it never turns up later, when a hint row comes back; only
   // a failure waits to be shown (the user's choice, release 5). Changed while drawing, which is safe as Ink renders
   // with React's non-concurrent root (ink.js, `concurrent` defaults to false); a concurrent root could drop or mark
@@ -2332,9 +2333,9 @@ export function App({
       {hint && (
         // A live edit's line keeps its own colour, and a long one gives up its middle, not its count (choice 35).
         <Text
-          dimColor={!notice || hint !== noticeText}
-          color={notice && hint === noticeText ? notice.color : undefined}
-          wrap={notice && hint === noticeText ? "truncate-middle" : "truncate-end"}
+          dimColor={!noticeShown}
+          color={noticeShown ? notice.color : undefined}
+          wrap={noticeShown ? "truncate-middle" : "truncate-end"}
         >
           {hint}
         </Text>
