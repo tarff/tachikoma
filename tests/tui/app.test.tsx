@@ -6599,8 +6599,8 @@ describe("App's live settings", () => {
     }
   });
 
-  // The code review of choice 32: every question's closing drops a chord waiting, not only the last's, so one half typed
-  // at a question that is cancelled never joins the keys of the next question in the line.
+  // The code review of choice 32: the question on screen drops a chord waiting as it closes, so one half typed at it,
+  // cancelled, never joins the keys of the next question in the line.
   it("drops a chord half typed at a cancelled question before the next question in the line reads a key", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));
