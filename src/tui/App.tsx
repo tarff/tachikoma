@@ -518,6 +518,9 @@ export function App({
         // view"). Closed here, before it is drawn, so its first drawing places the conversation's view (release 5 plan,
         // Task 11).
         latest.current.closeDetail();
+        // A chord half typed for the prompt is dropped as the question opens, so no stroke typed for the prompt joins the
+        // question's keys, which answer as at launch (release 6 plan, choice 30; found at the combined review).
+        if (!questions.current.length) latest.current.dropChord();
         questions.current.push(q);
         rerender((n) => n + 1);
         // Printed out, the view comes back at once, as on q, and the question shows (release 5 plan, Task 13).
@@ -1966,7 +1969,7 @@ export function App({
   // functions, set at each, so what they read is the screen as last drawn, never what it was when they were set up
   // (release 6 design, "Tidying the screen code first"). Set while drawing, safe with Ink's non-concurrent root
   // (above).
-  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys, settle };
+  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys, settle, dropChord: () => table.drop() };
   const latest = useRef(handlers);
   latest.current = handlers;
 

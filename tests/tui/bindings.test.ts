@@ -390,15 +390,10 @@ describe("Bindings.keepAnswers", () => {
     ["Confirmation", "Scroll", "Global"],
   ];
   const lookUp = (b: Bindings, stroke: Stroke, contexts: Context[]) => (b.waiting(0) && b.press(stroke, contexts, 0)) || b.press(stroke, contexts, 0);
-  // What each key does at a question, in each screen mode, and then y once the prompt has started Ctrl+X (Chat's
-  // Ctrl+X Ctrl+E) as the question comes.
+  // What each key does at a question, in each screen mode. Each starts afresh: App drops a chord the prompt started as
+  // a question opens (App.tsx, bindAsk; found at the combined review), so none carries into the question's keys.
   const answers = (b: Bindings) =>
-    ASKING.map((contexts) => {
-      const keys = ["y", "n", "escape", "enter", "x", "z", "q"].map((key) => (b.drop(), lookUp(b, one(key), contexts)));
-      b.drop();
-      b.press(one("ctrl+x"), ["Chat", "Global"], 0);
-      return [...keys, lookUp(b, one("y"), contexts)];
-    });
+    ASKING.map((contexts) => ["y", "n", "escape", "enter", "x", "z", "q"].map((key) => (b.drop(), lookUp(b, one(key), contexts))));
   const launch = new Bindings(tableOf(DEFAULTS));
   // The security review's payload: n and Esc answer yes, and Enter too.
   const PAYLOAD = over({ Confirmation: { n: "confirm:yes", escape: "confirm:yes" }, Global: { enter: "confirm:yes" } });
@@ -408,7 +403,6 @@ describe("Bindings.keepAnswers", () => {
     ["y set to null", over({ Confirmation: { y: null } })],
     ["a Global chord starting with y, which y would wait on", over({ Global: { "y z": "app:toggleTodos" } })],
     ["a Scroll key answering yes in full screen", over({ Scroll: { x: "confirm:yes" } })],
-    ["a Global chord that holds y after the prompt's Ctrl+X", over({ Global: { "ctrl+x y z": "app:toggleTodos" } })],
     // At a question app:interrupt declines and stops the turn (App.tsx, onKey), as Ctrl-C does (the combined review).
     ["a Global key bound to app:interrupt, which would decline", over({ Global: { q: "app:interrupt" } })],
   ])("keeps every answer as at launch against %s, and says it held some back", (_, file) => {

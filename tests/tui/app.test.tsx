@@ -6399,6 +6399,26 @@ describe("App's live settings", () => {
     expect(flat(app)).not.toContain(HELD);
   });
 
+  // Found at the combined review: a chord the prompt started went on into a question, where Chat is not in force, so a
+  // live Chat chord on a made a, then n at the question, the launch's Confirmation "a n" (yes), where at launch a was
+  // typed and n said no. A question drops a chord waiting as it opens, so a stroke typed for the prompt never joins its keys.
+  it("drops a chord the prompt started when a question opens, so n still declines", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    const launchKeys = { context: "Confirmation", bindings: { "a n": "confirm:yes" } };
+    writeKeys(home, { bindings: [launchKeys] });
+    const { app, ask, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [launchKeys, { context: "Chat", bindings: { "a b": "chat:stash" } }] }));
+    await tick();
+    await press(app, "a"); // Chat's chord a b waits
+    expect(app.lastFrame()).toContain("a ...");
+    const answer = ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n]");
+    await press(app, "n");
+    expect(await answer).toBe(false);
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));

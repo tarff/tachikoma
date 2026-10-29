@@ -297,7 +297,8 @@ export class Bindings {
   // question put back as `launch` has it, so each key answers yes, no or nothing as at launch, and with whether any was
   // (release 6 plan, choice 30: a shell command could rewrite the file so n answers yes). A question reads Confirmation,
   // then Scroll in full screen, then Global (App.tsx, contextsOf), and press reads only the keys that are, or start
-  // with, the strokes read so far, a chord the prompt started included. So Confirmation is kept whole; and in Scroll and
+  // with, the strokes read so far at the question (App drops a chord the prompt started as a question opens, found at
+  // the combined review). So Confirmation is kept whole; and in Scroll and
   // Global, every key holding a stroke that begins an answer: a key of launch's Confirmation, or one bound to
   // confirm:yes, confirm:no or app:interrupt (which declines at a question, App.tsx, onKey) in launch's or this Scroll
   // or Global. Strokes read that hold none of those can answer nothing, at launch or now; strokes that hold one are read

@@ -347,7 +347,9 @@ Each is marked in its task. None approved yet.
       `confirm:yes`, `confirm:no` or `app:interrupt`, which declines at a question as Ctrl-C does,
       in Scroll or Global, at launch or in the edit; found at the combined review). Strokes holding
       none of those answer nothing, at launch or after; strokes holding one are looked up only among
-      bindings kept as at launch, a chord the prompt started included (`Bindings.keepAnswers`). The
+      bindings kept as at launch (`Bindings.keepAnswers`). A chord half typed at the prompt is
+      dropped as a question opens, so no stroke typed for the prompt joins a question's keys, where
+      Chat, which a live edit still changes, is not in force (found at the combined review). The
       rest of the edit applies, and one grey line, said once while it stays, as a problem is, says
       `keybindings.json: changes to the keys that answer a question take effect at the next
       launch; the rest apply now`. At launch the file applies whole, as the user's own choice.
