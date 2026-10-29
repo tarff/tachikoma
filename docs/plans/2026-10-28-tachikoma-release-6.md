@@ -416,8 +416,11 @@ Each is marked in its task. None approved yet.
       the question's contexts; the live table is not read there. The question's hint
       (`[y/n] · Esc to decline`) names the launch's keys, so it never names a key that does not
       answer. No chord runs on between the two tables: a question opening when none is open, and
-      every question closing, answered or cancelled, drop any chord waiting in either (so none
-      half typed at a cancelled question joins the next one's keys), and so does the first stroke
+      the question on screen closing, answered or cancelled, drop any chord waiting in either (so
+      none half typed at a cancelled question joins the next one's keys; one waiting behind it,
+      cancelled, leaves the chord to the one on screen, whose keys it was typed for: found at the
+      outside review's second round, where a launch `"z y"` to `confirm:no` read as `y`, a yes,
+      once the one behind was cancelled after z), and so does the first stroke
       read at a question or after one (`asked`, in `lookUp`), whatever came between, such as a
       question waiting under the model list whose closing key starts a chord in the launch's keys
       only. The hint row names a chord only when the keys drawn would go on with it, so a chord
