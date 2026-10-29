@@ -6351,10 +6351,13 @@ describe("App's live settings", () => {
 
   // Choice 26: the settings file goes with the folder, and a missing one keeps the settings in force.
   it("keeps the settings and says the file is no longer watched once ~/.tachikoma is removed", async () => {
-    const { app, where } = await watching([], { mode: "project" }, { mode: "project" });
+    const { app, where, write } = await watching([], { mode: "project" }, { mode: "project" });
+    write({ mode: "project", maxTasks: 3 }); // an edit's line first, which the folder's line then replaces (noteAlone)
+    await sees(app, `maxTasks is now 3 ${FROM}`);
     rmSync(path.dirname(where), { recursive: true });
     await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json and keybindings.json are no longer watched this session`);
     expect(hintRow(app)!.startsWith(`${path.join("~", ".tachikoma")} was removed`)).toBe(true); // a live file's line (choice 35)
+    expect(hintRow(app)).not.toContain("more above");
     expect(flat(app)).not.toContain('"mode" changes');
     expect(app.lastFrame()).toContain("perm project");
   });
