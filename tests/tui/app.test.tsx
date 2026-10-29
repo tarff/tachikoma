@@ -5959,6 +5959,7 @@ describe("App's live settings", () => {
   const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll("\n", " "); // a long line wraps
   const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
   const freshHome = () => mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+  const PINNED = (mode: string) => `"mode" changes in settings.json take effect at the next launch; the mode stays ${mode}`;
 
   // A home of the test's own whose settings file holds `file` at launch, and the App watching it; `given`, the
   // entries a flag or variable gave at launch. `write` changes the file as an editor does; `remove` takes it away.
@@ -5983,7 +5984,7 @@ describe("App's live settings", () => {
     const { app, session, write } = await watching([], {}, { lead, made });
     await type(app, "go");
     write({ lead: "ollama:b", mode: "project" });
-    await sees(app, `mode is now project ${FROM}`); // the edit was read while the turn runs
+    await sees(app, PINNED("ask")); // the edit was read while the turn runs
     expect(flat(app)).not.toContain("lead is now");
     lead.answer("done");
     await sees(app, `lead is now fake:b ${FROM}`);
@@ -6003,25 +6004,30 @@ describe("App's live settings", () => {
     expect(session.lead.id).toBe("fake:a");
   });
 
-  it("changes the mode at once, and back to ask when the entry is removed", async () => {
-    const { app, write } = await watching([], {});
+  // Release 6 plan, choice 32 (the outside review of PR #5): a shell command the user allowed could rewrite the file to
+  // put the session in project mode, so a live edit of "mode" never changes it; Shift+Tab still does.
+  it("keeps the mode as at launch on a live edit of it, says so, and still switches it on Shift+Tab", async () => {
+    const { app, gate, write } = await watching([], {});
     write({ mode: "project" });
-    await sees(app, `mode is now project ${FROM}`);
-    expect(app.lastFrame()).toContain("perm project");
-    write({});
-    await sees(app, `mode is now ask ${FROM}`);
+    await sees(app, PINNED("ask"));
+    expect(gate.mode).toBe("ask");
     expect(app.lastFrame()).toContain("perm ask");
+    await press(app, "\u001b[Z");
+    await sees(app, "mode is now project");
+    write({});
+    await sees(app, PINNED("project")); // removing the entry is a change too
+    expect(gate.mode).toBe("project");
   });
 
-  it("refuses a live never, and lets a session started in never go to ask", async () => {
+  it("refuses a live never, and keeps a session started in never in it", async () => {
     const a = await watching([], {});
     a.write({ mode: "never" });
     await sees(a.app, '"mode": "never" is switched off until release 7; the mode stays ask');
     expect(a.app.lastFrame()).toContain("perm ask");
     const b = await watching([], { mode: "never" }, { mode: "never" });
     b.write({ mode: "ask" });
-    await sees(b.app, `mode is now ask ${FROM}`);
-    expect(b.app.lastFrame()).toContain("perm ask");
+    await sees(b.app, PINNED("never"));
+    expect(b.app.lastFrame()).toContain("perm never");
   });
 
   // Test 7 too: a change made while a tool runs inside a turn is sent from the request after the tool's result.
@@ -6147,7 +6153,7 @@ describe("App's live settings", () => {
     await read(remove);
     await read(() => write({ status: ["lead"] }));
     write({ status: ["lead"], mode: "project" });
-    await sees(app, `mode is now project ${FROM}`);
+    await sees(app, PINNED("ask"));
     expect(flat(app).split("status is now").length - 1).toBe(1);
     expect(app.lastFrame()).not.toContain("perm ask");
   });
@@ -6157,7 +6163,7 @@ describe("App's live settings", () => {
     const { app, write, where } = await watching([], {}, { lead, full: true });
     await type(app, "go");
     write({ screen: "classic", mode: "project" });
-    await sees(app, `mode is now project ${FROM}`); // the edit was read while the turn runs
+    await sees(app, PINNED("ask")); // the edit was read while the turn runs
     expect(flat(app)).not.toContain("screen is now");
     lead.answer("done");
     await sees(app, `screen is now classic ${FROM}`);
@@ -6213,7 +6219,7 @@ describe("App's live settings", () => {
     await read(() => write(""));
     write({ mode: "project", maxTasks: 3 });
     await sees(app, `maxTasks is now 3 ${FROM}`);
-    expect(flat(app)).not.toContain("mode is now");
+    expect(flat(app)).not.toContain('"mode" changes');
     expect(flat(app)).not.toContain("maxTasks is now 8");
   });
 
@@ -6233,7 +6239,7 @@ describe("App's live settings", () => {
     await read(() => write("")); // an editor's empty write, then the same broken text again
     await read(() => write('{"mode": '));
     write({ mode: "ask" });
-    await sees(app, `mode is now ask ${FROM}`);
+    await sees(app, PINNED("project"));
     expect(flat(app).split(line).length - 1).toBe(1);
   });
 
@@ -6254,7 +6260,7 @@ describe("App's live settings", () => {
     await until(app, "screen is now classic");
     expect(readFileSync(where, "utf8")).toBe('{"lead":"ollama:x"}');
     write({ lead: "ollama:x", mode: "project" });
-    await sees(app, `mode is now project ${FROM}`);
+    await sees(app, PINNED("ask"));
     expect(made).toEqual(["ollama:a", "fake:c"]);
     write({ lead: "ollama:b", mode: "project", screen: "full" });
     await sees(app, `lead is now fake:b ${FROM}`);
@@ -6269,7 +6275,7 @@ describe("App's live settings", () => {
     const { app } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
     expect(existsSync(settingsDir(home))).toBe(true);
     writeFileSync(path.join(settingsDir(home), "settings.json"), '{"mode": "project"}');
-    await sees(app, `mode is now project ${FROM}`);
+    await sees(app, PINNED("ask"));
   });
 
   // Choice 26: the settings file goes with the folder, and a missing one keeps the settings in force.
@@ -6277,7 +6283,7 @@ describe("App's live settings", () => {
     const { app, where } = await watching([], { mode: "project" }, { mode: "project" });
     rmSync(path.dirname(where), { recursive: true });
     await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json and keybindings.json are no longer watched this session`);
-    expect(flat(app)).not.toContain("mode is now");
+    expect(flat(app)).not.toContain('"mode" changes');
     expect(app.lastFrame()).toContain("perm project");
   });
 
@@ -6320,7 +6326,7 @@ describe("App's live settings", () => {
     const loaded = readSettings('{"leed": 1}');
     if ("problem" in loaded) throw new Error(loaded.problem);
     const { app } = await mount([], { home, live: { loaded, given: {} } });
-    await sees(app, `mode is now project ${FROM}`);
+    await sees(app, PINNED("ask"));
     expect(flat(app)).not.toContain('"leed"');
   });
 
@@ -6330,7 +6336,7 @@ describe("App's live settings", () => {
     write({ leed: 1 });
     await sees(app, warning);
     write({ leed: 1, mode: "project" });
-    await sees(app, `mode is now project ${FROM}`);
+    await sees(app, PINNED("ask"));
     expect(flat(app).split(warning).length - 1).toBe(1);
   });
 
@@ -6506,7 +6512,7 @@ describe("App's live settings", () => {
     await read(() => unlinkSync(keysIn(home)));
     await read(() => writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null })));
     write({ mode: "project" });
-    await sees(app, `mode is now project ${FROM}`); // drawn after anything the reads above said
+    await sees(app, PINNED("ask")); // drawn after anything the reads above said
     expect(flat(app).split(reserved).length - 1).toBe(1);
   });
 
@@ -6550,17 +6556,18 @@ describe("App's live settings", () => {
   // watcher while the editor is still open. The stand-in saves, then waits for `go`.
   it("makes a missing settings file on /settings and opens it, the watcher applying a save while the editor is open", async () => {
     const editor = standInEditor();
-    editor.next('{"mode": "project"}\n');
+    editor.next('{"effort": "low"}\n');
     vi.stubEnv("VISUAL", editor.command("wait"));
     const home = freshHome();
     onTestFinished(() => rmSync(home, { recursive: true, force: true }));
-    const { app, gate } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    const lead = Object.assign(new FakeProvider("a", []), { setEffort: vi.fn() }); // a live mode edit changes nothing (choice 32)
+    const { app } = await mount([], { lead, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
     await type(app, "/settings");
     await vi.waitFor(() => expect(editor.started()).toBe(true), WATCHED);
     expect(editor.given()).toEqual({ file: path.join(settingsDir(home), "settings.json"), text: "{}\n" });
-    await vi.waitFor(() => expect(gate.mode).toBe("project"), WATCHED);
+    await vi.waitFor(() => expect(lead.setEffort).toHaveBeenCalledWith("low"), WATCHED);
     editor.go();
-    await sees(app, `mode is now project ${FROM}`);
+    await sees(app, `effort is now low ${FROM}`);
   });
 
   it("makes a missing keys file on /keybindings, with two-space indents, and opens it", async () => {
@@ -6616,13 +6623,14 @@ describe("App's live settings", () => {
   // edit was made in to close.
   it("switches the screen a save in /settings's editor asks for once the editor closes", async () => {
     const editor = standInEditor();
-    editor.next('{"screen": "classic", "mode": "project"}\n');
+    editor.next('{"screen": "classic", "effort": "low"}\n');
     vi.stubEnv("VISUAL", editor.command("wait"));
     const home = freshHome();
     onTestFinished(() => rmSync(home, { recursive: true, force: true }));
-    const { app, gate } = await mount([], { full: true, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    const lead = Object.assign(new FakeProvider("a", []), { setEffort: vi.fn() }); // a live mode edit changes nothing (choice 32)
+    const { app } = await mount([], { lead, full: true, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
     await type(app, "/settings");
-    await vi.waitFor(() => expect(gate.mode).toBe("project"), WATCHED); // the save read, its screen waiting
+    await vi.waitFor(() => expect(lead.setEffort).toHaveBeenCalledWith("low"), WATCHED); // the save read, its screen waiting
     await tick();
     editor.go();
     await sees(app, `screen is now classic ${FROM}`);

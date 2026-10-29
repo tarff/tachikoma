@@ -1215,9 +1215,9 @@ export function App({
     } else if (key === "mode") {
       // `never` is refused live (the user's choice, design's table), and at launch too until release 7 (plan, choice 30).
       if (now.mode === "never") return say(gray(`"mode": "never" is switched off until release 7; the mode stays ${perm.current}`));
-      perm.current = now.mode;
-      onMode(now.mode);
-      line(now.mode);
+      // A live edit never changes the mode, so a shell command the user allowed cannot rewrite the file to put the
+      // session in project mode; Shift+Tab still does (plan, choice 32, the user's: "Pin at launch").
+      say(gray(`"mode" changes in ${SETTINGS} take effect at the next launch; the mode stays ${perm.current}`));
     } else if (key === "effort") {
       effortNow.current = { effort: now.effort };
       session.lead.setEffort?.(now.effort);
