@@ -4,7 +4,7 @@ import { type Mode, visible } from "../../core/permissions.js";
 import type { Effort } from "../../providers/anthropic.js";
 import type { ModelGroup } from "../../providers/models.js";
 import type { TodoItem } from "../../tools/todo.js";
-import type { AppProps } from "../App.js";
+import type { AppProps, Fns } from "../App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../bindings.js";
 import type { Clipboard } from "../clipboard.js";
 import type { Line } from "../describe.js";
@@ -246,6 +246,9 @@ export function useAppState({
   // it was found before: finding an `@` menu can list a folder (menuFor). A paste asks pasteTo() of the same inputs.
   const phaseRefs = { ended, printed, drawn: frame, listOpen, questions, detail, search, working, queue };
   const happening = (findMenu?: () => boolean) => nowOf(phaseInputs(phaseRefs, findMenu));
+  // What the functions read that the drawing works out after making them, filled in by it (App.tsx): the
+  // conversation's height, and the latest drawing's functions for the one of them that calls through them.
+  const drawn = {} as { viewHeight: number; latest: { readonly current: Pick<Fns, "settle"> } };
   // Each read-only, so a check stored in a const narrows it, as it narrowed App's own consts (the question, `movable`).
   return {
     session, tasks, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments,
@@ -258,6 +261,9 @@ export function useAppState({
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
-    happening,
+    happening, drawn,
   } as const;
 }
+
+// What every area reads: the props and the state of one drawing (App.tsx, fns).
+export type UI = ReturnType<typeof useAppState>;
