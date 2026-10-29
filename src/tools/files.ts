@@ -40,9 +40,10 @@ function folderOf(p: string): BigIntStats | undefined {
 // folder not made yet. Then each folder on the way up is compared by what it is (its volume and file
 // number), since Windows reaches one folder by its short name, by \\?\ and by \\localhost\C$, and
 // macOS ignores case. A hard link is another name for a file in an ordinary folder, so a file with
-// more than one name is compared with each file directly in the data folder.
-function inData(data: string, real: string): boolean {
-  if (!leaves(path.relative(data, real)) || withinIgnoringCase(data, real)) return true;
+// more than one name is compared with each file directly in the data folder. `platform` is the system's, which a test
+// gives as another's, with that system's path rules (samePath).
+export function inData(data: string, real: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (withinPath(data, real, platform)) return true;
   const id = statSync(data, { bigint: true, throwIfNoEntry: false });
   if (!id) return false;
   for (let p = real; ; p = path.dirname(p)) {
@@ -70,12 +71,18 @@ export function settingsName(name: string): boolean {
 export const sameIgnoringCase = (a: string, b: string, platform: NodeJS.Platform = process.platform) =>
   (platform === "win32" || platform === "darwin") && a.toLowerCase() === b.toLowerCase();
 
-// Whether `p` is `folder`, or inside it, by the same spelling rule: for the data folder, which path.relative also
-// matches case-sensitively on macOS before it is made (choice 30).
-export function withinIgnoringCase(folder: string, p: string, platform: NodeJS.Platform = process.platform): boolean {
-  for (let q = p; ; q = path.dirname(q)) {
-    if (sameIgnoringCase(folder, q, platform)) return true;
-    if (path.dirname(q) === q) return false;
+// Whether two paths are one folder's by path alone: by the system's own rules, Windows' ignoring case, and by the case
+// rule above. The rules are the platform's, so a test of macOS's on Windows reaches the case rule (found at the
+// combined review).
+const rules = (platform: NodeJS.Platform) => (platform === "win32" ? path.win32 : path.posix);
+const samePath = (a: string, b: string, platform: NodeJS.Platform) => rules(platform).relative(a, b) === "" || sameIgnoringCase(a, b, platform);
+
+// Whether `p` is `folder`, or inside it, by path alone: for the data folder, which may not be made yet (choice 30).
+function withinPath(folder: string, p: string, platform: NodeJS.Platform): boolean {
+  const { dirname } = rules(platform);
+  for (let q = p; ; q = dirname(q)) {
+    if (samePath(folder, q, platform)) return true;
+    if (dirname(q) === q) return false;
   }
 }
 
@@ -83,10 +90,10 @@ export function withinIgnoringCase(folder: string, p: string, platform: NodeJS.P
 // make it a folder). As for the data folder: the folder by path, which covers one not made yet, or by
 // what it is. An existing file is also compared by what it is with each protected file: one in the
 // folder, since Windows gives each a short name (SETTIN~1.JSO) that the real path keeps, and one
-// anywhere with more than one name, since a hard link is another name for it.
-function inSettings(folder: string, real: string): boolean {
+// anywhere with more than one name, since a hard link is another name for it. `platform` as for inData.
+export function inSettings(folder: string, real: string, platform: NodeJS.Platform = process.platform): boolean {
   const id = statSync(folder, { bigint: true, throwIfNoEntry: false });
-  const isFolder = (p: string) => path.relative(folder, p) === "" || sameIgnoringCase(folder, p) || (id !== undefined && same(folderOf(p), id));
+  const isFolder = (p: string) => samePath(folder, p, platform) || (id !== undefined && same(folderOf(p), id));
   for (let p = real; path.dirname(p) !== p; p = path.dirname(p)) {
     if (settingsName(path.basename(p)) && isFolder(path.dirname(p))) return true;
   }

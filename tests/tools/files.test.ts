@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
-import { editFileTool, programEnvironment, readFileTool, resolveIn, sameIgnoringCase, withinIgnoringCase, writeFileTool } from "../../src/tools/files.js";
+import { editFileTool, programEnvironment, readFileTool, inData, inSettings, resolveIn, sameIgnoringCase, writeFileTool } from "../../src/tools/files.js";
 import { shortName, tempContext } from "../helpers.js";
 
 describe("resolveIn", () => {
@@ -110,12 +110,14 @@ describe("the data folder", () => {
 
   // As for the settings folder (the security review's finding 5, release 6 plan, choice 30): before the data folder is
   // made only its path can match it, and macOS's disks, as Windows', ignore case.
+  // The system's own path rules are passed in with it, so on any machine, Windows included, whose paths ignore case
+  // anyway, only the case rule matches macOS's .TACHIKOMA-DATA (found at the combined review). None of these exist.
   it("matches its path, and paths inside it, ignoring case on Windows and macOS, and exactly elsewhere", () => {
-    expect(withinIgnoringCase("/Users/me/.tachikoma-data", "/Users/me/.TACHIKOMA-DATA", "darwin")).toBe(true);
-    expect(withinIgnoringCase("/Users/me/.tachikoma-data", "/Users/me/.Tachikoma-Data/auth/chatgpt.json", "darwin")).toBe(true);
-    expect(withinIgnoringCase("C:\\Users\\me\\tachikoma", "c:\\users\\ME\\TACHIKOMA\\chatgpt.json", "win32")).toBe(true);
-    expect(withinIgnoringCase("/home/me/.tachikoma-data", "/home/me/.TACHIKOMA-DATA/chatgpt.json", "linux")).toBe(false);
-    expect(withinIgnoringCase("/Users/me/.tachikoma-data", "/Users/me/.tachikoma-data2/x", "darwin")).toBe(false);
+    expect(inData("/Users/me/.tachikoma-data", "/Users/me/.TACHIKOMA-DATA", "darwin")).toBe(true);
+    expect(inData("/Users/me/.tachikoma-data", "/Users/me/.Tachikoma-Data/auth/chatgpt.json", "darwin")).toBe(true);
+    expect(inData("/home/me/.tachikoma-data", "/home/me/.TACHIKOMA-DATA/chatgpt.json", "linux")).toBe(false);
+    expect(inData("/home/me/.tachikoma-data", "/home/me/.tachikoma-data/chatgpt.json", "linux")).toBe(true);
+    expect(inData("/Users/me/.tachikoma-data", "/Users/me/.tachikoma-data2/x", "darwin")).toBe(false);
   });
 
   it.runIf(process.platform === "win32" || process.platform === "darwin")("is refused before it exists by another case of its name", async () => {
@@ -214,6 +216,10 @@ describe("the settings and keys files", () => {
     expect(sameIgnoringCase("C:\\Users\\me\\.tachikoma", "c:\\users\\ME\\.Tachikoma", "win32")).toBe(true);
     expect(sameIgnoringCase("/home/me/.tachikoma", "/home/me/.TACHIKOMA", "linux")).toBe(false);
     expect(sameIgnoringCase("/Users/me/.tachikoma", "/Users/me/.tachikoma2", "darwin")).toBe(false);
+    // Through inSettings, with the system's own path rules, as for the data folder above. None of these exist.
+    expect(inSettings("/Users/me/.tachikoma", "/Users/me/.TACHIKOMA/settings.json", "darwin")).toBe(true);
+    expect(inSettings("/home/me/.tachikoma", "/home/me/.TACHIKOMA/settings.json", "linux")).toBe(false);
+    expect(inSettings("/home/me/.tachikoma", "/home/me/.tachikoma/keybindings.json", "linux")).toBe(true);
   });
 
   it.runIf(process.platform === "win32" || process.platform === "darwin")("are refused before they exist by another case of their folder", async () => {
