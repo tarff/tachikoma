@@ -42,7 +42,7 @@ function folderOf(p: string): BigIntStats | undefined {
 // macOS ignores case. A hard link is another name for a file in an ordinary folder, so a file with
 // more than one name is compared with each file directly in the data folder.
 function inData(data: string, real: string): boolean {
-  if (!leaves(path.relative(data, real))) return true;
+  if (!leaves(path.relative(data, real)) || withinIgnoringCase(data, real)) return true;
   const id = statSync(data, { bigint: true, throwIfNoEntry: false });
   if (!id) return false;
   for (let p = real; ; p = path.dirname(p)) {
@@ -69,6 +69,15 @@ export function settingsName(name: string): boolean {
 // macOS .TACHIKOMA/settings.json passed (release 6 plan, choice 30, the security review's finding 5).
 export const sameIgnoringCase = (a: string, b: string, platform: NodeJS.Platform = process.platform) =>
   (platform === "win32" || platform === "darwin") && a.toLowerCase() === b.toLowerCase();
+
+// Whether `p` is `folder`, or inside it, by the same spelling rule: for the data folder, which path.relative also
+// matches case-sensitively on macOS before it is made (choice 30).
+export function withinIgnoringCase(folder: string, p: string, platform: NodeJS.Platform = process.platform): boolean {
+  for (let q = p; ; q = path.dirname(q)) {
+    if (sameIgnoringCase(folder, q, platform)) return true;
+    if (path.dirname(q) === q) return false;
+  }
+}
 
 // Whether `real` is one of the settings folder's protected files, or a path inside one (which would
 // make it a folder). As for the data folder: the folder by path, which covers one not made yet, or by

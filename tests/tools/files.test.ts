@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
-import { editFileTool, programEnvironment, readFileTool, resolveIn, sameIgnoringCase, writeFileTool } from "../../src/tools/files.js";
+import { editFileTool, programEnvironment, readFileTool, resolveIn, sameIgnoringCase, withinIgnoringCase, writeFileTool } from "../../src/tools/files.js";
 import { shortName, tempContext } from "../helpers.js";
 
 describe("resolveIn", () => {
@@ -106,6 +106,24 @@ describe("the data folder", () => {
     const file = `\\\\?\\${path.join(ctx.root, "a.txt")}`;
     await writeFileTool.run({ path: file, content: "fine" }, ctx);
     expect(await readFileTool.run({ path: file }, ctx)).toBe("     1\tfine");
+  });
+
+  // As for the settings folder (the security review's finding 5, release 6 plan, choice 30): before the data folder is
+  // made only its path can match it, and macOS's disks, as Windows', ignore case.
+  it("matches its path, and paths inside it, ignoring case on Windows and macOS, and exactly elsewhere", () => {
+    expect(withinIgnoringCase("/Users/me/.tachikoma-data", "/Users/me/.TACHIKOMA-DATA", "darwin")).toBe(true);
+    expect(withinIgnoringCase("/Users/me/.tachikoma-data", "/Users/me/.Tachikoma-Data/auth/chatgpt.json", "darwin")).toBe(true);
+    expect(withinIgnoringCase("C:\\Users\\me\\tachikoma", "c:\\users\\ME\\TACHIKOMA\\chatgpt.json", "win32")).toBe(true);
+    expect(withinIgnoringCase("/home/me/.tachikoma-data", "/home/me/.TACHIKOMA-DATA/chatgpt.json", "linux")).toBe(false);
+    expect(withinIgnoringCase("/Users/me/.tachikoma-data", "/Users/me/.tachikoma-data2/x", "darwin")).toBe(false);
+  });
+
+  it.runIf(process.platform === "win32" || process.platform === "darwin")("is refused before it exists by another case of its name", async () => {
+    const ctx = await tempContext("never");
+    vi.stubEnv("TACHI_DATA_DIR", path.join(ctx.root, "tachikoma"));
+    const p = path.join("TACHIKOMA", "chatgpt.json");
+    await expect(writeFileTool.run({ path: p, content: "{}" }, ctx)).rejects.toThrow("Tachikoma's data folder");
+    expect(existsSync(path.join(ctx.root, "TACHIKOMA"))).toBe(false);
   });
 
   it("leaves a folder whose name only starts the same alone", async () => {
