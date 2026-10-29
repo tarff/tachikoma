@@ -20,11 +20,12 @@ import {
   type Held, isCommand, isFile, LIVE, MOVES, names, NO_KEY, NOTHING, printable, type Printed, type Question,
   visualSelection, WAITING,
 } from "./app/constants.js";
+import { output } from "./app/output.js";
 import { type UI, useAppState } from "./app/state.js";
 import { Bindings, CHORD_MS, type Context, keyText, type Stroke, strokeOf } from "./bindings.js";
 import { type Clipboard, imagePaths, pictureFile } from "./clipboard.js";
 import { Conversation } from "./Conversation.js";
-import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
+import { brief, callLines, describe, lastTurn, type Line } from "./describe.js";
 import { type Detail, DetailView, keyRow, opened, searchFor, step as stepMatch } from "./DetailView.js";
 import {
   apply, change, cutPicture, type Editor, insertPicture, load, move, replace, segmenter,
@@ -47,7 +48,7 @@ import { TaskPanel, taskRow, taskRows } from "./TaskPanel.js";
 import { PASTE_OFF, PASTE_ON, type Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
 import { ToolLine } from "./ToolLine.js";
-import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow } from "./view.js";
+import { bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow } from "./view.js";
 import { press as vimPress, start as vimStart } from "./vim.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
@@ -102,54 +103,6 @@ export interface AppProps {
   // given (clipboard.ts, imageReader). Tests give a stand-in, so none reads the user's clipboard.
   readPicture?: (() => Promise<Read>) | null;
 }
-
-const output = (ui: UI, fns: Fns) => {
-  // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
-  // design, "Scrolling"); setting `lines` draws them either way.
-  const say = (...add: Line[]) => {
-    const shown = add.map(escaped);
-    if (ui.fullNow.current) {
-      const before = ui.kept.lines.length;
-      ui.kept.add(shown);
-      ui.view.current = arrived(ui.view.current, ui.kept.lines.length - before);
-    } else ui.unkept.current.push(...shown);
-    ui.setLines((l) => [...l, ...shown.map((x) => ({ ...x, id: ui.nextId.current++ }))]);
-  };
-  // What the user asks to see (the key list, the mode, `/model`) brings the view to the bottom, following, so it is seen;
-  // output arriving on its own leaves a held view where it is (the user's choice, release 5). The last turn opens the
-  // detail view instead (release 5 plan, Task 12).
-  const show = (...add: Line[]) => {
-    ui.view.current = FOLLOWING;
-    fns.say(...add);
-  };
-  const note = (...add: Line[]) => {
-    fns.say(...add);
-    ui.notes.current = [...(ui.newEdit.current ? [] : ui.notes.current), ...add.map(escaped)];
-    ui.newEdit.current = false;
-  };
-  const noteAlone = (line: Line) => {
-    ui.newEdit.current = true;
-    fns.note(line);
-  };
-  // Every model made in the session takes a changed effort (release 6 plan, Task 9).
-  const make = (spec: string) => {
-    const provider = ui.makeProvider(spec);
-    if (ui.effortNow.current) provider.setEffort?.(ui.effortNow.current.effort);
-    return provider;
-  };
-
-  // Only the latest lookup's answer is shown: a late one, for the previous lead or from before a
-  // request, must not replace it. Asked again after each request, without clearing what is shown: a
-  // ChatGPT plan's window is known only once a request has fetched the account's model list.
-  const lookUpWindow = (fresh = true) => {
-    const asked = ++ui.lookups.current;
-    if (fresh) ui.setContextWindow(null);
-    ui.session.lead.contextWindow?.()
-      .then((n) => asked === ui.lookups.current && ui.setContextWindow(n))
-      .catch(() => {}); // stays unknown
-  };
-  return { say, show, note, noteAlone, make, lookUpWindow };
-};
 
 const queue = (ui: UI, fns: Fns) => {
   // Called without await, so nothing may escape: an unhandled rejection ends the program. The queue
@@ -885,7 +838,7 @@ const keyRouting = (ui: UI, fns: Fns) => {
     const h = ui.happening(() => fns.menuFor(ui.editor.current) !== null);
     if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // printed out: a key read with the `[` that printed the view out
     ui.clearCopied();
-    ui.notes.current = []; // a live edit's lines leave the hint row at the next key (note, above)
+    ui.notes.current = []; // a live edit's lines leave the hint row at the next key (note, output.ts)
     const field = h.phase.kind === "search" || h.phase.kind === "picker" || (h.phase.kind === "detail" && h.phase.searching);
     fns.onKey(h, fns.route(h.phase.kind, field, ch, key), ch, key);
   };
@@ -1760,7 +1713,7 @@ export function App(props: AppProps) {
       const given = phaseInputs(ui.phaseRefs);
       if (given.printed) return; // as for keys, above; before clearCopied(), which pasteTo() cannot say
       ui.clearCopied();
-      ui.notes.current = []; // a live edit's lines leave the hint row at a paste, keys pressed too (note, above)
+      ui.notes.current = []; // a live edit's lines leave the hint row at a paste, keys pressed too (note, output.ts)
       fns.dropChords(); // a paste is text, which drops a waiting chord as text read together does (route)
       const to = pasteTo(given);
       // In the detail view a paste goes into a search being typed, up to its first line break, without the control
@@ -1815,7 +1768,7 @@ export function App(props: AppProps) {
   const chord = ui.asked.current === (!!ui.question && !ui.picker) ? fns.chordKeys().waiting(Date.now()) : null;
   const fillKeys = [ui.keyOf("autocomplete:accept", "Autocomplete", "tab"), ui.keyOf("chat:submit", "Chat", "enter")];
   const previous = ui.keyOf("history:previous", "Chat", "up");
-  // The last line of a live edit, with how many more it said, which the conversation shows (note, above).
+  // The last line of a live edit, with how many more it said, which the conversation shows (note, output.ts).
   const notice = ui.notes.current.at(-1);
   // One row, as the frame gives it (layout.ts, frame): a line break in it, such as in the file Node's JSON error quotes,
   // is one space here, the conversation keeping the line as said (choice 35's code review).
