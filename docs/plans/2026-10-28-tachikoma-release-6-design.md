@@ -611,8 +611,10 @@ build made, for the user to review at the final review.
   it"), while taking it out applies at once. One grey line says the keys at a question stay as at
   launch and a key newly bound to switch the mode does nothing, until the next launch.
 - **A live edit's lines in the hint row** (choice 35, from the user's terminal checklist: "Hint row,
-  until a key"): every line a live edit of the settings or keys file says also shows in the hint row
-  until the next key, the edit's last line in its own colour with `(+N more above)` when it said
-  more; it comes just over `? for shortcuts` and a turn's empty row in the row's order, and survives
-  the editor being open.
+  until a key"): every line a live edit of the settings or keys file says, and the line saying the
+  folder was removed, also shows in the hint row until the next key, the edit's last line in its own
+  colour with `(+N more above)` when it said more. In the row's order it comes over vim's mode (the
+  user: "Notice wins (Recommended)"), `? for shortcuts` and a turn's empty row, under everything
+  else, and survives the editor being open. The keys file's problems at launch show there too; the
+  settings file's launch warnings, printed as it starts, do not.
 - **Testing.** The user's terminal checklist is in the plan's Task 23, to be run after the build.

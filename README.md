@@ -142,12 +142,12 @@ tachi logout chatgpt                               sign out of ChatGPT
 Options --lead to --scroll-speed can also be set in ~/.tachikoma/settings.json; a flag or variable wins.
 ```
 
-In a session, `/lead <provider:model>` switches the lead model, `/lead` or `/model` lists them,
-`/login chatgpt` and `/logout chatgpt` sign in and out, `/tasks` lists the subagents, `/errors`
-summarises the error log, `/screen` switches between full screen and classic, `/settings` and
-`/keybindings` open the settings and keys files in your editor, `/vim` switches vim mode, and
-`/exit` quits; commands ignore case. `/lead`, `/model`, `/screen` and `/vim` change only the window
-you type them in. Esc or Ctrl-C stops the current turn and the subagents it waits for;
+In a session, `/lead <provider:model>` switches the lead model, `/lead` or `/model` alone lists the
+models to pick from, `/login chatgpt` and `/logout chatgpt` sign in and out, `/tasks` lists the
+subagents, `/errors` summarises the error log, `/screen` switches between full screen and classic,
+`/settings` and `/keybindings` open the settings and keys files in your editor, `/vim` switches vim
+mode, and `/exit` quits; commands ignore case. `/lead`, `/model`, `/screen` and `/vim` change only
+the window you type them in. Esc or Ctrl-C stops the current turn and the subagents it waits for;
 background subagents go on until `/tasks stop` or you quit.
 When idle, Ctrl-C clears the prompt, and pressed twice on an empty prompt it quits. Ctrl+T hides or
 shows the to-do list. Esc and Ctrl+T can be moved in the keys file; Ctrl-C and Ctrl-D cannot. `?`
@@ -263,7 +263,9 @@ Every entry is optional; one left out keeps its default.
   in its place, while they save; so deleting the file keeps the settings in force until the next
   start. Each line an edit says also shows in the hint row (the row over the status line, where
   `? for shortcuts` shows) until your next key, in its own colour: the edit's last line, with
-  `(+2 more above)` or the like when it said more.
+  `(+2 more above)` or the like when it said more. It shows over vim's mode, which comes back after
+  the key; other hints, such as a question's or the queue's, keep the row. Warnings found as
+  Tachikoma starts are printed then, not in the hint row.
 - **Except `"mode"`, which applies at the next launch only,** so a shell command you allowed cannot
   rewrite the file to put the session in `project` mode. An edit to it gets a grey line, `"mode"
   changes in settings.json take effect at the next launch; the mode stays ask`, and the mode stays;
@@ -322,7 +324,7 @@ making it first if it is missing.
   the last good keys after.
 - **Edits apply at once,** as for the settings file, and an empty or missing file changes nothing
   until the next start. As there, each line an edit says also shows in the hint row until your next
-  key.
+  key, and so does a problem in the keys file found as Tachikoma starts.
 - **Except at a permission question, where the keys stay as they were at launch, and for a key
   newly bound to switch the mode, which does nothing until the next launch,** so a command that
   rewrites the file cannot make a key answer yes, nor bind the mode switch to a key you type

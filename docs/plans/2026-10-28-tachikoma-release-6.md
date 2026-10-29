@@ -496,13 +496,19 @@ Each is marked in its task. None approved yet.
     applies) is still said in the conversation, and also shows in the hint row until the next key:
     the edit's last line, in its own colour (red for a problem, grey otherwise), followed by `(+N
     more above)` when the edit said N more. A newer edit replaces it; a long line gives up its
-    middle rather than its count. In the hint row's order it comes just over `? for shortcuts` and
-    the row's emptiness during a turn: a chord under way, the exit warning, the detail view's keys,
-    Ctrl+R's search, a question or the model list (which leave the row empty), the menu's keys,
-    `Reading picture...`, the queue's and the stash's hints and vim's mode all keep the row first,
-    and the working line (`Esc to stop`) is a row of its own, which it never takes. So it shows
-    during a turn, when edits are likely, where the row was empty. A line said while the editor is
-    open is there when Tachikoma comes back, as the editor reads the keys meanwhile.
+    middle rather than its count. The line saying `~/.tachikoma` was removed and the files are no
+    longer watched shows there too, as a line of its own. In the hint row's order it comes over
+    vim's mode (the user: "Notice wins (Recommended)"; vim's mode comes back after the key), over
+    the row's usual words and over its emptiness during a turn: a chord under way, the exit warning,
+    the detail view's keys, Ctrl+R's search, a question or the model list (which leave the row
+    empty), the menu's keys, `Reading picture...`, and the queue's and the stash's hints all keep
+    the row first, and the working line (`Esc to stop`) is a row of its own, which it never takes.
+    So it shows during a turn, when edits are likely, where the row was empty. A line said while the
+    editor is open is there when Tachikoma comes back, as the editor reads the keys meanwhile. At
+    launch the two files differ: the keys file's problems are first said by the watcher's first
+    read, so they show in the hint row too; the settings file's warnings were printed as Tachikoma
+    started (on stderr, and in full screen also as grey lines in the conversation) and are not said
+    again, so they do not, and a broken settings file stops the launch.
 
 ---
 
@@ -1398,6 +1404,8 @@ at Task 6's spec review).
     session and the running turn going, as Git ignores Ctrl-C while its editor runs (found at
     Task 12's spec review; choice 31). Then the same with `"editor": "code --wait"`, where cmd may
     ask `Terminate batch job (Y/N)?`: whatever the editor does, Tachikoma goes on.
+    While Notepad is open the terminal shows `Waiting for your editor to close the file... (Ctrl-C
+    does nothing until then)`, and the line is gone once Notepad closes (choice 33).
 12. Only if a Mac is to hand (choice 29's script was not run on one): a screenshot copied with
     Cmd+Ctrl+Shift+4, Ctrl+V (macOS's default, bindings.ts): a marker, and the answer is about
     it; then text copied, Ctrl+V: `No picture on the clipboard.`
