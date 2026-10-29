@@ -6808,6 +6808,54 @@ describe("App's live settings", () => {
     }
   });
 
+  // Release 6 plan, choice 35 (the user's: "Hint row, until a key"): a live edit's lines show in the hint row too, the row
+  // over the status line, until the next key, the last of an edit's lines with how many more are in the conversation.
+  const hintRow = (app: ReturnType<typeof render>) => {
+    const rows = app.lastFrame()!.split("\n");
+    return rows[rows.findIndex((r) => /lead fake:a [|]/.test(r)) - 1];
+  };
+  it("shows a live edit's line in the hint row until the next key, and how many more an edit said", async () => {
+    const { app, write } = await watching([], {});
+    write({ maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    expect(hintRow(app)).toBe(`maxTasks is now 3 ${FROM}`);
+    await press(app, "x");
+    expect(hintRow(app)).toBe("? for shortcuts");
+    expect(flat(app)).toContain(`maxTasks is now 3 ${FROM}`); // still in the conversation
+    write({ maxTasks: 2, scrollSpeed: 1 });
+    await sees(app, `scrollSpeed is now 1 ${FROM}`);
+    expect(hintRow(app)).toBe(`scrollSpeed is now 1 ${FROM} (+1 more above)`);
+    write({ maxTasks: 2, scrollSpeed: 1, mode: "project" }); // a newer edit replaces it
+    await sees(app, PINNED("ask"));
+    expect(hintRow(app)).toBe(PINNED("ask"));
+  });
+
+  it("shows a problem from a live edit in the hint row in red, until the next key", async () => {
+    await inColour(async () => {
+      const { app, write } = await watching([], {});
+      write('{"mode": ');
+      const red = "\u001b[31msettings.json is not valid JSON";
+      await vi.waitFor(() => expect(app.lastFrame()!.split(red).length - 1).toBe(2), WATCHED); // the conversation's and the hint row's
+      await press(app, "x");
+      expect(app.lastFrame()!.split(red).length - 1).toBe(1);
+    });
+  });
+
+  it("shows a line said while the editor was open in the hint row once Tachikoma is back", async () => {
+    const editor = standInEditor();
+    editor.next('{"effort": "low"}\n');
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const home = freshHome();
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const lead = Object.assign(new FakeProvider("a", []), { setEffort: vi.fn() });
+    const { app } = await mount([], { lead, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    await type(app, "/settings");
+    await vi.waitFor(() => expect(lead.setEffort).toHaveBeenCalledWith("low"), WATCHED); // read while the editor is open
+    editor.go();
+    await sees(app, `effort is now low ${FROM}`);
+    expect(hintRow(app)).toBe(`effort is now low ${FROM}`);
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));
@@ -7001,7 +7049,7 @@ describe("App's live settings", () => {
     write({ editorMode: "normal", vimInsertModeRemaps: { jj: "<Esc>", jk: "<Esc>" } });
     await sees(app, `editorMode is now normal ${FROM}`);
     await sees(app, `vimInsertModeRemaps is now jj, jk ${FROM}`);
-    expect(app.lastFrame()).toContain("? for shortcuts");
+    expect(app.lastFrame()).not.toMatch(/-- (INSERT|NORMAL) --/); // vim mode's hint gone; the edit's lines show (choice 35)
     write({ editorMode: "normal" });
     await sees(app, `vimInsertModeRemaps is now none ${FROM}`);
   });

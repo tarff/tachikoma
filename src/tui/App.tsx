@@ -463,6 +463,17 @@ export function App({
     view.current = FOLLOWING;
     say(...add);
   };
+  // A live edit's lines (onSettings, onKeys) show in the hint row too, until the next key (release 6 plan, choice 35,
+  // the user's: "Hint row, until a key"): the last edit's lines, said in the conversation as ever, and whether the next
+  // line starts a new edit's, which replaces them. One said later for the same edit, a lead or a screen that waited for
+  // a turn to end, joins them.
+  const notes = useRef<Line[]>([]);
+  const newEdit = useRef(true);
+  const note = (...add: Line[]) => {
+    say(...add);
+    notes.current = [...(newEdit.current ? [] : notes.current), ...add.map(escaped)];
+    newEdit.current = false;
+  };
   const history = useRef<History | null>(null);
   history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
   // Every model made in the session takes a changed effort (release 6 plan, Task 9).
@@ -556,7 +567,8 @@ export function App({
       latest.current.lookUpWindow(false);
     };
     const onLead = (id: string) => {
-      latest.current.say(leadFromFile.current ? gray(`lead is now ${id}${FROM}`) : { text: `lead is now ${id}`, color: "magenta" });
+      if (leadFromFile.current) latest.current.note(gray(`lead is now ${id}${FROM}`));
+      else latest.current.say({ text: `lead is now ${id}`, color: "magenta" });
       latest.current.lookUpWindow();
     };
     const onToolStart = ({ id, name, input }: Events["tool-start"][0]) => {
@@ -692,8 +704,8 @@ export function App({
     if (w.screen && !owner.busy) {
       const to = w.screen;
       w.screen = undefined;
-      if (to === "full" && !fullNow.current && !fullPossible) say(gray("Full screen needs a terminal (the output is not one, or CI is set)"));
-      else if ((to === "full") === fullNow.current) say(gray(`screen is now ${to}${FROM}`));
+      if (to === "full" && !fullNow.current && !fullPossible) note(gray("Full screen needs a terminal (the output is not one, or CI is set)"));
+      else if ((to === "full") === fullNow.current) note(gray(`screen is now ${to}${FROM}`));
       else {
         // As perform runs /screen: what goes wrong is said, and the queue goes on after.
         void switchScreen(true)
@@ -1101,7 +1113,7 @@ export function App({
       handover.done(); // a print-out started during the switch keeps the hold (comeBack, above)
     }
     if (ended.current) return;
-    say({ text: `screen is now ${toFull ? "full" : "classic"}${file ? FROM : ""}`, color: "gray" });
+    (file ? note : say)({ text: `screen is now ${toFull ? "full" : "classic"}${file ? FROM : ""}`, color: "gray" });
   };
 
   // The editor in the terminal (release 6 design, "The external editor"; plan, Task 12), through the owner, which waits
@@ -1187,8 +1199,9 @@ export function App({
   // design's table, or, given by a flag or variable at launch, stays as given. Removing an entry is a change to what
   // applies without it, the default, as resolve gives it with no flag nor variable.
   const onSettings = (read: Loaded) => {
-    if ("problem" in read) return say({ text: `${read.problem}; the last good settings still apply`, color: "red" });
-    for (const w of read.warnings) if (!warned.current.includes(w)) say(gray(w));
+    newEdit.current = true;
+    if ("problem" in read) return note({ text: `${read.problem}; the last good settings still apply`, color: "red" });
+    for (const w of read.warnings) if (!warned.current.includes(w)) note(gray(w));
     warned.current = read.warnings;
     const before = fileNow.current;
     fileNow.current = read.settings;
@@ -1197,7 +1210,7 @@ export function App({
       if (JSON.stringify(before[key]) === JSON.stringify(read.settings[key])) continue;
       // VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
       const flag = key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : live?.given[key];
-      if (flag) say(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
+      if (flag) note(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
       else applyEntry(key, read.settings, now);
     }
     next();
@@ -1206,8 +1219,9 @@ export function App({
   // following them. A broken file keeps the keys before it, the default ones until a good file is read, and says so;
   // each problem in an entry is said once, while it stays, as a settings warning is (choice 21).
   const onKeys = (read: KeysLoaded) => {
+    newEdit.current = true;
     if ("problem" in read) {
-      return say({ text: `${read.problem}; ${keysRead.current ? "the last good keys still apply" : "the default keys apply"}`, color: "red" });
+      return note({ text: `${read.problem}; ${keysRead.current ? "the last good keys still apply" : "the default keys apply"}`, color: "red" });
     }
     keysRead.current = true;
     // After the launch, a question reads the launch's keys, whole (lookUp), so a shell command that rewrites the file
@@ -1218,7 +1232,7 @@ export function App({
     else if (read.table.heldBack(launchKeys.current)) {
       problems = [...problems, `${KEYBINDINGS}: at a permission question the keys stay as at launch, and a key newly bound to switch the mode does nothing, until the next launch; the rest apply now`];
     }
-    for (const p of problems) if (!keysWarned.current.includes(p)) say(gray(p));
+    for (const p of problems) if (!keysWarned.current.includes(p)) note(gray(p));
     keysWarned.current = problems;
     setTable(read.table);
   };
@@ -1226,26 +1240,26 @@ export function App({
   // next() (above). A model the file names that cannot be made is said, as at launch (cli.tsx), and the one before is
   // kept.
   const applyEntry = (key: (typeof LIVE)[number], s: Settings, now: ReturnType<typeof resolve>) => {
-    const line = (value: string) => say(gray(`${key} is now ${value}${FROM}`));
+    const line = (value: string) => note(gray(`${key} is now ${value}${FROM}`));
     const model = (spec: string | undefined) => {
       if (!spec) return undefined; // an empty --fallback or --worker is none at launch too (cli.tsx)
       try {
         return make(spec);
       } catch (err) {
-        say({ text: `${SETTINGS}: "${key}": ${errorText(err)}`, color: "red" });
+        note({ text: `${SETTINGS}: "${key}": ${errorText(err)}`, color: "red" });
         return null;
       }
     };
     if (key === "lead") {
       waiting.current.lead = s.lead;
       // A session cannot be without a lead, so removing the entry keeps the one it has (the design's table).
-      if (s.lead === undefined) say(gray(`"lead" was removed from ${SETTINGS}; the lead stays ${session.lead.id}`));
+      if (s.lead === undefined) note(gray(`"lead" was removed from ${SETTINGS}; the lead stays ${session.lead.id}`));
     } else if (key === "mode") {
       // `never` is refused live (the user's choice, design's table), and at launch too until release 7 (plan, choice 30).
-      if (now.mode === "never") return say(gray(`"mode": "never" is switched off until release 7; the mode stays ${perm.current}`));
+      if (now.mode === "never") return note(gray(`"mode": "never" is switched off until release 7; the mode stays ${perm.current}`));
       // A live edit never changes the mode, so a shell command the user allowed cannot rewrite the file to put the
       // session in project mode; Shift+Tab still does (plan, choice 32, the user's: "Pin at launch").
-      say(gray(`"mode" changes in ${SETTINGS} take effect at the next launch; the mode stays ${perm.current}`));
+      note(gray(`"mode" changes in ${SETTINGS} take effect at the next launch; the mode stays ${perm.current}`));
     } else if (key === "effort") {
       effortNow.current = { effort: now.effort };
       session.lead.setEffort?.(now.effort);
@@ -1286,7 +1300,7 @@ export function App({
     try {
       provider = make(spec);
     } catch (err) {
-      return say({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "red" });
+      return note({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "red" });
     }
     leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
     session.setLead(provider);
@@ -1296,7 +1310,7 @@ export function App({
   // line; `from` says the settings file asked. Asked to be what it is, it stays as it is.
   const setVim = (on: boolean, from = "") => {
     if (on !== (vim.current !== null)) vim.current = on ? vimStart : null;
-    say(gray(`editorMode is now ${on ? "vim" : "normal"}${from}`));
+    (from ? note : say)(gray(`editorMode is now ${on ? "vim" : "normal"}${from}`));
   };
   // Who takes a key (release 6 plan, Task 6): while a field is typed (a Ctrl+R query, a detail-view search, the model
   // list's filter), a printable key goes into it, after a chord under way (lookUp). Keys match the table exactly
@@ -1373,6 +1387,7 @@ export function App({
     const h = happening(() => menuFor(editor.current) !== null);
     if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // printed out: a key read with the `[` that printed the view out
     clearCopied();
+    notes.current = []; // a live edit's lines leave the hint row at the next key (note, above)
     const field = h.phase.kind === "search" || h.phase.kind === "picker" || (h.phase.kind === "detail" && h.phase.searching);
     onKey(h, route(h.phase.kind, field, ch, key), ch, key);
   };
@@ -2021,7 +2036,7 @@ export function App({
   // functions, set at each, so what they read is the screen as last drawn, never what it was when they were set up
   // (release 6 design, "Tidying the screen code first"). Set while drawing, safe with Ink's non-concurrent root
   // (above).
-  const handlers = { say, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys, settle, dropChord: dropChords };
+  const handlers = { say, note, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys, settle, dropChord: dropChords };
   const latest = useRef(handlers);
   latest.current = handlers;
 
@@ -2051,6 +2066,9 @@ export function App({
   const chord = asked.current === (!!question && !picker) ? chordKeys().waiting(Date.now()) : null;
   const fillKeys = [keyOf("autocomplete:accept", "Autocomplete", "tab"), keyOf("chat:submit", "Chat", "enter")];
   const previous = keyOf("history:previous", "Chat", "up");
+  // The last line of a live edit, with how many more it said, which the conversation shows (note, above).
+  const notice = notes.current.at(-1);
+  const noticeText = notice && `${notice.text}${notes.current.length > 1 ? ` (+${notes.current.length - 1} more above)` : ""}`;
   const usualHint = (left: number) =>
     chord
       ? `${keyText(chord)} ...`
@@ -2087,9 +2105,11 @@ export function App({
                 hints("Stashed", said(keyOf("chat:stash", "Chat", "ctrl+s"), "to bring back"))
               : vim.current
                 ? `-- ${vim.current.mode} --` // every mode, in a turn too, when no other hint takes the row (choice 15)
-                : busy
-                  ? null
-                  : "? for shortcuts";
+                : noticeText
+                  ? noticeText // over nothing but "? for shortcuts", and the empty row of a turn (choice 35)
+                  : busy
+                    ? null
+                    : "? for shortcuts";
   // The line about the last copy, until the next key or click (release 5 design, "Copying"), takes the hint row's place
   // only while one shows, so a copy never moves the conversation; a failed copy shows anyway, adding the row. Ctrl+R's
   // search and the exit warning keep the row (the user's choice, release 5), and so does the detail view's search while
@@ -2295,7 +2315,12 @@ export function App({
         </>
       )}
       {hint && (
-        <Text dimColor wrap="truncate-end">
+        // A live edit's line keeps its own colour, and a long one gives up its middle, not its count (choice 35).
+        <Text
+          dimColor={!notice || hint !== noticeText}
+          color={notice && hint === noticeText ? notice.color : undefined}
+          wrap={notice && hint === noticeText ? "truncate-middle" : "truncate-end"}
+        >
           {hint}
         </Text>
       )}
