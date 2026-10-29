@@ -37,7 +37,15 @@ export function changes<T extends object>(parse: (text: string) => T): (text: st
 // EPERM error is reported when the watched directory is deleted", and an error with no listener would end the session.
 // Making the folder or starting the watch can throw (a home that cannot be written, Linux's limit on watches); the
 // caller says so. A watch that cannot start still reads the files once, so their keys apply unwatched (choice 21).
-export function watchSettings(home: string, on: (next: Loaded) => void, onKeys: (next: KeysLoaded) => void, gone: () => void): () => void {
+// `begin`, when given, is called once for each read that gives either callback anything, before them, so the caller can
+// take what both files said in one read as one edit (App.tsx, note; release 6 plan, choice 35's code review).
+export function watchSettings(
+  home: string,
+  on: (next: Loaded) => void,
+  onKeys: (next: KeysLoaded) => void,
+  gone: () => void,
+  begin?: () => void,
+): () => void {
   const dir = settingsDir(home);
   mkdirSync(dir, { recursive: true });
   const file = path.join(dir, SETTINGS);
@@ -57,8 +65,9 @@ export function watchSettings(home: string, on: (next: Loaded) => void, onKeys: 
     const text = read(file);
     const keys = read(keysFile);
     const next = text === undefined || text === null ? null : step(text);
-    if (next) on(next);
     const nextKeys = keys === undefined || keys === null ? null : keysStep(keys);
+    if (next || nextKeys) begin?.();
+    if (next) on(next);
     if (nextKeys) onKeys(nextKeys);
     if (text === null && keys === null && !existsSync(dir)) end();
   };

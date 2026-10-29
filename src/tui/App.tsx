@@ -623,6 +623,8 @@ export function App({
           (read) => latest.current.onKeys(read),
           // A live file's line, as an edit's, of its own (note; choice 35).
           () => latest.current.noteAlone(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} and ${KEYBINDINGS} are no longer watched this session`)),
+          // One read of the folder is one edit, whichever of the files it changed (note; choice 35's code review).
+          () => void (newEdit.current = true),
         );
     } catch (err) {
       say(gray(`${SETTINGS} and ${KEYBINDINGS} are not watched this session (${errorText(err)})`));
@@ -1211,7 +1213,6 @@ export function App({
   // design's table, or, given by a flag or variable at launch, stays as given. Removing an entry is a change to what
   // applies without it, the default, as resolve gives it with no flag nor variable.
   const onSettings = (read: Loaded) => {
-    newEdit.current = true;
     if ("problem" in read) return note({ text: `${read.problem}; the last good settings still apply`, color: "red" });
     for (const w of read.warnings) if (!warned.current.includes(w)) note(gray(w));
     warned.current = read.warnings;
@@ -1231,7 +1232,6 @@ export function App({
   // following them. A broken file keeps the keys before it, the default ones until a good file is read, and says so;
   // each problem in an entry is said once, while it stays, as a settings warning is (choice 21).
   const onKeys = (read: KeysLoaded) => {
-    newEdit.current = true;
     if ("problem" in read) {
       return note({ text: `${read.problem}; ${keysRead.current ? "the last good keys still apply" : "the default keys apply"}`, color: "red" });
     }

@@ -6952,6 +6952,18 @@ describe("App's live settings", () => {
     expect(hintRow(app)).toBe("? for shortcuts");
   });
 
+  // The code review of choice 35: the settings file and the keys file changed in one read of the folder are one edit.
+  it("counts the lines of both files changed in one read as one edit's", async () => {
+    const home = freshHome();
+    const { app, write } = await watching([], {}, {}, {}, home);
+    const reserved = 'keybindings.json: Global "ctrl+c" is a reserved key; it was left out';
+    write({ maxTasks: 3 });
+    writeKeys(home, globalKeys({ "ctrl+c": null }));
+    await sees(app, reserved);
+    expect(flat(app)).toContain(`maxTasks is now 3 ${FROM}`);
+    expect(hintRow(app)).toBe(`${reserved} (+1 more above)`);
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));
