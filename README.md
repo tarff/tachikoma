@@ -265,8 +265,8 @@ Every entry is optional; one left out keeps its default.
   stops with one line, and an edit to it during a session gets a line, and the mode stays.
 - **The file tools never touch the settings file or the keys file,** in any mode, even when the
   project is your home folder, so the model cannot change them with its file tools. A shell command
-  is not stopped: it asks first in `ask` and `project` mode, as every command does, and in `never`
-  mode it does not.
+  is not stopped, but it asks first, as every command does, in both modes Tachikoma starts in
+  (`never`, which would not ask, is switched off until release 7).
 
 ## Keys
 
