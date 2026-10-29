@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Action, apply, type Editor, empty, load, replace } from "../../src/tui/editor.js";
+import { type Action, apply, change, cutPicture, type Editor, empty, insertPicture, load, replace } from "../../src/tui/editor.js";
 
 // The text with the cursor shown as "|".
 const show = (e: Editor) => `${e.text.slice(0, e.cursor)}|${e.text.slice(e.cursor)}`;
@@ -95,6 +95,93 @@ describe("editor", () => {
     expect(show(e)).toBe("two\nlines|");
     expect(show(run(e, "undo"))).toBe("two\nlines|");
     expect(show(run(e, "yank"))).toBe("two\nlinesyz|");
+  });
+});
+
+// Release 6 plan, Task 14: a picture's marker is a span, which moves with the text around it and goes whole.
+describe("pictures", () => {
+  const spans = (e: Editor) => e.spans.map((s) => `${s.id}:${e.text.slice(s.from, s.to)}@${s.from}`);
+
+  it("puts a picture's marker at the cursor as a span, one step to undo", () => {
+    const e = insertPicture(run(empty, typed("see ")), 2);
+    expect(show(e)).toBe("see [Image #2]|");
+    expect(spans(e)).toEqual(["2:[Image #2]@4"]);
+    expect(show(run(e, typed("!"), "undo"))).toBe("see [Image #2]|"); // the typing after is a step of its own
+    expect(show(run(e, "undo"))).toBe("see |");
+  });
+
+  it("moves the span with typing before it", () => {
+    const e = run(insertPicture(at("a|b"), 1), "home", typed("xy"));
+    expect(show(e)).toBe("xy|a[Image #1]b");
+    expect(spans(e)).toEqual(["1:[Image #1]@3"]);
+  });
+
+  it("deletes the whole marker on Backspace at its end or Delete at its start (choice 14)", () => {
+    const e = insertPicture(at("a|b"), 1);
+    expect(show(run(e, "backspace"))).toBe("a|b");
+    expect(run(e, "backspace").spans).toEqual([]);
+    const before = run(e, "left", "home", "right");
+    expect(show(before)).toBe("a|[Image #1]b");
+    expect(show(run(before, "delete"))).toBe("a|b");
+    expect(run(before, "delete").spans).toEqual([]);
+  });
+
+  it("deletes the whole marker when a word delete or a range reaches into it", () => {
+    const e = insertPicture(at("x |"), 1);
+    expect(show(run(e, "deleteWord"))).toBe("x |"); // Alt+Backspace takes "1]", a word and what follows it
+    expect(show(run(e, "deleteToSpace"))).toBe("x |"); // Ctrl+W takes "#1]"
+    expect(run(e, "deleteWord").killed).toEqual({ text: "[Image #1]", spans: [{ id: 1, from: 0, to: 10 }] });
+    const ranged = change(e, 0, 4, ""); // a selection's delete from the start into "[Im"
+    expect(show(ranged)).toBe("|");
+    expect(ranged.spans).toEqual([]);
+  });
+
+  // Final review: Ctrl+Y put a cut marker back as text only, so the message went without its picture. What a delete
+  // takes keeps its spans, as vim's register does.
+  it("puts back a marker a word or line delete took with its span, each time", () => {
+    const e = run(insertPicture(at("look |"), 1), "home", "deleteToEnd");
+    expect(show(e)).toBe("|");
+    const back = run(e, "yank");
+    expect(show(back)).toBe("look [Image #1]|");
+    expect(spans(back)).toEqual(["1:[Image #1]@5"]);
+    expect(spans(run(back, "yank"))).toEqual(["1:[Image #1]@5", "1:[Image #1]@20"]);
+  });
+
+  it("drops the span, keeping the text, when something is typed inside the marker", () => {
+    const e = run(insertPicture(at("|"), 1), "left", typed("x"));
+    expect(show(e)).toBe("[Image #1x|]");
+    expect(e.spans).toEqual([]);
+  });
+
+  it("brings the marker back with its span on undo", () => {
+    const e = run(insertPicture(at("a|b"), 1), "backspace", "undo");
+    expect(show(e)).toBe("a[Image #1]|b");
+    expect(spans(e)).toEqual(["1:[Image #1]@1"]);
+  });
+
+  it("loads a prompt from history with no spans, a marker in it only text", () => {
+    expect(load(insertPicture(empty, 1), "[Image #1]").spans).toEqual([]);
+  });
+
+  it("takes a picture's spans out, text and all, as one step, the cursor kept among the rest", () => {
+    const e = run(insertPicture(insertPicture(insertPicture(at("|"), 1), 2), 1), typed(" end"), "home", "right");
+    expect(show(e)).toBe("[|Image #1][Image #2][Image #1] end");
+    const cut = cutPicture(e, 1);
+    expect(show(cut)).toBe("|[Image #2] end");
+    expect(spans(cut)).toEqual(["2:[Image #2]@0"]);
+    expect(show(run(cut, "undo"))).toBe(show(e));
+    expect(cutPicture(cut, 1)).toBe(cut); // none left: no step
+  });
+
+  // Found at the combined review: what the last delete took keeps its pictures' spans for Ctrl+Y, so a failed read's
+  // marker goes from there too, even with none left in the text, and is no step.
+  it("takes a picture's marker out of what the last delete took, so Ctrl+Y puts back none", () => {
+    const e = run(insertPicture(load(empty, "a "), 1), "deleteToStart");
+    expect(e.killed.spans).toHaveLength(1);
+    const cut = cutPicture(e, 1);
+    expect(cut.killed).toEqual({ text: "a ", spans: [] });
+    expect(cut.undo).toBe(e.undo);
+    expect(apply(cut, "yank")).toMatchObject({ text: "a ", spans: [] });
   });
 });
 

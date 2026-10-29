@@ -1,17 +1,22 @@
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import path from "node:path";
 import {
   approvalQuestion,
+  exitOn,
   exitSignals,
   fullPossible,
+  givenBy,
   headlessAnswer,
+  headlessDeclined,
   headlessExit,
   headlessLeftOut,
   instructionsLine,
   jsonLine,
+  leadOf,
   prose,
+  resolve,
   screenMode,
   scrollSpeed,
   statusSegments,
@@ -56,6 +61,16 @@ describe("the instruction files on screen", () => {
     expect(headlessLeftOut([{ path: path.resolve("/elsewhere/x.md"), how: "imported by CLAUDE.md" }])).toBe(
       `note: 1 instruction file from outside the project left out, since nobody can approve it in -p mode: ${path.resolve("/elsewhere/x.md")}, imported by CLAUDE.md`,
     );
+  });
+});
+
+// The line a -p run prints for each action it declines, naming the subagent that asked, if one did (found at the
+// combined review: its space after the colon was lost).
+describe("headlessDeclined", () => {
+  const why = "declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused)";
+  it("says why, then the action, after a space, its subagent's name escaped before it", () => {
+    expect(headlessDeclined("run: ls")).toBe(`${why}: run: ls`);
+    expect(headlessDeclined("run: ls", "t2 (a\u001b[2Jb)")).toBe(`${why}: t2 (a\\u001b[2Jb): run: ls`);
   });
 });
 
@@ -146,6 +161,17 @@ describe("screenMode", () => {
     for (const env of [{ CI: "true" }, { CI: "1" }, { CI: "" }, { CONTINUOUS_INTEGRATION: "yes" }]) expect(screenMode(undefined, env, true)).toBe("classic");
     for (const env of [{ CI: "0" }, { CI: "false" }, { CONTINUOUS_INTEGRATION: "false" }]) expect(screenMode(undefined, env, true)).toBe("full");
   });
+
+  // Release 6 design, "Which wins": --classic, then TACHI_CLASSIC, then the settings file's "screen". Neither the flag nor
+  // the variable can ask for full screen, so the file's "full" holds only where neither asks for classic.
+  it("takes the settings file's screen after --classic and TACHI_CLASSIC", () => {
+    expect(screenMode(undefined, {}, true, "classic")).toBe("classic");
+    expect(screenMode(undefined, {}, true, "full")).toBe("full");
+    expect(screenMode(true, {}, true, "full")).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "1" }, true, "full")).toBe("classic");
+    expect(screenMode(undefined, { TACHI_CLASSIC: "0" }, true, "classic")).toBe("classic"); // 0 is unset, so the file's applies
+    expect(screenMode(undefined, {}, false, "full")).toBe("classic");
+  });
 });
 
 describe("fullPossible", () => {
@@ -193,6 +219,27 @@ describe("exitSignals", () => {
   });
 });
 
+// Final review: Ctrl-C in the terminal while the editor ran ended the whole session. As Git's launch_editor does, Ctrl-C
+// and Ctrl-\ are ignored while a program has the terminal; every other signal still ends Tachikoma (choice 31).
+describe("exitOn", () => {
+  it("exits on each signal with 128 and its number, but on SIGINT and SIGQUIT only while no program runs", () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as typeof process.exit);
+    onTestFinished(() => exit.mockRestore());
+    for (const sig of ["SIGINT", "SIGQUIT", "SIGTERM", "SIGHUP", "SIGBREAK"] as const) {
+      exitOn(sig, () => false)();
+      expect(exit).toHaveBeenLastCalledWith(128 + constants.signals[sig]);
+    }
+    exit.mockClear();
+    exitOn("SIGINT", () => true)();
+    exitOn("SIGQUIT", () => true)();
+    expect(exit).not.toHaveBeenCalled();
+    for (const sig of ["SIGTERM", "SIGHUP", "SIGBREAK"] as const) {
+      exitOn(sig, () => true)();
+      expect(exit).toHaveBeenLastCalledWith(128 + constants.signals[sig]);
+    }
+  });
+});
+
 describe("endOnEpipe", () => {
   it("ends quietly when the reader of its output stops early", async () => {
     // A real pipe: a single large write fails with EPIPE once the reader has gone.
@@ -204,5 +251,101 @@ describe("endOnEpipe", () => {
     const code = await new Promise((resolve) => child.on("close", resolve));
     expect(stderr).toBe("");
     expect(code).toBe(0);
+  });
+});
+
+// Release 6 design, "Which wins": a flag, then a TACHI_ variable, then the settings file, then the default.
+describe("resolve", () => {
+  it("takes the lead from --lead, then TACHI_LEAD, then the file, an empty variable being unset", () => {
+    expect(leadOf({ lead: "a:1" }, { TACHI_LEAD: "a:2" }, { lead: "a:3" })).toBe("a:1");
+    expect(leadOf({}, { TACHI_LEAD: "a:2" }, { lead: "a:3" })).toBe("a:2");
+    expect(leadOf({}, { TACHI_LEAD: "" }, { lead: "a:3" })).toBe("a:3");
+    expect(leadOf({}, {}, {})).toBeUndefined();
+  });
+
+  it("takes the worker from --worker, then TACHI_WORKER, then the file", () => {
+    expect(resolve({ worker: "w:1" }, { TACHI_WORKER: "w:2" }, { worker: "w:3" }).worker).toBe("w:1");
+    expect(resolve({}, { TACHI_WORKER: "w:2" }, { worker: "w:3" }).worker).toBe("w:2");
+    expect(resolve({}, { TACHI_WORKER: "" }, { worker: "w:3" }).worker).toBe("w:3");
+    expect(resolve({}, {}, {}).worker).toBeUndefined();
+  });
+
+  it("takes mode, effort and fallback from the flag, then the file, then the default", () => {
+    expect(resolve({ mode: "project" }, {}, { mode: "never" }).mode).toBe("project");
+    expect(resolve({}, {}, { mode: "never" }).mode).toBe("never");
+    expect(resolve({}, {}, {}).mode).toBe("ask");
+    expect(resolve({ effort: "low" }, {}, { effort: "max" }).effort).toBe("low");
+    expect(resolve({}, {}, { effort: "max" }).effort).toBe("max");
+    expect(resolve({}, {}, {}).effort).toBeUndefined();
+    expect(resolve({ fallback: "f:1" }, {}, { fallback: "f:2" }).fallback).toBe("f:1");
+    expect(resolve({ fallback: "" }, {}, { fallback: "f:2" }).fallback).toBe(""); // an empty --fallback turns the file's off
+    expect(resolve({}, {}, { fallback: "f:2" }).fallback).toBe("f:2");
+    expect(resolve({}, {}, {}).fallback).toBeUndefined();
+  });
+
+  it("takes max tasks and the status parts from the flag, then the file, then the default", () => {
+    expect(resolve({ "max-tasks": "4" }, {}, { maxTasks: 6 }).maxTasks).toBe(4);
+    expect(resolve({}, {}, { maxTasks: 6 }).maxTasks).toBe(6);
+    expect(resolve({}, {}, {}).maxTasks).toBe(8);
+    expect(resolve({ status: "cost" }, {}, { status: ["lead"] }).segments).toEqual(["cost"]);
+    expect(resolve({}, {}, { status: ["lead"] }).segments).toEqual(["lead"]);
+    expect(resolve({}, {}, {}).segments).toEqual(SEGMENTS);
+  });
+
+  it("takes the scroll speed from --scroll-speed, then TACHI_SCROLL_SPEED, then the file, then 3", () => {
+    expect(resolve({ "scroll-speed": "2" }, { TACHI_SCROLL_SPEED: "4" }, { scrollSpeed: 5 }).speed).toBe(2);
+    expect(resolve({}, { TACHI_SCROLL_SPEED: "4" }, { scrollSpeed: 5 }).speed).toBe(4);
+    expect(resolve({}, { TACHI_SCROLL_SPEED: "" }, { scrollSpeed: 5 }).speed).toBe(5);
+    expect(resolve({}, {}, {}).speed).toBe(3);
+  });
+
+  // Release 5's rule: -p has no screen to scroll, so it ignores TACHI_SCROLL_SPEED, and so the file's scrollSpeed too.
+  it("with -p, ignores TACHI_SCROLL_SPEED and the file's scrollSpeed, but not --scroll-speed", () => {
+    expect(resolve({ print: "hi" }, { TACHI_SCROLL_SPEED: "abc" }, { scrollSpeed: 5 }).speed).toBe(3);
+    expect(resolve({ print: "hi", "scroll-speed": "2" }, {}, { scrollSpeed: 5 }).speed).toBe(2);
+  });
+
+  it("still checks a flag given over the file, in the flag's words", () => {
+    expect(() => resolve({ mode: "x" }, {}, { mode: "ask" })).toThrow('--mode must be one of: ask, project (got "x")');
+    // `never` is not offered, but still read, so the launch can say it is switched off (release 6 plan, choice 30).
+    expect(resolve({ mode: "never" }, {}, {}).mode).toBe("never");
+    expect(() => resolve({ effort: "x" }, {}, {})).toThrow('--effort must be one of: low, medium, high, xhigh, max (got "x")');
+    expect(() => resolve({ "max-tasks": "1e1" }, {}, { maxTasks: 2 })).toThrow('--max-tasks must be a whole number from 1 (got "1e1")');
+    expect(() => resolve({ status: "nope" }, {}, { status: ["lead"] })).toThrow(
+      '--status must be one of: lead, context, tokens, cost, mode, errors, project, time, tasks, tools (got "nope")',
+    );
+    expect(() => resolve({ "scroll-speed": "21" }, {}, { scrollSpeed: 2 })).toThrow('--scroll-speed must be a number above 0, up to 20 (got "21")');
+  });
+});
+
+// Release 6 design, "Live edits": an entry a flag or variable gave at launch stays as given, and the line names which.
+describe("givenBy", () => {
+  it("names the flag that gave each entry, or else its variable, an empty variable being unset", () => {
+    const flags = {
+      lead: "a:1",
+      mode: "ask",
+      effort: "low",
+      fallback: "",
+      worker: "w:1",
+      "max-tasks": "2",
+      status: "lead",
+      classic: true,
+      "scroll-speed": "2",
+    };
+    const env = { TACHI_LEAD: "a:2", TACHI_WORKER: "w:2", TACHI_CLASSIC: "1", TACHI_SCROLL_SPEED: "4" };
+    expect(givenBy(flags, env)).toEqual({
+      lead: "--lead",
+      mode: "--mode",
+      effort: "--effort",
+      fallback: "--fallback", // an empty --fallback still wins over the file
+      worker: "--worker",
+      maxTasks: "--max-tasks",
+      status: "--status",
+      screen: "--classic",
+      scrollSpeed: "--scroll-speed",
+    });
+    expect(givenBy({}, env)).toEqual({ lead: "TACHI_LEAD", worker: "TACHI_WORKER", screen: "TACHI_CLASSIC", scrollSpeed: "TACHI_SCROLL_SPEED" });
+    expect(givenBy({}, { TACHI_LEAD: "", TACHI_WORKER: "", TACHI_CLASSIC: "0", TACHI_SCROLL_SPEED: "" })).toEqual({});
+    expect(givenBy({}, {})).toEqual({});
   });
 });

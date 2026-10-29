@@ -1,7 +1,9 @@
 import { visible } from "../core/permissions.js";
+import type { Bindings } from "./bindings.js";
 import { Conversation } from "./Conversation.js";
 import { type Line, screen as escaped } from "./describe.js";
 import { type Found, find } from "./find.js";
+import { named } from "./keys.js";
 import { first, type Pos, Rows, scrollTo, type View } from "./view.js";
 
 // The detail view (release 5 design, "The detail view"; plan, Task 12): Ctrl+O's last turn or `/tasks t3`'s record, in
@@ -13,9 +15,6 @@ export interface Detail {
   view: { current: View };
   search: { query: string; found: Found[]; at: number; typing: boolean; before: View } | null;
 }
-
-// The grey row under the view naming its keys; `[` prints the view out (Task 13).
-export const KEYS = "j k ↑ ↓ line · g G Home End top, bottom · / search · [ print · q Esc close";
 
 // Opened at its top, so a record is read from its heading. The lines are escaped as the conversation's are (App.tsx, say).
 export function opened(lines: Line[], width: number): Detail {
@@ -54,12 +53,31 @@ export function step(d: Detail, by: 1 | -1, height: number) {
 }
 
 // The row under the view: the keys; while typing a search, what is typed, saying so when nothing matches, as Ctrl+R's
-// row does (the user's choice at Task 12's review); a search kept, which match shows of how many.
-export function keyRow(d: Detail): string {
+// row does (the user's choice at Task 12's review); a search kept, which match shows of how many. The keys are those
+// bound in the table, named as release 5 named them (keys.ts, named); `[` prints the view out (Task 13).
+export function keyRow(d: Detail, b: Bindings): string {
+  const k = (action: string, ...usual: string[]) => named(b, `transcript:${action}`, "Transcript", usual);
+  // Each group's keys, then what they do; a group with no key bound is left out.
+  const row = (...groups: [(string | undefined)[], string][]) =>
+    groups
+      .map(([keys, words]) => [keys.filter(Boolean), words] as const)
+      .filter(([keys]) => keys.length)
+      .map(([keys, words]) => `${keys.join(" ")} ${words}`)
+      .join(" · ");
   const s = d.search;
-  if (!s) return KEYS;
+  if (!s) {
+    const [down, up, top, bottom] = [k("lineDown", "j", "down"), k("lineUp", "k", "up"), k("top", "g", "home"), k("bottom", "shift+g", "end")];
+    return row(
+      [[down[0], up[0], ...up.slice(1), ...down.slice(1)], "line"],
+      [[top[0], bottom[0], ...top.slice(1), ...bottom.slice(1)], "top, bottom"],
+      [k("search", "/"), "search"],
+      [k("print", "["), "print"],
+      [k("exit", "q", "escape"), "close"],
+    );
+  }
   if (s.typing) return `/${visible(s.query)}${s.query && !s.found.length ? " (no match)" : ""}`;
-  return `"${visible(s.query)}": ${s.at + 1} of ${s.found.length} · n next · N previous`;
+  const steps = row([k("nextMatch", "n"), "next"], [k("previousMatch", "shift+n"), "previous"]);
+  return [`"${visible(s.query)}": ${s.at + 1} of ${s.found.length}`, steps].filter(Boolean).join(" · ");
 }
 
 // The matches on the lines of the `height` rows from `top`, which are all the drawing needs: it looks at each match it is

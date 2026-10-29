@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { render, Text } from "ink";
 import { render as renderFrames } from "ink-testing-library";
+import chalk from "chalk";
 import { afterEach, describe, expect, it } from "vitest";
 import { load, empty } from "../../src/tui/editor.js";
 import { Prompt } from "../../src/tui/Prompt.js";
@@ -97,5 +98,25 @@ describe("Prompt", () => {
     app.rerender(at());
     await tick();
     expect(terminal.out).toContain("\u001b[2A\u001b[10G\u001b[?25h"); // 9 a row: the third of four rows, column 7
+  });
+
+  // The plan's choice 28: vim's VISUAL selection, from App, in reverse colours on each row it covers, as Claude Code
+  // 2.1.312 draws it, an empty line in it as one reversed space.
+  it("draws a selection in reverse colours across a wrapped row and an empty line", () => {
+    const level = chalk.level;
+    chalk.level = 1; // chalk's basic colours, enough for reverse
+    try {
+      const text = "abcdefghijklmnopqrstuvwxyz\n\nend"; // 17 columns a row: "abc...pq", "rst...z", "", "end"
+      const app = renderFrames(<Prompt editor={load(empty, text)} columns={20} offset={0} space={10} selected={[15, 29]} />);
+      unmounts.push(app.unmount);
+      expect(app.lastFrame()!.split("\n")).toEqual([
+        "› abcdefghijklmno\u{1b}[7mpq\u{1b}[27m",
+        "  \u{1b}[7mrstuvwxyz\u{1b}[27m",
+        "  \u{1b}[7m \u{1b}[27m",
+        "  \u{1b}[7me\u{1b}[27mnd",
+      ]);
+    } finally {
+      chalk.level = level;
+    }
   });
 });

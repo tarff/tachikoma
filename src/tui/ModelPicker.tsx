@@ -1,13 +1,18 @@
-import { Text, useInput, useStdout } from "ink";
+import { Text, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 import { visible } from "../core/permissions.js";
 import type { ModelGroup } from "../providers/models.js";
+import type { Bindings } from "./bindings.js";
 import type { Mouse } from "./input.js";
+import { both, named } from "./keys.js";
 
 // `/model`: every model of every provider that is set up (release 2 design, "The model picker").
 // Arrow keys move, Enter picks, Esc (or Ctrl-C) closes, and typing filters, since OpenRouter alone
 // lists hundreds.
 // Names come from the providers, so they are escaped like everything else on screen.
+// The keys come from App (release 6 plan, Task 6), which finds them in the table: an action, Select's, or select:cancel
+// for Ctrl-C; text typed into the filter, a key at a time, or read together, a paste among it; or Backspace or Delete.
+export type PickerKey = { action: string } | { text: string } | "backspace";
 
 type Row = { kind: "heading"; text: string } | { kind: "model"; spec: string };
 
@@ -36,6 +41,8 @@ export function ModelPicker({
   maxRows,
   mouse,
   bottom,
+  keys,
+  bindings,
 }: {
   groups: ModelGroup[];
   current: string;
@@ -46,6 +53,8 @@ export function ModelPicker({
   // at the foot of its rows, so where its first row is depends on the filter.
   mouse?: { on(e: "mouse", f: (m: Mouse) => void): unknown; off(e: "mouse", f: (m: Mouse) => void): unknown };
   bottom?: number;
+  keys: { current: ((k: PickerKey) => void) | null }; // set at each drawing, for App to hand the list its keys
+  bindings: Bindings; // for the help line's keys
 }) {
   // Each key reads and changes this at once: Ink can pass on several keys from one read of the
   // terminal before the screen is drawn again, and each must see what the one before it did.
@@ -91,28 +100,32 @@ export function ModelPicker({
     return () => void mouse.off("mouse", onMouse);
   });
 
-  useInput((ch, key) => {
+  keys.current = (k) => {
     if (done.current) return;
     const s = state.current!;
     const { models, at } = view(groups, s.filter, s.chosen);
-    if (key.escape || (key.ctrl && ch === "c")) {
-      done.current = true;
-      return onClose();
-    }
-    if (key.return) return pick();
-    if (key.upArrow) s.chosen = Math.max(0, at - 1);
-    else if (key.downArrow) s.chosen = Math.max(0, Math.min(models.length - 1, at + 1));
-    else if (key.backspace || key.delete) Object.assign(s, { filter: s.filter.slice(0, -1), chosen: 0 });
-    else if (!key.ctrl && !key.meta && ch) {
+    if (k === "backspace") Object.assign(s, { filter: s.filter.slice(0, -1), chosen: 0 });
+    else if ("text" in k) {
       // A paste, or a letter and Enter in one read of the terminal, comes as one piece of text: what is
       // before a line end filters, without its control characters, and the line end picks.
-      const [typed = "", ...after] = ch.split(/[\r\n]/);
+      const [typed = "", ...after] = k.text.split(/[\r\n]/);
       const text = typed.replace(/\p{Cc}/gu, "");
       if (text) Object.assign(s, { filter: s.filter + text, chosen: 0 });
       if (after.length) return pick();
-    } else return;
+    } else if (k.action === "select:cancel") {
+      done.current = true;
+      return onClose();
+    } else if (k.action === "select:accept") return pick();
+    else if (k.action === "select:previous") s.chosen = Math.max(0, at - 1);
+    else if (k.action === "select:next") s.chosen = Math.max(0, Math.min(models.length - 1, at + 1));
+    else return;
     redraw((n) => n + 1);
-  });
+  };
+  // The help line names the keys bound to Select's actions, as release 5 named them (keys.ts, named).
+  const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
+  const [up, down, enter, esc] = [key("select:previous", "up"), key("select:next", "down"), key("select:accept", "enter"), key("select:cancel", "escape")];
+  const moves = both(up, down);
+  const help = [moves && `${moves} move`, enter && `${enter} picks`, esc && `${esc} closes`].filter(Boolean).join(" · ");
 
   return (
     <>
@@ -130,7 +143,7 @@ export function ModelPicker({
       )}
       {models.length === 0 && <Text color="gray">{filter ? "No models match." : "No models to pick from."}</Text>}
       <Text color="gray" wrap="truncate-end">
-        Filter: {visible(filter) || "(type to filter)"} · ↑↓ move · Enter picks · Esc closes
+        Filter: {visible(filter) || "(type to filter)"} · {help}
       </Text>
     </>
   );

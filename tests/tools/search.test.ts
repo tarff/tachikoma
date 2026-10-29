@@ -9,7 +9,7 @@ import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { TOOLS } from "../../src/tools/index.js";
 import { findFilesTool, searchFilesTool } from "../../src/tools/search.js";
 import { brief } from "../../src/tui/describe.js";
-import { tempContext } from "../helpers.js";
+import { shortName, tempContext } from "../helpers.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -21,6 +21,17 @@ async function files(root: string, tree: Record<string, string>) {
     await mkdir(path.dirname(path.join(root, p)), { recursive: true });
     await writeFile(path.join(root, p), text);
   }
+}
+
+// A project that is the test's home folder, its ~/.tachikoma holding the settings and keys files, a
+// save's lock, and the error log, each with "token" in it.
+async function settingsHome() {
+  const ctx = await tempContext();
+  vi.stubEnv("USERPROFILE", ctx.root);
+  vi.stubEnv("HOME", ctx.root);
+  const names = ["settings.json", "keybindings.json", "settings.json.lock", "errors.jsonl"];
+  await files(ctx.root, Object.fromEntries(names.map((name) => [`.tachikoma/${name}`, "token"])));
+  return ctx;
 }
 
 describe("find_files", () => {
@@ -128,6 +139,11 @@ describe("find_files", () => {
     await expect(findFilesTool.run({ pattern: "**/*" }, ctx)).rejects.toThrow("Tachikoma's data folder");
   });
 
+  it("leaves out the settings and keys files when the project is the home folder", async () => {
+    const ctx = await settingsHome();
+    expect(await findFilesTool.run({ pattern: ".tachikoma/**" }, ctx)).toBe(".tachikoma/errors.jsonl");
+  });
+
   it("cuts a long list and says how many more there were", async () => {
     const ctx = await tempContext();
     const name = (n: number) => `${String(n).padStart(3, "0")}${"x".repeat(140)}.txt`;
@@ -202,6 +218,24 @@ describe("search_files", () => {
     vi.stubEnv("TACHI_DATA_DIR", path.join(ctx.root, "data"));
     linkSync(path.join(ctx.root, "data", "chatgpt.json"), path.join(ctx.root, "innocent.json"));
     expect(await searchFilesTool.run({ pattern: "token" }, ctx)).toBe("a.txt:1: token");
+  });
+
+  it("leaves out the settings and keys files when the project is the home folder, and a hard link to one", async () => {
+    const ctx = await settingsHome();
+    linkSync(path.join(ctx.root, ".tachikoma", "settings.json"), path.join(ctx.root, "innocent.json"));
+    expect(await searchFilesTool.run({ pattern: "token" }, ctx)).toBe(".tachikoma/errors.jsonl:1: token");
+    expect(await searchFilesTool.run({ pattern: "token", path: ".tachikoma" }, ctx)).toBe(".tachikoma/errors.jsonl:1: token");
+  });
+
+  // Windows gives each a short name on a volume that makes them (SETTIN~1.JSO).
+  it("refuses the settings and keys files by their short names", async ({ skip }) => {
+    const ctx = await settingsHome();
+    const folder = path.join(ctx.root, ".tachikoma");
+    const short = ["settings.json", "keybindings.json", "settings.json.lock"].map((name) => shortName(folder, name));
+    if (short.some((s) => !s)) skip("this system or volume makes no short names");
+    for (const s of short) {
+      await expect(searchFilesTool.run({ pattern: "token", path: `.tachikoma/${s}` }, ctx)).rejects.toThrow("is one of Tachikoma's settings files");
+    }
   });
 
   it("says when the pattern is not a regular expression", async () => {

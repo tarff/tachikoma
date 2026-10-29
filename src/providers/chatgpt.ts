@@ -1,9 +1,20 @@
 import OpenAI from "openai";
-import type { ResponseInputItem, ResponseOutputItem, ResponseStreamEvent, ResponseUsage, Tool } from "openai/resources/responses/responses";
+import type { ResponseInputImage, ResponseInputItem, ResponseOutputItem, ResponseStreamEvent, ResponseUsage, Tool } from "openai/resources/responses/responses";
 import type { Access, ChatGPTAuth } from "../auth/access.js";
 import { USAGE_URL } from "../auth/chatgpt.js";
-import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type ToolSpec, type Turn } from "../core/types.js";
-import { parseArgs } from "./openai.js";
+import {
+  type CompletionRequest,
+  connectReason,
+  type Message,
+  type Part,
+  type Prepared,
+  type Provider,
+  ProviderError,
+  type ToolSpec,
+  type Turn,
+} from "../core/types.js";
+import { dataUrl, inOrder, parseArgs } from "./openai.js";
+import { fitted, LIMITS } from "./pictures.js";
 
 // A ChatGPT plan leading, through OpenAI's Responses API (release 2 design, "Requests"; OpenAI's
 // "models and inference" and "preview limitations" pages, read 2026-10-23).
@@ -68,7 +79,7 @@ function planText({ code, param, status, message }: Failure): string {
   return `OpenAI ${what} the request${about ? ` (${about})` : ""}.${why}${status === 429 ? " Try again later." : ""}`;
 }
 
-const planError = (failure: Failure) => new Error(withId(planText(failure), failure.requestId));
+const planError = (failure: Failure) => new ProviderError(withId(planText(failure), failure.requestId), failure.status);
 
 // A connection that drops part way through a reply ends the stream with Node's bare "terminated", a
 // TypeError from undici (the fetch under the SDK).
@@ -81,7 +92,7 @@ async function* dropped<T>(events: AsyncIterable<T>, requestId: string | null): 
   }
 }
 
-export function toResponses(messages: Message[]): ResponseInputItem[] {
+export function toResponses(messages: Message[], prepared: Prepared = new Map()): ResponseInputItem[] {
   const out: ResponseInputItem[] = [];
   for (const m of messages) {
     if (m.role === "assistant") {
@@ -99,8 +110,20 @@ export function toResponses(messages: Message[]): ResponseInputItem[] {
     }
     for (const p of m.parts) {
       if (p.type === "tool_result") out.push({ type: "function_call_output", call_id: p.callId, output: p.isError ? `Error: ${p.output}` : p.output });
-      else if (p.type === "text") out.push({ role: "user", content: p.text });
     }
+    // With a picture to send, the text and pictures go as one user item of `input_text` and `input_image` parts, the
+    // picture's data inline (release 6 design, "In the conversation"); without one each text is its own item, so a
+    // request whose pictures were all left out is sent as before them.
+    const pieces = inOrder(m, prepared);
+    const texts = pieces.filter((s) => typeof s === "string");
+    if (texts.length < pieces.length) {
+      // No `detail`: the API then takes "auto" (the openai package's ResponseInputImage, 7.30.0), though the type
+      // marks it required.
+      const content = pieces.map((s) =>
+        typeof s === "string" ? { type: "input_text" as const, text: s } : ({ type: "input_image", image_url: dataUrl(s) } as ResponseInputImage),
+      );
+      out.push({ role: "user", content });
+    } else for (const s of texts) out.push({ role: "user", content: s });
   }
   return out;
 }
@@ -236,7 +259,8 @@ export class ChatGPTProvider implements Provider {
     return found;
   }
 
-  async complete({ system, messages, tools, signal }: CompletionRequest): Promise<Turn> {
+  async complete(req: CompletionRequest): Promise<Turn> {
+    const { system, messages, tools, signal } = req;
     // Read again after the model check, so a logout while the model list was fetched is seen, and a
     // switch to another account is checked against that account's list.
     let login = await this.auth.token(signal);
@@ -251,14 +275,18 @@ export class ChatGPTProvider implements Provider {
     // retrying a usage limit only hits it again (errors and recovery page).
     const client = new OpenAI({ apiKey: token, baseURL: this.base, maxRetries: 0 });
     const toolList = toolsFor(tools);
+    // Only fields the route accepts: no temperature, max_output_tokens or the like.
+    const body = (prepared: Prepared) => ({
+      model: this.model,
+      instructions: system,
+      input: toResponses(messages, prepared),
+      ...(toolList.length ? { tools: toolList } : {}),
+      stream: true as const,
+      store: false,
+    });
+    const sent = await fitted(req, LIMITS.chatgpt, body);
     try {
-      const { data: stream, request_id } = await client.responses
-        .create(
-          // Only fields the route accepts: no temperature, max_output_tokens or the like.
-          { model: this.model, instructions: system, input: toResponses(messages), ...(toolList.length ? { tools: toolList } : {}), stream: true, store: false },
-          { signal },
-        )
-        .withResponse();
+      const { data: stream, request_id } = await client.responses.create(sent, { signal }).withResponse();
       return await fromStream(dropped(stream, request_id), tools, request_id);
     } catch (err) {
       if (signal?.aborted) throw err; // Ctrl-C, passed on as it is (the SDK's abort error is an APIError)

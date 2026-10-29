@@ -1,7 +1,8 @@
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
+import type { Cache } from "../providers/pictures.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
-import { Declined } from "./permissions.js";
+import { type Ask, Declined } from "./permissions.js";
 import { errorText, type Message, type Part, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
 
 export function truncate(s: string): string {
@@ -18,16 +19,27 @@ export interface SessionOptions {
   // Takes the text waiting for the lead, such as background subagents' answers, so each goes into
   // exactly one request (release 4 design, "Background subagents").
   inbox?: () => string[];
+  // The permission question's path, for asking whether to send a refused request again without its pictures (release 6
+  // plan, Task 18). Subagents have none: they are never sent pictures.
+  ask?: Ask;
 }
 
 export class Session {
   // Append-only. Earlier messages are never edited, for the same reason the system prompt is fixed.
   readonly messages: Message[] = [];
   #lead: Provider;
+  #fallback: Provider | undefined;
   #running = false;
+  // Shrunk copies of the conversation's pictures, kept for the session; each request, to the lead or the fallback,
+  // still builds its own set from them (release 6 design, "What is sent, request by request").
+  readonly #shrunk: Cache = new Map();
+  // The providers the user said to send no pictures to, by id, for the session (release 6 design, "When the provider
+  // refuses").
+  readonly #refusedPictures = new Set<string>();
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
+    this.#fallback = opts.fallback;
   }
 
   get lead(): Provider {
@@ -39,21 +51,32 @@ export class Session {
     this.opts.bus.emit("lead", provider.id);
   }
 
-  // An empty `text` starts a turn with only the waiting text, when there is any.
-  async send(text: string, signal?: AbortSignal): Promise<void> {
+  get fallback(): Provider | undefined {
+    return this.#fallback;
+  }
+
+  // From the next refusal; a rescue already under way finishes on the one it started with (release 6 design, "When a
+  // live change applies").
+  setFallback(provider: Provider | undefined): void {
+    this.#fallback = provider;
+  }
+
+  // An empty `text` starts a turn with only the waiting text, when there is any. The prompt sends its parts, pictures
+  // among its text (release 6 plan, Task 14).
+  async send(text: string | Part[], signal?: AbortSignal): Promise<void> {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
     try {
-      await this.#turn(text, signal);
+      await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal);
     } finally {
       this.#running = false;
     }
   }
 
-  async #turn(text: string, signal?: AbortSignal): Promise<void> {
+  async #turn(typed: Part[], signal?: AbortSignal): Promise<void> {
     const { bus } = this.opts;
-    const parts: Part[] = [...(text ? [{ type: "text" as const, text }] : []), ...this.#waiting()];
+    const parts: Part[] = [...typed, ...this.#waiting()];
     if (!parts.length) return;
     this.#push({ role: "user", parts });
 
@@ -62,7 +85,7 @@ export class Session {
       let answeredBy = lead;
       let turn = await this.#request(lead, signal);
       if (!turn) return;
-      const rescue = this.opts.fallback;
+      const rescue = this.#fallback;
       if (turn.cutOff?.kind === "refusal" && rescue) {
         // The refused reply is discarded, never stored, so the history stays append-only.
         const refused = { kind: "refusal", attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
@@ -111,13 +134,45 @@ export class Session {
   // One request. Its usage is reported even if the reply is then discarded, because it is billed.
   async #request(provider: Provider, signal?: AbortSignal): Promise<Turn | undefined> {
     const { bus, tools, system } = this.opts;
+    const refused = this.#refusedPictures.has(provider.id);
     try {
-      const turn = await provider.complete({ system, messages: this.messages, tools: tools.map((t) => t.spec), signal });
+      // The line for pictures left out (release 6 design, "The whole request"); the conversation keeps them all.
+      const leftOut = (n: number, over: string) =>
+        bus.emit("note", `${n} ${n === 1 ? "picture was" : "pictures were"} left out of this request to fit ${over}.`);
+      const turn = await provider.complete({
+        system,
+        messages: this.messages,
+        tools: tools.map((t) => t.spec),
+        signal,
+        shrunk: this.#shrunk,
+        leftOut,
+        ...(refused ? { refusedBy: provider.id } : {}),
+      });
       for (const d of turn.declined ?? []) bus.emit("usage", d);
       bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage }); // last: it sets the context size
       return turn;
     } catch (err) {
-      if (!signal?.aborted) bus.emit("error", { kind: "provider", attempted: `request to ${provider.id}`, message: errorText(err), lead: this.#lead.id });
+      if (signal?.aborted) return undefined;
+      // The SDKs' `APIError` and chatgpt.ts's ProviderError carry the HTTP status; anything else has none.
+      const status: unknown = (err as { status?: unknown } | null | undefined)?.status;
+      const error = {
+        kind: "provider" as const,
+        attempted: `request to ${provider.id}`,
+        message: errorText(err),
+        lead: this.#lead.id,
+      };
+      bus.emit("error", typeof status === "number" ? { ...error, status } : error);
+      // A 400 does not say whether the pictures caused it, so the user is asked, after seeing the provider's words; y
+      // leaves them out for this provider from now on, the conversation keeping them (release 6 design, "When the
+      // provider refuses"). It is whichever provider was sent the request, the fallback included, as its id is the one
+      // marked. A request already without pictures asks nothing, so a second refusal ends the turn.
+      const pictures = !refused && this.messages.some((m) => m.parts.some((p) => p.type === "image"));
+      const question = "Send again without the pictures";
+      if (status === 400 && pictures && (await this.opts.ask?.(question, undefined, undefined, true))) {
+        this.#refusedPictures.add(provider.id);
+        bus.emit("note", `Pictures are left out for ${provider.id} from now on.`);
+        return this.#request(provider, signal);
+      }
       return undefined;
     }
   }

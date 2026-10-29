@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { BetaContentBlock, BetaContentBlockParam, BetaMessage, BetaMessageParam, BetaTool } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type Turn } from "../core/types.js";
+import { type CompletionRequest, connectReason, type Message, marker, type Part, type Prepared, type Provider, type Turn } from "../core/types.js";
+import { fitted, LIMITS } from "./pictures.js";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
@@ -10,11 +11,14 @@ export const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
 const FALLBACK_MODELS = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"]);
 // The claude-api skill's default max_tokens for streamed requests.
 const MAX_TOKENS = 64_000;
+// Pictures a request for a model with a 200k-token window (platform.claude.com/docs/en/build-with-claude/vision,
+// "Request limits"); other models take LIMITS.anthropic.maxCount.
+const SMALL_WINDOW_PICTURES = 100;
 
 // Tool-call ids from other providers may hold characters Anthropic rejects.
 const safeId = (id: string) => id.replace(/[^a-zA-Z0-9_-]/g, "_");
 
-function toBlock(p: Part): BetaContentBlockParam {
+function toBlock(p: Part, prepared: Prepared): BetaContentBlockParam | BetaContentBlockParam[] {
   switch (p.type) {
     case "text":
       return { type: "text", text: p.text };
@@ -22,16 +26,27 @@ function toBlock(p: Part): BetaContentBlockParam {
       return { type: "tool_use", id: safeId(p.id), name: p.name, input: p.input };
     case "tool_result":
       return { type: "tool_result", tool_use_id: safeId(p.callId), content: p.output, is_error: p.isError };
+    case "image": {
+      // The base64 source on Anthropic's vision page (platform.claude.com/docs/en/build-with-claude/vision), after its
+      // marker, so a later message can point the model at it by its number (release 6 design, "Which pictures a message
+      // carries"). A note in a left-out picture's place names the picture itself.
+      const sent = prepared.get(p.id) ?? p;
+      if (typeof sent === "string") return { type: "text", text: sent };
+      return [
+        { type: "text", text: marker(p.id) },
+        { type: "image", source: { type: "base64", media_type: sent.mediaType, data: sent.data.toString("base64") } },
+      ];
+    }
   }
 }
 
-export function toAnthropic(messages: Message[]): BetaMessageParam[] {
+export function toAnthropic(messages: Message[], prepared: Prepared = new Map()): BetaMessageParam[] {
   return (
     messages
       .map((m): BetaMessageParam =>
         m.role === "assistant" && m.native?.provider === "anthropic"
           ? { role: "assistant", content: m.native.content as BetaContentBlockParam[] }
-          : { role: m.role, content: m.parts.map(toBlock) },
+          : { role: m.role, content: m.parts.flatMap((p) => toBlock(p, prepared)) },
       )
       // A reply can come back empty (context full before any output), but the API rejects an empty
       // message anywhere but last, and the history is append-only, so it would fail every later request.
@@ -105,17 +120,25 @@ export class AnthropicProvider implements Provider {
   readonly id: string;
   #client: Anthropic;
   #window?: number | null;
+  #effort: Effort | undefined;
 
   constructor(
     readonly model: string,
-    private readonly effort?: Effort,
+    effort?: Effort,
   ) {
+    this.#effort = effort;
     // An API key only. Left to itself the SDK also signs in with ANTHROPIC_AUTH_TOKEN or a stored login
     // profile, either of which can carry a subscription token, which the design rules out.
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) throw new Error("Set ANTHROPIC_API_KEY to use anthropic");
     this.#client = new Anthropic({ apiKey, authToken: null });
     this.id = `anthropic:${model}`;
+  }
+
+  // Read by each request, so a change made while a turn runs its tools is sent from that turn's next request (release 6
+  // design, "When a live change applies": "from the lead's next request").
+  setEffort(effort: Effort | undefined): void {
+    this.#effort = effort;
   }
 
   async complete(req: CompletionRequest): Promise<Turn> {
@@ -133,23 +156,34 @@ export class AnthropicProvider implements Provider {
     }
   }
 
-  async #complete({ system, messages, tools, signal }: CompletionRequest): Promise<Turn> {
-    const stream = this.#client.beta.messages.stream(
-      {
-        model: this.model,
-        max_tokens: MAX_TOKENS,
-        system,
-        // No eager_input_streaming: only finalMessage() is read, so streaming tool input early gains
-        // nothing here, and it would move input validation from the API to us (claude-api skill, tool-use-concepts.md).
-        tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema as BetaTool["input_schema"] })),
-        messages: toAnthropic(messages),
-        cache_control: { type: "ephemeral" },
-        ...(this.effort ? { output_config: { effort: this.effort } } : {}),
-        ...(FALLBACK_MODELS.has(this.model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
-      },
-      { signal },
-    );
+  async #complete(req: CompletionRequest): Promise<Turn> {
+    const { system, messages, tools, signal } = req;
+    const effort = this.#effort; // read once, so the request measured is the request sent
+    const params = (prepared: Prepared) => ({
+      model: this.model,
+      max_tokens: MAX_TOKENS,
+      system,
+      // No eager_input_streaming: only finalMessage() is read, so streaming tool input early gains
+      // nothing here, and it would move input validation from the API to us (claude-api skill, tool-use-concepts.md).
+      tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema as BetaTool["input_schema"] })),
+      messages: toAnthropic(messages, prepared),
+      cache_control: { type: "ephemeral" as const },
+      ...(effort ? { output_config: { effort } } : {}),
+      ...(FALLBACK_MODELS.has(this.model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
+    });
+    const limits = { ...LIMITS.anthropic, maxCount: await this.#maxPictures(messages) };
+    const stream = this.#client.beta.messages.stream(await fitted(req, limits, params), { signal });
     return fromAnthropic(await stream.finalMessage());
+  }
+
+  // Anthropic's vision page, "Request limits": 100 pictures a request "for models with a 200k-token context window",
+  // 600 for all others. The window is looked up only when the request holds more than 100; one that cannot be found
+  // counts as 200k, since leaving a picture out costs less than a refused request.
+  async #maxPictures(messages: Message[]): Promise<number> {
+    const count = messages.reduce((n, m) => n + m.parts.filter((p) => p.type === "image").length, 0);
+    if (count <= SMALL_WINDOW_PICTURES) return LIMITS.anthropic.maxCount!;
+    const window = await this.contextWindow();
+    return window !== null && window > 200_000 ? LIMITS.anthropic.maxCount! : SMALL_WINDOW_PICTURES;
   }
 
   // Only a successful lookup is kept; a failed one (offline, say) is tried again next time.

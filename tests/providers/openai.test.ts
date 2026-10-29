@@ -2,9 +2,12 @@ import OpenAI from "openai";
 import type { ChatCompletion } from "openai/resources/chat/completions";
 import { Completions } from "openai/resources/chat/completions";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Message } from "../../src/core/types.js";
+import { Session } from "../../src/core/session.js";
+import type { Message, Picture, Prepared } from "../../src/core/types.js";
 import { toAnthropic } from "../../src/providers/anthropic.js";
-import { fromOpenAI, OpenAIProvider, toOpenAI } from "../../src/providers/openai.js";
+import { fromOpenAI, OpenAIProvider, PRESETS, toOpenAI } from "../../src/providers/openai.js";
+import { LIMITS } from "../../src/providers/pictures.js";
+import { Bus, collectErrors, tempContext } from "../helpers.js";
 
 function completion(message: Record<string, unknown>, finish_reason = "stop", usage?: Record<string, unknown>): ChatCompletion {
   return {
@@ -31,6 +34,50 @@ describe("toOpenAI", () => {
       { role: "tool", tool_call_id: "c1", content: "Error: nope" },
       { role: "user", content: "and?" },
     ]);
+  });
+
+  // The shape is `image_url` with the data inline (the openai package's ChatCompletionContentPartImage, 7.30.0).
+  const png = { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } as const;
+  const jpeg = { type: "image", id: 2, mediaType: "image/jpeg", data: Buffer.from([0xff, 0xd8, 0xff]) } as const;
+  const tool = { type: "tool_result", callId: "c1", output: "ok", isError: false } as const;
+  const parts: Message["parts"] = [tool, { type: "text", text: "compare " }, png, { type: "text", text: " with " }, jpeg];
+  const note = (id: number) => `[Image #${id} left out: fake:x refused pictures]`;
+
+  it("sends a message with pictures as a list of parts in order, each picture's data inline after its label", () => {
+    expect(toOpenAI("s", [{ role: "user", parts }], "openai")).toEqual([
+      { role: "system", content: "s" },
+      { role: "tool", tool_call_id: "c1", content: "ok" },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "compare " },
+          { type: "text", text: "[Image #1]" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw==" } },
+          { type: "text", text: " with " },
+          { type: "text", text: "[Image #2]" },
+          { type: "image_url", image_url: { url: "data:image/jpeg;base64,/9j/" } },
+        ],
+      },
+    ]);
+  });
+
+  it("sends a note in a left-out picture's place as text with no label, and one string when no picture is left to send", () => {
+    const one: Prepared = new Map<number, Picture | string>([
+      [1, note(1)],
+      [2, { mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }],
+    ]);
+    expect(toOpenAI("s", [{ role: "user", parts }], "openai", one)[2]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "compare " },
+        { type: "text", text: note(1) },
+        { type: "text", text: " with " },
+        { type: "text", text: "[Image #2]" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,iVBORw==" } },
+      ],
+    });
+    const both: Prepared = new Map([[1, note(1)], [2, note(2)]]);
+    expect(toOpenAI("s", [{ role: "user", parts }], "openai", both)[2]).toEqual({ role: "user", content: `compare \n${note(1)}\n with \n${note(2)}` });
   });
 
   it("converts Anthropic turns too, ignoring their native content", () => {
@@ -151,11 +198,25 @@ describe("reasoning fields", () => {
 describe("OpenAIProvider", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("rejects names every object inherits", () => {
     expect(() => new OpenAIProvider("constructor", "m")).toThrow('Unknown OpenAI-format provider "constructor"');
     expect(() => new OpenAIProvider("toString", "m")).toThrow('Unknown OpenAI-format provider "toString"');
+  });
+
+  it("has picture limits for every provider it can lead", () => {
+    for (const kind of Object.keys(PRESETS)) expect(Object.hasOwn(LIMITS, kind), kind).toBe(true);
+  });
+
+  it("keeps a refused request's HTTP status on the session's error event", async () => {
+    const body = { error: { message: "Invalid image", type: "invalid_request_error", param: null, code: null } };
+    vi.stubGlobal("fetch", async () => new Response(JSON.stringify(body), { status: 400, headers: { "content-type": "application/json" } }));
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    await new Session({ lead: new OpenAIProvider("ollama", "m"), tools: [], system: "s", ctx: await tempContext(), bus }).send("look");
+    expect(errors).toEqual([expect.objectContaining({ kind: "provider", status: 400, message: expect.stringContaining("Invalid image") })]);
   });
 
   it("reports a timeout as a timeout", async () => {

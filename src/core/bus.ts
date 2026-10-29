@@ -7,6 +7,7 @@ export interface ErrorEvent {
   attempted: string;
   message: string;
   lead: string;
+  status?: number; // a provider's HTTP status, when its failure came with one (release 6 plan, choice 10)
 }
 
 // How a tool call ended. "declined": the user said no, or the mode refused it. "cancelled": the turn
@@ -23,6 +24,7 @@ export interface Events {
   "tool-end": [{ id: string; outcome: ToolOutcome }];
   todo: [TodoItem[]]; // the lead's new to-do list
   tasks: []; // a subagent started, changed or finished
+  note: [string]; // a line for the user that is neither a failure nor the conversation, such as pictures left out
 }
 
 // The session emits; the interface, status line, headless output and error log listen.

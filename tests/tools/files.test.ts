@@ -1,12 +1,13 @@
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { existsSync, linkSync, realpathSync } from "node:fs";
+import { existsSync, linkSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Mode } from "../../src/core/permissions.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
-import { editFileTool, programEnvironment, readFileTool, resolveIn, writeFileTool } from "../../src/tools/files.js";
-import { tempContext } from "../helpers.js";
+import { editFileTool, programEnvironment, readFileTool, inData, inSettings, resolveIn, sameIgnoringCase, writeFileTool } from "../../src/tools/files.js";
+import { shortName, tempContext } from "../helpers.js";
 
 describe("resolveIn", () => {
   it("marks paths that leave the project", () => {
@@ -97,10 +98,184 @@ describe("the data folder", () => {
     expect(await readFile(file, "utf8")).toBe("{}");
   });
 
+  // Windows cannot stat a drive's root spelled \\?\C:\ (EISDIR), which the walk up from a \\?\ path reaches.
+  it.runIf(process.platform === "win32")("reads and writes a long path (\\\\?\\) outside it, once it exists", async () => {
+    const ctx = await tempContext("never");
+    await mkdir(path.join(ctx.root, "tachikoma"));
+    vi.stubEnv("TACHI_DATA_DIR", path.join(ctx.root, "tachikoma"));
+    const file = `\\\\?\\${path.join(ctx.root, "a.txt")}`;
+    await writeFileTool.run({ path: file, content: "fine" }, ctx);
+    expect(await readFileTool.run({ path: file }, ctx)).toBe("     1\tfine");
+  });
+
+  // As for the settings folder (the security review's finding 5, release 6 plan, choice 30): before the data folder is
+  // made only its path can match it, and macOS's disks, as Windows', ignore case.
+  // The system's own path rules are passed in with it, so on any machine, Windows included, whose paths ignore case
+  // anyway, only the case rule matches macOS's .TACHIKOMA-DATA (found at the combined review). None of these exist.
+  it("matches its path, and paths inside it, ignoring case on Windows and macOS, and exactly elsewhere", () => {
+    expect(inData("/Users/me/.tachikoma-data", "/Users/me/.TACHIKOMA-DATA", "darwin")).toBe(true);
+    expect(inData("/Users/me/.tachikoma-data", "/Users/me/.Tachikoma-Data/auth/chatgpt.json", "darwin")).toBe(true);
+    expect(inData("C:\\Users\\me\\tachikoma", "c:\\users\\ME\\TACHIKOMA\\x", "win32")).toBe(true);
+    expect(inData("/home/me/.tachikoma-data", "/home/me/.TACHIKOMA-DATA/chatgpt.json", "linux")).toBe(false);
+    expect(inData("/home/me/.tachikoma-data", "/home/me/.tachikoma-data/chatgpt.json", "linux")).toBe(true);
+    expect(inData("/Users/me/.tachikoma-data", "/Users/me/.tachikoma-data2/x", "darwin")).toBe(false);
+  });
+
+  it.runIf(process.platform === "win32" || process.platform === "darwin")("is refused before it exists by another case of its name", async () => {
+    const ctx = await tempContext("never");
+    vi.stubEnv("TACHI_DATA_DIR", path.join(ctx.root, "tachikoma"));
+    const p = path.join("TACHIKOMA", "chatgpt.json");
+    await expect(writeFileTool.run({ path: p, content: "{}" }, ctx)).rejects.toThrow("Tachikoma's data folder");
+    expect(existsSync(path.join(ctx.root, "TACHIKOMA"))).toBe(false);
+  });
+
   it("leaves a folder whose name only starts the same alone", async () => {
     const ctx = await setup();
     await writeFile(path.join(ctx.root, "data2.txt"), "fine");
     expect(await readFileTool.run({ path: "data2.txt" }, ctx)).toBe("     1\tfine");
+  });
+});
+
+describe("the settings and keys files", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  // The project is the test's home folder, so ~/.tachikoma is inside it, where `project` and `never`
+  // mode would otherwise let the model rewrite the files unasked.
+  async function home(mode: Mode, names = ["settings.json", "keybindings.json", "settings.json.lock", "errors.jsonl"]) {
+    const ctx = await tempContext(mode);
+    vi.stubEnv("USERPROFILE", ctx.root);
+    vi.stubEnv("HOME", ctx.root);
+    await mkdir(path.join(ctx.root, ".tachikoma"));
+    for (const name of names) await writeFile(path.join(ctx.root, ".tachikoma", name), "{}");
+    return ctx;
+  }
+  const refused = (abs: string) => `${abs} is one of Tachikoma's settings files, which the file tools never touch; edit it with /settings or /keybindings`;
+
+  it.each(["ask", "project", "never"] as const)("are refused to read, write and edit in %s mode, a save's lock and temporary files too", async (mode) => {
+    const ctx = await home(mode);
+    for (const name of ["settings.json", "keybindings.json", "settings.json.lock", "settings.json.1234.0a1b2c3d.tmp"]) {
+      const p = path.join(".tachikoma", name);
+      const message = refused(path.join(ctx.root, p));
+      await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow(message);
+      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(message);
+      await expect(editFileTool.run({ path: p, old_text: "{}", new_text: "[]" }, ctx)).rejects.toThrow(message);
+    }
+    expect(ctx.asked).toEqual([]);
+    for (const name of ["settings.json", "keybindings.json", "settings.json.lock"]) {
+      expect(await readFile(path.join(ctx.root, ".tachikoma", name), "utf8")).toBe("{}");
+    }
+    expect(existsSync(path.join(ctx.root, ".tachikoma", "settings.json.1234.0a1b2c3d.tmp"))).toBe(false);
+  });
+
+  // Windows gives each a short name on a volume that makes them (SETTIN~1.JSO), and the real path keeps
+  // that spelling, so only what the file is shows it is one of them. The folder's short name too.
+  it.for(["ask", "project", "never"] as const)("are refused by their short names in %s mode", async (mode, { skip }) => {
+    const ctx = await home(mode);
+    const folder = path.join(ctx.root, ".tachikoma");
+    const short = ["settings.json", "keybindings.json", "settings.json.lock"].map((name) => shortName(folder, name));
+    const shortFolder = shortName(ctx.root, ".tachikoma");
+    if (!shortFolder || short.some((s) => !s)) skip("this system or volume makes no short names");
+    for (const p of [...short.map((s) => path.join(".tachikoma", s!)), path.join(shortFolder!, short[0]!)]) {
+      const message = refused(path.join(ctx.root, p));
+      await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow(message);
+      await expect(editFileTool.run({ path: p, old_text: "{}", new_text: "[]" }, ctx)).rejects.toThrow(message);
+      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(message);
+    }
+    expect(ctx.asked).toEqual([]);
+    for (const name of ["settings.json", "keybindings.json", "settings.json.lock"]) {
+      expect(await readFile(path.join(folder, name), "utf8")).toBe("{}");
+    }
+  });
+
+  // An editor saving the keys file can leave companions beside it, as a settings save does.
+  it("refuse the keys file's companions too", async () => {
+    const ctx = await home("never", ["keybindings.json.bak"]);
+    for (const name of ["keybindings.json.bak", "keybindings.json.1234.0a1b2c3d.tmp"]) {
+      const p = path.join(".tachikoma", name);
+      await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+    }
+    expect(await readFile(path.join(ctx.root, ".tachikoma", "keybindings.json.bak"), "utf8")).toBe("{}");
+    expect(existsSync(path.join(ctx.root, ".tachikoma", "keybindings.json.1234.0a1b2c3d.tmp"))).toBe(false);
+  });
+
+  it("are refused before they exist, so a write cannot make them", async () => {
+    const ctx = await tempContext("never");
+    vi.stubEnv("USERPROFILE", ctx.root);
+    vi.stubEnv("HOME", ctx.root);
+    for (const name of ["settings.json", "keybindings.json"]) {
+      const p = path.join(".tachikoma", name);
+      await expect(writeFileTool.run({ path: p, content: "{}" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+    }
+    expect(existsSync(path.join(ctx.root, ".tachikoma"))).toBe(false);
+  });
+
+  // The security review's finding 5 (release 6 plan, choice 30): before ~/.tachikoma is made only its path can match it,
+  // and macOS's disks, as Windows', ignore case, so .TACHIKOMA is the same folder there.
+  it("match their folder's path ignoring case on Windows and macOS, and exactly elsewhere", () => {
+    expect(sameIgnoringCase("/Users/me/.tachikoma", "/Users/me/.TACHIKOMA", "darwin")).toBe(true);
+    expect(sameIgnoringCase("C:\\Users\\me\\.tachikoma", "c:\\users\\ME\\.Tachikoma", "win32")).toBe(true);
+    expect(sameIgnoringCase("/home/me/.tachikoma", "/home/me/.TACHIKOMA", "linux")).toBe(false);
+    expect(sameIgnoringCase("/Users/me/.tachikoma", "/Users/me/.tachikoma2", "darwin")).toBe(false);
+    // Through inSettings, with the system's own path rules, as for the data folder above. None of these exist.
+    expect(inSettings("/Users/me/.tachikoma", "/Users/me/.TACHIKOMA/settings.json", "darwin")).toBe(true);
+    expect(inSettings("/home/me/.tachikoma", "/home/me/.TACHIKOMA/settings.json", "linux")).toBe(false);
+    expect(inSettings("/home/me/.tachikoma", "/home/me/.tachikoma/keybindings.json", "linux")).toBe(true);
+  });
+
+  it.runIf(process.platform === "win32" || process.platform === "darwin")("are refused before they exist by another case of their folder", async () => {
+    const ctx = await tempContext("never");
+    vi.stubEnv("USERPROFILE", ctx.root);
+    vi.stubEnv("HOME", ctx.root);
+    const p = path.join(".TACHIKOMA", "settings.json");
+    await expect(writeFileTool.run({ path: p, content: "{}" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+    expect(existsSync(path.join(ctx.root, ".TACHIKOMA"))).toBe(false);
+  });
+
+  it.each(["ask", "project", "never"] as const)("are refused through a link to their folder, and through a hard link to one, in %s mode", async (mode) => {
+    const ctx = await home(mode);
+    await symlink(path.join(ctx.root, ".tachikoma"), path.join(ctx.root, "innocent"), "junction");
+    const p = path.join("innocent", "settings.json");
+    await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+    await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+    await expect(editFileTool.run({ path: p, old_text: "{}", new_text: "[]" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+    linkSync(path.join(ctx.root, ".tachikoma", "keybindings.json"), path.join(ctx.root, "innocent.json"));
+    await expect(readFileTool.run({ path: "innocent.json" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, "innocent.json")));
+    await expect(writeFileTool.run({ path: "innocent.json", content: "x" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, "innocent.json")));
+    expect(await readFile(path.join(ctx.root, ".tachikoma", "settings.json"), "utf8")).toBe("{}");
+    expect(await readFile(path.join(ctx.root, ".tachikoma", "keybindings.json"), "utf8")).toBe("{}");
+    expect(ctx.asked).toEqual([]);
+  });
+
+  // Windows and macOS ignore case, and Windows drops dots at the end of a name, so these reach the same
+  // files. A path inside one would make it a folder.
+  it("are refused by other spellings of their names, and to a path inside one", async () => {
+    const ctx = await home("never", []);
+    for (const p of ["SETTINGS.JSON", "settings.json.", "Keybindings.Json", path.join("settings.json", "x")].map((n) => path.join(".tachikoma", n))) {
+      await expect(writeFileTool.run({ path: p, content: "{}" }, ctx)).rejects.toThrow(refused(path.join(ctx.root, p)));
+    }
+    expect(readdirSync(path.join(ctx.root, ".tachikoma"))).toEqual([]);
+  });
+
+  // Windows reaches one folder by \\?\ and by the loopback share \\localhost\C$, and macOS ignores case.
+  it.runIf(process.platform === "win32" || process.platform === "darwin")("are refused by every spelling of their folder that reaches it", async () => {
+    const ctx = await home("never");
+    const file = path.join(ctx.root, ".tachikoma", "settings.json");
+    const spellings = [path.join(ctx.root, ".TACHIKOMA", "settings.json")];
+    if (process.platform === "win32") spellings.push(`\\\\?\\${file}`, `\\\\localhost\\${file[0]}$${file.slice(2)}`);
+    const reaching = spellings.filter((p) => existsSync(p));
+    expect(reaching.length).toBeGreaterThan(0);
+    for (const p of reaching) await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(refused(path.resolve(p)));
+    expect(await readFile(file, "utf8")).toBe("{}");
+  });
+
+  it("leave the folder's other files, and settings files elsewhere, alone", async () => {
+    const ctx = await home("never");
+    await mkdir(path.join(ctx.root, "project", ".tachikoma"), { recursive: true });
+    for (const p of [".tachikoma/errors.jsonl", ".tachikoma/settings.json5", ".tachikoma/old-settings.json", "project/.tachikoma/settings.json"]) {
+      await writeFileTool.run({ path: p, content: "fine" }, ctx);
+      expect(await readFileTool.run({ path: p }, ctx)).toBe("     1\tfine");
+    }
   });
 });
 

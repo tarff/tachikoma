@@ -8,31 +8,36 @@ import { accountCommand } from "./auth/chatgpt.js";
 import {
   approvalQuestion,
   endOnEpipe,
+  exitOn,
   exitSignals,
   fullPossible,
+  givenBy,
   headlessAnswer,
+  headlessDeclined,
   headlessExit,
   headlessLeftOut,
   instructionsLine,
   jsonLine,
+  leadOf,
+  MAX_TASKS,
   prose,
+  resolve,
   screenMode,
-  scrollSpeed,
-  statusSegments,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
-import { type Ask, MODES, type Mode, PermissionGate } from "./core/permissions.js";
+import { type Ask, type Mode, PermissionGate, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { Session } from "./core/session.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
 import { errorText, type Provider } from "./core/types.js";
 import { LocalExecutor } from "./exec/local.js";
-import { EFFORTS, type Effort } from "./providers/anthropic.js";
+import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
+import { loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { delegateTool } from "./tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { todoTool } from "./tools/todo.js";
@@ -41,18 +46,15 @@ import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
 import { gitBranch } from "./tui/git.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
+import { programRunning } from "./tui/owner.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
-
-// Eight Claude Haiku 5.5 subagents ran at once on the user's account with none refused; eight was the
-// most tried (release 4 design, "Before the build", 2026-10-26).
-const MAX_TASKS = 8;
 
 const HELP = `tachi: a coding agent for your terminal
 
 Usage:
-  tachi --lead <provider:model> [options]            interactive session
-  tachi --lead <provider:model> -p "<prompt>"        run one prompt, print the answer, exit
+  tachi [--lead <provider:model>] [options]          interactive session
+  tachi [--lead <provider:model>] -p "<prompt>"      run one prompt, print the answer, exit
   tachi login chatgpt [--new | --account <number>]   sign in to use your ChatGPT plan;
                       [--keychain]                   --keychain seals the tokens with a key in the keychain
   tachi logout chatgpt                               sign out of ChatGPT
@@ -61,7 +63,8 @@ Options:
   --lead <spec>     anthropic:<model> | chatgpt:<model> | openai:<model> | openrouter:<model>
                     | kimi:<model> | ollama:<model> (or set TACHI_LEAD)
                     chatgpt: uses your ChatGPT plan; openai: uses OPENAI_API_KEY
-  --mode <mode>     when to ask before acting: ${MODES.join(" | ")} (default: ask)
+  --mode <mode>     when to ask before acting: ask | project (default: ask);
+                    never is switched off until release 7
   --effort <level>  Anthropic models only: ${EFFORTS.join(" | ")}
   --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
   --worker <spec>   the model subagents run on (or set TACHI_WORKER); the lead's model unless set
@@ -74,13 +77,16 @@ Options:
   --json            with -p, print every event as one JSON line
   --raw             with -p, print the answer exactly as written, control codes and all
   -h, --help        show this help
+  Options --lead to --scroll-speed can also be set in ${shownFile()}; a flag or variable wins.
 
-In a session: /lead <provider:model> switches the lead model, /model picks it from a list,
+In a session: /lead <provider:model> switches the lead model, /lead or /model picks from a list,
 /login chatgpt and /logout chatgpt sign in and out, /tasks lists the subagents (/tasks t1 shows one,
 /tasks stop stops them), /errors summarises the error log, /screen switches between full
-screen and classic, /exit quits. Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears
-the prompt, and twice on an empty prompt quits. Ctrl+T hides or shows the to-do list. ? on an
-empty prompt lists every key.`;
+screen and classic, /settings opens the settings file in your editor, /keybindings opens the
+keys file in your editor, /vim switches vim mode in this window, /exit quits. Esc or Ctrl-C stops
+the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty prompt quits. Ctrl+T
+hides or shows the to-do list. Esc and Ctrl+T can be moved in the keys file; Ctrl-C and Ctrl-D
+cannot. ? on an empty prompt lists every key.`;
 
 function fail(message: string): never {
   console.error(message);
@@ -103,12 +109,6 @@ function askAtStart(question: string): Promise<boolean> {
       resolve(yes);
     });
   });
-}
-
-function oneOf<T extends string>(name: string, value: string | undefined, allowed: readonly T[]): T | undefined {
-  if (value === undefined) return undefined;
-  if (!(allowed as readonly string[]).includes(value)) fail(`--${name} must be one of: ${allowed.join(", ")} (got "${value}")`);
-  return value as T;
 }
 
 process.stdout.on("error", endOnEpipe);
@@ -155,25 +155,29 @@ if (parsed.help) {
   process.exit(0);
 }
 
-const leadSpec = parsed.lead ?? process.env.TACHI_LEAD;
-if (!leadSpec) fail(`No lead model given. Pass --lead or set TACHI_LEAD.\n\n${HELP}`);
+// Release 6 design, "The settings file": a broken file stops the launch as a bad flag does; its warnings come first. Then
+// release 5's order: no lead, a blank -p, --raw, then the flags. What the file holds is escaped, so a value such as an
+// OSC 52 cannot act on the terminal (release 6 plan, choice 30).
+const loaded = loadSettings();
+if ("problem" in loaded) fail(visible(loaded.problem));
+for (const warning of loaded.warnings) console.error(visible(warning));
+const leadSpec = leadOf(parsed, process.env, loaded.settings);
+if (!leadSpec) fail(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${shownFile()}.\n\n${HELP}`);
 if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
 if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works only with -p, and not with --json, which is already exact");
 if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
-const mode: Mode = oneOf("mode", parsed.mode, MODES) ?? "ask"; // the safest mode is the default
-const effort = oneOf<Effort>("effort", parsed.effort, EFFORTS);
-// Digits only: Number() would also take "1e1", " 8 " and "0x10".
-const maxTasks = parsed["max-tasks"] === undefined ? MAX_TASKS : /^\d+$/.test(parsed["max-tasks"]) ? Number(parsed["max-tasks"]) : NaN;
-if (!Number.isInteger(maxTasks) || maxTasks < 1) fail(`--max-tasks must be a whole number from 1 (got "${parsed["max-tasks"]}")`);
-let segments;
-let speed;
+let options;
 try {
-  segments = statusSegments(parsed.status);
-  // -p has no screen to scroll, so it ignores TACHI_SCROLL_SPEED as it does TACHI_CLASSIC; a bad --scroll-speed, typed
-  // for this run, still stops it (the user's choice, 2026-10-27, at Task 7's review).
-  speed = scrollSpeed(parsed["scroll-speed"], parsed.print === undefined ? process.env : {});
+  options = resolve(parsed, process.env, loaded.settings);
 } catch (err) {
   fail(errorText(err));
+}
+const { mode, effort, maxTasks, segments, speed } = options;
+// `never` is switched off until release 7 brings the sandbox, auto mode and a check on dangerous commands (release 6
+// plan, choice 30). Refused once the mode is resolved, so the flag and the file are caught alike, as the flag's own
+// check names its source.
+if (mode === "never") {
+  fail(`${parsed.mode === undefined ? `${SETTINGS}: "mode": ` : "--mode: "}never is switched off until release 7, which adds the safety checks it needs; use ask or project`);
 }
 
 const root = process.cwd();
@@ -183,25 +187,29 @@ attachErrorLog(bus, errorFile, randomUUID());
 const stats = new Stats(bus);
 
 const makeProvider = (spec: string): Provider => createProvider(spec, { effort });
+// A value came from the settings file when no flag gave it, nor a variable where it has one (an empty variable is unset).
+const fromFile = (flag: string | undefined, variable?: string) => flag === undefined && !variable;
+// A spec the settings file gave names its entry, as one from a flag or variable names the flag (the plan's choice 8). Each
+// caller escapes the whole message with visible(), as the spec may come from the file (choice 30).
+const named = (entry: string, file: boolean, flag = "") => (file ? `${SETTINGS}: "${entry}": ` : flag);
 let lead: Provider;
 let fallback: Provider | undefined;
 try {
   lead = makeProvider(leadSpec);
 } catch (err) {
-  fail(errorText(err));
+  fail(visible(`${named("lead", fromFile(parsed.lead, process.env.TACHI_LEAD))}${errorText(err)}`));
 }
 try {
-  if (parsed.fallback) fallback = makeProvider(parsed.fallback);
+  if (options.fallback) fallback = makeProvider(options.fallback);
 } catch (err) {
-  fail(`--fallback: ${errorText(err)}`); // otherwise it reads like a bad lead
+  fail(visible(`${named("fallback", fromFile(parsed.fallback), "--fallback: ")}${errorText(err)}`)); // otherwise it reads like a bad lead
 }
 // Without --worker, a subagent uses the model leading when it starts.
-const workerSpec = parsed.worker ?? process.env.TACHI_WORKER;
 let worker: Provider | undefined;
 try {
-  if (workerSpec) worker = makeProvider(workerSpec);
+  if (options.worker) worker = makeProvider(options.worker);
 } catch (err) {
-  fail(`--worker: ${errorText(err)}`);
+  fail(visible(`${named("worker", fromFile(parsed.worker, process.env.TACHI_WORKER), "--worker: ")}${errorText(err)}`));
 }
 
 const interactive = parsed.print === undefined;
@@ -211,7 +219,8 @@ if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal
 // Read once, at the start (release 4 design, "Instruction files"). TACHI_INSTRUCTIONS_TOP moves where
 // the walk down to the project starts, so tests never read the user's files.
 const instructions = await readInstructions({ root, codexHome: process.env.CODEX_HOME || undefined, top: process.env.TACHI_INSTRUCTIONS_TOP || undefined }, async (reached) => {
-  if (mode === "never") return true; // as read_file reads outside the project then
+  // As read_file reads outside the project then. Unreachable while `never` is switched off, kept for release 7 (choice 30).
+  if ((mode as Mode) === "never") return true;
   if (!interactive) {
     console.error(headlessLeftOut(reached));
     return false;
@@ -223,9 +232,7 @@ const system = [systemPrompt(root), instructions.text].filter(Boolean).join("\n\
 let declined = false;
 let ask: Ask = async (summary, _detail, owner) => {
   declined = true;
-  console.error(
-    `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused; --mode never means no checks at all): ${owner ? `${prose(owner.name)}: ` : ""}${summary}`,
-  );
+  console.error(headlessDeclined(summary, owner?.name));
   return false;
 };
 const gate = new PermissionGate(mode, (summary, detail, owner) => ask(summary, detail, owner), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it");
@@ -241,10 +248,20 @@ const tasks = new Tasks({
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus.
 const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items)), delegateTool(tasks, { headless: !interactive })];
-const session: Session = new Session({ lead, fallback, tools, system, ctx: { root, executor, gate }, bus, inbox: () => tasks.take() });
+const session: Session = new Session({
+  lead,
+  fallback,
+  tools,
+  system,
+  ctx: { root, executor, gate },
+  bus,
+  inbox: () => tasks.take(),
+  ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
+});
 
-// The executor stops running commands from an "exit" handler, which dying by a signal skips.
-for (const sig of exitSignals(process.platform)) process.on(sig, () => process.exit(128 + constants.signals[sig]));
+// The executor stops running commands from an "exit" handler, which dying by a signal skips. SIGQUIT is ignored while the
+// editor has the terminal (clilib.ts, exitOn).
+for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));
 
 if (parsed.print !== undefined) {
   let failed = false;
@@ -277,8 +294,10 @@ if (parsed.print !== undefined) {
   }
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
-  // Ctrl-C reaches the interface as a key; a SIGINT here came from outside (`kill -INT`).
-  process.on("SIGINT", () => process.exit(128 + constants.signals.SIGINT));
+  // Ctrl-C reaches the interface as a key, as raw mode is on, so a SIGINT here came from outside (`kill -INT`), or from
+  // Ctrl-C typed while the editor has the terminal, with raw mode off: that one is ignored, as Git ignores it, and the
+  // turn goes on (clilib.ts, exitOn; release 6 plan, choice 31).
+  process.on("SIGINT", exitOn("SIGINT", programRunning));
   // After the instruction files' question, which stays on the normal screen, and before Ink's first frame, which goes to
   // the second (release 5 design, "The two modes"). restoreOnExit is set up in every mode, as /screen can enter full
   // screen later. tests/tui/terminal.test.tsx ("restoreOnExit") copies this order from here to restoreWhenInkEnds: keep
@@ -291,7 +310,7 @@ if (parsed.print !== undefined) {
   const tool = systemTool(process.platform, process.env);
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
-  if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true) === "full") screen.enter();
+  if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
   ink = render(
     <App
       session={session}
@@ -321,6 +340,8 @@ if (parsed.print !== undefined) {
       input={keys}
       scrollSpeed={speed}
       clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
+      home={os.homedir()}
+      live={{ loaded, given: givenBy(parsed, process.env) }}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing

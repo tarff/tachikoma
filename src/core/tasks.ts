@@ -36,7 +36,9 @@ export interface Task {
 export interface TasksOptions {
   bus: Bus; // the lead's: subagents' spend and errors are reported there, marked with the subagent
   max: number; // --max-tasks
-  worker: () => Provider; // the model for a new subagent; throws when none can be made
+  // The model for a new subagent: the same one on every call until setWorker, so a setting made on it (App's effort)
+  // holds; throws when none can be made, which cli.tsx's never does.
+  worker: () => Provider;
   fallback?: Provider;
   system: string; // the subagents' system prompt, instructions included
   tools: Tool[];
@@ -49,12 +51,40 @@ export interface TasksOptions {
 export class Tasks {
   readonly all: Task[] = [];
   #inbox: { id: string; text: string; wake: boolean }[] = [];
-  #free: number;
+  #max: number;
+  #free: number; // below 0 while more run than a lowered max allows
+  #worker: () => Provider;
+  #fallback: Provider | undefined;
   #line: (() => void)[] = []; // subagents waiting for a free place, in order
   #stops = new Map<string, { stop: AbortController; byUser: boolean }>();
 
   constructor(private readonly opts: TasksOptions) {
+    this.#max = opts.max;
     this.#free = opts.max;
+    this.#worker = opts.worker;
+    this.#fallback = opts.fallback;
+  }
+
+  // The model a subagent started now would get (TasksOptions.worker: the same one on every call).
+  get worker(): Provider {
+    return this.#worker();
+  }
+
+  // For subagents started after the change; running ones keep theirs (release 6 design, "When a live change applies").
+  setWorker(worker: () => Provider): void {
+    this.#worker = worker;
+  }
+
+  // For subagents started after the change, as the lead's fallback (Session.setFallback).
+  setFallback(fallback: Provider | undefined): void {
+    this.#fallback = fallback;
+  }
+
+  // Lowering it stops none: it only holds back new starts until enough have ended. Raising it starts those waiting.
+  setMax(max: number): void {
+    this.#free += max - this.#max;
+    this.#max = max;
+    this.#wake();
   }
 
   get running(): number {
@@ -63,7 +93,7 @@ export class Tasks {
 
   // `signal` is the lead's turn, for a subagent it waits for: stopping the turn stops it too.
   start(task: string, opts: { description?: string; background: boolean; signal?: AbortSignal }): Task {
-    const provider = this.opts.worker();
+    const provider = this.#worker();
     const id = `t${this.all.length + 1}`;
     const stop = new AbortController();
     opts.signal?.addEventListener("abort", () => stop.abort(), { once: true });
@@ -71,7 +101,7 @@ export class Tasks {
     // `done` is set just below, before anything reads it.
     const t = { id, description: opts.description ?? task, task, model: provider.id, background: opts.background, state: "waiting", started: Date.now(), output: 0, cost: 0, costUnknown: false, lastTool: null, shown: true, messages: [] } as Omit<Task, "done"> as Task;
     this.all.push(t);
-    t.done = this.#run(t, provider, stop.signal);
+    t.done = this.#run(t, provider, this.#fallback, stop.signal);
     this.#changed();
     return t;
   }
@@ -110,8 +140,8 @@ export class Tasks {
     this.#changed();
   }
 
-  async #run(t: Task, provider: Provider, signal: AbortSignal): Promise<Result> {
-    const result = (await this.#place(signal)) ? await this.#work(t, provider, signal) : null;
+  async #run(t: Task, provider: Provider, fallback: Provider | undefined, signal: AbortSignal): Promise<Result> {
+    const result = (await this.#place(signal)) ? await this.#work(t, provider, fallback, signal) : null;
     const stopped = this.#stops.get(t.id)!;
     const r: Result = result ?? { state: "stopped", text: "" };
     if (r.state === "stopped") r.text = `${t.id} was stopped${stopped.byUser ? " by the user before it finished" : ""}.`;
@@ -128,7 +158,7 @@ export class Tasks {
   }
 
   // Null when it was stopped.
-  async #work(t: Task, provider: Provider, signal: AbortSignal): Promise<Result | null> {
+  async #work(t: Task, provider: Provider, fallback: Provider | undefined, signal: AbortSignal): Promise<Result | null> {
     const bus = new Bus();
     let failure: ErrorEvent | undefined;
     bus.on("usage", (u) => {
@@ -149,7 +179,14 @@ export class Tasks {
     });
     const owner: Owner = { name: `${t.id} (${t.description})`, signal, stop: () => this.stop(t.id) };
     const { ctx } = this.opts;
-    const session = new Session({ lead: provider, ...(this.opts.fallback ? { fallback: this.opts.fallback } : {}), tools: this.opts.tools, system: this.opts.system, ctx: { ...ctx, gate: ctx.gate.for(owner) }, bus });
+    const session = new Session({
+      lead: provider,
+      ...(fallback ? { fallback } : {}),
+      tools: this.opts.tools,
+      system: this.opts.system,
+      ctx: { ...ctx, gate: ctx.gate.for(owner) },
+      bus,
+    });
     t.messages = session.messages;
     t.state = "running";
     this.#changed();
@@ -187,9 +224,15 @@ export class Tasks {
   }
 
   #release(): void {
-    const next = this.#line.shift();
-    if (next) next();
-    else this.#free++;
+    this.#free++;
+    this.#wake();
+  }
+
+  #wake(): void {
+    while (this.#free > 0 && this.#line.length) {
+      this.#free--;
+      this.#line.shift()!();
+    }
   }
 
   #changed(): void {

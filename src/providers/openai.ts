@@ -1,6 +1,18 @@
 import OpenAI from "openai";
 import type { ChatCompletion, ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
-import { type CompletionRequest, connectReason, type Message, type Part, type Provider, type Turn } from "../core/types.js";
+import {
+  type CompletionRequest,
+  connectReason,
+  type Message,
+  marker,
+  type Part,
+  type Picture,
+  type Prepared,
+  type Provider,
+  type Turn,
+} from "../core/types.js";
+import { fitted, LIMITS } from "./pictures.js";
+import { openaiWindow } from "./windows.js";
 
 // Providers that accept OpenAI's chat-completions format. Base URLs checked 2026-10-22 against each
 // provider's docs: OpenRouter (openrouter.ai/docs), Moonshot/Kimi global platform (platform.kimi.ai),
@@ -17,10 +29,28 @@ export const PRESETS: Record<string, { baseURL?: string; keyEnv?: string }> = {
 // OpenRouter's `reasoning` / `reasoning_details`. Only these are kept, as OpenAI rejects unknown fields.
 const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_details"];
 
-export function toOpenAI(system: string, messages: Message[], kind: string): ChatCompletionMessageParam[] {
+// A picture's data inline, as a data URL (OpenAI's images-vision guide,
+// developers.openai.com/api/docs/guides/images-vision).
+export const dataUrl = (p: Picture) => `data:${p.mediaType};base64,${p.data.toString("base64")}`;
+
+// A message's text and pictures in order, for this adapter and chatgpt.ts. A picture sent goes after its marker, so a
+// later message can point the model at it by its number (release 6 design, "Which pictures a message carries"); a note
+// in a left-out picture's place is text, naming the picture itself.
+export function inOrder(m: Message, prepared: Prepared): (string | Picture)[] {
+  return m.parts.flatMap((p) => {
+    if (p.type === "text") return [p.text];
+    if (p.type !== "image") return [];
+    const sent = prepared.get(p.id) ?? p;
+    return typeof sent === "string" ? [sent] : [marker(p.id), sent];
+  });
+}
+
+export function toOpenAI(system: string, messages: Message[], kind: string, prepared: Prepared = new Map()): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [{ role: "system", content: system }];
   for (const m of messages) {
-    const text = m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
+    const pieces = inOrder(m, prepared);
+    const texts = pieces.filter((s) => typeof s === "string");
+    const text = texts.join("\n");
     if (m.role === "assistant") {
       const calls = m.parts.flatMap((p) => (p.type === "tool_call" ? [p] : []));
       // The SDK requires content unless there are tool calls; an empty reply (all output spent on
@@ -40,7 +70,15 @@ export function toOpenAI(system: string, messages: Message[], kind: string): Cha
     for (const p of m.parts) {
       if (p.type === "tool_result") out.push({ role: "tool", tool_call_id: p.callId, content: p.isError ? `Error: ${p.output}` : p.output });
     }
-    if (text) out.push({ role: "user", content: text });
+    // With a picture to send, the content is a list of parts in order, each picture an `image_url` (the openai
+    // package's ChatCompletionContentPartImage, 7.30.0). Without one it stays one string, so a request whose pictures
+    // were all left out is sent as before them.
+    if (texts.length < pieces.length) {
+      out.push({
+        role: "user",
+        content: pieces.map((s) => (typeof s === "string" ? { type: "text", text: s } : { type: "image_url", image_url: { url: dataUrl(s) } })),
+      });
+    } else if (text) out.push({ role: "user", content: text });
   }
   return out;
 }
@@ -100,13 +138,18 @@ export class OpenAIProvider implements Provider {
     this.id = `${kind}:${model}`;
   }
 
-  async complete({ system, messages, tools, signal }: CompletionRequest): Promise<Turn> {
+  async complete(req: CompletionRequest): Promise<Turn> {
+    const { system, messages, tools, signal } = req;
     const specs: ChatCompletionTool[] = tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
+    const body = (prepared: Prepared) => ({
+      model: this.model,
+      messages: toOpenAI(system, messages, this.kind, prepared),
+      ...(specs.length ? { tools: specs } : {}),
+    });
+    // The constructor took only PRESETS' names, each of which has its limits (a test checks every one).
+    const sent = await fitted(req, LIMITS[this.kind as keyof typeof LIMITS], body);
     try {
-      const res = await this.#client.chat.completions.create(
-        { model: this.model, messages: toOpenAI(system, messages, this.kind), ...(specs.length ? { tools: specs } : {}) },
-        { signal },
-      );
+      const res = await this.#client.chat.completions.create(sent, { signal });
       return fromOpenAI(res, this.kind);
     } catch (err) {
       // The timeout error is a subclass of the connection error, so it is checked first.
@@ -120,5 +163,13 @@ export class OpenAIProvider implements Provider {
       }
       throw err;
     }
+  }
+
+  // The table is OpenAI's, so it answers only for openai leads at OpenAI's own address. Another address, set by
+  // OPENAI_BASE_URL, may serve other models under the same names, as OpenRouter, Kimi and Ollama do. Null shows the tokens
+  // in use.
+  async contextWindow(): Promise<number | null> {
+    if (this.kind !== "openai" || !/^https:\/\/api\.openai\.com\/v1\/?$/.test(this.#client.baseURL)) return null;
+    return openaiWindow(this.model);
   }
 }

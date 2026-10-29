@@ -9,3 +9,13 @@ export function dataDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.P
   if (platform === "darwin") return path.join(home, "Library", "Application Support", "tachikoma");
   return path.join(home, ".local", "share", "tachikoma");
 }
+
+// The settings file (release 6 design, "The settings file"): ~/.tachikoma/settings.json, the only one read, so a
+// repository the user clones can never change how Tachikoma behaves. The keys file is beside it.
+export const SETTINGS = "settings.json";
+export const KEYBINDINGS = "keybindings.json";
+export const SETTINGS_DIR = ".tachikoma";
+
+export function settingsDir(home = os.homedir()): string {
+  return path.join(home, SETTINGS_DIR);
+}

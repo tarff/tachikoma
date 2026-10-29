@@ -290,9 +290,9 @@ ${end}
   // cli.tsx's signal handlers, from exitSignals. Windows cannot send a process SIGBREAK from Node (process.kill gives
   // ENOSYS), so this runs elsewhere only; the timer keeps the child alive until the signal comes.
   it.skipIf(process.platform === "win32")("puts the terminal back on SIGQUIT, and exits with 128 + its number", { timeout: 15_000 }, () => {
-    const r = run(`import { constants } from "node:os";
-import { exitSignals } from ${url("src/clilib.ts")};
-for (const sig of exitSignals(process.platform)) process.on(sig, () => process.exit(128 + constants.signals[sig]));
+    const r = run(`import { exitOn, exitSignals } from ${url("src/clilib.ts")};
+import { programRunning } from ${url("src/tui/owner.ts")};
+for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));
 setTimeout(() => {}, 5000);
 process.kill(process.pid, "SIGQUIT");`);
     expect(r.code).toBe(128 + constants.signals.SIGQUIT);

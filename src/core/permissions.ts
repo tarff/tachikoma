@@ -3,6 +3,9 @@
 // never:   never ask (meant for the Docker sandbox)
 export type Mode = "ask" | "project" | "never";
 export const MODES: Mode[] = ["ask", "project", "never"];
+// The modes a mistake's words offer: `never` is still read, so the launch can say it is switched off until release 7
+// (release 6 plan, choice 30).
+export const OFFERED: Mode[] = ["ask", "project"];
 
 export interface Action {
   kind: "read" | "write" | "shell";
@@ -43,7 +46,9 @@ export interface Owner {
   stop: () => void;
 }
 
-export type Ask = (summary: string, detail?: string, owner?: Owner) => Promise<boolean>;
+// `plain`: the summary is a question of its own, not an action to allow, such as the session's "Send again without the
+// pictures" (release 6 plan, Task 18), so it is asked without "Allow" before it.
+export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean) => Promise<boolean>;
 
 export class PermissionGate {
   #mode: Mode;

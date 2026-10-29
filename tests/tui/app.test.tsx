@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,9 +7,14 @@ import { stripVTControlCharacters } from "node:util";
 import { type Instance, render as renderInk } from "ink";
 import { render } from "ink-testing-library";
 import chalk from "chalk";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { Completions } from "openai/resources/chat/completions";
+import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
+import { Models } from "@anthropic-ai/sdk/resources/models";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
-import { type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
+import type { Given } from "../../src/clilib.js";
+import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
+import { system32 } from "../../src/exec/env.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import type { Provider } from "../../src/core/types.js";
@@ -18,16 +23,33 @@ import { Tasks } from "../../src/core/tasks.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
 import { History } from "../../src/tui/history.js";
+import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import type { ModelGroup } from "../../src/providers/models.js";
+import { OpenAIProvider } from "../../src/providers/openai.js";
+import { readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
-import { Clipboard } from "../../src/tui/clipboard.js";
+import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
+import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
+import { Pictures, type Read } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
-import { Bus, FakeProvider, Held, callTool, reply, tempContext, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, reply, standInEditor, tempContext, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
+
+// How many times each file has been read, so a test can tell the settings watcher has read a file it wrote (readsOf,
+// below); otherwise node:fs's own. It counts every reader, so a test reads `where` itself only outside a readsOf wait.
+const reads = vi.hoisted(() => new Map<string, number>());
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  const readFileSync = ((file: unknown, ...rest: unknown[]) => {
+    if (typeof file === "string") reads.set(file, (reads.get(file) ?? 0) + 1);
+    return (fs.readFileSync as (...args: unknown[]) => unknown)(file, ...rest);
+  }) as typeof fs.readFileSync;
+  return { ...fs, readFileSync };
+});
 
 // Wait until the screen shows `text`; the session runs real file I/O in the background.
 async function until(app: ReturnType<typeof render>, text: string) {
@@ -47,9 +69,17 @@ async function gone(app: ReturnType<typeof render>, text: string) {
   expect(app.lastFrame()).not.toContain(text);
 }
 
+// No test opens a real editor (release 6 plan, Task 12): Ctrl+G, Ctrl+X Ctrl+E, /settings and /keybindings run VISUAL,
+// which a test that opens one sets to a stand-in (helpers.ts, standInEditor), and which names no program elsewhere.
+// The variables go back only once the App is unmounted, so none it still runs reads the user's own.
+beforeEach(() => {
+  vi.stubEnv("VISUAL", "tachi-test-no-editor");
+  vi.stubEnv("EDITOR", "");
+});
 const mounted: ReturnType<typeof render>[] = [];
 afterEach(() => {
   for (const app of mounted.splice(0)) app.unmount();
+  vi.unstubAllEnvs();
 });
 
 type Login = AppProps["login"];
@@ -61,6 +91,9 @@ const histories = path.join(mkdtempSync(path.join(tmpdir(), "tachi-")), "history
 mkdirSync(histories);
 beforeAll(() => privateDir(histories)); // so the first test does not wait for it
 let nextHistory = 0;
+// The home folder whose settings and keys files /settings and /keybindings open, shared by the tests that do not look
+// at them.
+const sharedHome = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
@@ -71,6 +104,7 @@ async function mount(
     models?: ModelGroup[];
     note?: string;
     slow?: boolean;
+    listing?: Promise<void>; // what the model lists' read waits on before it answers; nothing when not given
     made?: string[];
     segments?: Segment[];
     branches?: string[];
@@ -87,16 +121,29 @@ async function mount(
     leadFails?: string; // what /lead and the picker throw, in place of making a lead
     run?: ((text: string) => Promise<void>) | null; // the clipboard's stand-in tool; null for none, as on Linux over SSH
     written?: (s: string) => void; // called with each of the screen's writes, as it is made
+    bindings?: Bindings; // the table of keys; the default table when not given
+    home?: string; // the folder holding the settings file; sharedHome when not given
+    live?: AppProps["live"]; // the settings file as launch read it, which the App then watches; not watched when not given
+    pictures?: Pictures; // the session's pictures, whose reads the test ends
+    readPicture?: AppProps["readPicture"]; // Alt+V's read; one that never answers when not given, null for no reader
   } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
-  let ask: (s: string, d?: string, o?: Owner) => Promise<boolean> = async () => false;
+  let ask: Ask = async () => false;
   const gate = new PermissionGate(opts.mode ?? "ask", (s, d, o) => ask(s, d, o));
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
-  const session = new Session({ lead, tools: [...TOOLS, delegateTool(tasks, { headless: false })], system: "t", ctx: { ...ctx, gate }, bus, inbox: () => tasks.take() });
+  const session = new Session({
+    lead,
+    tools: [...TOOLS, delegateTool(tasks, { headless: false })],
+    system: "t",
+    ctx: { ...ctx, gate },
+    bus,
+    inbox: () => tasks.take(),
+    ask: (...a) => ask(...a), // as cli.tsx gives it
+  });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
   if (opts.past) writeFileSync(historyFile, opts.past.map((p) => `${JSON.stringify(p)}\n`).join(""));
   const screen = new Screen(
@@ -135,6 +182,7 @@ async function mount(
       listModels={async (signal, warn) => {
         if (opts.note) warn(opts.note);
         if (opts.slow) await new Promise((resolve) => signal.addEventListener("abort", resolve)); // until Ctrl-C
+        await opts.listing;
         return opts.models ?? [];
       }}
       bindAsk={(fn) => {
@@ -145,6 +193,13 @@ async function mount(
       mouse={mouse}
       scrollSpeed={opts.scrollSpeed ?? 3}
       clipboard={(report) => new Clipboard(write, run, report)}
+      bindings={opts.bindings}
+      home={opts.home ?? sharedHome}
+      live={opts.live}
+      pictures={opts.pictures}
+      // No test reads the user's clipboard: unless a test gives its own reader, Alt+V's read never answers, and the
+      // test ends it through the session's Pictures.
+      readPicture={opts.readPicture === undefined ? () => new Promise(() => {}) : opts.readPicture}
     />,
   );
   mounted.push(app);
@@ -152,7 +207,7 @@ async function mount(
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
+  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, gate, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -263,10 +318,19 @@ describe("App", () => {
     expect(app.lastFrame()).toContain("lead is now fake:b");
   });
 
-  it("shows how to use /lead, and does not send it to the model", async () => {
-    const { app, session } = await mount([]);
+  // Release 6 plan, choice 34 (the user: "can we have lead list the models?"): /lead alone opens the model list, as
+  // /model does; /lead with a model is unchanged (above).
+  it("opens the model list on /lead alone, as /model does, and does not send it to the model", async () => {
+    const made: string[] = [];
+    const { app, session } = await mount([], { made, models: [{ provider: "fake", models: ["a", "b"] }] });
     await type(app, "/lead");
-    expect(app.lastFrame()).toContain("Usage: /lead <provider:model>");
+    await until(app, "● fake:a");
+    await tick(); // the picker starts reading keys just after it first appears
+    app.stdin.write("\u001b[B"); // down
+    await tick();
+    app.stdin.write("\r");
+    await until(app, "lead is now fake:b");
+    expect(made).toEqual(["fake:b"]);
     expect(session.messages).toEqual([]);
   });
 
@@ -320,8 +384,11 @@ describe("App", () => {
     const { app, session } = await mount([], { lead, login, made });
     await type(app, "/LOGIN chatgpt");
     await until(app, "signed in");
-    await type(app, "/Lead");
-    await until(app, "Usage: /lead");
+    await type(app, "/Lead"); // the model list, as /lead opens it
+    await until(app, "Filter:");
+    await tick(); // the picker starts reading keys just after it first appears
+    await press(app, "\u001b");
+    await until(app, "? for shortcuts");
     await type(app, "/Errors");
     await until(app, "No errors logged yet.");
     await type(app, "/Tmp is full");
@@ -389,6 +456,30 @@ describe("App", () => {
     expect(session.messages).toEqual([]);
   });
 
+  // Choice 26, the user's: /lead, a /model pick and /screen change this window only, and save nothing, nor does
+  // Shift+Tab. Unwatched here, so nothing else makes ~/.tachikoma either.
+  it("changes the lead with /lead and a /model pick, and the screen with /screen, in this window only, making no settings file", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    const made: string[] = [];
+    const { app, session } = await mount([], { models, full: true, home, made });
+    await press(app, "\u001b[Z");
+    await until(app, "mode is now project");
+    await type(app, "/lead ollama:a");
+    await until(app, "lead is now fake:b");
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick(); // the picker starts reading keys just after it first appears
+    app.stdin.write("c");
+    await tick();
+    app.stdin.write("\r");
+    await waitFor(() => made.length === 2);
+    await type(app, "/screen");
+    await until(app, "screen is now classic");
+    expect(made).toEqual(["ollama:a", "fake:c"]);
+    expect(session.lead.id).toBe("fake:b");
+    expect(existsSync(settingsDir(home))).toBe(false);
+  });
+
   it("moves both ways, unfilters on Backspace, says when nothing matches, and closes on Ctrl-C", async () => {
     const made: string[] = [];
     const { app } = await mount([], { models, made });
@@ -414,8 +505,8 @@ describe("App", () => {
     app.stdin.write("\u0003");
     await until(app, "›");
     expect(app.lastFrame()).not.toContain("fake:c");
-    await type(app, "/lead"); // still running
-    await until(app, "Usage: /lead");
+    await type(app, "/lead"); // still running: the list opens again
+    await until(app, "fake:c");
   });
 
   it("shows a provider with no models, and what signing in says while the lists are read", async () => {
@@ -544,6 +635,23 @@ describe("App", () => {
     expect(app.lastFrame()).toContain("% left");
   });
 
+  it("shows the bar for an OpenAI API lead once a reply says how much is in use", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "sk-test");
+    vi.stubEnv("OPENAI_BASE_URL", "");
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+      vi.restoreAllMocks();
+    });
+    vi.spyOn(Completions.prototype, "create").mockResolvedValue({
+      choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "there", refusal: null } }],
+      usage: { prompt_tokens: 209_000, completion_tokens: 1_000, total_tokens: 210_000 },
+    } as never);
+    const { app } = await mount([], { lead: new OpenAIProvider("openai", "gpt-5.5") });
+    await type(app, "hi");
+    await until(app, "there");
+    await until(app, "██░░░░░░░░ 80% left"); // 210,000 of gpt-5.5's 1,050,000
+  });
+
   it("keeps going when the context-window lookup fails", async () => {
     const broken = Object.assign(new FakeProvider("a", [reply("still here")]), { contextWindow: () => Promise.reject(new Error("no window")) });
     const { app } = await mount([], { lead: broken });
@@ -556,6 +664,21 @@ describe("App", () => {
     const { app, bus } = await mount([]);
     bus.emit("error", { kind: "fallback", attempted: "x", message: "fake:a declined; fake:b answered instead", lead: "fake:a" });
     await until(app, "↪ fake:a declined; fake:b answered instead");
+    expect(app.lastFrame()).toContain("0 errors");
+  });
+
+  it("says how many pictures a request left out to fit its provider", async () => {
+    const lead: Provider = {
+      id: "fake:a",
+      complete: async (req) => {
+        req.leftOut?.(2, "Anthropic's 32 MB");
+        return reply("seen");
+      },
+    };
+    const { app } = await mount([], { lead });
+    await type(app, "hi");
+    await until(app, "seen");
+    expect(app.lastFrame()).toContain("2 pictures were left out of this request to fit Anthropic's 32 MB.");
     expect(app.lastFrame()).toContain("0 errors");
   });
 
@@ -990,11 +1113,11 @@ describe("App's queue", () => {
     const { app, session } = await mount([], { lead });
     await type(app, "one");
     await until(app, "Esc to stop");
-    await press(app, "two", "\r", "/lead", "\r", "three", "\r", "\u001b");
+    await press(app, "two", "\r", "/tasks", "\r", "three", "\r", "\u001b");
     await until(app, "last");
     release();
     expect(prompts(session)).toEqual(["one", "two", "three"]);
-    expect(app.lastFrame()).toMatch(/boom[\s\S]*Usage: \/lead[\s\S]*> three/);
+    expect(app.lastFrame()).toMatch(/boom[\s\S]*No subagents yet.[\s\S]*> three/);
   });
 
   it("brings the queue back into the prompt on Ctrl-C, after what is typed, one entry a line, and sends nothing more", async () => {
@@ -1046,12 +1169,12 @@ describe("App's queue", () => {
     expect(app.lastFrame()).not.toContain("queued");
   });
 
-  it("waits after a queued /model until the list is closed", async () => {
+  it.each(["/model", "/lead"])("waits after a queued %s until the list is closed", async (command) => {
     const { lead, release } = gated([reply("r1"), reply("r2")]);
     const { app, session } = await mount([], { lead, models: [{ provider: "fake", models: ["a", "c"] }] });
     await type(app, "one");
     await until(app, "Esc to stop");
-    await press(app, "/model", "\r", "two", "\r");
+    await press(app, command, "\r", "two", "\r");
     release();
     await until(app, "fake:c");
     await tick();
@@ -1397,7 +1520,7 @@ describe("App's menus", () => {
   it("lists the commands for / at the start of an empty prompt, narrowing as the command is typed", async () => {
     const { app } = await mount([]);
     await press(app, "/");
-    expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model\n  /model  Pick the lead model from a list\n");
+    expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model; alone, pick it from a list\n  /model  Pick the lead model from a list\n");
     expect(app.lastFrame()).toContain("↑↓ choose · Tab fill · Enter run · Esc close");
     await press(app, "e");
     expect(app.lastFrame()).toContain("› /e\n  /errors  Summarise the error log\n  /exit  Quit\n");
@@ -1476,6 +1599,8 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     expect(app.lastFrame()).toContain("Shift+Enter, \\ then Enter, or Ctrl+J  new line");
     expect(app.lastFrame()).toContain("Ctrl+O  the last turn's tool calls in full");
     expect(app.lastFrame()).toContain("Ctrl+T  show or hide the to-do list");
+    expect(app.lastFrame()).toContain("  Ctrl+G or Ctrl+X Ctrl+E  open the prompt in your editor");
+    expect(app.lastFrame()).toContain("  Ctrl+S  stash the prompt or bring it back · ");
     // Keys that work in Windows Terminal, where Ctrl+Backspace is Backspace and Ctrl+_ cannot be typed.
     expect(app.lastFrame()).toContain("Alt+Backspace  the word before");
     expect(app.lastFrame()).toContain("Ctrl+Z  undo");
@@ -1726,6 +1851,8 @@ describe("App in full screen", () => {
         fullPossible
         scrollSpeed={3}
         clipboard={(report) => new Clipboard(() => {}, null, report)}
+        readPicture={() => new Promise(() => {})} // never answers: no test reads the user's clipboard
+        home={sharedHome}
       />,
       { stdout: stdout as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
     );
@@ -3143,6 +3270,35 @@ describe("App's detail view in full screen", () => {
     });
   });
 
+  // The text-field rule (plan, Task 6): while a search is typed, a printable key goes into it.
+  it("types q, n and / into a search, the view staying open and no match stepped, and drops the search on Esc", async () => {
+    const { app } = await record(logins());
+    await press(app, "/", "login", "\r", "/"); // a search kept, then a new one typed
+    await press(app, "n");
+    expect(plain(app)[20]).toBe("/n");
+    await press(app, "q");
+    expect(plain(app)[20]).toBe("/nq (no match)");
+    await press(app, "/");
+    expect(plain(app)[20]).toBe("/nq/ (no match)");
+    expect(plain(app)[0]).toBe("the login 30."); // where the kept search left it: n stepped to no other match
+    await press(app, "\u001b");
+    expect(plain(app)[20]).toBe(KEYS);
+    expect(plain(app)[0]).toBe("the login 30.");
+  });
+
+  it("scrolls on PgUp, PgDn, Ctrl+Home and Ctrl+End", async () => {
+    const { app } = await record(lines(100));
+    const top = () => shown(app)[0];
+    await press(app, PG_DOWN, PG_DOWN); // half of 20, twice
+    expect(top()).toBe("line 18.");
+    await press(app, PG_UP);
+    expect(top()).toBe("line 8.");
+    await press(app, CTRL_END);
+    expect(top()).toBe("line 80.");
+    await press(app, CTRL_HOME);
+    expect(top()).toBe("t1 (find x), done: 0 tool calls");
+  });
+
   it("closes the view for a question, which then brings its detail into the conversation's view, and takes n as its answer", async () => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
     await press(app, "\u000f");
@@ -3310,8 +3466,9 @@ describe("App's detail view in full screen", () => {
     expect(app.lastFrame()).toContain("› next\n");
   });
 
+  const long = (i: number) => `said ${i}. ${"word ".repeat(14).trimEnd()}`; // under 80 columns: one row at 99, two at 59
+
   it("wraps the view's lines again on a resize", async () => {
-    const long = (i: number) => `said ${i}. ${"word ".repeat(14).trimEnd()}`; // under 80 columns: one row at 99, two at 59
     const { app } = await record(lines(3, long));
     expect(shown(app)[3]).toBe(long(1));
     Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
@@ -3321,6 +3478,101 @@ describe("App's detail view in full screen", () => {
     expect(rows[2]).toMatch(/^said 0\. word/);
     expect(rows[3]).toMatch(/^word/);
     expect(rows[4]).toMatch(/^said 1\. word/);
+  });
+
+  // A record opened by the queue going on from a listener set up once, at mount: a question's answer (bindAsk), the end
+  // of a turn the bus's tasks event started, and the end of a command clicked in the menu (the mouse's listener). Each
+  // way it wraps at the width the terminal has then. They pass on the code as it is because each drawing wraps an open
+  // view again (App.tsx, `detail`'s re-wrap); they catch a listener reading an old drawing only if that re-wrap goes.
+  // The last, a turn started before the resize opening the record from its own next(), is the one that pins
+  // openDetail reading the width from `frame`.
+  const narrow = async (app: ReturnType<typeof render>) => {
+    Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
+    app.stdout.emit("resize");
+    await tick();
+  };
+  const wrappedAt60 = (app: ReturnType<typeof render>) => {
+    const rows = shown(app, 60);
+    expect(rows[0]).toBe("t1 (find x), done: 0 tool calls");
+    expect(rows[2]).toMatch(/^said 0\. word/);
+    expect(rows[3]).toMatch(/^word/);
+    expect(rows[4]).toMatch(/^said 1\. word/);
+  };
+
+  it("wraps a record opened after a resize at the new width, when a question's answer lets the queue go on", async () => {
+    const lead = new Held();
+    const worker = new FakeProvider("w", [reply(lines(3, long))]);
+    const { app, ask, session } = await mount([], { full: true, lead, worker });
+    await type(app, "go");
+    lead.answer(callTool("c1", "delegate", { description: "find x", task: "find x" }));
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("done");
+    await gone(app, "Esc to stop");
+    await type(app, "hi");
+    await type(app, "/tasks t1"); // queued: a turn is running
+    const answer = ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n]");
+    lead.answer("ok"); // the turn ends, and the queue waits for the question
+    await waitFor(() => session.messages.at(-1)?.role === "assistant");
+    await narrow(app);
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    await until(app, "t1 (find x), done: 0 tool calls");
+    wrappedAt60(app);
+  });
+
+  it("wraps a record opened after a resize at the new width, when a background subagent's ending starts the turn before it", async () => {
+    const lead = new Held();
+    const worker = new Held("fake:w");
+    const { app } = await mount([], { full: true, lead, worker });
+    await type(app, "go");
+    lead.answer(callTool("c1", "delegate", { description: "find x", task: "find x", background: true }));
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("started it");
+    await gone(app, "Esc to stop");
+    await narrow(app);
+    worker.answer(lines(3, long)); // the bus's tasks event: the lead, idle, reads t1's answer in a turn of its own
+    await waitFor(() => lead.asked.length === 3);
+    await type(app, "/tasks t1"); // queued: the turn reading t1's answer is running
+    lead.answer("t1 says found");
+    await until(app, "t1 (find x), done: 0 tool calls");
+    wrappedAt60(app);
+  });
+
+  it("wraps a record opened after a resize at the new width, when a command clicked in the menu lets the queue go on", async () => {
+    let signedIn!: () => void;
+    const login: Login = () => new Promise<void>((resolve) => (signedIn = resolve));
+    const worker = new FakeProvider("w", [reply(lines(3, long))]);
+    const { app, mouse } = await mount([callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")], { full: true, worker, login });
+    await type(app, "go");
+    await until(app, "done");
+    await narrow(app);
+    await press(app, "/lo");
+    const row = shown(app, 60).findIndex((r) => r.startsWith("  /login chatgpt"));
+    expect(row).toBeGreaterThan(-1);
+    await pointer(mouse, ...click(4, row));
+    await until(app, "Waiting for the browser");
+    await type(app, "/tasks t1"); // queued while signing in
+    signedIn();
+    await until(app, "t1 (find x), done: 0 tool calls");
+    wrappedAt60(app);
+  });
+
+  it("wraps a record opened after a resize at the new width, when the turn it waited for ends", async () => {
+    const lead = new Held();
+    const worker = new FakeProvider("w", [reply(lines(3, long))]);
+    const { app } = await mount([], { full: true, lead, worker });
+    await type(app, "go");
+    lead.answer(callTool("c1", "delegate", { description: "find x", task: "find x" }));
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("done");
+    await gone(app, "Esc to stop");
+    await type(app, "hi");
+    await type(app, "/tasks t1"); // queued: a turn is running
+    await narrow(app);
+    lead.answer("ok"); // the turn, started at 100 columns, ends, and its own next() opens the record
+    await until(app, "t1 (find x), done: 0 tool calls");
+    wrappedAt60(app);
   });
 
   it("goes round to the first match when every match is above the view", async () => {
@@ -3432,6 +3684,8 @@ async function onTerminal(
     classic?: boolean;
     intro?: AppProps["intro"];
     step?: (s: string) => void;
+    home?: string; // the folder holding the settings file; sharedHome when not given
+    columns?: number; // the terminal's width; 100 when not given
   } = {},
 ) {
   const worker = opts.worker ?? new FakeProvider("w", []);
@@ -3440,7 +3694,7 @@ async function onTerminal(
     steps.push(s);
     opts.step?.(s);
   };
-  const terminal = Object.assign(new EventEmitter(), { isTTY: true, columns: 100, rows: 24, write: (s: string) => (record(s), true) });
+  const terminal = Object.assign(new EventEmitter(), { isTTY: true, columns: opts.columns ?? 100, rows: 24, write: (s: string) => (record(s), true) });
   const typed: string[] = [];
   const keyboard = Object.assign(new EventEmitter(), {
     isTTY: true,
@@ -3459,6 +3713,8 @@ async function onTerminal(
       reader = to;
       record(to ? "divert(reader)" : "divert(null)");
     },
+    release: () => record("release"),
+    retake: () => record("retake"),
   };
   const bus = new Bus();
   const ctx = await tempContext();
@@ -3495,6 +3751,8 @@ async function onTerminal(
       input={input}
       scrollSpeed={3}
       clipboard={(report) => new Clipboard(() => {}, null, report)}
+      readPicture={() => new Promise(() => {})} // never answers: no test reads the user's clipboard
+      home={opts.home ?? sharedHome}
     />,
     { stdout: terminal as never, stdin: keyboard as never, debug: false, patchConsole: false, exitOnCtrlC: false, interactive: true },
   );
@@ -3503,6 +3761,7 @@ async function onTerminal(
   return {
     steps,
     ink,
+    terminal,
     session,
     bus,
     // Each key in its own read, to Ink.
@@ -3573,6 +3832,18 @@ describe("App's detail view printed out", () => {
       expect(steps[first + 2]).toBe(PASTE_ON); // so a paste comes marked, and the reader can drop it
       expect(steps[first + 3]).toBe("divert(reader)");
     });
+  });
+
+  it("prints the view at the terminal's width after a resize", async () => {
+    const { steps, key, terminal } = await record();
+    terminal.columns = 60;
+    terminal.emit("resize");
+    await tick();
+    steps.length = 0;
+    await key("[");
+    const first = steps.indexOf(FIRST_SCREEN);
+    const lines = ["t1 (find x), done: 0 tool calls", "Answer:", "one", "", "three", LONG.slice(0, 60), LONG.slice(60, 120), LONG.slice(120), LAST, ""];
+    expect(stripVTControlCharacters(steps[first + 1]!)).toBe(lines.join("\n"));
   });
 
   it("comes back on q, not on other keys: the reader let go, the second screen, the mouse on, the view drawn again, then the keyboard", async () => {
@@ -3903,7 +4174,7 @@ describe("App's /screen", () => {
     expect(app.lastFrame()).not.toContain("screen is now");
     await type(app, "/nope");
     await until(app, "Unknown command: /nope.");
-    expect(app.lastFrame()).toContain("/errors, /screen, /exit");
+    expect(app.lastFrame()!.replaceAll("\n", " ")).toContain("/errors, /screen, /settings, /keybindings, /vim, /exit"); // a long line wraps
     await press(app, "/", "s");
     expect(app.lastFrame()).toContain("› /s\n  /screen  Switch between full screen and classic\n");
   });
@@ -4251,5 +4522,2693 @@ describe("App in classic mode", () => {
     const frame = app.lastFrame();
     await press(app, PG_UP, PG_DOWN, SHIFT_UP, SHIFT_DOWN, CTRL_HOME, CTRL_END);
     expect(app.lastFrame()).toBe(frame);
+  });
+
+  it("does nothing on the scroll keys at a question, as release 4 did", async () => {
+    const { app, ask } = await mount([], { intro: said(60) });
+    void ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    const frame = app.lastFrame();
+    await press(app, PG_UP, PG_DOWN, SHIFT_UP, SHIFT_DOWN, CTRL_HOME, CTRL_END);
+    expect(app.lastFrame()).toBe(frame);
+  });
+});
+
+// The keys as a table of actions (release 6 design, "Keys become named actions", "Bindings come first"; plan, Task 6).
+describe("App's keys from the table of actions", () => {
+  // The default table with `keys` laid over one context's.
+  const table = (context: Context, keys: Record<string, string | null>) =>
+    new Bindings(tableOf({ ...DEFAULTS, [context]: { ...DEFAULTS[context], ...keys } }));
+  const todo: TodoItem[] = [{ text: "write the fix", status: "pending" }];
+  const CTRL_X = "\u0018";
+
+  it("takes Ctrl+E from the editor's end-of-line when the table binds it to chat:externalEditor", async () => {
+    const editor = standInEditor();
+    editor.next("edited");
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { app } = await mount([], { bindings: table("Chat", { "ctrl+e": "chat:externalEditor" }) });
+    await press(app, "ab", "\u0001", "\u0005"); // Ctrl+A, then Ctrl+E: the editor opens on the prompt
+    await until(app, "› edited\n");
+    expect(editor.given()!.text).toBe("ab");
+    const { app: usual } = await mount([]);
+    await press(usual, "ab", "\u0001", "\u0005", "x");
+    expect(usual.lastFrame()).toContain("› abx\n");
+  });
+
+  // Release 6 plan, Task 23 (the spec review): `?` asks the contexts the prompt obeys, Scroll among them in full screen.
+  it("leaves End out of ?'s line keys when Scroll binds it in full screen, and keeps it in classic mode", async () => {
+    const bindings = table("Scroll", { end: "scroll:bottom" });
+    const { app: full } = await mount([], { full: true, bindings });
+    await press(full, "?");
+    await until(full, "Keys:");
+    expect(full.lastFrame()).toContain("  Ctrl+A Ctrl+E  line start, end · Home  line start · ");
+    const { app: classic } = await mount([], { bindings });
+    await press(classic, "?");
+    expect(classic.lastFrame()).toContain("  Home End or Ctrl+A Ctrl+E  line start, end · ");
+  });
+
+  it("moves the to-do list's key to Ctrl+Y, Ctrl+T doing nothing, and lists Ctrl+Y on ?", async () => {
+    const { app, bus } = await mount([], { bindings: table("Global", { "ctrl+t": null, "ctrl+y": "app:toggleTodos" }) });
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0014");
+    expect(app.lastFrame()).toContain("☐ write the fix");
+    await press(app, "\u0019");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("  Ctrl+Y  show or hide the to-do list");
+    expect(app.lastFrame()).not.toContain("Ctrl+T");
+  });
+
+  it("names the key chat:cancel is on in the working line, and stops the turn on it", async () => {
+    const { app } = await mount([], { lead: hanging(), bindings: table("Chat", { escape: null, "ctrl+q": "chat:cancel" }) });
+    await type(app, "hi");
+    await until(app, "· Ctrl+Q to stop");
+    await press(app, "\u0011");
+    await gone(app, "Ctrl+Q to stop");
+  });
+
+  // Runs `body` on a fake clock (setTimeout and Date); `wait` moves it on by `ms`, then lets one turn of the event loop
+  // pass (setImmediate is not faked), in which the screen is drawn again.
+  const onFakeClock = async (body: (wait: (ms: number) => Promise<void>) => Promise<void>) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      await body(async (ms) => {
+        await vi.advanceTimersByTimeAsync(ms);
+        await new Promise((resolve) => setImmediate(resolve));
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  };
+
+  // Ctrl+X Ctrl+E is bound to a quiet action here: chat:externalEditor hands the terminal to an editor, which is tested
+  // with the editor ("App's external editor").
+  it("shows a chord's first key in the hint row until the second key, or for 3 s", async () => {
+    const { app } = await mount([], { bindings: table("Chat", { "ctrl+x ctrl+e": "app:toggleTodos" }) });
+    await onFakeClock(async (wait) => {
+      app.stdin.write(CTRL_X);
+      await wait(10);
+      expect(app.lastFrame()).toContain("\nctrl+x ...\n");
+      app.stdin.write("\u0005"); // Ctrl+X Ctrl+E
+      await wait(10);
+      expect(app.lastFrame()).not.toContain("ctrl+x");
+      expect(app.lastFrame()).toContain("? for shortcuts");
+      app.stdin.write(CTRL_X);
+      await wait(2_980);
+      expect(app.lastFrame()).toContain("\nctrl+x ...\n");
+      await wait(20); // 3 s since Ctrl+X
+      expect(app.lastFrame()).not.toContain("ctrl+x");
+      expect(app.lastFrame()).toContain("? for shortcuts");
+    });
+  });
+
+  // Each of the four keys moves the conversation: back up from the bottom, to the top, down from it, and to the bottom.
+  const scrolls = async (app: ReturnType<typeof render>) => {
+    const bottom = shown(app)[0];
+    await press(app, PG_UP);
+    expect(shown(app)[0]).not.toBe(bottom);
+    await press(app, CTRL_HOME);
+    expect(shown(app)[0]).toBe("said 0.");
+    await press(app, PG_DOWN);
+    expect(shown(app)[0]).not.toBe("said 0.");
+    await press(app, CTRL_END);
+    expect(shown(app)[0]).toBe(bottom);
+  };
+
+  it("scrolls on PgUp, PgDn, Ctrl+Home and Ctrl+End in full screen at the prompt, with a menu open, at a question and in Ctrl+R's search", async () => {
+    const { app, ask } = await mount([], { full: true, intro: said(60), past: ["about"] });
+    await scrolls(app);
+    await press(app, "/");
+    await until(app, "↑↓ choose");
+    await scrolls(app);
+    await press(app, "\u007f", "\u0012");
+    await until(app, "search:");
+    await scrolls(app);
+    await press(app, "\u0003");
+    const answer = ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await scrolls(app);
+    await press(app, "n");
+    expect(await answer).toBe(false);
+  });
+
+  it("takes a letter bound in Chat as its action at the prompt, and types it into Ctrl+R's query", async () => {
+    const { app, bus } = await mount([], { bindings: table("Chat", { x: "app:toggleTodos" }) });
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "x");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    await press(app, "\u0012", "x");
+    expect(app.lastFrame()).toContain("search: x (no match) ·");
+  });
+
+  it("types q into Ctrl+R's query, and Esc still puts the match in the prompt", async () => {
+    const { app } = await mount([], { past: ["quit now"] });
+    await press(app, "\u0012", "q");
+    expect(app.lastFrame()).toContain("› quit now\nsearch: q · Ctrl+R older · Enter send · Tab edit · Ctrl-C cancel");
+    await press(app, "\u001b");
+    expect(app.lastFrame()).toContain("› quit now\n? for shortcuts");
+  });
+
+  // A chord ending in a plain letter (plan, Task 6, "A chord under way comes first").
+  const chord = () => table("Global", { "ctrl+x t": "app:toggleTodos" });
+
+  it("completes a chord ending in a letter in Ctrl+R's query, and types a letter that does not complete it or comes after 3 s", async () => {
+    const { app, bus } = await mount([], { bindings: chord(), past: ["quit now"] });
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0012", CTRL_X, "t");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    expect(app.lastFrame()).toContain("search:  ·");
+    await press(app, CTRL_X, "q");
+    expect(app.lastFrame()).toContain("search: q ·");
+    await onFakeClock(async (wait) => {
+      app.stdin.write(CTRL_X);
+      await wait(3_000);
+      app.stdin.write("t");
+      await wait(10);
+    });
+    expect(app.lastFrame()).toContain("search: qt (no match) ·");
+    expect(app.lastFrame()).not.toContain("write the fix");
+  });
+
+  it("completes a chord ending in a letter in the model list's filter, and types a letter that does not complete it or comes after 3 s", async () => {
+    const { app, bus } = await mount([], { bindings: chord(), models: [{ provider: "fake", models: ["quick", "slow"] }] });
+    bus.emit("todo", todo);
+    await type(app, "/model");
+    await until(app, "fake:quick");
+    await tick(); // the picker starts reading keys just after it first appears
+    await press(app, CTRL_X, "t");
+    expect(app.lastFrame()).toContain("Filter: (type to filter)");
+    await press(app, CTRL_X, "q");
+    expect(app.lastFrame()).toContain("Filter: q ·");
+    await onFakeClock(async (wait) => {
+      app.stdin.write(CTRL_X);
+      await wait(3_000);
+      app.stdin.write("u");
+      await wait(10);
+    });
+    expect(app.lastFrame()).toContain("Filter: qu ·");
+    await press(app, "\u001b");
+    await gone(app, "Filter:");
+    expect(app.lastFrame()).not.toContain("write the fix"); // hidden by the first chord
+  });
+
+  // Global's actions act wherever Global is in force (choice 19, the user's: "All three everywhere").
+  it("shows the last turn on Ctrl+O at a question, in the conversation, the question staying", async () => {
+    const { app, ask } = await mount([], { full: true });
+    void ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await press(app, "\u000f");
+    expect(shown(app)[0]).toBe("No turn yet, so no tool calls to show.");
+    expect(app.lastFrame()).toContain("Allow write a.txt? [y/n] · Esc to decline");
+  });
+
+  it("exits on Ctrl-D pressed twice at a question", async () => {
+    const { app, ask } = await mount([]);
+    let answered = false;
+    void ask("write a.txt").then(() => (answered = true));
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await press(app, "\u0004");
+    expect(app.lastFrame()).toContain("Allow write a.txt? [y/n] · Esc to decline\nPress Ctrl-D again to exit");
+    await press(app, "\u0004", "y"); // gone: y answers nothing
+    expect(answered).toBe(false);
+  });
+
+  // Two Escs read together reach Ink as one Esc with Alt, which release 5 took as Esc (Task 6's spec review).
+  const ESC_ESC = "\u001b\u001b";
+
+  it("stops a turn on two Escs read together", async () => {
+    const { app } = await mount([], { lead: hanging() });
+    await type(app, "hi");
+    await until(app, "Esc to stop");
+    await press(app, ESC_ESC);
+    await gone(app, "Esc to stop");
+  });
+
+  it("closes the detail view on two Escs read together", async () => {
+    const { app } = await mount([], { full: true });
+    await press(app, "\u000f");
+    expect(shown(app)[0]).toBe("No turn yet, so no tool calls to show.");
+    await press(app, ESC_ESC);
+    expect(shown(app)[0]).toBe("");
+    expect(shown(app)).toContain("›");
+  });
+
+  it("declines a question on two Escs read together", async () => {
+    const { app, ask } = await mount([]);
+    const answer = ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await press(app, ESC_ESC);
+    expect(await answer).toBe(false);
+    await until(app, "write a.txt: declined");
+  });
+
+  it("warns at the first Ctrl-D in the detail view and in Ctrl+R's search", async () => {
+    const { app } = await mount([], { full: true });
+    await press(app, "\u000f", "\u0004");
+    expect(shown(app)[0]).toBe("No turn yet, so no tool calls to show.");
+    expect(app.lastFrame()).toContain("\nPress Ctrl-D again to exit\n");
+    await press(app, "q", "\u0012", "\u0004");
+    expect(app.lastFrame()).toContain("\nPress Ctrl-D again to exit\n");
+    expect(app.lastFrame()).not.toContain("search:");
+  });
+
+  it("presses a wheel notch in a menu's contexts, Autocomplete first", async () => {
+    const { app, mouse } = await mount([], { full: true, bindings: table("Autocomplete", { wheeldown: "autocomplete:next" }) });
+    await press(app, "/", "e");
+    await until(app, "  /exit  Quit");
+    await wheel(mouse, "down");
+    await press(app, "\t");
+    expect(app.lastFrame()).toContain("› /exit");
+  });
+
+  it("scrolls on a wheel notch that drops a waiting chord, and takes the chord from the hint row", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(60) });
+    const bottom = shown(app)[0];
+    await press(app, CTRL_X);
+    expect(app.lastFrame()).toContain("\nctrl+x ...\n");
+    await wheel(mouse, "up");
+    expect(shown(app)[0]).not.toBe(bottom);
+    expect(app.lastFrame()).not.toContain("ctrl+x");
+  });
+
+  it("takes a dropped chord from the hint row on a wheel notch that has nowhere to scroll", async () => {
+    const { app, mouse } = await mount([], { full: true, intro: said(60) });
+    const bottom = shown(app)[0];
+    await press(app, CTRL_X);
+    expect(app.lastFrame()).toContain("\nctrl+x ...\n");
+    await wheel(mouse, "down"); // following the bottom: the notch moves nothing
+    expect(shown(app)[0]).toBe(bottom);
+    expect(app.lastFrame()).not.toContain("ctrl+x");
+  });
+
+  // Task 6's code review: text read together is no keystroke, and drops a chord as any other key does.
+  it("drops a waiting chord on text read together, so the next letter is typed", async () => {
+    const { app, bus } = await mount([], { bindings: chord() });
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, CTRL_X, "ab", "t");
+    expect(app.lastFrame()).toContain("☐ write the fix\n› abt\n? for shortcuts");
+  });
+
+  it("drops a waiting chord on a paste, so the next letter is typed", async () => {
+    const { app, bus } = await mount([], { bindings: chord() });
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, CTRL_X, "\u001b[200~ab\u001b[201~", "t");
+    expect(app.lastFrame()).toContain("☐ write the fix\n› abt\n? for shortcuts");
+  });
+
+  // Each hint names the keys a table leaves bound, in release 5's words (keys.ts, named).
+  it("leaves out of the detail view's key row a group with no key, and its kept search's n with none", async () => {
+    const { app } = await mount([], { full: true, bindings: table("Transcript", { "[": null, n: null }) });
+    await press(app, "\u000f");
+    expect(app.lastFrame()).toContain("\nj k ↑ ↓ line · g G Home End top, bottom · / search · q Esc close\n");
+    await press(app, "/", "turn", "\r");
+    expect(app.lastFrame()).toContain('\n"turn": 1 of 1 · N previous\n');
+  });
+
+  it("names the model list's moved keys in its help line", async () => {
+    const bindings = table("Select", { up: null, down: null, "ctrl+p": "select:previous", "ctrl+n": "select:next" });
+    const { app } = await mount([], { bindings, models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "/model");
+    await until(app, "fake:a");
+    expect(app.lastFrame()).toContain("Filter: (type to filter) · Ctrl+P Ctrl+N move · Enter picks · Esc closes");
+  });
+
+  it("names a menu's moved keys in its hint, leaving out what no key does", async () => {
+    const bindings = new Bindings(
+      tableOf({
+        ...DEFAULTS,
+        Autocomplete: { "ctrl+p": "autocomplete:previous", "ctrl+n": "autocomplete:next", escape: "autocomplete:dismiss" },
+        Chat: { ...DEFAULTS.Chat, enter: null },
+      }),
+    );
+    const { app, ctx } = await mount([], { bindings });
+    await writeFile(path.join(ctx.root, "a.txt"), "");
+    await press(app, "/");
+    expect(app.lastFrame()).toContain("\nCtrl+P Ctrl+N choose · Esc close\n");
+    await press(app, "\u007f", "@");
+    await until(app, "  a.txt");
+    expect(app.lastFrame()).toContain("\nCtrl+P Ctrl+N choose · Esc close\n");
+  });
+
+  it("names the key confirm:no is left on in a question's line", async () => {
+    const { app, ask } = await mount([], { bindings: table("Confirmation", { escape: null }) });
+    void ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · n to decline");
+  });
+});
+
+// Release 6 design, "The external editor"; plan, Task 12. Each test's editor is a stand-in (helpers.ts, standInEditor),
+// set as VISUAL. While it runs Ink draws nothing (Ink's suspend), so the screen is looked at once it is back.
+describe("App's external editor", () => {
+  const CTRL_G = "\u0007";
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll("\n", " "); // a long line wraps
+  const SET = `Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`;
+
+  it("opens the prompt in the editor on Ctrl+G and takes its text back, the cursor at the end, Ctrl+Z giving the text before", async () => {
+    const editor = standInEditor();
+    editor.next("after the edit\n");
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { app } = await mount([]);
+    await press(app, "before", "\u0001", CTRL_G); // Ctrl+A first: the cursor at the start
+    await until(app, "› after the edit\n");
+    expect(editor.given()!.text).toBe("before");
+    await press(app, "!");
+    expect(app.lastFrame()).toContain("› after the edit!\n");
+    await press(app, "\u001a", "\u001a"); // Ctrl+Z: the typing, then the edit
+    expect(app.lastFrame()).toContain("› before\n");
+  });
+
+  it("does the same on Ctrl+X Ctrl+E", async () => {
+    const editor = standInEditor();
+    editor.next("edited");
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { app } = await mount([]);
+    await press(app, "before", "\u0018", "\u0005");
+    await until(app, "› edited\n");
+  });
+
+  it("shows what the turn said and a question it asked while the editor was open, once it is back", async () => {
+    const editor = standInEditor();
+    editor.next("edited");
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const { app, bus, ask } = await mount([]);
+    await press(app, CTRL_G);
+    await waitFor(editor.started);
+    bus.emit("message", { role: "assistant", parts: [{ type: "text", text: "said while away" }] });
+    const answer = ask("write a.txt");
+    await tick();
+    editor.go();
+    await until(app, "Allow write a.txt? [y/n]");
+    expect(app.lastFrame()).toContain("said while away");
+    await press(app, "n");
+    expect(await answer).toBe(false);
+    expect(app.lastFrame()).toContain("› edited\n");
+  });
+
+  it("leaves the prompt as it was and says why when the editor fails, or is not found", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("fail"));
+    const { app } = await mount([]);
+    await press(app, "keep me", CTRL_G);
+    await waitFor(() => flat(app).includes(`The editor failed (exit code 1). ${SET}`));
+    expect(app.lastFrame()).toContain("› keep me\n");
+    vi.stubEnv("VISUAL", "tachi-no-such-editor"); // cmd.exe prints its own "is not recognized" line to the inherited stderr
+    await press(app, CTRL_G);
+    await waitFor(() => flat(app).includes(`tachi-no-such-editor was not found. ${SET}`));
+    expect(app.lastFrame()).toContain("› keep me\n");
+  });
+
+  // Nothing escapes as an unhandled rejection, which would end the program: here the terminal write that leaves full
+  // screen fails, before the editor starts.
+  it("says what went wrong when handing the terminal to the editor fails", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    let fail = false;
+    const written = (s: string) => {
+      if (fail && s === MOUSE_OFF) throw new Error("the terminal took no write");
+    };
+    const { app } = await mount([], { full: true, written });
+    fail = true;
+    await press(app, "keep me", CTRL_G);
+    await waitFor(() => flat(app).includes("the terminal took no write"));
+    expect(editor.given()).toBeNull();
+    expect(app.lastFrame()).toContain("› keep me");
+  });
+
+  // The queue starts none of the commands that hand the terminal over while the editor has it; messages go on.
+  // /keybindings makes its file as it starts, then opens the editor VISUAL names by then, the failing stand-in, whose
+  // line shows that run has ended.
+  type Shown = ReturnType<typeof render>;
+  const keysFile = (home: string) => path.join(settingsDir(home), "keybindings.json");
+  it.each([
+    {
+      command: "/screen",
+      home: () => sharedHome,
+      started: (app: Shown, _home: string) => flat(app).includes("screen is now full"),
+      ended: (app: Shown, _home: string) => flat(app).includes("screen is now full"),
+    },
+    {
+      command: "/keybindings",
+      home: () => mkdtempSync(path.join(tmpdir(), "tachi-home-")),
+      started: (_app: Shown, home: string) => existsSync(keysFile(home)),
+      ended: (app: Shown, home: string) => existsSync(keysFile(home)) && flat(app).includes("The editor failed (exit code 1)"),
+    },
+  ])("holds a queued $command while the editor is open, and runs it once it closes", async ({ command, started, ended, ...made }) => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const lead = new Held();
+    const home = made.home();
+    if (home !== sharedHome) onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const { app, session } = await mount([], { lead, home });
+    await type(app, "go");
+    await type(app, command);
+    await press(app, CTRL_G);
+    await waitFor(editor.started);
+    vi.stubEnv("VISUAL", editor.command("fail"));
+    lead.answer("done");
+    await waitFor(() => session.messages.at(-1)?.role === "assistant");
+    await tick();
+    expect(started(app, home)).toBe(false);
+    editor.go();
+    await waitFor(() => ended(app, home));
+    expect(flat(app)).not.toContain("suspended");
+  });
+
+  // As `[` does (printOut, comeBack): the mouse and the second screen go, and come back, Ink suspended meanwhile. A
+  // program waits for no hold: the keyboard is let go of instead (owner.ts, program).
+  it.each([
+    { mode: "full screen", classic: false, marks: ["release", MOUSE_OFF, FIRST_SCREEN, SECOND_SCREEN, MOUSE_ON, "retake"] },
+    { mode: "classic mode", classic: true, marks: ["release", "retake"] },
+  ])("lets the keyboard go to the editor in $mode, leaving and coming back as [ does", async ({ classic, marks }) => {
+    const editor = standInEditor();
+    editor.next("edited");
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { steps, key } = await onTerminal(new FakeProvider("a", []), { classic });
+    steps.length = 0;
+    await key(CTRL_G);
+    await waitFor(() => steps.includes("retake"));
+    const MARKS = ["release", "retake", "hold(true)", "hold(false)", MOUSE_OFF, MOUSE_ON, FIRST_SCREEN, SECOND_SCREEN];
+    expect(steps.filter((s) => MARKS.includes(s))).toEqual(marks);
+    await waitFor(() => text(since(steps, "retake")).includes("› edited"));
+  });
+
+  // Release 6 plan, choice 33 (the user's terminal checklist): with the editor in its own window, the terminal showed the
+  // screen from before Tachikoma and nothing else, so it looked dead. A line says what it waits for, as Git does
+  // (editor.c), once the screen is handed over, and is erased before Ink and full screen come back.
+  const WAITING = "Waiting for your editor to close the file... (Tachikoma ignores Ctrl-C until then) ";
+  const ERASE = "\r\u001b[K";
+  it.each([
+    { how: "Ctrl+G", mode: "full screen", classic: false },
+    { how: "Ctrl+G", mode: "classic mode", classic: true },
+    { how: "/settings", mode: "full screen", classic: false },
+    { how: "/settings", mode: "classic mode", classic: true },
+  ])("says it waits for the editor $how opens in $mode, and erases the line before the screen comes back", async ({ how, classic }) => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const { steps, key } = await onTerminal(new FakeProvider("a", []), { classic, home });
+    steps.length = 0;
+    if (how === "Ctrl+G") await key(CTRL_G);
+    else await key("/settings", "\r");
+    await waitFor(editor.started);
+    expect(steps.filter((s) => s === WAITING || s === ERASE)).toEqual([WAITING]); // said while the editor runs
+    editor.go();
+    await waitFor(() => steps.includes("retake"));
+    const MARKS = ["release", "retake", MOUSE_OFF, MOUSE_ON, FIRST_SCREEN, SECOND_SCREEN, WAITING, ERASE];
+    const handed = classic ? [] : [MOUSE_OFF, FIRST_SCREEN];
+    const back = classic ? [] : [SECOND_SCREEN, MOUSE_ON];
+    expect(steps.filter((s) => MARKS.includes(s))).toEqual(["release", ...handed, WAITING, ERASE, ...back, "retake"]);
+    expect(text(since(steps, "retake"))).not.toContain("Waiting for your editor"); // never in what Ink draws
+  });
+
+  // The code review of choice 33: an editor the shell cannot find still had the line written, and erased, and Tachikoma
+  // comes back saying so. The shell's own error goes to the real terminal, after the line, which no test sees.
+  it("writes and erases the waiting line for an editor that cannot start, and says it was not found", async () => {
+    vi.stubEnv("VISUAL", "tachi-no-such-editor");
+    const { steps, key } = await onTerminal(new FakeProvider("a", []), { classic: true });
+    steps.length = 0;
+    await key(CTRL_G);
+    await waitFor(() => text(since(steps, "retake")).includes("tachi-no-such-editor was not found"));
+    expect(steps.filter((s) => s === WAITING || s === ERASE || s === "retake")).toEqual([WAITING, ERASE, "retake"]);
+  });
+
+  // The code review of choice 33: a line wider than the terminal would wrap, and the erase take only its last row, so it
+  // is cut to the width the App draws at, a column short.
+  it("cuts the waiting line to a narrow terminal's width", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { steps, key } = await onTerminal(new FakeProvider("a", []), { classic: true, columns: 40 });
+    steps.length = 0;
+    await key(CTRL_G);
+    await waitFor(() => steps.includes("retake"));
+    expect(steps).toContain(WAITING.slice(0, 39));
+    expect(steps).not.toContain(WAITING);
+  });
+});
+
+// Release 6 design, "Stash"; plan, Task 13: one slot a session; the prompt and the slot swap when both have text.
+describe("App's stash", () => {
+  const CTRL_S = "\u0013";
+  const LEFT = "\u001b[D";
+  const CTRL_Q = "\u0011";
+  const CTRL_Z = "\u001a";
+  const STASHED = "Stashed · Ctrl+S to bring back";
+
+  it("puts the prompt aside on Ctrl+S and brings it back on an empty prompt, the cursor where it was", async () => {
+    const { app } = await mount([]);
+    await press(app, "abcd", LEFT, LEFT, CTRL_S);
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    await press(app, CTRL_S, "X");
+    expect(app.lastFrame()).toContain("› abXcd\n? for shortcuts");
+  });
+
+  it("swaps the prompt and the slot when both have text", async () => {
+    const { app } = await mount([]);
+    await press(app, "one", CTRL_S, "two", CTRL_S);
+    expect(app.lastFrame()).toContain(`› one\n${STASHED}`);
+    await press(app, CTRL_S);
+    expect(app.lastFrame()).toContain(`› two\n${STASHED}`);
+  });
+
+  it("shows the hint while the slot is full and no other hint takes the row: a menu's and the queue's come first", async () => {
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app } = await mount([], { lead });
+    await press(app, "aside", CTRL_S);
+    expect(app.lastFrame()).toContain(`›\n${STASHED}\n`);
+    await press(app, "/");
+    expect(app.lastFrame()).toContain("↑↓ choose");
+    expect(app.lastFrame()).not.toContain("Stashed");
+    await press(app, "\u007f", "go", "\r");
+    await until(app, "Esc to stop");
+    expect(app.lastFrame()).toContain(`›\n${STASHED}`); // during a turn too, where no hint shows otherwise
+    await press(app, "later", "\r");
+    expect(app.lastFrame()).toContain("›\n↑ to edit queued messages");
+    release();
+    await until(app, "r2");
+    await press(app, CTRL_S);
+    expect(app.lastFrame()).toContain("› aside\n? for shortcuts");
+  });
+
+  it("names the key chat:stash is bound to in the hint", async () => {
+    const bindings = new Bindings(tableOf({ ...DEFAULTS, Chat: { ...DEFAULTS.Chat, "ctrl+s": null, "ctrl+q": "chat:stash" } }));
+    const { app } = await mount([], { bindings });
+    await press(app, "aside", CTRL_S);
+    expect(app.lastFrame()).toContain("› aside\n? for shortcuts"); // Ctrl+S is bound to nothing now
+    await press(app, CTRL_Q);
+    expect(app.lastFrame()).toContain("›\nStashed · Ctrl+Q to bring back");
+  });
+
+  it("undoes within the text brought back", async () => {
+    const { app } = await mount([]);
+    // Backspace is a step of its own. On the cleared prompt Ctrl+Z takes nothing back: the steps went aside too.
+    await press(app, "abc", "\u007f", CTRL_S, CTRL_Z);
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    await press(app, CTRL_S, CTRL_Z);
+    expect(app.lastFrame()).toContain("› abc\n");
+    await press(app, CTRL_Z);
+    expect(app.lastFrame()).toMatch(/^›$/m);
+  });
+
+  // Up after a stash starts again from the newest prompt, as after a clear: where Up had got to went with the text.
+  it("steps back through the history from the newest prompt after a stash", async () => {
+    const { app } = await mount([reply("r1"), reply("r2")]);
+    await type(app, "one");
+    await until(app, "r1");
+    await type(app, "two");
+    await until(app, "r2");
+    await press(app, "\u001b[A", CTRL_S, "\u001b[A");
+    expect(app.lastFrame()).toContain(`› two\n${STASHED}`);
+  });
+
+  // Final review: Ctrl+S after Up stashed the line Up showed and dropped the draft Up keeps, picture and all. The slot
+  // keeps where Up had got to with the line, the draft included (choice 31).
+  it("keeps the draft typed before Up with the line it stashes, Down bringing the draft back once that line is back", async () => {
+    const PICTURE = process.platform === "win32" ? "\u001bv" : "\u0016"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+    const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("seen")], { past: ["older"], pictures });
+    await press(app, "draft ", PICTURE, "\u001b[A");
+    expect(app.lastFrame()).toContain("› older\n");
+    await press(app, CTRL_S, "\u001b[B");
+    expect(app.lastFrame()).toMatch(/^›$/m); // Down: nothing, the walk went with the line
+    await press(app, CTRL_S);
+    expect(app.lastFrame()).toContain("› older\n");
+    await press(app, "\u001b[B");
+    expect(app.lastFrame()).toContain("› draft [Image #1]\n");
+    pictures.set(1, PNG);
+    await press(app, "\r");
+    await until(app, "seen");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "draft " }, { type: "image", id: 1, ...PNG }]);
+  });
+
+  it("does nothing on Ctrl+S with an empty prompt and an empty slot", async () => {
+    const { app } = await mount([]);
+    const frame = app.lastFrame();
+    await press(app, CTRL_S);
+    expect(app.lastFrame()).toBe(frame);
+    expect(frame).toContain("›\n? for shortcuts");
+  });
+});
+
+// Release 6 plan, Task 14: a picture's marker is a span in the prompt, kept by the queue and the stash, and the message
+// waits for its reads. The tests end each read through the session's Pictures; Task 15 reads the clipboard.
+describe("App's pictures", () => {
+  const PICTURE = process.platform === "win32" ? "\u001bv" : "\u0016"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+  const CTRL_S = "\u0013";
+  const ESC = "\u001b";
+  const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
+  const userParts = (session: Session) => session.messages.filter((m) => m.role === "user").map((m) => m.parts);
+
+  it("waits on Enter for a picture still being read, then sends it with the picture in place", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("seen")], { pictures });
+    await press(app, "look at ", PICTURE);
+    expect(app.lastFrame()).toContain("› look at [Image #1]");
+    await press(app, "\r");
+    expect(app.lastFrame()).toContain("Esc to stop");
+    expect(session.messages).toEqual([]);
+    pictures.set(1, PNG);
+    await until(app, "seen");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look at " }, { type: "image", id: 1, ...PNG }]]);
+    expect(app.lastFrame()).toContain("> look at [Image #1]\n"); // in the conversation, one line (choice 22)
+  });
+
+  it("keeps the spans of a queued message and of the stash", async () => {
+    const pictures = new Pictures();
+    const { lead, release } = gated([reply("r1"), reply("r2"), reply("r3")]);
+    const { app, session } = await mount([], { lead, pictures });
+    await press(app, "first", "\r");
+    await until(app, "Esc to stop");
+    await press(app, PICTURE, " queued", "\r", "aside ", PICTURE, CTRL_S);
+    pictures.set(1, PNG);
+    pictures.set(2, PNG);
+    release();
+    await until(app, "r2");
+    expect(userParts(session)[1]).toEqual([{ type: "image", id: 1, ...PNG }, { type: "text", text: " queued" }]);
+    await press(app, CTRL_S, "\r");
+    await until(app, "r3");
+    expect(userParts(session)[2]).toEqual([{ type: "text", text: "aside " }, { type: "image", id: 2, ...PNG }]);
+  });
+
+  it("keeps a queued message's spans when Ctrl-C brings it back into the prompt", async () => {
+    const pictures = new Pictures();
+    const { lead } = gated([reply("ok")]); // the first request waits, and Ctrl-C stops it
+    const { app, session } = await mount([], { lead, pictures });
+    await press(app, "first", "\r");
+    await until(app, "Esc to stop");
+    await press(app, "see ", PICTURE, "\r", "\u0003");
+    await gone(app, "Esc to stop");
+    expect(app.lastFrame()).toContain("› see [Image #1]");
+    pictures.set(1, PNG);
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session).at(-1)).toEqual([{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]);
+  });
+
+  it("sends a marker recalled from prompt history as text, carrying no picture", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures, past: ["see [Image #1]"] });
+    await press(app, PICTURE); // picture #1 in the prompt, never sent, so a recall that kept its span would send it
+    pictures.set(1, PNG);
+    await press(app, "\u001b[A", "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "see [Image #1]" }]]);
+  });
+
+  it("keeps the draft's pictures through Up and Down in the history", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures, past: ["older"] });
+    await press(app, "see ", PICTURE, "\u001b[A");
+    expect(app.lastFrame()).toContain("› older\n");
+    await press(app, "\u001b[B");
+    expect(app.lastFrame()).toContain("› see [Image #1]\n");
+    pictures.set(1, PNG);
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]]);
+  });
+
+  // Release 6 design, "Which pictures a message carries": the editor's file is plain text, so on return a marker is a
+  // span again only if it names a picture the prompt held when the editor opened.
+  it("keeps a marker through the external editor as its picture, and takes one typed there as text", async () => {
+    const editor = standInEditor();
+    editor.next("now [Image #1] and [Image #2]\n");
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures });
+    await press(app, "see ", PICTURE, "\u0007"); // Ctrl+G
+    await until(app, "› now [Image #1] and [Image #2]\n");
+    pictures.set(1, PNG);
+    pictures.set(pictures.next(), PNG); // picture #2, which the prompt never held
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "now " }, { type: "image", id: 1, ...PNG }, { type: "text", text: " and [Image #2]" }]]);
+  });
+
+  it("takes a marker the read found none of out of the draft Up keeps, so Down brings it back without it", async () => {
+    const pictures = new Pictures();
+    const { app } = await mount([], { pictures, past: ["older"] });
+    await press(app, "see ", PICTURE, "\u001b[A");
+    pictures.set(1, "none");
+    await until(app, "No picture on the clipboard.");
+    await press(app, "\u001b[B");
+    expect(app.lastFrame()).toMatch(/› see ?\n/);
+  });
+
+  it("takes a marker the read found none of out of the prompt Ctrl+R gives back", async () => {
+    const pictures = new Pictures();
+    const { app } = await mount([], { pictures, past: ["older"] });
+    await press(app, "see ", PICTURE, "\u0012"); // Ctrl+R
+    pictures.set(1, "none");
+    await until(app, "No picture on the clipboard.");
+    await press(app, "\u0003"); // Ctrl-C: the prompt as it was
+    expect(app.lastFrame()).toMatch(/› see ?\n/);
+  });
+
+  it("ends the reads as stopped when the detail view's Ctrl-C stops the turn during the wait, and the turn stops", async () => {
+    const pictures = new Pictures();
+    // A lead that refuses a request already stopped, as the real leads do: the Anthropic and OpenAI SDKs refuse a signal
+    // already aborted, and fetch (ChatGPT) rejects at once.
+    const lead: Provider = {
+      id: "fake:a",
+      complete: async ({ signal }) => {
+        if (signal?.aborted) throw new Error("aborted");
+        return reply("answered");
+      },
+    };
+    const { app, session } = await mount([], { lead, pictures, full: true });
+    await press(app, "look ", PICTURE, "\r", "\u000f", "\u0003"); // Ctrl+O opens the detail view, where Ctrl-C stops the turn
+    await waitFor(() => session.messages.length > 0);
+    await press(app, "q");
+    await until(app, "Could not read the clipboard: stopped; [Image #1] was sent without it.");
+    await gone(app, "Esc to stop");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look" }]]);
+    expect(app.lastFrame()).not.toContain("answered");
+  });
+
+  it("queues what is sent during the wait, sending it after the message waiting", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("one"), reply("two")], { pictures });
+    await press(app, "look ", PICTURE, "\r", "more", "\r");
+    expect(app.lastFrame()).toContain("more");
+    pictures.set(1, PNG);
+    await until(app, "two");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }], [{ type: "text", text: "more" }]]);
+  });
+
+  it("says nothing was sent when a message that was only a picture is left empty", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures });
+    await press(app, PICTURE, "\r");
+    pictures.set(1, "none");
+    await until(app, "No picture on the clipboard; nothing was sent.");
+    await gone(app, "Esc to stop");
+    expect(session.messages).toEqual([]);
+  });
+
+  it("sends without a picture whose read fails after Enter, its marker gone, and says so in red", async () => {
+    await inColour(async () => {
+      const pictures = new Pictures();
+      const { app, session } = await mount([reply("ok")], { pictures });
+      await press(app, "look ", PICTURE, " here", "\r");
+      pictures.set(1, { failed: "access denied" });
+      await until(app, "\u001b[31mCould not read the clipboard: access denied; [Image #1] was sent without it.");
+      await until(app, "ok");
+      expect(userParts(session)).toEqual([[{ type: "text", text: "look  here" }]]);
+    });
+  });
+
+  it("sends without a picture the read found none of, and says so in grey", async () => {
+    await inColour(async () => {
+      const pictures = new Pictures();
+      const { app, session } = await mount([reply("ok")], { pictures });
+      await press(app, "look ", PICTURE, "\r");
+      pictures.set(1, "none");
+      await until(app, "\u001b[90mNo picture on the clipboard; [Image #1] was sent without it.");
+      await until(app, "ok");
+      expect(userParts(session)).toEqual([[{ type: "text", text: "look" }]]);
+    });
+  });
+
+  it("takes a failed read's marker out of a queued message, which goes without it once the turn ends", async () => {
+    const pictures = new Pictures();
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session } = await mount([], { lead, pictures });
+    await press(app, "first", "\r");
+    await until(app, "Esc to stop");
+    await press(app, PICTURE, " later", "\r");
+    pictures.set(1, { failed: "access denied" });
+    await until(app, "Could not read the clipboard: access denied");
+    expect(app.lastFrame()).not.toContain("was sent without it");
+    release();
+    await until(app, "r2");
+    expect(userParts(session)[1]).toEqual([{ type: "text", text: "later" }]);
+  });
+
+  it("takes a marker the read found none of out of the prompt and the stash", async () => {
+    const pictures = new Pictures();
+    const { app } = await mount([], { pictures });
+    await press(app, " ", PICTURE, CTRL_S, "b ", PICTURE); // the stash, left with a blank only, empties
+    expect(app.lastFrame()).toContain("Reading picture..."); // in the hint row, over "Stashed", while a read runs (Task 15)
+    await press(app, CTRL_S); // the two swap: the stash held the first marker
+    expect(app.lastFrame()).toContain("›  [Image #1]");
+    await press(app, CTRL_S);
+    expect(app.lastFrame()).toContain("› b [Image #2]");
+    pictures.set(1, "none");
+    pictures.set(2, "none");
+    await until(app, "No picture on the clipboard.\nNo picture on the clipboard.");
+    expect(app.lastFrame()).toMatch(/› b ?\n\? for shortcuts/); // the stash, left empty, is gone too
+  });
+
+  // Found at the combined review: what Ctrl+K took, and vim's register, kept a failed read's marker, so Ctrl+Y or p put
+  // back a marker for a picture that is gone.
+  it("takes a failed read's marker out of what Ctrl+K took, so Ctrl+Y puts back none", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures });
+    await press(app, "a ", PICTURE, "\u0001", "\u000b"); // Ctrl+A, then Ctrl+K takes the line, marker and all
+    pictures.set(1, { failed: "access denied" });
+    await until(app, "Could not read the clipboard: access denied");
+    await press(app, "\u0019", "\r"); // Ctrl+Y puts it back
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "a" }]]); // a message is sent trimmed
+  });
+
+  it("takes a failed read's marker out of vim's register, so p puts back none", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures });
+    await press(app, "/vim", "\r");
+    await until(app, "editorMode is now vim");
+    await press(app, "a ", PICTURE, ESC, "d", "d"); // dd takes the line, marker and all, into the register
+    pictures.set(1, { failed: "access denied" });
+    await until(app, "Could not read the clipboard: access denied");
+    await press(app, "p", "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "a" }]]);
+  });
+
+  it.each([
+    ["Esc", ESC],
+    ["Ctrl-C", "\u0003"],
+  ])("ends a read the message waits on when %s is pressed, and sends the message without it", async (_, key) => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("ok")], { pictures });
+    await press(app, "look ", PICTURE, "\r", key);
+    await until(app, "Could not read the clipboard: stopped; [Image #1] was sent without it.");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look" }]]);
+    expect(pictures.get(1)).toEqual({ failed: "stopped" });
+  });
+
+  // Release 6 plan, Task 18: a request with pictures refused as invalid asks, on the permission question's line with no
+  // owner, before sending again without them.
+  const invalid = () => Object.assign(new Error("400 invalid image"), { status: 400 });
+  const looked = [{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }];
+
+  it("asks after a 400 to a request with pictures; y sends it again, says pictures are left out, and the queue goes on", async () => {
+    const pictures = new Pictures();
+    const { lead, fake, release } = gated([invalid(), reply("seen"), reply("next one")]);
+    const { app, session } = await mount([], { lead, pictures });
+    await press(app, "look ", PICTURE, "\r");
+    pictures.set(1, PNG);
+    await until(app, "Esc to stop");
+    await press(app, "queued", "\r");
+    release();
+    await until(app, "Send again without the pictures? [y/n] · Esc to decline");
+    expect(app.lastFrame()).toContain("✗ provider: 400 invalid image\n");
+    expect(app.lastFrame()).not.toContain("Allow Send"); // a plain question, not a permission one
+    await press(app, "y");
+    await until(app, "next one");
+    expect(app.lastFrame()).toContain("Send again without the pictures: yes\nPictures are left out for fake:a from now on.\nseen");
+    expect(fake.seen).toHaveLength(3);
+    expect(userParts(session)).toEqual([looked, [{ type: "text", text: "queued" }]]); // the conversation is never changed
+  });
+
+  it("ends the turn on n, as after any failure, and the queue goes on", async () => {
+    const pictures = new Pictures();
+    const { lead, fake, release } = gated([invalid(), reply("next one")]);
+    const { app, session } = await mount([], { lead, pictures, full: true });
+    await press(app, "look ", PICTURE, "\r");
+    pictures.set(1, PNG);
+    await until(app, "Esc to stop");
+    await press(app, "queued", "\r");
+    release();
+    await until(app, "Send again without the pictures? [y/n] · Esc to decline");
+    expect(app.lastFrame()).not.toContain("Allow Send");
+    await press(app, "n");
+    await until(app, "next one");
+    expect(app.lastFrame()).toContain("Send again without the pictures: no");
+    expect(app.lastFrame()).not.toContain("Pictures are left out");
+    expect(fake.seen).toHaveLength(2);
+    expect(userParts(session)).toEqual([looked, [{ type: "text", text: "queued" }]]);
+  });
+
+  // Task 18's code review: "allowed" and "declined" fit a permission; a plain question's answer is yes or no.
+  it("logs a Ctrl-C at the question as no (cancelled), and sends nothing again", async () => {
+    const pictures = new Pictures();
+    const { lead, fake, release } = gated([invalid()]);
+    const { app } = await mount([], { lead, pictures });
+    await press(app, "look ", PICTURE, "\r");
+    pictures.set(1, PNG);
+    await until(app, "Esc to stop");
+    release();
+    await until(app, "Send again without the pictures? [y/n] · Esc to decline");
+    await press(app, "\u0003");
+    await until(app, "Send again without the pictures: no (cancelled)");
+    expect(fake.seen).toHaveLength(1);
+  });
+});
+
+// Release 6 plan, Task 15: Alt+V's read, through a reader the test gives (no test reads the user's clipboard), and a
+// pasted path to a picture file, in a folder the test made.
+describe("App's picture reads", () => {
+  const PICTURE = process.platform === "win32" ? "\u001bv" : "\u0016"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+  const READING = "Reading picture...";
+  const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]) }; // PNG's signature
+  const OTHER = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 2]) };
+  const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0]); // JPEG's SOI marker, then another (ITU-T T.81, Table B.1)
+  const userParts = (session: Session) => session.messages.filter((m) => m.role === "user").map((m) => m.parts);
+  const paste = (text: string) => `\u001b[200~${text}\u001b[201~`;
+  // Reads the test answers one by one, in the order Alt+V started them.
+  const answered = () => {
+    const answers: ((r: Read) => void)[] = [];
+    return { read: () => new Promise<Read>((resolve) => answers.push(resolve)), answers };
+  };
+  const folder = () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-paste-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    return dir;
+  };
+  // A stand-in reader (clipboard.ts, readImage) that fails as a real one does, run only once the test lets it start.
+  const failing = () => {
+    const file = path.join(folder(), "reader.mjs");
+    writeFileSync(file, `console.error("no access"); process.exit(1);`);
+    const reader: Reader = { command: process.execPath, args: [file], output: (b) => b, name: "stand-in" };
+    let go!: () => void;
+    const start = new Promise<void>((resolve) => (go = resolve));
+    return { read: () => start.then(() => readImage(reader)), go };
+  };
+
+  it("puts the marker in at once, says it is reading, and fills the picture in when the read ends", async () => {
+    const { read, answers } = answered();
+    const { app, session } = await mount([reply("seen")], { readPicture: read });
+    await press(app, "look ", PICTURE);
+    expect(app.lastFrame()).toContain(`› look [Image #1]\n${READING}`);
+    answers[0]!(PNG);
+    await gone(app, READING);
+    expect(app.lastFrame()).toContain("› look [Image #1]\n? for shortcuts");
+    await press(app, "\r");
+    await until(app, "seen");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }]]);
+  });
+
+  // Final review: Ctrl+K then Ctrl+Y put the marker back as text only, and the message went without the picture.
+  it("sends the picture of a marker Ctrl+K took and Ctrl+Y put back", async () => {
+    const { app, session } = await mount([reply("seen")], { readPicture: async () => PNG });
+    await press(app, "look ", PICTURE);
+    await gone(app, READING);
+    await press(app, "\u0001", "\u000b"); // Ctrl+A, Ctrl+K
+    expect(app.lastFrame()).toMatch(/^›$/m);
+    await press(app, "\u0019", "\r"); // Ctrl+Y, Enter
+    await until(app, "seen");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look " }, { type: "image", id: 1, ...PNG }]]);
+  });
+
+  it("keeps two pictures in the order asked for when the later read ends first, saying it is reading until both end", async () => {
+    const { read, answers } = answered();
+    const { app, session } = await mount([reply("ok")], { readPicture: read });
+    await press(app, PICTURE, " and ", PICTURE);
+    answers[1]!(OTHER);
+    await tick();
+    expect(app.lastFrame()).toContain(READING);
+    answers[0]!(PNG);
+    await gone(app, READING);
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "image", id: 1, ...PNG }, { type: "text", text: " and " }, { type: "image", id: 2, ...OTHER }]]);
+  });
+
+  // Release 6 design, "Testing": deleting the marker during the read, the read ending, then undo.
+  it("keeps the picture of a marker deleted during its read when undo brings the marker back after, reading only once", async () => {
+    const { read, answers } = answered();
+    let reads = 0;
+    const { app, session } = await mount([reply("ok")], {
+      readPicture: () => {
+        reads++;
+        return read();
+      },
+    });
+    await press(app, "see ", PICTURE, "\u007f"); // Backspace takes the whole marker (choice 14)
+    expect(app.lastFrame()).toMatch(/› see ?\n/);
+    answers[0]!(PNG);
+    await tick();
+    await press(app, "\u001a"); // Ctrl+Z
+    expect(app.lastFrame()).toContain("› see [Image #1]");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]]);
+    expect(reads).toBe(1);
+  });
+
+  // Release 6 design, "While a read runs": a copy of the marker that undo brings back after a read found nothing is
+  // only text.
+  it("sends a marker undo brings back after the read found no picture as text only", async () => {
+    const { read, answers } = answered();
+    const { app, session } = await mount([reply("ok")], { readPicture: read });
+    await press(app, "see ", PICTURE);
+    answers[0]!("none");
+    await until(app, "No picture on the clipboard.");
+    expect(app.lastFrame()).toMatch(/› see ?\n/);
+    await press(app, "\u001a"); // Ctrl+Z
+    expect(app.lastFrame()).toContain("› see [Image #1]");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "see [Image #1]" }]]);
+  });
+
+  it("takes a marker out of a queued message when the clipboard has no picture, and the message goes without it", async () => {
+    const { read, answers } = answered();
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session } = await mount([], { lead, readPicture: read });
+    await press(app, "first", "\r");
+    await until(app, "Esc to stop");
+    await press(app, PICTURE, " later", "\r");
+    answers[0]!("none");
+    await until(app, "No picture on the clipboard.");
+    release();
+    await until(app, "r2");
+    expect(userParts(session)[1]).toEqual([{ type: "text", text: "later" }]);
+  });
+
+  it("sends a message without the picture when the reader fails after Enter, leaving nothing waiting", async () => {
+    const { read, go } = failing();
+    const { app, session } = await mount([reply("ok")], { readPicture: read });
+    await press(app, "look ", PICTURE, " here", "\r");
+    expect(app.lastFrame()).toContain(READING);
+    go();
+    await until(app, "Could not read the clipboard: stand-in failed: no access; [Image #1] was sent without it.");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "look  here" }]]);
+    await gone(app, "Esc to stop");
+    expect(app.lastFrame()).not.toContain(READING);
+  });
+
+  it("takes the marker out of a queued message when the reader fails, and the message goes without it", async () => {
+    const { read, go } = failing();
+    const { lead, release } = gated([reply("r1"), reply("r2")]);
+    const { app, session } = await mount([], { lead, readPicture: read });
+    await press(app, "first", "\r");
+    await until(app, "Esc to stop");
+    await press(app, PICTURE, " later", "\r");
+    go();
+    await until(app, "Could not read the clipboard: stand-in failed: no access");
+    expect(app.lastFrame()).not.toContain("was sent without it");
+    release();
+    await until(app, "r2");
+    expect(userParts(session)[1]).toEqual([{ type: "text", text: "later" }]);
+    await gone(app, "Esc to stop");
+    expect(app.lastFrame()).not.toContain(READING);
+  });
+
+  it("says so in red where there is no clipboard reader, and puts no marker in", async () => {
+    await inColour(async () => {
+      const { app } = await mount([], { readPicture: null });
+      await press(app, "see ", PICTURE);
+      await until(app, "\u001b[31mNo clipboard reader here: install wl-paste or xclip.");
+      expect(app.lastFrame()).not.toContain("[Image #1]");
+      expect(app.lastFrame()).not.toContain(READING);
+    });
+  });
+
+  it("makes a paste of paths to picture files those pictures, with or without quotes, each typed by its first bytes", async () => {
+    const dir = folder();
+    const shot = path.join(dir, "shot one.png");
+    const photo = path.join(dir, "photo.png"); // a JPEG named .png
+    writeFileSync(shot, PNG.data);
+    writeFileSync(photo, JPEG);
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, "see ", paste(`"${shot}"\n${photo}\n`));
+    expect(app.lastFrame()).toContain("› see [Image #1][Image #2]");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([
+      [{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }, { type: "image", id: 2, mediaType: "image/jpeg", data: JPEG }],
+    ]);
+  });
+
+  it("keeps a paste of paths as text when a file it names is missing", async () => {
+    const dir = folder();
+    const shot = path.join(dir, "shot.png");
+    writeFileSync(shot, PNG.data);
+    const text = `${shot}\n${path.join(dir, "missing.png")}`;
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, paste(text), "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text }]]);
+  });
+
+  it("keeps a pasted path to a folder named like a picture as text, with no marker", async () => {
+    const folderPath = path.join(folder(), "shots.png");
+    mkdirSync(folderPath);
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, paste(folderPath));
+    expect(app.lastFrame()).not.toContain("[Image #");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: folderPath }]]);
+  });
+
+  // The security review's finding 3 (release 6 plan, choice 30): a path starting with two slashes is pasted as text and
+  // never looked at, so a pasted \\server\share\cat.png cannot reach that machine. This one leads to a real picture on
+  // this machine (\\?\ before it on Windows, a doubled / elsewhere), which would be a picture without the rule.
+  it("keeps a pasted path starting with two slashes as text, though it leads to a picture", async () => {
+    const shot = path.join(folder(), "shot.png");
+    writeFileSync(shot, PNG.data);
+    const text = process.platform === "win32" ? `\\\\?\\${shot}` : `/${shot}`;
+    const { app, session } = await mount([reply("ok")]);
+    await press(app, paste(text));
+    expect(app.lastFrame()).not.toContain("[Image #");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text }]]);
+  });
+
+  it("says in red that a pasted file that is not a picture could not be read, naming the file, and takes its marker out", async () => {
+    await inColour(async () => {
+      const { app, ctx } = await mount([]);
+      writeFileSync(path.join(ctx.root, "notes.png"), "hello"); // a path in the project, as typed relative to it
+      onTestFinished(() => rmSync(path.join(ctx.root, "notes.png"), { force: true }));
+      await press(app, "see ", paste("notes.png"));
+      await until(app, "\u001b[31mCould not read notes.png: not a PNG, JPEG, GIF or WebP picture");
+      expect(app.lastFrame()).toMatch(/› see ?\n/);
+    });
+  });
+});
+
+// Release 6 plan, Task 21: vim mode at the prompt (vim.ts), switched by /vim and the settings file.
+describe("App's vim mode", () => {
+  const ESC = "\u{1b}";
+  const CTRL_T = "\u{14}";
+  const CTRL_K = "\u{b}";
+  const CTRL_O = "\u{f}";
+  const PICTURE = process.platform === "win32" ? "\u{1b}v" : "\u{16}"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+  const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
+  const todo: TodoItem[] = [{ text: "write the fix", status: "pending" }];
+  // The default table with `keys` laid over one context's.
+  const table = (context: Context, keys: Record<string, string | null>) =>
+    new Bindings(tableOf({ ...DEFAULTS, [context]: { ...DEFAULTS[context], ...keys } }));
+  // Vim mode on with /vim, which starts in INSERT; then `text` typed in one read, and Esc: NORMAL, the cursor on the
+  // text's last character.
+  const normal = async (app: ReturnType<typeof render>, text = "") => {
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await press(app, ...(text ? [text] : []), ESC);
+    await until(app, "-- NORMAL --");
+  };
+  // The text drawn in reverse colours on the prompt's first row.
+  const onPrompt = (app: ReturnType<typeof render>) => reverse(app.lastFrame()!.split("\n").find((r) => /^›( |$)/.test(r))!);
+
+  it("switches on and off with /vim, /vim on and /vim off, saying so, in this window only", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const { app } = await mount([], { home });
+    expect(app.lastFrame()).toContain("? for shortcuts");
+    await type(app, "/vim");
+    await until(app, "editorMode is now vim");
+    expect(app.lastFrame()).toContain("-- INSERT --");
+    expect(app.lastFrame()).not.toContain("? for shortcuts");
+    await type(app, "/vim");
+    await until(app, "editorMode is now normal");
+    expect(app.lastFrame()).toContain("? for shortcuts");
+    await type(app, "/vim on");
+    await until(app, "-- INSERT --");
+    await type(app, "/VIM OFF"); // typed in INSERT, in one read; commands ignore case
+    await until(app, "? for shortcuts");
+    expect(app.lastFrame()!.split("editorMode is now normal").length - 1).toBe(2);
+    await type(app, "/vim maybe");
+    await until(app, "Usage: /vim, /vim on, /vim off");
+    expect(existsSync(path.join(settingsDir(home), "settings.json"))).toBe(false); // nothing saved (choice 26)
+  });
+
+  it("deletes a word on dw written in one read", async () => {
+    const { app } = await mount([]);
+    await normal(app, "one two");
+    await press(app, "0", "dw");
+    expect(app.lastFrame()).toContain("› two\n");
+  });
+
+  it("inserts a paste in NORMAL as text", async () => {
+    const { app } = await mount([]);
+    await normal(app, "ab");
+    await press(app, "\u{1b}[200~dw\u{1b}[201~");
+    expect(app.lastFrame()).toContain("› adwb\n");
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+  });
+
+  it("goes to NORMAL on Esc in INSERT during a turn, which goes on, and stops the turn on Esc in NORMAL", async () => {
+    const { app } = await mount([], { lead: hanging() });
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await type(app, "hi");
+    await until(app, "Esc to stop");
+    await press(app, ESC);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    expect(app.lastFrame()).toContain("Esc to stop");
+    await press(app, ESC);
+    await gone(app, "Esc to stop");
+  });
+
+  // Final review: in INSERT, and with a command half typed, the first Esc goes to vim and only the second stops the
+  // turn, so the working line names Esc twice there (choice 31).
+  it("says Esc Esc to stop in INSERT and with d half typed, and Esc to stop in NORMAL", async () => {
+    const { app } = await mount([], { lead: hanging() });
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await type(app, "hi");
+    await until(app, "· Esc Esc to stop");
+    await press(app, ESC);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    expect(app.lastFrame()).toContain("· Esc to stop");
+    await press(app, "d");
+    expect(app.lastFrame()).toContain("· Esc Esc to stop");
+    await press(app, ESC);
+    expect(app.lastFrame()).toContain("· Esc to stop");
+    await press(app, ESC);
+    await gone(app, "to stop");
+  });
+
+  it("lists Esc twice to stop the turn on ? in INSERT, and once in NORMAL", async () => {
+    const { app } = await mount([]);
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await press(app, "?");
+    await until(app, "  Esc Esc  stop the turn · Esc Esc Esc  clear the prompt");
+    await press(app, ESC, "?");
+    expect(app.lastFrame()).toContain("  Esc  stop the turn · Esc Esc  clear the prompt");
+  });
+
+  it("sends on Enter in NORMAL", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await normal(app, "hi");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(sent(session)).toEqual({ type: "text", text: "hi" });
+  });
+
+  it("lists the keys on ?, recalls a past prompt on k, and opens Ctrl+R's search on /, in NORMAL", async () => {
+    const { app } = await mount([], { past: ["older"] });
+    await normal(app);
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("Keys:");
+    await press(app, "k");
+    expect(app.lastFrame()).toContain("› /vim\n");
+    await press(app, "/");
+    expect(app.lastFrame()).toContain("search: ");
+    await press(app, "o"); // typed into the search, not a vim key
+    expect(app.lastFrame()).toContain("› older\n");
+  });
+
+  it("keeps the mode and the cursor across Ctrl+O's detail view", async () => {
+    const { app } = await mount([], { full: true });
+    await normal(app, "abc");
+    await press(app, CTRL_O);
+    expect(app.lastFrame()).not.toContain("-- NORMAL --"); // the view's key row takes the row
+    await press(app, CTRL_O);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    await press(app, "x");
+    expect(shown(app)).toContain("› ab");
+  });
+
+  it("toggles the to-do list on Ctrl+T after d, leaving d pending", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("todo", todo);
+    await normal(app, "one two");
+    expect(app.lastFrame()).toContain("write the fix");
+    await press(app, "0", "d", CTRL_T);
+    expect(app.lastFrame()).not.toContain("write the fix");
+    await press(app, "w");
+    expect(app.lastFrame()).toContain("› two\n");
+  });
+
+  it("deletes a word on d then w, with w bound in Chat, which a lone w does", async () => {
+    const { app, bus } = await mount([], { bindings: table("Chat", { w: "app:toggleTodos" }) });
+    bus.emit("todo", todo);
+    await normal(app, "one six");
+    await press(app, "0", "w");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    expect(app.lastFrame()).toContain("› one six\n");
+    await press(app, "d", "w");
+    expect(app.lastFrame()).toContain("› six\n");
+  });
+
+  it("goes to NORMAL on Esc in INSERT with chat:cancel rebound to Ctrl+Q, which stops the turn from INSERT", async () => {
+    const { app } = await mount([], { lead: hanging(), bindings: table("Chat", { escape: null, "ctrl+q": "chat:cancel" }) });
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await type(app, "hi");
+    await until(app, "Ctrl+Q to stop");
+    await press(app, ESC);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    expect(app.lastFrame()).toContain("Ctrl+Q to stop");
+    await press(app, "i");
+    expect(app.lastFrame()).toContain("-- INSERT --");
+    await press(app, "\u{11}"); // Ctrl+Q: chat:cancel stops the turn, not a switch of mode
+    await gone(app, "Ctrl+Q to stop");
+    expect(app.lastFrame()).toContain("-- INSERT --");
+  });
+
+  // As Claude Code's vim hook does: any Ctrl or Meta key in VISUAL goes to NORMAL first; its text field then takes no
+  // editing key, and a key the table binds does its action (the plan's choice 27).
+  it("leaves VISUAL on a Ctrl or Alt key, which then does its table action but no editing", async () => {
+    const { app, bus } = await mount([]);
+    bus.emit("todo", todo);
+    await normal(app, "one two");
+    await press(app, "0", "v", "e");
+    expect(app.lastFrame()).toContain("-- VISUAL --");
+    await press(app, CTRL_T);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    expect(app.lastFrame()).not.toContain("write the fix");
+    await press(app, "x"); // one character: nothing is selected now
+    expect(app.lastFrame()).toContain("› on two\n");
+    await press(app, "V");
+    expect(app.lastFrame()).toContain("-- VISUAL LINE --");
+    await press(app, CTRL_K);
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    expect(app.lastFrame()).toContain("› on two\n");
+    await press(app, CTRL_K); // in NORMAL the editor's own key: delete to the line's end
+    expect(app.lastFrame()).toContain("› on\n");
+  });
+
+  // The plan's choice 28: VISUAL's selection in reverse colours, as Claude Code 2.1.312 draws it.
+  it("draws VISUAL's selection in reverse colours, the cursor's character in it, and clears it on leaving", async () => {
+    await inColour(async () => {
+      const { app } = await mount([]);
+      await normal(app, "one two");
+      await press(app, "0", "v");
+      expect(reversed(app)).toContain("o");
+      await press(app, "l", "l");
+      expect(reversed(app)).toContain("one");
+      await press(app, ESC);
+      expect(app.lastFrame()).toContain("-- NORMAL --");
+      expect(onPrompt(app)).toBe("");
+      await press(app, "v", "h", CTRL_T); // leaving on a Ctrl key clears it too
+      expect(app.lastFrame()).toContain("-- NORMAL --");
+      expect(onPrompt(app)).toBe("");
+      await press(app, "0", "l", "v", "h"); // the anchor after the cursor: from the cursor to the anchor's character
+      expect(onPrompt(app)).toBe("on");
+    });
+  });
+
+  // Code review of Task 21: App changing the prompt's text under VISUAL left its anchor in the old text, and `o` then put
+  // the cursor where the new text has no place, which threw while drawing. Changed text leaves VISUAL for NORMAL.
+  it.each([
+    { name: "a message sent", keys: ["\r"] },
+    { name: "a past prompt recalled", keys: ["\u{1b}[A"] },
+    { name: "a paste", keys: ["\u{1b}[200~\u{1f600}\u{1b}[201~"] },
+  ])("leaves VISUAL for NORMAL when $name changes the text, and o then works", async ({ keys }) => {
+    await inColour(async () => {
+      // On from the settings file, so no /vim is in the history for Up to bring back.
+      const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+      onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+      const live = { loaded: { settings: { editorMode: "vim" as const }, warnings: [] }, given: {} };
+      const { app } = await mount([reply("ok")], { past: ["hi"], home, live });
+      await press(app, "hello world", ESC, "v", "0", ...keys);
+      expect(app.lastFrame()).toContain("-- NORMAL --");
+      expect(onPrompt(app)).toBe("");
+      await press(app, "o");
+      expect(app.lastFrame()).toContain("-- INSERT --");
+    });
+  });
+
+  // Final review: a command or count half typed outlived App putting other text in the prompt, so `d`, Ctrl+P, `w`
+  // deleted a word of the line recalled. Changed text drops them, as it leaves VISUAL.
+  it.each([
+    { name: "a past prompt recalled with Ctrl+P", keys: ["\u{10}"], after: "› /vim\n" },
+    { name: "a picture's marker put in", keys: [PICTURE], after: "› [Image #1]alpha beta\n" },
+  ])("drops a half-typed d when $name changes the text, so w only moves", async ({ keys, after }) => {
+    const { app } = await mount([]);
+    await normal(app, "alpha beta");
+    await press(app, "0", "d", ...keys, "w");
+    expect(app.lastFrame()).toContain(after);
+  });
+
+  it("leaves VISUAL for NORMAL when a picture's failed read takes its marker out", async () => {
+    await inColour(async () => {
+      const pictures = new Pictures();
+      const { app } = await mount([], { pictures });
+      await type(app, "/vim");
+      await until(app, "-- INSERT --");
+      await press(app, PICTURE, "ab", ESC, "v", "0");
+      expect(onPrompt(app)).toBe("[Image #1]ab");
+      pictures.set(1, "none");
+      await until(app, "No picture on the clipboard.");
+      expect(app.lastFrame()).toContain("-- NORMAL --");
+      expect(onPrompt(app)).toBe("");
+      await press(app, "o");
+      expect(app.lastFrame()).toContain("-- INSERT --");
+    });
+  });
+
+  // Claude Code's Enter in NORMAL goes to its text field, which sends, whatever is half typed (2.1.312's
+  // `if(a.name==="return"&&l.mode!=="VISUAL"){f.handleKeyDown(a);return}`); here an operator's Enter drops the command
+  // (choice 27), and a count's sends, as there.
+  it("drops d on Enter, and sends after a count, in NORMAL", async () => {
+    const { app, session } = await mount([reply("ok")]);
+    await normal(app, "hi");
+    await press(app, "d", "\r");
+    await tick();
+    expect(session.messages).toEqual([]);
+    expect(app.lastFrame()).toContain("› hi\n");
+    await press(app, "2", "\r");
+    await until(app, "ok");
+    expect(sent(session)).toEqual({ type: "text", text: "hi" });
+  });
+
+  // Code review of Task 21: new text in the prompt starts what `.` repeats afresh (App.tsx, freshText).
+  it("repeats on . an insert typed after a message was sent from INSERT", async () => {
+    const { app } = await mount([reply("ok")]);
+    await normal(app, "foo");
+    await press(app, "A", "bar", "\r");
+    await until(app, "ok");
+    await press(app, "baz", ESC, ".");
+    expect(app.lastFrame()).toContain("› babazz\n");
+  });
+
+  it("draws VISUAL LINE's selection over whole lines", async () => {
+    await inColour(async () => {
+      const { app } = await mount([]);
+      await type(app, "/vim");
+      await until(app, "-- INSERT --");
+      await press(app, "one two", "\n", "six", ESC, "h", "V"); // a line feed is Ctrl+J, a new line
+      expect(reversed(app)).toContain("six");
+      expect(reversed(app)).not.toContain("one two");
+      await press(app, "k");
+      expect(reversed(app)).toEqual(expect.arrayContaining(["one two", "six"]));
+    });
+  });
+
+  it("draws the whole of a picture's marker the selection reaches into, as a delete there takes all of it", async () => {
+    await inColour(async () => {
+      const { app } = await mount([]);
+      await type(app, "/vim");
+      await until(app, "-- INSERT --");
+      await press(app, "see ", PICTURE, ESC, "0", "v", "l", "l", "l", "l", "l"); // to the marker's I
+      expect(reversed(app)).toContain("see [Image #1]");
+      await press(app, "d");
+      expect(app.lastFrame()).not.toContain("[Image #1]");
+    });
+  });
+
+  it("keeps a picture's span through a vim edit, so the message carries the picture", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("seen")], { pictures });
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    await press(app, "one see ", PICTURE, ESC, "0", "dw");
+    expect(app.lastFrame()).toContain("› see [Image #1]\n");
+    pictures.set(1, PNG);
+    await press(app, "\r");
+    await until(app, "seen");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]);
+  });
+});
+
+// Release 6 plan, Task 9: edits to the settings file apply in the running session, by the design's table ("The settings
+// file", "When a live change applies").
+describe("App's live settings", () => {
+  const FROM = "(from settings.json)";
+  // fs.watch reported each of 400 writes within 5 ms on this machine (measured 2026-10-28); 2 s is as long as until()
+  // waits (40 ticks of 50 ms), room for a busy machine.
+  const WATCHED = { timeout: 2_000 };
+  // A long line wraps, and Ink can carry the space it broke at onto the next row.
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
+  const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
+  const freshHome = () => mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+  const PINNED = (mode: string) => `"mode" changes in settings.json take effect at the next launch; the mode stays ${mode}`;
+
+  // A home of the test's own whose settings file holds `file` at launch, and the App watching it; `given`, the
+  // entries a flag or variable gave at launch. `write` changes the file as an editor does; `remove` takes it away.
+  async function watching(
+    turns: ConstructorParameters<typeof FakeProvider>[1],
+    file: Settings,
+    opts: Parameters<typeof mount>[1] = {},
+    given: Given = {},
+    home = freshHome(),
+  ) {
+    const where = path.join(settingsDir(home), "settings.json");
+    mkdirSync(settingsDir(home), { recursive: true });
+    writeFileSync(where, JSON.stringify(file));
+    const m = await mount(turns, { ...opts, home, live: { loaded: { settings: file, warnings: [] }, given } });
+    const write = (data: object | string) => writeFileSync(where, typeof data === "string" ? data : JSON.stringify(data));
+    return { ...m, where, write, remove: () => unlinkSync(where) };
+  }
+
+  it("changes the lead as /lead does, once a turn running ends, and keeps it when the entry is removed", async () => {
+    const lead = new Held();
+    const made: string[] = [];
+    const { app, session, write } = await watching([], {}, { lead, made });
+    await type(app, "go");
+    write({ lead: "ollama:b", mode: "project" });
+    await sees(app, PINNED("ask")); // the edit was read while the turn runs
+    expect(flat(app)).not.toContain("lead is now");
+    lead.answer("done");
+    await sees(app, `lead is now fake:b ${FROM}`);
+    expect(session.lead.id).toBe("fake:b");
+    expect(made).toEqual(["ollama:b"]);
+    write({ mode: "project" });
+    await sees(app, '"lead" was removed from settings.json; the lead stays fake:b');
+    expect(session.lead.id).toBe("fake:b");
+  });
+
+  it("says why a lead, fallback or worker the file names cannot be made, and keeps the one before", async () => {
+    const { app, session, write } = await watching([], {}, { leadFails: "no such model" });
+    write({ lead: "x", fallback: "y", worker: "z" });
+    await sees(app, 'settings.json: "lead": no such model');
+    await sees(app, 'settings.json: "fallback": no such model');
+    await sees(app, 'settings.json: "worker": no such model');
+    expect(session.lead.id).toBe("fake:a");
+  });
+
+  // Release 6 plan, choice 32 (the outside review of PR #5): a shell command the user allowed could rewrite the file to
+  // put the session in project mode, so a live edit of "mode" never changes it; Shift+Tab still does.
+  it("keeps the mode as at launch on a live edit of it, says so, and still switches it on Shift+Tab", async () => {
+    const { app, gate, write } = await watching([], {});
+    write({ mode: "project" });
+    await sees(app, PINNED("ask"));
+    expect(gate.mode).toBe("ask");
+    expect(app.lastFrame()).toContain("perm ask");
+    await press(app, "\u001b[Z");
+    await sees(app, "mode is now project");
+    write({});
+    await sees(app, PINNED("project")); // removing the entry is a change too
+    expect(gate.mode).toBe("project");
+  });
+
+  it("refuses a live never, and keeps a session started in never in it", async () => {
+    const a = await watching([], {});
+    a.write({ mode: "never" });
+    await sees(a.app, '"mode": "never" is switched off until release 7; the mode stays ask');
+    expect(a.app.lastFrame()).toContain("perm ask");
+    const b = await watching([], { mode: "never" }, { mode: "never" });
+    b.write({ mode: "ask" });
+    await sees(b.app, PINNED("never"));
+    expect(b.app.lastFrame()).toContain("perm never");
+  });
+
+  // Test 7 too: a change made while a tool runs inside a turn is sent from the request after the tool's result.
+  it("sends a changed effort from the lead's very next request, inside a turn, and none once the entry is removed", async () => {
+    vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
+    onTestFinished(() => void vi.unstubAllEnvs());
+    const lookup = vi.spyOn(Models.prototype, "retrieve").mockResolvedValue({ max_input_tokens: 1_000 } as never); // no request leaves
+    onTestFinished(() => lookup.mockRestore());
+    const answer = (content: unknown[], stop_reason: string) =>
+      ({
+        id: "msg_1",
+        type: "message",
+        role: "assistant",
+        model: "claude-test",
+        content,
+        stop_reason,
+        stop_details: null,
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      }) as unknown as BetaMessage;
+    const answers = [
+      answer([{ type: "tool_use", id: "c1", name: "write_file", input: { path: "a.txt", content: "x" } }], "tool_use"),
+      answer([{ type: "text", text: "written" }], "end_turn"),
+      answer([{ type: "text", text: "answered again" }], "end_turn"),
+    ];
+    const efforts: (string | undefined)[] = [];
+    const stream = vi.spyOn(Messages.prototype, "stream").mockImplementation(((params: { output_config?: { effort?: string } }) => {
+      efforts.push(params.output_config?.effort);
+      const next = answers.shift();
+      return { finalMessage: async () => next };
+    }) as never);
+    onTestFinished(() => stream.mockRestore());
+    const { app, ctx, write } = await watching([], { effort: "high" }, { lead: new AnthropicProvider("claude-test", "high") });
+    await type(app, "make a file");
+    await until(app, `Allow write ${path.join(ctx.root, "a.txt")}? [y/n]`);
+    write({ effort: "low" });
+    await sees(app, `effort is now low ${FROM}`);
+    app.stdin.write("y");
+    await until(app, "written");
+    write({});
+    await sees(app, `effort is now the model's default ${FROM}`);
+    await type(app, "again");
+    await until(app, "answered again");
+    expect(efforts).toEqual(["high", "low", undefined]);
+  });
+
+  it("rescues a refusal, the lead's and a subagent's, on a fallback the file names, and none once the entry is removed", async () => {
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const rescue = new FakeProvider("b", [reply("rescued"), reply("rescued the subagent")]);
+    const worker = new FakeProvider("w", [refused, refused]);
+    const { app, tasks, write } = await watching([refused, refused], {}, { newLead: rescue, worker });
+    write({ fallback: "ollama:f" });
+    await sees(app, `fallback is now fake:b ${FROM}`);
+    await type(app, "one");
+    await until(app, "rescued");
+    expect(await tasks.start("one", { background: false }).done).toEqual({ state: "done", text: "rescued the subagent" });
+    write({});
+    await sees(app, `fallback is now off ${FROM}`);
+    await type(app, "two");
+    await until(app, "✗ refusal: declined");
+    expect(await tasks.start("two", { background: false }).done).toEqual({ state: "failed", text: "declined" });
+  });
+
+  // As at launch (cli.tsx, makeProvider), the fallback and the subagents' worker take the effort too, not only the
+  // lead.
+  it("sends a changed effort to the fallback and the subagents' worker as well as the lead", async () => {
+    // Records the effort each request goes with, as AnthropicProvider sends it.
+    class Effortful extends FakeProvider {
+      effort: string | undefined;
+      readonly sent: (string | undefined)[] = [];
+      setEffort(effort: string | undefined) {
+        this.effort = effort;
+      }
+      override complete(req: Parameters<FakeProvider["complete"]>[0]) {
+        this.sent.push(this.effort);
+        return super.complete(req);
+      }
+    }
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const lead = new Effortful("a", [refused]);
+    const rescue = new Effortful("b", [reply("rescued")]);
+    const worker = new Effortful("w", [reply("subagent done")]);
+    const { app, tasks, write } = await watching([], {}, { lead, newLead: rescue, worker });
+    write({ fallback: "ollama:f" });
+    await sees(app, `fallback is now fake:b ${FROM}`);
+    write({ fallback: "ollama:f", effort: "low" });
+    await sees(app, `effort is now low ${FROM}`);
+    await type(app, "go");
+    await until(app, "rescued");
+    expect(await tasks.start("one", { background: false }).done).toEqual({ state: "done", text: "subagent done" });
+    expect([lead.sent, rescue.sent, worker.sent]).toEqual([["low"], ["low"], ["low"]]);
+  });
+
+  it("starts later subagents on the worker the file names, and on the lead's model once the entry is removed", async () => {
+    const { app, tasks, write } = await watching([], {});
+    write({ worker: "ollama:w" });
+    await sees(app, `worker is now fake:b ${FROM}`);
+    expect(tasks.start("one", { background: false }).model).toBe("fake:b");
+    write({});
+    await sees(app, `worker is now the lead's model ${FROM}`);
+    expect(tasks.start("two", { background: false }).model).toBe("fake:a");
+  });
+
+  it("holds back new subagents past a lowered maxTasks, stopping none, and starts them once the entry is removed", async () => {
+    const { app, tasks, write } = await watching([], {}, { worker: new Held("fake:w") });
+    tasks.start("one", { background: false });
+    tasks.start("two", { background: false });
+    write({ maxTasks: 1 });
+    await sees(app, `maxTasks is now 1 ${FROM}`);
+    tasks.start("three", { background: false });
+    await vi.waitFor(() => expect(tasks.all.map((t) => t.state)).toEqual(["running", "running", "waiting"]));
+    write({});
+    await sees(app, `maxTasks is now 8 ${FROM}`);
+    await vi.waitFor(() => expect(tasks.all.map((t) => t.state)).toEqual(["running", "running", "running"]));
+  });
+
+  // Choice 26, the user's: a missing file is skipped, as an empty one is, so an editor that saves by renaming a new
+  // file over the old one changes nothing while there is none.
+  it("shows the status parts the file names at once, and keeps them while the file is missing and once it is back", async () => {
+    const { app, write, remove, where } = await watching([], {});
+    write({ status: ["lead"] });
+    await sees(app, `status is now lead ${FROM}`);
+    const read = readsOf(where);
+    await read(remove);
+    await read(() => write({ status: ["lead"] }));
+    write({ status: ["lead"], mode: "project" });
+    await sees(app, PINNED("ask"));
+    expect(flat(app).split("status is now").length - 1).toBe(1);
+    expect(app.lastFrame()).not.toContain("perm ask");
+  });
+
+  it("switches the screen as /screen does, once a turn running ends, and back once the entry is removed", async () => {
+    const lead = new Held();
+    const { app, write, where } = await watching([], {}, { lead, full: true });
+    await type(app, "go");
+    write({ screen: "classic", mode: "project" });
+    await sees(app, PINNED("ask")); // the edit was read while the turn runs
+    expect(flat(app)).not.toContain("screen is now");
+    lead.answer("done");
+    await sees(app, `screen is now classic ${FROM}`);
+    write({ mode: "project" });
+    await sees(app, `screen is now full ${FROM}`);
+    expect(readFileSync(where, "utf8")).toBe('{"mode":"project"}'); // the file as the user wrote it
+  });
+
+  it("says full screen cannot draw here when the file asks for it", async () => {
+    const { app, write } = await watching([], { screen: "classic" }, { fullPossible: false });
+    write({});
+    await sees(app, "Full screen needs a terminal (the output is not one, or CI is set)");
+  });
+
+  it("scrolls by the file's scrollSpeed from the next notch, and by 3 once the entry is removed", async () => {
+    const { app, mouse, write } = await watching([], {}, { full: true, intro: said(80) });
+    const top = () => Number(/^said (\d+)\.$/.exec(shown(app)[0]!)![1]);
+    write({ scrollSpeed: 1 });
+    await sees(app, `scrollSpeed is now 1 ${FROM}`);
+    let from = top();
+    await wheel(mouse, "up");
+    expect(top()).toBe(from - 1);
+    await wheel(mouse, "down", 5); // back to the bottom, following, so the next line shows
+    write({});
+    await sees(app, `scrollSpeed is now 3 ${FROM}`);
+    from = top();
+    await wheel(mouse, "up");
+    expect(top()).toBe(from - 3);
+  });
+
+  it("leaves an entry a flag or variable gave at launch as given, and says so", async () => {
+    const { app, session, write } = await watching([], {}, {}, { lead: "TACHI_LEAD", mode: "--mode" });
+    write({ lead: "ollama:b", mode: "project" });
+    await sees(app, `settings.json's "lead" was left as TACHI_LEAD set it for this session`);
+    await sees(app, `settings.json's "mode" was left as --mode set it for this session`);
+    expect(session.lead.id).toBe("fake:a");
+    expect(app.lastFrame()).toContain("perm ask");
+  });
+
+  // The watcher reads the settings file `where` on every event in its folder (settingsWatch.ts, watchSettings), so a
+  // read of it once a file there is written shows the watcher has read what was written.
+  const readsOf = (where: string) => async (write: () => void) => {
+    const before = reads.get(where) ?? 0;
+    write();
+    await vi.waitFor(() => expect(reads.get(where) ?? 0).toBeGreaterThan(before), WATCHED);
+  };
+
+  // Choice 3: editors such as Notepad empty the file before writing it. Neither entry is given by a flag, so a reset
+  // would show.
+  it("takes an editor's empty write, then its full text, as one change, with no line resetting the rest", async () => {
+    const { app, write, where } = await watching([], { mode: "project", maxTasks: 2 }, { mode: "project" });
+    const read = readsOf(where);
+    await read(() => write(""));
+    write({ mode: "project", maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    expect(flat(app)).not.toContain('"mode" changes');
+    expect(flat(app)).not.toContain("maxTasks is now 8");
+  });
+
+  it("keeps the last good settings through a broken edit, says what is wrong once, and applies good text after", async () => {
+    let words = "";
+    try {
+      JSON.parse('{"mode": ');
+    } catch (err) {
+      words = (err as Error).message;
+    }
+    const line = `settings.json is not valid JSON: ${words}; the last good settings still apply`;
+    const { app, write, where } = await watching([], { mode: "project" }, { mode: "project" });
+    write('{"mode": ');
+    await sees(app, line);
+    expect(app.lastFrame()).toContain("perm project");
+    const read = readsOf(where);
+    await read(() => write("")); // an editor's empty write, then the same broken text again
+    await read(() => write('{"mode": '));
+    write({ mode: "ask" });
+    await sees(app, PINNED("project"));
+    expect(flat(app).split(line).length - 1).toBe(1);
+  });
+
+  // Choice 26, the user's: /lead, a /model pick and /screen change this window only, so the file keeps the user's own
+  // text, and an edit of another entry does not put the file's lead back; an edit of "lead" or "screen" applies as any
+  // edit does.
+  it("leaves the file as it was on /lead, a /model pick and /screen, and applies a later edit of those entries", async () => {
+    const made: string[] = [];
+    const models = [{ provider: "fake", models: ["c"] }];
+    const { app, write, where } = await watching([], { lead: "ollama:x" }, { models, made, full: true });
+    await type(app, "/lead ollama:a");
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick(); // the picker starts reading keys just after it first appears
+    app.stdin.write("\r");
+    await waitFor(() => made.length === 2);
+    await type(app, "/screen");
+    await until(app, "screen is now classic");
+    expect(readFileSync(where, "utf8")).toBe('{"lead":"ollama:x"}');
+    write({ lead: "ollama:x", mode: "project" });
+    await sees(app, PINNED("ask"));
+    expect(made).toEqual(["ollama:a", "fake:c"]);
+    write({ lead: "ollama:b", mode: "project", screen: "full" });
+    await sees(app, `lead is now fake:b ${FROM}`);
+    await sees(app, `screen is now full ${FROM}`);
+    expect(made).toEqual(["ollama:a", "fake:c", "ollama:b"]);
+    expect(readFileSync(where, "utf8")).toBe('{"lead":"ollama:b","mode":"project","screen":"full"}');
+  });
+
+  // Choice 16: on a first launch neither ~/.tachikoma nor the file is there yet.
+  it("makes ~/.tachikoma on a first launch, and applies a settings file written there later", async () => {
+    const home = freshHome();
+    const { app } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    expect(existsSync(settingsDir(home))).toBe(true);
+    writeFileSync(path.join(settingsDir(home), "settings.json"), '{"mode": "project"}');
+    await sees(app, PINNED("ask"));
+  });
+
+  // Choice 26: the settings file goes with the folder, and a missing one keeps the settings in force.
+  it("keeps the settings and says the file is no longer watched once ~/.tachikoma is removed", async () => {
+    const { app, where, write } = await watching([], { mode: "project" }, { mode: "project" });
+    write({ mode: "project", maxTasks: 3 }); // an edit's line first, which the folder's line then replaces (noteAlone)
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    rmSync(path.dirname(where), { recursive: true });
+    await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json and keybindings.json are no longer watched this session`);
+    expect(hintRow(app)!.startsWith(`${path.join("~", ".tachikoma")} was removed`)).toBe(true); // a live file's line (choice 35)
+    expect(hintRow(app)).not.toContain("more above");
+    expect(flat(app)).not.toContain('"mode" changes');
+    expect(app.lastFrame()).toContain("perm project");
+  });
+
+  // mkdir and fs.watch can fail: a home that cannot be written, or Linux's limit on watches. Here `.tachikoma` is a
+  // file, so no permission is changed.
+  it("says the file is not watched when watching cannot start, and the session runs on", async () => {
+    const home = freshHome();
+    writeFileSync(settingsDir(home), "");
+    let reason = "";
+    try {
+      mkdirSync(settingsDir(home), { recursive: true });
+    } catch (err) {
+      reason = (err as Error).message;
+    }
+    const { app } = await mount([reply("still here")], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    expect(flat(app)).toContain(`settings.json and keybindings.json are not watched this session (${reason})`);
+    await type(app, "hi");
+    await until(app, "still here");
+  });
+
+  // The pick comes after the file's edit, so it wins, as a /lead typed then would.
+  it("keeps the lead picked from the model list over one the file set while the list was open", async () => {
+    const made: string[] = [];
+    const { app, where, write } = await watching([], {}, { models: [{ provider: "fake", models: ["c"] }], made });
+    const read = readsOf(where);
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await read(() => write({ lead: "ollama:y" }));
+    app.stdin.write("\r");
+    await sees(app, "lead is now fake:b");
+    expect(made).toEqual(["fake:c"]); // the file's lead was never made, though the pick's closing the list ran next()
+    expect(flat(app)).not.toContain(FROM);
+  });
+
+  // During the instruction files' question, say: the launch has read the file, and the watcher starts later.
+  it("applies an edit made before watching started, without saying the launch's warnings again", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeFileSync(path.join(settingsDir(home), "settings.json"), '{"leed": 1, "mode": "project"}');
+    const loaded = readSettings('{"leed": 1}');
+    if ("problem" in loaded) throw new Error(loaded.problem);
+    const { app } = await mount([], { home, live: { loaded, given: {} } });
+    await sees(app, PINNED("ask"));
+    expect(flat(app)).not.toContain('"leed"');
+  });
+
+  it("says a new unknown entry's warning once", async () => {
+    const warning = 'settings.json: "leed" is not a setting; it was left out';
+    const { app, write } = await watching([], {});
+    write({ leed: 1 });
+    await sees(app, warning);
+    write({ leed: 1, mode: "project" });
+    await sees(app, PINNED("ask"));
+    expect(flat(app).split(warning).length - 1).toBe(1);
+  });
+
+  // Release 6 plan, Task 9, "The launch's warnings show in the session too": full screen hides stderr, where the
+  // launch printed them, until the user quits.
+  it("shows the launch's settings warnings in full screen, but not in classic mode, where stderr is seen", async () => {
+    const loaded = readSettings('{"leed": 1}');
+    if ("problem" in loaded) throw new Error(loaded.problem);
+    const warning = 'settings.json: "leed" is not a setting; it was left out';
+    const full = await mount([], { full: true, home: freshHome(), live: { loaded, given: {} } });
+    expect(full.app.lastFrame()).toContain(warning);
+    const classic = await mount([], { home: freshHome(), live: { loaded, given: {} } });
+    expect(classic.app.lastFrame()).not.toContain(warning);
+  });
+
+  // Release 6 plan, Task 11: the keys file beside the settings file, through the same watcher.
+  const keysIn = (home: string) => path.join(settingsDir(home), "keybindings.json");
+  const writeKeys = (home: string, data: object | string) => writeFileSync(keysIn(home), typeof data === "string" ? data : JSON.stringify(data));
+  const globalKeys = (keys: Record<string, string | null>) => ({ bindings: [{ context: "Global", bindings: keys }] });
+  const todo: TodoItem[] = [{ text: "write the fix", status: "pending" }];
+  const parserWords = (text: string) => {
+    try {
+      JSON.parse(text);
+    } catch (err) {
+      return (err as Error).message;
+    }
+    throw new Error("parsed");
+  };
+
+  it("rebinds a key from the keys file without a restart, and ? follows it", async () => {
+    const home = freshHome();
+    const { app, bus, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+y": "app:toggleTodos" })));
+    await tick();
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0014"); // Ctrl+T, now unbound
+    expect(app.lastFrame()).toContain("write the fix");
+    await press(app, "\u0019"); // Ctrl+Y
+    expect(app.lastFrame()).not.toContain("write the fix");
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("  Ctrl+Y  show or hide the to-do list");
+    expect(app.lastFrame()).not.toContain("Ctrl+T");
+    // Global is read at a question too, where Ctrl+T still does as at launch (choice 32).
+    expect(flat(app)).toContain(HELD);
+  });
+
+  // Release 6 plan, choice 30 (security review finding 1): a shell command could rewrite the keys file so that n and Esc
+  // answer yes. After a live edit every key answers a question as at launch, the rest of the edit applies, and a line
+  // says so; at launch the file applies whole, as the user's own choice. Since choice 32 a question reads the launch's
+  // keys whole, and its hint names them.
+  const PAYLOAD = [
+    { context: "Confirmation", bindings: { n: "confirm:yes", escape: "confirm:yes" } },
+    { context: "Global", bindings: { enter: "confirm:yes" } },
+  ];
+  const HELD = "keybindings.json: at a permission question the keys stay as at launch, and a key newly bound to switch the mode does nothing, until the next launch; the rest apply now";
+
+  it("keeps the keys that answer a question as at launch after a live edit, says so, and applies the rest", async () => {
+    const home = freshHome();
+    const { app, bus, ask, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [...PAYLOAD, { context: "Global", bindings: { "ctrl+y": "app:toggleTodos" } }] }));
+    await sees(app, HELD);
+    let answer = ask("write a.txt");
+    await until(app, "Allow write a.txt? [y/n] · Esc to decline");
+    await press(app, "\r"); // Enter answers nothing
+    expect(app.lastFrame()).toContain("Allow write a.txt? [y/n]");
+    await press(app, "n");
+    expect(await answer).toBe(false);
+    answer = ask("write b.txt");
+    await until(app, "Allow write b.txt? [y/n]");
+    await press(app, "\u001b");
+    expect(await answer).toBe(false);
+    answer = ask("write c.txt");
+    await until(app, "Allow write c.txt? [y/n]");
+    await press(app, "y");
+    expect(await answer).toBe(true);
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0019"); // Ctrl+Y, from the same edit
+    expect(app.lastFrame()).not.toContain("write the fix");
+  });
+
+  it("applies keys that answer a question from the keys file at launch, with no line", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, { bindings: PAYLOAD });
+    const { app, ask } = await watching([], {}, {}, {}, home);
+    const answer = ask("write a.txt");
+    await until(app, "Allow write a.txt?"); // no key left declines, so the question names none
+    await press(app, "n");
+    expect(await answer).toBe(true);
+    expect(flat(app)).not.toContain(HELD);
+  });
+
+  // Found at the combined review: a chord the prompt started went on into a question, where Chat is not in force, so a
+  // live Chat chord on a made a, then n at the question, the launch's Confirmation "a n" (yes), where at launch a was
+  // typed and n said no. A question drops a chord waiting as it opens, so a stroke typed for the prompt never joins its keys.
+  it("drops a chord the prompt started when a question opens, so n still declines", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    const launchKeys = { context: "Confirmation", bindings: { "a n": "confirm:yes" } };
+    writeKeys(home, { bindings: [launchKeys] });
+    const { app, ask, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [launchKeys, { context: "Chat", bindings: { "a b": "chat:stash" } }] }));
+    await tick();
+    // The clock stands still from here (timers still run), so the chord's 3 s cannot end it however slow the machine,
+    // and only the question's opening can (found at the re-review).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await press(app, "a"); // Chat's chord a b waits
+      expect(app.lastFrame()).toContain("a ...");      const answer = ask("write a.txt");
+      await until(app, "Allow write a.txt? [y/n]");
+      await press(app, "n");
+      expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Release 6 plan, choice 32 (the outside review of PR #5): the reviewer's repro. At launch, z x x a b at a question
+  // reads z x (Global's z x a waiting), drops it at the second x, which then starts x a, and b answers nothing. A live
+  // edit adding a harmless Global z x x passed choice 30's check, and regrouped the same keys into z x x, then a b, the
+  // launch's own yes. A question now reads the launch's keys whole, so it is not answered.
+  it("answers a question from the launch's keys whole, so a live chord cannot regroup keys into a launch answer", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    const launchFile = [
+      { context: "Confirmation", bindings: { "a b": "confirm:yes" } },
+      { context: "Global", bindings: { "z x a": "app:toggleTodos", "x a": "app:toggleTodos" } },
+    ];
+    writeKeys(home, { bindings: launchFile });
+    const { app, ask, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [...launchFile, { context: "Global", bindings: { "z x x": "app:toggleTodos" } }] }));
+    await sees(app, HELD);
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const answer = ask("write a.txt");
+      await until(app, "Allow write a.txt? [y/n]");
+      await press(app, "z", "x", "x", "a", "b");
+      expect(app.lastFrame()).toContain("Allow write a.txt? [y/n]"); // still asked
+      await press(app, "n");
+      expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Choice 32: a chord half typed at a question that closes without the key ending it (its owner stopped) is dropped
+  // as the question closes, so it neither runs on into the prompt's keys nor stays in the hint row.
+  it("drops a chord half typed at a question when the question closes", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, globalKeys({ "z x": "app:toggleTodos" }));
+    const { app, ask, bus } = await watching([], {}, {}, {}, home);
+    bus.emit("todo", todo);
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so only the closing can end the chord
+    try {
+      const stop = new AbortController();
+      const answer = ask("write a.txt", undefined, { name: "t1", signal: stop.signal, stop: () => stop.abort() });
+      await until(app, "write a.txt? [y/n]");
+      await press(app, "z");
+      expect(app.lastFrame()).toContain("z ...");
+      stop.abort();
+      expect(await answer).toBe(false);
+      await tick();
+      expect(app.lastFrame()).not.toContain("z ...");
+      await press(app, "x"); // typed, not the chord's end
+      expect(app.lastFrame()).toContain("› x");
+      expect(app.lastFrame()).toContain("write the fix");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Release 6 plan, choice 32 (the user's: "Yes, close it"): a shell command could bind chat:cycleMode to a key the user
+  // types anyway, so typing would flip ask to project. A stroke switches the mode only where the launch's keys, reading
+  // every stroke as if alone, switch it too; a stroke the live keys alone bind to it does nothing.
+  it("switches the mode only on a key the launch's keys switch it on, whatever a live edit binds", async () => {
+    const home = freshHome();
+    const { app, gate, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [{ context: "Chat", bindings: { space: "chat:cycleMode", "z m": "chat:cycleMode" } }] }));
+    await sees(app, HELD);
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      await press(app, "a", " ", "b", "z", "m");
+      expect(gate.mode).toBe("ask");
+      expect(flat(app)).not.toContain("mode is now");
+      expect(app.lastFrame()).toContain("› ab"); // the space did nothing, and z m was a chord
+      await press(app, "\u001b[Z");
+      expect(gate.mode).toBe("project");
+      expect(flat(app)).toContain("mode is now project");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Each table keeps its own chord: at launch a then Shift+Tab is the launch's chord a shift+tab, a stash, so a live
+  // edit taking that chord out cannot make the same keys switch the mode, though Shift+Tab alone still does.
+  it("reads a stroke by the launch's own chords, so a live edit cannot regroup keys into the mode key", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    const launchFile = { context: "Chat", bindings: { "a shift+tab": "chat:stash" } };
+    writeKeys(home, { bindings: [launchFile] });
+    const { app, gate, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [{ context: "Chat", bindings: { "a shift+tab": null } }] }));
+    await tick();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await press(app, "a");
+      expect(app.lastFrame()).toContain("› a"); // the edit landed: only the live keys type a, the launch's wait on it
+      await press(app, "\u001b[Z");
+      expect(gate.mode).toBe("ask");
+      await press(app, "\u001b[Z");
+      expect(gate.mode).toBe("project");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Unbinding the mode key weakens nothing, so it applies at once, and ? names only a key that switches the mode.
+  it("applies a live edit taking the mode key out at once, and ? names no key the launch's keys would not switch on", async () => {
+    const home = freshHome();
+    const { app, gate, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [{ context: "Chat", bindings: { "shift+tab": null, space: "chat:cycleMode" } }] }));
+    await sees(app, HELD);
+    await press(app, "\u001b[Z", " ");
+    expect(gate.mode).toBe("ask");
+    await press(app, "?");
+    expect(app.lastFrame()).not.toContain("permission mode");
+  });
+
+  // Choice 32: outside a question the launch's keys read every stroke too, so a chord they start at the prompt is
+  // dropped as a question opens, as the live keys' is (above), and never joins the question's keys.
+  it("drops a chord the launch's keys started at the prompt when a question opens, after a live edit", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    const launchFile = { context: "Global", bindings: { "a n": "confirm:yes" } };
+    writeKeys(home, { bindings: [launchFile] });
+    const { app, ask, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [{ context: "Global", bindings: { "ctrl+y": "app:toggleTodos" } }] }));
+    await sees(app, HELD);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await press(app, "a"); // typed into the prompt by the live keys; the launch's a n waits
+      const answer = ask("write a.txt");
+      await until(app, "Allow write a.txt? [y/n]");
+      await press(app, "n");
+      expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The code review of choice 32: the question on screen drops a chord waiting as it closes, so one half typed at it,
+  // cancelled, never joins the keys of the next question in the line.
+  it("drops a chord half typed at a cancelled question before the next question in the line reads a key", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, globalKeys({ "z n": "confirm:yes" }));
+    const { app, ask } = await watching([], {}, {}, {}, home);
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so only the closing can end the chord
+    try {
+      const stop = new AbortController();
+      const first = ask("write a.txt", undefined, { name: "t1", signal: stop.signal, stop: () => stop.abort() });
+      const second = ask("write b.txt");
+      await until(app, "write a.txt? [y/n]");
+      await press(app, "z");
+      stop.abort();
+      expect(await first).toBe(false);
+      await until(app, "Allow write b.txt? [y/n]");
+      await press(app, "n"); // n alone: no
+      expect(await second).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The code review of choice 32: a question asked while the model list is open waits under it, and the key that
+  // closes the list is read by both tables. Here the launch's keys start their chord Esc n on it, which the live keys
+  // no longer have; the first key read at the question drops it (App.tsx, lookUp's `asked`), so n still declines.
+  it("drops a chord the launch's keys started in the model list before the question under it reads a key", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, globalKeys({ "escape n": "confirm:yes" }));
+    const { app, ask, where } = await watching([], {}, { models: [{ provider: "fake", models: ["c"] }] }, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, globalKeys({ "ctrl+y": "app:toggleTodos" })));
+    await sees(app, HELD);
+    await type(app, "/model");
+    await until(app, "fake:c");
+    await tick(); // the picker starts reading keys just after it first appears
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const answer = ask("write a.txt");
+      await tick();
+      expect(app.lastFrame()).not.toContain("Allow write a.txt"); // the list is drawn over it
+      await press(app, "\u001b"); // the live keys close the list
+      await until(app, "Allow write a.txt? [y/n]");
+      await press(app, "n");
+      expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The code review of choice 32: a click picks from the model list without a key, so a chord the list's keys started
+  // still waits when the question under it is drawn. The question's keys are not waiting on it (the first key there
+  // drops it, as above), so the hint row does not name it.
+  it("names no chord over a question that the question's keys are not waiting on", async () => {
+    const bindings = new Bindings(tableOf({ ...DEFAULTS, Global: { ...DEFAULTS.Global, "ctrl+k ctrl+x": "app:toggleTodos" } }));
+    const { app, ask, mouse } = await mount([], { full: true, bindings, models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "/model");
+    await until(app, "fake:b");
+    await tick(); // the picker starts reading keys just after it first appears
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const answer = ask("write a.txt");
+      await tick();
+      await press(app, "\u000b"); // Ctrl+K: the chord ctrl+k ctrl+x waits
+      await pointer(mouse, ...click(4, shown(app).indexOf("  fake:b")));
+      await until(app, "Allow write a.txt? [y/n]");
+      expect(app.lastFrame()).not.toContain("ctrl+k ...");
+      await press(app, "n");
+      expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The outside review of PR #5's second round: a question waiting in the line, not on screen, that is cancelled leaves
+  // a chord half typed at the one on screen as it is, so z y still reads as the launch's z y (no), not y (yes).
+  it("keeps a chord half typed at the question on screen when one waiting behind it is cancelled", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, globalKeys({ "z y": "confirm:no" }));
+    const { app, ask } = await watching([], {}, {}, {}, home);
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const first = ask("write a.txt");
+      const stop = new AbortController();
+      const second = ask("write b.txt", undefined, { name: "t1", signal: stop.signal, stop: () => stop.abort() });
+      await until(app, "Allow write a.txt? [y/n]");
+      await press(app, "z");
+      stop.abort();
+      expect(await second).toBe(false);
+      await press(app, "y"); // ends z y: no
+      expect(await first).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The code re-check of choice 32: the last key was read in the model list, not at a question, so cancelling the
+  // question under it leaves the chord half typed in the list to the list's keys, and Ctrl+K Enter still toggles the
+  // to-do list rather than Enter picking.
+  it("keeps a chord half typed in the model list when the question under it is cancelled", async () => {
+    const bindings = new Bindings(tableOf({ ...DEFAULTS, Global: { ...DEFAULTS.Global, "ctrl+k enter": "app:toggleTodos" } }));
+    const made: string[] = [];
+    const { app, ask, bus } = await mount([], { bindings, made, models: [{ provider: "fake", models: ["a", "b"] }] });
+    bus.emit("todo", todo);
+    await tick();
+    expect(app.lastFrame()).toContain("write the fix");
+    await type(app, "/model");
+    await until(app, "fake:b");
+    await tick(); // the picker starts reading keys just after it first appears
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const stop = new AbortController();
+      const answer = ask("write a.txt", undefined, { name: "t1", signal: stop.signal, stop: () => stop.abort() });
+      await tick();
+      await press(app, "\u000b"); // the chord ctrl+k enter waits; Ctrl+K alone does nothing in the list
+      stop.abort();
+      expect(await answer).toBe(false);
+      await press(app, "\r"); // ends the chord
+      expect(made).toEqual([]); // no model picked
+      expect(app.lastFrame()).toContain("fake:b"); // the list still open
+      await press(app, "\u001b");
+      await until(app, "? for shortcuts");
+      expect(app.lastFrame()).not.toContain("write the fix"); // the chord hid the to-do list
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The code re-check of choice 32 (its fuzz's rare path): z typed at question A, the model list then opening over A
+  // with no key between (its read ending), A cancelled under the list, and the list closed by a click, no key between
+  // either. The chord z was typed at the question on screen, the last key read there, so A's closing drops it, and n at
+  // the next question declines rather than ending the launch's z n (yes).
+  it("drops a chord typed at a question that the model list then opened over, when that question is cancelled", async () => {
+    const bindings = new Bindings(tableOf({ ...DEFAULTS, Global: { ...DEFAULTS.Global, "z n": "confirm:yes" } }));
+    let list = () => {};
+    const listing = new Promise<void>((resolve) => (list = resolve));
+    const made: string[] = [];
+    const { app, ask, mouse } = await mount([], { full: true, bindings, made, listing, models: [{ provider: "fake", models: ["a", "b"] }] });
+    await type(app, "/model"); // its read waits
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const stop = new AbortController();
+      const first = ask("write a.txt", undefined, { name: "t1", signal: stop.signal, stop: () => stop.abort() });
+      const second = ask("write b.txt");
+      await until(app, "write a.txt? [y/n]");
+      await press(app, "z"); // the launch's chord z n waits
+      list();
+      await until(app, "fake:b"); // the list opens over the question
+      await tick(); // the picker starts reading keys just after it first appears
+      stop.abort();
+      expect(await first).toBe(false);
+      await pointer(mouse, ...click(4, shown(app).indexOf("  fake:b")));
+      await until(app, "Allow write b.txt? [y/n]");
+      expect(made).toEqual(["fake:b"]);
+      await press(app, "n"); // n alone: no
+      expect(await second).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Release 6 plan, choice 35 (the user's: "Hint row, until a key"): a live edit's lines show in the hint row too, the row
+  // over the status line, until the next key, the last of an edit's lines with how many more are in the conversation.
+  const hintRow = (app: ReturnType<typeof render>) => {
+    const rows = app.lastFrame()!.split("\n");
+    return rows[rows.findIndex((r) => /^ ?lead \S+ [|]/.test(r)) - 1];
+  };
+  it("shows a live edit's line in the hint row until the next key, and how many more an edit said", async () => {
+    const { app, write } = await watching([], {});
+    write({ maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    expect(hintRow(app)).toBe(`maxTasks is now 3 ${FROM}`);
+    await press(app, "x");
+    expect(hintRow(app)).toBe("? for shortcuts");
+    expect(flat(app)).toContain(`maxTasks is now 3 ${FROM}`); // still in the conversation
+    write({ maxTasks: 2, scrollSpeed: 1 });
+    await sees(app, `scrollSpeed is now 1 ${FROM}`);
+    expect(hintRow(app)).toBe(`scrollSpeed is now 1 ${FROM} (+1 more above)`);
+    write({ maxTasks: 2, scrollSpeed: 1, mode: "project" }); // a newer edit replaces it
+    await sees(app, PINNED("ask"));
+    expect(hintRow(app)).toBe(PINNED("ask"));
+  });
+
+  it("shows a problem from a live edit in the hint row in red, until the next key", async () => {
+    await inColour(async () => {
+      const { app, write } = await watching([], {});
+      write('{"mode": ');
+      const red = "\u001b[31msettings.json is not valid JSON";
+      await vi.waitFor(() => expect(app.lastFrame()!.split(red).length - 1).toBe(2), WATCHED); // the conversation's and the hint row's
+      await press(app, "x");
+      expect(app.lastFrame()!.split(red).length - 1).toBe(1);
+    });
+  });
+
+  it("shows a line said while the editor was open in the hint row once Tachikoma is back", async () => {
+    const editor = standInEditor();
+    editor.next('{"effort": "low"}\n');
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const home = freshHome();
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const lead = Object.assign(new FakeProvider("a", []), { setEffort: vi.fn() });
+    const { app } = await mount([], { lead, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    await type(app, "/settings");
+    await vi.waitFor(() => expect(lead.setEffort).toHaveBeenCalledWith("low"), WATCHED); // read while the editor is open
+    editor.go();
+    await sees(app, `effort is now low ${FROM}`);
+    expect(hintRow(app)).toBe(`effort is now low ${FROM}`);
+  });
+
+  it("shows a keys file edit's line in the hint row until a key", async () => {
+    const home = freshHome();
+    const { app } = await watching([], {}, {}, {}, home);
+    const reserved = 'keybindings.json: Global "ctrl+c" is a reserved key; it was left out';
+    writeKeys(home, globalKeys({ "ctrl+c": null }));
+    await sees(app, reserved);
+    expect(hintRow(app)).toBe(reserved);
+    await press(app, "x");
+    expect(hintRow(app)).toBe("? for shortcuts");
+  });
+
+  // A lead the file set waits for the turn to end (applyEntry), and its line, said then, joins that edit's lines.
+  it("adds a lead the file set, applied once the turn ends, to that edit's line in the hint row", async () => {
+    const lead = new Held();
+    const { app, write } = await watching([], {}, { lead });
+    await type(app, "go");
+    write({ lead: "ollama:b", maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    expect(hintRow(app)).toBe(`maxTasks is now 3 ${FROM}`); // shown during the turn, where the row was empty
+    lead.answer("done");
+    await sees(app, `lead is now fake:b ${FROM}`);
+    expect(hintRow(app)).toBe(`lead is now fake:b ${FROM} (+1 more above)`);
+  });
+
+  // The user's: "Notice wins (Recommended)": over vim's mode until a key, which then shows again.
+  it("shows a live edit's line over vim's mode until a key, and vim's mode after", async () => {
+    const { app, write } = await watching([], { editorMode: "vim" });
+    expect(hintRow(app)).toBe("-- INSERT --");
+    write({ editorMode: "vim", maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    expect(hintRow(app)).toBe(`maxTasks is now 3 ${FROM}`);
+    await press(app, "x");
+    expect(hintRow(app)).toBe("-- INSERT --");
+  });
+
+  // What ranks over the line keeps the row: here the queue's hint, during a turn.
+  it("leaves the hint row to the queue's hint while a live edit's line waits", async () => {
+    const lead = new Held();
+    const { app, write } = await watching([], {}, { lead });
+    await type(app, "go");
+    await type(app, "next");
+    const queued = hintRow(app);
+    expect(queued).toMatch(/queued/);
+    write({ maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    expect(hintRow(app)).toBe(queued);
+  });
+
+  // The code review of choice 35: Node's JSON error quotes the file, line breaks and all, and the hint row has one row
+  // (layout.ts, frame), so its copy of a line is one line: the frame keeps to the terminal's height.
+  it.each(["settings.json", "keybindings.json"])("shows a %s problem with line breaks in one hint row", async (name) => {
+    const home = freshHome();
+    const { app, write } = await watching([], {}, { full: true }, {}, home);
+    const rows = app.lastFrame()!.split("\n").length;
+    if (name === "settings.json") write('{\n  "mode": ask\n}');
+    else writeKeys(home, '{\n  "bindings": a\n}');
+    await vi.waitFor(() => expect(hintRow(app)!.startsWith(`${name} is not valid JSON`)).toBe(true), WATCHED);
+    expect(app.lastFrame()!.split("\n").length).toBe(rows);
+  });
+
+  // The code review of choice 35: a paste is pressing keys too, so it takes the line away; the wheel does not.
+  it("takes a live edit's line out of the hint row on a paste", async () => {
+    const { app, write } = await watching([], {});
+    write({ maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    await press(app, "\u001b[200~pasted\u001b[201~");
+    expect(app.lastFrame()).toContain("› pasted");
+    expect(hintRow(app)).toBe("? for shortcuts");
+  });
+
+  // The code review of choice 35: the settings file and the keys file changed in one read of the folder are one edit.
+  it("counts the lines of both files changed in one read as one edit's", async () => {
+    const home = freshHome();
+    const { app, write } = await watching([], {}, {}, {}, home);
+    const reserved = 'keybindings.json: Global "ctrl+c" is a reserved key; it was left out';
+    write({ maxTasks: 3 });
+    writeKeys(home, globalKeys({ "ctrl+c": null }));
+    await sees(app, reserved);
+    expect(flat(app)).toContain(`maxTasks is now 3 ${FROM}`);
+    expect(hintRow(app)).toBe(`${reserved} (+1 more above)`);
+  });
+
+  it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, { bindings: [{ context: "Chat", bindings: { "ctrl+y": "command:screen" } }] });
+    const lead = new Held();
+    const { app } = await watching([], {}, { lead }, {}, home);
+    await type(app, "go");
+    await press(app, "ab", "\u0019");
+    expect(flat(app)).not.toContain("screen is now");
+    lead.answer("done");
+    await sees(app, "screen is now full");
+    expect(app.lastFrame()).toContain("› ab");
+  });
+
+  it("lists a key bound to a command on ?, and runs it at once when idle, leaving the prompt as typed", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, { bindings: [{ context: "Chat", bindings: { "ctrl+y": "command:screen" } }] });
+    const { app } = await watching([], {}, {}, {}, home);
+    await press(app, "?");
+    expect(app.lastFrame()).toContain("  Ctrl+Y  /screen");
+    await press(app, "ab", "\u0019");
+    await sees(app, "screen is now full");
+    expect(app.lastFrame()).toContain("› ab");
+  });
+
+  // Choice 26, the user's: the keys file goes with the folder, and a missing one keeps the keys in force.
+  it("keeps the keys file's keys once ~/.tachikoma is removed with it, and says it is no longer watched", async () => {
+    const home = freshHome();
+    const { app, bus, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, globalKeys({ "ctrl+t": null })));
+    await tick();
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0014"); // Ctrl+T, unbound by the file
+    expect(app.lastFrame()).toContain("write the fix");
+    rmSync(path.dirname(where), { recursive: true });
+    await sees(app, `${path.join("~", ".tachikoma")} was removed, so settings.json and keybindings.json are no longer watched this session`);
+    await press(app, "\u0014"); // Ctrl+T, still unbound
+    expect(app.lastFrame()).toContain("write the fix");
+  });
+
+  // Choice 26, the user's: an editor that saves by renaming a new file over the old one leaves no keys file for a
+  // moment, which is skipped, so the keys stay and the file's problems are not said again.
+  it("keeps the keys while the keys file is missing, and says its problems once when it is back the same", async () => {
+    const home = freshHome();
+    const { app, where, write } = await watching([], {}, {}, {}, home);
+    const reserved = 'keybindings.json: Global "ctrl+c" is a reserved key; it was left out';
+    writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null }));
+    await sees(app, reserved);
+    const read = readsOf(where);
+    await read(() => unlinkSync(keysIn(home)));
+    await read(() => writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null })));
+    write({ mode: "project" });
+    await sees(app, PINNED("ask")); // drawn after anything the reads above said
+    expect(flat(app).split(reserved).length - 1).toBe(1);
+  });
+
+  it("says the keys file's problems in the conversation, each once while it stays, and keeps the keys before a broken edit", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    writeKeys(home, '{"bindings": ');
+    const { app, bus, where } = await watching([], {}, {}, {}, home);
+    await sees(app, `keybindings.json is not valid JSON: ${parserWords('{"bindings": ')}; the default keys apply`);
+    const reserved = 'keybindings.json: Global "ctrl+c" is a reserved key; it was left out';
+    writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null }));
+    await sees(app, reserved);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, globalKeys({ "ctrl+t": null, "ctrl+c": null, "ctrl+y": "app:toggleTodos" })));
+    writeKeys(home, '{"bindings": [');
+    await sees(app, `keybindings.json is not valid JSON: ${parserWords('{"bindings": [')}; the last good keys still apply`);
+    expect(flat(app).split(reserved).length - 1).toBe(1);
+    bus.emit("todo", todo);
+    await tick();
+    await press(app, "\u0019"); // Ctrl+Y, from the last good keys
+    expect(app.lastFrame()).not.toContain("write the fix");
+  });
+
+  // Release 6 plan, Task 12: a live edit of "editor" says its line, as the entries above do; VISUAL and EDITOR come
+  // before the file (release 6 design, "The external editor"), as a flag does.
+  it("says a changed editor, the one that applies once the entry is removed, and that EDITOR keeps its own", async () => {
+    vi.stubEnv("VISUAL", "");
+    const { app, write, where } = await watching([], {});
+    const home = path.dirname(path.dirname(where));
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    write({ editor: "code --wait" });
+    await sees(app, `editor is now code --wait ${FROM}`);
+    write({});
+    await sees(app, `editor is now ${process.platform === "win32" ? system32("notepad.exe") : "vi"} ${FROM}`);
+    vi.stubEnv("EDITOR", "nano");
+    write({ editor: "vim" });
+    await sees(app, `settings.json's "editor" was left as EDITOR set it for this session`);
+  });
+
+  // Release 6 plan, Task 12: the real file opens in the editor, made first when missing, so each save reaches the
+  // watcher while the editor is still open. The stand-in saves, then waits for `go`.
+  it("makes a missing settings file on /settings and opens it, the watcher applying a save while the editor is open", async () => {
+    const editor = standInEditor();
+    editor.next('{"effort": "low"}\n');
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const home = freshHome();
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const lead = Object.assign(new FakeProvider("a", []), { setEffort: vi.fn() }); // a live mode edit changes nothing (choice 32)
+    const { app } = await mount([], { lead, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    await type(app, "/settings");
+    await vi.waitFor(() => expect(editor.started()).toBe(true), WATCHED);
+    expect(editor.given()).toEqual({ file: path.join(settingsDir(home), "settings.json"), text: "{}\n" });
+    await vi.waitFor(() => expect(lead.setEffort).toHaveBeenCalledWith("low"), WATCHED);
+    editor.go();
+    await sees(app, `effort is now low ${FROM}`);
+  });
+
+  it("makes a missing keys file on /keybindings, with two-space indents, and opens it", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const home = freshHome();
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const { app } = await mount([], { home });
+    await type(app, "/keybindings");
+    const file = path.join(settingsDir(home), "keybindings.json");
+    await vi.waitFor(() => expect(editor.given()).toEqual({ file, text: '{\n  "bindings": []\n}\n' }), WATCHED);
+  });
+
+  it("opens the settings file as it is when there is one", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("keep"));
+    const { app, where } = await watching([], { mode: "project" });
+    const home = path.dirname(path.dirname(where));
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    await type(app, "/settings");
+    await vi.waitFor(() => expect(editor.given()).toEqual({ file: where, text: '{"mode":"project"}' }), WATCHED);
+  });
+
+  it("names /settings and /keybindings in the unknown command's list and the / menu", async () => {
+    const { app } = await mount([]);
+    await type(app, "/nope");
+    await sees(app, "/errors, /screen, /settings, /keybindings, /vim, /exit");
+    await press(app, "/", "k");
+    expect(app.lastFrame()).toContain("› /k\n  /keybindings  Open the keys file in your editor\n");
+    await press(app, "\u007f", "s", "e");
+    expect(app.lastFrame()).toContain("› /se\n  /settings  Open the settings file in your editor\n");
+  });
+
+  it("says /settings and /keybindings take nothing after them", async () => {
+    const { app } = await mount([]);
+    await type(app, "/settings now");
+    await until(app, "/settings takes nothing after it.");
+    await type(app, "/keybindings now");
+    await until(app, "/keybindings takes nothing after it.");
+  });
+
+  it("says the editor failed on /settings as on Ctrl+G", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("fail"));
+    const home = freshHome();
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const { app } = await mount([], { home });
+    await type(app, "/settings");
+    await sees(app, `The editor failed (exit code 1). Set VISUAL or EDITOR, or "editor" in ${shownFile()}.`);
+  });
+
+  // "screen" applies as /screen does, waiting where /screen waits (release 6 design's table): here for the editor the
+  // edit was made in to close.
+  it("switches the screen a save in /settings's editor asks for once the editor closes", async () => {
+    const editor = standInEditor();
+    editor.next('{"screen": "classic", "effort": "low"}\n');
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const home = freshHome();
+    onTestFinished(() => rmSync(home, { recursive: true, force: true }));
+    const lead = Object.assign(new FakeProvider("a", []), { setEffort: vi.fn() }); // a live mode edit changes nothing (choice 32)
+    const { app } = await mount([], { lead, full: true, home, live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+    await type(app, "/settings");
+    await vi.waitFor(() => expect(lead.setEffort).toHaveBeenCalledWith("low"), WATCHED); // the save read, its screen waiting
+    await tick();
+    editor.go();
+    await sees(app, `screen is now classic ${FROM}`);
+    expect(flat(app)).not.toContain("suspended");
+  });
+
+  // Release 6 plan, Task 21: editorMode at once, as /vim, whose own switch saves nothing, so a later edit applies.
+  it("starts in vim mode from the file, switches it on an edit of editorMode, after /vim too, and says a remaps edit", async () => {
+    const launched = await watching([], { editorMode: "vim" });
+    expect(launched.app.lastFrame()).toContain("-- INSERT --");
+    const { app, write } = await watching([], {});
+    await type(app, "/vim");
+    await until(app, "-- INSERT --");
+    write({ editorMode: "vim" });
+    await sees(app, `editorMode is now vim ${FROM}`);
+    await press(app, "\u001b"); // the edit's line holds the hint row until a key (choice 35); vim takes Esc
+    expect(app.lastFrame()).toContain("-- NORMAL --");
+    write({ editorMode: "normal", vimInsertModeRemaps: { jj: "<Esc>", jk: "<Esc>" } });
+    await sees(app, `editorMode is now normal ${FROM}`);
+    await sees(app, `vimInsertModeRemaps is now jj, jk ${FROM}`);
+    expect(app.lastFrame()).not.toMatch(/-- (INSERT|NORMAL) --/); // vim mode's hint gone; the edit's lines show (choice 35)
+    write({ editorMode: "normal" });
+    await sees(app, `vimInsertModeRemaps is now none ${FROM}`);
+  });
+
+  it("goes to NORMAL on a vimInsertModeRemaps pair typed within 1 s, from the key after the edit, leaving neither key", async () => {
+    const { app, write } = await watching([], { editorMode: "vim" });
+    write({ editorMode: "vim", vimInsertModeRemaps: { jj: "<Esc>" } });
+    await sees(app, `vimInsertModeRemaps is now jj ${FROM}`);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    // The clock moved on by `ms`, then one turn of the event loop (setImmediate is not faked), in which the screen is drawn.
+    const wait = async (ms: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    try {
+      app.stdin.write("aj");
+      await wait(10);
+      expect(app.lastFrame()).toContain("› aj\n");
+      await wait(990); // 1 s since the first j: within, as Claude Code counts it (vim.ts, REMAP_MS)
+      app.stdin.write("j");
+      await wait(10);
+      expect(app.lastFrame()).toContain("› a\n");
+      expect(app.lastFrame()).toContain("-- NORMAL --");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Code review of Task 21: a key App handles itself ends a remap pair's wait (App.tsx, dropRemap).
+  it("types both keys of a vimInsertModeRemaps pair with Ctrl+T between them", async () => {
+    const { app } = await watching([], { editorMode: "vim", vimInsertModeRemaps: { jj: "<Esc>" } });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const wait = async (ms: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      await new Promise((resolve) => setImmediate(resolve));
+    };
+    try {
+      app.stdin.write("j");
+      await wait(10);
+      app.stdin.write("\u{14}"); // Ctrl+T
+      await wait(10);
+      app.stdin.write("j");
+      await wait(10);
+      expect(app.lastFrame()).toContain("› jj\n");
+      expect(app.lastFrame()).toContain("-- INSERT --");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

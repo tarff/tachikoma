@@ -1,10 +1,13 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { ResponseStreamEvent } from "openai/resources/responses/responses";
+import sharp from "sharp";
 import { describe, expect, it, onTestFinished } from "vitest";
 import type { ChatGPTAuth } from "../../src/auth/access.js";
-import type { Message, ToolSpec } from "../../src/core/types.js";
+import { Session } from "../../src/core/session.js";
+import { type Message, type Picture, type Prepared, ProviderError, type ToolSpec } from "../../src/core/types.js";
 import { ChatGPTProvider, fromStream, toolsFor, toResponses, USAGE_LIMIT } from "../../src/providers/chatgpt.js";
+import { Bus, collectErrors, tempContext, twoFrameGif } from "../helpers.js";
 
 const tools: ToolSpec[] = [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: { path: { type: "string" } } } }];
 const usage = { input_tokens: 100, input_tokens_details: { cached_tokens: 30, cache_write_tokens: 10 }, output_tokens: 20, output_tokens_details: { reasoning_tokens: 5 }, total_tokens: 120 };
@@ -30,6 +33,57 @@ describe("toResponses", () => {
       { role: "assistant", content: "looking" },
       { type: "function_call", call_id: "toolu_1", name: "read_file", namespace: "tachikoma", arguments: '{"path":"a"}' },
       { type: "function_call_output", call_id: "toolu_1", output: "Error: nope" },
+    ]);
+  });
+
+  // The shape is the Responses API's `input_text` and `input_image` with the data inline (the openai package's
+  // ResponseInputImage, 7.30.0): the ChatGPT plan's route documents none of its own (release 6 design, "Picture
+  // limits").
+  const png = { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } as const;
+  const jpeg = { type: "image", id: 2, mediaType: "image/jpeg", data: Buffer.from([0xff, 0xd8, 0xff]) } as const;
+  const tool = { type: "tool_result", callId: "c1", output: "ok", isError: false } as const;
+  const parts: Message["parts"] = [tool, { type: "text", text: "compare " }, png, { type: "text", text: " with " }, jpeg];
+  const note = (id: number) => `[Image #${id} left out: fake:x refused pictures]`;
+
+  it("sends a message with pictures as one user item of parts in order, each picture's data inline after its label", () => {
+    expect(toResponses([{ role: "user", parts }])).toEqual([
+      { type: "function_call_output", call_id: "c1", output: "ok" },
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "compare " },
+          { type: "input_text", text: "[Image #1]" },
+          { type: "input_image", image_url: "data:image/png;base64,iVBORw==" },
+          { type: "input_text", text: " with " },
+          { type: "input_text", text: "[Image #2]" },
+          { type: "input_image", image_url: "data:image/jpeg;base64,/9j/" },
+        ],
+      },
+    ]);
+  });
+
+  it("sends a note in a left-out picture's place as text with no label, and items as before when no picture is left to send", () => {
+    const one: Prepared = new Map<number, Picture | string>([
+      [1, note(1)],
+      [2, { mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }],
+    ]);
+    expect(toResponses([{ role: "user", parts }], one)[1]).toEqual({
+      role: "user",
+      content: [
+        { type: "input_text", text: "compare " },
+        { type: "input_text", text: note(1) },
+        { type: "input_text", text: " with " },
+        { type: "input_text", text: "[Image #2]" },
+        { type: "input_image", image_url: "data:image/png;base64,iVBORw==" },
+      ],
+    });
+    const both: Prepared = new Map([[1, note(1)], [2, note(2)]]);
+    expect(toResponses([{ role: "user", parts }], both)).toEqual([
+      { type: "function_call_output", call_id: "c1", output: "ok" },
+      { role: "user", content: "compare " },
+      { role: "user", content: note(1) },
+      { role: "user", content: " with " },
+      { role: "user", content: note(2) },
     ]);
   });
 
@@ -161,6 +215,17 @@ describe("ChatGPTProvider", () => {
     for (const refused of ["temperature", "max_output_tokens", "previous_response_id", "metadata", "user", "prompt"]) expect(body).not.toHaveProperty(refused);
   });
 
+  it("sends an animated GIF as its first frame in PNG", async () => {
+    const api = await fakeApi((_, res) => sse(res, [done(text), completed]));
+    const gif = await twoFrameGif();
+    const messages: Message[] = [{ role: "user", parts: [{ type: "image", id: 1, mediaType: "image/gif", data: gif }] }];
+    await new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete({ ...request, messages });
+    const input = api.seen[0]!.body.input as { content: { type: string; image_url?: string }[] }[];
+    const url = input[0]!.content.find((c) => c.type === "input_image")!.image_url!;
+    expect(url.startsWith("data:image/png;base64,")).toBe(true);
+    expect(await sharp(Buffer.from(url.slice("data:image/png;base64,".length), "base64")).metadata()).toMatchObject({ format: "png", width: 4, height: 4 });
+  });
+
   it("reads the login again after fetching the model list, so a logout in the meantime stops the request", async () => {
     const api = await fakeApi((_, res) => sse(res, [done(text), completed]));
     const left = ["tok-1"]; // one token, then signed out
@@ -201,34 +266,50 @@ describe("ChatGPTProvider", () => {
   it("stops on the usage limit at once, with no retry", async () => {
     const api = await fakeApi((_, res) => json(res, 429, { error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit", type: "x", param: null } }));
     // A full stop goes after the address, before the request ID.
-    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`));
+    const limit = new ProviderError(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`, 429);
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(limit);
     expect(api.seen).toHaveLength(1);
   });
 
   it("says what a refused request means, in OpenAI's words, with the request ID", async () => {
-    const cases: [(res: http.ServerResponse) => void, string][] = [
-      [(res) => json(res, 401, { error: { code: "invalid_token", message: "Bad token", type: "x", param: null } }), "OpenAI did not accept the ChatGPT sign-in (HTTP 401, invalid_token). Bad token. Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt` (or /logout chatgpt and /login chatgpt in a session). OpenAI's request ID: req_9."],
-      [(res) => json(res, 503, { detail: "Direct routing is off" }), "ChatGPT plan use is unavailable right now (HTTP 503). Direct routing is off. Your sign-in is kept; try again later. OpenAI's request ID: req_9."],
-      [(res) => json(res, 503, { error: { code: "server_overloaded", message: "Busy", type: "x", param: null } }), "ChatGPT plan use is unavailable right now (HTTP 503, server_overloaded). Busy. Your sign-in is kept; try again later. OpenAI's request ID: req_9."],
-      [(res) => json(res, 429, { error: { code: "rate_limit_exceeded", message: "Slow down", type: "x", param: null } }), "OpenAI refused the request (HTTP 429, rate_limit_exceeded). Slow down. Try again later. OpenAI's request ID: req_9."],
-      [(res) => json(res, 403, { detail: "Region not supported" }), "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9."],
-      [(res) => json(res, 400, { error: { code: "too_long", message: "Your input is too long.", type: "x", param: "input" } }), "OpenAI refused the request (HTTP 400, too_long, about input). Your input is too long. OpenAI's request ID: req_9."],
-      [(res) => res.writeHead(502, { "content-type": "text/html" }).end("<html>Bad gateway</html>"), "OpenAI could not complete the request (HTTP 502)."],
+    const cases: [(res: http.ServerResponse) => void, string, number][] = [
+      [(res) => json(res, 401, { error: { code: "invalid_token", message: "Bad token", type: "x", param: null } }), "OpenAI did not accept the ChatGPT sign-in (HTTP 401, invalid_token). Bad token. Sign out with `tachi logout chatgpt`, then sign in again with `tachi login chatgpt` (or /logout chatgpt and /login chatgpt in a session). OpenAI's request ID: req_9.", 401],
+      [(res) => json(res, 503, { detail: "Direct routing is off" }), "ChatGPT plan use is unavailable right now (HTTP 503). Direct routing is off. Your sign-in is kept; try again later. OpenAI's request ID: req_9.", 503],
+      [(res) => json(res, 503, { error: { code: "server_overloaded", message: "Busy", type: "x", param: null } }), "ChatGPT plan use is unavailable right now (HTTP 503, server_overloaded). Busy. Your sign-in is kept; try again later. OpenAI's request ID: req_9.", 503],
+      [(res) => json(res, 429, { error: { code: "rate_limit_exceeded", message: "Slow down", type: "x", param: null } }), "OpenAI refused the request (HTTP 429, rate_limit_exceeded). Slow down. Try again later. OpenAI's request ID: req_9.", 429],
+      [
+        (res) => json(res, 403, { detail: "Region not supported" }),
+        "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9.",
+        403,
+      ],
+      [(res) => json(res, 400, { error: { code: "too_long", message: "Your input is too long.", type: "x", param: "input" } }), "OpenAI refused the request (HTTP 400, too_long, about input). Your input is too long. OpenAI's request ID: req_9.", 400],
+      [(res) => res.writeHead(502, { "content-type": "text/html" }).end("<html>Bad gateway</html>"), "OpenAI could not complete the request (HTTP 502).", 502],
     ];
-    for (const [answer, message] of cases) {
+    for (const [answer, message, status] of cases) {
       const api = await fakeApi((_, res) => answer(res));
-      await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error(message));
+      await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new ProviderError(message, status));
     }
+  });
+
+  it("keeps a refused request's HTTP status on the session's error event, its message unchanged", async () => {
+    const api = await fakeApi((_, res) => json(res, 400, { error: { code: "too_long", message: "Your input is too long.", type: "x", param: "input" } }));
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    await new Session({ lead: new ChatGPTProvider("gpt-6.1-sol", auth, api.base), tools: [], system: "s", ctx: await tempContext(), bus }).send("look");
+    const message = "OpenAI refused the request (HTTP 400, too_long, about input). Your input is too long. OpenAI's request ID: req_9.";
+    expect(errors).toEqual([expect.objectContaining({ kind: "provider", status: 400, message })]);
   });
 
   it("keeps the request ID of a reply that fails part way through", async () => {
     const failed = { type: "response.failed", response: { error: { code: "server_error", message: "Something broke" } } };
     const api = await fakeApi((_, res) => sse(res, [done(text), failed]));
-    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error("OpenAI could not complete the request (server_error). Something broke. OpenAI's request ID: req_9."));
+    const broke = new ProviderError("OpenAI could not complete the request (server_error). Something broke. OpenAI's request ID: req_9.");
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(broke);
     // A named `event: error`, which the SDK throws itself.
     const limit = { type: "error", code: "subscription_sharing_usage_limit_exceeded", message: "limit", param: null };
     const limited = await fakeApi((_, res) => sse(res, [done(text), limit]));
-    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, limited.base).complete(request)).rejects.toThrow(new Error(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`));
+    const limitError = new ProviderError(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`);
+    await expect(new ChatGPTProvider("gpt-6.1-sol", auth, limited.base).complete(request)).rejects.toThrow(limitError);
   });
 
   it("says a connection that drops part way through a reply dropped", async () => {
@@ -252,19 +333,26 @@ describe("ChatGPTProvider", () => {
     await new Promise((r) => closed.close(r));
     await expect(new ChatGPTProvider("gpt-6.1-sol", auth, `http://127.0.0.1:${port}/v1`).complete(request)).rejects.toThrow(`Could not reach http://127.0.0.1:${port}/v1 (connect ECONNREFUSED`);
 
-    const cases: [(res: http.ServerResponse) => void, string][] = [
+    // A list that came back but could not be read has no status to keep.
+    const cases: [(res: http.ServerResponse) => void, string, number?][] = [
       [(res) => res.writeHead(200, { "content-type": "text/html" }).end("<html>wifi</html>"), "OpenAI's model list could not be read. Check your network and try again."],
       [(res) => json(res, 200, { data: [] }), "OpenAI's model list could not be read. Check your network and try again. OpenAI's request ID: req_9."],
       [
         (res) => json(res, 403, { error: { code: "subscription_sharing_user_not_eligible", message: "Not for this workspace", type: "x", param: null } }),
         "This ChatGPT account cannot use its plan here (subscription_sharing_user_not_eligible). Not for this workspace. Use openai:<model> with an API key instead. OpenAI's request ID: req_9.",
+        403,
       ],
-      [(res) => json(res, 403, { detail: "Region not supported" }), "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9."],
-      [(res) => res.writeHead(500).end(), "OpenAI could not complete the request (HTTP 500)."],
+      [
+        (res) => json(res, 403, { detail: "Region not supported" }),
+        "OpenAI refused the request (HTTP 403). Region not supported. OpenAI's request ID: req_9.",
+        403,
+      ],
+      [(res) => res.writeHead(500).end(), "OpenAI could not complete the request (HTTP 500).", 500],
     ];
-    for (const [list, message] of cases) {
+    for (const [list, message, status] of cases) {
       const api = await fakeApi(() => {}, list);
-      await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new Error(message));
+      const error = status ? new ProviderError(message, status) : new Error(message);
+      await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(error);
     }
   });
 

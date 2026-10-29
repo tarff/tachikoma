@@ -23,6 +23,14 @@ function tachi(...args: (string | Record<string, string>)[]) {
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
+// A pretend home folder holding ~/.tachikoma/settings.json, given to tachi() as its HOME and USERPROFILE.
+function homeWith(settings: string) {
+  const home = mkdtempSync(path.join(tmpdir(), "tachi-cli-home-"));
+  mkdirSync(path.join(home, ".tachikoma"));
+  writeFileSync(path.join(home, ".tachikoma", "settings.json"), settings);
+  return { USERPROFILE: home, HOME: home };
+}
+
 // Each start takes about a second; with the whole suite running, two starts took up to 5 s (2026-10-23),
 // past Vitest's default. 15 s, as for the other tests that start processes (tests/exec/local.test.ts).
 describe("tachi", { timeout: 15_000 }, () => {
@@ -103,6 +111,27 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(help).toMatch(/\/screen switches between full\s+screen\s+and\s+classic/);
   });
 
+  it("lists /settings, /keybindings and /vim in the help", () => {
+    const help = tachi("--help").stdout;
+    expect(help).toMatch(/\/settings opens the settings file in your editor,\s+\/keybindings opens the\s+keys file in your editor/);
+    expect(help).toMatch(/\/vim\s+switches\s+vim\s+mode\s+in\s+this\s+window,/);
+  });
+
+  // Release 6 plan, Task 23: Esc and Ctrl+T are actions the keys file can move (release 6 design, "Keys become named
+  // actions"); Ctrl-C and Ctrl-D are reserved (bindings.ts, RESERVED).
+  it("says in the help that Esc and Ctrl+T can be moved in the keys file, and Ctrl-C and Ctrl-D cannot", () => {
+    expect(tachi("--help").stdout).toMatch(/Esc\s+and\s+Ctrl\+T\s+can\s+be\s+moved\s+in\s+the\s+keys\s+file;\s+Ctrl-C\s+and\s+Ctrl-D\s+cannot\./);
+  });
+
+  // Final review: the help showed --lead as needed, and never named the settings file.
+  it("shows --lead as optional in the help, and says the options from --lead to --scroll-speed can be set in the settings file", () => {
+    const help = tachi("--help").stdout;
+    expect(help).toMatch(/^ {2}tachi \[--lead <provider:model>\] \[options\] +interactive session$/m);
+    expect(help).toMatch(/^ {2}tachi \[--lead <provider:model>\] -p "<prompt>" +run one prompt, print the answer, exit$/m);
+    const file = path.join("~", ".tachikoma", "settings.json"); // this machine's separator
+    expect(help).toContain(`\n  Options --lead to --scroll-speed can also be set in ${file}; a flag or variable wins.\n`);
+  });
+
   it("lists --scroll-speed in the help, and stops on a bad one, from the option or, in interactive mode, TACHI_SCROLL_SPEED", () => {
     expect(tachi("--help").stdout).toMatch(/^ {2}--scroll-speed <n> /m);
     let r = tachi("--lead", "ollama:none", "--scroll-speed", "abc", "-p", "hi");
@@ -133,5 +162,124 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
     expect(r.stderr).not.toContain("    at "); // no stack trace
+  });
+
+  // Release 6 design, "The settings file". The stand-in terminal stops an interactive start, as above, once the lead is made.
+  it("takes the lead from the settings file when no flag gives one", () => {
+    const r = tachi(homeWith('{"lead": "ollama:none"}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+  });
+
+  it("with no lead anywhere, says how to set one in the settings file", () => {
+    const r = tachi();
+    expect(r.code).toBe(1);
+    const file = path.join("~", ".tachikoma", "settings.json"); // this machine's separator
+    expect(r.stderr).toContain(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${file}.`);
+  });
+
+  // Release 5's order: no lead, a blank -p, --raw, then the flags; the settings file's own
+  // problem, new in release 6, before them all.
+  it("says what is wrong in release 5's order, the settings file's own problem first", () => {
+    let r = tachi("--mode", "x");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^No lead model given\./);
+    r = tachi("--lead", "ollama:none", "-p", "", "--mode", "x");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^-p needs a prompt\n/);
+    r = tachi("--lead", "ollama:none", "-p", "hi", "--raw", "--mode", "x");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^warning: --raw prints the answer exactly as the model wrote it; .*\n--mode must be one of: /);
+    r = tachi("--mode", "x", homeWith('{"effort": "x"}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^settings\.json: "effort" must be one of: /);
+  });
+
+  it("stops on a broken settings file, with its problem", () => {
+    let r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"mode": "x"}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^settings\.json: "mode" must be one of: ask, project \(got "x"\)/);
+    r = tachi("--lead", "ollama:none", "-p", "hi", homeWith("{"));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^settings\.json is not valid JSON: /);
+  });
+
+  // Release 6 plan, choice 30: `never` is switched off until release 7, from the flag or the file, with -p and without.
+  // Without -p the stand-in terminal would stop the start later, so the refusal comes first.
+  it("refuses never mode, from --mode or the settings file, with and without -p", () => {
+    const off = "never is switched off until release 7, which adds the safety checks it needs; use ask or project\n";
+    for (const r of [tachi("--lead", "ollama:none", "--mode", "never", "-p", "hi"), tachi("--lead", "ollama:none", "--mode", "never")]) {
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(`--mode: ${off}`);
+    }
+    for (const r of [tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"mode": "never"}')), tachi("--lead", "ollama:none", homeWith('{"mode": "never"}'))]) {
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(`settings.json: "mode": ${off}`);
+    }
+    // A flag still wins over the file, so --mode ask starts.
+    expect(tachi("--lead", "ollama:none", "--mode", "ask", homeWith('{"mode": "never"}')).stderr).toContain("Interactive mode needs a terminal; use -p");
+    expect(tachi("--help").stdout).toMatch(/^ {2}--mode <mode> +when to ask before acting: ask \| project \(default: ask\);\n +never is switched off until release 7\n/m);
+  });
+
+  // The security review's finding 2: a bad value in the settings file reaches stderr with its control characters as
+  // escapes, so an OSC 52 in it cannot set the clipboard, nor any other code act on the terminal. Nine starts.
+  it("prints the settings file's problems and warnings with control characters as escapes", { timeout: 60_000 }, () => {
+    const osc = "\\u001b]52;c;ZWNobyBwd25lZA==\\u0007"; // ESC and BEL, as JSON writes them
+    const runs = [
+      ...["mode", "effort", "screen", "editorMode"].map((name) => tachi("--lead", "ollama:none", "-p", "hi", homeWith(`{"${name}": "${osc}"}`))),
+      tachi("--lead", "ollama:none", "-p", "hi", homeWith(`{"status": ["${osc}"]}`)),
+      tachi("-p", "hi", homeWith(`{"lead": "${osc}"}`)),
+      tachi("--lead", "ollama:none", "-p", "hi", homeWith(`{"fallback": "${osc}"}`)),
+      tachi("--lead", "ollama:none", "-p", "", homeWith(`{"${osc}": 1}`)), // a warning, then -p's own problem
+      tachi("--lead", "ollama:none", "-p", "hi", homeWith("\u001b]52;c;ZWNobyBwd25lZA==\u0007")), // not JSON: the parser quotes its first 10 characters
+    ];
+    for (const r of runs) {
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("\\u001b]52;c;ZWN");
+      expect(r.stderr).not.toMatch(/[\u001b\u0007]/);
+    }
+  });
+
+  it("warns of an unknown settings entry on stderr, and starts", () => {
+    const r = tachi(homeWith('{"lead": "ollama:none", "leed": "x"}'));
+    expect(r.stderr).toContain('settings.json: "leed" is not a setting; it was left out\n');
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+  });
+
+  it("starts on a settings file that begins with a byte-order mark, as Windows PowerShell 5.1 writes it", () => {
+    const r = tachi(homeWith(`${String.fromCharCode(0xfeff)}{"lead": "ollama:none"}`));
+    expect(r.stderr).not.toContain("settings.json");
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+  });
+
+  it("starts with the defaults on an empty settings file, or one of only spaces and line breaks", () => {
+    for (const text of ["", " \r\n "]) {
+      const r = tachi("--lead", "ollama:none", homeWith(text));
+      expect(r.stderr).not.toContain("settings.json");
+      expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+    }
+  });
+
+  it("with -p, still stops on a bad scrollSpeed in the settings file, which is checked whole", () => {
+    const r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"scrollSpeed": 50}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('settings.json: "scrollSpeed" must be a number above 0, up to 20 (got "50")');
+  });
+
+  it("lets a flag win over the settings file", () => {
+    const r = tachi("--lead", "ollama:none", homeWith('{"lead": "nope"}'));
+    expect(r.stderr).toContain("Interactive mode needs a terminal; use -p");
+  });
+
+  it("names the settings entry when a model it gives is bad", () => {
+    expect(tachi("-p", "hi", homeWith('{"lead": "nope"}')).stderr).toMatch(/^settings\.json: "lead": Expected <provider>:<model>/);
+    expect(tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"fallback": "nope"}')).stderr).toMatch(/^settings\.json: "fallback": Expected/);
+    expect(tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"worker": "nope"}')).stderr).toMatch(/^settings\.json: "worker": Expected/);
+  });
+
+  // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.
+  it("with -p, runs on the settings file's lead", () => {
+    const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });
+    expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
   });
 });

@@ -13,8 +13,13 @@ const labels = (m: ReturnType<typeof commandMenu>) => m?.entries.map((e) => e.la
 describe("commandMenu", () => {
   it("lists every command for a slash at the start of the prompt, each saying what it does", () => {
     const m = commandMenu("/", 1);
-    expect(labels(m)).toEqual(["/lead <provider:model>", "/model", "/login chatgpt", "/logout chatgpt", "/tasks", "/errors", "/screen", "/exit"]);
-    expect(m!.entries[0]).toMatchObject({ note: "Switch the lead model", fill: "/lead ", run: "/lead" });
+    expect(labels(m)).toEqual([
+      ...["/lead <provider:model>", "/model", "/login chatgpt", "/logout chatgpt", "/tasks", "/errors", "/screen"],
+      ...["/settings", "/keybindings", "/vim", "/exit"],
+    ]);
+    expect(m!.entries[0]).toMatchObject({ note: "Switch the lead model; alone, pick it from a list", fill: "/lead ", run: "/lead" });
+    expect(m!.entries[7]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
+    expect(m!.entries[8]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
   });
 
   it("narrows as the command is typed, in any case", () => {

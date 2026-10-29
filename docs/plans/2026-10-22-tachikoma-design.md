@@ -44,6 +44,12 @@ learn from experience. The command is `tachi`.
 | Release 4, choices | Subagents use `--worker`'s model, else the lead's; they may run in the background, and one finishing while the lead is idle starts a turn; Esc stops only the subagents a turn waits for; a subagent's read outside the project asks, naming it; no subagent starts another; the lead and subagents get `find_files` and `search_files`, which follow `.gitignore`; the to-do list shows while any item is open; instruction files from `~/.claude`, `~/.codex` and every folder down to the project, CLAUDE.md and AGENTS.md both, with `@` imports; an import leaving the project, or a found file linked to another folder, asks first unless it is the user's own; with `-p`, background subagents run in the foreground | User, 2026-10-25 (chose each from options offered; [release 4 design](2026-10-25-tachikoma-release-4-design.md)) |
 | Releases 5 and 6 | Full screen with its own scrolling (5); vim mode, image paste, an external editor, stash and rebinding keys in a file (6); every later release moves down one, to 14 | User, 2026-10-26 (option chosen: "Split: full screen first"; [release 5 design](2026-10-27-tachikoma-release-5-design.md)) |
 | Release 5, as built | Classic mode also when the output is not a terminal or under CI; an error that ends the screen exits with 1; Ctrl+Break and SIGQUIT put the terminal back too; `-p` ignores `TACHI_SCROLL_SPEED`; no cap on kept lines; Shift+Up/Down only scroll; in the detail view Ctrl-C with nothing running only closes it, and a paste goes only into a search being typed; while `[` has the view printed out, pastes do nothing and a queued `/model` or `/tasks t3` waits; `/screen` to classic is classic from its start | User, 2026-10-27 and 2026-10-28, at the build and its reviews ([release 5 design](2026-10-27-tachikoma-release-5-design.md), "As built") |
+| Release 6 | A settings file, `~/.tachikoma/settings.json`, holding every launch option, vim mode and the editor, flags still winning; `/lead`, `/model`, `/screen` and `/vim` save to it (as built, nothing is saved: user, 2026-10-29, the plan's choice 26); edits apply live; `never` only at launch; no settings file in projects. Keys as named actions in Claude Code's format, rebound in `~/.tachikoma/keybindings.json`, live. Ctrl+G opens VISUAL, EDITOR, the settings' editor or Notepad; Ctrl+S stashes; Alt+V (Ctrl+V outside Windows) and pasted image paths add pictures, shrunk with sharp to each provider's documented limits; a request with pictures refused as invalid asks before sending again without them; all of Claude Code's vim mode. The screen code is tidied first | User, 2026-10-28 (chose each from options offered: "I don't want to be launching with args"; [release 6 design](2026-10-28-tachikoma-release-6-design.md)) |
+| Release 6, as built | Nothing is saved: `/lead`, a `/model` pick, `/screen` and `/vim` change this window only, and a missing settings or keys file is skipped; the file tools never touch either file, in any mode; a key set to `null` stops it in its own context only; Global's keys act everywhere; keys match their modifiers exactly; Alt+V and Ctrl+V both paste a picture under WSL; vim's VISUAL selection drawn in reverse; the editor run through the system's shell | User, 2026-10-28 and 2026-10-29, at the build and its reviews; the rest the plan's and the build's calls, for the final review ([release 6 design](2026-10-28-tachikoma-release-6-design.md), "As built") |
+| Lessons and skills from experience | The lessons (section 4) are built in release 8, with memory. Release 9 adds skills drafted from experience: Tachikoma offers to turn a lesson that keeps coming back, or a way of working that went well, into a draft skill, saved only on the user's yes | User, 2026-10-28 ("Yes add the self skills and add lesson builds to release 8"), after asking whether the plans had self-learning or self skill creation |
+| Auto mode | Claude Code's `auto` (a second model judging each action before it runs) goes into release 7, designed with the sandbox; release 12's loops decide which may use it | User, 2026-10-28 (option chosen: "Release 7, with the sandbox"; [release 6 design](2026-10-28-tachikoma-release-6-design.md), "Not in this release") |
+| `never` mode switched off | From release 6 until release 7, `never` is refused however it is asked for (`--mode never` or `"mode": "never"` in the settings file), at launch with one line, in `tachi` and `tachi -p` alike. Release 7 brings, before `never` returns: (1) the Docker sandbox; (2) auto mode, a second model judging each action before it runs; (3) a check on dangerous commands of every kind, not only ones that delete files. Examples only, for release 7's design to settle: wiping or formatting disks, changing permissions or system settings, stopping processes, rewriting or force-pushing git history, sending files or secrets off the machine, installing software | User, 2026-10-29 ("we can't have never mode deleting a filesystem"; options chosen: "Switch never off (Recommended)", then "Off now, checks in 7"; then "not just file deletion, any other dangerous commands too"; release 6 plan, choice 30) |
+| Shift+Enter in Windows Terminal | Release 7: Windows Terminal sends Shift+Enter as Enter (README, Known limits; tested 2026-10-25), so a new line takes Ctrl+J or `\` then Enter. First re-test whether the user's current Windows Terminal answers the kitty keyboard protocol, which Tachikoma already asks for; if it still does not, read Windows Terminal's own win32 input mode, which sends each key with its Shift, Ctrl and Alt state, since Ink cannot read it. A Windows Terminal `sendInput` setting would act in every program there, PowerShell included, so it is not the fix | User, 2026-10-30, at release 6's terminal checklist ("why cant we get shift+enter to work?", then "yes" to adding it to release 7) |
 
 ## 1. Overall shape
 
@@ -630,6 +636,9 @@ summarises the log.
 Version 1 has no separate critic model. The failed check and any matching lessons are the
 correction.
 
+Lessons are built in release 8, with memory, since they live in the palace (user, 2026-10-28).
+Release 9 turns lessons that keep coming back into skills ("Skills from experience", section 5).
+
 ## 5. Skills, status line, codebase search, install
 
 ### Skills
@@ -659,6 +668,22 @@ it.
     changes
 - A user's skills from Claude Code and other tools are copied by `tachi setup`'s first-run import
   (release 13), after checking each licence.
+
+**Skills from experience (release 9; user, 2026-10-28: "add the self skills"):**
+- **When it offers.** Tachikoma offers to write a skill when the same lesson keeps coming back
+  across sessions, or when a task that needed several corrections ends well. The user can also
+  ask for one at any time. How often a lesson must come back before the offer is measured from
+  release 8's lessons (see "Still to measure"); the command's name is settled in release 9's
+  design.
+- **What it writes.** The model drafts a `SKILL.md` in Claude Code's format: a name, a
+  description saying when it applies, and the steps, drawn from the lessons and the session that
+  led to it.
+- **Nothing is saved without a yes,** in every mode, `never` included: the user sees the draft and
+  saves it, edits it first, or drops it. The user chooses where it goes: their own
+  `~/.tachikoma/skills`, or the project's `.tachikoma/skills`, which others who clone the project
+  will also get.
+- **A drafted skill grants nothing.** Like any skill, it cannot grant trust or loosen the rules
+  (section 3).
 
 ### Status line
 
@@ -838,6 +863,8 @@ whose results are recorded.
     nine items of the release 3 plan's checklist passed: Shift+Tab's modes, Alt+P's model list, a
     three-line paste left unsent, Alt+Backspace and Ctrl+Z, Ctrl+J and backslash-Enter, the spinner
     and Esc during a turn, resizing with a long prompt, the `/` and `@` menus, and Ctrl+O.
+19. When to offer a skill from experience (release 9): how many times a lesson must come back, and
+    across how many sessions. Needs release 8's lessons in real use first.
 
 ## Release order
 
@@ -858,12 +885,16 @@ Each release works on its own and can be shown.
    ([release 4 design](2026-10-25-tachikoma-release-4-design.md))
 5. Full screen with its own scrolling, a scroll bar, mouse selection and copying, and a detail
    view for Ctrl+O and `/tasks t3` ([release 5 design](2026-10-27-tachikoma-release-5-design.md))
-6. Key extras: vim mode, image paste, external editor, stash, rebinding keys in a file; the
-   context window of OpenAI API models, from a dated table of OpenAI's model pages
-7. Docker sandbox, both modes, including conflict-safe apply for copy-then-review
+6. A settings file, and key extras: vim mode, image paste, external editor, stash, rebinding keys
+   in a file; the context window of OpenAI API models, from a dated table of OpenAI's model pages
+   ([release 6 design](2026-10-28-tachikoma-release-6-design.md))
+7. Docker sandbox, both modes, including conflict-safe apply for copy-then-review; auto mode, a
+   second model judging each action; a check on dangerous commands of every kind. `never` mode,
+   switched off in release 6, returns only with these three
 8. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
-   disk; shortening the history
-9. Skills: the loader, vendored superpowers, Tachikoma's own skills
+   disk; shortening the history; lessons from the error log, stored in the palace and recalled
+9. Skills: the loader, vendored superpowers, Tachikoma's own skills, and skills drafted from
+   experience, saved on the user's yes
 10. Codebase search with EmbeddingGemma 2
 11. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
     refusal rules. The controller comes first because workers have to be cancellable as a group.

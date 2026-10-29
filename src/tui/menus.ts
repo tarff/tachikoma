@@ -23,13 +23,16 @@ export interface Menu {
 
 // The commands, as the README lists them, with what each does.
 const COMMANDS: { label: string; run: string; note: string }[] = [
-  { label: "/lead <provider:model>", run: "/lead", note: "Switch the lead model" },
+  { label: "/lead <provider:model>", run: "/lead", note: "Switch the lead model; alone, pick it from a list" },
   { label: "/model", run: "/model", note: "Pick the lead model from a list" },
   { label: "/login chatgpt", run: "/login chatgpt", note: "Sign in to ChatGPT" },
   { label: "/logout chatgpt", run: "/logout chatgpt", note: "Sign out of ChatGPT" },
   { label: "/tasks", run: "/tasks", note: "List the subagents; /tasks t1 shows one, /tasks stop stops them" },
   { label: "/errors", run: "/errors", note: "Summarise the error log" },
   { label: "/screen", run: "/screen", note: "Switch between full screen and classic" },
+  { label: "/settings", run: "/settings", note: "Open the settings file in your editor" },
+  { label: "/keybindings", run: "/keybindings", note: "Open the keys file in your editor" },
+  { label: "/vim", run: "/vim", note: "Switch vim mode on or off in this window" },
   { label: "/exit", run: "/exit", note: "Quit" },
 ];
 
@@ -64,7 +67,8 @@ export function pathMenu(text: string, cursor: number, list: (folder: string) =>
 }
 
 // A folder of the project, or one a path leads to: folders first, then files, each by name. What the
-// file tools refuse (Tachikoma's data folder, a program's environment) is left out, by the same check.
+// file tools refuse (Tachikoma's data folder, its settings files, a program's environment) is left out,
+// by the same check.
 export function listFolder(root: string, folder: string): Listing {
   try {
     const dir = resolveIn(root, folder || ".").abs;

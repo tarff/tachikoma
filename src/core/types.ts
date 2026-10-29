@@ -1,3 +1,6 @@
+import type { Effort } from "../providers/anthropic.js";
+import type { Cache } from "../providers/pictures.js";
+
 // The conversation format Tachikoma stores. No provider owns it; each adapter converts to and from it.
 
 export type Part =
@@ -5,10 +8,23 @@ export type Part =
   // something the user typed.
   | { type: "text"; text: string; from?: "tasks" }
   | { type: "tool_call"; id: string; name: string; input: unknown }
-  | { type: "tool_result"; callId: string; output: string; isError: boolean };
+  | { type: "tool_result"; callId: string; output: string; isError: boolean }
+  // A picture the user added, the original as read, kept in memory for the session (release 6 plan, choice 9); `id` is
+  // its number, the N of its marker `[Image #N]` (release 6 design, "Pictures").
+  | { type: "image"; id: number; mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: Buffer };
 
 export type ToolCall = Extract<Part, { type: "tool_call" }>;
 export type ToolResult = Extract<Part, { type: "tool_result" }>;
+export type Image = Extract<Part, { type: "image" }>;
+export type Picture = Pick<Image, "mediaType" | "data">;
+
+// A picture's marker, in the prompt and before the picture in each request (release 6 design, "Pictures").
+export const marker = (id: number) => `[Image #${id}]`;
+
+// The pictures of one request, by number, as that request sends them: shrunk to its provider's limits, or a note's
+// text in a left-out picture's place (release 6 design, "What is sent, request by request"). A picture not in the map
+// goes as it was read.
+export type Prepared = ReadonlyMap<number, Picture | string>;
 
 export interface Message {
   role: "user" | "assistant";
@@ -51,12 +67,32 @@ export interface CompletionRequest {
   messages: Message[];
   tools: ToolSpec[];
   signal?: AbortSignal;
+  // The session's shrunk copies of its pictures, shared by every request it makes (providers/pictures.ts); a request
+  // without one shrinks for itself alone.
+  shrunk?: Cache;
+  // Told when the request left out pictures to fit its provider's limit, `over` naming it: "Anthropic's 32 MB".
+  leftOut?: (count: number, over: string) => void;
+  // This provider's id, when it refused a request with pictures and the user said to send again without them: every
+  // picture then goes as a note naming it, and none is shrunk (release 6 plan, Task 18).
+  refusedBy?: string;
 }
 
 export interface Provider {
   readonly id: string; // "<provider>:<model>", e.g. "anthropic:claude-opus-5-5"
   complete(req: CompletionRequest): Promise<Turn>;
   contextWindow?(): Promise<number | null>;
+  setEffort?(effort: Effort | undefined): void; // Anthropic's only, as --effort is
+}
+
+// A provider's failure with the HTTP status it came with, so the session can tell a refused request (400) apart without
+// reading the provider's words (release 6 plan, choice 10). The SDKs' own `APIError` carries `status` the same way.
+export class ProviderError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+  }
 }
 
 export function errorText(err: unknown): string {
