@@ -6394,7 +6394,7 @@ describe("App's live settings", () => {
     { context: "Confirmation", bindings: { n: "confirm:yes", escape: "confirm:yes" } },
     { context: "Global", bindings: { enter: "confirm:yes" } },
   ];
-  const HELD = "keybindings.json: at a permission question, and for the key that switches the mode, the keys stay as at launch until the next launch; the rest apply now";
+  const HELD = "keybindings.json: at a permission question the keys stay as at launch, and a key newly bound to switch the mode does nothing, until the next launch; the rest apply now";
 
   it("keeps the keys that answer a question as at launch after a live edit, says so, and applies the rest", async () => {
     const home = freshHome();

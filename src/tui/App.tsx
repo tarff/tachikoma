@@ -1197,7 +1197,7 @@ export function App({
     let problems = read.problems;
     if (!launched.current) launchKeys.current = read.table;
     else if (read.table.heldBack(launchKeys.current)) {
-      problems = [...problems, `${KEYBINDINGS}: at a permission question, and for the key that switches the mode, the keys stay as at launch until the next launch; the rest apply now`];
+      problems = [...problems, `${KEYBINDINGS}: at a permission question the keys stay as at launch, and a key newly bound to switch the mode does nothing, until the next launch; the rest apply now`];
     }
     for (const p of problems) if (!keysWarned.current.includes(p)) say(gray(p));
     keysWarned.current = problems;
