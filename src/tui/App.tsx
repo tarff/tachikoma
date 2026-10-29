@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { Box, type Key, renderToString, Static, Text, useApp, useInput, usePaste, useWindowSize } from "ink";
-import { useEffect, useRef, useState } from "react";
+import { Box, type Key, renderToString, Static, Text, useInput, usePaste } from "ink";
+import { useEffect, useRef } from "react";
 import { type Given, resolve } from "../clilib.js";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
 import { summarize } from "../core/errorlog.js";
@@ -11,7 +11,6 @@ import type { Stats } from "../core/stats.js";
 import type { Task, Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import { KEYBINDINGS, type KeysLoaded } from "../keybindings.js";
-import type { Effort } from "../providers/anthropic.js";
 import type { ModelGroup } from "../providers/models.js";
 import { type Loaded, SETTINGS, type Settings, settingsDir, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
@@ -21,13 +20,14 @@ import {
   type Held, isCommand, isFile, LIVE, MOVES, names, NO_KEY, NOTHING, printable, type Printed, type Question,
   visualSelection, WAITING,
 } from "./app/constants.js";
-import { Bindings, CHORD_MS, type Context, DEFAULTS, keyText, type Stroke, strokeOf, tableOf } from "./bindings.js";
+import { useAppState } from "./app/state.js";
+import { Bindings, CHORD_MS, type Context, keyText, type Stroke, strokeOf } from "./bindings.js";
 import { type Clipboard, imagePaths, pictureFile } from "./clipboard.js";
 import { Conversation } from "./Conversation.js";
 import { brief, callLines, describe, lastTurn, type Line, screen as escaped } from "./describe.js";
 import { type Detail, DetailView, keyRow, opened, searchFor, step as stepMatch } from "./DetailView.js";
 import {
-  apply, change, cutPicture, type Editor, empty, insertPicture, load, move, replace, segmenter,
+  apply, change, cutPicture, type Editor, insertPicture, load, move, replace, segmenter,
 } from "./editor.js";
 import { editFile, editorCommand, editText, NOT_FOUND } from "./external.js";
 import { History, matches } from "./history.js";
@@ -35,10 +35,10 @@ import { type Mouse, readOut } from "./input.js";
 import { both, type Command, commands, isScroll, keyList, named, pieces, type Scroll, vimKey } from "./keys.js";
 import { frame as frameOf, layout, placeOn, scroll as windowOf, vertical } from "./layout.js";
 import { Menu } from "./Menu.js";
-import { commandMenu, type Listing, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
-import { ModelPicker, type PickerKey, rows as listRows } from "./ModelPicker.js";
-import { type Hand, TerminalOwner } from "./owner.js";
-import { type Now, now as nowOf, pasteTo, type Phase, phaseInputs } from "./phase.js";
+import { commandMenu, listFolder, type Menu as MenuData, pathMenu } from "./menus.js";
+import { ModelPicker, rows as listRows } from "./ModelPicker.js";
+import type { Hand } from "./owner.js";
+import { type Now, pasteTo, type Phase, phaseInputs } from "./phase.js";
 import { type Draft, joined, marker, messageParts, Pictures, type Read, spansIn, trimmed, without } from "./pictures.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "./select.js";
@@ -46,9 +46,9 @@ import { type Segment, StatusLine } from "./StatusLine.js";
 import { TaskPanel, taskRow, taskRows } from "./TaskPanel.js";
 import { PASTE_OFF, PASTE_ON, type Screen } from "./terminal.js";
 import { TodoList, todoRows, unfinished } from "./TodoList.js";
-import { type Call, ToolLine } from "./ToolLine.js";
-import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow, type View } from "./view.js";
-import { type Vim, press as vimPress, start as vimStart } from "./vim.js";
+import { ToolLine } from "./ToolLine.js";
+import { arrived, bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow } from "./view.js";
+import { press as vimPress, start as vimStart } from "./vim.js";
 import { SPIN_MS, WorkingLine } from "./WorkingLine.js";
 
 export interface AppProps {
@@ -103,255 +103,41 @@ export interface AppProps {
   readPicture?: (() => Promise<Read>) | null;
 }
 
-export function App({
-  session,
-  tasks,
-  bus,
-  stats,
-  mode,
-  onMode,
-  project,
-  root,
-  gitBranch,
-  historyFile,
-  intro,
-  errorFile,
-  segments,
-  makeProvider,
-  bindAsk,
-  login,
-  listModels,
-  screen,
-  fullPossible,
-  mouse,
-  scrollSpeed,
-  clipboard,
-  input,
-  bindings,
-  home,
-  live,
-  pictures: picturesGiven,
-  readPicture,
-}: AppProps) {
-  const { exit, suspendTerminal } = useApp();
-  const [lines, setLines] = useState<(Line & { id: number })[]>([]);
-  // Each key reads and changes these at once, as in ModelPicker: several keys can arrive before the
-  // screen is drawn again. `goal` is the column Up and Down keep to, until another key moves the cursor.
-  const editor = useRef(empty);
-  const goal = useRef<number | null>(null);
-  // Vim mode's state (vim.ts), or null with vim mode off: on from the settings file's editorMode, /vim or a live edit,
-  // starting in INSERT (release 6 design, "Vim mode"). Kept while the detail view, a menu or the model list is open.
-  const vim = useRef<Vim | null>(live?.loaded.settings.editorMode === "vim" ? vimStart : null);
-  const vimText = useRef<string | null>(null); // the prompt's text as vim's last key left it (staleVim)
-  const first = useRef<{ name: string; timer: NodeJS.Timeout } | null>(null); // a key waiting for its second press
-  // The table of keys (release 6 design, "Keys become named actions"), as the keys file last set it, and the timer that
-  // draws the hint row again once a chord's 3 s are up (bindings.ts, CHORD_MS).
-  const [table, setTable] = useState(() => bindings ?? new Bindings(tableOf(DEFAULTS)));
-  const chordTimer = useRef<NodeJS.Timeout | undefined>(undefined);
-  // The keys a hint names for an action (keys.ts, named).
-  const keyOf = (action: string, context: Context, usual: string) => named(table, action, context, [usual])[0];
-  // The model list's keys (ModelPicker.tsx), set as it draws; called only in the picker phase, while it is drawn.
-  const pickerKey = useRef<((k: PickerKey) => void) | null>(null);
-  // Where Up has gone in the history, and what was typed before, its pictures' spans kept (release 6 plan, Task 14).
-  const step = useRef<{ at: number; draft: Draft } | null>(null);
-  // Ctrl+R: what is searched for, how many older matches Ctrl+R has passed, and the prompt to give back.
-  const search = useRef<{ query: string; skip: number; before: Editor } | null>(null);
-  // Ctrl+S's one slot, for the session (release 6 design, "Stash"): the prompt, and where Up had got to with it, the
-  // draft typed before Up included, so a stash during Up's walk loses nothing (choice 31).
-  const stash = useRef<{ prompt: Editor; step: { at: number; draft: Draft } | null } | null>(null);
-  // The menus: the entry chosen, for the text it was chosen at; the text Esc closed one at, which
-  // keeps it closed until the text changes; and the folder `@` listed last.
-  const chosen = useRef({ text: "", at: 0 });
-  const closed = useRef<string | null>(null);
-  const listed = useRef<{ folder: string; listing: Listing } | null>(null);
-  const { columns, rows: height } = useWindowSize();
-  // Full screen (release 5 design, "The screen"): every line is kept, wrapped one column short, leaving the last column
-  // for the scroll bar (release 5 plan, choice 1), and the view is where the user put it. Keys read and change the view
-  // at once, as above.
-  const [full, setFull] = useState(screen.full);
-  // While /screen goes to classic, nothing is drawn, so Ink's redraw on resuming draws no full-screen frame on the normal
-  // screen (the user's check, release 5 plan, "Before you start").
-  const [switching, setSwitching] = useState(false);
-  const [kept] = useState(() => new Rows(columns - 1));
-  // The lines said in classic mode since `kept` last took them: going to full screen adds them (/screen, below), so `kept`
-  // holds every line said, in order, from then on. `lines` cannot give them then: what is said is in it only once React
-  // draws again.
-  const unkept = useRef<Line[]>([]);
-  const view = useRef<View>(FOLLOWING);
-  // The detail view, while it is open (DetailView.tsx); it takes the conversation's place. The keys, the wheel, the bar,
-  // selecting and copying act on whichever is drawn, the pane, with its own rows and view (release 5 plan, Task 12).
-  const detail = useRef<Detail | null>(null);
-  const pane = () => detail.current ?? { rows: kept, view };
-  // While the detail view is printed out (`[`), from the key on, and once Ink is suspended, how to resume it; `paste`,
-  // while a paste comes in, its last characters, which may hold the start of its end marker. Kept apart from the view,
-  // which a question closes while it is out.
-  const printed = useRef<Printed | null>(null);
-  // Once back, a paste that was coming in when a question brought the view back, until its end; and the model list of a
-  // /model that ended while printed out, until the view is back (comeBack, below).
-  const dropping = useRef<Printed | null>(null);
-  const waitingList = useRef<ModelGroup[] | null>(null);
-  const ended = useRef(false); // Ink has unmounted the App (the cleanup below)
-  // Who has the terminal (owner.ts): how many hand-overs hold the keyboard, and whether Ink is suspended.
-  const [owner] = useState(
-    () =>
-      new TerminalOwner({
-        suspend: () => suspendTerminal(),
-        hold: (on) => input?.hold(on),
-        divert: (to) => input?.divert(to),
-        release: () => input?.release(),
-        retake: () => input?.retake(),
-      }),
-  );
-  // The mode as it is now, which `say`, `next` and the rest read from here, not from `full`: /screen sets it as the
-  // switch starts, `full` following (switchScreen, below), and a drawing's functions can run after a later drawing:
-  // History's warning is the first drawing's, and a turn or a command, once it ends, calls the next() of the drawing
-  // that started it.
-  const fullNow = useRef(full);
-  // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row, how many it draws and
-  // which of its rows they are (layout.ts, frame), and the menu's under it, no prompt rows while a question, the model
-  // list, Ctrl+R's search, whose prompt shows a match, or the detail view takes their place; the prompt as typed and the
-  // menu's choice when they were drawn, which keys replace, never change; the detail view drawn, if any; and whether the
-  // model list and a question are drawn, which take the keys (phase.ts, PhaseInputs).
-  const frame = useRef({
-    columns,
-    viewHeight: 1,
-    promptFirst: 0,
-    promptRows: 0,
-    promptWindow: { top: 0, above: 0, below: 0 },
-    menuRows: 0,
-    editor: empty,
-    chosen: chosen.current,
-    detail: null as Detail | null,
-    picker: false,
-    question: false,
-  });
-  const promptTop = useRef(0); // the prompt's and the menu's windows (layout.ts, scroll), as last drawn
-  const menuTop = useRef(0);
-  const wheel = useRef(0); // the fraction of a row carried from earlier notches (view.ts, notch)
-  const grab = useRef<number | null>(null); // while the thumb is dragged, the row of the thumb it was pressed on
-  // Selecting (release 5 design, "Selecting"): places in the lines, not screen rows, so a selection stays on its text as
-  // the view moves or rewraps. `press` is what the press took: the pressed cell's character (select.ts, span), or the word
-  // or line of a double or triple click. `end` is the character under the pointer's cell, as span takes it.
-  const selection = useRef<{ press: [Pos, Pos]; end: [Pos, Pos] } | null>(null);
-  const held = useRef<Held | null>(null);
-  const lastPress = useRef<{ at: number; x: number; y: number; count: number } | null>(null); // for select.ts, clicks
-  // The hint row's line about the last copy, until the next key or click, whether it says the copy failed, and whether it
-  // has been on screen.
-  const copied = useRef<{ text: string; failed: boolean; shown?: boolean } | null>(null);
-  // A resize wraps every line again: here, while drawing, so resize events that come together cost one wrapping.
-  if (full && kept.width !== columns - 1) kept.setWidth(columns - 1);
-  if (detail.current && detail.current.rows.width !== columns - 1) detail.current.rows.setWidth(columns - 1);
-  const [busy, setBusy] = useState(false);
-  const working = useRef(false); // busy, for keys read before the screen is drawn again
-  const queue = useRef<Draft[]>([]); // what Enter added during a turn, in order, pictures' spans kept (release 6 plan, Task 14)
-  const [pictures] = useState(() => picturesGiven ?? new Pictures());
-  // The message waiting for its pictures' reads to end before it is sent, as the reads leave it (perform, below).
-  const reading = useRef<Draft | null>(null);
-  const reads = useRef(0); // the pictures' reads running, for the hint row's "Reading picture..." (newPicture, below)
-  // What is running, since when, and for a turn the totals it started from; and the turn's tool calls,
-  // kept after it until the next turn starts.
-  const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
-  const calls = useRef<Call[]>([]);
-  // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
-  const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
-  // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a
-  // session started with.
-  const perm = useRef(mode);
-  const cycle: Mode[] = mode === "never" ? ["ask", "project", "never"] : ["ask", "project"];
-  // The lead's and every subagent's questions, shown one at a time, so none replaces the one on screen.
-  const questions = useRef<Question[]>([]);
-  const question = questions.current[0] ?? null;
-  const [contextWindow, setContextWindow] = useState<number | null>(null);
-  const [picker, setPicker] = useState<ModelGroup[] | null>(null);
-  const listOpen = useRef(false); // the picker, for keys and answers read before the screen is drawn again
-  const announced = useRef(new Set<string>()); // background subagents whose ending has been shown
-  const [, rerender] = useState(0);
-  // A failure of the system's tool comes after the copy, and replaces its line in the hint row (release 5 design,
-  // "Copying").
-  const board = useRef<Clipboard | null>(null);
-  // Made once, while drawing: safe with Ink's non-concurrent root (ink.js, `concurrent` defaults to false), which never
-  // throws a render away; a concurrent root could make one clipboard for a render it drops.
-  board.current ??= clipboard((problem) => {
-    copied.current = { text: `Copied with the terminal only; ${visible(problem)}`, failed: true }; // the tool's own output (clipboard.ts, runTool)
-    rerender((n) => n + 1);
-  });
-  // The next key, paste or click takes away the line about the last copy (release 5 design, "Copying"), but a failure only
-  // once it has been on screen: one that came while Ctrl+R's search or the exit warning held the row waits for it, as a
-  // failed copy is always reported (the user's choice, release 5).
-  const clearCopied = () => {
-    const c = copied.current;
-    if (c === null || (c.failed && !c.shown)) return;
-    copied.current = null;
-    rerender((n) => n + 1);
-  };
-  const started = useRef(Date.now());
-  const [now, setNow] = useState(started.current);
-  const [branch, setBranch] = useState(gitBranch);
-  const abort = useRef<AbortController | null>(null);
-  const nextId = useRef(0);
-  const printUpTo = useRef<number | null>(null); // while an editor has the terminal in classic mode (away, below)
-  const lookups = useRef(0);
-  // Live edits of the settings file (release 6 design, "Live edits"): the status line's parts and the wheel's speed
-  // as the file last set them; the file's settings and warnings as last applied, to tell which entries an edit
-  // changed; a changed effort, which every model made after it takes too; the lead and the screen waiting for the
-  // turn to end, as /lead and /screen wait; and whether the lead now set came from the file, for its line (onLead).
-  const [shownSegments, setSegments] = useState(segments);
-  const [speed, setSpeed] = useState(scrollSpeed);
-  const fileNow = useRef(live?.loaded.settings ?? {});
-  const warned = useRef(live?.loaded.warnings ?? []);
-  const effortNow = useRef<{ effort: Effort | undefined } | null>(null);
-  const waiting = useRef<{ lead?: string; screen?: "full" | "classic" }>({});
-  const leadFromFile = useRef(false);
-  // The keys file's problems as last said, and whether a good file has been read (onKeys).
-  const keysWarned = useRef<string[]>([]);
-  const keysRead = useRef(false);
-  // The keys as the launch's read of the keys file left them, the table given if it read none, and whether that read
-  // is done: after it, a permission question reads these keys, whole, whatever a live edit did (onKeys, lookUp;
-  // release 6 plan, choice 32). `asked`: whether the last stroke was read at a question, so no chord runs on between
-  // the launch's keys and the live ones (lookUp).
-  const launchKeys = useRef(table);
-  const launched = useRef(false);
-  const asked = useRef(false);
+export function App(props: AppProps) {
+  const ui = useAppState(props);
 
   // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
   // design, "Scrolling"); setting `lines` draws them either way.
   const say = (...add: Line[]) => {
     const shown = add.map(escaped);
-    if (fullNow.current) {
-      const before = kept.lines.length;
-      kept.add(shown);
-      view.current = arrived(view.current, kept.lines.length - before);
-    } else unkept.current.push(...shown);
-    setLines((l) => [...l, ...shown.map((x) => ({ ...x, id: nextId.current++ }))]);
+    if (ui.fullNow.current) {
+      const before = ui.kept.lines.length;
+      ui.kept.add(shown);
+      ui.view.current = arrived(ui.view.current, ui.kept.lines.length - before);
+    } else ui.unkept.current.push(...shown);
+    ui.setLines((l) => [...l, ...shown.map((x) => ({ ...x, id: ui.nextId.current++ }))]);
   };
   // What the user asks to see (the key list, the mode, `/model`) brings the view to the bottom, following, so it is seen;
   // output arriving on its own leaves a held view where it is (the user's choice, release 5). The last turn opens the
   // detail view instead (release 5 plan, Task 12).
   const show = (...add: Line[]) => {
-    view.current = FOLLOWING;
+    ui.view.current = FOLLOWING;
     say(...add);
   };
-  // A live edit's lines (onSettings, onKeys) show in the hint row too, until the next key (release 6 plan, choice 35,
-  // the user's: "Hint row, until a key"): the last edit's lines, said in the conversation as ever, and whether the next
-  // line starts a new edit's, which replaces them. One said later for the same edit, a lead or a screen that waited for
-  // a turn to end, joins them.
-  const notes = useRef<Line[]>([]);
-  const newEdit = useRef(true);
   const note = (...add: Line[]) => {
     say(...add);
-    notes.current = [...(newEdit.current ? [] : notes.current), ...add.map(escaped)];
-    newEdit.current = false;
+    ui.notes.current = [...(ui.newEdit.current ? [] : ui.notes.current), ...add.map(escaped)];
+    ui.newEdit.current = false;
   };
   const noteAlone = (line: Line) => {
-    newEdit.current = true;
+    ui.newEdit.current = true;
     note(line);
   };
-  const history = useRef<History | null>(null);
-  history.current ??= new History(historyFile, (line) => say({ text: line, color: "magenta" }));
+  ui.history.current ??= new History(ui.historyFile, (line) => say({ text: line, color: "magenta" }));
   // Every model made in the session takes a changed effort (release 6 plan, Task 9).
   const make = (spec: string) => {
-    const provider = makeProvider(spec);
-    if (effortNow.current) provider.setEffort?.(effortNow.current.effort);
+    const provider = ui.makeProvider(spec);
+    if (ui.effortNow.current) provider.setEffort?.(ui.effortNow.current.effort);
     return provider;
   };
 
@@ -359,27 +145,27 @@ export function App({
   // request, must not replace it. Asked again after each request, without clearing what is shown: a
   // ChatGPT plan's window is known only once a request has fetched the account's model list.
   const lookUpWindow = (fresh = true) => {
-    const asked = ++lookups.current;
-    if (fresh) setContextWindow(null);
-    session.lead.contextWindow?.()
-      .then((n) => asked === lookups.current && setContextWindow(n))
+    const asked = ++ui.lookups.current;
+    if (fresh) ui.setContextWindow(null);
+    ui.session.lead.contextWindow?.()
+      .then((n) => asked === ui.lookups.current && ui.setContextWindow(n))
       .catch(() => {}); // stays unknown
   };
 
   useEffect(() => {
-    bindAsk((text, detail, owner, plain) => {
+    ui.bindAsk((text, detail, owner, plain) => {
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped, nor a
       // stopped subagent about anything.
-      const signal = owner ? owner.signal : abort.current?.signal;
+      const signal = owner ? owner.signal : ui.abort.current?.signal;
       if (signal?.aborted) return Promise.resolve(false);
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface.
       let range: [number, number] | undefined;
       if (detail !== undefined) {
         const lines = detail ? detail.replace(/\r?\n$/, "").split("\n").length : 0; // as read_file counts them
-        const from = kept.lines.length;
+        const from = ui.kept.lines.length;
         latest.current.say({ text: `┌ ${text} (${lines} line${lines === 1 ? "" : "s"})`, color: "gray" }, { text: detail || "(empty)", color: "gray" });
-        if (fullNow.current) range = [from, kept.lines.length - 1];
+        if (ui.fullNow.current) range = [from, ui.kept.lines.length - 1];
       }
       return new Promise((resolve) => {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
@@ -398,8 +184,8 @@ export function App({
             if (!open) return;
             open = false;
             signal?.removeEventListener("abort", cancel);
-            const typedAt = questions.current[0] === q && asked.current;
-            questions.current = questions.current.filter((x) => x !== q);
+            const typedAt = ui.questions.current[0] === q && ui.asked.current;
+            ui.questions.current = ui.questions.current.filter((x) => x !== q);
             // As at the opening (below): a chord half typed at the question on screen, which one cancelled can leave,
             // never runs on into the next question's keys nor the live ones (choice 32 and its code review). A chord
             // waiting was typed there exactly when it is the first in the line and the last key was read at a
@@ -407,10 +193,10 @@ export function App({
             // leaves the chord to the question on screen (the outside review's second round); one under the model
             // list, a chord typed in the list to the list's keys (the code re-checks).
             if (typedAt) latest.current.dropChord();
-            if (q.detail && q.following) view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
+            if (q.detail && q.following) ui.view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
             latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
             resolve(ok);
-            rerender((n) => n + 1);
+            ui.rerender((n) => n + 1);
             latest.current.next(); // an answer may have waited for this question to close
           },
         };
@@ -421,126 +207,125 @@ export function App({
         latest.current.closeDetail();
         // A chord half typed for the prompt is dropped as the question opens, so no stroke typed for the prompt joins the
         // question's keys, the launch's (release 6 plan, choices 30 and 32; found at the combined review).
-        if (!questions.current.length) latest.current.dropChord();
-        questions.current.push(q);
-        rerender((n) => n + 1);
+        if (!ui.questions.current.length) latest.current.dropChord();
+        ui.questions.current.push(q);
+        ui.rerender((n) => n + 1);
         // Printed out, the view comes back at once, as on q, and the question shows (release 5 plan, Task 13).
         void latest.current.comeBack();
       });
     });
     const onMessage = (m: Message) => latest.current.say(...describe(m));
     const onError = (e: ErrorEvent) => {
-      if (e.kind === "tool") rerender((n) => n + 1);
+      if (e.kind === "tool") ui.rerender((n) => n + 1);
       else if (e.kind === "fallback") latest.current.say({ text: `↪ ${e.message}`, color: "magenta" });
       else latest.current.say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
     };
     const onUsage = () => {
-      rerender((n) => n + 1);
+      ui.rerender((n) => n + 1);
       latest.current.lookUpWindow(false);
     };
     const onLead = (id: string) => {
-      if (leadFromFile.current) latest.current.note(gray(`lead is now ${id}${FROM}`));
+      if (ui.leadFromFile.current) latest.current.note(gray(`lead is now ${id}${FROM}`));
       else latest.current.say({ text: `lead is now ${id}`, color: "magenta" });
       latest.current.lookUpWindow();
     };
     const onToolStart = ({ id, name, input }: Events["tool-start"][0]) => {
-      calls.current.push({ id, name, target: brief(name, input) });
-      rerender((n) => n + 1);
+      ui.calls.current.push({ id, name, target: brief(name, input) });
+      ui.rerender((n) => n + 1);
     };
     const onToolEnd = ({ id, outcome }: Events["tool-end"][0]) => {
-      const call = calls.current.find((c) => c.id === id);
+      const call = ui.calls.current.find((c) => c.id === id);
       if (call) call.outcome = outcome;
-      rerender((n) => n + 1);
+      ui.rerender((n) => n + 1);
     };
     // A background subagent's ending is shown when it comes; its answer is read at once when idle.
     const onTasks = () => {
-      for (const t of tasks.all) {
-        if (!t.background || t.state === "running" || t.state === "waiting" || announced.current.has(t.id)) continue;
-        announced.current.add(t.id);
+      for (const t of ui.tasks.all) {
+        if (!t.background || t.state === "running" || t.state === "waiting" || ui.announced.current.has(t.id)) continue;
+        ui.announced.current.add(t.id);
         latest.current.say({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "gray" });
       }
-      rerender((n) => n + 1);
+      ui.rerender((n) => n + 1);
       latest.current.next();
     };
     const onTodo = (items: TodoItem[]) => {
-      todos.current = { items, hidden: false };
-      rerender((n) => n + 1);
+      ui.todos.current = { items, hidden: false };
+      ui.rerender((n) => n + 1);
     };
     const onNote = (text: string) => latest.current.say(gray(text));
-    bus.on("message", onMessage);
-    bus.on("error", onError);
-    bus.on("usage", onUsage);
-    bus.on("lead", onLead);
-    bus.on("tool-start", onToolStart);
-    bus.on("tool-end", onToolEnd);
-    bus.on("todo", onTodo);
-    bus.on("tasks", onTasks);
-    bus.on("note", onNote);
+    ui.bus.on("message", onMessage);
+    ui.bus.on("error", onError);
+    ui.bus.on("usage", onUsage);
+    ui.bus.on("lead", onLead);
+    ui.bus.on("tool-start", onToolStart);
+    ui.bus.on("tool-end", onToolEnd);
+    ui.bus.on("todo", onTodo);
+    ui.bus.on("tasks", onTasks);
+    ui.bus.on("note", onNote);
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
     // stderr is seen, and they are not said twice.
-    say(...(fullNow.current ? (live?.loaded.warnings ?? []).map(gray) : []), ...intro);
+    say(...(ui.fullNow.current ? (ui.live?.loaded.warnings ?? []).map(gray) : []), ...ui.intro);
     // A watch that cannot start leaves the session as the launch set it, and says so.
     let unwatch: (() => void) | undefined;
     try {
       unwatch =
-        live &&
+        ui.live &&
         watchSettings(
-          home,
+          ui.home,
           (read) => latest.current.onSettings(read),
           (read) => latest.current.onKeys(read),
           // A live file's line, as an edit's, of its own (note; choice 35).
           () => latest.current.noteAlone(gray(`${path.dirname(shownFile())} was removed, so ${SETTINGS} and ${KEYBINDINGS} are no longer watched this session`)),
           // One read of the folder is one edit, whichever of the files it changed (note; choice 35's code review).
-          () => void (newEdit.current = true),
+          () => void (ui.newEdit.current = true),
         );
     } catch (err) {
       say(gray(`${SETTINGS} and ${KEYBINDINGS} are not watched this session (${errorText(err)})`));
     }
-    launched.current = true; // the watcher's first read, done at once inside watchSettings, was the launch's (onKeys)
-    history.current!.load();
+    ui.launched.current = true; // the watcher's first read, done at once inside watchSettings, was the launch's (onKeys)
+    ui.history.current!.load();
     lookUpWindow();
-    const minutes = setInterval(() => setNow(Date.now()), 60_000); // the status line counts the session in minutes
+    const minutes = setInterval(() => ui.setNow(Date.now()), 60_000); // the status line counts the session in minutes
     const onReport = (m: Mouse) => latest.current.onMouse(m);
-    mouse?.on("mouse", onReport);
+    ui.mouse?.on("mouse", onReport);
     return () => {
-      ended.current = true;
+      ui.ended.current = true;
       // Ink ending (a crash, or a signal) lets the keyboard go, so raw mode goes off and the process can end (input.ts,
       // hold), whatever held it: the view printed out, the rest of a paste dropped after it, or a switch, whose own ending
       // a signal never lets come. Letting go again later, as a switch or comeBack does, is harmless. Bracketed paste
       // needs nothing here: Ink's own cleanups turn it off as they end, suspended or not (Ink's components/App.js).
-      printed.current = null;
-      dropping.current = null;
-      owner.end();
-      mouse?.off("mouse", onReport);
+      ui.printed.current = null;
+      ui.dropping.current = null;
+      ui.owner.end();
+      ui.mouse?.off("mouse", onReport);
       unwatch?.();
       clearInterval(minutes);
-      clearTimeout(first.current?.timer);
-      clearTimeout(chordTimer.current);
-      bus.off("message", onMessage);
-      bus.off("error", onError);
-      bus.off("usage", onUsage);
-      bus.off("lead", onLead);
-      bus.off("tool-start", onToolStart);
-      bus.off("tool-end", onToolEnd);
-      bus.off("todo", onTodo);
-      bus.off("tasks", onTasks);
-      bus.off("note", onNote);
+      clearTimeout(ui.first.current?.timer);
+      clearTimeout(ui.chordTimer.current);
+      ui.bus.off("message", onMessage);
+      ui.bus.off("error", onError);
+      ui.bus.off("usage", onUsage);
+      ui.bus.off("lead", onLead);
+      ui.bus.off("tool-start", onToolStart);
+      ui.bus.off("tool-end", onToolEnd);
+      ui.bus.off("todo", onTodo);
+      ui.bus.off("tasks", onTasks);
+      ui.bus.off("note", onNote);
       // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
       // Ink ending on a drawing error would leave with nothing on screen.
-      tasks.stop();
-      abort.current?.abort();
+      ui.tasks.stop();
+      ui.abort.current?.abort();
     };
   }, []);
 
   // The working line's spinner and time, while something runs; the panel's times, once a second, while
   // only subagents do.
-  const running = tasks.running > 0;
   useEffect(() => {
-    if (!busy && !running) return;
-    const spin = setInterval(() => setNow(Date.now()), busy ? SPIN_MS : 1000);
+    if (!ui.busy && !ui.running) return;
+    const spin = setInterval(() => ui.setNow(Date.now()), ui.busy ? SPIN_MS : 1000);
     return () => clearInterval(spin);
-  }, [busy, running]);
+  }, [ui.busy, ui.running]);
 
   // Called without await, so nothing may escape: an unhandled rejection ends the program. The queue
   // goes on after a turn, however it ended, and after `/model` once the list is closed. `answers`: a
@@ -548,14 +333,6 @@ export function App({
   const submit = async (raw: Draft, answers = false) => {
     if (!(await perform(raw, answers))) next();
   };
-
-  // What is happening now (phase.ts), from the refs only, the model list and the question as last drawn among them
-  // (`frame`), so the mouse listener and the bus's handlers, set up once, read the screen as it is. Keys see the same as
-  // this drawing's values: Ink's root is non-concurrent (above), so React draws and commits in one go, and useInput's and
-  // usePaste's handler is the committed drawing's (useEffectEvent). Only the keys and the wheel ask for the menu, where
-  // it was found before: finding an `@` menu can list a folder (menuFor). A paste asks pasteTo() of the same inputs.
-  const phaseRefs = { ended, printed, drawn: frame, listOpen, questions, detail, search, working, queue };
-  const happening = (findMenu?: () => boolean) => nowOf(phaseInputs(phaseRefs, findMenu));
 
   // Background answers waiting go first, in a turn of their own (release 4 design, "Background
   // subagents"). Then the queue's entries, taken from the front: a command alone, as if typed then;
@@ -571,16 +348,16 @@ export function App({
   // A lead or screen the settings file set waits here as `/lead` and `/screen` would in the queue, the screen also
   // while the terminal is handed over (release 6 design, "When a live change applies").
   const next = () => {
-    const h = happening();
+    const h = ui.happening();
     if (h.phase.kind === "ended" || h.working || h.waiting) return;
-    const w = waiting.current;
+    const w = ui.waiting.current;
     if (w.lead !== undefined) fileLead(w.lead);
     w.lead = undefined;
-    if (w.screen && !owner.busy) {
+    if (w.screen && !ui.owner.busy) {
       const to = w.screen;
       w.screen = undefined;
-      if (to === "full" && !fullNow.current && !fullPossible) note(gray("Full screen needs a terminal (the output is not one, or CI is set)"));
-      else if ((to === "full") === fullNow.current) note(gray(`screen is now ${to}${FROM}`));
+      if (to === "full" && !ui.fullNow.current && !ui.fullPossible) note(gray("Full screen needs a terminal (the output is not one, or CI is set)"));
+      else if ((to === "full") === ui.fullNow.current) note(gray(`screen is now ${to}${FROM}`));
       else {
         // As perform runs /screen: what goes wrong is said, and the queue goes on after.
         void switchScreen(true)
@@ -589,20 +366,20 @@ export function App({
         return;
       }
     }
-    if (tasks.wakes()) return void submit({ text: "", spans: [] }, true);
-    const q = queue.current;
+    if (ui.tasks.wakes()) return void submit({ text: "", spans: [] }, true);
+    const q = ui.queue.current;
     const command = q.findIndex((d) => isCommand(d.text));
     if (!h.queued) return;
     if (h.phase.kind === "printed" && command === 0 && (recordToOpen(q[0]!.text) || /^\/screen$/i.test(q[0]!.text))) return;
-    if (owner.busy && command === 0 && /^\/(screen|settings|keybindings)$/i.test(q[0]!.text)) return;
-    view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
+    if (ui.owner.busy && command === 0 && /^\/(screen|settings|keybindings)$/i.test(q[0]!.text)) return;
+    ui.view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void submit(joined(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command), "\n\n"));
   };
   // The subagent whose record `text` opens in the detail view: in full screen, `/tasks t3` with a subagent of that id
   // (perform, below).
   const recordToOpen = (text: string) => {
     const [first = "", ...words] = text.split(/\s+/);
-    return fullNow.current && first.toLowerCase() === "/tasks" && words.length === 1 ? tasks.all.find((t) => t.id === words[0]) : undefined;
+    return ui.fullNow.current && first.toLowerCase() === "/tasks" && words.length === 1 ? ui.tasks.all.find((t) => t.id === words[0]) : undefined;
   };
 
   // True when it opened the model list.
@@ -619,12 +396,12 @@ export function App({
     const listing = alone("/model") || alone("/lead");
     try {
       if (alone("/exit")) {
-        queue.current = [];
-        return exit();
+        ui.queue.current = [];
+        return ui.exit();
       }
-      if (alone("/errors")) return say(...summarize(errorFile).map((row) => ({ text: row, oneLine: true })));
+      if (alone("/errors")) return say(...summarize(ui.errorFile).map((row) => ({ text: row, oneLine: true })));
       // Not to full screen where it can't draw: classic, as at the start (clilib.ts, screenMode).
-      if (alone("/screen") && !fullNow.current && !fullPossible)
+      if (alone("/screen") && !ui.fullNow.current && !ui.fullPossible)
         return say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
       if (alone("/screen")) return await switchScreen();
       if (alone("/settings")) return await openFile(SETTINGS, {});
@@ -632,7 +409,7 @@ export function App({
       // /vim switches vim mode, /vim on and /vim off set it (choice 6), this window only, saving nothing (choice 26).
       if (command === "/vim") {
         const [word = "", ...rest] = words.map((w) => w.toLowerCase());
-        const on = word ? word === "on" : vim.current === null;
+        const on = word ? word === "on" : ui.vim.current === null;
         if (!rest.length && ["", "on", "off"].includes(word)) return setVim(on);
         return say({ text: "Usage: /vim, /vim on, /vim off", color: "red" });
       }
@@ -644,7 +421,7 @@ export function App({
       }
       if (command === "/lead" && !listing) {
         const spec = words.join(" ");
-        session.setLead(make(spec)); // this window only, saving nothing (choice 26, the user's)
+        ui.session.setLead(make(spec)); // this window only, saving nothing (choice 26, the user's)
         return;
       }
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
@@ -653,38 +430,38 @@ export function App({
       if (!account && !listing && /^\/[a-z]+$/i.test(text)) return say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
       if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings"].includes(command))
         return say({ text: `${command} takes nothing after it.`, color: "red" });
-      abort.current = new AbortController();
+      ui.abort.current = new AbortController();
       const turn = !account && !listing;
-      const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(tasks.answering())}` : turn ? "Working" : "Reading the model lists";
-      doing.current = { label, at: Date.now(), from: turn ? { output: stats.output, cost: stats.cost, unpriced: stats.unpriced } : null };
-      if (turn) calls.current = [];
-      setNow(doing.current.at);
-      setBusy(true);
-      working.current = true;
+      const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(ui.tasks.answering())}` : turn ? "Working" : "Reading the model lists";
+      ui.doing.current = { label, at: Date.now(), from: turn ? { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } : null };
+      if (turn) ui.calls.current = [];
+      ui.setNow(ui.doing.current.at);
+      ui.setBusy(true);
+      ui.working.current = true;
       // Finished subagents leave the panel at the user's next turn; after `working`, since the change
       // it reports would otherwise start the queue.
-      if (turn && !answers) tasks.clearFinished();
+      if (turn && !answers) ui.tasks.clearFinished();
       try {
         // Signing in waits on the browser; Ctrl-C stops it, as it stops a turn.
-        if (account) await login(account, words, (line) => say({ text: line, color: "magenta" }), abort.current.signal, "/");
+        if (account) await ui.login(account, words, (line) => say({ text: line, color: "magenta" }), ui.abort.current.signal, "/");
         else if (listing) {
-          const { signal } = abort.current; // this command's own, read before the wait
-          const groups = await listModels(signal, (line) => say({ text: line, color: "magenta" }));
+          const { signal } = ui.abort.current; // this command's own, read before the wait
+          const groups = await ui.listModels(signal, (line) => say({ text: line, color: "magenta" }));
           if (!signal.aborted) {
-            listOpen.current = true;
+            ui.listOpen.current = true;
             // A list read while the detail view is printed out, sent before `[` or from the queue, waits for it to come back
             // (the user's choice, release 5): opening, it would end the paste hook (usePaste, below), and Ink would
             // turn bracketed paste off at once, suspended or not, so a paste would come as keys. listOpen holds the
             // queue meanwhile.
-            if (printed.current) waitingList.current = groups;
-            else setPicker(groups);
+            if (ui.printed.current) ui.waitingList.current = groups;
+            else ui.setPicker(groups);
             return true;
           }
-        } else await session.send(await readsEnded(message, abort.current.signal), abort.current.signal);
+        } else await ui.session.send(await readsEnded(message, ui.abort.current.signal), ui.abort.current.signal);
       } finally {
-        setBusy(false);
-        working.current = false;
-        setBranch(gitBranch());
+        ui.setBusy(false);
+        ui.working.current = false;
+        ui.setBranch(ui.gitBranch());
       }
     } catch (err) {
       say({ text: errorText(err), color: "red" });
@@ -697,46 +474,46 @@ export function App({
   // detail view) ends the reads as stopped, and the turn then stops as usual; at the prompt, Esc and Ctrl-C end only
   // the reads (promptKey, below).
   const readsEnded = async (message: Draft, signal: AbortSignal) => {
-    const ids = new Set(message.spans.filter((s) => pictures.get(s.id) === "reading").map((s) => s.id));
-    if (!ids.size) return messageParts(message, pictures);
-    reading.current = message;
+    const ids = new Set(message.spans.filter((s) => ui.pictures.get(s.id) === "reading").map((s) => s.id));
+    if (!ids.size) return messageParts(message, ui.pictures);
+    ui.reading.current = message;
     signal.addEventListener("abort", stopReads);
     try {
       // Each picture's own settle, set when its number was taken, runs first (newPicture, below).
-      await Promise.all([...ids].map((id) => pictures.settled(id)));
-      return messageParts(trimmed(reading.current), pictures); // trimmed again, as a marker taken out may leave a blank at an end
+      await Promise.all([...ids].map((id) => ui.pictures.settled(id)));
+      return messageParts(trimmed(ui.reading.current), ui.pictures); // trimmed again, as a marker taken out may leave a blank at an end
     } finally {
-      reading.current = null;
+      ui.reading.current = null;
       signal.removeEventListener("abort", stopReads);
     }
   };
   const stopReads = () => {
-    for (const s of reading.current?.spans ?? []) pictures.set(s.id, { failed: "stopped" }); // a read that ended stays as it ended
+    for (const s of ui.reading.current?.spans ?? []) ui.pictures.set(s.id, { failed: "stopped" }); // a read that ended stays as it ended
   };
   // A read has ended (release 6 design, "While a read runs"). With no picture, its marker goes from wherever it is: the
   // prompt, the stash, the draft Up keeps, the prompt Ctrl+R gives back, the queue and the message waiting on it; and
   // one line says so, naming the marker when that message goes without it (plan, choice 17), in Task 15's words. A
   // failed read names where it read from: the clipboard, or a pasted path (`from`).
   const settle = (id: number, from = "the clipboard") => {
-    const read = pictures.get(id);
+    const read = ui.pictures.get(id);
     if (read !== "none" && !(typeof read === "object" && "failed" in read)) return;
-    editor.current = cutPicture(editor.current, id); // what Ctrl+K and the rest took too (editor.ts)
-    const v = vim.current; // and vim's register, so p puts none back (found at the combined review)
+    ui.editor.current = cutPicture(ui.editor.current, id); // what Ctrl+K and the rest took too (editor.ts)
+    const v = ui.vim.current; // and vim's register, so p puts none back (found at the combined review)
     const r = v && without(v.register, id);
-    if (v && r) vim.current = { ...v, register: { ...v.register, text: r.text, spans: r.spans } };
-    const s = stash.current;
+    if (v && r) ui.vim.current = { ...v, register: { ...v.register, text: r.text, spans: r.spans } };
+    const s = ui.stash.current;
     if (s) {
       const prompt = cutPicture(s.prompt, id);
       const walk = s.step && { ...s.step, draft: without(s.step.draft, id) };
-      stash.current = prompt === s.prompt || prompt.text.trim() || walk?.draft.text.trim() ? { prompt, step: walk } : null;
+      ui.stash.current = prompt === s.prompt || prompt.text.trim() || walk?.draft.text.trim() ? { prompt, step: walk } : null;
     }
-    if (step.current) step.current = { ...step.current, draft: without(step.current.draft, id) };
-    if (search.current) search.current.before = cutPicture(search.current.before, id);
-    queue.current = queue.current.map((d) => without(d, id)).filter((d) => d.text.trim());
-    const waits = reading.current?.spans.some((x) => x.id === id);
-    if (reading.current) reading.current = without(reading.current, id);
+    if (ui.step.current) ui.step.current = { ...ui.step.current, draft: without(ui.step.current.draft, id) };
+    if (ui.search.current) ui.search.current.before = cutPicture(ui.search.current.before, id);
+    ui.queue.current = ui.queue.current.map((d) => without(d, id)).filter((d) => d.text.trim());
+    const waits = ui.reading.current?.spans.some((x) => x.id === id);
+    if (ui.reading.current) ui.reading.current = without(ui.reading.current, id);
     // A message that was only pictures, left empty, sends nothing (session.ts, send).
-    const ending = !waits ? "" : reading.current!.text.trim() ? `; ${marker(id)} was sent without it.` : "; nothing was sent.";
+    const ending = !waits ? "" : ui.reading.current!.text.trim() ? `; ${marker(id)} was sent without it.` : "; nothing was sent.";
     const why = read === "none" ? "No picture on the clipboard" : `Could not read ${from}: ${read.failed}`;
     say({ text: ending ? why + ending : read === "none" ? `${why}.` : why, color: read === "none" ? "gray" : "red" });
   };
@@ -744,12 +521,12 @@ export function App({
   // as "Reading picture..." shows while any read runs (release 6 design, "Pictures"). Every read starts here: Alt+V's
   // and a pasted path's, whose `from` names it.
   const newPicture = (from?: string) => {
-    const id = pictures.next();
-    reads.current++;
-    void pictures.settled(id).then(() => {
-      reads.current--;
+    const id = ui.pictures.next();
+    ui.reads.current++;
+    void ui.pictures.settled(id).then(() => {
+      ui.reads.current--;
       latest.current.settle(id, from);
-      rerender((n) => n + 1);
+      ui.rerender((n) => n + 1);
     });
     return id;
   };
@@ -758,12 +535,12 @@ export function App({
   // read runs"). With no reader, as on Linux with no display (clipboard.ts, imageReader), no marker goes in (plan,
   // Task 15).
   const imagePaste = (e: Editor) => {
-    const read = readPicture === undefined ? fromClipboard() : readPicture;
+    const read = ui.readPicture === undefined ? fromClipboard() : ui.readPicture;
     if (!read) return say({ text: "No clipboard reader here: install wl-paste or xclip.", color: "red" });
     const id = newPicture();
-    editor.current = insertPicture(e, id);
-    goal.current = null;
-    void read().then((r) => pictures.set(id, r));
+    ui.editor.current = insertPicture(e, id);
+    ui.goal.current = null;
+    void read().then((r) => ui.pictures.set(id, r));
   };
   // A paste of paths to picture files that are all there becomes those pictures, read as Alt+V's are, each failure
   // naming its path as pasted (release 6 design, "From pasted paths"). A path not absolute is taken in the project, as
@@ -771,10 +548,10 @@ export function App({
   const pastePictures = (files: string[]) => {
     for (const file of files) {
       const id = newPicture(file);
-      editor.current = insertPicture(editor.current, id);
-      void pictureFile(path.resolve(root, file)).then((r) => pictures.set(id, r));
+      ui.editor.current = insertPicture(ui.editor.current, id);
+      void pictureFile(path.resolve(ui.root, file)).then((r) => ui.pictures.set(id, r));
     }
-    goal.current = null;
+    ui.goal.current = null;
   };
 
   // `/tasks` lists the session's subagents, `/tasks t3` prints one's tool calls and answer in full,
@@ -783,17 +560,17 @@ export function App({
     const none = (id: string): Line => ({ text: `No subagent ${id}. /tasks lists them.`, color: "red" });
     const [verb, id, ...rest] = words;
     if (verb === undefined) {
-      if (!tasks.all.length) return [gray("No subagents yet.")];
+      if (!ui.tasks.all.length) return [gray("No subagents yet.")];
       const now = Date.now();
-      return [gray(`Subagents: ${tasks.all.length}`), ...tasks.all.flatMap((t) => taskRow(t, now)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
+      return [gray(`Subagents: ${ui.tasks.all.length}`), ...ui.tasks.all.flatMap((t) => taskRow(t, now)).map((r) => ({ ...gray(`${r.mark} ${r.text}`), oneLine: true }))];
     }
     if (verb === "stop" && !rest.length) {
-      if (id === undefined) return [gray(tasks.stop() ? "Stopped every subagent." : "No subagent is running.")];
-      if (!tasks.all.some((t) => t.id === id)) return [none(id)];
-      return [gray(tasks.stop(id) ? `Stopped ${id}.` : `${id} is not running.`)];
+      if (id === undefined) return [gray(ui.tasks.stop() ? "Stopped every subagent." : "No subagent is running.")];
+      if (!ui.tasks.all.some((t) => t.id === id)) return [none(id)];
+      return [gray(ui.tasks.stop(id) ? `Stopped ${id}.` : `${id} is not running.`)];
     }
     if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "red" }];
-    const t = tasks.all.find((x) => x.id === verb);
+    const t = ui.tasks.all.find((x) => x.id === verb);
     return t ? recordOf(t) : [none(verb)];
   };
   // `/tasks t3`'s record: the subagent's tool calls and answer in full.
@@ -806,22 +583,22 @@ export function App({
   // Picking does what `/lead <provider:model>` does. What it says ("lead is now ...", from the bus, or why not) is asked-for
   // output, shown at the bottom (release 5 design, "Scrolling"), as the wheel can scroll the view while the list is open.
   const pick = (spec: string) => {
-    listOpen.current = false;
-    setPicker(null);
-    view.current = FOLLOWING;
+    ui.listOpen.current = false;
+    ui.setPicker(null);
+    ui.view.current = FOLLOWING;
     // The pick comes after any edit of the file's lead made while the list was open, so it wins, as a /lead typed
     // then would.
-    waiting.current.lead = undefined;
+    ui.waiting.current.lead = undefined;
     try {
-      session.setLead(make(spec)); // this window only, as /lead (choice 26)
+      ui.session.setLead(make(spec)); // this window only, as /lead (choice 26)
     } catch (err) {
       say({ text: errorText(err), color: "red" });
     }
     next();
   };
   const closePicker = () => {
-    listOpen.current = false;
-    setPicker(null);
+    ui.listOpen.current = false;
+    ui.setPicker(null);
     next();
   };
 
@@ -829,20 +606,20 @@ export function App({
   // read before a question is first drawn asks for is said in the conversation instead. Opening and closing clear the
   // selection, which belongs to the other pane's lines, and end a drag, a grab of the bar and a run of clicks.
   const unselect = () => {
-    selection.current = null;
-    held.current = null;
-    grab.current = null;
-    lastPress.current = null;
+    ui.selection.current = null;
+    ui.held.current = null;
+    ui.grab.current = null;
+    ui.lastPress.current = null;
   };
   const openDetail = (lines: Line[]) => {
-    if (questions.current.length) return say(...lines);
-    detail.current = opened(lines, frame.current.columns - 1); // as last drawn, for a turn started before a resize
+    if (ui.questions.current.length) return say(...lines);
+    ui.detail.current = opened(lines, ui.frame.current.columns - 1); // as last drawn, for a turn started before a resize
     unselect();
-    rerender((n) => n + 1);
+    ui.rerender((n) => n + 1);
   };
   const closeDetail = () => {
-    if (!detail.current) return;
-    detail.current = null;
+    if (!ui.detail.current) return;
+    ui.detail.current = null;
     unselect();
   };
   // `[` prints the view into the normal scrollback, for the terminal's own search, selecting and scrolling (release 5
@@ -859,29 +636,29 @@ export function App({
   // once.
   const printOut = async (d: Detail) => {
     const p: Printed = {};
-    printed.current = p;
+    ui.printed.current = p;
     unselect();
-    p.handover = owner.take();
-    screen.setMouse(false);
+    p.handover = ui.owner.take();
+    ui.screen.setMouse(false);
     const { resume } = await p.handover.suspend();
-    if (printed.current !== p) return; // Ink ended meanwhile, and the cleanup above let the keyboard go
-    screen.setSecond(false);
-    screen.suspended = true;
+    if (ui.printed.current !== p) return; // Ink ended meanwhile, and the cleanup above let the keyboard go
+    ui.screen.setSecond(false);
+    ui.screen.suspended = true;
     const page = d.rows.lines.map((l, i) => (
       <Text key={i} color={l.text ? l.color : undefined} wrap={l.oneLine ? "truncate-end" : "wrap"}>
         {l.text || " "}
       </Text>
     ));
-    screen.write(`${renderToString(<>{page}<Text color="gray">Printed. q, Esc or Ctrl-C to go back.</Text></>, { columns })}\n`);
-    screen.write(PASTE_ON);
+    ui.screen.write(`${renderToString(<>{page}<Text color="gray">Printed. q, Esc or Ctrl-C to go back.</Text></>, { columns: ui.columns })}\n`);
+    ui.screen.write(PASTE_ON);
     p.resume = resume;
-    input!.divert(reader);
-    if (questions.current.length) await comeBack();
+    ui.input!.divert(reader);
+    if (ui.questions.current.length) await comeBack();
   };
   // What a read does is readOut's (input.ts). Keys after the one that comes back are dropped: Ink is not reading again
   // until it resumes.
   const reader = (keys: string) => {
-    const p = printed.current;
+    const p = ui.printed.current;
     if (!p) return;
     const read = readOut(p.paste, keys);
     p.paste = read.paste;
@@ -895,32 +672,32 @@ export function App({
   // a /screen sent then started (Ctrl+O closing the view, then the prompt, in one read): its own ending lets go, as
   // letting go in its middle would let Ink's suspend turn raw mode off.
   const comeBack = async () => {
-    const p = printed.current;
+    const p = ui.printed.current;
     if (!p?.resume) return;
-    printed.current = null;
-    if (p.paste === undefined) input!.divert(null);
+    ui.printed.current = null;
+    if (p.paste === undefined) ui.input!.divert(null);
     else {
-      dropping.current = p;
-      input!.divert((keys) => {
+      ui.dropping.current = p;
+      ui.input!.divert((keys) => {
         p.paste = readOut(p.paste, keys).paste;
         if (p.paste !== undefined) return;
-        dropping.current = null;
-        input!.divert(null);
+        ui.dropping.current = null;
+        ui.input!.divert(null);
       });
     }
-    screen.write(PASTE_OFF);
-    screen.setSecond(true);
-    screen.setMouse(true);
-    screen.suspended = false;
+    ui.screen.write(PASTE_OFF);
+    ui.screen.setSecond(true);
+    ui.screen.setMouse(true);
+    ui.screen.suspended = false;
     await p.resume();
     p.handover!.done(); // also when Ink ended meanwhile, after its cleanup let go: again is harmless (input.ts, hold)
-    if (printed.current) return;
+    if (ui.printed.current) return;
     // Ink ending during the resume (a crash in its redraw) starts nothing that waited: no screen would show it, and a
     // turn would go on paying with none.
-    if (ended.current) return;
-    const list = waitingList.current;
-    waitingList.current = null;
-    if (list) setPicker(list);
+    if (ui.ended.current) return;
+    const list = ui.waitingList.current;
+    ui.waitingList.current = null;
+    if (list) ui.setPicker(list);
     next();
   };
   // /screen (release 5 design, "The two modes"; release 5 plan, Task 14), in the orders the user's check settled, with
@@ -951,43 +728,43 @@ export function App({
   // to full screen, the mode goes back to classic, as the screen is (perform says why); `switching` ends however the
   // switch does. A switch the settings file asked for (`file`) says so; /screen's own saves nothing (choice 26).
   const switchScreen = async (file = false) => {
-    const toFull = !fullNow.current;
-    working.current = true;
-    const handover = owner.take();
+    const toFull = !ui.fullNow.current;
+    ui.working.current = true;
+    const handover = ui.owner.take();
     unselect();
-    wheel.current = 0;
+    ui.wheel.current = 0;
     try {
       if (toFull) {
-        const width = frame.current.columns - 1; // one column short, as above
-        if (kept.width !== width) kept.setWidth(width);
-        kept.add(unkept.current);
-        unkept.current = [];
-        fullNow.current = true;
+        const width = ui.frame.current.columns - 1; // one column short, as in state.ts
+        if (ui.kept.width !== width) ui.kept.setWidth(width);
+        ui.kept.add(ui.unkept.current);
+        ui.unkept.current = [];
+        ui.fullNow.current = true;
         const { resume } = await handover.suspend();
-        if (ended.current) return;
-        screen.enter();
-        setFull(true);
+        if (ui.ended.current) return;
+        ui.screen.enter();
+        ui.setFull(true);
         await new Promise((resolve) => setTimeout(resolve, 0));
-        if (ended.current) return;
+        if (ui.ended.current) return;
         await resume();
       } else {
         closeDetail();
-        fullNow.current = false;
-        setFull(false);
-        setSwitching(true);
+        ui.fullNow.current = false;
+        ui.setFull(false);
+        ui.setSwitching(true);
         await new Promise((resolve) => setTimeout(resolve, 0));
-        if (ended.current) return;
+        if (ui.ended.current) return;
         const { resume } = await handover.suspend();
-        screen.leave();
+        ui.screen.leave();
         await resume();
       }
     } finally {
-      if (toFull && !screen.full) fullNow.current = false; // the suspend threw, or Ink ended first
-      setSwitching(false);
-      working.current = false;
+      if (toFull && !ui.screen.full) ui.fullNow.current = false; // the suspend threw, or Ink ended first
+      ui.setSwitching(false);
+      ui.working.current = false;
       handover.done(); // a print-out started during the switch keeps the hold (comeBack, above)
     }
-    if (ended.current) return;
+    if (ui.ended.current) return;
     (file ? note : say)({ text: `screen is now ${toFull ? "full" : "classic"}${file ? FROM : ""}`, color: "gray" });
   };
 
@@ -1014,26 +791,26 @@ export function App({
   // dumb-terminal case (a line break, nothing erased) is not followed: Ink's frame needs the same codes.
   const away = async <T,>(edit: (command: string) => Promise<T>) => {
     try {
-      return await owner.program(async () => {
-        const full = screen.full;
+      return await ui.owner.program(async () => {
+        const full = ui.screen.full;
         unselect();
-        if (full) screen.leave();
-        else printUpTo.current = nextId.current;
-        screen.suspended = true;
-        const command = editorCommand(process.env, fileNow.current.editor, process.platform);
+        if (full) ui.screen.leave();
+        else ui.printUpTo.current = ui.nextId.current;
+        ui.screen.suspended = true;
+        const command = editorCommand(process.env, ui.fileNow.current.editor, process.platform);
         // Cut to the width the App draws at, a column short, so it never wraps onto a row the erase leaves.
-        screen.write(WAITING.slice(0, Math.max(0, frame.current.columns - 1)));
+        ui.screen.write(WAITING.slice(0, Math.max(0, ui.frame.current.columns - 1)));
         try {
           return { command, got: await edit(command) };
         } finally {
-          screen.write(ERASE_LINE);
-          if (full && !ended.current) screen.enter();
-          screen.suspended = false;
+          ui.screen.write(ERASE_LINE);
+          if (full && !ui.ended.current) ui.screen.enter();
+          ui.screen.suspended = false;
         }
       });
     } finally {
-      printUpTo.current = null;
-      rerender((n) => n + 1);
+      ui.printUpTo.current = null;
+      ui.rerender((n) => n + 1);
     }
   };
   // The one line for an editor that failed or was not found, naming how to set one (design, "On return").
@@ -1045,19 +822,19 @@ export function App({
   // prompt, the cursor at the end, as one step Ctrl+Z takes back; on failure the prompt stays (design, "On return").
   // Then the queue goes on: a /screen, /settings or /keybindings may have waited for the editor (next, above).
   const externalEditor = async () => {
-    const ids = editor.current.spans.map((s) => s.id); // the pictures the prompt holds as the editor opens
-    const ran = await away((command) => editText(editor.current.text, command));
+    const ids = ui.editor.current.spans.map((s) => s.id); // the pictures the prompt holds as the editor opens
+    const ran = await away((command) => editText(ui.editor.current.text, command));
     if (!ran) return; // Ink ended meanwhile
     if ("failed" in ran.got) editorFailed(ran.command, ran.got.failed);
     else {
-      const e = editor.current;
+      const e = ui.editor.current;
       // A marker is a span again when it names a picture the prompt held as the editor opened (release 6 design,
       // "Which pictures a message carries"): the editor's file is plain text.
       const d = change(e, 0, e.text.length, ran.got.text);
-      editor.current = { ...d, spans: spansIn(d.text, ids) };
-      goal.current = null;
+      ui.editor.current = { ...d, spans: spansIn(d.text, ids) };
+      ui.goal.current = null;
       freshText();
-      rerender((n) => n + 1);
+      ui.rerender((n) => n + 1);
     }
     next();
   };
@@ -1065,7 +842,7 @@ export function App({
   // (plan, Task 12). A missing one is made first, `blank` in two-space JSON (choice 2), with a private file's mode,
   // 0o600 (auth/private.ts, writePrivate), never over one made meanwhile.
   const openFile = async (name: string, blank: object) => {
-    const file = path.join(settingsDir(home), name);
+    const file = path.join(settingsDir(ui.home), name);
     mkdirSync(path.dirname(file), { recursive: true });
     try {
       writeFileSync(file, `${JSON.stringify(blank, null, 2)}\n`, { flag: "wx", mode: 0o600 });
@@ -1082,15 +859,15 @@ export function App({
   // applies without it, the default, as resolve gives it with no flag nor variable.
   const onSettings = (read: Loaded) => {
     if ("problem" in read) return note({ text: `${read.problem}; the last good settings still apply`, color: "red" });
-    for (const w of read.warnings) if (!warned.current.includes(w)) note(gray(w));
-    warned.current = read.warnings;
-    const before = fileNow.current;
-    fileNow.current = read.settings;
+    for (const w of read.warnings) if (!ui.warned.current.includes(w)) note(gray(w));
+    ui.warned.current = read.warnings;
+    const before = ui.fileNow.current;
+    ui.fileNow.current = read.settings;
     const now = resolve({}, {}, read.settings);
     for (const key of LIVE) {
       if (JSON.stringify(before[key]) === JSON.stringify(read.settings[key])) continue;
       // VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
-      const flag = key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : live?.given[key];
+      const flag = key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : ui.live?.given[key];
       if (flag) note(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
       else applyEntry(key, read.settings, now);
     }
@@ -1101,20 +878,20 @@ export function App({
   // each problem in an entry is said once, while it stays, as a settings warning is (choice 21).
   const onKeys = (read: KeysLoaded) => {
     if ("problem" in read) {
-      return note({ text: `${read.problem}; ${keysRead.current ? "the last good keys still apply" : "the default keys apply"}`, color: "red" });
+      return note({ text: `${read.problem}; ${ui.keysRead.current ? "the last good keys still apply" : "the default keys apply"}`, color: "red" });
     }
-    keysRead.current = true;
+    ui.keysRead.current = true;
     // After the launch, a question reads the launch's keys, whole (lookUp), so a shell command that rewrites the file
     // cannot make a key answer it (choice 32, which replaced choice 30's keepAnswers); a line says so when the edit
     // differs from them where they still apply, said as a problem is.
     let problems = read.problems;
-    if (!launched.current) launchKeys.current = read.table;
-    else if (read.table.heldBack(launchKeys.current)) {
+    if (!ui.launched.current) ui.launchKeys.current = read.table;
+    else if (read.table.heldBack(ui.launchKeys.current)) {
       problems = [...problems, `${KEYBINDINGS}: at a permission question the keys stay as at launch, and a key newly bound to switch the mode does nothing, until the next launch; the rest apply now`];
     }
-    for (const p of problems) if (!keysWarned.current.includes(p)) note(gray(p));
-    keysWarned.current = problems;
-    setTable(read.table);
+    for (const p of problems) if (!ui.keysWarned.current.includes(p)) note(gray(p));
+    ui.keysWarned.current = problems;
+    ui.setTable(read.table);
   };
   // One entry's new value, `s` the file's and `now` what applies (above), with its line. A lead or a screen waits for
   // next() (above). A model the file names that cannot be made is said, as at launch (cli.tsx), and the one before is
@@ -1131,46 +908,46 @@ export function App({
       }
     };
     if (key === "lead") {
-      waiting.current.lead = s.lead;
+      ui.waiting.current.lead = s.lead;
       // A session cannot be without a lead, so removing the entry keeps the one it has (the design's table).
-      if (s.lead === undefined) note(gray(`"lead" was removed from ${SETTINGS}; the lead stays ${session.lead.id}`));
+      if (s.lead === undefined) note(gray(`"lead" was removed from ${SETTINGS}; the lead stays ${ui.session.lead.id}`));
     } else if (key === "mode") {
       // `never` is refused live (the user's choice, design's table), and at launch too until release 7 (plan, choice 30).
-      if (now.mode === "never") return note(gray(`"mode": "never" is switched off until release 7; the mode stays ${perm.current}`));
+      if (now.mode === "never") return note(gray(`"mode": "never" is switched off until release 7; the mode stays ${ui.perm.current}`));
       // A live edit never changes the mode, so a shell command the user allowed cannot rewrite the file to put the
       // session in project mode; Shift+Tab still does (plan, choice 32, the user's: "Pin at launch").
-      note(gray(`"mode" changes in ${SETTINGS} take effect at the next launch; the mode stays ${perm.current}`));
+      note(gray(`"mode" changes in ${SETTINGS} take effect at the next launch; the mode stays ${ui.perm.current}`));
     } else if (key === "effort") {
-      effortNow.current = { effort: now.effort };
-      session.lead.setEffort?.(now.effort);
+      ui.effortNow.current = { effort: now.effort };
+      ui.session.lead.setEffort?.(now.effort);
       // As at launch (cli.tsx, makeProvider), the fallback and the subagents' worker take it too.
-      session.fallback?.setEffort?.(now.effort);
-      tasks.worker.setEffort?.(now.effort);
+      ui.session.fallback?.setEffort?.(now.effort);
+      ui.tasks.worker.setEffort?.(now.effort);
       line(now.effort ?? "the model's default");
     } else if (key === "fallback") {
       const p = model(now.fallback);
       if (p === null) return;
-      session.setFallback(p);
-      tasks.setFallback(p); // subagents get the lead's fallback, as at launch (cli.tsx)
+      ui.session.setFallback(p);
+      ui.tasks.setFallback(p); // subagents get the lead's fallback, as at launch (cli.tsx)
       line(p?.id ?? "off");
     } else if (key === "worker") {
       const p = model(now.worker);
       if (p === null) return;
-      tasks.setWorker(() => p ?? session.lead); // without one, a subagent uses the model leading when it starts (cli.tsx)
+      ui.tasks.setWorker(() => p ?? ui.session.lead); // without one, a subagent uses the model leading when it starts (cli.tsx)
       line(p?.id ?? "the lead's model");
     } else if (key === "maxTasks") {
-      tasks.setMax(now.maxTasks);
+      ui.tasks.setMax(now.maxTasks);
       line(String(now.maxTasks));
     } else if (key === "status") {
-      setSegments(now.segments);
+      ui.setSegments(now.segments);
       line(now.segments.join(", "));
-    } else if (key === "screen") waiting.current.screen = s.screen ?? "full"; // full unless asked for classic (clilib.ts, screenMode)
+    } else if (key === "screen") ui.waiting.current.screen = s.screen ?? "full"; // full unless asked for classic (clilib.ts, screenMode)
     else if (key === "editor") line(editorCommand(process.env, s.editor, process.platform)); // read again at each use (away)
     else if (key === "editorMode") setVim(s.editorMode === "vim", FROM); // at once, as /vim (design's table)
     else if (key === "vimInsertModeRemaps") line(Object.keys(s.vimInsertModeRemaps ?? {}).join(", ") || "none");
     else {
       // scrollSpeed
-      setSpeed(now.speed);
+      ui.setSpeed(now.speed);
       line(String(now.speed));
     }
   };
@@ -1182,14 +959,14 @@ export function App({
     } catch (err) {
       return note({ text: `${SETTINGS}: "lead": ${errorText(err)}`, color: "red" });
     }
-    leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
-    session.setLead(provider);
-    leadFromFile.current = false;
+    ui.leadFromFile.current = true; // read by onLead while setLead runs: the bus calls its handlers at once
+    ui.session.setLead(provider);
+    ui.leadFromFile.current = false;
   };
   // Vim mode on, from INSERT, or off, leaving the text and cursor as they are (release 6 design's table), with its
   // line; `from` says the settings file asked. Asked to be what it is, it stays as it is.
   const setVim = (on: boolean, from = "") => {
-    if (on !== (vim.current !== null)) vim.current = on ? vimStart : null;
+    if (on !== (ui.vim.current !== null)) ui.vim.current = on ? vimStart : null;
     (from ? note : say)(gray(`editorMode is now ${on ? "vim" : "normal"}${from}`));
   };
   // Who takes a key (release 6 plan, Task 6): while a field is typed (a Ctrl+R query, a detail-view search, the model
@@ -1206,19 +983,19 @@ export function App({
     // Two Escs read together reach Ink as one Esc with Alt (Ink's parse-keypress.js), which release 5 took as Esc; the
     // kitty protocol, which marks each key with its eventType, sends them apart (choice 20).
     if (stroke.key === "escape" && stroke.alt && key.eventType === undefined) stroke = { ...stroke, alt: false };
-    if (!fullNow.current && stroke.shift && !stroke.ctrl && !stroke.alt && (stroke.key === "up" || stroke.key === "down")) stroke = { ...stroke, shift: false };
+    if (!ui.fullNow.current && stroke.shift && !stroke.ctrl && !stroke.alt && (stroke.key === "up" || stroke.key === "down")) stroke = { ...stroke, shift: false };
     // At the prompt in vim mode, Esc in INSERT or VISUAL, and a key without Ctrl or Alt while a vim command is half
     // typed, go to vim before any binding, as a field's text does (plan, Task 6), so Esc there is never chat:cancel.
     // What is half typed is asked once text App changed since has dropped it (staleVim).
     staleVim();
-    const v = vim.current;
+    const v = ui.vim.current;
     const toVim =
       v !== null &&
       (kind === "prompt" || kind === "menu") &&
       !stroke.ctrl &&
       !stroke.alt &&
       (v.pending !== "" || v.count !== "" || (stroke.key === "escape" && v.mode !== "NORMAL"));
-    return lookUp(stroke, contextsOf(kind, fullNow.current), (field && printable(stroke)) || toVim ? ch : null, kind === "question");
+    return lookUp(stroke, contextsOf(kind, ui.fullNow.current), (field && printable(stroke)) || toVim ? ch : null, kind === "question");
   };
   // A stroke in the table (release 6 plan, Task 6): a chord under way first, so one ending in a plain letter completes
   // in a field too; then `typed`, the text of a key that goes into a field; then the table, in the contexts in force. A
@@ -1231,32 +1008,32 @@ export function App({
   // applies at once (choice 32, the user's: "Yes, close it"). A stroke only the live keys switch it on does nothing.
   const lookUp = (stroke: Stroke, contexts: Context[], typed: string | null, question: boolean): Got => {
     const at = Date.now();
-    if (question !== asked.current) dropChords();
-    asked.current = question;
+    if (question !== ui.asked.current) dropChords();
+    ui.asked.current = question;
     const read = (keys: Bindings): Got => {
       const chord = keys.waiting(at) && keys.press(stroke, contexts, at);
       if (chord) return chord;
       if (typed !== null) return { typed };
       return keys.press(stroke, contexts, at);
     };
-    const launch = launchKeys.current;
+    const launch = ui.launchKeys.current;
     if (question) return pressed(read(launch));
-    const got = read(table);
-    const atLaunch = launch === table ? got : read(launch);
+    const got = read(ui.table);
+    const atLaunch = launch === ui.table ? got : read(launch);
     const cycles = (g: Got) => g !== null && "action" in g && g.action === "chat:cycleMode";
     return cycles(got) && !cycles(atLaunch) ? NOTHING : pressed(got);
   };
   // The table a chord may be waiting in, for the hint row: the launch's after a stroke read at a question (lookUp).
-  const chordKeys = () => (asked.current ? launchKeys.current : table);
+  const chordKeys = () => (ui.asked.current ? ui.launchKeys.current : ui.table);
   const dropChords = () => {
-    table.drop();
-    launchKeys.current.drop();
+    ui.table.drop();
+    ui.launchKeys.current.drop();
   };
   // A chord's first strokes show in the hint row until the next key or 3 s (release 6 design, "The keys file").
   const pressed = (got: Got) => {
     if (got && "pending" in got) {
-      clearTimeout(chordTimer.current);
-      chordTimer.current = setTimeout(() => rerender((n) => n + 1), CHORD_MS);
+      clearTimeout(ui.chordTimer.current);
+      ui.chordTimer.current = setTimeout(() => ui.rerender((n) => n + 1), CHORD_MS);
     }
     return got;
   };
@@ -1264,10 +1041,10 @@ export function App({
   // Once Ink has ended no key comes here, nor a paste or a mouse report below: Ink's cleanup takes their listeners away
   // with the App's, which sets `ended` (above). It is checked all the same, as the first phase, which hides the others.
   const onInput = (ch: string, key: Key) => {
-    const h = happening(() => menuFor(editor.current) !== null);
+    const h = ui.happening(() => menuFor(ui.editor.current) !== null);
     if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // printed out: a key read with the `[` that printed the view out
-    clearCopied();
-    notes.current = []; // a live edit's lines leave the hint row at the next key (note, above)
+    ui.clearCopied();
+    ui.notes.current = []; // a live edit's lines leave the hint row at the next key (note, above)
     const field = h.phase.kind === "search" || h.phase.kind === "picker" || (h.phase.kind === "detail" && h.phase.searching);
     onKey(h, route(h.phase.kind, field, ch, key), ch, key);
   };
@@ -1283,7 +1060,7 @@ export function App({
     // Any other key starts the press-twice count again, as at the prompt (below).
     if (action !== "app:exit") forget();
     if (kind === "picker") {
-      const to = pickerKey.current;
+      const to = ui.pickerKey.current;
       if (got && "typed" in got) to?.({ text: got.typed });
       else if (action === "app:interrupt") to?.({ action: "select:cancel" }); // Ctrl-C closes the list, as Esc does
       else if (action?.startsWith("select:")) to?.({ action });
@@ -1293,21 +1070,21 @@ export function App({
     } else if (kind === "question") {
       // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent. A plain question's
       // answer is logged as yes or no, a permission's as allowed or declined (Task 18's code review).
-      const [yes, no] = question!.plain ? ["yes", "no"] : ["allowed", "declined"];
+      const [yes, no] = ui.question!.plain ? ["yes", "no"] : ["allowed", "declined"];
       if (action === "app:interrupt") {
-        question!.answer(false, `${no} (cancelled)`);
-        if (question!.owner) question!.owner.stop();
+        ui.question!.answer(false, `${no} (cancelled)`);
+        if (ui.question!.owner) ui.question!.owner.stop();
         else {
-          abort.current?.abort();
+          ui.abort.current?.abort();
           restore();
         }
       } else if (action === "confirm:yes" || action === "confirm:no") {
         // Esc, as n: that action only; the turn goes on
-        question!.answer(action === "confirm:yes", action === "confirm:yes" ? yes : no);
+        ui.question!.answer(action === "confirm:yes", action === "confirm:yes" ? yes : no);
       } else if (action) everywhere(action, h);
-    } else if (kind === "detail") detailKey(detail.current!, h, got, ch, key);
+    } else if (kind === "detail") detailKey(ui.detail.current!, h, got, ch, key);
     else if (kind === "search") searchKey(h, got, ch, key);
-    rerender((n) => n + 1);
+    ui.rerender((n) => n + 1);
   };
   // Global's actions, and Scroll's in full screen, outside the prompt: wherever Global is in force (choice 19, the
   // user's: "All three everywhere"). The detail view closes on app:toggleTranscript itself (detailKey), and each phase
@@ -1321,10 +1098,10 @@ export function App({
   // Ctrl-D (app:exit) twice on an empty prompt exits, never during a turn (release 3 design); outside the prompt too,
   // and only with nothing typed in it, hidden or not, so no draft is lost unseen.
   const twice = (name: string, h: Now) => {
-    if (h.working || editor.current.text) return;
-    const again = first.current?.name === name;
+    if (h.working || ui.editor.current.text) return;
+    const again = ui.first.current?.name === name;
     forget();
-    if (again) exit();
+    if (again) ui.exit();
     else remember(name);
   };
 
@@ -1335,42 +1112,42 @@ export function App({
   // the editor, or in vim mode to vim first (vimTakes).
   const promptKey = (h: Now, got: Got, ch: string, key: Key) => {
     const action = got && "action" in got ? got.action : null;
-    const v = vim.current;
+    const v = ui.vim.current;
     const stroke = strokeOf(ch, key);
     // Claude Code's vim hook leaves VISUAL on any Ctrl or Meta key, and its text field then takes no editing key from
     // it (2.1.312's `if(a.ctrl||a.meta){if(l.mode==="VISUAL"){...;a.preventDefault();return}`), so here the table's
     // action still acts and the editor's own keys do nothing (plan, choice 27). Leaving is Esc with nothing half typed.
     if (v?.mode.startsWith("VISUAL") && stroke && (stroke.ctrl || stroke.alt) && stroke.key !== "escape") {
-      const out = vimPress({ ...v, pending: "", count: "" }, editor.current, "escape");
-      vim.current = out.v;
-      editor.current = out.e;
-      if (!got) return rerender((n) => n + 1);
+      const out = vimPress({ ...v, pending: "", count: "" }, ui.editor.current, "escape");
+      ui.vim.current = out.v;
+      ui.editor.current = out.e;
+      if (!got) return ui.rerender((n) => n + 1);
     }
     if (vimTakes(got, ch, key)) {
       forget(); // any other key starts the press-twice count again (below)
-      return rerender((n) => n + 1);
+      return ui.rerender((n) => n + 1);
     }
     dropRemap();
-    const e = editor.current;
+    const e = ui.editor.current;
     if (action === "autocomplete:accept" || action === "autocomplete:dismiss") {
-      if (action === "autocomplete:dismiss") closed.current = e.text;
+      if (action === "autocomplete:dismiss") ui.closed.current = e.text;
       else fill(menuFor(e)!, e); // the menu happening() found: the same text, its folder's listing kept (menuFor, list)
       forget();
-      return rerender((n) => n + 1);
+      return ui.rerender((n) => n + 1);
     }
     const name = action === "chat:cancel" ? "Esc" : action === "app:interrupt" ? "Ctrl-C" : action === "app:exit" && !e.text ? "Ctrl-D" : null;
     // While a message waits on its pictures' reads, Esc and Ctrl-C end those reads, and it goes without them (release 6
     // plan, choice 17), so a reader that never answers cannot hold the prompt.
-    if (h.working && name && name !== "Ctrl-D" && reading.current) {
+    if (h.working && name && name !== "Ctrl-D" && ui.reading.current) {
       stopReads();
-      return rerender((n) => n + 1);
+      return ui.rerender((n) => n + 1);
     }
     if (h.working && name) {
       if (name === "Ctrl-C") restore();
-      if (name !== "Ctrl-D") abort.current?.abort();
-      return rerender((n) => n + 1);
+      if (name !== "Ctrl-D") ui.abort.current?.abort();
+      return ui.rerender((n) => n + 1);
     }
-    const again = name !== null && first.current?.name === name;
+    const again = name !== null && ui.first.current?.name === name;
     forget();
     if (action === "app:exit" && e.text) run("delete");
     else if (!name) {
@@ -1383,9 +1160,9 @@ export function App({
       else if (!got) for (const c of commands(ch, key)) run(c);
     } else if (name === "Ctrl-C" && e.text) clear(e); // one press clears
     else if (!again) remember(name);
-    else if (name !== "Esc") return exit();
+    else if (name !== "Esc") return ui.exit();
     else if (e.text) clear(e); // Esc Esc; on an empty prompt it does nothing
-    rerender((n) => n + 1);
+    ui.rerender((n) => n + 1);
   };
   // Vim mode at the prompt (release 6 plan, Task 21): a key route() sent to vim first (`typed`), or one no binding
   // takes and not held with Ctrl or Alt; in INSERT only a typed character and Esc, the rest being the editor's
@@ -1393,7 +1170,7 @@ export function App({
   // from the top, so a fast `dw` is two keys, and a `/` among them opens the search the rest go into (design, "Vim
   // mode"). The remaps are the settings file's as now, so an edit applies from the next key. True when vim took it.
   const vimTakes = (got: Got, ch: string, key: Key): boolean => {
-    const v = vim.current;
+    const v = ui.vim.current;
     if (!v || (got && !("typed" in got))) return false;
     const each = pieces(ch);
     if (!got && !key.ctrl && !key.meta && each.length > 1) {
@@ -1403,16 +1180,16 @@ export function App({
       return true;
     }
     const k = vimKey(ch, key);
-    const e = editor.current;
+    const e = ui.editor.current;
     // A character typed is one character on screen; a key's name ("left", "tab", "escape") is several letters.
     const typed = k !== null && pieces(k).length === 1;
     if (k === null || (v.mode === "INSERT" && k !== "escape" && (!typed || (k === "?" && !e.text)))) return false;
-    const r = vimPress(v, e, k, { pairs: fileNow.current.vimInsertModeRemaps ?? {}, now: Date.now() });
-    vim.current = r.v;
-    editor.current = r.e;
-    vimText.current = r.e.text;
-    goal.current = null;
-    if (r.act === "help") show(...keyList(table, contextsOf("prompt", fullNow.current), vimFirst(), launchKeys.current).map(gray));
+    const r = vimPress(v, e, k, { pairs: ui.fileNow.current.vimInsertModeRemaps ?? {}, now: Date.now() });
+    ui.vim.current = r.v;
+    ui.editor.current = r.e;
+    ui.vimText.current = r.e.text;
+    ui.goal.current = null;
+    if (r.act === "help") show(...keyList(ui.table, contextsOf("prompt", ui.fullNow.current), vimFirst(), ui.launchKeys.current).map(gray));
     else if (r.act) run(r.act === "submit" ? "submit" : ACTIONS[r.act]!); // history:previous, :next or :search
     return true;
   };
@@ -1422,32 +1199,32 @@ export function App({
   // that is gone, and no `d` typed for one text deletes from another; moving the cursor alone keeps them (code review of
   // Task 21; choice 27; the final review).
   const staleVim = () => {
-    const v = vim.current;
-    if (!v || editor.current.text === vimText.current) return;
+    const v = ui.vim.current;
+    if (!v || ui.editor.current.text === ui.vimText.current) return;
     if (v.mode.startsWith("VISUAL")) {
       const { anchor, ...rest } = v;
-      vim.current = { ...rest, mode: "NORMAL", pending: "", count: "" };
-    } else if (v.pending || v.count) vim.current = { ...v, pending: "", count: "" };
+      ui.vim.current = { ...rest, mode: "NORMAL", pending: "", count: "" };
+    } else if (v.pending || v.count) ui.vim.current = { ...v, pending: "", count: "" };
   };
   // Vim takes a plain Esc first in INSERT and VISUAL, and while a command or count is half typed (route), so the first
   // Esc only goes to NORMAL and the working line and `?` name the Esc that stops or clears after it (choice 31).
   const vimFirst = () => {
-    const v = vim.current;
+    const v = ui.vim.current;
     return v !== null && (v.mode !== "NORMAL" || v.pending !== "" || v.count !== "");
   };
   // Claude Code ends a remap pair's wait at every key (its cancelPendingRemap): `press` ends it at the keys it takes,
   // and App at the rest (plan, Task 21).
   const dropRemap = () => {
-    if (!vim.current?.remap) return;
-    const { remap, ...rest } = vim.current;
-    vim.current = rest;
+    if (!ui.vim.current?.remap) return;
+    const { remap, ...rest } = ui.vim.current;
+    ui.vim.current = rest;
   };
   // New text in the prompt (a message sent, a history recall, the editor's text back...) drops where vim's INSERT began
   // its typing, so `.` takes what is typed next from its first character (plan, Task 21).
   const freshText = () => {
-    if (!vim.current?.entered) return;
-    const { entered, ...rest } = vim.current;
-    vim.current = rest;
+    if (!ui.vim.current?.entered) return;
+    const { entered, ...rest } = ui.vim.current;
+    ui.vim.current = rest;
   };
 
   // The detail view's keys (release 5 design, "The detail view"; release 5 plan, Task 12): the conversation's scroll
@@ -1461,12 +1238,12 @@ export function App({
   // Alt+P's model list, Ctrl+R's search and the like wait for the view to close. Several keys can come in one read,
   // each its own key here, so each checks the view is still open and not printed out.
   const detailKey = (d: Detail, h: Now, got: Got, ch: string, key: Key) => {
-    if (detail.current !== d || printed.current) return;
+    if (ui.detail.current !== d || ui.printed.current) return;
     const s = d.search;
     if (!got) {
       // Enter is no action here, and keys.ts leaves it to chat:submit: it keeps a search being typed, as before.
       for (const c of key.return ? ["submit" as const] : commands(ch, key)) {
-        if (detail.current !== d || printed.current) return;
+        if (ui.detail.current !== d || ui.printed.current) return;
         if (typeof c === "object")
           for (const letter of c.text) {
             const as = { ...key, shift: letter !== letter.toLowerCase() };
@@ -1489,13 +1266,13 @@ export function App({
       if (!h.working) closeDetail();
       else {
         restore();
-        abort.current?.abort();
+        ui.abort.current?.abort();
       }
     } else if (a === "transcript:exit" && s?.typing) {
       d.view.current = s.before;
       d.search = null;
     } else if (a === "transcript:exit" || a === "app:toggleTranscript") closeDetail();
-    else if (a === "transcript:print" && input && !owner.suspended) void printOut(d); // switchScreen says why
+    else if (a === "transcript:print" && ui.input && !ui.owner.suspended) void printOut(d); // switchScreen says why
     else if (a === "transcript:search") d.search = { query: "", found: [], at: 0, typing: true, before: d.view.current };
     else if ((a === "transcript:nextMatch" || a === "transcript:previousMatch") && s) stepMatch(d, a === "transcript:nextMatch" ? 1 : -1, viewHeight);
     else if (move) scroll(move);
@@ -1506,48 +1283,48 @@ export function App({
   // window Claude Code's docs give for Ctrl+D. Any other key in between starts the count again.
   const remember = (name: string) => {
     const timer = setTimeout(() => {
-      first.current = null;
-      rerender((n) => n + 1);
+      ui.first.current = null;
+      ui.rerender((n) => n + 1);
     }, DOUBLE_PRESS_MS);
-    first.current = { name, timer };
+    ui.first.current = { name, timer };
   };
   const forget = () => {
-    clearTimeout(first.current?.timer);
-    first.current = null;
+    clearTimeout(ui.first.current?.timer);
+    ui.first.current = null;
   };
 
   // A pasted block goes in whole, its line breaks as new lines: it is never sent by them; one of only paths to picture
   // files becomes those pictures (pastePictures). While the picker is open, pastes reach it as typed text, as before.
   usePaste(
     (text) => {
-      const given = phaseInputs(phaseRefs);
+      const given = phaseInputs(ui.phaseRefs);
       if (given.printed) return; // as for keys, above; before clearCopied(), which pasteTo() cannot say
-      clearCopied();
-      notes.current = []; // a live edit's lines leave the hint row at a paste, keys pressed too (note, above)
+      ui.clearCopied();
+      ui.notes.current = []; // a live edit's lines leave the hint row at a paste, keys pressed too (note, above)
       dropChords(); // a paste is text, which drops a waiting chord as text read together does (route)
       const to = pasteTo(given);
       // In the detail view a paste goes into a search being typed, up to its first line break, without the control
       // characters typed text loses (keys.ts, commands); otherwise it does nothing there (the user's choice,
       // release 5).
-      const d = detail.current;
+      const d = ui.detail.current;
       if (to === "search" && d?.search) {
         searchFor(d, d.search.query + text.split(/\r\n?|\n/, 1)[0]!.replace(/\p{Cc}/gu, ""), viewHeight);
-        return rerender((n) => n + 1);
+        return ui.rerender((n) => n + 1);
       }
       if (to === null) return;
       const files = imagePaths(text);
-      if (files?.every((f) => isFile(path.resolve(root, f)))) pastePictures(files);
+      if (files?.every((f) => isFile(path.resolve(ui.root, f)))) pastePictures(files);
       else run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
-      rerender((n) => n + 1);
+      ui.rerender((n) => n + 1);
     },
-    { isActive: !picker },
+    { isActive: !ui.picker },
   );
 
   // The scroll keys move the conversation (release 5 design, "Scrolling"): PgUp and PgDn by half its height, at least a
   // row; Ctrl+Home to the top; Ctrl+End to the bottom, following again; Shift+Up and Shift+Down by a row. They work
   // during a turn and while a question waits, and move the detail view while it is open (release 5 plan, Task 12).
   const scroll = (c: Scroll) => {
-    const p = pane();
+    const p = ui.pane();
     const half = Math.max(1, Math.floor(viewHeight / 2));
     const by = { pageUp: -half, pageDown: half, lineUp: -1, lineDown: 1, top: 0, bottom: 0 }[c];
     p.view.current =
@@ -1557,7 +1334,7 @@ export function App({
   // 6), as span takes them: backward, from the pointer's character to the end of what was pressed; otherwise from the
   // start of what was pressed to whichever ends later.
   const selected = (): [Pos, Pos] | null => {
-    const s = selection.current;
+    const s = ui.selection.current;
     if (!s) return null;
     const [at, atEnd] = s.end;
     const [from, fromEnd] = s.press;
@@ -1568,11 +1345,11 @@ export function App({
   // says how many characters, counted as a person sees them, as the prompt counts them (release 5 plan, choice 7).
   const copy = () => {
     const s = selected();
-    const text = s ? textOf(pane().rows.lines, ...s) : "";
+    const text = s ? textOf(ui.pane().rows.lines, ...s) : "";
     if (!text) return;
-    board.current!.copy(text);
+    ui.board.current!.copy(text);
     const n = characters(text);
-    copied.current = { text: `Copied ${n} character${n === 1 ? "" : "s"}${board.current!.terminalOnly ? " with the terminal only" : ""}`, failed: false };
+    ui.copied.current = { text: `Copied ${n} character${n === 1 ? "" : "s"}${ui.board.current!.terminalOnly ? " with the terminal only" : ""}`, failed: false };
   };
   // The wheel and the scroll bar (release 5 design, "Scrolling"), in full screen only. The wheel scrolls the conversation
   // wherever the pointer is, and while a question or the model list is open (release 5 plan, choice 3). The bar is the
@@ -1593,15 +1370,15 @@ export function App({
     // `ended` never comes here (useInput says why), and is checked as the first phase. Printed out: a report read with its
     // `[`, as for keys.
     // A wheel notch asks for the menu, as a key does (useInput), so Autocomplete comes first while one is open.
-    const h = happening(m.kind === "wheel" ? () => menuFor(editor.current) !== null : undefined);
+    const h = ui.happening(m.kind === "wheel" ? () => menuFor(ui.editor.current) !== null : undefined);
     const { phase } = h;
-    if (!fullNow.current || phase.kind === "ended" || phase.kind === "printed") return;
-    const { columns, viewHeight } = frame.current;
-    if (frame.current.detail !== detail.current) return;
-    const p = pane();
+    if (!ui.fullNow.current || phase.kind === "ended" || phase.kind === "printed") return;
+    const { columns, viewHeight } = ui.frame.current;
+    if (ui.frame.current.detail !== ui.detail.current) return;
+    const p = ui.pane();
     const goTo = (to: number) => {
       p.view.current = scrollTo(p.rows, p.view.current, viewHeight, to);
-      rerender((n) => n + 1);
+      ui.rerender((n) => n + 1);
     };
     // A wheel notch is a stroke of its own, pressed in the contexts in force (release 6 plan, Task 6), Scroll's among
     // them in the model list too. scroll:lineUp and scroll:lineDown move by the notch, as release 5's wheel did;
@@ -1612,22 +1389,22 @@ export function App({
       // leaves the hint row even when the notch has nowhere to scroll.
       const waited = chordKeys().waiting(Date.now()) !== null;
       const got = lookUp(stroke, contextsOf(phase.kind, true, true), null, phase.kind === "question");
-      if (waited) rerender((n) => n + 1);
+      if (waited) ui.rerender((n) => n + 1);
       if (!got) return;
       if (!("action" in got) || (got.action !== "scroll:lineUp" && got.action !== "scroll:lineDown")) return onKey(h, got, "", NO_KEY);
-      const step = notch(wheel.current, speed, got.action === "scroll:lineUp" ? -1 : 1);
-      wheel.current = step.carry;
+      const step = notch(ui.wheel.current, ui.speed, got.action === "scroll:lineUp" ? -1 : 1);
+      ui.wheel.current = step.carry;
       const from = firstRow(p.rows, p.view.current, viewHeight);
       if (step.rows && (step.rows < 0 ? from > 0 : p.view.current.at !== null)) goTo(from + step.rows); // not up at the top, nor down following
       return;
     }
     if (m.kind === "release") {
-      grab.current = null;
-      const h = held.current;
-      held.current = null;
+      ui.grab.current = null;
+      const h = ui.held.current;
+      ui.held.current = null;
       if (h?.copy) {
         copy();
-        rerender((n) => n + 1);
+        ui.rerender((n) => n + 1);
       }
       return;
     }
@@ -1635,28 +1412,28 @@ export function App({
     const thumb = bar(p.rows.total, viewHeight, top);
     const onBar = thumb !== null && m.x === columns - 1 && m.y < viewHeight;
     if (m.kind === "press") {
-      grab.current = null;
-      held.current = null;
-      clearCopied();
+      ui.grab.current = null;
+      ui.held.current = null;
+      ui.clearCopied();
       // A selection stays until a click: any press but one on the scroll bar, which scrolls as the wheel does (the user's
       // choice, release 5).
-      if (!onBar && selection.current) {
-        selection.current = null;
-        rerender((n) => n + 1);
+      if (!onBar && ui.selection.current) {
+        ui.selection.current = null;
+        ui.rerender((n) => n + 1);
       }
     }
     if (m.button !== "left") return;
-    if (m.kind === "drag" && held.current) return dragTo(held.current, m.x, m.y);
+    if (m.kind === "drag" && ui.held.current) return dragTo(ui.held.current, m.x, m.y);
     if (m.kind === "press" && m.x !== columns - 1 && m.y < textRows(viewHeight)) return pressAt(top, m.x, m.y);
     if (m.kind === "press" && m.y >= viewHeight) return clickAt(m.x, m.y);
     if (!thumb) return;
     const clamp = (start: number) => Math.max(0, Math.min(viewHeight - thumb.size, start));
     const move = (start: number) => start !== thumb.start && goTo(barFirst(p.rows.total, viewHeight, thumb.size, start));
-    if (m.kind === "drag" && grab.current !== null) return void move(clamp(m.y - grab.current));
+    if (m.kind === "drag" && ui.grab.current !== null) return void move(clamp(m.y - ui.grab.current));
     if (m.kind !== "press" || !onBar) return;
     const on = m.y >= thumb.start && m.y < thumb.start + thumb.size;
     const start = on ? thumb.start : clamp(m.y - Math.floor(thumb.size / 2)); // centred on its middle row, the lower of two
-    grab.current = m.y - start;
+    ui.grab.current = m.y - start;
     move(start);
   };
 
@@ -1666,21 +1443,21 @@ export function App({
     row < rows.total ? { row, x } : { row: rows.total - 1, x: rows.width }; // rows.width: past any row's text
   // The pane's rows that show text: all but the "↓ N new lines" row while it shows, which is not text (release 5 plan,
   // choice 10's rule for such rows): a press there starts nothing, and a drag onto it counts as the row above it.
-  const textRows = (viewHeight: number) => viewHeight - (unseenBelow(pane().rows, pane().view.current, viewHeight) > 0 ? 1 : 0);
+  const textRows = (viewHeight: number) => viewHeight - (unseenBelow(ui.pane().rows, ui.pane().view.current, viewHeight) > 0 ? 1 : 0);
   // A left press in the conversation's text rows (release 5 design, "Selecting"; release 5 plan, choice 6), the
   // selection already cleared: a click takes the pressed character, which a drag grows from; a double-click selects the
   // word, a triple-click the line, both copied on release. A double-click past a row's text, or a double or triple
   // click below the last line, clicks nothing: placeAt gives the row's end there, which on a wrapped row is the next
   // row's start.
   const pressAt = (top: number, x: number, y: number) => {
-    const { rows } = pane();
+    const { rows } = ui.pane();
     if (!rows.total) return;
     const at = Date.now();
-    const count = clicks(lastPress.current, at, x, y);
-    lastPress.current = { at, x, y, count };
+    const count = clicks(ui.lastPress.current, at, x, y);
+    ui.lastPress.current = { at, x, y, count };
     const cell = cellAt(rows, top + y, x);
-    rerender((n) => n + 1);
-    if (count === 1) return void (held.current = { press: span(rows, cell, cell), copy: false, top: y === 0 });
+    ui.rerender((n) => n + 1);
+    if (count === 1) return void (ui.held.current = { press: span(rows, cell, cell), copy: false, top: y === 0 });
     const { pos, past } = placeAt(rows, cell.row, cell.x);
     if (top + y >= rows.total || (count === 2 && past)) return;
     const text = rows.lines[pos.line]!.text;
@@ -1689,8 +1466,8 @@ export function App({
       { line: pos.line, offset: start },
       { line: pos.line, offset: end },
     ];
-    selection.current = { press, end: span(rows, cell, cell) };
-    held.current = { press, copy: true, top: y === 0 };
+    ui.selection.current = { press, end: span(rows, cell, cell) };
+    ui.held.current = { press, copy: true, top: y === 0 };
   };
   // A left press below the conversation (release 5 design, "Clicking"): on a prompt row the cursor goes to the place under
   // it, after the two columns of "› ", or to the row's end past it; a menu entry is chosen and Enter's path runs it, so a
@@ -1700,114 +1477,114 @@ export function App({
   // replaced the prompt or the menu's choice is dropped: React draws nothing between them, so the screen is still the one
   // from before the key. A click that acts starts the press-twice count again, as a key between the presses does.
   const clickAt = (x: number, y: number) => {
-    const f = frame.current;
-    if (editor.current !== f.editor || chosen.current !== f.chosen) return;
+    const f = ui.frame.current;
+    if (ui.editor.current !== f.editor || ui.chosen.current !== f.chosen) return;
     const { columns, promptFirst, promptRows, promptWindow, menuRows } = f;
     const row = y - promptFirst; // a row of the prompt, then of the menu
     const marked = (i: number, shown: number, w: { above: number; below: number }) => (i === 0 && w.above > 0) || (i === shown - 1 && w.below > 0);
-    const e = editor.current;
+    const e = ui.editor.current;
     if (row >= 0 && row < promptRows) {
       const { places } = layout(e.text, promptWidth(columns));
       if (marked(row, promptRows, promptWindow)) return;
-      editor.current = move(e, placeOn(places, promptWindow.top + row, x - 2)!);
-      goal.current = null;
+      ui.editor.current = move(e, placeOn(places, promptWindow.top + row, x - 2)!);
+      ui.goal.current = null;
     } else {
       const i = row - promptRows;
       if (i < 0 || i >= menuRows) return;
       const menu = menuFor(e); // after the rows are checked: for an `@` path it can list a folder again
       if (!menu) return;
-      const w = windowOf(menu.entries.length, menuRows, chosenIn(e, menu), menuTop.current);
+      const w = windowOf(menu.entries.length, menuRows, chosenIn(e, menu), ui.menuTop.current);
       if (marked(i, menuRows, w)) return;
-      chosen.current = { text: e.text, at: w.top + i };
+      ui.chosen.current = { text: e.text, at: w.top + i };
       run("submit");
     }
     forget();
-    rerender((n) => n + 1);
+    ui.rerender((n) => n + 1);
   };
   // A drag while selecting grows the selection to the pointer's cell. Below the conversation the view first scrolls a row
   // for each report, so a selection can be longer than the screen (release 5 design, "Selecting"). The frame starts at
   // the terminal's top, so the pointer cannot go above the conversation: its top row stands for above it, for a drag
   // started lower down; one started on the top row selects within it and never scrolls (the user's choice, release 5).
   const dragTo = (h: Held, x: number, y: number) => {
-    const { viewHeight } = frame.current;
-    const p = pane();
+    const { viewHeight } = ui.frame.current;
+    const p = ui.pane();
     const up = y <= 0 && !h.top;
     if (y >= viewHeight || up) p.view.current = scrollBy(p.rows, p.view.current, viewHeight, up ? -1 : 1);
     const cell = cellAt(p.rows, firstRow(p.rows, p.view.current, viewHeight) + Math.max(0, Math.min(textRows(viewHeight) - 1, y)), x);
-    selection.current = { press: h.press, end: span(p.rows, cell, cell) };
+    ui.selection.current = { press: h.press, end: span(p.rows, cell, cell) };
     h.copy = true;
-    rerender((n) => n + 1);
+    ui.rerender((n) => n + 1);
   };
 
   // Scroll's actions come only in full screen, where Scroll is in force (contextsOf, constants.ts).
   const run = (c: Command) => {
     if (isScroll(c)) return scroll(c);
-    const e = editor.current;
+    const e = ui.editor.current;
     const menu = menuFor(e);
     if (menu && (c === "up" || c === "down")) {
-      chosen.current = { text: e.text, at: Math.max(0, Math.min(menu.entries.length - 1, chosenIn(e, menu) + (c === "up" ? -1 : 1))) };
+      ui.chosen.current = { text: e.text, at: Math.max(0, Math.min(menu.entries.length - 1, chosenIn(e, menu) + (c === "up" ? -1 : 1))) };
       return;
     }
     if (menu && c === "submit") return menu.kind === "command" ? send(load(e, menu.entries[chosenIn(e, menu)]!.run!)) : fill(menu, e);
     if (c === "mode") {
-      perm.current = cycle[(cycle.indexOf(perm.current) + 1) % cycle.length]!;
-      onMode(perm.current);
-      return show({ text: `mode is now ${perm.current}`, color: "gray" });
+      ui.perm.current = ui.cycle[(ui.cycle.indexOf(ui.perm.current) + 1) % ui.cycle.length]!;
+      ui.onMode(ui.perm.current);
+      return show({ text: `mode is now ${ui.perm.current}`, color: "gray" });
     }
     // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom.
     if (c === "models") return command("/model");
-    if (c === "lastTurn") return fullNow.current ? openDetail(lastTurn(session.messages)) : show(...lastTurn(session.messages)); // release 5 plan, Task 12
-    if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
+    if (c === "lastTurn") return ui.fullNow.current ? openDetail(lastTurn(ui.session.messages)) : show(...lastTurn(ui.session.messages)); // release 5 plan, Task 12
+    if (c === "todos") return void (ui.todos.current.hidden = !ui.todos.current.hidden);
     // A message starting with `?` needs a space typed first.
     if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text)
-      return show(...keyList(table, contextsOf("prompt", fullNow.current), vimFirst(), launchKeys.current).map((text) => ({ text, color: "gray" })));
-    if (c === "up" && !e.text && queue.current.length) return restore();
+      return show(...keyList(ui.table, contextsOf("prompt", ui.fullNow.current), vimFirst(), ui.launchKeys.current).map((text) => ({ text, color: "gray" })));
+    if (c === "up" && !e.text && ui.queue.current.length) return restore();
     if (c === "up" || c === "down") {
-      const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);
+      const to = vertical(e.text, promptWidth(ui.columns), e.cursor, c === "up" ? -1 : 1, ui.goal.current);
       if (to) {
-        editor.current = move(e, to.cursor);
-        goal.current = to.goal;
+        ui.editor.current = move(e, to.cursor);
+        ui.goal.current = to.goal;
       } else recall(c === "up" ? -1 : 1);
       return;
     }
-    goal.current = null;
+    ui.goal.current = null;
     if (c === "search") {
-      search.current = { query: "", skip: 0, before: e };
-      step.current = null;
-    } else if (c !== "submit") editor.current = apply(e, c);
+      ui.search.current = { query: "", skip: 0, before: e };
+      ui.step.current = null;
+    } else if (c !== "submit") ui.editor.current = apply(e, c);
     // A backslash before Enter makes a new line in every terminal, in place of the backslash.
-    else if (e.text.slice(0, e.cursor).endsWith("\\")) editor.current = apply(apply(e, "backspace"), "newline");
+    else if (e.text.slice(0, e.cursor).endsWith("\\")) ui.editor.current = apply(apply(e, "backspace"), "newline");
     else send(e);
   };
 
   // A key bound to command:<name>, and Alt+P's /model, run the command as if typed then, the prompt's text left as it
   // is: during a turn it waits in the queue (choice 21).
   const command = (text: string) => {
-    if (working.current) return void queue.current.push({ text, spans: [] });
-    view.current = FOLLOWING;
+    if (ui.working.current) return void ui.queue.current.push({ text, spans: [] });
+    ui.view.current = FOLLOWING;
     void submit({ text, spans: [] });
   };
   // The prompt goes with its pictures' spans; prompt history keeps its text only (release 6 plan, Task 14).
   const send = (e: Editor) => {
-    view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
+    ui.view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     keep(e.text);
-    editor.current = load(e, "");
+    ui.editor.current = load(e, "");
     freshText();
-    if (!working.current) void submit(e);
-    else if (e.text.trim()) queue.current.push(trimmed(e));
+    if (!ui.working.current) void submit(e);
+    else if (e.text.trim()) ui.queue.current.push(trimmed(e));
   };
   // Ctrl-C during a turn, or Up on an empty prompt: the queue comes back into the prompt, one entry a
   // line, after what is there, to edit or send, with its pictures' spans.
   const restore = () => {
-    if (!queue.current.length) return;
-    const back = joined([editor.current, ...queue.current].filter((d) => d.text), "\n");
-    editor.current = { ...load(editor.current, back.text), spans: back.spans };
-    queue.current = [];
+    if (!ui.queue.current.length) return;
+    const back = joined([ui.editor.current, ...ui.queue.current].filter((d) => d.text), "\n");
+    ui.editor.current = { ...load(ui.editor.current, back.text), spans: back.spans };
+    ui.queue.current = [];
     freshText();
   };
   const clear = (e: Editor) => {
     keep(e.text);
-    editor.current = load(e, "");
+    ui.editor.current = load(e, "");
     freshText();
   };
   // Ctrl+S (release 6 design, "Stash"): a prompt with text goes into the slot whole, cursor and undo steps with it, and
@@ -1817,69 +1594,69 @@ export function App({
   // prompt and comes back with it, so the draft Up keeps is never dropped: after the line Up showed comes back, Down
   // past the newest brings the draft back (choice 31).
   const swapStash = (e: Editor) => {
-    const back = stash.current;
+    const back = ui.stash.current;
     if (!e.text && !back) return;
-    stash.current = e.text || step.current ? { prompt: e, step: step.current } : null;
-    editor.current = back ? { ...back.prompt, typing: false, killed: e.killed } : load(e, "");
-    goal.current = null;
-    step.current = back?.step ?? null;
+    ui.stash.current = e.text || ui.step.current ? { prompt: e, step: ui.step.current } : null;
+    ui.editor.current = back ? { ...back.prompt, typing: false, killed: e.killed } : load(e, "");
+    ui.goal.current = null;
+    ui.step.current = back?.step ?? null;
     freshText();
   };
   // Saved for Up and Ctrl+R, in this session and later ones: each sent prompt, and one cleared with
   // Ctrl-C or Esc Esc. The same prompt twice in a row is kept once, as Claude Code keeps it.
   const keep = (raw: string) => {
     const text = raw.trim();
-    if (text && history.current!.entries.at(-1) !== text) void history.current!.add(text);
-    step.current = null;
+    if (text && ui.history.current!.entries.at(-1) !== text) void ui.history.current!.add(text);
+    ui.step.current = null;
   };
 
   // Up from the prompt's first row steps back through the history, Down from its last row forward,
   // and past the newest prompt back to what was being typed. A prompt comes back with the cursor at
   // its end.
   const recall = (dir: -1 | 1) => {
-    const { entries } = history.current!;
-    const e = editor.current;
-    const at = (step.current?.at ?? entries.length) + dir;
-    goal.current = null;
-    if (at < 0 || (!step.current && dir === 1)) return;
+    const { entries } = ui.history.current!;
+    const e = ui.editor.current;
+    const at = (ui.step.current?.at ?? entries.length) + dir;
+    ui.goal.current = null;
+    if (at < 0 || (!ui.step.current && dir === 1)) return;
     freshText();
     if (at < entries.length) {
-      step.current = { at, draft: step.current?.draft ?? { text: e.text, spans: e.spans } };
-      editor.current = load(e, entries[at]!);
+      ui.step.current = { at, draft: ui.step.current?.draft ?? { text: e.text, spans: e.spans } };
+      ui.editor.current = load(e, entries[at]!);
     } else {
-      editor.current = { ...load(e, step.current!.draft.text), spans: step.current!.draft.spans };
-      step.current = null;
+      ui.editor.current = { ...load(e, ui.step.current!.draft.text), spans: ui.step.current!.draft.spans };
+      ui.step.current = null;
     }
   };
 
   // The `/` or `@` menu for the prompt as it is, unless Esc closed it at this text. A folder is listed
   // again when the menu opens again, so it shows what is there then.
   const menuFor = (e: Editor): MenuData | null => {
-    if (closed.current !== e.text) closed.current = null;
-    if (search.current || closed.current !== null) return null;
+    if (ui.closed.current !== e.text) ui.closed.current = null;
+    if (ui.search.current || ui.closed.current !== null) return null;
     return commandMenu(e.text, e.cursor) ?? pathMenu(e.text, e.cursor, list);
   };
   const list = (folder: string) => {
-    if (listed.current?.folder !== folder) listed.current = { folder, listing: listFolder(root, folder) };
-    return listed.current.listing;
+    if (ui.listed.current?.folder !== folder) ui.listed.current = { folder, listing: listFolder(ui.root, folder) };
+    return ui.listed.current.listing;
   };
-  const chosenIn = (e: Editor, m: MenuData) => Math.min(chosen.current.text === e.text ? chosen.current.at : 0, m.entries.length - 1);
+  const chosenIn = (e: Editor, m: MenuData) => Math.min(ui.chosen.current.text === e.text ? ui.chosen.current.at : 0, m.entries.length - 1);
   // Tab, and Enter on a path: the chosen entry in place of what it completes.
   const fill = (m: MenuData, e: Editor) => {
     const entry = m.entries[chosenIn(e, m)]!;
-    if (!entry.error) editor.current = replace(e, m.from, entry.fill);
+    if (!entry.error) ui.editor.current = replace(e, m.from, entry.fill);
   };
 
   // What the search shows in the prompt: the match, with the cursor at its end, or, with no match,
   // the prompt as it was.
   const shown = (): Editor => {
-    const s = search.current!;
-    const match = matches(history.current!.entries, s.query)[s.skip];
+    const s = ui.search.current!;
+    const match = matches(ui.history.current!.entries, s.query)[s.skip];
     return match === undefined ? s.before : load(s.before, match);
   };
   const endSearch = (e: Editor) => {
-    search.current = null;
-    editor.current = e;
+    ui.search.current = null;
+    ui.editor.current = e;
     freshText();
   };
   // Ctrl+R's keys, as Claude Code's search has them (interactive-mode.md): typing searches, Ctrl+R
@@ -1888,13 +1665,13 @@ export function App({
   // the search scrolls (the user's choice, release 5); in classic mode Scroll is not in force, and the scroll keys do
   // nothing here, as in release 4.
   const searchKey = (h: Now, got: Got, ch: string, key: Key) => {
-    const s = search.current!;
+    const s = ui.search.current!;
     if (got && "typed" in got) return void Object.assign(s, { query: s.query + got.typed, skip: 0 });
     if (got && "pending" in got) return;
     const a = got?.action;
     if (a === "historySearch:cancel") return endSearch(s.before);
     if (a === "historySearch:accept") return endSearch(shown());
-    if (a === "historySearch:next") return void (s.skip = Math.max(0, Math.min(s.skip + 1, matches(history.current!.entries, s.query).length - 1)));
+    if (a === "historySearch:next") return void (s.skip = Math.max(0, Math.min(s.skip + 1, matches(ui.history.current!.entries, s.query).length - 1)));
     if (a === "historySearch:execute") {
       const e = shown();
       endSearch(e);
@@ -1916,22 +1693,22 @@ export function App({
   // What the listeners set up once, at mount (the bus's, bindAsk's and the mouse's), call: the latest drawing's
   // functions, set at each, so what they read is the screen as last drawn, never what it was when they were set up
   // (release 6 design, "Tidying the screen code first"). Set while drawing, safe with Ink's non-concurrent root
-  // (above).
+  // (state.ts).
   const handlers = { say, note, noteAlone, closeDetail, comeBack, next, lookUpWindow, onMouse, onSettings, onKeys, settle, dropChord: dropChords };
   const latest = useRef(handlers);
   latest.current = handlers;
 
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
-  const d = detail.current;
-  const prompt = search.current ? shown() : editor.current;
+  const d = ui.detail.current;
+  const prompt = ui.search.current ? shown() : ui.editor.current;
   staleVim(); // while drawing too, for a change no key made (a picture's read ending), safe as `copied` below says
-  const highlight = search.current ? undefined : visualSelection(vim.current, prompt);
-  const menu = picker || question || d ? null : menuFor(prompt);
-  if (menu?.kind !== "path") listed.current = null;
+  const highlight = ui.search.current ? undefined : visualSelection(ui.vim.current, prompt);
+  const menu = ui.picker || ui.question || d ? null : menuFor(prompt);
+  if (menu?.kind !== "path") ui.listed.current = null;
 
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the
   // rows left for the queue.
-  const exitKey = first.current?.name === "Esc" ? undefined : first.current?.name;
+  const exitKey = ui.first.current?.name === "Esc" ? undefined : ui.first.current?.name;
   // The detail view's row naming its keys, or its search, stands in the hint row's place (release 5 plan, Task 12), as
   // the row over the status line; Ctrl+R's search waits under the view, and a model list queued as `/model` during a
   // turn, which takes the keys, takes the row away while it is open.
@@ -1939,58 +1716,58 @@ export function App({
   // reserved (bindings.ts, RESERVED), and written as release 5 wrote them. A chord's first strokes take the row first,
   // in the table's spelling, until the next key or 3 s (release 6 design, "The keys file"); then the exit warning, as
   // Ctrl-D twice exits from the detail view and Ctrl+R's search too (choice 19).
-  const searching = !d && search.current && `search: ${visible(search.current.query)}${shown() === search.current.before ? " (no match)" : ""}`;
+  const searching = !d && ui.search.current && `search: ${visible(ui.search.current.query)}${shown() === ui.search.current.before ? " (no match)" : ""}`;
   const said = (key: string | undefined, words: string) => key !== undefined && `${key} ${words}`;
   const hints = (...parts: (string | false | null)[]) => parts.filter(Boolean).join(" · ");
   // Only a chord the keys drawn would go on with: none read at the prompt's side once a question is drawn, as a click on
   // the model list can bring one there with no key between (lookUp drops it at the next key; choice 32's code review).
-  const chord = asked.current === (!!question && !picker) ? chordKeys().waiting(Date.now()) : null;
-  const fillKeys = [keyOf("autocomplete:accept", "Autocomplete", "tab"), keyOf("chat:submit", "Chat", "enter")];
-  const previous = keyOf("history:previous", "Chat", "up");
+  const chord = ui.asked.current === (!!ui.question && !ui.picker) ? chordKeys().waiting(Date.now()) : null;
+  const fillKeys = [ui.keyOf("autocomplete:accept", "Autocomplete", "tab"), ui.keyOf("chat:submit", "Chat", "enter")];
+  const previous = ui.keyOf("history:previous", "Chat", "up");
   // The last line of a live edit, with how many more it said, which the conversation shows (note, above).
-  const notice = notes.current.at(-1);
+  const notice = ui.notes.current.at(-1);
   // One row, as the frame gives it (layout.ts, frame): a line break in it, such as in the file Node's JSON error quotes,
   // is one space here, the conversation keeping the line as said (choice 35's code review).
-  const noticeText = notice && `${notice.text.replace(/\s*[\r\n]+\s*/g, " ")}${notes.current.length > 1 ? ` (+${notes.current.length - 1} more above)` : ""}`;
+  const noticeText = notice && `${notice.text.replace(/\s*[\r\n]+\s*/g, " ")}${ui.notes.current.length > 1 ? ` (+${ui.notes.current.length - 1} more above)` : ""}`;
   const usualHint = (left: number) =>
     chord
       ? `${keyText(chord)} ...`
       : exitKey
       ? `Press ${exitKey} again to exit`
-      : d && !picker
-      ? keyRow(d, table)
+      : d && !ui.picker
+      ? keyRow(d, ui.table)
       : searching
       ? hints(
           searching,
-          said(keyOf("historySearch:next", "HistorySearch", "ctrl+r"), "older"),
-          said(keyOf("historySearch:execute", "HistorySearch", "enter"), "send"),
-          said(keyOf("historySearch:accept", "HistorySearch", "tab"), "edit"),
+          said(ui.keyOf("historySearch:next", "HistorySearch", "ctrl+r"), "older"),
+          said(ui.keyOf("historySearch:execute", "HistorySearch", "enter"), "send"),
+          said(ui.keyOf("historySearch:accept", "HistorySearch", "tab"), "edit"),
           "Ctrl-C cancel",
         )
-        : picker || question
+        : ui.picker || ui.question
           ? null
           : menu
             ? hints(
-                said(both(keyOf("autocomplete:previous", "Autocomplete", "up"), keyOf("autocomplete:next", "Autocomplete", "down")), "choose"),
+                said(both(ui.keyOf("autocomplete:previous", "Autocomplete", "up"), ui.keyOf("autocomplete:next", "Autocomplete", "down")), "choose"),
                 ...(menu.kind === "command"
                   ? [said(fillKeys[0], "fill"), said(fillKeys[1], "run")]
                   : [said(fillKeys.filter(Boolean).join(" or ") || undefined, "fill")]),
-                said(keyOf("autocomplete:dismiss", "Autocomplete", "escape"), "close"),
+                said(ui.keyOf("autocomplete:dismiss", "Autocomplete", "escape"), "close"),
               )
-            : reads.current
+            : ui.reads.current
             ? "Reading picture..." // over the queue's and the stash's hints, for the moment it lasts (release 6 design, "Pictures")
-            : queue.current.length
+            : ui.queue.current.length
             ? left > 0 && previous
               ? `${previous} to edit queued messages`
-              : `${queue.current.length} queued`
-            : stash.current
+              : `${ui.queue.current.length} queued`
+            : ui.stash.current
               ? // during a turn too, no other hint taking the row (release 6 plan, Task 13)
-                hints("Stashed", said(keyOf("chat:stash", "Chat", "ctrl+s"), "to bring back"))
+                hints("Stashed", said(ui.keyOf("chat:stash", "Chat", "ctrl+s"), "to bring back"))
               : noticeText
                 ? noticeText // over vim's mode too, until a key (choice 35, the user's: "Notice wins")
-                : vim.current
-                  ? `-- ${vim.current.mode} --` // every mode, in a turn too, when no other hint takes the row (choice 15)
-                  : busy
+                : ui.vim.current
+                  ? `-- ${ui.vim.current.mode} --` // every mode, in a turn too, when no other hint takes the row (choice 15)
+                  : ui.busy
                     ? null
                     : "? for shortcuts";
   // The line about the last copy, until the next key or click (release 5 design, "Copying"), takes the hint row's place
@@ -1999,7 +1776,7 @@ export function App({
   // it is typed, as Ctrl+R's does. A failure on a terminal too short for a hint row waits until one fits.
   const hintFor = (left: number) => {
     const usual = usualHint(left);
-    const c = copied.current;
+    const c = ui.copied.current;
     return c === null || searching || d?.search?.typing || exitKey || (!c.failed && usual === null) ? usual : c.text;
   };
 
@@ -2010,7 +1787,7 @@ export function App({
   // too long to fit is its short one, below.
   // A question names the launch's keys, the ones that answer it (lookUp; choice 32).
   const allow = (what: string, plain?: boolean) => {
-    const answer = (action: string, usual: string) => named(launchKeys.current, action, "Confirmation", [usual])[0];
+    const answer = (action: string, usual: string) => named(ui.launchKeys.current, action, "Confirmation", [usual])[0];
     const yes = answer("confirm:yes", "y") ?? "";
     const no = answer("confirm:no", "n") ?? "";
     return hints(
@@ -2019,31 +1796,31 @@ export function App({
     );
   };
   const shortOf = (q: Question) => `${q.label} (shown above)`;
-  const laid = layout(prompt.text, promptWidth(columns));
-  const offered = full && picker ? listRows(picker, "") : [];
-  const movable = full && question && !picker && !question.short; // a question that can still move into the conversation
+  const laid = layout(prompt.text, promptWidth(ui.columns));
+  const offered = ui.full && ui.picker ? listRows(ui.picker, "") : [];
+  const movable = ui.full && ui.question && !ui.picker && !ui.question.short; // a question that can still move into the conversation
   const f = frameOf({
-    rows: height,
-    columns,
-    full,
+    rows: ui.height,
+    columns: ui.columns,
+    full: ui.full,
     promptRows: laid.rows.length,
     cursorRow: laid.places.get(prompt.cursor)!.row,
-    promptTop: promptTop.current,
-    working: busy,
-    toolLine: !picker && shownSegments.includes("tools") && calls.current.length > 0,
+    promptTop: ui.promptTop.current,
+    working: ui.busy,
+    toolLine: !ui.picker && ui.shownSegments.includes("tools") && ui.calls.current.length > 0,
     detail: d !== null,
     hint: hintFor(1) !== null, // whether there is a hint does not depend on the rows left (usualHint)
     menu: menu ? menu.entries.length : null,
-    taskRows: (rows) => taskRows(tasks.all, rows, now),
-    todoRows: (rows) => (!todos.current.hidden && unfinished(todos.current.items) ? todoRows(todos.current.items, rows) : []),
-    queued: queue.current.length,
-    pickerNeeded: picker ? offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1) : null,
-    question: question !== null,
-    askedText: full && question && !picker ? allow(question.short ?? question.text, question.plain) : null,
-    askedShort: movable ? allow(shortOf(question), question.plain) : null,
+    taskRows: (rows) => taskRows(ui.tasks.all, rows, ui.now),
+    todoRows: (rows) => (!ui.todos.current.hidden && unfinished(ui.todos.current.items) ? todoRows(ui.todos.current.items, rows) : []),
+    queued: ui.queue.current.length,
+    pickerNeeded: ui.picker ? offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1) : null,
+    question: ui.question !== null,
+    askedText: ui.full && ui.question && !ui.picker ? allow(ui.question.short ?? ui.question.text, ui.question.plain) : null,
+    askedShort: movable ? allow(shortOf(ui.question), ui.question.plain) : null,
   });
   const { tooled, menuRows, panel, promptSpace, promptShown, todoShown, pickerRows, viewHeight, promptFirst } = f;
-  const q = queue.current.map((e) => visible(e.text));
+  const q = ui.queue.current.map((e) => visible(e.text));
   const shownQueued = f.queuedShown;
   const queued = q.length <= shownQueued ? q : shownQueued > 0 ? [...q.slice(0, shownQueued - 1), `+${q.length - shownQueued + 1} more`] : [];
   const hint = f.hinted ? hintFor(f.left) : null;
@@ -2052,8 +1829,8 @@ export function App({
   // a failure waits to be shown (the user's choice, release 5). Changed while drawing, which is safe as Ink renders
   // with React's non-concurrent root (ink.js, `concurrent` defaults to false); a concurrent root could drop or mark
   // shown a line it never drew.
-  if (copied.current && !copied.current.failed && hint !== copied.current.text) copied.current = null;
-  if (copied.current && hint === copied.current.text) copied.current.shown = true; // from now the next key or click takes it away
+  if (ui.copied.current && !ui.copied.current.failed && hint !== ui.copied.current.text) ui.copied.current = null;
+  if (ui.copied.current && hint === ui.copied.current.text) ui.copied.current.shown = true; // from now the next key or click takes it away
 
   // A question too long to fit, whose rows would leave the conversation less than its one row, has its line point above
   // instead (the user's choices, release 5): at a write's preview, whose heading holds the whole path, or else at all
@@ -2065,13 +1842,13 @@ export function App({
   // short line can itself wrap past the frame: the limit any live area has there.
   const moved = movable && !f.questionFits;
   if (moved) {
-    if (!question.detail) {
-      const n = characters(question.text);
-      const from = kept.lines.length;
-      say({ text: `┌ ${question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" }, { text: question.text, color: "gray" });
-      question.detail = [from, kept.lines.length - 1];
+    if (!ui.question.detail) {
+      const n = characters(ui.question.text);
+      const from = ui.kept.lines.length;
+      say({ text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" }, { text: ui.question.text, color: "gray" });
+      ui.question.detail = [from, ui.kept.lines.length - 1];
     }
-    question.short = shortOf(question);
+    ui.question.short = shortOf(ui.question);
   }
   // A question brings its own detail into view when it is first drawn (release 5 design, "Scrolling"; release 5 plan,
   // Task 11), and when a draw moves it into the conversation, above; here, with the height the conversation has beside
@@ -2080,66 +1857,66 @@ export function App({
   // that; otherwise its heading goes on the top row. The view is held there, never moved to the bottom (view.ts,
   // first), so what arrives while the question waits does not move it, and the lines already below the detail (a reply,
   // an earlier answer) are counted as unseen. A question without a detail leaves the view (release 5 plan, choice 11).
-  if (full && question && !picker && (question.following === undefined || moved)) {
-    if (question.following === undefined) question.following = view.current.at === null;
-    if (question.detail) {
-      const [from, to] = question.detail;
-      const head = kept.rowOf({ line: from, offset: 0 });
-      const end = kept.rowOf({ line: to, offset: kept.lines[to]!.text.length });
-      const r = kept.row(end - head + 1 <= viewHeight - 1 ? Math.max(0, end - (viewHeight - 2)) : head); // 2: the last two rows
-      view.current = { at: { line: r.line, offset: r.start }, unseen: kept.lines.length - 1 - to };
+  if (ui.full && ui.question && !ui.picker && (ui.question.following === undefined || moved)) {
+    if (ui.question.following === undefined) ui.question.following = ui.view.current.at === null;
+    if (ui.question.detail) {
+      const [from, to] = ui.question.detail;
+      const head = ui.kept.rowOf({ line: from, offset: 0 });
+      const end = ui.kept.rowOf({ line: to, offset: ui.kept.lines[to]!.text.length });
+      const r = ui.kept.row(end - head + 1 <= viewHeight - 1 ? Math.max(0, end - (viewHeight - 2)) : head); // 2: the last two rows
+      ui.view.current = { at: { line: r.line, offset: r.start }, unseen: ui.kept.lines.length - 1 - to };
     }
   }
-  frame.current = {
-    columns,
+  ui.frame.current = {
+    columns: ui.columns,
     viewHeight,
     promptFirst,
-    promptRows: picker || question || search.current || d ? 0 : promptShown,
+    promptRows: ui.picker || ui.question || ui.search.current || d ? 0 : promptShown,
     promptWindow: f.promptWindow,
     menuRows,
-    editor: editor.current,
-    chosen: chosen.current,
+    editor: ui.editor.current,
+    chosen: ui.chosen.current,
     detail: d,
-    picker: picker !== null,
-    question: question !== null,
+    picker: ui.picker !== null,
+    question: ui.question !== null,
   };
   // Where vim takes Esc first (vimFirst) the line names it twice; a key chat:cancel has with Ctrl or Alt never goes to
   // vim (choice 31).
-  const stop = keyOf("chat:cancel", "Chat", "escape");
-  const escFirst = vimFirst() && table.keysFor("chat:cancel", "Chat").includes("escape");
-  const workingLine = busy && (
+  const stop = ui.keyOf("chat:cancel", "Chat", "escape");
+  const escFirst = vimFirst() && ui.table.keysFor("chat:cancel", "Chat").includes("escape");
+  const workingLine = ui.busy && (
     <WorkingLine
-      label={doing.current.label}
+      label={ui.doing.current.label}
       stop={escFirst ? `${stop} ${stop}` : stop}
-      ms={Math.max(0, now - doing.current.at)}
+      ms={Math.max(0, ui.now - ui.doing.current.at)}
       spend={
-        doing.current.from && {
-          lead: session.lead.id,
-          output: stats.output - doing.current.from.output,
-          cost: stats.cost - doing.current.from.cost,
-          costUnknown: stats.unpriced > doing.current.from.unpriced,
+        ui.doing.current.from && {
+          lead: ui.session.lead.id,
+          output: ui.stats.output - ui.doing.current.from.output,
+          cost: ui.stats.cost - ui.doing.current.from.cost,
+          costUnknown: ui.stats.unpriced > ui.doing.current.from.unpriced,
         }
       }
     />
   );
 
-  if (switching) return null; // going to classic: nothing is drawn until Ink has resumed on the normal screen (/screen)
+  if (ui.switching) return null; // going to classic: nothing is drawn until Ink has resumed on the normal screen (/screen)
   return (
     <>
-      {full && d ? (
+      {ui.full && d ? (
         <DetailView detail={d} height={viewHeight} selection={selected()} />
-      ) : full ? (
+      ) : ui.full ? (
         <Conversation
-          rows={kept}
-          first={firstRow(kept, view.current, viewHeight)}
+          rows={ui.kept}
+          first={firstRow(ui.kept, ui.view.current, viewHeight)}
           height={viewHeight}
-          unseen={unseenBelow(kept, view.current, viewHeight)}
-          following={view.current.at === null}
+          unseen={unseenBelow(ui.kept, ui.view.current, viewHeight)}
+          following={ui.view.current.at === null}
           selection={selected()}
-          bottom={keyOf("scroll:bottom", "Scroll", "ctrl+end")}
+          bottom={ui.keyOf("scroll:bottom", "Scroll", "ctrl+end")}
         />
       ) : (
-        <Static items={printUpTo.current === null ? lines : lines.slice(0, printUpTo.current)}>
+        <Static items={ui.printUpTo.current === null ? ui.lines : ui.lines.slice(0, ui.printUpTo.current)}>
           {(l) => (
             <Text key={l.id} color={l.color} wrap={l.oneLine ? "truncate-end" : "wrap"}>
               {l.text}
@@ -2147,33 +1924,33 @@ export function App({
           )}
         </Static>
       )}
-      {picker ? (
-        full ? (
+      {ui.picker ? (
+        ui.full ? (
           <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
             <ModelPicker
-              groups={picker}
-              current={session.lead.id}
+              groups={ui.picker}
+              current={ui.session.lead.id}
               onPick={pick}
               onClose={closePicker}
-              keys={pickerKey}
-              bindings={table}
+              keys={ui.pickerKey}
+              bindings={ui.table}
               maxRows={pickerRows}
-              mouse={mouse}
+              mouse={ui.mouse}
               bottom={viewHeight + pickerRows} // the box's last row
             />
           </Box>
         ) : (
-          <ModelPicker groups={picker} current={session.lead.id} onPick={pick} onClose={closePicker} keys={pickerKey} bindings={table} />
+          <ModelPicker groups={ui.picker} current={ui.session.lead.id} onPick={pick} onClose={closePicker} keys={ui.pickerKey} bindings={ui.table} />
         )
-      ) : question ? (
-        full ? (
+      ) : ui.question ? (
+        ui.full ? (
           f.asked.map((r, i) => (
             <Text key={i} color="yellow" wrap="truncate-end">
               {r}
             </Text>
           ))
         ) : (
-          <Text color="yellow">{allow(question.text, question.plain)}</Text>
+          <Text color="yellow">{allow(ui.question.text, ui.question.plain)}</Text>
         )
       ) : d ? (
         workingLine // the working line stays under the detail view while a turn runs (release 5 plan, choice 12)
@@ -2188,13 +1965,13 @@ export function App({
           ))}
           <Prompt
             editor={prompt}
-            columns={columns}
+            columns={ui.columns}
             offset={promptFirst}
             space={promptSpace}
-            top={promptTop}
+            top={ui.promptTop}
             selected={highlight}
           />
-          {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} top={menuTop} />}
+          {menu && <Menu entries={menu.entries} chosen={chosenIn(prompt, menu)} rows={menuRows} top={ui.menuTop} />}
           <TaskPanel rows={panel} />
         </>
       )}
@@ -2209,24 +1986,24 @@ export function App({
         </Text>
       )}
       <StatusLine
-        segments={shownSegments}
+        segments={ui.shownSegments}
         info={{
-          lead: session.lead.id,
-          context: stats.context,
-          contextWindow,
-          input: stats.input,
-          output: stats.output,
-          cost: stats.cost,
-          costUnknown: stats.costUnknown,
-          mode: perm.current,
-          errors: stats.errors,
-          project,
-          branch,
-          elapsed: now - started.current,
-          running: tasks.running,
+          lead: ui.session.lead.id,
+          context: ui.stats.context,
+          contextWindow: ui.contextWindow,
+          input: ui.stats.input,
+          output: ui.stats.output,
+          cost: ui.stats.cost,
+          costUnknown: ui.stats.costUnknown,
+          mode: ui.perm.current,
+          errors: ui.stats.errors,
+          project: ui.project,
+          branch: ui.branch,
+          elapsed: ui.now - ui.started.current,
+          running: ui.tasks.running,
         }}
       />
-      {tooled && <ToolLine calls={calls.current} />}
+      {tooled && <ToolLine calls={ui.calls.current} />}
     </>
   );
 }
