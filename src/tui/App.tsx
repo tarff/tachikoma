@@ -1655,6 +1655,7 @@ export function App({
       const given = phaseInputs(phaseRefs);
       if (given.printed) return; // as for keys, above; before clearCopied(), which pasteTo() cannot say
       clearCopied();
+      notes.current = []; // a live edit's lines leave the hint row at a paste, keys pressed too (note, above)
       dropChords(); // a paste is text, which drops a waiting chord as text read together does (route)
       const to = pasteTo(given);
       // In the detail view a paste goes into a search being typed, up to its first line break, without the control

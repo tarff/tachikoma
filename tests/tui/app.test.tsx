@@ -6942,6 +6942,16 @@ describe("App's live settings", () => {
     expect(app.lastFrame()!.split("\n").length).toBe(rows);
   });
 
+  // The code review of choice 35: a paste is pressing keys too, so it takes the line away; the wheel does not.
+  it("takes a live edit's line out of the hint row on a paste", async () => {
+    const { app, write } = await watching([], {});
+    write({ maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    await press(app, "\u001b[200~pasted\u001b[201~");
+    expect(app.lastFrame()).toContain("› pasted");
+    expect(hintRow(app)).toBe("? for shortcuts");
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));
