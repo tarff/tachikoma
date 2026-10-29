@@ -211,6 +211,10 @@ const MOVES: Record<string, Scroll> = {
 // What a key does, found in the table (route, below): an action, a chord's first strokes waiting, or a key typed into a
 // field; null for a key no binding takes.
 type Got = { action: string } | { pending: Stroke[] } | { typed: string } | null;
+// A key taken that does nothing: one only a live edit binds to chat:cycleMode (App, lookUp; release 6 plan, choice 32).
+// No phase knows this action, so none acts on it, nor gives the key to the prompt's editor or a field, as it would a
+// key no binding takes (null).
+const NOTHING: Got = { action: "held" };
 // A key typed into a field: printable, without Ctrl or Alt (release 6 plan, Task 6, Claude Code's "Text fields" rule).
 const printable = (s: Stroke) => !s.ctrl && !s.alt && (s.key === "space" || [...s.key].length === 1);
 // The wheel's reports carry no key, so no flag of one is set.
@@ -1309,16 +1313,25 @@ export function App({
   // the launch's, whole, so a live edit changes nothing a question reads: choice 30 kept the launch's answering keys
   // in the live table, where a live chord could still regroup strokes into a launch answer (choice 32, the outside
   // review of PR #5). The first stroke read at a question, or after one, drops any chord waiting in either table.
+  // Elsewhere the launch's keys read every stroke too, keeping their own chords, and a stroke switches the mode only
+  // where they switch it as well, so a live edit cannot bind chat:cycleMode to a key typed anyway; one taking it out
+  // applies at once (choice 32, the user's: "Yes, close it"). A stroke only the live keys switch it on does nothing.
   const lookUp = (stroke: Stroke, contexts: Context[], typed: string | null, question: boolean): Got => {
     const at = Date.now();
     if (question !== asked.current) dropChords();
     asked.current = question;
-    const keys = question ? launchKeys.current : table;
-    const chord = keys.waiting(at) && keys.press(stroke, contexts, at);
-    if (chord) return pressed(chord);
-    if (typed !== null) return { typed };
-    const got = keys.press(stroke, contexts, at);
-    return got && pressed(got);
+    const read = (keys: Bindings): Got => {
+      const chord = keys.waiting(at) && keys.press(stroke, contexts, at);
+      if (chord) return chord;
+      if (typed !== null) return { typed };
+      return keys.press(stroke, contexts, at);
+    };
+    const launch = launchKeys.current;
+    if (question) return pressed(read(launch));
+    const got = read(table);
+    const atLaunch = launch === table ? got : read(launch);
+    const cycles = (g: Got) => g !== null && "action" in g && g.action === "chat:cycleMode";
+    return cycles(got) && !cycles(atLaunch) ? NOTHING : pressed(got);
   };
   // The table a chord may be waiting in, for the hint row: the launch's after a stroke read at a question (lookUp).
   const chordKeys = () => (asked.current ? launchKeys.current : table);
@@ -1327,8 +1340,8 @@ export function App({
     launchKeys.current.drop();
   };
   // A chord's first strokes show in the hint row until the next key or 3 s (release 6 design, "The keys file").
-  const pressed = (got: { action: string } | { pending: Stroke[] }) => {
-    if ("pending" in got) {
+  const pressed = (got: Got) => {
+    if (got && "pending" in got) {
       clearTimeout(chordTimer.current);
       chordTimer.current = setTimeout(() => rerender((n) => n + 1), CHORD_MS);
     }
@@ -1485,7 +1498,7 @@ export function App({
     editor.current = r.e;
     vimText.current = r.e.text;
     goal.current = null;
-    if (r.act === "help") show(...keyList(table, contextsOf("prompt", fullNow.current), vimFirst()).map(gray));
+    if (r.act === "help") show(...keyList(table, contextsOf("prompt", fullNow.current), vimFirst(), launchKeys.current).map(gray));
     else if (r.act) run(r.act === "submit" ? "submit" : ACTIONS[r.act]!); // history:previous, :next or :search
     return true;
   };
@@ -1832,7 +1845,7 @@ export function App({
     if (c === "todos") return void (todos.current.hidden = !todos.current.hidden);
     // A message starting with `?` needs a space typed first.
     if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text)
-      return show(...keyList(table, contextsOf("prompt", fullNow.current), vimFirst()).map((text) => ({ text, color: "gray" })));
+      return show(...keyList(table, contextsOf("prompt", fullNow.current), vimFirst(), launchKeys.current).map((text) => ({ text, color: "gray" })));
     if (c === "up" && !e.text && queue.current.length) return restore();
     if (c === "up" || c === "down") {
       const to = vertical(e.text, promptWidth(columns), e.cursor, c === "up" ? -1 : 1, goal.current);

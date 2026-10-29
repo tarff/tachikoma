@@ -50,9 +50,9 @@ const spelled = (text: string) =>
 // The keys a hint or help names for an action: each of `usual`, the keys release 5's words name, still bound to it, or
 // with none of them, its first key bound, or none, so the words stay release 5's with the default table and a rebind
 // never leaves them stale (plan, Task 6, test 1: the same words). Given the contexts in force, only keys that run the
-// action there count (Bindings.acts).
-export function named(b: Bindings, action: string, context: Context, usual: string[], contexts?: Context[]): string[] {
-  const bound = b.keysFor(action, context).filter((k) => !contexts || b.acts(k, action, contexts));
+// action there count (Bindings.acts), in `launch` too when given: chat:cycleMode's (App.tsx, lookUp; choice 32).
+export function named(b: Bindings, action: string, context: Context, usual: string[], contexts?: Context[], launch = b): string[] {
+  const bound = b.keysFor(action, context).filter((k) => !contexts || (b.acts(k, action, contexts) && launch.acts(k, action, contexts)));
   const kept = usual.filter((k) => bound.includes(k));
   return (kept.length ? kept : bound.slice(0, 1)).map(spelled);
 }
@@ -70,8 +70,9 @@ const either = (items: string[]) => (items.length < 3 ? items.join(" or ") : `${
 // What `?` on an empty prompt prints, grey, in the scrollback: the editor's own keys that no binding in `prompt`, the
 // contexts the prompt obeys (App.tsx, contextsOf: Scroll too in full screen), takes, the rest from the table. Ctrl-C and
 // Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them. With `vimFirst`, vim takes
-// a plain Esc first, as in INSERT (App.tsx, route), so the first Esc only goes to NORMAL (choice 31).
-export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"], vimFirst = false): string[] {
+// a plain Esc first, as in INSERT (App.tsx, route), so the first Esc only goes to NORMAL (choice 31). A key switches the
+// mode only where `launch`, the launch's keys, switches it too (App.tsx, lookUp; release 6 plan, choice 32).
+export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"], vimFirst = false, launch = b): string[] {
   // A key is named only where it runs its action at the prompt; Scroll's as full screen's prompt runs them, Chat, Scroll
   // and Global (App.tsx, contextsOf), as the list names them "(full screen)".
   const fullScreen: Context[] = prompt.includes("Scroll") ? prompt : [...prompt.slice(0, -1), "Scroll", ...prompt.slice(-1)];
@@ -162,7 +163,7 @@ export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"], vim
     line(
       "/  commands",
       "@  project paths",
-      part(k("chat:cycleMode", "Chat", "shift+tab"), "permission mode"),
+      part(named(b, "chat:cycleMode", "Chat", ["shift+tab"], prompt, launch), "permission mode"),
       part(k("chat:modelPicker", "Chat", "alt+p"), "pick the model"),
     ),
     line(part(k("app:toggleTranscript", "Global", "ctrl+o"), "the last turn's tool calls in full"), "a space first starts a message with ?"),

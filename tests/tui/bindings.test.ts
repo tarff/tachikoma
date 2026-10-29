@@ -391,12 +391,15 @@ describe("Bindings.heldBack", () => {
     ["the outside review's harmless Global chord", over({ Global: { "z x x": "app:toggleTodos" } })],
     ["a Scroll key, read at a question in full screen", over({ Scroll: { "ctrl+up": "scroll:lineUp" } })],
     ["a Global key taken out", over({ Global: { "ctrl+t": null } })],
-  ])("holds back an edit of a context a question reads: %s", (_, file) => {
+    ["chat:cycleMode on a key typed anyway", over({ Chat: { space: "chat:cycleMode" } })],
+    ["chat:cycleMode moved to a chord", over({ Chat: { "shift+tab": null, "z m": "chat:cycleMode" } })],
+  ])("holds back an edit of a context a question reads, or one adding a mode key: %s", (_, file) => {
     expect(new Bindings(tableOf(file)).heldBack(launch)).toBe(true);
   });
 
   it("holds back nothing for an edit of contexts a question does not read, nor for the same keys", () => {
     expect(new Bindings(tableOf(over({ Chat: { y: "chat:stash" }, Transcript: { x: "transcript:exit" } }))).heldBack(launch)).toBe(false);
+    expect(new Bindings(tableOf(over({ Chat: { "shift+tab": null } }))).heldBack(launch)).toBe(false); // taking the mode key out applies at once
     expect(new Bindings(tableOf(DEFAULTS)).heldBack(launch)).toBe(false);
   });
 });

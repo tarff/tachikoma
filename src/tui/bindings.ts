@@ -295,9 +295,15 @@ export class Bindings {
 
   // Whether this table, a live edit of the keys file, differs from `launch` where App goes on reading the launch's
   // keys, for its line (App.tsx, onKeys; release 6 plan, choice 32): in a context a permission question reads, whole
-  // (Confirmation, then Scroll in full screen, then Global; App.tsx, contextsOf and lookUp).
+  // (Confirmation, then Scroll in full screen, then Global; App.tsx, contextsOf and lookUp), or in a key bound to
+  // chat:cycleMode that launch does not bind to it there, which switches the mode only where launch's keys do too.
   heldBack(launch: Bindings): boolean {
     const same = (a: Map<string, string | null>, b: Map<string, string | null>) => a.size === b.size && [...a].every(([text, action]) => b.has(text) && b.get(text) === action);
-    return (["Confirmation", "Scroll", "Global"] as const).some((c) => !same(this.#table[c], launch.#table[c]));
+    const modeKeys = (t: Table) => CONTEXTS.flatMap((c) => [...t[c]].filter(([, a]) => a === "chat:cycleMode").map(([text]) => `${c} ${text}`));
+    const atLaunch = new Set(modeKeys(launch.#table));
+    return (
+      (["Confirmation", "Scroll", "Global"] as const).some((c) => !same(this.#table[c], launch.#table[c])) ||
+      modeKeys(this.#table).some((k) => !atLaunch.has(k))
+    );
   }
 }

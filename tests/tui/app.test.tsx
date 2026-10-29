@@ -6516,6 +6516,87 @@ describe("App's live settings", () => {
     }
   });
 
+  // Release 6 plan, choice 32 (the user's: "Yes, close it"): a shell command could bind chat:cycleMode to a key the user
+  // types anyway, so typing would flip ask to project. A stroke switches the mode only where the launch's keys, reading
+  // every stroke as if alone, switch it too; a stroke the live keys alone bind to it does nothing.
+  it("switches the mode only on a key the launch's keys switch it on, whatever a live edit binds", async () => {
+    const home = freshHome();
+    const { app, gate, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [{ context: "Chat", bindings: { space: "chat:cycleMode", "z m": "chat:cycleMode" } }] }));
+    await sees(app, HELD);
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      await press(app, "a", " ", "b", "z", "m");
+      expect(gate.mode).toBe("ask");
+      expect(flat(app)).not.toContain("mode is now");
+      expect(app.lastFrame()).toContain("› ab"); // the space did nothing, and z m was a chord
+      await press(app, "\u001b[Z");
+      expect(gate.mode).toBe("project");
+      expect(flat(app)).toContain("mode is now project");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Each table keeps its own chord: at launch a then Shift+Tab is the launch's chord a shift+tab, a stash, so a live
+  // edit taking that chord out cannot make the same keys switch the mode, though Shift+Tab alone still does.
+  it("reads a stroke by the launch's own chords, so a live edit cannot regroup keys into the mode key", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    const launchFile = { context: "Chat", bindings: { "a shift+tab": "chat:stash" } };
+    writeKeys(home, { bindings: [launchFile] });
+    const { app, gate, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [{ context: "Chat", bindings: { "a shift+tab": null } }] }));
+    await tick();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await press(app, "a", "\u001b[Z");
+      expect(gate.mode).toBe("ask");
+      await press(app, "\u001b[Z");
+      expect(gate.mode).toBe("project");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // Unbinding the mode key weakens nothing, so it applies at once, and ? names only a key that switches the mode.
+  it("applies a live edit taking the mode key out at once, and ? names no key the launch's keys would not switch on", async () => {
+    const home = freshHome();
+    const { app, gate, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [{ context: "Chat", bindings: { "shift+tab": null, space: "chat:cycleMode" } }] }));
+    await sees(app, HELD);
+    await press(app, "\u001b[Z", " ");
+    expect(gate.mode).toBe("ask");
+    await press(app, "?");
+    expect(app.lastFrame()).not.toContain("permission mode");
+  });
+
+  // Choice 32: outside a question the launch's keys read every stroke too, so a chord they start at the prompt is
+  // dropped as a question opens, as the live keys' is (above), and never joins the question's keys.
+  it("drops a chord the launch's keys started at the prompt when a question opens, after a live edit", async () => {
+    const home = freshHome();
+    mkdirSync(settingsDir(home));
+    const launchFile = { context: "Global", bindings: { "a n": "confirm:yes" } };
+    writeKeys(home, { bindings: [launchFile] });
+    const { app, ask, where } = await watching([], {}, {}, {}, home);
+    const read = readsOf(where);
+    await read(() => writeKeys(home, { bindings: [{ context: "Global", bindings: { "ctrl+y": "app:toggleTodos" } }] }));
+    await sees(app, HELD);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await press(app, "a"); // typed into the prompt by the live keys; the launch's a n waits
+      const answer = ask("write a.txt");
+      await until(app, "Allow write a.txt? [y/n]");
+      await press(app, "n");
+      expect(await answer).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));
