@@ -475,21 +475,22 @@ Each is marked in its task. None approved yet.
     as an editor may not: `code --wait` runs through `code.cmd` under `cmd.exe`, so Ctrl-C can end
     the wait or ask `Terminate batch job (Y/N)?`. Git's `editor.c` (`launch_specified_editor`, read
     2026-10-30 at raw.githubusercontent.com/git/git/master/editor.c) prints `hint: Waiting for your
-    editor to close the file...` on stderr when stderr is a terminal, ending it with a space and no
-    line break, and once the editor has exited, succeeded or not, erases it with `\r\033[K`
-    (`term_clear_line`, `pager.c`); it does not when the editor could not be started, nor when the
-    editor died of Ctrl-C or Ctrl-\, which Git then raises itself; on a dumb terminal it ends the
-    hint with a line break and erases nothing. Tachikoma writes its line once the terminal is handed
-    over (after leaving full screen, or once Ink is suspended in classic mode), ending in a space
-    and cut to the width it draws at, a column short, so it never wraps onto a second row (the code
-    review's); it erases it in the same way every time the editor returns, before full screen and
-    Ink come back, so a terminal editor's screen and Ink's frame are left as they were. A command
-    the shell cannot find still starts the shell, whose own error is printed after the line on its
-    row and ends with a line break, so the erase clears the row below: the line and the shell's
-    error stay on the normal screen, and Tachikoma says the editor was not found once it is back. A
-    resize while the editor is open can leave part of the line, as with Git. The line goes straight
-    to the terminal and is never said, so it is in no printed output and not in classic mode's
-    scrollback. Git's dumb-terminal case is not followed, as Ink's own drawing needs the same codes.
+    editor to close the file...` on stderr just before it starts the editor, when stderr is a
+    terminal, ending it with a space and no line break, and once the editor has exited, succeeded or
+    not, erases it with `\r\033[K` (`term_clear_line`, `pager.c`); it does not when the editor could
+    not be started, nor when the editor died of Ctrl-C or Ctrl-\, which Git then raises itself; on a
+    dumb terminal it ends the hint with a line break and erases nothing. Tachikoma writes its line
+    once the terminal is handed over (after leaving full screen, or once Ink is suspended in classic
+    mode), ending in a space and cut to the width it draws at, a column short, so it never wraps
+    onto a second row (the code review's); it erases it in the same way every time the editor
+    returns, before full screen and Ink come back, so a terminal editor's screen and Ink's frame are
+    left as they were. A command the shell cannot find still starts the shell, whose own error is
+    printed after the line on its row and ends with a line break, so the erase clears the row below:
+    the line and the shell's error stay on the normal screen, and Tachikoma says the editor was not
+    found once it is back. A resize while the editor is open can leave part of the line, as with
+    Git. The line goes straight to the terminal and is never said, so it is in no printed output and
+    not in classic mode's scrollback. Git's dumb-terminal case is not followed, as Ink's own drawing
+    needs the same codes.
 34. **`/lead` alone lists the models (the user's terminal checklist, 2026-10-30; the user: "can we
     have lead list the models?").** `/lead` typed alone said `Usage: /lead <provider:model>`. It now
     opens the same model list `/model` opens, as `/model` does in every respect: during a turn it
