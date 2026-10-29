@@ -353,6 +353,15 @@ Each is marked in its task. None approved yet.
       rest of the edit applies, and one grey line, said once while it stays, as a problem is, says
       `keybindings.json: changes to the keys that answer a question take effect at the next
       launch; the rest apply now`. At launch the file applies whole, as the user's own choice.
+      A known limit (found by the re-review's random edits): a live edit can still change how keys
+      group into chords at a question, so a key acts as it does on its own where at launch a chord
+      would have taken it in. With a launch Scroll `"enter escape": "scroll:top"` and a live Global
+      `"enter enter": "app:toggleTodos"`, Enter, Enter, Esc at a question in full screen answered
+      nothing at launch and declines after the edit. It needs the launch's keys file itself to
+      put y, n, Esc or another answering key inside a chord; from the default keys at launch,
+      2,000 random edits changed nothing; and no key answers yes unless it answers yes on its own
+      at launch. The fully sound fix, answering questions from the launch's whole table, is left
+      for the user to decide.
     - **Escape codes in launch messages** (finding 2, the coordinator's approval): the settings
       file's problem and warnings, and the lead, fallback and worker messages that may quote its
       values, go through `visible()` before `fail` or stderr, so an OSC 52 in a value cannot set the

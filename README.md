@@ -591,6 +591,10 @@ Each is fixed in a later release, unless it says otherwise.
 - **Windows Terminal keeps Ctrl+V** and pastes the clipboard's text itself, so Tachikoma never sees
   it: pictures are Alt+V there, under WSL too, and binding `ctrl+v` in the keys file does nothing in
   it (not planned to change).
+- **An edit to the keys file during a session can still change how keys group into chords at a
+  question,** but only when the keys file you started with puts y, n, Esc or another answering key
+  inside a chord: then a key that a chord took in at launch can act on its own, for example
+  declining. No key answers yes unless it did on its own at launch (no release is set).
 - **On Windows, a `%` in a path given to the editor can be changed on the way:** the editor runs
   through `cmd.exe`, which reads `%NAME%` as a variable, so a user folder with `%` signs in its name
   could give the editor the wrong file for Ctrl+G or `/settings` (no release is set).
