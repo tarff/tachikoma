@@ -6905,6 +6905,18 @@ describe("App's live settings", () => {
     expect(hintRow(app)).toBe(queued);
   });
 
+  // The code review of choice 35: Node's JSON error quotes the file, line breaks and all, and the hint row has one row
+  // (layout.ts, frame), so its copy of a line is one line: the frame keeps to the terminal's height.
+  it.each(["settings.json", "keybindings.json"])("shows a %s problem with line breaks in one hint row", async (name) => {
+    const home = freshHome();
+    const { app, write } = await watching([], {}, { full: true }, {}, home);
+    const rows = app.lastFrame()!.split("\n").length;
+    if (name === "settings.json") write('{\n  "mode": ask\n}');
+    else writeKeys(home, '{\n  "bindings": a\n}');
+    await vi.waitFor(() => expect(hintRow(app)!.startsWith(`${name} is not valid JSON`)).toBe(true), WATCHED);
+    expect(app.lastFrame()!.split("\n").length).toBe(rows);
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));

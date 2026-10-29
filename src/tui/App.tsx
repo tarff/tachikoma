@@ -2073,7 +2073,9 @@ export function App({
   const previous = keyOf("history:previous", "Chat", "up");
   // The last line of a live edit, with how many more it said, which the conversation shows (note, above).
   const notice = notes.current.at(-1);
-  const noticeText = notice && `${notice.text}${notes.current.length > 1 ? ` (+${notes.current.length - 1} more above)` : ""}`;
+  // One row, as the frame gives it (layout.ts, frame): a line break in it, such as in the file Node's JSON error quotes,
+  // is one space here, the conversation keeping the line as said (choice 35's code review).
+  const noticeText = notice && `${notice.text.replace(/\s*[\r\n]+\s*/g, " ")}${notes.current.length > 1 ? ` (+${notes.current.length - 1} more above)` : ""}`;
   const usualHint = (left: number) =>
     chord
       ? `${keyText(chord)} ...`
