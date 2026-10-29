@@ -6698,6 +6698,37 @@ describe("App's live settings", () => {
     }
   });
 
+  // The code re-check of choice 32: a question under the model list is not on screen, so its cancelling leaves a chord
+  // half typed in the list to the list's keys, and Ctrl+K Enter still toggles the to-do list rather than Enter picking.
+  it("keeps a chord half typed in the model list when the question under it is cancelled", async () => {
+    const bindings = new Bindings(tableOf({ ...DEFAULTS, Global: { ...DEFAULTS.Global, "ctrl+k enter": "app:toggleTodos" } }));
+    const made: string[] = [];
+    const { app, ask, bus } = await mount([], { bindings, made, models: [{ provider: "fake", models: ["a", "b"] }] });
+    bus.emit("todo", todo);
+    await tick();
+    expect(app.lastFrame()).toContain("write the fix");
+    await type(app, "/model");
+    await until(app, "fake:b");
+    await tick(); // the picker starts reading keys just after it first appears
+    vi.useFakeTimers({ toFake: ["Date"] }); // the clock stands still, so no chord's 3 s end it on a slow machine
+    try {
+      const stop = new AbortController();
+      const answer = ask("write a.txt", undefined, { name: "t1", signal: stop.signal, stop: () => stop.abort() });
+      await tick();
+      await press(app, "\u000b"); // the chord ctrl+k enter waits; Ctrl+K alone does nothing in the list
+      stop.abort();
+      expect(await answer).toBe(false);
+      await press(app, "\r"); // ends the chord
+      expect(made).toEqual([]); // no model picked
+      expect(app.lastFrame()).toContain("fake:b"); // the list still open
+      await press(app, "\u001b");
+      await until(app, "? for shortcuts");
+      expect(app.lastFrame()).not.toContain("write the fix"); // the chord hid the to-do list
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));
