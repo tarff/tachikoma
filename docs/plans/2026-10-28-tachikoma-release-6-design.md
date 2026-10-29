@@ -597,5 +597,5 @@ build made, for the user to review at the final review.
   every key answers a permission question as at launch, the rest of the edit applying, with a
   line (the user's choice); the settings file's problems print at launch with control characters
   escaped; a pasted path starting with two slashes stays text and is never looked at (the user's
-  choice); and before `~/.tachikoma` is made its path matches ignoring case on macOS too.
+  choice); and the paths of `~/.tachikoma` and the data folder match ignoring case on macOS too.
 - **Testing.** The user's terminal checklist is in the plan's Task 23, to be run after the build.

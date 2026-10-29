@@ -361,8 +361,9 @@ Each is marked in its task. None approved yet.
       pasted path starting with two slashes of either kind, `\\?\` and `\\.\` included, is never a
       picture, so no file is looked at, which on Windows would reach that machine, handing it a
       hash of the user's login, or freeze the screen on one that does not answer.
-    - **Case-insensitive folder match** (finding 5, the coordinator's approval): before
-      `~/.tachikoma` is made, the file tools match its path ignoring case on macOS as on Windows.
+    - **Case-insensitive folder match** (finding 5, the coordinator's approval): the file tools
+      match the paths of `~/.tachikoma` and the data folder ignoring case on macOS as on Windows,
+      made yet or not, so a folder not made yet is covered too.
     - Not done: finding 6, a size cap on a pasted picture, waits for measured sizes, as a cap
       needs a number taken from data first.
 31. **Three calls from the final review (2026-10-29; the coordinator's, for the user to review).**
