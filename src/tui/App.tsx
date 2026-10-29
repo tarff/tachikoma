@@ -218,7 +218,7 @@ const NOTHING: Got = { action: "held" };
 // A key typed into a field: printable, without Ctrl or Alt (release 6 plan, Task 6, Claude Code's "Text fields" rule).
 const printable = (s: Stroke) => !s.ctrl && !s.alt && (s.key === "space" || [...s.key].length === 1);
 // The line while the editor runs, and the codes that erase it (App, away; release 6 plan, choice 33).
-const WAITING = "Waiting for your editor to close the file... (Ctrl-C does nothing until then) ";
+const WAITING = "Waiting for your editor to close the file... (Tachikoma ignores Ctrl-C until then) ";
 const ERASE_LINE = "\r\u001b[K";
 // The wheel's reports carry no key, so no flag of one is set.
 const NO_KEY = {} as Key;
@@ -1129,13 +1129,14 @@ export function App({
   // question waits; both show on return. The editor is read as it starts, so a live edit of "editor" applies from the
   // next one. In classic mode the lines said meanwhile reach <Static> only once Ink has resumed: it counts as printed
   // what a render Ink drops held, so they would never be printed.
-  // While the editor runs, one line says what Tachikoma waits for (choice 33, the user's: "Say Ctrl-C too"), as an
-  // editor in its own window leaves the terminal showing only the screen from before. As Git's editor.c
-  // (launch_specified_editor, read 2026-10-30): written once the terminal is handed over, ending in a space with no line
-  // break, and erased with "\r\x1b[K" (pager.c, term_clear_line) when the editor returns, so a terminal editor's screen
-  // and the frame Ink draws again are left as they were. Written straight to the terminal, never said, so it is in no
-  // printed output nor <Static>. Git's dumb-terminal case (a line break, nothing erased) is not followed: Ink's frame
-  // needs the same codes.
+  // While the editor runs, one line says what Tachikoma waits for (choice 33, the user's: "Say Ctrl-C too", then "Say
+  // Tachikoma (Recommended)", as an editor such as `code --wait` may act on Ctrl-C itself), as an editor in its own
+  // window leaves the terminal showing only the screen from before. As Git's editor.c (launch_specified_editor, read
+  // 2026-10-30): written once the terminal is handed over, ending in a space with no line break, and erased with
+  // "\r\x1b[K" (pager.c, term_clear_line) when the editor returns, so a terminal editor's screen and the frame Ink
+  // draws again are left as they were. Written straight to the terminal, never said, so it is in no printed output nor
+  // <Static>. Git's dumb-terminal case (a line break, nothing erased) is not followed: Ink's frame needs the same
+  // codes.
   const away = async <T,>(edit: (command: string) => Promise<T>) => {
     try {
       return await owner.program(async () => {

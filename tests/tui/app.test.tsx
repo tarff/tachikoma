@@ -5000,7 +5000,7 @@ describe("App's external editor", () => {
   // Release 6 plan, choice 33 (the user's terminal checklist): with the editor in its own window, the terminal showed the
   // screen from before Tachikoma and nothing else, so it looked dead. A line says what it waits for, as Git does
   // (editor.c), once the screen is handed over, and is erased before Ink and full screen come back.
-  const WAITING = "Waiting for your editor to close the file... (Ctrl-C does nothing until then) ";
+  const WAITING = "Waiting for your editor to close the file... (Tachikoma ignores Ctrl-C until then) ";
   const ERASE = "\r\u001b[K";
   it.each([
     { how: "Ctrl+G", mode: "full screen", classic: false },
