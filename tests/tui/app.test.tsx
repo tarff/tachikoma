@@ -6812,7 +6812,7 @@ describe("App's live settings", () => {
   // over the status line, until the next key, the last of an edit's lines with how many more are in the conversation.
   const hintRow = (app: ReturnType<typeof render>) => {
     const rows = app.lastFrame()!.split("\n");
-    return rows[rows.findIndex((r) => /lead fake:a [|]/.test(r)) - 1];
+    return rows[rows.findIndex((r) => /^ ?lead \S+ [|]/.test(r)) - 1];
   };
   it("shows a live edit's line in the hint row until the next key, and how many more an edit said", async () => {
     const { app, write } = await watching([], {});
@@ -6854,6 +6854,43 @@ describe("App's live settings", () => {
     editor.go();
     await sees(app, `effort is now low ${FROM}`);
     expect(hintRow(app)).toBe(`effort is now low ${FROM}`);
+  });
+
+  it("shows a keys file edit's line in the hint row until a key", async () => {
+    const home = freshHome();
+    const { app } = await watching([], {}, {}, {}, home);
+    const reserved = 'keybindings.json: Global "ctrl+c" is a reserved key; it was left out';
+    writeKeys(home, globalKeys({ "ctrl+c": null }));
+    await sees(app, reserved);
+    expect(hintRow(app)).toBe(reserved);
+    await press(app, "x");
+    expect(hintRow(app)).toBe("? for shortcuts");
+  });
+
+  // A lead the file set waits for the turn to end (applyEntry), and its line, said then, joins that edit's lines.
+  it("adds a lead the file set, applied once the turn ends, to that edit's line in the hint row", async () => {
+    const lead = new Held();
+    const { app, write } = await watching([], {}, { lead });
+    await type(app, "go");
+    write({ lead: "ollama:b", maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    expect(hintRow(app)).toBe(`maxTasks is now 3 ${FROM}`); // shown during the turn, where the row was empty
+    lead.answer("done");
+    await sees(app, `lead is now fake:b ${FROM}`);
+    expect(hintRow(app)).toBe(`lead is now fake:b ${FROM} (+1 more above)`);
+  });
+
+  // What ranks over the line keeps the row: here the queue's hint, during a turn.
+  it("leaves the hint row to the queue's hint while a live edit's line waits", async () => {
+    const lead = new Held();
+    const { app, write } = await watching([], {}, { lead });
+    await type(app, "go");
+    await type(app, "next");
+    const queued = hintRow(app);
+    expect(queued).toMatch(/queued/);
+    write({ maxTasks: 3 });
+    await sees(app, `maxTasks is now 3 ${FROM}`);
+    expect(hintRow(app)).toBe(queued);
   });
 
   it("runs /screen from a key bound to command:screen, after the turn running, leaving the prompt as typed", async () => {
