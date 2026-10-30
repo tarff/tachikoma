@@ -387,7 +387,31 @@ the plan's review.
 38. **A here-document fed to an interpreter reads like its `-c`** (the user's choice, after the
     re-review found `python - <<'PY'` asked): the code is written in the line, so it is the
     known limit for inline code. A here-document fed to a shell still asks (choice 35), and so
-    does code really piped in (`curl x | python`).
+    does code really piped in (`curl x | python`). In PowerShell, which has no `<<`, the same
+    holds for a quoted string or here-string piped straight into an interpreter
+    (`@'...'@ | python -`), the user's choice after the third review.
+39. **PowerShell's reach into .NET asks** (the user's choice, after the reviews kept finding new
+    spellings for starting a program or running text through .NET or COM): any `[Type]::Member`
+    call outside a short list of harmless types and members (Environment's Get members and
+    read-only properties, IO.Path, IO.File's Exists and ReadAll members, DateTime, Math, Convert,
+    Text.Encoding, string, char, number types, bool, guid, TimeSpan, regex matching,
+    BitConverter), a type held in a variable (`$t::`), quoted or computed member names,
+    `.Invoke(`, `.Create(`, `.Start(`, `CreatePipeline`, `GetScriptBlock`, `ParseInput`,
+    `InvokeMember`, `GetTypeFromProgID`, `Activator`, `[wmiclass]`, `[wmi]` and `Add-Type` give
+    `a way of running text the check does not follow`. Everyday cost: a rarer helper line such as
+    `[System.Collections.Generic.List[string]]::new()` asks.
+40. **Task 2's hunt stops after the fourth fix round** (the user's choice): every way found by
+    then is closed and one final check confirms the fixes and the everyday lines. A way found
+    later goes to the README's known limits (Task 23), or is fixed only if it is common. The
+    fourth round also closed: paths to the input written with `..` or `~`, and relative paths
+    after a `cd` the reader cannot place; loops and `if`s fed a here-document; redirections on
+    other file numbers, and `<&N` copying the pipe back; an option value `-`; NODE_OPTIONS,
+    RUBYOPT and PERL5OPT, and BASH_ENV/ENV set any way (declare, typeset, readonly, local,
+    `set -a`); exported functions; functions behind wrappers; `forfiles /c`; the runners `uv run`,
+    `uvx`, `pipenv run`, `poetry run`, `npx`, `npm exec`, `pnpm exec`/`dlx`, `bunx`, `conda run`;
+    ipython, pypy, irb, tclsh, osascript, jshell; nu, xonsh, elvish as shells the check does not
+    read. Not followed: PowerShell's `Set-Location`, yarn's exec and dlx, R itself. For Task 3:
+    `deno run https://...` downloads and runs code, and needs a rule of that kind.
 
 ---
 
