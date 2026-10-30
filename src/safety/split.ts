@@ -466,7 +466,8 @@ class Reader {
   private counted(text: string): void {
     const bare = text.replace(/\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`/g, "");
     for (const m of bare.matchAll(/[A-Za-z_]\w*/g)) this.arith.add(m[0]);
-    if (/\$(?:\d|\{\d+\}|\{?[@*])/.test(bare)) this.arith.add(POSITIONAL);
+    // A positional parameter, whatever follows its name: $1, ${1}, ${1:-0}, ${#1}, ${!1}, $@, ${@:2}.
+    if (/\$(?:\d|[@*]|\{[#!]?(?:\d|[@*]))/.test(bare)) this.arith.add(POSITIONAL);
   }
 
   // Adds the counts of a reader whose text is part of this line, run by this line's shell or one it starts.
@@ -1398,6 +1399,10 @@ class Reader {
         const parts = /^[#!]?(?:[A-Za-z_]\w*|\d+|[@*])(?:\[([^\]]*)\])?(?::(?![-=+?])([\s\S]*))?$/.exec(inside);
         if (parts?.[1]) this.counted(parts[1]);
         if (parts?.[2]) this.counted(parts[2]);
+        // ${!X}, ${!X:-...} and the like read X's value as a variable's name, and bash evaluates a subscript in it as
+        // arithmetic, so X counts as used there; ${!prefix*}, ${!prefix@} and ${!a[@]} only list names or keys.
+        const indirect = /^!([A-Za-z_]\w*|\d+|[@*])([\s\S]*)$/.exec(inside);
+        if (indirect && !/^([@*]|\[[@*]\])$/.test(indirect[2]!)) this.arith.add(/^[A-Za-z_]/.test(indirect[1]!) ? indirect[1]! : POSITIONAL);
         // ${X:=...} and ${X=...} write X as they expand: text the line gives.
         const assigned = /^([A-Za-z_]\w*):?=/.exec(inside);
         if (assigned) this.note(assigned[1]!, "code");

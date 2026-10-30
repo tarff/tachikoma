@@ -888,6 +888,20 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "f() { X=$1; (( X )); }; f a[\\$\\(rm\\ x\\)]", "shell text made only when it runs"],
   ["bash", "function f { echo $(( ${1} )); }; f a[\\$\\(rm\\ x\\)]", "shell text made only when it runs"],
   ["bash", "bash -c '(( $1 ))' _ a[\\$\\(rm\\ x\\)]", "shell text made only when it runs"],
+  // ... also written with an operator, or as an indirect ${!1}
+  ["bash", "set -- a[\\$\\(rm\\ x\\)]; (( ${1:-0} ))", "shell text made only when it runs"],
+  ["bash", "f() { (( ${1#z} )); }; f a[\\$\\(rm\\ x\\)]", "shell text made only when it runs"],
+  ["bash", "set -- a[\\$\\(rm\\ x\\)]; (( ${!1} ))", "shell text made only when it runs"],
+  ["bash", "set -- a[\\$\\(rm\\ x\\)]; (( ${@:2} ))", "shell text made only when it runs"],
+  ["bash", "set -- a[\\$\\(rm\\ x\\)]; (( ${#1} ))", "shell text made only when it runs"],
+  ["bash", "n=0; (( ${n:-0} + 1 ))", []],
+  // An indirect ${!name} evaluates a subscript in name's value, so name counts in arithmetic; listing names or keys does not
+  ["bash", "X=a[\\$\\(rm\\ x\\)]; echo ${!X}", "shell text made only when it runs"],
+  ["bash", 'X=a[\\$\\(rm\\ x\\)]; echo "${!X:-y}"', "shell text made only when it runs"],
+  ["bash", "X=HOME; echo ${!X}", "shell text made only when it runs"], // strict, as in (( X )): the user's choice
+  ["bash", "echo ${!X}", [["echo", "${!X}"]]],
+  ["bash", "echo ${!BASH*}", [["echo", "${!BASH*}"]]],
+  ["bash", "echo ${!a[@]}", [["echo", "${!a[@]}"]]],
   ["bash", "X=$1; (( X ))", []],
   ["bash", "set -o pipefail; X=$1; (( X ))", [["set", "-o", "pipefail"]]],
   ["bash", "f() { echo hi; }; n=$(wc -l < f); (( n ))", [["echo", "hi"], ["wc", "-l"]]],
