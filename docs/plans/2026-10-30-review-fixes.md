@@ -36,29 +36,78 @@ right reason.
 
 ### 2. Network and device paths, refused before the disk
 
-Option chosen: "Refuse unless in project".
-- **Code:** first in `resolveIn`, before anything touches the disk, on Windows only: a path that,
-  once resolved, starts with `\\` (which covers `\\server\share`, `//server/share`, `\\?\UNC\...`,
-  `\\?\...` and `\\.\...`) and is not inside the root by its text alone (`leaves(path.relative(root,
-  abs))`) is refused in every mode, `never` included:
+Option chosen: "Refuse unless in project". A path can name a network share in its text
+(`\\server\share\a.txt`), or reach one through a link on the way (`C:\project\linked\a.txt`, where
+`linked` leads to `\\server\share`). Both are refused before anything follows them (found at the
+plan's review).
+
+- **"Network or device path":** on Windows, a path that starts with `\\` or `//` once resolved. That
+  covers `\\server\share`, `\\?\UNC\...`, `\\?\...` and `\\.\...` (named pipes and devices). Node
+  reports a junction's or link's target as a plain path (`C:\...`), so ordinary local links never
+  count (probed 2026-10-30 with a junction in the scratch folder).
+- **The text check:** first in `resolveIn`, before any disk call: a resolved path that is a network
+  or device path, and not inside the root by its text (`leaves(path.relative(root, abs))`), is
+  refused.
+- **The link check:** next, still before `realTarget` follows anything, a new `linkHops(abs)` in
+  `src/tools/files.ts` walks the path one part at a time from its drive, as `realpath` would, but
+  looks before it follows:
+  - each part is examined with `lstatSync`, which does not follow that part; the parts above it are
+    already known to be plain folders, or links whose targets were checked (the probe confirmed
+    `lstatSync` follows every part above the last, which is why it goes one part at a time);
+  - a part that is a link has its target read with `readlinkSync`, which does not open the target,
+    and resolved against the link's folder;
+  - a target that is a network or device path outside the root is refused; any other target takes
+    the place of the parts walked so far, and the walk goes on from there;
+  - a link met a second time ends the walk (a loop of links), and `realTarget` then reports it as it
+    does today; the walk keeps a set of the links seen, so no count is needed;
+  - the walk stops at the first part that does not exist.
+- **The root itself** is walked the same way once, at the first `resolveIn` for that root. A network
+  target there is allowed, since the user started Tachikoma in that folder. The root's real place,
+  where that walk ends, counts as inside the root for every later check, by text.
+- **Refused in every mode, `never` included,** with:
   `<abs> is a network or device path outside the project, which the file tools never open; a shell command can reach it, after asking`
-- **What it covers:** every caller of `resolveIn`, so `read_file`, `write_file`, `edit_file`,
-  `find_files`, `search_files`, the `@` menu's listing, and the instruction files' `@` imports (an
-  AGENTS.md in a downloaded project naming a network path no longer makes Windows try to sign in at
-  launch).
-- **What it leaves:** a project that itself lives on a share still works, as its own paths are
-  inside the root. Paths the user pastes or drags in as pictures are the user's own and do not go
-  through `resolveIn`; they are not changed.
-- **Tests** (a new file, `tests/tools/networkPaths.test.ts`, Windows only, since it wraps
-  `node:fs`): `vi.mock("node:fs")` keeps every function but records the paths given to
-  `existsSync`, `lstatSync`, `realpathSync`, `statSync` and `readdirSync`. The server's name is
-  `tachi-test.invalid` (`.invalid` is reserved and never resolves, RFC 2606), so no test could
-  reach a machine even if the check failed. For `\\tachi-test.invalid\share\a.txt`,
-  `//tachi-test.invalid/share/a.txt`, `\\?\UNC\tachi-test.invalid\share\a.txt` and `\\.\pipe\tachi`:
-  `read_file` and `write_file` in `ask` and `never`, and `find_files` and `search_files` with the
-  path as their start, each refused with the words above, the gate never asked, and no recorded path
-  starting with `\\`. In `tests/core/instructions.test.ts`: an `@\\tachi-test.invalid\share\x.md`
-  import is left out with the same reason.
+  or, for a link on the way,
+  `<abs> leads through <link> to a network or device path outside the project (<target>), which the file tools never open; a shell command can reach it, after asking`
+- **What it covers:** every caller of `resolveIn`:
+  - `read_file`, `write_file` and `edit_file`: their `path`;
+  - `search_files`: its `path` input, where it starts;
+  - `find_files`: it takes only a `pattern` and always walks the project root
+    (`src/tools/search.ts`, `files(".", ...)`); its walk already skips every link
+    (`e.isSymbolicLink()`), so a link in the project to a share is never followed, and its pattern
+    is matched only against names, never opened;
+  - the `@` menu's listing;
+  - the instruction files' `@` imports, so an AGENTS.md in a downloaded project naming a network
+    path, directly or through a link, no longer makes Windows try to sign in at launch.
+- **What it leaves:**
+  - A project that itself lives on a share still works.
+  - A drive letter the user has mapped to a share (`Z:\`) reaches only the user's own server, which
+    Windows has already signed in to; it is a local path to this check and is not changed.
+  - Paths the user pastes or drags in as pictures are the user's own and do not go through
+    `resolveIn`; they are not changed.
+- **Tests:** a new file, `tests/tools/networkPaths.test.ts`, Windows only. Every network or device
+  access is stopped, not just recorded (found at the plan's review), so a test that fails before the
+  fix still never reaches Windows' network or a pipe:
+  - `vi.mock("node:fs")` and `vi.mock("node:fs/promises")` wrap every function that takes a path.
+    A call whose path is a network or device path is recorded and throws `ENOENT` at once, without
+    calling the real function. Every other call goes to the real function.
+  - **A fake link:** the same wrappers make `<root>\linked` a link to `\\tachi-test.invalid\share`
+    (`lstatSync` reports a symbolic link, `readlinkSync` returns that target), and any other call on
+    `<root>\linked` or a path under it is recorded and throws too, so following it is caught. A real
+    link to a share would need a real server and the right to make symbolic links. The name's
+    `.invalid` is reserved and never resolves (RFC 2606), as a second guard only.
+  - **Direct paths:** `\\tachi-test.invalid\share\a.txt`, `//tachi-test.invalid/share/a.txt`,
+    `\\?\UNC\tachi-test.invalid\share\a.txt` and `\\.\pipe\tachi`, each given to `read_file` and
+    `write_file` in `ask` and `never`, and to `search_files` as its `path`.
+  - **Through the link:** `linked\a.txt` given to the same tools, and `@linked\` in the `@` menu.
+  - **Imports:** an instruction file with `@\\tachi-test.invalid\share\x.md` and one with
+    `@linked/x.md`, each left out with its reason. (In this file, not `instructions.test.ts`, which
+    uses the real disk.)
+  - **`find_files`:** with `**/*` and with `//tachi-test.invalid/**` as its pattern, with the fake
+    link in the root: no network or device access, and no access under `linked`.
+  - Each refused case: the exact words above, the gate never asked, and nothing reached the real
+    disk for it.
+  - **Ordinary links still work:** a real junction in the project to a local folder outside it is
+    still "outside" and asks, as today (`tests/tools/files.test.ts` already checks this, unchanged).
 
 ### 3. The error log, in Tachikoma's data folder
 
