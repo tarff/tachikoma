@@ -123,6 +123,12 @@ export const programEnvironment = (real: string) => /^\/proc\/[^/]+\/(task\/[^/]
 // ordinary local file (the user's choice at the build, "Count as local"). Touching one can make Windows sign in to a
 // server, so the file tools refuse one outside the project before anything opens it.
 const networkPath = (p: string) => process.platform === "win32" && /^[\\/]{2}/.test(p) && !/^[\\/]{2}[?.][\\/][a-z]:\\/i.test(p);
+// The share a path is on, \\server\share in lower case, whether written \\server\share or \\?\UNC\server\share; none
+// for a device path (\\?\ or \\.\ before anything else, \\.\UNC\ included) or a local one (review fixes plan, fix 13).
+function shareOf(p: string): string | undefined {
+  const m = /^\\\\(?:\?\\unc\\)?([^\\]+)\\([^\\]+)/i.exec(p);
+  return m && m[1] !== "?" && m[1] !== "." ? `${m[1]}\\${m[2]}`.toLowerCase() : undefined;
+}
 const NEVER_OPENED = "which the file tools never open; a shell command can reach it, after asking";
 const leadsThrough = (start: string, link: string, target: string) =>
   `${start} leads through ${link} to a network or device path outside the project (${target}), ${NEVER_OPENED}`;
@@ -190,8 +196,11 @@ export function resolveIn(root: string, p: string, network = false): { abs: stri
     if (typeof place !== "string") {
       throw new Error(`${abs} is in a project whose own folder leads through ${place.link} to ${place.target}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`);
     }
-    // Inside the root by its text, or inside the root's real place.
-    const inRoot = (q: string) => !leaves(path.relative(root, q)) || !leaves(path.relative(place, q));
+    // Inside the root by its text, or inside the root's real place, or on the share that place is on: Windows has
+    // already signed in there for the project (fix 13, the user's choice, "Same share is fine"). One outside the
+    // project still asks, as any path outside it does.
+    const share = shareOf(place);
+    const inRoot = (q: string) => !leaves(path.relative(root, q)) || !leaves(path.relative(place, q)) || (share !== undefined && shareOf(q) === share);
     // By its text, so \\localhost\C$\<project> is refused though it is the project (fix 11, the words).
     if (networkPath(abs) && !inRoot(abs)) {
       throw new Error(`${abs} is a network or device path not written as a path in the project, so the file tools do not open it; a shell command can reach it, after asking`);

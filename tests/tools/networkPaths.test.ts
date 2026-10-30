@@ -258,6 +258,25 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     expect(fake.state.reached).toEqual([]);
   });
 
+  // Review fixes plan, fix 13: a path on the share the project really lives on is not refused, as Windows has already
+  // signed in there for the project (the user's choice, "Same share is fine"); a path on another share still is.
+  it.each(["on the share", "through a link to the share"])("looks for instruction files above a project %s, and refuses another share", async (how) => {
+    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    const ctx = await tempContext("never");
+    const name = path.basename(ctx.root);
+    await mkdir(path.join(share, name));
+    fake.state.share = share;
+    fake.state.toShare = path.join(ctx.root, "work");
+    const [root, top] = how === "on the share" ? [path.join(fake.TARGET, name), fake.TARGET] : [path.join(ctx.root, "work", name), ctx.root];
+    expect(await readInstructions({ root, home, top }, async () => false)).toEqual({ text: "", read: [], left: [] });
+    const other = String.raw`\\tachi-test.invalid\other\x.md`;
+    await writeFile(path.join(share, "CLAUDE.md"), `Above. See @${other}\n`);
+    const got = await readInstructions({ root, home, top }, async () => false);
+    expect(got.read.map((r) => r.path)).toEqual([path.join(path.dirname(root), "CLAUDE.md")]);
+    expect(got.left).toEqual([{ path: other, why: direct(other) }]);
+    expect(fake.state.reached).toEqual([]);
+  });
+
   it("lists nothing through the link in the @ menu, and leaves it out of its folder's listing", async () => {
     const { root } = await project("ask");
     const link = path.join(root, "linked");
