@@ -17,10 +17,10 @@ export const mouse = (ui: UI, fns: Fns) => {
   // during a turn and while a question waits, and move the detail view while it is open (release 5 plan, Task 12).
   const scroll = (c: Scroll) => {
     const p = ui.pane();
-    const half = Math.max(1, Math.floor(ui.drawn.viewHeight / 2));
+    const half = Math.max(1, Math.floor(ui.late.viewHeight / 2));
     const by = { pageUp: -half, pageDown: half, lineUp: -1, lineDown: 1, top: 0, bottom: 0 }[c];
     p.view.current =
-      c === "top" ? scrollTo(p.rows, p.view.current, ui.drawn.viewHeight, 0) : c === "bottom" ? FOLLOWING : scrollBy(p.rows, p.view.current, ui.drawn.viewHeight, by);
+      c === "top" ? scrollTo(p.rows, p.view.current, ui.late.viewHeight, 0) : c === "bottom" ? FOLLOWING : scrollBy(p.rows, p.view.current, ui.late.viewHeight, by);
   };
   // The selection as two places, from the press to the pointer's cell, both cells' characters in (release 5 plan, choice
   // 6), as span takes them: backward, from the pointer's character to the end of what was pressed; otherwise from the

@@ -64,7 +64,7 @@ export const pictureReads = (ui: UI, fns: Fns) => {
     ui.reads.current++;
     void ui.pictures.settled(id).then(() => {
       ui.reads.current--;
-      ui.drawn.latest.current.settle(id, from);
+      ui.late.latest.current.settle(id, from);
       ui.rerender((n) => n + 1);
     });
     return id;

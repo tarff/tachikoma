@@ -293,7 +293,7 @@ export const keyRouting = (ui: UI, fns: Fns) => {
             const one = fns.route("detail", d.search?.typing === true, letter, as);
             if (one) fns.detailKey(d, h, one, letter, as);
           }
-        else if (s?.typing && c === "backspace") searchFor(d, s.query.slice(0, [...segmenter.segment(s.query)].at(-1)?.index ?? 0), ui.drawn.viewHeight);
+        else if (s?.typing && c === "backspace") searchFor(d, s.query.slice(0, [...segmenter.segment(s.query)].at(-1)?.index ?? 0), ui.late.viewHeight);
         else if (s?.typing && c === "submit") {
           if (s.found.length) s.typing = false;
           else d.search = null;
@@ -301,7 +301,7 @@ export const keyRouting = (ui: UI, fns: Fns) => {
       }
       return;
     }
-    if ("typed" in got) return searchFor(d, s!.query + got.typed, ui.drawn.viewHeight);
+    if ("typed" in got) return searchFor(d, s!.query + got.typed, ui.late.viewHeight);
     if ("pending" in got) return;
     const a = got.action;
     const move = MOVES[a];
@@ -317,7 +317,7 @@ export const keyRouting = (ui: UI, fns: Fns) => {
     } else if (a === "transcript:exit" || a === "app:toggleTranscript") fns.closeDetail();
     else if (a === "transcript:print" && ui.input && !ui.owner.suspended) void fns.printOut(d); // switchScreen says why
     else if (a === "transcript:search") d.search = { query: "", found: [], at: 0, typing: true, before: d.view.current };
-    else if ((a === "transcript:nextMatch" || a === "transcript:previousMatch") && s) stepMatch(d, a === "transcript:nextMatch" ? 1 : -1, ui.drawn.viewHeight);
+    else if ((a === "transcript:nextMatch" || a === "transcript:previousMatch") && s) stepMatch(d, a === "transcript:nextMatch" ? 1 : -1, ui.late.viewHeight);
     else if (move) fns.scroll(move);
     else fns.everywhere(a, h);
   };

@@ -248,7 +248,7 @@ export function useAppState({
   const happening = (findMenu?: () => boolean) => nowOf(phaseInputs(phaseRefs, findMenu));
   // Filled in by this drawing once it has worked them out, after making the functions that read them (App.tsx): the
   // conversation's height, and `latest`, through which newPicture's settle calls the latest drawing's functions.
-  const drawn = {} as { viewHeight: number; latest: { readonly current: Pick<Fns, "settle"> } };
+  const late = {} as { viewHeight: number; latest: { readonly current: Pick<Fns, "settle"> } };
   // Read-only, so TypeScript narrows `ui.question` through a check kept in a const (`movable`), as it narrowed App's
   // own `question`.
   return {
@@ -262,7 +262,7 @@ export function useAppState({
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
-    happening, drawn,
+    happening, late,
   } as const;
 }
 

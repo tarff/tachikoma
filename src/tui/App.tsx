@@ -372,7 +372,7 @@ export function App(props: AppProps) {
   };
   const latest = useRef(handlers);
   latest.current = handlers;
-  ui.drawn.latest = latest; // for newPicture's settle (pictureReads.ts)
+  ui.late.latest = latest; // for newPicture's settle (pictureReads.ts)
 
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = ui.detail.current;
@@ -496,7 +496,7 @@ export function App(props: AppProps) {
     askedShort: movable ? allow(shortOf(ui.question), ui.question.plain) : null,
   });
   const { tooled, menuRows, panel, promptSpace, promptShown, todoShown, pickerRows, viewHeight, promptFirst } = f;
-  ui.drawn.viewHeight = viewHeight; // for the functions that read it once the drawing is done (state.ts, drawn)
+  ui.late.viewHeight = viewHeight; // for the functions that read it once the drawing is done (state.ts, late)
   const q = ui.queue.current.map((e) => visible(e.text));
   const shownQueued = f.queuedShown;
   const queued = q.length <= shownQueued ? q : shownQueued > 0 ? [...q.slice(0, shownQueued - 1), `+${q.length - shownQueued + 1} more`] : [];
