@@ -353,15 +353,13 @@ class Reader {
   // bash, choice 42: a line with arithmetic that uses a name asks only when it also holds a $( or a backtick that it does
   // not itself read as a command substitution (in single quotes, $'...', escaped, in a quoted here-document or a
   // here-string): code text that could reach a variable and run inside an array index. A value from a command's output or
-  // a file is a known limit. Arithmetic is (( )), $(( )), for (( )), let, declare -i, [[ ... -eq ... ]] and the like, and
-  // these found in the text: array subscripts, NAME[...] anywhere (as in ${a[i]}, a[i]=, [[ -v a[i] ]], unset 'a[i]');
-  // ${NAME:offset:length} with an offset or length that is not a plain integer; and the old $[ ... ].
+  // a file is a known limit. The arithmetic is what a bash the reader reads would evaluate, found as it reads: (( )),
+  // $(( )), $[ ], for (( )), let, declare -i, [[ ... -eq ... ]] and the like, ${a[i]} and ${x:i:n} outside single quotes,
+  // a[i]= assignments, and unset, declare and [[ -v ]] operands with a subscript. Text in single quotes, or given to a
+  // program that is not a shell the reader follows (ssh, python -c, grep), is not.
   checkArithmetic(): void {
     if (this.g !== "bash") return;
     const { src } = this;
-    for (const m of src.matchAll(/[A-Za-z_]\w*\[([^\]]*)\]/g)) this.counted(m[1]!);
-    for (const m of src.matchAll(/\$\{(?:[A-Za-z_]\w*|\d+|[@*])(?:\[[^\]]*\])?:(?![-=+?])([^}]*)\}/g)) this.counted(m[1]!);
-    for (const m of src.matchAll(/\$\[([^\]]*)\]/g)) this.counted(m[1]!);
     if (this.arith.size === 0) return;
     const dollars = src.split("$(").length - 1;
     const ticks = src.split("`").length - 1;
@@ -613,6 +611,7 @@ class Reader {
     const k = g === "bash" ? assignments(words, src) : 0;
     const own = g === "bash" ? words.slice(k) : g === "powershell" ? psUnassigned(words, src) : cmdOwn(words);
     const vars = [...this.exported, ...words.slice(0, k)];
+    for (const w of words.slice(0, k)) this.subscript(src.slice(w.start, w.end)); // a[i]=x: the subscript is arithmetic
     if (own.length === 0) {
       this.exported.push(...words.slice(0, k));
       return { commands: [], hungry: NONE };
@@ -650,7 +649,8 @@ class Reader {
   }
 
   // The names a bash command reads as arithmetic (Reader.checkArithmetic): let's words, the names declare -i (and typeset
-  // and local -i) makes integers, and the words of [[ ... -eq ... ]] (and -ne, -lt, -le, -gt, -ge).
+  // and local -i) makes integers, the words of [[ ... -eq ... ]] (and -ne, -lt, -le, -gt, -ge), and an array subscript in
+  // an operand of unset, declare and the like, or of [[ (as in [[ -v a[i] ]]).
   private arithmeticWords(name: string, args: Word[], options: string): void {
     const raw = (w: Word) => this.src.slice(w.start, w.end);
     if (["declare", "typeset", "local"].includes(name) && options.includes("i")) {
@@ -658,6 +658,15 @@ class Reader {
     }
     if (name === "let") for (const w of args) this.counted(raw(w));
     if (name === "[[" && args.some((w) => /^-(eq|ne|lt|le|gt|ge)$/.test(w.value))) for (const w of args) this.counted(raw(w));
+    if (["unset", "declare", "typeset", "local", "export", "readonly", "[["].includes(name)) {
+      for (const w of args) this.subscript(w.value);
+    }
+  }
+
+  // An array subscript at the start of a word, as in a[i]=x or unset 'a[i]', is arithmetic.
+  private subscript(word: string): void {
+    const m = /^[A-Za-z_]\w*\[([^\]]*)\]/.exec(word);
+    if (m) this.counted(m[1]!);
   }
 
   // The variables a name-setting command writes (NAMES): each name argument, after its quotes are taken off. A name made
@@ -1115,6 +1124,14 @@ class Reader {
       this.braces(nested);
       return src.slice(from, this.i);
     }
+    // $[ ... ]: the old form of $(( ... )).
+    const old = n === "[" ? src.indexOf("]", from + 2) : -1;
+    if (old >= 0) {
+      this.counted(src.slice(from + 2, old));
+      this.i = old + 1;
+      this.dynamic = true;
+      return src.slice(from, this.i);
+    }
     if (n === "'" && !quoted) return this.ansi();
     if (n === '"' && !quoted) {
       this.i++;
@@ -1150,10 +1167,16 @@ class Reader {
   // ${...}: a variable, whose default can hold a command, as in ${x:-$(rm y)}.
   private braces(nested: Command[]): void {
     const { src } = this;
+    const from = this.i;
     for (;;) {
       const c = src[this.i];
       if (c === undefined) throw new Unreadable(UNPAIRED);
       if (c === "}") {
+        // Arithmetic bash does here: an array's subscript, as in ${a[i]}, and a substring's offset and length, as in
+        // ${x:i:n} (not ${x:-...}, ${x:=...}, ${x:+...} or ${x:?...}).
+        const parts = /^[#!]?(?:[A-Za-z_]\w*|\d+|[@*])(?:\[([^\]]*)\])?(?::(?![-=+?])([\s\S]*))?$/.exec(src.slice(from, this.i));
+        if (parts?.[1]) this.counted(parts[1]);
+        if (parts?.[2]) this.counted(parts[2]);
         this.i++;
         return;
       }

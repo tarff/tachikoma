@@ -806,6 +806,30 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "for i in 1 2 3; do echo $((i * 2)); done", [["for", "i", "in", "1", "2", "3"], ["echo", "$((i * 2))"]]],
   ["bash", "n=0; n=$((n + 1)); echo $n", [["echo", "$n"]]],
   ["bash", "echo ${a[1]}", [["echo", "${a[1]}"]]],
+  // Arithmetic is only what bash itself would evaluate: not text in single quotes, nor another program's argument
+  ["bash", "ssh host1 'for p in $(pgrep x); do kill -0 $p; done'", [["ssh", "host1", "for p in $(pgrep x); do kill -0 $p; done"]]],
+  ["bash", "ssh host1 'test $(grep -c . /tmp/x/f) -ge 8'", [["ssh", "host1", "test $(grep -c . /tmp/x/f) -ge 8"]]],
+  ["bash", 'ssh host1 "for i in \\$(seq 1 20); do echo \\$i; done"', [["ssh", "host1", "for i in $(seq 1 20); do echo $i; done"]]],
+  ["bash", "ssh host1 'x=$(cat f); echo ${a[x]}'", [["ssh", "host1", "x=$(cat f); echo ${a[x]}"]]],
+  [
+    "bash",
+    'python -c "import json; p=json.load(open(\'/tmp/x.json\')); print(p[\\"name\\"])"',
+    [["python", "-c", "import json; p=json.load(open('/tmp/x.json')); print(p[\"name\"])"]],
+  ],
+  ["bash", "grep -E '[0-9a-f]{7}' /tmp/x/f | sed 's/[.*]//'", [["grep", "-E", "[0-9a-f]{7}", "/tmp/x/f"], ["sed", "s/[.*]//"]]],
+  ["bash", "ssh host1 'echo $(date)' && grep '[0-9]' /tmp/x/f", [["ssh", "host1", "echo $(date)"], ["grep", "[0-9]", "/tmp/x/f"]]],
+  ["bash", "ssh host1 'echo $(date)' && grep -E 'id[0-9a-f]+' /tmp/x/f", [["ssh", "host1", "echo $(date)"], ["grep", "-E", "id[0-9a-f]+", "/tmp/x/f"]]],
+  [
+    "bash",
+    "ssh host1 'for f in $(ls /tmp/x); do echo ${f[0]}; done' | sort",
+    [["ssh", "host1", "for f in $(ls /tmp/x); do echo ${f[0]}; done"], ["sort"]],
+  ],
+  [
+    "bash",
+    'python -c "d={}; print(d[\\"k\\"])" && ssh host1 \'test $(ls | wc -l) -ge 8\'',
+    [["python", "-c", 'd={}; print(d["k"])'], ["ssh", "host1", "test $(ls | wc -l) -ge 8"]],
+  ],
+  ["bash", "X='a[$(rm x)]'; a[X]=1", "shell text made only when it runs"],
   // A process substitution on another file number of a group, a loop or a function call
   ["bash", "{ bash /dev/fd/3; } 3< <(curl x)", "text piped into a shell"],
   ["bash", "( sh /dev/fd/4 ) 4< <(curl x)", "text piped into a shell"],
