@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
 import { readInstructions } from "../../src/core/instructions.js";
-import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
+import { editFileTool, leaves, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { findFilesTool, searchFilesTool } from "../../src/tools/search.js";
 import { listFolder, pathMenu } from "../../src/tui/menus.js";
 import { tempContext } from "../helpers.js";
@@ -16,23 +16,27 @@ import { tempContext } from "../helpers.js";
 // readlinkSync gives its target; any other call on it or under it is recorded and refused, so following it is caught.
 // The share's name ends in .invalid, which never resolves (RFC 2606), as a second guard only. The wrappers go by a
 // path's text, and do not reach search's grep worker or the steps inside realpathSync: that is safe only because every
-// refusal comes before those (fix 11).
+// refusal comes before those (fix 11). So search_files is not tried in a project on the share: its worker would really
+// try the share's name (fix 14, the user's choice, "Leave search out").
 // Fix 8: when `share` is set, the share is a folder the test made, which stands in for it, so a project can live there;
-// `toShare` is then a fake link to the share that is followed, as a real one would be. realpath names the share again.
+// each of `follow` is a fake link that is followed to its target, as a real one would be. realpath names the share
+// again. Fix 14: `lstats` records every lstatSync, and each test's project root is its own, as resolveIn keeps each
+// root's real place for the session.
 // Fix 9: each of `internal` is a fake link whose stored target is in Windows' internal form, refused as `linked` is,
 // and so is the made-up local folder that target resolves into (C:\??, C:\Device), so a walk that resolves it never
 // reaches the real disk.
 const fake = vi.hoisted(() => {
-  const state = { reached: [] as string[], linked: undefined as string | undefined, share: undefined as string | undefined, toShare: undefined as string | undefined, internal: [] as [string, string][] };
+  const state = { reached: [] as string[], linked: undefined as string | undefined, share: undefined as string | undefined, follow: [] as [string, string][], internal: [] as [string, string][], lstats: [] as string[] };
   const TARGET = String.raw`\\tachi-test.invalid\share`;
   // As the plan defines it: \\ or // once resolved, except \\?\ or \\.\ before a drive letter, a local long path.
   const network = (p: string) => /^[\\/]{2}/.test(p) && !/^[\\/]{2}[?.][\\/][a-z]:\\/i.test(p);
   const twoPaths = new Set(["rename", "renameSync", "copyFile", "copyFileSync", "link", "linkSync", "symlink", "symlinkSync", "cp", "cpSync"]);
   const sameAs = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   const under = (p: string, folder: string) => sameAs(p, folder) || p.toLowerCase().startsWith(`${folder.toLowerCase().replace(/\\$/, "")}\\`);
-  // Where a path really goes: through `toShare` to the share, and from the share to the folder standing in for it.
+  // Where a path really goes: through each followed link in turn, and from the share to the folder standing in for it.
   const moved = (p: string) => {
-    const through = state.toShare && under(p, state.toShare) ? TARGET + p.slice(state.toShare.length) : p;
+    let through = p;
+    for (const [link, target] of state.follow) if (under(through, link)) through = target + through.slice(link.length);
     return state.share && under(through, TARGET) ? state.share + through.slice(TARGET.length) : through;
   };
   const named = (out: unknown) => (typeof out === "string" && state.share && under(out, state.share) ? TARGET + out.slice(state.share.length) : out);
@@ -42,13 +46,10 @@ const fake = vi.hoisted(() => {
       const wrapped = function (this: unknown, ...args: unknown[]) {
         const given = args.map((a, i) => (i < (twoPaths.has(name) ? 2 : 1) && typeof a === "string" ? resolve(a) : undefined));
         const linked = state.linked;
+        if (name === "lstatSync" && given[0] !== undefined) state.lstats.push(given[0]);
         for (const p of given) {
           if (p === undefined) continue;
-          for (const link of [linked, state.toShare]) {
-            if (link && sameAs(p, link) && name === "lstatSync") return { isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false };
-            if (link && sameAs(p, link) && name === "readlinkSync") return TARGET;
-          }
-          for (const [link, stored] of state.internal) {
+          for (const [link, stored] of [...(linked ? [[linked, TARGET] as [string, string]] : []), ...state.follow, ...state.internal]) {
             if (sameAs(p, link) && name === "lstatSync") return { isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false };
             if (sameAs(p, link) && name === "readlinkSync") return stored;
           }
@@ -118,8 +119,9 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     vi.unstubAllEnvs();
     fake.state.linked = undefined;
     fake.state.share = undefined;
-    fake.state.toShare = undefined;
+    fake.state.follow = [];
     fake.state.internal = [];
+    fake.state.lstats = [];
   });
 
   async function project(mode: Mode) {
@@ -207,16 +209,73 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     }
   });
 
+  // Review fixes plan, fix 14: Windows opens a path through 63 junctions and no more (probed 2026-10-30: 64 gave
+  // ELOOP), so a chain of 63 resolves and one of 64 is refused; a project whose own folder passes 64 refuses every
+  // path, with words for one in it and for one outside it. The junctions are real and local.
+  it("reads through 63 junctions, and refuses 64, in the project and on the way to it", async () => {
+    const ctx = await project("never");
+    await mkdir(path.join(ctx.root, "end"));
+    await writeFile(path.join(ctx.root, "end", "a.txt"), "end");
+    const chains = [63, 64].map((n) => Array.from({ length: n }, (_, i) => path.join(ctx.root, `n${n}j${i + 1}`)));
+    for (const links of chains) for (const [i, link] of links.entries()) await symlink(links[i + 1] ?? path.join(ctx.root, "end"), link, "junction");
+    try {
+      const [first63, first64] = chains.map((links) => links[0]!) as [string, string];
+      expect(await readFileTool.run({ path: path.join(first63, "a.txt") }, ctx)).toBe("     1\tend");
+      const abs = path.join(first64, "a.txt");
+      expect(await failure(readFileTool.run({ path: abs }, ctx))).toBe(`${abs} passes through more than 63 links, ${OPEN}`);
+      const outside = path.join(ctx.root, "a.txt");
+      const root = { ...ctx, root: first64 };
+      expect(await failure(readFileTool.run({ path: "a.txt" }, root))).toBe(`${abs} is in a project whose own folder passes through more than 63 links, ${OPEN}`);
+      expect(await failure(readFileTool.run({ path: outside }, root))).toBe(`${outside} cannot be checked, as the project's own folder passes through more than 63 links, ${OPEN}`);
+      expect(ctx.asked).toEqual([]);
+      expect(fake.state.reached).toEqual([]);
+    } finally {
+      for (const link of chains.flat()) await unlink(link);
+    }
+  });
+
+  // Review fixes plan, fix 14: in a project reached through a link to the share, a later path is walked from the
+  // project's real place, not over its own folders again; a link in the project to another folder of that place is
+  // followed; and the @ menu lists the project. search_files is left out (see the top of this file).
+  it("works in a project reached through a link to the share: its own folders walked once, a link in it, the @ menu", async () => {
+    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    const ctx = await tempContext("never");
+    const name = path.basename(ctx.root);
+    await mkdir(path.join(share, name, "sub"), { recursive: true });
+    await writeFile(path.join(share, name, "a.txt"), "fine");
+    await writeFile(path.join(share, name, "sub", "b.txt"), "sub");
+    const work = path.join(ctx.root, "work");
+    const place = path.join(fake.TARGET, name);
+    fake.state.share = share;
+    fake.state.follow = [
+      [work, fake.TARGET],
+      [path.join(place, "inner"), path.join(place, "sub")],
+    ];
+    const root = { ...ctx, root: path.join(work, name) };
+    expect(await readFileTool.run({ path: "a.txt" }, root)).toBe("     1\tfine");
+    fake.state.lstats = [];
+    expect(await readFileTool.run({ path: path.join("sub", "b.txt") }, root)).toBe("     1\tsub");
+    // None of the folders on the way to the project, nor the project itself, is looked at again.
+    const own = (p: string) => [root.root, place].some((r) => !leaves(path.relative(p, r)));
+    expect(fake.state.lstats.filter(own)).toEqual([]);
+    expect(await readFileTool.run({ path: path.join("inner", "b.txt") }, root)).toBe("     1\tsub");
+    const list = (folder: string) => listFolder(root.root, folder);
+    expect(pathMenu("@", 1, list)?.entries.map((e) => e.label)).toEqual(["sub/", "a.txt"]);
+    expect(ctx.asked).toEqual([]);
+    expect(fake.state.reached).toEqual([]);
+  });
+
   // Review fixes plan, fix 8: a path in the project is walked from the root's real place, so a project on a share, or
   // reached through a link to one, works.
   it("reads a file in a project on a share, and in one reached through a link to that share", async () => {
     const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
-    await mkdir(path.join(share, "proj"));
-    await writeFile(path.join(share, "proj", "a.txt"), "fine");
     const ctx = await tempContext("never");
+    const name = path.basename(ctx.root);
+    await mkdir(path.join(share, name));
+    await writeFile(path.join(share, name, "a.txt"), "fine");
     fake.state.share = share;
-    fake.state.toShare = path.join(ctx.root, "work");
-    for (const root of [path.join(fake.TARGET, "proj"), path.join(ctx.root, "work", "proj")]) {
+    fake.state.follow = [[path.join(ctx.root, "work"), fake.TARGET]];
+    for (const root of [path.join(fake.TARGET, name), path.join(ctx.root, "work", name)]) {
       expect(await readFileTool.run({ path: "a.txt" }, { ...ctx, root })).toBe("     1\tfine");
     }
     expect(ctx.asked).toEqual([]);
@@ -237,6 +296,10 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
       const inside = path.join(root, "a.txt");
       const words = `${inside} is in a project whose own folder leads through ${link} to ${stored}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`;
       expect(await failure(readFileTool.run({ path: "a.txt" }, { ...ctx, root }))).toBe(words);
+      // Fix 14: a path outside such a project is not "in" it.
+      const outside = path.join(ctx.root, "a.txt");
+      const unchecked = `${outside} cannot be checked, as the project's own folder leads through ${link} to ${stored}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`;
+      expect(await failure(readFileTool.run({ path: outside }, { ...ctx, root }))).toBe(unchecked);
     }
     expect(ctx.asked).toEqual([]);
     expect(fake.state.reached).toEqual([]);
@@ -266,7 +329,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     const name = path.basename(ctx.root);
     await mkdir(path.join(share, name));
     fake.state.share = share;
-    fake.state.toShare = path.join(ctx.root, "work");
+    fake.state.follow = [[path.join(ctx.root, "work"), fake.TARGET]];
     const [root, top] = how === "on the share" ? [path.join(fake.TARGET, name), fake.TARGET] : [path.join(ctx.root, "work", name), ctx.root];
     expect(await readInstructions({ root, home, top }, async () => false)).toEqual({ text: "", read: [], left: [] });
     const other = String.raw`\\tachi-test.invalid\other\x.md`;

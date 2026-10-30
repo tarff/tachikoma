@@ -108,7 +108,7 @@ export async function readInstructions(where: Where, approve: (reached: Reached[
     let outside: boolean;
     try {
       // Your own files, and what they import, may be on a share (review fixes plan, fix 10).
-      ({ outside } = resolveIn(where.root, abs, opts.trusted));
+      ({ outside } = resolveIn(where.root, abs, { trusted: opts.trusted }));
     } catch (err) {
       left.push({ path: abs, why: errorText(err) });
       return null;

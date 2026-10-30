@@ -146,9 +146,10 @@ type Unchecked = { link: string; target: string };
 // `allowed` is false is refused; any other takes the place of the parts walked so far. The walk ends at the first part
 // that does not exist. A link can rightly be passed twice, so a loop is ended by counting: a path past 63 links is
 // refused, the most reparse points Windows allows on one path ("Reparse Points", learn.microsoft.com; review fixes
-// plan, fix 7, the user's choice). Returns where it ended, or the first link whose stored target is Unchecked, which
-// is not followed (fix 9).
-function linkHops(start: string, allowed: (target: string) => boolean, from = path.parse(start).root, after = start.slice(from.length)): string | Unchecked {
+// plan, fix 7, the user's choice; 64 junctions gave ELOOP when probed, 2026-10-30). Returns where it ended, the first
+// link whose stored target is Unchecked, which is not followed (fix 9), or null past 63 links, so the root's walk
+// can say it in its own words (fix 14).
+function linkHops(start: string, allowed: (target: string) => boolean, from = path.parse(start).root, after = start.slice(from.length)): string | Unchecked | null {
   let done = from;
   const rest = after.split(path.sep).filter(Boolean);
   let links = 0;
@@ -161,9 +162,9 @@ function linkHops(start: string, allowed: (target: string) => boolean, from = pa
       done = next;
       continue;
     }
-    if (++links > 63) throw new Error(`${start} passes through more than 63 links, ${NEVER_OPENED}`);
+    if (++links > 63) return null;
     const stored = readlinkSync(next);
-    if (process.platform === "win32" && /^[\\/](?![\\/])/.test(stored)) return { link: next, target: stored };
+    if (/^[\\/](?![\\/])/.test(stored)) return { link: next, target: stored };
     const target = path.resolve(path.dirname(next), stored);
     // Named without the backslash Node adds at the end of a share's root (review fixes plan, fix 11).
     if (networkPath(target) && !allowed(target)) throw new Error(leadsThrough(start, next, target.replace(/\\$/, "")));
@@ -175,26 +176,34 @@ function linkHops(start: string, allowed: (target: string) => boolean, from = pa
 
 // Each project root's real place, from its walk at the first resolveIn for it. A network target there is allowed: the
 // user started Tachikoma in that folder. One that met an Unchecked link is kept as that link: where the project really
-// is cannot be told, so every path in it is refused (fix 9, the user's choice at the build, "Refuse, own message").
-// rulesIn (search.ts) passes the folder of a .gitignore with more than one name as the root, so such folders get their
-// own entry. The real place is taken once a session: a change to the links above the project during one is not seen.
-const rootPlaces = new Map<string, string | Unchecked>();
+// is cannot be told, so every path in it is refused (fix 9, the user's choice at the build, "Refuse, own message"), and
+// so is every path for one past 63 links (null). rulesIn (search.ts) passes the folder of a .gitignore with more than
+// one name as the root, so such folders get their own entry. The project's own folder, as well as the folders above
+// it, is taken once a session: one replaced by a link during the session (only a shell command, which asks, can do
+// that) is not seen (fix 14).
+const rootPlaces = new Map<string, string | Unchecked | null>();
 
 // `shown` is what the approval prompt names: the path, plus where it really leads when a link, or Windows' own
 // spelling of the real place (a path typed as \\?\C:\... or with a short name), differs from what was typed (review
 // fixes plan, fix 12, the user's choice, "Show the real place").
-export function resolveIn(root: string, p: string, network = false): { abs: string; outside: boolean; shown: string } {
+export function resolveIn(root: string, p: string, { trusted = false }: { trusted?: boolean } = {}): { abs: string; outside: boolean; shown: string } {
   const abs = path.resolve(root, p);
-  // `network` lets network and device paths through, skipping the link check and the root's walk: for the user's own
-  // instruction files and what they import, read before the check was made (review fixes plan, fix 10, the user's
-  // choice, "Allow your own files"). The checks below still apply. Only on Windows, as networkPath is false elsewhere:
-  // the walks double the cost of each path check, and the @ menu checks every entry of a folder on each keystroke
-  // (fix 11).
-  if (!network && process.platform === "win32") {
+  // `trusted` skips the root's walk, the text check and the link check, with its 63-link count, so network and device
+  // paths go through: for the user's own instruction files and what they import, read before the check was made
+  // (review fixes plan, fix 10, the user's choice, "Allow your own files"; fix 14). The checks below still apply. Only
+  // on Windows, as networkPath is false elsewhere: the walks double the cost of each path check, and the @ menu checks
+  // every entry of a folder on each keystroke (fix 11).
+  if (!trusted && process.platform === "win32") {
     if (!rootPlaces.has(root)) rootPlaces.set(root, linkHops(path.resolve(root), () => true));
     const place = rootPlaces.get(root)!;
+    const fromRoot = path.relative(root, abs);
     if (typeof place !== "string") {
-      throw new Error(`${abs} is in a project whose own folder leads through ${place.link} to ${place.target}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`);
+      // "In a project" only of a path in it by its text (fix 14).
+      const why =
+        place === null
+          ? `passes through more than 63 links, ${NEVER_OPENED}`
+          : `leads through ${place.link} to ${place.target}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`;
+      throw new Error(leaves(fromRoot) ? `${abs} cannot be checked, as the project's own folder ${why}` : `${abs} is in a project whose own folder ${why}`);
     }
     // Inside the root by its text, or inside the root's real place, or on the share that place is on: Windows has
     // already signed in there for the project (fix 13, the user's choice, "Same share is fine"). One outside the
@@ -208,8 +217,9 @@ export function resolveIn(root: string, p: string, network = false): { abs: stri
     // A path in the root by its text is walked from the root's real place, as the root's own parts were walked
     // already, so a link on the way to a root on a share is not checked again as if it led out (review fixes plan,
     // fix 8). Any other path is walked from its drive.
-    const fromRoot = path.relative(root, abs);
+    // From the root's real place (`from`), with the path from the root to abs (`after`).
     const walked = leaves(fromRoot) ? linkHops(abs, inRoot) : linkHops(abs, inRoot, place, fromRoot);
+    if (walked === null) throw new Error(`${abs} passes through more than 63 links, ${NEVER_OPENED}`);
     if (typeof walked !== "string") throw new Error(leadsThrough(abs, walked.link, walked.target));
   }
   const base = realTarget(root);
