@@ -6,7 +6,7 @@ import { layout, placeOn, scroll as windowOf } from "../layout.js";
 import { promptWidth } from "../Prompt.js";
 import { clicks, placeAt, span, textOf, wordAt } from "../select.js";
 import {
-  bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, Rows, scrollBy, scrollTo, unseenBelow,
+  bar, barFirst, first as firstRow, FOLLOWING, notch, type Pos, type Rows, scrollBy, scrollTo, unseenBelow,
 } from "../view.js";
 import { characters, contextsOf, type Held, NO_KEY } from "./constants.js";
 import type { UI } from "./state.js";

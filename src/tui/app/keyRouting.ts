@@ -1,7 +1,7 @@
 import type { Key } from "ink";
 import { errorText } from "../../core/types.js";
 import type { Fns } from "../App.js";
-import { Bindings, CHORD_MS, type Context, type Stroke, strokeOf } from "../bindings.js";
+import { type Bindings, CHORD_MS, type Context, type Stroke, strokeOf } from "../bindings.js";
 import { type Detail, searchFor, step as stepMatch } from "../DetailView.js";
 import { segmenter } from "../editor.js";
 import { commands, isScroll, keyList, pieces, vimKey } from "../keys.js";
