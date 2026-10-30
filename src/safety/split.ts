@@ -78,9 +78,18 @@ function once(commands: Command[]): Command[] {
   });
 }
 
+// A bash here-document whose body comes after the line it is on: the line that ends it, whether that line and the body's lines
+// lose their leading tabs (<<-), and whether bash expands the body (an unquoted end word).
+interface HereDoc {
+  end: string;
+  strip: boolean;
+  expands: boolean;
+}
+
 class Reader {
   private i = 0;
   private readonly escape: string;
+  private pending: HereDoc[] = [];
 
   constructor(
     private readonly src: string,
@@ -110,23 +119,28 @@ class Reader {
     let last = -1;
     let group = false; // this command was a ( ) or { } group, which only redirections may follow
     let named = false; // after bash's `function`: the name comes next
-    const done = (sep: string) => ({ commands: this.emit(words, nested, start, last, receives), sep });
+    let fed = false; // a here-document or here-string is this command's input, so a shell here would run it
+    const done = (sep: string) => ({ commands: this.emit(words, nested, start, last, receives || fed), sep });
     for (;;) {
       this.space();
       const at = this.i;
       const c = src[at];
       const next = src[at + 1];
       if (c === undefined) {
+        if (this.pending.length > 0) throw new Unreadable(HEREDOC); // its end line never came
         if (stop) throw new Unreadable(UNPAIRED);
         return done("");
       }
-      if (this.redirection(stop, nested)) {
+      const redirected = this.redirection(stop, nested);
+      if (redirected) {
+        fed ||= redirected === "text";
         if (start < 0) start = at;
         last = this.i;
         continue;
       }
       if (c === "\n" || (c === ";" && g !== "cmd")) {
         this.i++;
+        if (c === "\n") nested.push(...this.bodies());
         return done(c);
       }
       if (c === "&" || c === "|") {
@@ -231,21 +245,68 @@ class Reader {
     return true;
   }
 
-  // Reads a redirection if one starts here, and leaves it out of the command's words (choice 32).
-  private redirection(stop: Stop, nested: Command[]): boolean {
+  // Reads a redirection if one starts here, and leaves it out of the command's words (choice 32). A here-document or
+  // here-string is left out the same way (choice 35); "text" says one is the command's input.
+  private redirection(stop: Stop, nested: Command[]): "file" | "text" | false {
     const { src, g } = this;
-    const re = g === "bash" ? /\d*(&>>|&>|>>|>&|>\||>|<<|<&|<>|<)/y : g === "powershell" ? /[*\d]?(>>|>|<)(&\d)?/y : /\d?(>>|>|<)(&\d)?/y;
+    const re =
+      g === "bash" ? /\d*(&>>|&>|>>|>&|>\||>|<<<|<<-|<<|<&|<>|<)/y : g === "powershell" ? /[*\d]?(>>|>|<)(&\d)?/y : /\d?(>>|>|<)(&\d)?/y;
     re.lastIndex = this.i;
     const m = re.exec(src);
     if (!m) return false;
-    if (m[1] === "<<") throw new Unreadable(HEREDOC); // and the here-string, <<<
+    const op = m[1]!;
+    const here = op.startsWith("<<");
     this.i = re.lastIndex;
     if (g === "bash" && src[this.i] === "(") throw new Unreadable(PROCESS);
-    if (m[2]) return true; // 2>&1 and the like, which name no file
+    if (m[2]) return "file"; // 2>&1 and the like, which name no file
     while (src[this.i] === " " || src[this.i] === "\t") this.i++;
-    if (this.ends(src[this.i], stop)) throw new Unreadable(NO_FILE);
-    this.word(stop, nested);
-    return true;
+    if (this.ends(src[this.i], stop)) throw new Unreadable(here ? HEREDOC : NO_FILE);
+    // A here-string's word is read as any word is, its $(...) and backticks included unless it is in single quotes.
+    const w = this.word(stop, nested);
+    // A quoted end word, as in <<'EOF', <<"EOF" or <<\EOF, keeps bash from expanding the body (bash manual, "Here Documents").
+    if (op !== "<<<" && here) this.pending.push({ end: w.value, strip: op === "<<-", expands: !/['"\\]/.test(src.slice(w.start, w.end)) });
+    return here ? "text" : "file";
+  }
+
+  // Reads the bodies of the here-documents begun on the line just ended, and returns the commands in those bash expands.
+  private bodies(): Command[] {
+    const { src } = this;
+    const out: Command[] = [];
+    for (const doc of this.pending) {
+      const from = this.i;
+      for (;;) {
+        if (this.i >= src.length) throw new Unreadable(HEREDOC); // its end line never came
+        const newline = src.indexOf("\n", this.i);
+        const lineEnd = newline < 0 ? src.length : newline;
+        const line = src.slice(this.i, lineEnd);
+        const bodyEnd = this.i;
+        this.i = newline < 0 ? src.length : newline + 1;
+        if ((doc.strip ? line.replace(/^\t+/, "") : line) === doc.end) {
+          if (doc.expands) out.push(...new Reader(src.slice(from, bodyEnd), "bash").expansions());
+          break;
+        }
+      }
+    }
+    this.pending = [];
+    return out;
+  }
+
+  // The commands in the text of a here-document or here-string the shell expands: those in its $(...) and, in bash, its
+  // backticks, as inside double quotes.
+  expansions(): Command[] {
+    const { src, g } = this;
+    const nested: Command[] = [];
+    while (this.i < src.length) {
+      const c = src[this.i];
+      if (c === this.escape) this.i += 2;
+      else if (g === "bash" && c === "$") this.dollar(nested, true);
+      else if (g === "bash" && c === "`") this.backtick(nested);
+      else if (g === "powershell" && c === "$" && src[this.i + 1] === "(") {
+        this.i += 2;
+        nested.push(...this.sequence(")", false));
+      } else this.i++;
+    }
+    return nested;
   }
 
   // PowerShell's stop-parsing token: the rest of the line, up to a new line or a pipe, goes to the program as written
@@ -294,7 +355,7 @@ class Reader {
     const n = src[from + 1];
     if (PS_SINGLE.has(c)) return this.psQuoted(PS_SINGLE);
     if (PS_DOUBLE.has(c)) return this.psQuoted(PS_DOUBLE, nested);
-    if (c === "@" && this.looking(HERE_STRING)) throw new Unreadable(HEREDOC);
+    if (c === "@" && this.looking(HERE_STRING)) return this.psHere(n!, nested);
     if (c === "(" || ((c === "$" || c === "@") && n === "(")) {
       this.i += c === "(" ? 1 : 2;
       nested.push(...this.sequence(")", false));
@@ -519,6 +580,25 @@ class Reader {
     }
     this.i += n === undefined ? 1 : 2;
     return n === undefined ? "`" : (PS_ESCAPES[n] ?? n);
+  }
+
+  // PowerShell's here-string, read as text (choice 35): its lines up to one that starts with the quote mark and @. Only
+  // @"..."@ is expanded, so only its $(...) commands are added (about_Quoting_Rules, "Here-strings").
+  private psHere(quote: string, nested: Command[]): string {
+    const { src } = this;
+    const marks = PS_SINGLE.has(quote) ? PS_SINGLE : PS_DOUBLE;
+    const from = this.i;
+    for (let line = from; ; ) {
+      if (marks.has(src[line] ?? "") && src[line + 1] === "@") {
+        const body = src.slice(from, Math.max(from, line - 1));
+        this.i = line + 2;
+        if (marks === PS_DOUBLE) nested.push(...new Reader(body, "powershell").expansions());
+        return body;
+      }
+      const newline = src.indexOf("\n", line);
+      if (newline < 0) throw new Unreadable(HEREDOC); // its end line never came
+      line = newline + 1;
+    }
   }
 
   // ${name}: a variable whose name is in braces.
