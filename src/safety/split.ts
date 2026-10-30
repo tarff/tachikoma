@@ -75,6 +75,7 @@ interface Part {
   hungry: Hunger;
   program?: boolean;
   arith?: string[]; // bash: the names used in the part's arithmetic (Reader.counted)
+  subs?: { dollars: number; ticks: number }; // bash: the command substitutions read in it (Reader.subs)
 }
 // What a shell is given to run: its text in a grammar, and whether that text is made only when the line runs.
 interface Runs {
@@ -209,7 +210,7 @@ function read(text: string, grammar: Grammar, from?: Inherited): Part {
   const part = reader.sequence("");
   reader.dotnet();
   reader.checkArithmetic();
-  return { ...part, arith: reader.arithNames() };
+  return { ...part, arith: [...reader.arith], subs: { ...reader.subs } };
 }
 
 // Whether a path names a process's own input (choice 37). An absolute path is tidied by its text alone: repeated slashes
@@ -317,10 +318,11 @@ class Reader {
   private code = ""; // PowerShell: the line's code with each string as '', for the .NET checks (choice 39)
   private readonly written = new Set<string>(); // bash: the names written by name-setting commands read so far
   private writtenAll = false; // bash: a name-setting command whose name is made when it runs, or a nameref, was read
-  // bash: the names used in arithmetic, and those the line writes with anything but a plain integer. Arithmetic reads a
-  // name's value as arithmetic too, and runs any $(...) in an array index there, as in X='a[$(rm x)]'; (( X )).
-  private readonly arith = new Set<string>();
-  private readonly loose = new Set<string>();
+  // bash: the names used in arithmetic (Reader.counted). Arithmetic reads a name's value as arithmetic too, and runs any
+  // $(...) in an array index there, as in X='a[$(rm x)]'; (( X )).
+  readonly arith = new Set<string>();
+  // bash: the command substitutions read as such, $( and backtick pairs, counted against the line's own text (choice 42).
+  readonly subs = { dollars: 0, ticks: 0 };
 
   constructor(
     private readonly src: string,
@@ -331,41 +333,39 @@ class Reader {
     if (g === "powershell" && PS_COM.test(src) && PS_COM_RUN.test(src)) throw new Unreadable(FOLLOW);
     if (from) {
       this.exported.push(...from.env);
-      for (const w of from.env) this.assignedNumber(w);
       this.cwd = from.cwd;
     }
   }
 
-  // Notes the names in arithmetic text, leaving out what its $(...) and backticks hold (choice 37).
+  // Notes the names in arithmetic text, leaving out what its $(...) and backticks hold.
   private counted(text: string): void {
     const bare = text.replace(/\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`/g, "");
     for (const m of bare.matchAll(/[A-Za-z_]\w*/g)) this.arith.add(m[0]);
   }
 
-  // Notes a NAME=value word, given as written: its name is written loosely unless the value is a plain integer or an
-  // arithmetic expansion, whose result is a number.
-  private assignedNumber(w: Word, raw = w.value): void {
-    const name = /^[A-Za-z_]\w*/.exec(w.value)?.[0];
-    const value = raw.slice(raw.indexOf("=") + 1);
-    if (name && !/^["']?[+-]?\d+["']?$/.test(value) && !/^"?\$\(\([\s\S]*\)\)"?$/.test(value)) this.loose.add(name);
+  // Adds the counts of a reader whose text is part of this line, run by this line's shell or one it starts.
+  merge(part: Part): void {
+    for (const name of part.arith ?? []) this.arith.add(name);
+    this.subs.dollars += part.subs?.dollars ?? 0;
+    this.subs.ticks += part.subs?.ticks ?? 0;
   }
 
-  // bash: arithmetic that uses a name the line writes with anything but a plain integer is unreadable, as that value is
-  // read as arithmetic and can run a command (Reader.arith). A name written by a command whose name is made when the line
-  // runs, a nameref, or ${NAME:=...} counts as written loosely.
+  // bash, choice 42: a line with arithmetic that uses a name asks only when it also holds a $( or a backtick that it does
+  // not itself read as a command substitution (in single quotes, $'...', escaped, in a quoted here-document or a
+  // here-string): code text that could reach a variable and run inside an array index. A value from a command's output or
+  // a file is a known limit. Arithmetic is (( )), $(( )), for (( )), let, declare -i, [[ ... -eq ... ]] and the like, and
+  // these found in the text: array subscripts, NAME[...] anywhere (as in ${a[i]}, a[i]=, [[ -v a[i] ]], unset 'a[i]');
+  // ${NAME:offset:length} with an offset or length that is not a plain integer; and the old $[ ... ].
   checkArithmetic(): void {
     if (this.g !== "bash") return;
-    // An indexed array's subscript is arithmetic too: ${a[i]} and a[i]=...
-    for (const m of this.src.matchAll(/\$\{[#!]?[A-Za-z_]\w*\[([^\]]*)\]|(?:^|[\s;&|(])[A-Za-z_]\w*\[([^\]]*)\]\+?=/g)) this.counted(m[1] ?? m[2]!);
+    const { src } = this;
+    for (const m of src.matchAll(/[A-Za-z_]\w*\[([^\]]*)\]/g)) this.counted(m[1]!);
+    for (const m of src.matchAll(/\$\{(?:[A-Za-z_]\w*|\d+|[@*])(?:\[[^\]]*\])?:(?![-=+?])([^}]*)\}/g)) this.counted(m[1]!);
+    for (const m of src.matchAll(/\$\[([^\]]*)\]/g)) this.counted(m[1]!);
     if (this.arith.size === 0) return;
-    const any = this.writtenAll || DYNAMIC_SETTER.test(this.src);
-    const loose = (name: string) => any || this.loose.has(name) || new RegExp(`\\$\\{${name}:?=`).test(this.src);
-    if ([...this.arith].some(loose)) throw new Unreadable(MADE);
-  }
-
-  // The names used in this reader's arithmetic, for the reader of the line whose shell runs this text too (backticks).
-  arithNames(): string[] {
-    return [...this.arith];
+    const dollars = src.split("$(").length - 1;
+    const ticks = src.split("`").length - 1;
+    if (dollars > this.subs.dollars || ticks > this.subs.ticks) throw new Unreadable(MADE);
   }
 
   // Reads commands up to `stop`.
@@ -437,12 +437,14 @@ class Reader {
     let copied = false; // <&N or 0<&N copies another file number into the input, which may be the pipe
     let piped = false; // a process substitution, as in `< <(curl x)`, is this command's input
     let substituted = false; // a process substitution is redirected onto any file number of this command
+    let other = false; // one is redirected onto a file number other than 0 and 1
     let opens = 0;
     let closes = 0;
     const outerHungry = this.hungry;
     this.hungry = NONE;
     const done = (sep: string) => {
       const own = this.emit(words, start, last, called);
+      this.merge(own); // the shell texts it gives, read by their own readers
       const subs = this.hungry; // $(...) and backticks read the line's input, not the command's
       this.hungry = outerHungry;
       const hungry = most(own.hungry, groupHungry);
@@ -450,6 +452,10 @@ class Reader {
       // A process substitution redirected for a shell or an interpreter, or for exec, which keeps it open for later commands:
       // the program may read it as its script (choice 37).
       if (substituted && own.program) throw new Unreadable(PIPED);
+      // On a file number other than 0 and 1 of a group, a loop, an if, a case or a function call, the commands inside may
+      // read it as a script, as in `{ bash /dev/fd/3; } 3< <(curl x)`. Files 0 and 1 are the input and output, already followed.
+      const callee = g === "bash" ? words[assignments(words, src)] : undefined;
+      if (other && (group || closes > 0 || (callee && this.functions.has(src.slice(callee.start, callee.end))))) throw new Unreadable(PIPED);
       // A here-document, here-string or file in place of the input: an interpreter reading it runs code written in the line.
       const replaced = (fed || input) && !copied;
       // PowerShell: a command that is only a string or here-string written in the line, with nothing in it made when it runs.
@@ -473,7 +479,8 @@ class Reader {
         input ||= redirected === "input";
         copied ||= redirected === "copy";
         piped ||= redirected === "piped";
-        substituted ||= redirected === "procsub" || redirected === "piped";
+        substituted ||= redirected === "procsub" || redirected === "procsub-other" || redirected === "piped";
+        other ||= redirected === "procsub-other";
         if (start < 0) start = at;
         last = this.i;
         continue;
@@ -606,7 +613,6 @@ class Reader {
     const k = g === "bash" ? assignments(words, src) : 0;
     const own = g === "bash" ? words.slice(k) : g === "powershell" ? psUnassigned(words, src) : cmdOwn(words);
     const vars = [...this.exported, ...words.slice(0, k)];
-    for (const w of words.slice(0, k)) this.assignedNumber(w, src.slice(w.start, w.end));
     if (own.length === 0) {
       this.exported.push(...words.slice(0, k));
       return { commands: [], hungry: NONE };
@@ -638,33 +644,17 @@ class Reader {
       this.exported.push(...args.filter((w) => !w.value.startsWith("-") && w.value.includes("=")));
     }
     if (NAMES.has(name)) this.names(name, args);
-    this.numbers(name, args, options);
+    this.arithmeticWords(name, args, options);
     if (name === "alias") for (const a of args) if (a.value.indexOf("=") > 0) this.functions.set(a.value.slice(0, a.value.indexOf("=")), SHELL);
     if (MOVES.has(name)) this.cwd = most(this.cwd, this.moved(name, args, vars)) as Cwd;
   }
 
-  // What a bash command means for arithmetic (Reader.checkArithmetic): the names it writes with anything but a plain
-  // integer, and the names it reads as arithmetic. NAME=value words for export, declare and the like are judged by their
-  // value; read, mapfile, readarray, getopts, select and printf -v write whatever comes; a for loop writes its words, which
-  // are fine only if all are plain integers. let, declare -i and [[ ... -eq ... ]] (and -ne, -lt, -le, -gt, -ge) read
-  // their words as arithmetic.
-  private numbers(name: string, args: Word[], options: string): void {
+  // The names a bash command reads as arithmetic (Reader.checkArithmetic): let's words, the names declare -i (and typeset
+  // and local -i) makes integers, and the words of [[ ... -eq ... ]] (and -ne, -lt, -le, -gt, -ge).
+  private arithmeticWords(name: string, args: Word[], options: string): void {
     const raw = (w: Word) => this.src.slice(w.start, w.end);
-    const operands = args.filter((w) => !w.value.startsWith("-"));
-    if (["export", "declare", "typeset", "local", "readonly"].includes(name)) {
-      for (const w of operands) {
-        if (w.value.includes("=")) this.assignedNumber(w, raw(w));
-        if (options.includes("i") && name !== "export") this.counted(w.value.split("=")[0]!);
-      }
-    }
-    if (["read", "mapfile", "readarray", "getopts", "select"].includes(name)) for (const w of operands) this.loose.add(w.value);
-    if (name === "printf") {
-      const k = args.findIndex((w) => /^-v/.test(w.value));
-      const target = args[k]?.value === "-v" ? args[k + 1]?.value : args[k]?.value.slice(2);
-      if (target) this.loose.add(target);
-    }
-    if (name === "for" && args[1]?.value === "in" && !args.slice(2).every((w) => !w.dynamic && /^[+-]?\d+$/.test(w.value))) {
-      this.loose.add(args[0]!.value);
+    if (["declare", "typeset", "local"].includes(name) && options.includes("i")) {
+      for (const w of args) if (!w.value.startsWith("-")) this.counted(w.value.split("=")[0]!);
     }
     if (name === "let") for (const w of args) this.counted(raw(w));
     if (name === "[[" && args.some((w) => /^-(eq|ne|lt|le|gt|ge)$/.test(w.value))) for (const w of args) this.counted(raw(w));
@@ -826,7 +816,7 @@ class Reader {
   // here-string is left out the same way (choice 35). Says what it was: "text" for a here-document or here-string on the
   // input, "input" for a file read as the input, "copy" for another file number copied into the input (<&N, 0<&N), which
   // may be the pipe, and "file" for any other. Only file number 0, written or left out, is the input.
-  private redirection(stop: Stop, nested: Command[]): "file" | "input" | "text" | "copy" | "piped" | "procsub" | false {
+  private redirection(stop: Stop, nested: Command[]): "file" | "input" | "text" | "copy" | "piped" | "procsub" | "procsub-other" | false {
     const { src, g } = this;
     if (g === "bash" && /[<>]\(/y.test(src.slice(this.i, this.i + 2))) return false; // a process substitution, read as a word
     const re =
@@ -848,7 +838,11 @@ class Reader {
     if (op === "<&") return onInput ? "copy" : "file";
     // A command's output in place of the input, as in `sh < <(curl x)`: a shell or an interpreter there runs it. On another
     // file number, as in `bash /dev/fd/3 3< <(curl x)`, it can still be read as one's script (Reader.command).
-    if (w.fed) return onInput && (op === "<" || op === "<>") ? "piped" : "procsub";
+    if (w.fed) {
+      if (onInput && (op === "<" || op === "<>")) return "piped";
+      const fd = m[1] || (op.startsWith("<") ? "0" : "1");
+      return fd === "0" || fd === "1" ? "procsub" : "procsub-other";
+    }
     // A quoted end word, as in <<'EOF', <<"EOF" or <<\EOF, keeps bash from expanding the body (bash manual, "Here Documents").
     if (op !== "<<<" && here) this.pending.push({ end: w.value, strip: op === "<<-", expands: !/['"\\]/.test(src.slice(w.start, w.end)) });
     if (here) return onInput ? "text" : "file";
@@ -874,7 +868,7 @@ class Reader {
         const reader = new Reader(lines.join("\n"), "bash");
         out.push(...reader.expansions());
         this.hungry = most(this.hungry, reader.hungry);
-        for (const name of reader.arith) this.arith.add(name); // its arithmetic runs in this line's shell
+        this.merge({ commands: [], hungry: NONE, arith: [...reader.arith], subs: reader.subs }); // run by this line's shell
       }
     }
     this.pending = [];
@@ -1105,6 +1099,7 @@ class Reader {
     const n = src[from + 1];
     if (n === "(" || n === "{") this.dynamic = true;
     if (n === "(") {
+      this.subs.dollars++;
       if (src[from + 2] === "(") {
         const kept = nested.length;
         this.i = from + 3;
@@ -1226,7 +1221,8 @@ class Reader {
     const part = read(inner, "bash");
     nested.push(...part.commands);
     this.hungry = most(this.hungry, part.hungry);
-    for (const name of part.arith ?? []) this.arith.add(name); // its arithmetic sees this line's variables
+    this.subs.ticks += 2;
+    this.merge(part); // its text runs in this line's shell
     this.dynamic = true;
     return src.slice(from, this.i);
   }
@@ -1399,6 +1395,14 @@ function expand(words: Word[], text: string, src: string, g: Grammar, ctx: Conte
   if (g === "powershell" && parses(name) && args.some(changed)) throw requoted(shown);
   if (ctx.inner && MOVES.has(name)) ctx.lost?.();
   const commands: Command[] = [{ words: words.map((w) => w.value), text }];
+  // The arithmetic names and command substitutions in the shell texts it gives, for the line's check (Reader.checkArithmetic).
+  const arith: string[] = [];
+  const subs = { dollars: 0, ticks: 0 };
+  const gather = (part: Part) => {
+    arith.push(...(part.arith ?? []));
+    subs.dollars += part.subs?.dollars ?? 0;
+    subs.ticks += part.subs?.ticks ?? 0;
+  };
   // A bash function or alias made earlier on the line runs here, with this command's input (choice 37).
   let hungry = g === "bash" ? (ctx.functions.get(first.value) ?? NONE) : NONE;
   const run = (runs: Runs) => {
@@ -1409,6 +1413,7 @@ function expand(words: Word[], text: string, src: string, g: Grammar, ctx: Conte
       const part = read(t, runs.grammar, { env: ctx.vars, cwd });
       commands.push(...part.commands);
       hungry = most(hungry, part.hungry); // the shell's own commands read its input
+      gather(part);
     }
   };
   const code = interpreterRun(name, args, cwd);
@@ -1449,8 +1454,9 @@ function expand(words: Word[], text: string, src: string, g: Grammar, ctx: Conte
     commands.push(...part.commands);
     hungry = most(hungry, part.hungry);
     program ||= !!part.program;
+    gather(part);
   }
-  return { commands, hungry, program };
+  return { commands, hungry, program, arith, subs };
 }
 
 // The text a command gives a shell to run; null when it gives none; undefined when the shell reads its input, as in
