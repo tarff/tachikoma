@@ -139,6 +139,11 @@ const leadsThrough = (start: string, link: string, target: string) =>
 // fix 9, the user's choice, "Any single-slash start"). Where it leads cannot be told without following it.
 type Unchecked = { link: string; target: string };
 
+// Where a walk starts: the path's drive, or for a share its root, \\server\share\ or \\?\UNC\server\share\; path.parse
+// gives \\?\UNC\ alone for the second, which would make the server on its own the walk's first part (review fixes plan,
+// fix 13, found at the spec review).
+const walkRoot = (p: string) => /^\\\\\?\\unc\\[^\\]+\\[^\\]+/i.exec(p)?.[0].concat("\\") ?? path.parse(p).root;
+
 // Walks `start` one part at a time from its drive, or from `from` with the parts in `after`, as realpath would, but
 // looks before it follows (the plan, fix 2):
 // lstat does not follow the part it is given, and the parts above it are already plain folders or links whose targets
@@ -149,7 +154,7 @@ type Unchecked = { link: string; target: string };
 // plan, fix 7, the user's choice; 64 junctions gave ELOOP when probed, 2026-10-30). Returns where it ended, the first
 // link whose stored target is Unchecked, which is not followed (fix 9), or null past 63 links, so the root's walk
 // can say it in its own words (fix 14).
-function linkHops(start: string, allowed: (target: string) => boolean, from = path.parse(start).root, after = start.slice(from.length)): string | Unchecked | null {
+function linkHops(start: string, allowed: (target: string) => boolean, from = walkRoot(start), after = start.slice(from.length)): string | Unchecked | null {
   let done = from;
   const rest = after.split(path.sep).filter(Boolean);
   let links = 0;
@@ -168,7 +173,7 @@ function linkHops(start: string, allowed: (target: string) => boolean, from = pa
     const target = path.resolve(path.dirname(next), stored);
     // Named without the backslash Node adds at the end of a share's root (review fixes plan, fix 11).
     if (networkPath(target) && !allowed(target)) throw new Error(leadsThrough(start, next, target.replace(/\\$/, "")));
-    done = path.parse(target).root;
+    done = walkRoot(target);
     rest.unshift(...target.slice(done.length).split(path.sep).filter(Boolean));
   }
   return path.join(done, ...rest);

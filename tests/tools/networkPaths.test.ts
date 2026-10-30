@@ -33,9 +33,11 @@ const fake = vi.hoisted(() => {
   const twoPaths = new Set(["rename", "renameSync", "copyFile", "copyFileSync", "link", "linkSync", "symlink", "symlinkSync", "cp", "cpSync"]);
   const sameAs = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
   const under = (p: string, folder: string) => sameAs(p, folder) || p.toLowerCase().startsWith(`${folder.toLowerCase().replace(/\\$/, "")}\\`);
-  // Where a path really goes: through each followed link in turn, and from the share to the folder standing in for it.
+  // Where a path really goes: from the share's \\?\UNC\ spelling to its plain one, through each followed link in turn,
+  // and from the share to the folder standing in for it.
+  const UNC = String.raw`\\?\UNC\tachi-test.invalid\share`;
   const moved = (p: string) => {
-    let through = p;
+    let through = state.share && under(p, UNC) ? TARGET + p.slice(UNC.length) : p;
     for (const [link, target] of state.follow) if (under(through, link)) through = target + through.slice(link.length);
     return state.share && under(through, TARGET) ? state.share + through.slice(TARGET.length) : through;
   };
@@ -237,6 +239,27 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
   // Review fixes plan, fix 14: in a project reached through a link to the share, a later path is walked from the
   // project's real place, not over its own folders again; a link in the project to another folder of that place is
   // followed; and the @ menu lists the project. search_files is left out (see the top of this file).
+  // Review fixes plan, fix 13: the project's own share written as \\?\UNC\server\share is walked from that share's
+  // root, as \\server\share is, not from \\?\UNC\ with the server on its own as its first part.
+  it("reads a file in a project on the share written as \\\\?\\UNC\\, and asks for one elsewhere on that share", async () => {
+    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    const ctx = await tempContext("ask", [false]);
+    const name = path.basename(ctx.root);
+    await mkdir(path.join(share, name));
+    await mkdir(path.join(share, "other"));
+    await writeFile(path.join(share, name, "a.txt"), "fine");
+    await writeFile(path.join(share, "other", "b.txt"), "elsewhere");
+    fake.state.share = share;
+    const root = { ...ctx, root: path.join(fake.TARGET, name) };
+    const unc = String.raw`\\?\UNC\tachi-test.invalid\share`;
+    expect(await readFileTool.run({ path: path.join(unc, name, "a.txt") }, root)).toBe("     1\tfine");
+    expect(ctx.asked).toEqual([]);
+    const elsewhere = path.join(unc, "other", "b.txt");
+    expect(await failure(readFileTool.run({ path: elsewhere }, root))).toBe(`The user declined: read ${elsewhere} (really ${path.join(fake.TARGET, "other", "b.txt")})`);
+    expect(ctx.asked).toHaveLength(1);
+    expect(fake.state.reached).toEqual([]);
+  });
+
   it("works in a project reached through a link to the share: its own folders walked once, a link in it, the @ menu", async () => {
     const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
     const ctx = await tempContext("never");
