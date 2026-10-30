@@ -231,10 +231,9 @@ export function resolveIn(root: string, p: string, { trusted = false }: { truste
     if (walked === null) throw new Error(`${abs} passes through more than 63 links, ${NEVER_OPENED}`);
     if (typeof walked !== "string") throw new Error(leadsThrough(abs, walked.link, walked.target));
   }
-  const base = realTarget(root);
   const real = realTarget(abs);
-  if (base === null || real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
-  if (base === undefined || real === undefined) return { abs, outside: true, shown: `${abs} (where it really leads cannot be told)` };
+  if (real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
+  if (real === undefined) return { abs, outside: true, shown: `${abs} (where it really leads cannot be told)` };
   // The saved login lives there. Refused in every mode, `never` included, and after following links,
   // so a link cannot get round it.
   const data = realTarget(path.resolve(dataDir()));
@@ -246,6 +245,11 @@ export function resolveIn(root: string, p: string, { trusted = false }: { truste
     throw new Error(`${abs} is one of Tachikoma's settings files, which the file tools never touch; edit it with /settings or /keybindings`);
   }
   if (programEnvironment(real)) throw new Error(`${abs} is a program's environment, which can hold API keys, so the file tools never read it`);
+  // The project's own place only after those refusals, so one that cannot be told still refuses them (from the outside
+  // review of PR #8).
+  const base = realTarget(root);
+  if (base === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
+  if (base === undefined) return { abs, outside: true, shown: `${abs} (where it really leads cannot be told)` };
   const rel = path.relative(base, real);
   // Case ignored on Windows, where A.TXT and a.txt are one file (fix 16, the user's choice, "Hide case-only").
   const typed = path.relative(root, abs);

@@ -65,6 +65,22 @@ describe("the data folder", () => {
     await expect(readFileTool.run({ path: "innocent/chatgpt.json" }, ctx)).rejects.toThrow("Tachikoma's data folder");
   });
 
+  // From the outside review of PR #8: a project folder the lookup cannot place still refuses the data folder.
+  it("is refused when the project's own folder cannot be looked up", async () => {
+    const ctx = await setup();
+    const real = realpathSync.native;
+    const native = vi.spyOn(realpathSync, "native").mockImplementation((p, ...rest) => {
+      if (p === ctx.root) throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${ctx.root}'`), { code: "ENOENT" });
+      return real(p, ...rest);
+    });
+    try {
+      expect(() => resolveIn(ctx.root, "data/chatgpt.json")).toThrow("Tachikoma's data folder");
+      expect(() => resolveIn(ctx.root, "data/chatgpt.json", { trusted: true })).toThrow("Tachikoma's data folder");
+    } finally {
+      native.mockRestore();
+    }
+  });
+
   it("is refused through a hard link to one of its files", async () => {
     const ctx = await setup();
     linkSync(path.join(ctx.root, "data", "chatgpt.json"), path.join(ctx.root, "innocent.json"));
