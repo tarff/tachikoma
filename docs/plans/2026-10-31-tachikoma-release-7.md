@@ -337,6 +337,17 @@ the plan's review.
     (whose words are shell text, as `sh -c`), and `find` with `-exec`, `-execdir`, `-ok` or
     `-okdir`. Each one's own options are skipped. Otherwise `env rm -rf ~` would pass the check.
 
+**Found at Task 2's build** (the user's choices, 2026-10-31)
+35. **Here-documents and here-strings are read as text,** like a quoted string, so the usual
+    `git commit -m "$(cat <<'EOF' ... EOF)"` and PowerShell's `@'...'@` do not ask. Where the
+    shell expands them (bash's unquoted `<<EOF`, PowerShell's `@"..."@`), their `$(...)` and
+    backticks are split as in double quotes. Text a here-document feeds into a shell
+    (`bash <<EOF`, `@'...'@ | powershell -`) stays unreadable, as `text piped into a shell`.
+36. **More unreadable reasons,** for what the shell itself would refuse or the reader cannot
+    follow: `a bracket without its pair`, `a bracket where a command cannot have one`,
+    `a redirection without its file`, `cmd's if or for, which the check does not read`, and
+    `<name> <option>, an option the check does not read` for a wrapper's option it does not know.
+
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
