@@ -8,7 +8,7 @@ import { defineTool } from "./tool.js";
 // Where a path really leads, following symlinks and Windows junctions. Parts that don't exist yet
 // (a new file in a new folder) are added back onto the deepest part that does. Null for a link that
 // leads nowhere: writing through it could create its missing target, wherever that is. Undefined when
-// Windows cannot say where it leads (review fixes plan, fix 15).
+// the system's lookup (Windows' own on Windows) cannot say where it leads (review fixes plan, fix 15).
 function realTarget(abs: string): string | null | undefined {
   let existing = abs;
   const rest: string[] = [];
@@ -23,9 +23,10 @@ function realTarget(abs: string): string | null | undefined {
 
 // Where an existing path really is, as Windows says (realpathSync.native): Node's lstat does not see a junction to a
 // drive named by its ID (\\?\Volume{...}\) as a link and follows it, so the JavaScript realpath, which goes part by
-// part, gave such a junction's target as the junction's own place (review fixes plan, fix 12). Undefined when Windows'
-// throws, as it does (ENOENT) for a junction to a volume with no drive letter, where the JavaScript one gave the
-// junction's own place too (fix 15, the user's choice, "always ask").
+// part, gave such a junction's target as the junction's own place (review fixes plan, fix 12). Undefined when the
+// lookup throws, as Windows' does (ENOENT) for a junction to a volume with no drive letter, where the JavaScript one
+// gave the junction's own place too, and (EPERM) for a folder the user is denied (fix 15, the user's choice, "always
+// ask"). On other systems it is the system's own realpath, which rarely throws for a path that exists.
 function realPlace(p: string): string | undefined {
   try {
     return realpathSync.native(p);
