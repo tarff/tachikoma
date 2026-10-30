@@ -283,6 +283,74 @@ first and seen failing for the right reason.
   spelling to choose which spellings to test. It was there before this branch and reaches only this
   machine's own share.
 
+## After the second code review
+
+The code review of `e2ae24e..6dc5f4c` approved fixes 7 to 11, apart from the points below. Each
+was checked against the code before this section. One commit per fix, tests first, seen failing.
+
+### 12. Where a path really leads, as Windows says
+
+- **The gap** (since release 1, confirmed by running): a junction whose target names a drive by its
+  ID (`\\?\Volume{...}\...`, or `\\?\GLOBALROOT\Device\HarddiskVolume3\...`), not by its letter, is
+  not seen as a link by Node's `lstatSync`, which follows it instead. `realTarget`
+  (`src/tools/files.ts:11-20`) uses the JavaScript `realpathSync`, which goes part by part with
+  `lstat`, so such a junction to a folder outside the project comes back inside it, and reads and
+  writes there are not asked about. `realpathSync.native` gives the real place. Such a junction is
+  local only: Windows does not support junctions to remote shares (Sysinternals' Junction page,
+  <https://learn.microsoft.com/sysinternals/downloads/junction>), and `mklink /J` refuses one. Git
+  and zip cannot make one.
+- **Option chosen: "Fix it now".** `realTarget` uses `realpathSync.native`, and the JavaScript
+  `realpathSync` when that throws (it can on some virtual drives), so those drives behave as now.
+  It runs after the network checks, as now. The root and the path go through the same function, so
+  a mapped drive, which `native` gives as its `\\server\share` path, still compares the same way.
+- **Tests:** in a folder the test made, a junction made with `mklink /J` to the volume ID spelling
+  of another folder the test made outside the project (the ID from `mountvol <drive>: /L`): a
+  read there is "outside" and asks. With `realpathSync.native` made to throw, a plain file in the
+  project still resolves inside it.
+
+### 13. A project on a share reads the files above it again
+
+- **The gap** (a regression from this branch, confirmed by running): a project on a share, or
+  reached through a link to one, gets four "left out" instruction files at every start, one for
+  each name looked for in the share's folders above the project (`src/core/instructions.ts:192-193`),
+  even when none exists. Before this branch a missing one was skipped and a present one loaded.
+- **Option chosen: "Same share is fine".** A network path on the same share as the project's real
+  place (the same `\\server\share`, case ignored, whether written `\\server\share` or
+  `\\?\UNC\server\share`) is not refused by the text check or the link check: Windows has already
+  signed in there for the project. It is still "outside" when it is outside the project, and asks
+  as usual. A path on any other share, and every device path, is refused as now.
+- **Tests:** in `networkPaths.test.ts`, with the root on the fake share and with the root through
+  the fake link to it: the instruction loader lists nothing left out when the folders above have no
+  instruction files, and loads a `CLAUDE.md` placed in the share's top folder. A file on another
+  fake share is still refused.
+
+### 14. Smaller points from the second code review and its spec review
+
+- **Comment** on `rootPlaces`: the project's own folder, as well as the folders above it, is taken
+  once a session; one replaced by a link during the session (only a shell command, which asks, can
+  do that) is not seen.
+- **The third argument of `resolveIn`** becomes `{ trusted: true }`, as it also skips the walk of
+  the project's own folder and the 63-link count, not only network paths.
+- **`linkHops`' own `process.platform` test** (`files.ts:148`) goes, since it runs only inside the
+  Windows test.
+- **A one-line comment** at the call that walks from the root's real place (`files.ts:190`), saying
+  what its two starting arguments are.
+- **The project-folder refusal's words** for a path outside the project: it says "is in a project"
+  only for a path inside the project; for one outside it, `<abs> cannot be checked, as the project's
+  own folder leads through <link> to <target>, a link the file tools cannot check, so they never
+  open it; a shell command can reach it, after asking`.
+- **A root walk past 63 links** names the path asked for, with the root's link count in the words:
+  `<abs> is in a project whose own folder passes through more than 63 links, which the file tools
+  never open; a shell command can reach it, after asking`.
+- **Tests:**
+  - every test root in `networkPaths.test.ts` is its own, since the root places are kept for the
+    session;
+  - a chain of 63 real junctions resolves, and 64 is refused with the 63-link words;
+  - in a project on the fake share, a project link to another folder in the project's real place
+    is allowed;
+  - later walks do not go over the root's own parts again (the fake counts `lstatSync` on them);
+  - `search_files` and the `@` menu in a project on the fake share.
+
 ## Checks
 
 - After each commit: the type check, and that commit's test files.
