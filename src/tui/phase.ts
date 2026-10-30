@@ -60,7 +60,8 @@ export interface PhaseRefs {
   queue: { current: unknown[] };
 }
 
-// Without `findMenu`, a menu counts as the prompt: only the keys ask for it (App.tsx, useInput).
+// Without `findMenu`, a menu counts as the prompt: only the keys and a wheel notch ask for it (app/keyRouting.ts,
+// onInput; app/mouse.ts, onMouse).
 export function phaseInputs(r: PhaseRefs, findMenu: () => boolean = () => false): PhaseInputs {
   return {
     ended: r.ended.current,
