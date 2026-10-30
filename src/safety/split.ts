@@ -762,6 +762,12 @@ class Reader {
   // the folder (cd, pushd, popd). A function exported for child shells is unreadable: a child's `bash -c f` would run it,
   // and its reader would not know f (choice 37).
   private settings(name: string, args: Word[], vars: Word[], fed: boolean): void {
+    // builtin and command run the builtin after their options (command -v and -V only name it), which sets the same.
+    if (name === "builtin" || name === "command") {
+      const k = args.findIndex((w) => !w.value.startsWith("-"));
+      const naming = name === "command" && args.slice(0, Math.max(k, 0)).some((w) => /^-\w*[vV]/.test(w.value));
+      if (k >= 0 && !naming) this.settings(args[k]!.value, args.slice(k + 1), vars, fed);
+    }
     const options = args.filter((w) => w.value.startsWith("-")).map((w) => w.value.slice(1)).join("");
     // mapfile's and readarray's -C runs its callback text as code.
     if ((name === "mapfile" || name === "readarray") && args.some((w) => /^-\w*C/.test(w.value))) throw new Unreadable(FOLLOW);
@@ -807,9 +813,9 @@ class Reader {
     };
     if (DECLARERS.includes(name)) for (const w of operands) if (w.value.includes("=")) this.wrote(raw(w));
     if (READERS.includes(name)) for (const variable of readerNames(name, args)) read(variable);
-    if (name === "getopts" && operands[1]) {
-      this.note(operands[1].value, "fine");
-      if (operands.length > 2) this.note("OPTARG", "code"); // the words after the name, rather than the script's own
+    if (name === "getopts" && args[1]) {
+      this.note(args[1].value, "fine");
+      if (args.length > 2) this.note("OPTARG", "code"); // any word after the name, rather than the script's own arguments
     }
     if (name === "select" && operands[0]) {
       this.note(operands[0].value, "code");
@@ -1299,17 +1305,28 @@ class Reader {
   }
 
   // Whether the text from `at`, just after (( or $((, is arithmetic: whether its bracket closes with )) rather than ) and
-  // something else, as bash decides. Looked at before anything is read, so the text is read once either way: reading it
-  // one way and then again the other would take time doubling with each level and count what it holds twice. Quotes
-  // and escapes are skipped; a line that ends first is left to the reading to call unpaired.
+  // something else, as bash decides. Looked at before the text is read, so that it is read only as one or the other:
+  // reading it one way and then again the other would take time doubling with each level and count what it holds twice.
+  // This look rescans the text once per level of nesting, which the stack limit bounds. Escapes and single quotes are
+  // skipped. A $(, ${ or backtick met first, in double quotes or not, counts as arithmetic, as bash reads each as one piece
+  // whose brackets this count would get wrong; arithmetic() asks when bash would have read a subshell after all. A line
+  // that ends first is left to the reading to call unpaired.
   private arithmeticAhead(at: number): boolean {
     const { src } = this;
+    const piece = (k: number) => src[k] === "`" || (src[k] === "$" && (src[k + 1] === "(" || src[k + 1] === "{"));
     let depth = 0;
     for (let k = at; k < src.length; k++) {
       const c = src[k]!;
       if (c === "\\") k++;
-      else if (c === "'" || c === '"' || c === "`") {
-        for (k++; k < src.length && src[k] !== c; k++) if (c !== "'" && src[k] === "\\") k++;
+      else if (piece(k)) return true;
+      else if (c === "'") {
+        const end = src.indexOf("'", k + 1);
+        k = end < 0 ? src.length : end;
+      } else if (c === '"') {
+        for (k++; k < src.length && src[k] !== '"'; k++) {
+          if (src[k] === "\\") k++;
+          else if (piece(k)) return true;
+        }
       } else if (c === "(") depth++;
       else if (c === ")" && depth-- === 0) return src[k + 1] === ")";
     }

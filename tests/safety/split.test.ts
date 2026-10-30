@@ -870,10 +870,15 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "select x in a b; do (( REPLY )); done <<< a[\\$\\(rm\\ x\\)]", "shell text made only when it runs"],
   ["bash", "read -p 'n? ' n; (( n ))", [["read", "-p", "n? ", "n"]]],
   ["bash", "getopts a: o -a a[\\$\\(rm\\ x\\)]; (( OPTARG ))", "shell text made only when it runs"],
+  ["bash", "getopts a: o -aa[\\$\\(rm\\ x\\)]; (( OPTARG ))", "shell text made only when it runs"],
   ["bash", "getopts ab: o; (( OPTARG ))", [["getopts", "ab:", "o"]]],
   ["bash", "mapfile -C 'rm x' -c 1 lines < /tmp/x/f", "a way of running text the check does not follow"],
-  // A $(( that is not arithmetic is read once: its commands are counted once
-  ["bash", "echo '$(x)'; echo $(( echo $(true) ) ); (( n ))", "shell text made only when it runs"],
+  ["bash", "builtin mapfile -C cb arr", "a way of running text the check does not follow"],
+  ["bash", "command mapfile -C cb arr", "a way of running text the check does not follow"],
+  // A $(( holding a $(, ${ or backtick before its bracket closes is taken as arithmetic, which asks if bash reads a subshell
+  ["bash", "echo '$(x)'; echo $(( echo $(true) ) ); (( n ))", "a bracket without its pair"],
+  ["bash", "X='a[$(rm x)]'; echo $(( 1 + $(case x in a) echo 1;; esac) + X ))", "shell text made only when it runs"],
+  ["bash", "X='a[$(rm x)]'; y=a; echo $(( 1 + ${y/(/} + X ))", "shell text made only when it runs"],
   // A process substitution on another file number of a group, a loop or a function call
   ["bash", "{ bash /dev/fd/3; } 3< <(curl x)", "text piped into a shell"],
   ["bash", "( sh /dev/fd/4 ) 4< <(curl x)", "text piped into a shell"],
@@ -996,9 +1001,9 @@ describe("split", () => {
     expect(split("[IO.File]::WriteAllText('x', 'y')", "powershell")).toEqual({ unreadable: "a way of running text the check does not follow" });
   });
 
-  it("reads $(( that is not arithmetic, nested many times, in one pass", () => {
+  it("comes back on $(( that is not arithmetic, nested many times", () => {
     const line = `echo ${"$((a ".repeat(30)}${") )".repeat(30)}`;
-    expect("commands" in split(line, "bash")).toBe(true);
+    expect(split(line, "bash")).toEqual({ unreadable: "a bracket without its pair" });
   });
 
   it("says when brackets are nested too deep to read, rather than failing", () => {
