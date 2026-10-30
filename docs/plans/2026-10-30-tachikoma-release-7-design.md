@@ -77,6 +77,12 @@ first time the sandbox is used, Tachikoma says what it will download (the base i
 Hub, and the Linux packages) and asks; on yes it builds the image, and reuses it after that. `sfw`
 covers npm- and pip-style installs, not Docker, which is why this asks. A project can supply its
 own Dockerfile, under the main design's no-special-powers rules.
+- **`tachi sandbox build`** (new) does the same on its own: it shows what it will download, asks,
+  and builds.
+- **Headless, nothing is built.** `tachi -p` with the sandbox, when the image is not built yet or
+  its Dockerfile (Tachikoma's or the project's) has changed since, stops at once with one line
+  saying to run `tachi sandbox build` first. It never waits for an answer and never builds without
+  one. There is no switch to approve the download in advance.
 
 **The modes:** `ask`, `project`, `auto` (new) and `never` (back).
 - **`never` is allowed only with `--sandbox copy`** (options chosen: "Only in the sandbox", then,
@@ -103,36 +109,58 @@ the project folder (or its copy), none of Tachikoma's keys or logins, and the ne
 Shell commands run in it in bash, through `DockerExecutor`. Esc stops a running command in the box
 as it does now.
 
-**The file tools see what the box sees.** `read_file`, `write_file`, `edit_file`, `find_files` and
-`search_files` run on the host, and today they read the disk directly (`src/tools/search.ts`) and
-work out paths there (`src/tools/files.ts`). In the sandbox they all work on the folder mounted into
-the box, never on another:
-- **The session's root** is the folder the box sees: the real folder in live link, the copy's
-  folder in copy mode. Every tool, listing, search, file check and path lookup starts from it, so
-  in copy mode nothing reads or writes the real folder until the review.
-- **A path outside that folder is refused,** since the box cannot see it either; in the sandbox
-  there is no question to approve it.
-- **Links are never followed in the sandbox.** A command in the box can make or swap a link at any
-  time, so a path with a link in it is refused, and listing and search skip links, saying how many
-  were skipped. Where the operating system allows it, files are opened in a way that refuses a
-  link, as the main design's apply rules say.
+**Nothing on the host opens a path in the box's folder while the box runs.** Today `read_file`,
+`write_file`, `edit_file`, `find_files` and `search_files` read the disk directly on the host
+(`src/tools/search.ts`) and work out paths there (`src/tools/files.ts`), and so do the `@` menu's
+listing (`src/tui/menus.ts`) and the status line's branch (`src/tui/git.ts`). A command in the box
+can swap any part of a path for a link between a check and the open that follows it; refusing a
+link on the last part of the path (`O_NOFOLLOW`) does not cover the folders above it, and Windows
+has no simple equal. So in the sandbox:
+- **All of these go through the box.** A small helper, sent into the container with each call so
+  the image need not change with each Tachikoma version, does the reading, writing, listing and
+  searching there. Inside the container a link can lead only to what the container can see, so
+  there is no race to win: the confinement is the mount itself.
+- **The session's root is the box's folder,** `/work` in the box: the real folder in live link, the
+  copy in copy mode. A path outside it is refused; in the sandbox there is no question to approve
+  it.
+- **Copy mode's review and apply run on the host only after the box has stopped,** so no command in
+  it can race them. They follow the main design's rules for links.
+- **Read on the host before the box starts:** the instruction files (AGENTS.md, CLAUDE.md) and git's
+  settings (below). Nothing in the box is running yet to race them.
 
-**Live link: the holes closed, and the one that is not.** The container writes straight into the
-real folder, so:
-- **Git's own files are read-only in the box:** `.git/config`, and the folder git really runs
-  hooks from, found on the host before the box starts (`git rev-parse --git-path hooks`, which
-  follows `core.hooksPath`, so a `.husky` folder is covered). A hook written there would otherwise
-  run on the host the next time the user ran git, outside the sandbox. Commits in the box still
-  work.
+**Live link: the holes closed, and what stays open.** The container writes straight into the real
+folder, so before the box starts:
+- **All of `.git` is read-only in the box** (option chosen: "Whole .git read-only", over Claude
+  Code's way, which leaves the box `.git` to write except `hooks` and `config`, and whose docs do
+  not cover git's includes). Git commands that only read work in the box (`log`, `diff`,
+  `status`); commits, checkouts and branch switches fail, and the user commits on the host. Copy
+  mode keeps full git, on the copy's own repository (main design, "Git").
+- **So are the project files git's settings include.** Git's settings can include other files
+  (`include.path`), and some only under a condition such as the branch (`includeIf`), which the box
+  could change. Starting from every settings file git reads for the project (the system's, the
+  user's, and the repository's), Tachikoma follows every include and includeIf, whatever the
+  condition, reading each file with `git config --file` (which runs nothing). Every included file
+  inside the project is read-only in the box, as is every folder those settings name for hooks
+  (`core.hooksPath`, so a `.husky` folder is covered). An included path that is a link, or cannot be
+  read, refuses live link with one line saying which, and offers copy mode.
+- **Claude Code's top-level block, as far as mounts allow:** a `HEAD`, `objects`, `refs` or
+  `config` already at the top of the project is read-only in the box, as Claude Code denies writes
+  to them, so the project folder itself cannot be turned into a git repository with the box's
+  settings. A mount cannot cover one that does not exist yet; that case is the next item's.
 - **When `.git` is a file** (a linked worktree or a submodule), it is read-only in the box, so it
   cannot be pointed at a git folder the box controls. The real git folder is outside the project,
-  so it is not mounted, and git does not work in the box there; the line at launch says so, and
-  that copy mode gives the copy a repository of its own (main design, "Git").
+  so it is not mounted, and git does not work in the box there; the line at launch says so.
 - **`.tachikoma/` is hidden from the box.** It holds the error log and backups.
-- **What stays open, said plainly:** a command in the box can change any other project file the
-  user later runs on the host, such as a `package.json` script or a Makefile. No mount rule can
-  protect ordinary project files. This is why `never` is refused in live link, and why the README
-  says copy mode is the one to use when a session's work should be reviewed first.
+- **What stays open, said plainly:**
+  - A command in the box can change any other project file the user later runs on the host, such
+    as a `package.json` script or a Makefile. No mount rule can protect ordinary project files.
+  - It can also make a folder inside the project, the top one included, look like a git
+    repository of its own (its own `HEAD`, `objects`, `refs` and `config`). Git run later in that
+    folder on the host would use the box's settings instead of the real `.git`. Git's own setting `safe.bareRepository = explicit`
+    refuses such a repository unless it is named on purpose; Tachikoma never changes the user's git
+    settings, so the README recommends it.
+  - This is why `never` is refused in live link, and why the README says copy mode is the one to
+    use when a session's work should be reviewed first.
 
 **Resource limits.** Docker sets none by default ("a container has no resource constraints",
 docs.docker.com/engine/containers/resource_constraints/, read on 2026-10-30), so a runaway command
@@ -289,6 +317,9 @@ stage"). Until then, the first launch with the sandbox asks before building the 
 ## When something goes wrong
 
 - Docker missing or not running, with the sandbox asked for: the launch stops with one line.
+- The image not built, headless: the launch stops with one line naming `tachi sandbox build`.
+- A git include in live link that is a link or cannot be read: live link is refused with one line
+  naming it, and copy mode is offered.
 - Docker failing during a session: shell and file tools refuse to run, with the error; they never
   fall back to the host (main design, "Safeguards").
 - The image build failing: the launch stops, showing the build's last lines.
@@ -326,10 +357,16 @@ source. The name-lookup measurement moves to release 8 with the site list.
   running:
   - the container's settings: not root, no special powers, network off, and the memory, CPU and
     process limits, with a command stopped over the memory limit and the message naming it;
-  - in live link, `.git/config` and the real hooks folder read-only (with `core.hooksPath` set to
-    `.husky` too), a `.git` file read-only, and `.tachikoma` hidden;
-  - the file tools in copy mode reading, listing and searching the copy, never the real folder,
-    and refusing links;
+  - in live link: all of `.git` read-only (a commit fails, `git log` and `git diff` work); a file
+    included from `.git/config`, through `include` and through an `includeIf` whose condition is
+    not met, read-only; a hooks folder named by `core.hooksPath` (`.husky`) read-only; an existing
+    top-level `HEAD` or `config` read-only; a `.git` file read-only; `.tachikoma` hidden; an
+    included path that is a link refusing live link;
+  - the file tools, the `@` menu and the branch going through the box: in copy mode they read,
+    list and search the copy, never the real folder; a link made in the box to a folder outside
+    `/work` leads nowhere on the host; and nothing on the host opens a path in the box's folder
+    while the box runs;
+  - headless with no image: the one line, at once, and nothing built;
   - Esc stopping a command, and copy-then-review's apply, conflicts and `tachi review`.
 - **In the user's terminal,** a checklist run once: launching each sandbox mode, a command in the
   box, network off, a dangerous command in each mode, auto mode's judge, the review at the end of a
