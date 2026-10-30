@@ -351,7 +351,11 @@ the plan's review.
     user's choice, after the spec review and two automatic security findings showed lines read as
     harmless while the real shell ran something else). Where a command can be unpacked it is
     (`coproc`, `builtin`, cmd's `call` and `start`, `trap`'s text, `ksh`/`mksh`/`busybox sh` read
-    as bash); otherwise the line is unreadable, with these reasons:
+    as bash, `wsl`, `sudo` and `doas` running the rest of their words); code piped into
+    `python`, `node`, `perl`, `ruby` or `php` with no script counts as `text piped into a shell`
+    (code given inline, `python -c`, `node -e`, is not read: a known limit for the README); a
+    redirect from the shell's own input (`< /dev/stdin`) or from a name made when it runs does
+    not hide a pipe; otherwise the line is unreadable, with these reasons:
     - `a command named only when it runs` (a command name that is a variable, a substitution,
       `{a,b}` braces, `$0` or `{}`, or `&` with anything but a plain name);
     - `shell text made only when it runs` (`sh -c "$(curl …)"`, `-c` text built from a variable);
