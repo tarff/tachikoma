@@ -78,7 +78,7 @@ const CLOSES = new Set(["fi", "done"]);
 const SH = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh"]);
 const OTHER_SHELLS = new Set(["fish", "csh", "tcsh"]);
 // Programs whose words Windows PowerShell 5.1 passes with their inner double quotes changed (choice 37).
-const REQUOTED = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh", "busybox", "cmd", "powershell", "pwsh"]);
+const REQUOTED = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh", "busybox", "cmd", "powershell", "pwsh", "wsl", "sudo"]);
 // Files that are a process's own input.
 const STDIN = new Set(["/dev/stdin", "/proc/self/fd/0", "/dev/fd/0"]);
 // PowerShell's ways of running text or renaming a command that the check does not follow (choice 37).
@@ -359,7 +359,9 @@ class Reader {
     // A quoted end word, as in <<'EOF', <<"EOF" or <<\EOF, keeps bash from expanding the body (bash manual, "Here Documents").
     if (op !== "<<<" && here) this.pending.push({ end: w.value, strip: op === "<<-", expands: !/['"\\]/.test(src.slice(w.start, w.end)) });
     if (here) return "text";
-    return (op === "<" || op === "<>") && (m[1] === "" || m[1] === "0") ? "input" : "file";
+    // A file in place of the command's input; not its own input under another name, nor a file known only when it runs.
+    const replaces = (op === "<" || op === "<>") && (m[1] === "" || m[1] === "0") && !w.dynamic && !STDIN.has(w.value);
+    return replaces ? "input" : "file";
   }
 
   // Reads the bodies of the here-documents begun on the line just ended, and returns the commands in those bash expands.
@@ -824,11 +826,12 @@ function expand(words: Word[], text: string, src: string, g: Grammar, inner: boo
   if (runs === undefined) hungry = true;
   else if (runs) run(runs);
   for (const w of wrapped(name, args, g, src)) {
-    if ("grammar" in w) {
+    if ("texts" in w) {
       run(w);
       continue;
     }
-    const part = expand(w.words, src.slice(w.words[0]!.start, w.words.at(-1)!.end), src, g, true, w.placeholder ?? placeholder);
+    const text = src.slice(w.words[0]!.start, w.words.at(-1)!.end);
+    const part = expand(w.words, text, src, w.grammar ?? g, true, w.placeholder ?? placeholder);
     // xargs gives the command its input, so a shell there runs it.
     if (name === "xargs" && part.hungry) throw new Unreadable(PIPED);
     commands.push(...part.commands);
@@ -840,6 +843,17 @@ function expand(words: Word[], text: string, src: string, g: Grammar, inner: boo
 // The text a command gives a shell to run; null when it gives none; undefined when the shell reads its input, as in
 // `curl x | sh`, and runs what comes down the pipe.
 function shellRuns(name: string, args: Word[], g: Grammar): Runs | null | undefined {
+  if (name === "wsl") {
+    const run = wslRun(args);
+    if ("text" in run) return { grammar: "bash", texts: [linuxLine(run.text)], dynamic: run.text.some((w) => w.dynamic) };
+    return "none" in run || "exec" in run ? null : undefined;
+  }
+  if (name === "sudo" || name === "doas") {
+    const { rest, used } = sudoRun(name, args);
+    return rest.length === 0 && (used.has("s") || used.has("i") || used.has("shell") || used.has("login")) ? undefined : null;
+  }
+  const interpreter = INTERPRETERS[/^python[\d.]*$/.test(name) ? "python" : name];
+  if (interpreter) return interpreted(args, interpreter);
   if (SH.has(name)) return shText(args);
   if (name === "cmd") return cmdText(args);
   if (name === "powershell" || name === "pwsh") return psText(name, args);
@@ -958,13 +972,15 @@ function psText(name: string, args: Word[]): Runs | null | undefined {
 // to another switch (/q/c) or to the text (/cdel); undefined when there is none and it reads its input. Text that starts with
 // a quote loses that quote and the last one, unless there is no /s, exactly two quotes with blanks and none of & < > ( ) @ ^ |
 // between them, and what they hold names a program. As the check cannot tell that last, such text is read both ways.
-// %NAME% is filled in before cmd reads the text, so text holding one is made only when it runs.
+// %NAME% is filled in before cmd reads the text, so text holding one is made only when it runs; so is text holding !NAME!
+// when /v or /v:on turns on delayed expansion.
 function cmdText(args: Word[]): Runs | undefined {
   const line = args.map((w) => w.value).join(" ");
   const m = /\/[ckr]/i.exec(line);
   if (!m) return undefined;
   const text = line.slice(m.index + 2).replace(/^[ \t]+/, "");
-  const dynamic = args.some((w) => w.dynamic) || /%[^%\s]+%/.test(text);
+  const delayed = /\/v(:on)?(\s|\/|$)/i.test(line.slice(0, m.index));
+  const dynamic = args.some((w) => w.dynamic) || /%[^%\s]+%/.test(text) || (delayed && /![^!\s]+!/.test(text));
   if (!text.startsWith('"')) return { grammar: "cmd", texts: [text], dynamic };
   const last = text.lastIndexOf('"');
   const stripped = text.slice(1, last) + text.slice(last + 1);
@@ -1018,11 +1034,154 @@ const WRAPPERS: Record<string, Options> = {
 const START_FLAGS = ["/i", "/min", "/max", "/separate", "/shared", "/low", "/normal", "/high", "/realtime", "/abovenormal", "/belownormal", "/wait", "/b"];
 const START_VALUES = ["/d", "/node", "/affinity", "/machine"];
 
-type Wrapped = { words: Word[]; placeholder?: string } | Runs;
+// sudo's options (sudo(8), 1.9) and doas's (doas(1), OpenBSD 7.5). sudo's -h is both help and -h HOST, so it is not read.
+const SUDO: Options = {
+  flags: "ABbEeHiKklNnPSsVv",
+  values: "CDgpRrtTUu",
+  long: [
+    "askpass", "bell", "background", "preserve-env", "edit", "set-home", "login", "remove-timestamp", "reset-timestamp", "list",
+    "no-update", "non-interactive", "preserve-groups", "stdin", "shell", "validate",
+  ],
+  longValues: ["close-from", "chdir", "group", "prompt", "chroot", "role", "type", "command-timeout", "other-user", "user"],
+};
+const DOAS: Options = { flags: "Lns", values: "aCu" };
+
+// sudo's or doas's command, after its options and sudo's NAME=value words, and the options it was given.
+function sudoRun(name: string, args: Word[]): { rest: Word[]; used: Set<string> } {
+  const used = new Set<string>();
+  let k = skip(name, args, name === "sudo" ? SUDO : DOAS, used);
+  if (name === "sudo") while (k < args.length && /^[A-Za-z_]\w*=/.test(args[k]!.value)) k++;
+  // sudo -e edits files, -l lists what may run, -v, -K and -V run nothing; doas -C checks its settings and -L logs out.
+  const none = name === "sudo" ? ["e", "edit", "l", "list", "v", "validate", "K", "remove-timestamp", "V"] : ["C", "L"];
+  return { rest: none.some((o) => used.has(o)) ? [] : args.slice(k), used };
+}
+
+// wsl's own options (`wsl --help`, Windows 11): those for running a command, and those that manage WSL and run none.
+const WSL_VALUES = ["--cd", "--distribution", "-d", "--distribution-id", "--user", "-u", "--shell-type"];
+const WSL_MANAGE = [
+  "--help", "--debug-shell", "--install", "--manage", "--mount", "--set-default-version", "--shutdown", "--status", "--unmount",
+  "--uninstall", "--update", "--version", "-v", "--export", "--import", "--import-in-place", "--list", "-l", "--set-default", "-s",
+  "--set-version", "--terminate", "-t", "--unregister",
+];
+
+// What wsl runs: a command line for Linux's shell, the words of a command run without a shell (-e, --exec), nothing (its
+// management options), or Linux's shell reading its input when no command is given.
+function wslRun(args: Word[]): { text: Word[] } | { exec: Word[] } | { none: true } | { input: true } {
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!.value;
+    if (a === "-e" || a === "--exec") return { exec: args.slice(k + 1) };
+    if (a === "--") return { text: args.slice(k + 1) };
+    if (WSL_VALUES.includes(a)) k++;
+    else if (WSL_MANAGE.includes(a)) return { none: true };
+    else if (a !== "--system") {
+      if (a.startsWith("-")) throw unknownOption("wsl", a);
+      return { text: args.slice(k) };
+    }
+  }
+  return { input: true };
+}
+
+// The command line Windows passes on, as Linux's shell reads it: a word holding a blank is put in double quotes.
+function linuxLine(words: Word[]): string {
+  return words.map((w) => (w.value === "" || /\s/.test(w.value) ? `"${w.value}"` : w.value)).join(" ");
+}
+
+// Interpreters that run code from their input when given no script, or - or /dev/stdin as the script (choice 37). From each
+// one's --help: Python 3.12, Node.js 24, perl 5.38 (perlrun), ruby 3.3, PHP 8.3. `code` options give the code (or, for
+// php -f, the script) themselves; `interactive` ones read code from the input after the script. An option not listed is
+// taken to have a value in the next word, so that a script it hides makes the line read as code from the input.
+interface Interpreter {
+  flags: string;
+  values: string;
+  attached?: string; // short options whose value can only be attached
+  code: string;
+  interactive: string;
+  long: string[];
+  longValues: string[];
+  longCode?: string[];
+}
+const INTERPRETERS: Record<string, Interpreter> = {
+  python: {
+    flags: "bBdEhIOPqsSuvVx?",
+    values: "WX",
+    code: "cm",
+    interactive: "i",
+    long: ["help", "version", "help-env", "help-xoptions", "help-all"],
+    longValues: ["check-hash-based-pycs"],
+  },
+  node: {
+    flags: "hvc",
+    values: "rC",
+    code: "ep",
+    interactive: "i",
+    long: [
+      "help", "version", "check", "trace-warnings", "enable-source-maps", "inspect", "inspect-brk", "test", "watch",
+      "expose-gc", "preserve-symlinks", "pending-deprecation", "trace-deprecation", "throw-deprecation", "abort-on-uncaught-exception",
+      "frozen-intrinsics", "experimental-strip-types", "experimental-transform-types", "experimental-vm-modules",
+    ],
+    longValues: ["require", "import", "input-type", "loader", "experimental-loader", "title", "env-file", "conditions", "inspect-port", "redirect-warnings"],
+    longCode: ["eval", "print", "run"],
+  },
+  nodejs: { flags: "hvc", values: "rC", code: "ep", interactive: "i", long: ["help", "version"], longValues: [], longCode: ["eval", "print"] },
+  perl: { flags: "acnpstTuUwWXSvh", values: "I", attached: "0CdDilmMxF", code: "eE", interactive: "", long: [], longValues: [] },
+  ruby: {
+    flags: "acdlnpsSvwyhU",
+    values: "CEIr",
+    attached: "WxTK0Fi",
+    code: "e",
+    interactive: "",
+    long: ["help", "version", "verbose", "copyright", "yjit"],
+    longValues: [],
+  },
+  php: { flags: "hilmnsvwHq", values: "cdztS", code: "rfBREF", interactive: "a", long: [], longValues: [] },
+};
+
+// Whether an interpreter reads its code from its input: undefined if so, null when it is given code or a script.
+function interpreted(args: Word[], it: Interpreter): null | undefined {
+  let k = 0;
+  for (; k < args.length; k++) {
+    const a = args[k]!.value;
+    if (a === "--") {
+      k++;
+      break;
+    }
+    if (a === "-" || !a.startsWith("-")) break;
+    if (a.startsWith("--")) {
+      const option = a.slice(2).split("=")[0]!;
+      if (it.longCode?.includes(option)) return null;
+      if (option === "interactive") return undefined;
+      // node's --no-... and --experimental-... options are on their own, unless listed with a value.
+      const alone = it.long.includes(option) || option.startsWith("no-") || (option.startsWith("experimental-") && !it.longValues.includes(option));
+      if (!a.includes("=") && !alone) k++; // a value in the next word, for a listed option and, to be safe, for one not listed
+      continue;
+    }
+    for (let j = 1; j < a.length; j++) {
+      const letter = a[j]!;
+      if (it.code.includes(letter)) return null;
+      if (it.interactive.includes(letter)) return undefined;
+      if (it.attached?.includes(letter)) break;
+      if (it.flags.includes(letter)) continue;
+      if (j === a.length - 1) k++; // a value in the next word, for a listed option and, to be safe, for one not listed
+      break;
+    }
+  }
+  const script = args[k]?.value;
+  return script === undefined || script === "-" || STDIN.has(script) ? undefined : null;
+}
+
+type Wrapped = { words: Word[]; placeholder?: string; grammar?: Grammar } | Runs;
 
 // What a command that runs the rest of its words runs (choice 34): the words, or for watch, shell text.
 function wrapped(name: string, args: Word[], g: Grammar, src: string): Wrapped[] {
   if (name === "find") return execs(args).map((words) => ({ words, placeholder: "{}" }));
+  if (name === "sudo" || name === "doas") {
+    const { rest } = sudoRun(name, args);
+    return rest.length > 0 ? [{ words: rest }] : [];
+  }
+  if (name === "wsl") {
+    const run = wslRun(args);
+    return "exec" in run && run.exec.length > 0 ? [{ words: run.exec, grammar: "bash" }] : []; // run in Linux, without a shell
+  }
   if (g === "cmd" && name === "call") return args.length > 0 ? [{ words: args }] : [];
   if (g === "cmd" && name === "start") return started(args, src);
   const options = WRAPPERS[name];
@@ -1063,8 +1222,8 @@ function started(args: Word[], src: string): Wrapped[] {
   return k < args.length ? [{ words: args.slice(k) }] : [];
 }
 
-// Where a command's own options end; one it does not know makes the line unreadable.
-function skip(name: string, args: Word[], options: Options): number {
+// Where a command's own options end; one it does not know makes the line unreadable. `used` collects the options given.
+function skip(name: string, args: Word[], options: Options, used?: Set<string>): number {
   let k = 0;
   for (; k < args.length; k++) {
     const a = args[k]!.value;
@@ -1072,6 +1231,7 @@ function skip(name: string, args: Word[], options: Options): number {
     if (a === "-" || !a.startsWith("-")) return k;
     if (a.startsWith("--")) {
       const option = a.slice(2).split("=")[0]!;
+      used?.add(option);
       if (options.longValues?.includes(option)) {
         if (!a.includes("=")) k++;
         continue;
@@ -1081,6 +1241,7 @@ function skip(name: string, args: Word[], options: Options): number {
     }
     for (let j = 1; j < a.length; j++) {
       const letter = a[j]!;
+      used?.add(letter);
       if (options.values.includes(letter)) {
         if (j === a.length - 1) k++;
         break;
