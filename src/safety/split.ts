@@ -539,10 +539,14 @@ class Reader {
   }
 
   // Where a cd, pushd or popd may leave the shell. Its options are skipped up to --, and the target is tidied as paths are
-  // (ownInput), so `cd -- /dev` and `cd /./` are read for what they are. An option the check does not know, the folder
-  // stack (`cd -`, popd, pushd +N), and HOME or CDPATH set anywhere on the line leave the shell anywhere.
+  // (ownInput), so `cd -- /dev` and `cd /./` are read for what they are. These leave the shell anywhere: an option the check
+  // does not know; the folder stack (`cd -`, popd, pushd +N); a ~ form other than ~ and ~/... (~- and ~+ are the folders
+  // before and now, ~user another's home); and HOME, CDPATH or PWD set anywhere on the line.
   private moved(name: string, args: Word[], vars: Word[]): Cwd {
-    const set = (variable: string) => new RegExp(`\\b${variable}\\+?=`).test(this.src) || vars.some((v) => v.value.startsWith(`${variable}=`));
+    // A variable counts as set when its name is on the line as a plain word, as NAME=, `read NAME`, `printf -v NAME`,
+    // `for NAME in`, mapfile or declare would write it, not only inside a $NAME or ${NAME} expansion.
+    const set = (variable: string) =>
+      new RegExp(`(?<!\\$|\\$\\{[#!]?|\\w)${variable}(?!\\w)`).test(this.src) || vars.some((v) => v.value.startsWith(`${variable}=`));
     let target: Word | undefined;
     for (let k = 0; k < args.length; k++) {
       const value = args[k]!.value;
@@ -557,9 +561,12 @@ class Reader {
     }
     if (name === "popd" || (name === "pushd" && !target)) return ANYWHERE;
     if (!target) return set("HOME") ? ANYWHERE : KNOWN; // cd alone goes home
-    if (target.dynamic || ownInput(target.value, this.cwd) || (target.value.startsWith("~") && set("HOME"))) return ANYWHERE;
+    const home = target.value === "~" || target.value.startsWith("~/");
+    if (target.value.startsWith("~") && (!home || set("HOME"))) return ANYWHERE;
+    if (target.dynamic || ownInput(target.value, this.cwd)) return ANYWHERE;
     const relative = !/^[/~]/.test(target.value);
-    if (relative && (this.cwd !== KNOWN || set("CDPATH"))) return ANYWHERE; // from a folder not known, or found through CDPATH
+    // From a folder not known, found through CDPATH, or climbed from a PWD set on the line.
+    if (relative && (this.cwd !== KNOWN || set("CDPATH") || set("PWD"))) return ANYWHERE;
     if (target.value.startsWith("/")) return tidied(target.value).length === 0 ? ROOT : KNOWN;
     return target.value.split("/").includes("..") ? ROOT : KNOWN;
   }
