@@ -61,7 +61,8 @@ export const mouse = (ui: UI, fns: Fns) => {
   const onMouse = (m: Mouse) => {
     // `ended` never comes here (onInput, keyRouting.ts, says why), and is checked as the first phase. Printed out: a
     // report read with its `[`, as for keys.
-    // A wheel notch asks for the menu, as a key does (useInput), so Autocomplete comes first while one is open.
+    // A wheel notch asks for the menu, as a key does (onInput, keyRouting.ts), so Autocomplete comes first while one is
+    // open.
     const h = ui.happening(m.kind === "wheel" ? () => fns.menuFor(ui.editor.current) !== null : undefined);
     const { phase } = h;
     if (!ui.fullNow.current || phase.kind === "ended" || phase.kind === "printed") return;

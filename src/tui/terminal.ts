@@ -19,8 +19,9 @@ export class Screen {
   #mouse = false;
   #restored = false;
   #used = false; // anything ever turned on, so there is anything to undo
-  // Set by the App while the detail view is printed out (`[`), or while an editor has the terminal (App.tsx, away): Ink
-  // is suspended then, and drops its report of a render error with every other drawing (restoreWhenInkEnds, below).
+  // Set by the App while the detail view is printed out (`[`), or while an editor has the terminal (app/handover.tsx,
+  // away): Ink is suspended then, and drops its report of a render error with every other drawing (restoreWhenInkEnds,
+  // below).
   suspended = false;
   readonly #write: (s: string) => void;
   readonly #writeNow: (s: string) => void;
@@ -116,8 +117,8 @@ export function restoreOnExit(screen: Screen, unmount: () => void, proc: Pick<No
 // when the process ends, which can be a while later. A render error is drawn by Ink's ErrorBoundary on the second screen,
 // which leaving would take away, and Ink swallows the rejected exit promise (ink.js:277): so in full screen it is said
 // again on stderr once the terminal is back; so too while the detail view is printed out, or while an editor has the
-// terminal (App.tsx, away), when Ink is suspended and draws nothing. Ink rejects before the event loop drains, so
-// before `exit`. In classic Ink's report stays on screen, as in release 4. Either way the exit code is 1 (the user's
+// terminal (app/handover.tsx, away), when Ink is suspended and draws nothing. Ink rejects before the event loop drains,
+// so before `exit`. In classic Ink's report stays on screen, as in release 4. Either way the exit code is 1 (the user's
 // choice, 2026-10-27, at Task 6's review; release 4 exited 0).
 export function restoreWhenInkEnds(screen: Screen, exited: Promise<unknown>): void {
   exited.then(

@@ -7,7 +7,7 @@ import { type Action, segmenter } from "./editor.js";
 // needs the screen's width, so App does them, and the rest of these App's own: Ctrl+R's search,
 // Shift+Tab's permission mode, Alt+P's model list and Ctrl+O's last turn ("Menus and modes"), and
 // Ctrl+T's to-do list (release 4 design, "On screen"); and scrolling the conversation (release 5 design, "Scrolling").
-// The keys for all but the editor's own come from the table of actions (bindings.ts; App.tsx, ACTIONS).
+// The keys for all but the editor's own come from the table of actions (bindings.ts; app/constants.ts, ACTIONS).
 export type Command = Action | "submit" | "up" | "down" | "search" | "mode" | "models" | "lastTurn" | "todos" | Scroll;
 export type Scroll = "pageUp" | "pageDown" | "top" | "bottom" | "lineUp" | "lineDown";
 const SCROLLS = new Set<Command>(["pageUp", "pageDown", "top", "bottom", "lineUp", "lineDown"]);
@@ -50,7 +50,8 @@ const spelled = (text: string) =>
 // The keys a hint or help names for an action: each of `usual`, the keys release 5's words name, still bound to it, or
 // with none of them, its first key bound, or none, so the words stay release 5's with the default table and a rebind
 // never leaves them stale (plan, Task 6, test 1: the same words). Given the contexts in force, only keys that run the
-// action there count (Bindings.acts), in `launch` too when given: chat:cycleMode's (App.tsx, lookUp; choice 32).
+// action there count (Bindings.acts), in `launch` too when given: chat:cycleMode's (app/keyRouting.ts, lookUp; choice
+// 32).
 export function named(b: Bindings, action: string, context: Context, usual: string[], contexts?: Context[], launch = b): string[] {
   const bound = b.keysFor(action, context).filter((k) => !contexts || (b.acts(k, action, contexts) && launch.acts(k, action, contexts)));
   const kept = usual.filter((k) => bound.includes(k));
@@ -68,13 +69,14 @@ export function both(a: string | undefined, b: string | undefined): string | und
 const either = (items: string[]) => (items.length < 3 ? items.join(" or ") : `${items.slice(0, -1).join(", ")}, or ${items.at(-1)}`);
 
 // What `?` on an empty prompt prints, grey, in the scrollback: the editor's own keys that no binding in `prompt`, the
-// contexts the prompt obeys (App.tsx, contextsOf: Scroll too in full screen), takes, the rest from the table. Ctrl-C and
-// Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them. With `vimFirst`, vim takes
-// a plain Esc first, as in INSERT (App.tsx, route), so the first Esc only goes to NORMAL (choice 31). A key switches the
-// mode only where `launch`, the launch's keys, switches it too (App.tsx, lookUp; release 6 plan, choice 32).
+// contexts the prompt obeys (app/constants.ts, contextsOf: Scroll too in full screen), takes, the rest from the table.
+// Ctrl-C and Ctrl-D are reserved (bindings.ts, RESERVED), so they are written as release 5 wrote them. With `vimFirst`,
+// vim takes a plain Esc first, as in INSERT (app/keyRouting.ts, route), so the first Esc only goes to NORMAL (choice
+// 31). A key switches the mode only where `launch`, the launch's keys, switches it too (app/keyRouting.ts, lookUp;
+// release 6 plan, choice 32).
 export function keyList(b: Bindings, prompt: Context[] = ["Chat", "Global"], vimFirst = false, launch = b): string[] {
   // A key is named only where it runs its action at the prompt; Scroll's as full screen's prompt runs them, Chat, Scroll
-  // and Global (App.tsx, contextsOf), as the list names them "(full screen)".
+  // and Global (app/constants.ts, contextsOf), as the list names them "(full screen)".
   const fullScreen: Context[] = prompt.includes("Scroll") ? prompt : [...prompt.slice(0, -1), "Scroll", ...prompt.slice(-1)];
   const k = (action: string, context: Context, ...usual: string[]) => named(b, action, context, usual, context === "Scroll" ? fullScreen : prompt);
   const scroll = (action: string, usual: string) => k(`scroll:${action}`, "Scroll", usual)[0];
@@ -208,7 +210,8 @@ export function commands(input: string, key: Key): Command[] {
 
 // A key as vim mode's `press` takes it (vim.ts; release 6 plan, Task 21): a character typed, as typed, or a key's name
 // ("escape", "enter", "left", "tab"...). Null for a key held with Ctrl or Alt, which keeps its table or editor meaning
-// (release 6 design, "Vim mode"), and for what is not one key; Esc with Alt is two Escs read together (App.tsx, route).
+// (release 6 design, "Vim mode"), and for what is not one key; Esc with Alt is two Escs read together
+// (app/keyRouting.ts, route).
 export function vimKey(input: string, key: Key): string | null {
   const s = strokeOf(input, key);
   if (s?.ctrl || (s?.alt && s.key !== "escape")) return null;

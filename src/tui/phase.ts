@@ -3,8 +3,8 @@
 // mouse read them through now(); usePaste through pasteTo().
 //
 // Not a phase: /screen switching to classic. Today's keys, pastes, queue and mouse never ask it: a key read while the
-// switch runs acts as in classic mode (App.tsx, switchScreen), and a question asked meanwhile is answered as ever. The
-// switch holds the queue through `working`, as a turn does.
+// switch runs acts as in classic mode (app/handover.tsx, switchScreen), and a question asked meanwhile is answered as
+// ever. The switch holds the queue through `working`, as a turn does.
 
 // Who takes the keys: the order App's useInput decides in, first match winning.
 export type Phase =
@@ -39,7 +39,8 @@ export interface PhaseInputs {
   questions: number; // the questions waiting, drawn or not
   detail: { search: { typing: boolean } | null } | null;
   search: boolean; // Ctrl+R's
-  // Asked last, only when nothing before it takes the keys: finding an `@` menu can list a folder (App.tsx, menuFor).
+  // Asked last, only when nothing before it takes the keys: finding an `@` menu can list a folder (app/promptKeys.ts,
+  // menuFor).
   menu: () => boolean;
   working: boolean;
   queued: number;
