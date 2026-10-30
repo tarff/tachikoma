@@ -50,6 +50,7 @@ learn from experience. The command is `tachi`.
 | Auto mode | Claude Code's `auto` (a second model judging each action before it runs) goes into release 7, designed with the sandbox; release 12's loops decide which may use it | User, 2026-10-28 (option chosen: "Release 7, with the sandbox"; [release 6 design](2026-10-28-tachikoma-release-6-design.md), "Not in this release") |
 | `never` mode switched off | From release 6 until release 7, `never` is refused however it is asked for (`--mode never` or `"mode": "never"` in the settings file), at launch with one line, in `tachi` and `tachi -p` alike. Release 7 brings, before `never` returns: (1) the Docker sandbox; (2) auto mode, a second model judging each action before it runs; (3) a check on dangerous commands of every kind, not only ones that delete files. Examples only, for release 7's design to settle: wiping or formatting disks, changing permissions or system settings, stopping processes, rewriting or force-pushing git history, sending files or secrets off the machine, installing software | User, 2026-10-29 ("we can't have never mode deleting a filesystem"; options chosen: "Switch never off (Recommended)", then "Off now, checks in 7"; then "not just file deletion, any other dangerous commands too"; release 6 plan, choice 30) |
 | Shift+Enter in Windows Terminal | Release 7: Windows Terminal sends Shift+Enter as Enter (README, Known limits; tested 2026-10-25), so a new line takes Ctrl+J or `\` then Enter. First re-test whether the user's current Windows Terminal answers the kitty keyboard protocol, which Tachikoma already asks for; if it still does not, read Windows Terminal's own win32 input mode, which sends each key with its Shift, Ctrl and Alt state, since Ink cannot read it. A Windows Terminal `sendInput` setting would act in every program there, PowerShell included, so it is not the fix | User, 2026-10-30, at release 6's terminal checklist ("why cant we get shift+enter to work?", then "yes" to adding it to release 7) |
+| Workflows | Release 12, after the loops: a saved route of steps, as LangGraph does, for a process that should run the same way every time (build, then a spec review, then a code review, fixing until both approve). Each step is a delegated task with its own worker; the arrows between steps are real checks, such as the tests passing or a reviewer approving, never the model saying it is done; a check that fails sends the work back to the step that needs fixing. The free loop stays the default; a workflow is for repeated processes only. Release 12's design settles the file format and the limits | User, 2026-10-30 ("like langgraph", then "Add it at the end of release 12"), after agreeing it is the next stage on from loops |
 
 ## 1. Overall shape
 
@@ -300,6 +301,11 @@ Loops run in headless mode and come in two kinds:
 
 Every loop needs a limit set by the user. There is no default limit, because no data yet supports
 one.
+
+**Workflows** come at the end of release 12, built on the loops and on delegation. A workflow is
+a saved route of steps, each a delegated task, joined by real checks: a check that fails sends
+the work back to the step that needs fixing. Like a loop, each workflow needs a limit set by the
+user (see Decisions, "Workflows").
 
 ### Budgets
 
@@ -899,7 +905,7 @@ Each release works on its own and can be shown.
 10. Codebase search with EmbeddingGemma 2
 11. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
     refusal rules. The controller comes first because workers have to be cancellable as a group.
-12. Loops: on a timer, and until done
+12. Loops: on a timer, and until done; then workflows, saved routes of steps joined by checks
 13. `tachi setup` / `tachi doctor`, with a first-run import from other tools, and the fresh-install
     CI
 14. More providers and bring-your-own keys
