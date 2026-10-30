@@ -16,8 +16,11 @@ import { tempContext } from "../helpers.js";
 // The share's name ends in .invalid, which never resolves (RFC 2606), as a second guard only.
 // Fix 8: when `share` is set, the share is a folder the test made, which stands in for it, so a project can live there;
 // `toShare` is then a fake link to the share that is followed, as a real one would be. realpath names the share again.
+// Fix 9: each of `internal` is a fake link whose stored target is in Windows' internal form, refused as `linked` is,
+// and so is the made-up local folder that target resolves into (C:\??, C:\Device), so a walk that resolves it never
+// reaches the real disk.
 const fake = vi.hoisted(() => {
-  const state = { reached: [] as string[], linked: undefined as string | undefined, share: undefined as string | undefined, toShare: undefined as string | undefined };
+  const state = { reached: [] as string[], linked: undefined as string | undefined, share: undefined as string | undefined, toShare: undefined as string | undefined, internal: [] as [string, string][] };
   const TARGET = String.raw`\\tachi-test.invalid\share`;
   // As the plan defines it: \\ or // once resolved, except \\?\ or \\.\ before a drive letter, a local long path.
   const network = (p: string) => /^[\\/]{2}/.test(p) && !/^[\\/]{2}[?.][\\/][a-z]:\\/i.test(p);
@@ -30,7 +33,7 @@ const fake = vi.hoisted(() => {
     return state.share && under(through, TARGET) ? state.share + through.slice(TARGET.length) : through;
   };
   const named = (out: unknown) => (typeof out === "string" && state.share && under(out, state.share) ? TARGET + out.slice(state.share.length) : out);
-  function wrapAll(real: Record<string, unknown>, promises: boolean, resolve: (p: string) => string, dirname: (p: string) => string) {
+  function wrapAll(real: Record<string, unknown>, promises: boolean, resolve: (...p: string[]) => string, dirname: (p: string) => string) {
     const linkDirent = { name: "linked", isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false };
     const wrap = (name: string, fn: (...a: unknown[]) => unknown) => {
       const wrapped = function (this: unknown, ...args: unknown[]) {
@@ -42,8 +45,13 @@ const fake = vi.hoisted(() => {
             if (link && sameAs(p, link) && name === "lstatSync") return { isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false };
             if (link && sameAs(p, link) && name === "readlinkSync") return TARGET;
           }
+          for (const [link, stored] of state.internal) {
+            if (sameAs(p, link) && name === "lstatSync") return { isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false };
+            if (sameAs(p, link) && name === "readlinkSync") return stored;
+          }
           const q = moved(p);
-          if (network(q) || (linked && under(q, linked))) {
+          const internal = state.internal.some(([link, stored]) => under(q, link) || under(q, resolve(dirname(link), stored).split("\\").slice(0, 2).join("\\")));
+          if (network(q) || (linked && under(q, linked)) || internal) {
             state.reached.push(`${name} ${q}`);
             const err = Object.assign(new Error(`ENOENT: no such file or directory, ${name} '${q}'`), { code: "ENOENT" });
             if (promises) return Promise.reject(err);
@@ -85,7 +93,7 @@ vi.mock("node:fs/promises", async (original) => {
 
 const OPEN = "which the file tools never open; a shell command can reach it, after asking";
 const direct = (abs: string) => `${abs} is a network or device path outside the project, ${OPEN}`;
-const through = (abs: string, link: string) => `${abs} leads through ${link} to a network or device path outside the project (${fake.TARGET}\\), ${OPEN}`;
+const through = (abs: string, link: string, target = `${fake.TARGET}\\`) => `${abs} leads through ${link} to a network or device path outside the project (${target}), ${OPEN}`;
 const failure = (p: Promise<unknown>) =>
   p.then(
     () => "no error",
@@ -107,6 +115,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     fake.state.linked = undefined;
     fake.state.share = undefined;
     fake.state.toShare = undefined;
+    fake.state.internal = [];
   });
 
   async function project(mode: Mode) {
@@ -202,6 +211,25 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     fake.state.toShare = path.join(ctx.root, "work");
     for (const root of [path.join(fake.TARGET, "proj"), path.join(ctx.root, "work", "proj")]) {
       expect(await readFileTool.run({ path: "a.txt" }, { ...ctx, root })).toBe("     1\tfine");
+    }
+    expect(ctx.asked).toEqual([]);
+    expect(fake.state.reached).toEqual([]);
+  });
+
+  // Review fixes plan, fix 9: a link stored in Windows' internal form, which path.resolve would make a local path, is
+  // refused by its stored text: in the project, and, with words of its own, on the way to the project's own folder.
+  const INTERNAL = [String.raw`\??\GLOBALROOT\Device\Mup\tachi-test.invalid\share`, String.raw`\Device\Mup\tachi-test.invalid\share`];
+  it("refuses a link whose target is in Windows' internal form, in the project and on the way to it", async () => {
+    const ctx = await project("never");
+    fake.state.internal = INTERNAL.map((stored, i) => [path.join(ctx.root, `internal${i}`), stored]);
+    for (const [link, stored] of fake.state.internal) {
+      const abs = path.join(link, "a.txt");
+      expect(await failure(readFileTool.run({ path: abs }, ctx))).toBe(through(abs, link, stored));
+      expect(await failure(writeFileTool.run({ path: abs, content: "x" }, ctx))).toBe(through(abs, link, stored));
+      const root = path.join(link, "proj");
+      const inside = path.join(root, "a.txt");
+      const words = `${inside} is in a project whose own folder leads through ${link} to ${stored}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`;
+      expect(await failure(readFileTool.run({ path: "a.txt" }, { ...ctx, root }))).toBe(words);
     }
     expect(ctx.asked).toEqual([]);
     expect(fake.state.reached).toEqual([]);

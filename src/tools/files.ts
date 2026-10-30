@@ -112,6 +112,14 @@ export const programEnvironment = (real: string) => /^\/proc\/[^/]+\/(task\/[^/]
 // server, so the file tools refuse one outside the project before anything opens it.
 const networkPath = (p: string) => process.platform === "win32" && /^[\\/]{2}/.test(p) && !/^[\\/]{2}[?.][\\/][a-z]:\\/i.test(p);
 const NEVER_OPENED = "which the file tools never open; a shell command can reach it, after asking";
+const leadsThrough = (start: string, link: string, target: string) =>
+  `${start} leads through ${link} to a network or device path outside the project (${target}), ${NEVER_OPENED}`;
+
+// A link whose stored target begins with one \ or / (not two, and not a drive letter): on Windows, the internal forms
+// such as \??\GLOBALROOT\Device\Mup\server\share and \Device\Mup\server\share, which path.resolve would make a local
+// path (C:\Device\...) though the link leads to the network, and the rare link written as \folder (review fixes plan,
+// fix 9, the user's choice, "Any single-slash start"). Where it leads cannot be told without following it.
+type Unchecked = { link: string; target: string };
 
 // Walks `start` one part at a time from its drive, or from `from` with the parts in `after`, as realpath would, but
 // looks before it follows (the plan, fix 2):
@@ -120,8 +128,9 @@ const NEVER_OPENED = "which the file tools never open; a shell command can reach
 // `allowed` is false is refused; any other takes the place of the parts walked so far. The walk ends at the first part
 // that does not exist. A link can rightly be passed twice, so a loop is ended by counting: a path past 63 links is
 // refused, the most reparse points Windows allows on one path ("Reparse Points", learn.microsoft.com; review fixes
-// plan, fix 7, the user's choice). Returns where it ended.
-function linkHops(start: string, allowed: (target: string) => boolean, from = path.parse(start).root, after = start.slice(from.length)): string {
+// plan, fix 7, the user's choice). Returns where it ended, or the first link whose stored target is Unchecked, which
+// is not followed (fix 9).
+function linkHops(start: string, allowed: (target: string) => boolean, from = path.parse(start).root, after = start.slice(from.length)): string | Unchecked {
   let done = from;
   const rest = after.split(path.sep).filter(Boolean);
   let links = 0;
@@ -135,10 +144,10 @@ function linkHops(start: string, allowed: (target: string) => boolean, from = pa
       continue;
     }
     if (++links > 63) throw new Error(`${start} passes through more than 63 links, ${NEVER_OPENED}`);
-    const target = path.resolve(path.dirname(next), readlinkSync(next));
-    if (networkPath(target) && !allowed(target)) {
-      throw new Error(`${start} leads through ${next} to a network or device path outside the project (${target}), ${NEVER_OPENED}`);
-    }
+    const stored = readlinkSync(next);
+    if (process.platform === "win32" && /^[\\/](?![\\/])/.test(stored)) return { link: next, target: stored };
+    const target = path.resolve(path.dirname(next), stored);
+    if (networkPath(target) && !allowed(target)) throw new Error(leadsThrough(start, next, target));
     done = path.parse(target).root;
     rest.unshift(...target.slice(done.length).split(path.sep).filter(Boolean));
   }
@@ -146,17 +155,18 @@ function linkHops(start: string, allowed: (target: string) => boolean, from = pa
 }
 
 // Each project root's real place, from its walk at the first resolveIn for it. A network target there is allowed: the
-// user started Tachikoma in that folder.
-const rootPlaces = new Map<string, string>();
+// user started Tachikoma in that folder. One that met an Unchecked link is kept as that link: where the project really
+// is cannot be told, so every path in it is refused (fix 9, the user's choice at the build, "Refuse, own message").
+const rootPlaces = new Map<string, string | Unchecked>();
 
 // `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
 // it somewhere else.
 export function resolveIn(root: string, p: string): { abs: string; outside: boolean; shown: string } {
   const abs = path.resolve(root, p);
-  let place = rootPlaces.get(root);
-  if (place === undefined) {
-    place = linkHops(path.resolve(root), () => true);
-    rootPlaces.set(root, place);
+  if (!rootPlaces.has(root)) rootPlaces.set(root, linkHops(path.resolve(root), () => true));
+  const place = rootPlaces.get(root)!;
+  if (typeof place !== "string") {
+    throw new Error(`${abs} is in a project whose own folder leads through ${place.link} to ${place.target}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`);
   }
   // Inside the root by its text, or inside the root's real place.
   const inRoot = (q: string) => !leaves(path.relative(root, q)) || !leaves(path.relative(place, q));
@@ -165,8 +175,8 @@ export function resolveIn(root: string, p: string): { abs: string; outside: bool
   // so a link on the way to a root on a share is not checked again as if it led out (review fixes plan, fix 8). Any
   // other path is walked from its drive.
   const fromRoot = path.relative(root, abs);
-  if (leaves(fromRoot)) linkHops(abs, inRoot);
-  else linkHops(abs, inRoot, place, fromRoot);
+  const walked = leaves(fromRoot) ? linkHops(abs, inRoot) : linkHops(abs, inRoot, place, fromRoot);
+  if (typeof walked !== "string") throw new Error(leadsThrough(abs, walked.link, walked.target));
   const base = realTarget(root);
   const real = realTarget(abs);
   if (base === null || real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
