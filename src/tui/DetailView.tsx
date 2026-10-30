@@ -16,7 +16,8 @@ export interface Detail {
   search: { query: string; found: Found[]; at: number; typing: boolean; before: View } | null;
 }
 
-// Opened at its top, so a record is read from its heading. The lines are escaped as the conversation's are (App.tsx, say).
+// Opened at its top, so a record is read from its heading. The lines are escaped as the conversation's are
+// (app/output.ts, say).
 export function opened(lines: Line[], width: number): Detail {
   const rows = new Rows(width);
   rows.add(lines.map(escaped));

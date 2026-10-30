@@ -71,6 +71,8 @@ tasks"). Nothing a user sees changes, and every test passes before and after eac
   were made.
 - **Layout sums move out of drawing** into `layout.ts`, where they are tested as plain functions.
 - **Comments that tell the build's history** are cut to what the code does and why.
+- **After release 6, App.tsx's areas each get a file** in `src/tui/app/`, beside its state and
+  constants; App.tsx wires them together and draws the screen ([plan](2026-10-30-split-app.md)).
 
 ## Keys become named actions
 

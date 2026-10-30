@@ -63,6 +63,7 @@ src/
   mcp/        MCP client (MemPalace, code search, any server the user adds)
   skills/     SKILL.md loader
   tui/        terminal interface (Ink) and status line
+    app/      App.tsx's state and its areas (keys, mouse, queue and the rest), a file each
   cli.ts      entry point: interactive, or headless for loops
 sidecar/      Python, managed by uv: MemPalace and the code search, both run as MCP servers
 skills/       built-in skills: vendored superpowers, plus Tachikoma's own

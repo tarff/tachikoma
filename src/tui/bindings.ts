@@ -261,8 +261,8 @@ export class Bindings {
     return tables.some((t) => [...t.keys()].some((k) => k.startsWith(`${text} `) && this.#bound(tables, k) != null));
   }
 
-  // Drops a chord under way, for what is no one keystroke and so can complete none: text read together (App.tsx,
-  // route).
+  // Drops a chord under way, for what is no one keystroke and so can complete none: text read together
+  // (app/keyRouting.ts, route).
   drop(): void {
     this.#chord = null;
   }
@@ -294,11 +294,12 @@ export class Bindings {
   }
 
   // Whether this table, a live edit of the keys file, differs from `launch` where App goes on reading the launch's
-  // keys, for its line (App.tsx, onKeys; release 6 plan, choice 32): in a context a permission question reads, whole
-  // (Confirmation, then Scroll in full screen, then Global; App.tsx, contextsOf and lookUp), or in a key that switches
-  // the mode at the prompt or its menu, in either screen mode, where launch's keys do not, as `acts` says (App
-  // switches the mode only where both tables do). By what the key does, not how the file writes it, so freeing a key
-  // the launch's keys bind to chat:cycleMode but take in a chord, or set to null, counts too (choice 32's code review).
+  // keys, for its line (app/liveEdits.ts, onKeys; release 6 plan, choice 32): in a context a permission question reads,
+  // whole (Confirmation, then Scroll in full screen, then Global; app/constants.ts, contextsOf; app/keyRouting.ts,
+  // lookUp), or in a key that switches the mode at the prompt or its menu, in either screen mode, where launch's keys
+  // do not, as `acts` says (App switches the mode only where both tables do). By what the key does, not how the file
+  // writes it, so freeing a key the launch's keys bind to chat:cycleMode but take in a chord, or set to null, counts
+  // too (choice 32's code review).
   heldBack(launch: Bindings): boolean {
     const same = (a: Map<string, string | null>, b: Map<string, string | null>) => a.size === b.size && [...a].every(([text, action]) => b.has(text) && b.get(text) === action);
     const PROMPT: Context[][] = [

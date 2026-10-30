@@ -38,7 +38,7 @@ export function changes<T extends object>(parse: (text: string) => T): (text: st
 // Making the folder or starting the watch can throw (a home that cannot be written, Linux's limit on watches); the
 // caller says so. A watch that cannot start still reads the files once, so their keys apply unwatched (choice 21).
 // `begin`, when given, is called once for each read that gives either callback anything, before them, so the caller can
-// take what both files said in one read as one edit (App.tsx, note; release 6 plan, choice 35's code review).
+// take what both files said in one read as one edit (app/output.ts, note; release 6 plan, choice 35's code review).
 export function watchSettings(
   home: string,
   on: (next: Loaded) => void,

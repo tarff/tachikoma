@@ -1962,8 +1962,8 @@ describe("App in full screen", () => {
     expect(app.lastFrame()).toContain("› about");
   });
 
-  // The live area's rows are counted by hand (App.tsx, liveRows): a count off by one would make the frame as tall as the
-  // terminal, which Ink clears whole before drawing (release 5 plan, "Before you start").
+  // The live area's rows are counted by hand (layout.ts, frame's `live`): a count off by one would make the frame as
+  // tall as the terminal, which Ink clears whole before drawing (release 5 plan, "Before you start").
   const bg = (id: string, task: string) => callTool(id, "delegate", { description: task, task, background: true });
   it.each([
     { name: "the / menu open", turns: [], last: "lead fake:a", setup: async (app: ReturnType<typeof render>) => press(app, "/") },
@@ -2783,7 +2783,7 @@ describe("App's clicks in full screen", () => {
     expect(app.lastFrame()).toContain("› dX\n");
   });
 
-  // As a key between two presses does (the rule at App.tsx's `remember`).
+  // As a key between two presses does (the rule at app/keyRouting.ts's `remember`).
   it("starts the press-twice count again on a click", async () => {
     const { app, mouse } = await mount([], { full: true });
     await press(app, "abc", "\u001b");
@@ -3483,8 +3483,8 @@ describe("App's detail view in full screen", () => {
   // A record opened by the queue going on from a listener set up once, at mount: a question's answer (bindAsk), the end
   // of a turn the bus's tasks event started, and the end of a command clicked in the menu (the mouse's listener). Each
   // way it wraps at the width the terminal has then. They pass on the code as it is because each drawing wraps an open
-  // view again (App.tsx, `detail`'s re-wrap); they catch a listener reading an old drawing only if that re-wrap goes.
-  // The last, a turn started before the resize opening the record from its own next(), is the one that pins
+  // view again (app/state.ts, `detail`'s re-wrap); they catch a listener reading an old drawing only if that re-wrap
+  // goes. The last, a turn started before the resize opening the record from its own next(), is the one that pins
   // openDetail reading the width from `frame`.
   const narrow = async (app: ReturnType<typeof render>) => {
     Object.defineProperty(app.stdout, "columns", { value: 60, configurable: true });
@@ -5970,7 +5970,7 @@ describe("App's vim mode", () => {
     expect(sent(session)).toEqual({ type: "text", text: "hi" });
   });
 
-  // Code review of Task 21: new text in the prompt starts what `.` repeats afresh (App.tsx, freshText).
+  // Code review of Task 21: new text in the prompt starts what `.` repeats afresh (app/keyRouting.ts, freshText).
   it("repeats on . an insert typed after a message was sent from INSERT", async () => {
     const { app } = await mount([reply("ok")]);
     await normal(app, "foo");
@@ -6699,7 +6699,8 @@ describe("App's live settings", () => {
 
   // The code review of choice 32: a question asked while the model list is open waits under it, and the key that
   // closes the list is read by both tables. Here the launch's keys start their chord Esc n on it, which the live keys
-  // no longer have; the first key read at the question drops it (App.tsx, lookUp's `asked`), so n still declines.
+  // no longer have; the first key read at the question drops it (app/keyRouting.ts, lookUp's `asked`), so n still
+  // declines.
   it("drops a chord the launch's keys started in the model list before the question under it reads a key", async () => {
     const home = freshHome();
     mkdirSync(settingsDir(home));
@@ -7190,7 +7191,7 @@ describe("App's live settings", () => {
     }
   });
 
-  // Code review of Task 21: a key App handles itself ends a remap pair's wait (App.tsx, dropRemap).
+  // Code review of Task 21: a key App handles itself ends a remap pair's wait (app/keyRouting.ts, dropRemap).
   it("types both keys of a vimInsertModeRemaps pair with Ctrl+T between them", async () => {
     const { app } = await watching([], { editorMode: "vim", vimInsertModeRemaps: { jj: "<Esc>" } });
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
