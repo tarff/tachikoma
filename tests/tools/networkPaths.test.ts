@@ -257,6 +257,29 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     const elsewhere = path.join(unc, "other", "b.txt");
     expect(await failure(readFileTool.run({ path: elsewhere }, root))).toBe(`The user declined: read ${elsewhere} (really ${path.join(fake.TARGET, "other", "b.txt")})`);
     expect(ctx.asked).toHaveLength(1);
+    // Fix 17: the project's own folder written that way too.
+    const asking = await tempContext("ask", [false]);
+    const uncRoot = { ...asking, root: path.join(unc, name) };
+    expect(await readFileTool.run({ path: "a.txt" }, uncRoot)).toBe("     1\tfine");
+    expect(await failure(readFileTool.run({ path: elsewhere }, uncRoot))).toBe(`The user declined: read ${elsewhere}`);
+    expect(asking.asked).toHaveLength(1);
+    expect(fake.state.reached).toEqual([]);
+  });
+
+  // Review fixes plan, fix 17: in a project on the share, a link to another share is still refused by the link check.
+  it("refuses a link in a project on the share that leads to another share", async () => {
+    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    const ctx = await tempContext("ask");
+    const name = path.basename(ctx.root);
+    await mkdir(path.join(share, name));
+    fake.state.share = share;
+    const root = path.join(fake.TARGET, name);
+    const link = path.join(root, "out");
+    const other = String.raw`\\tachi-test.invalid\other`;
+    fake.state.follow = [[link, other]];
+    const abs = path.join(link, "a.txt");
+    expect(await failure(readFileTool.run({ path: path.join("out", "a.txt") }, { ...ctx, root }))).toBe(through(abs, link, other));
+    expect(ctx.asked).toEqual([]);
     expect(fake.state.reached).toEqual([]);
   });
 

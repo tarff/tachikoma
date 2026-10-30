@@ -7,8 +7,9 @@ import { defineTool } from "./tool.js";
 
 // Where a path really leads, following symlinks and Windows junctions. Parts that don't exist yet
 // (a new file in a new folder) are added back onto the deepest part that does. Null for a link that
-// leads nowhere: writing through it could create its missing target, wherever that is.
-function realTarget(abs: string): string | null {
+// leads nowhere: writing through it could create its missing target, wherever that is. Undefined when
+// Windows cannot say where it leads (review fixes plan, fix 15).
+function realTarget(abs: string): string | null | undefined {
   let existing = abs;
   const rest: string[] = [];
   while (!existsSync(existing) && path.dirname(existing) !== existing) {
@@ -16,18 +17,20 @@ function realTarget(abs: string): string | null {
     rest.unshift(path.basename(existing));
     existing = path.dirname(existing);
   }
-  return path.join(realPlace(existing), ...rest);
+  const place = realPlace(existing);
+  return place === undefined ? undefined : path.join(place, ...rest);
 }
 
 // Where an existing path really is, as Windows says (realpathSync.native): Node's lstat does not see a junction to a
 // drive named by its ID (\\?\Volume{...}\) as a link and follows it, so the JavaScript realpath, which goes part by
-// part, gave such a junction's target as the junction's own place. The JavaScript one when Windows' throws, as it can
-// on some virtual drives (review fixes plan, fix 12).
-function realPlace(p: string): string {
+// part, gave such a junction's target as the junction's own place (review fixes plan, fix 12). Undefined when Windows'
+// throws, as it does (ENOENT) for a junction to a volume with no drive letter, where the JavaScript one gave the
+// junction's own place too (fix 15, the user's choice, "always ask").
+function realPlace(p: string): string | undefined {
   try {
     return realpathSync.native(p);
   } catch {
-    return realpathSync(p);
+    return undefined;
   }
 }
 
@@ -144,13 +147,13 @@ type Unchecked = { link: string; target: string };
 // fix 13, found at the spec review).
 const walkRoot = (p: string) => /^\\\\\?\\unc\\[^\\]+\\[^\\]+/i.exec(p)?.[0].concat("\\") ?? path.parse(p).root;
 
-// Walks `start` one part at a time from its drive, or from `from` with the parts in `after`, as realpath would, but
-// looks before it follows (the plan, fix 2):
+// Walks `start` one part at a time from walkRoot, its drive or its share's root, or from `from` with the parts in
+// `after`, as realpath would, but looks before it follows (the plan, fix 2):
 // lstat does not follow the part it is given, and the parts above it are already plain folders or links whose targets
 // were checked; a link's target is read without opening it. A target that is a network or device path for which
 // `allowed` is false is refused; any other takes the place of the parts walked so far. The walk ends at the first part
-// that does not exist. A link can rightly be passed twice, so a loop is ended by counting: a path past 63 links is
-// refused, the most reparse points Windows allows on one path ("Reparse Points", learn.microsoft.com; review fixes
+// that does not exist. A link can rightly be passed twice, so a loop is ended by counting: past 63 links the walk
+// stops, the most reparse points Windows allows on one path ("Reparse Points", learn.microsoft.com; review fixes
 // plan, fix 7, the user's choice; 64 junctions gave ELOOP when probed, 2026-10-30). Returns where it ended, the first
 // link whose stored target is Unchecked, which is not followed (fix 9), or null past 63 links, so the root's walk
 // can say it in its own words (fix 14).
@@ -200,7 +203,7 @@ export function resolveIn(root: string, p: string, { trusted = false }: { truste
   // every entry of a folder on each keystroke (fix 11).
   if (!trusted && process.platform === "win32") {
     if (!rootPlaces.has(root)) rootPlaces.set(root, linkHops(path.resolve(root), () => true));
-    const place = rootPlaces.get(root)!;
+    const place = rootPlaces.get(root) as string | Unchecked | null;
     const fromRoot = path.relative(root, abs);
     if (typeof place !== "string") {
       // "In a project" only of a path in it by its text (fix 14).
@@ -230,19 +233,23 @@ export function resolveIn(root: string, p: string, { trusted = false }: { truste
   const base = realTarget(root);
   const real = realTarget(abs);
   if (base === null || real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
+  if (base === undefined || real === undefined) return { abs, outside: true, shown: `${abs} (where it really leads cannot be told)` };
   // The saved login lives there. Refused in every mode, `never` included, and after following links,
   // so a link cannot get round it.
   const data = realTarget(path.resolve(dataDir()));
-  if (data === null || inData(data, real)) throw new Error(`${abs} is in Tachikoma's data folder, which the file tools never touch`);
+  if (!data || inData(data, real)) throw new Error(`${abs} is in Tachikoma's data folder, which the file tools never touch`);
   // The settings and keys files, the same way: when the project is the home folder they are inside it,
   // where `project` mode would let the model rewrite them unasked.
   const settings = realTarget(settingsDir());
-  if (settings === null || inSettings(settings, real)) {
+  if (!settings || inSettings(settings, real)) {
     throw new Error(`${abs} is one of Tachikoma's settings files, which the file tools never touch; edit it with /settings or /keybindings`);
   }
   if (programEnvironment(real)) throw new Error(`${abs} is a program's environment, which can hold API keys, so the file tools never read it`);
   const rel = path.relative(base, real);
-  return { abs, outside: leaves(rel), shown: rel === path.relative(root, abs) ? abs : `${abs} (really ${real})` };
+  // Case ignored on Windows, where A.TXT and a.txt are one file (fix 16, the user's choice, "Hide case-only").
+  const typed = path.relative(root, abs);
+  const asTyped = process.platform === "win32" ? rel.toLowerCase() === typed.toLowerCase() : rel === typed;
+  return { abs, outside: leaves(rel), shown: asTyped ? abs : `${abs} (really ${real})` };
 }
 
 // Read the way Claude Code's own Read tool does (its tool description, 2026-10-22): up to 2,000 lines

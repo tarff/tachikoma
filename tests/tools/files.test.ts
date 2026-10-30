@@ -382,19 +382,31 @@ describe("file tools", () => {
     }
   });
 
-  it.runIf(process.platform === "win32")("resolves a file in the project when Windows' own realpath throws", async () => {
+  // Fix 15: Windows' lookup throws ENOENT for a junction to a volume with no drive letter, and the JavaScript one put
+  // it inside the project, so a path it cannot look up is outside and asks (the user's choice, "always ask").
+  it.runIf(process.platform === "win32")("treats a file Windows' own realpath cannot look up as outside", async () => {
     const ctx = await tempContext();
     await writeFile(path.join(ctx.root, "a.txt"), "fine");
-    const native = vi.spyOn(realpathSync, "native").mockImplementation(() => {
-      throw Object.assign(new Error("EISDIR: illegal operation on a directory"), { code: "EISDIR" });
+    const abs = path.join(ctx.root, "a.txt");
+    const real = realpathSync.native;
+    const native = vi.spyOn(realpathSync, "native").mockImplementation((p, ...rest) => {
+      if (p === abs) throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${abs}'`), { code: "ENOENT" });
+      return real(p, ...rest);
     });
     try {
-      const abs = path.join(ctx.root, "a.txt");
-      expect(resolveIn(ctx.root, "a.txt")).toEqual({ abs, outside: false, shown: abs });
+      expect(resolveIn(ctx.root, "a.txt")).toEqual({ abs, outside: true, shown: `${abs} (where it really leads cannot be told)` });
       expect(native).toHaveBeenCalled();
     } finally {
       native.mockRestore();
     }
+  });
+
+  // Fix 16: Windows' lookup gives the real case, which is the same file there (the user's choice, "Hide case-only").
+  it.runIf(process.platform === "win32")("names a path typed in another case without its real place", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), "fine");
+    const abs = path.join(ctx.root, "A.TXT");
+    expect(resolveIn(ctx.root, "A.TXT")).toEqual({ abs, outside: false, shown: abs });
   });
 
   it("shows where a path through a link really leads when asking", async () => {
