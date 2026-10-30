@@ -41,13 +41,23 @@ Option chosen: "Refuse unless in project". A path can name a network share in it
 `linked` leads to `\\server\share`). Both are refused before anything follows them (found at the
 plan's review).
 
-- **"Network or device path":** on Windows, a path that starts with `\\` or `//` once resolved. That
-  covers `\\server\share`, `\\?\UNC\...`, `\\?\...` and `\\.\...` (named pipes and devices). Node
-  reports a junction's or link's target as a plain path (`C:\...`), so ordinary local links never
-  count (probed 2026-10-30 with a junction in the scratch folder).
-- **The text check:** first in `resolveIn`, before any disk call: a resolved path that is a network
-  or device path, and not inside the root by its text (`leaves(path.relative(root, abs))`), is
-  refused.
+- **"Network or device path":** on Windows, a path that starts with `\\` or `//` once resolved,
+  except `\\?\` or `\\.\` followed by a drive letter (`\\?\C:\...`), which is Windows' long-path
+  spelling of an ordinary local file and is checked as today (option chosen at the build, where the
+  first rule would have refused the existing long-path test, `tests/tools/files.test.ts:102`: "Count
+  as local"). So it covers `\\server\share`, `\\localhost\C$\...`, `\\?\UNC\...`, `\\?\` and `\\.\`
+  with anything but a drive letter (named pipes, raw devices, volume names). Node reports a
+  junction's or link's target as a plain path (`C:\...`), so ordinary local links never count
+  (probed 2026-10-30 with a junction in the scratch folder).
+- **The order:** the root is walked first (below), as that touches only the root's own parts, which
+  the user chose by starting there; then the text check; then the link check (found at the build:
+  the plan put the text check first but also counted the root's real place in it).
+- **The text check:** before any disk call on the path itself: a resolved path that is a network
+  or device path, and not inside the root by its text (`leaves(path.relative(root, abs))`), nor
+  inside the root's real place, is refused.
+- **The existing spelling tests** (`tests/tools/files.test.ts:79` and `:261`): the `\\localhost\C$`
+  spelling of the data folder and of the settings folder is now refused with the network words, not
+  the data or settings ones. Those two expectations change; the long-path spellings keep theirs.
 - **The link check:** next, still before `realTarget` follows anything, a new `linkHops(abs)` in
   `src/tools/files.ts` walks the path one part at a time from its drive, as `realpath` would, but
   looks before it follows:
