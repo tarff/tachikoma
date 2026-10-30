@@ -216,8 +216,8 @@ describe("the keys named in help and hints", () => {
     expect(keyList(over("Chat", { "ctrl+k": "chat:stash", "ctrl+u": "chat:stash" }))).toContain("  Ctrl+Y  put back the last delete · Ctrl+Z  undo");
   });
 
-  // In full screen the prompt obeys Chat, Scroll and Global (App.tsx, contextsOf), so a Scroll binding takes an editing
-  // key there; in classic mode, Chat and Global, Scroll is not in force.
+  // In full screen the prompt obeys Chat, Scroll and Global (app/constants.ts, contextsOf), so a Scroll binding takes
+  // an editing key there; in classic mode, Chat and Global, Scroll is not in force.
   it("leaves out an editing key a Scroll binding takes only when asked with Scroll's context, as in full screen", () => {
     const b = over("Scroll", { end: "scroll:bottom" });
     expect(keyList(b, ["Chat", "Scroll", "Global"])).toContain("  Ctrl+A Ctrl+E  line start, end · Home  line start · Alt+B Alt+F or Ctrl+← Ctrl+→  by word");

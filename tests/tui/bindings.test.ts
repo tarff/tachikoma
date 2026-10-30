@@ -221,7 +221,7 @@ describe("Bindings.press", () => {
     expect(bindings.press(k("q"), ["Chat", "Global"], 300)).toBeNull(); // typed, as no binding takes it
   });
 
-  // For what is no one keystroke, text read together (App.tsx, route; Task 6's code review).
+  // For what is no one keystroke, text read together (app/keyRouting.ts, route; Task 6's code review).
   it("drops a chord on drop(), reading the next stroke as if none had waited", () => {
     const bindings = b();
     bindings.press(ctrl("x"), ["Chat", "Global"], 0);

@@ -57,7 +57,8 @@ describe("now", () => {
     expect(now({ ...all, ended: true }).phase.kind).toBe("ended");
   });
 
-  // Finding an `@` menu can list a folder (App.tsx, menuFor), so it is asked only where the keys would reach it.
+  // Finding an `@` menu can list a folder (app/promptKeys.ts, menuFor), so it is asked only where the keys would reach
+  // it.
   it("asks for the menu only when nothing before it takes the keys", () => {
     let asked = 0;
     const menu = () => {
