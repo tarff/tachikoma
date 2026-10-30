@@ -6279,6 +6279,19 @@ describe("App's live settings", () => {
     expect(top()).toBe(from - 3);
   });
 
+  // Review fixes plan, fix 6: 0.99 leaves 99 hundredths over, which speed 3 once read as 99 rows.
+  it("starts a new scrollSpeed's first notch with nothing left over from the old one", async () => {
+    const { app, mouse, write } = await watching([], { scrollSpeed: 0.99 }, { full: true, intro: said(80), scrollSpeed: 0.99 });
+    const top = () => Number(/^said (\d+)\.$/.exec(shown(app)[0]!)![1]);
+    await press(app, "\u001b[5~"); // PgUp, so there is room below
+    await wheel(mouse, "down"); // moves no row, leaving 0.99 of one over
+    write({ scrollSpeed: 3 });
+    await sees(app, `scrollSpeed is now 3 ${FROM}`);
+    const from = top();
+    await wheel(mouse, "down");
+    expect(top()).toBe(from + 3);
+  });
+
   it("leaves an entry a flag or variable gave at launch as given, and says so", async () => {
     const { app, session, write } = await watching([], {}, {}, { lead: "TACHI_LEAD", mode: "--mode" });
     write({ lead: "ollama:b", mode: "project" });
