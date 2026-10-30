@@ -70,7 +70,8 @@ plan's review).
   - a target that is a network or device path outside the root is refused; any other target takes
     the place of the parts walked so far, and the walk goes on from there;
   - a link met a second time ends the walk (a loop of links), and `realTarget` then reports it as it
-    does today; the walk keeps a set of the links seen, so no count is needed;
+    does today; the walk keeps a set of the links seen, so no count is needed (wrong, found at the
+    code review: a link can rightly be passed twice; replaced by fix 7's count of 63 links);
   - the walk stops at the first part that does not exist.
 - **The root itself** is walked the same way once, at the first `resolveIn` for that root. A network
   target there is allowed, since the user started Tachikoma in that folder. The root's real place,
