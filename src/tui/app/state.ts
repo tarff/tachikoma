@@ -164,7 +164,7 @@ export function useAppState({
   const working = useRef(false); // busy, for keys read before the screen is drawn again
   const queue = useRef<Draft[]>([]); // what Enter added during a turn, in order, pictures' spans kept (release 6 plan, Task 14)
   const [pictures] = useState(() => picturesGiven ?? new Pictures());
-  // The message waiting for its pictures' reads to end before it is sent, as the reads leave it (perform, App.tsx).
+  // The message waiting for its pictures' reads to end before it is sent, as the reads leave it (perform, queue.ts).
   const reading = useRef<Draft | null>(null);
   const reads = useRef(0); // the pictures' reads running, for the hint row's "Reading picture..." (newPicture, pictureReads.ts)
   // What is running, since when, and for a turn the totals it started from; and the turn's tool calls,
@@ -246,10 +246,11 @@ export function useAppState({
   // it was found before: finding an `@` menu can list a folder (menuFor). A paste asks pasteTo() of the same inputs.
   const phaseRefs = { ended, printed, drawn: frame, listOpen, questions, detail, search, working, queue };
   const happening = (findMenu?: () => boolean) => nowOf(phaseInputs(phaseRefs, findMenu));
-  // What the functions read that the drawing works out after making them, filled in by it (App.tsx): the
-  // conversation's height, and the latest drawing's functions for the one of them that calls through them.
+  // Filled in by this drawing once it has worked them out, after making the functions that read them (App.tsx): the
+  // conversation's height, and `latest`, through which newPicture's settle calls the latest drawing's functions.
   const drawn = {} as { viewHeight: number; latest: { readonly current: Pick<Fns, "settle"> } };
-  // Each read-only, so a check stored in a const narrows it, as it narrowed App's own consts (the question, `movable`).
+  // Read-only, so TypeScript narrows `ui.question` through a check kept in a const (`movable`), as it narrowed App's
+  // own `question`.
   return {
     session, tasks, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments,
     makeProvider, bindAsk, login, listModels, screen, fullPossible, mouse, scrollSpeed, clipboard, input, bindings,

@@ -50,8 +50,8 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     ui.setTable(read.table);
   };
   // One entry's new value, `s` the file's and `now` what applies (above), with its line. A lead or a screen waits for
-  // next() (App.tsx). A model the file names that cannot be made is said, as at launch (cli.tsx), and the one before is
-  // kept.
+  // next() (queue.ts). A model the file names that cannot be made is said, as at launch (cli.tsx), and the one before
+  // is kept.
   const applyEntry = (key: (typeof LIVE)[number], s: Settings, now: ReturnType<typeof resolve>) => {
     const line = (value: string) => fns.note(gray(`${key} is now ${value}${FROM}`));
     const model = (spec: string | undefined) => {

@@ -194,7 +194,8 @@ export const keyRouting = (ui: UI, fns: Fns) => {
     if (action === "app:exit" && e.text) fns.run("delete");
     else if (!name) {
       if (action && ACTIONS[action]) fns.run(ACTIONS[action]);
-      // Called without await, so nothing may escape (submit, App.tsx): what goes wrong is said, as for a switch (next).
+      // Called without await, so nothing may escape (submit, queue.ts): what goes wrong is said, as for a switch
+      // (next).
       else if (action === "chat:externalEditor") void fns.externalEditor().catch((err) => fns.say({ text: errorText(err), color: "red" }));
       else if (action === "chat:stash") fns.swapStash(e);
       else if (action === "chat:imagePaste") fns.imagePaste(e);

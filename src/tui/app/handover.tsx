@@ -232,7 +232,7 @@ export const handover = (ui: UI, fns: Fns) => {
   };
   // Ctrl+G and Ctrl+X Ctrl+E: the prompt as it is when the editor starts goes to it, and what it saved becomes the
   // prompt, the cursor at the end, as one step Ctrl+Z takes back; on failure the prompt stays (design, "On return").
-  // Then the queue goes on: a /screen, /settings or /keybindings may have waited for the editor (next, App.tsx).
+  // Then the queue goes on: a /screen, /settings or /keybindings may have waited for the editor (next, queue.ts).
   const externalEditor = async () => {
     const ids = ui.editor.current.spans.map((s) => s.id); // the pictures the prompt holds as the editor opens
     const ran = await fns.away((command) => editText(ui.editor.current.text, command));
