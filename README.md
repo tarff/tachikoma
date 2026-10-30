@@ -80,9 +80,9 @@ editor, stash, pictures and vim mode. The command is `tachi`.
   tool calls. `--status` picks which parts to show. Subagents' tokens and cost count in the totals.
 - **Headless runs:** `-p "<prompt>"` runs one prompt, prints the answer and exits. Add `--json` to
   get every event as one JSON line. Details below.
-- **An error log:** every failure, and every refusal another model answered, is written to
-  `.tachikoma/errors.jsonl` in the project, and that folder is kept out of git. `/errors`
-  summarises it.
+- **An error log:** every failure, and every refusal another model answered, is written to a
+  private file of the project's own in Tachikoma's data folder, `errors/<hash>.jsonl`, so nothing
+  in a project can lead it elsewhere. `/errors` summarises it.
 - **Refusals:** for the Anthropic models that support it, Anthropic's own fallback re-runs a refused
   request on another model. `--fallback <provider:model>` adds a retry on a model of your choice,
   which can be from another provider. Off unless set. Every rescue is shown and logged.

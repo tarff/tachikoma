@@ -723,10 +723,12 @@ describe("App", () => {
   });
 
   it("shows an error, and keeps running, when the error log cannot be read", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    // A folder in one the test made: the log's own folder is made private when it is read (review fixes plan, fix 3).
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "log");
+    mkdirSync(dir);
     const { app } = await mount([reply("still here")], { errorFile: dir });
     await type(app, "/errors");
-    await until(app, "EISDIR");
+    await until(app, `${dir} is not a plain file, so it was not used`);
     await type(app, "hi");
     await until(app, "still here");
   });

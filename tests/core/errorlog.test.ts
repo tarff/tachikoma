@@ -1,15 +1,87 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtemp, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { writePrivate } from "../../src/auth/private.js";
 import { Bus } from "../../src/core/bus.js";
+import { projectFile } from "../../src/core/datadir.js";
 import { attachErrorLog, summarize } from "../../src/core/errorlog.js";
 import { Stats } from "../../src/core/stats.js";
+import { shortName } from "../helpers.js";
 
-describe("error log", () => {
+// Review fixes plan, fix 3: the log is in Tachikoma's data folder, named after the project's real path as the prompt
+// history is, so nothing in a project can lead it elsewhere. Making that folder private starts PowerShell on Windows.
+describe("error log", { timeout: 15_000 }, () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  // The project is a folder of its own inside one the test made, so its short name can be listed quickly.
+  async function project() {
+    const data = await mkdtemp(path.join(tmpdir(), "tachi-data-"));
+    vi.stubEnv("TACHI_DATA_DIR", data);
+    const root = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a project folder");
+    mkdirSync(root);
+    return { data, root };
+  }
+  const report = { kind: "provider", attempted: "request", message: "429", lead: "fake:a" } as const;
+
+  it("writes to the data folder, named after the project's real path, and nothing in the project", async () => {
+    const { data, root } = await project();
+    const file = projectFile("errors", root);
+    expect(file).toBe(path.join(data, "errors", `${createHash("sha256").update(realpathSync.native(root)).digest("hex")}.jsonl`));
+    const bus = new Bus();
+    attachErrorLog(bus, file, "s1");
+    bus.emit("error", report);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ session: "s1", ...report });
+    expect(readdirSync(path.join(data, "errors"))).toEqual([path.basename(file)]);
+    expect(existsSync(path.join(root, ".tachikoma"))).toBe(false);
+  });
+
+  it("is not led out by a .tachikoma link in the project", async () => {
+    const { root } = await project();
+    const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
+    // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink.
+    await symlink(elsewhere, path.join(root, ".tachikoma"), "junction");
+    const bus = new Bus();
+    attachErrorLog(bus, projectFile("errors", root), "s1");
+    bus.emit("error", report);
+    expect(readdirSync(elsewhere)).toEqual([]);
+  });
+
+  it("is one log for two spellings of one folder", async () => {
+    const { root } = await project();
+    const short = shortName(path.dirname(root), path.basename(root));
+    const spellings = [root, path.join(root, "."), ...(short ? [path.join(path.dirname(root), short)] : [])];
+    const file = projectFile("errors", root);
+    for (const p of spellings) {
+      expect(projectFile("errors", p)).toBe(file);
+      const bus = new Bus();
+      attachErrorLog(bus, projectFile("errors", p), "s1");
+      bus.emit("error", report);
+    }
+    expect(readFileSync(file, "utf8").trim().split("\n")).toHaveLength(spellings.length);
+  });
+
+  it("turns itself off, saying so once, when its folder cannot be made", async () => {
+    const { data, root } = await project();
+    const blocker = path.join(data, "blocker");
+    writeFileSync(blocker, "");
+    vi.stubEnv("TACHI_DATA_DIR", blocker); // the data folder is a file, so the errors folder cannot be made in it
+    const file = projectFile("errors", root);
+    const bus = new Bus();
+    attachErrorLog(bus, file, "s1");
+    const said = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => bus.emit("error", report)).not.toThrow();
+    bus.emit("error", report);
+    expect(said).toHaveBeenCalledTimes(1);
+    expect(said.mock.calls[0]![0]).toBe(`Error log turned off: could not write ${file} (ENOTDIR: not a directory, mkdir '${path.dirname(file)}').`);
+    said.mockRestore();
+  });
+
   it("writes one JSON line per error and summarises them", async () => {
-    const file = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), ".tachikoma", "errors.jsonl");
+    const { root } = await project();
+    const file = projectFile("errors", root);
     const bus = new Bus();
     attachErrorLog(bus, file, "s1");
     bus.emit("error", { kind: "tool", attempted: "shell", message: "exit code: 1\nmore", lead: "fake:a" });
@@ -24,48 +96,16 @@ describe("error log", () => {
     expect(out).toContain("request\n  429");
   });
 
-  it("keeps its folder out of git, without touching the project's .gitignore", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
-    const bus = new Bus();
-    attachErrorLog(bus, path.join(root, ".tachikoma", "errors.jsonl"), "s1");
-    bus.emit("error", { kind: "tool", attempted: "write_file secret", message: "x", lead: "fake:a" });
-    expect(readFileSync(path.join(root, ".tachikoma", ".gitignore"), "utf8")).toBe("*\n");
-    expect(existsSync(path.join(root, ".gitignore"))).toBe(false);
-  });
-
-  it("leaves an existing .gitignore in its folder alone", async () => {
-    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), ".tachikoma");
-    mkdirSync(dir);
-    writeFileSync(path.join(dir, ".gitignore"), "errors.jsonl\n");
-    const bus = new Bus();
-    attachErrorLog(bus, path.join(dir, "errors.jsonl"), "s1");
-    bus.emit("error", { kind: "tool", attempted: "shell", message: "x", lead: "fake:a" });
-    expect(readFileSync(path.join(dir, ".gitignore"), "utf8")).toBe("errors.jsonl\n");
-  });
-
-  it("turns itself off, saying so once, when the log cannot be written", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-"));
-    writeFileSync(path.join(dir, "blocker"), "");
-    const file = path.join(dir, "blocker", "errors.jsonl"); // its folder is a file, so writing fails
-    const bus = new Bus();
-    attachErrorLog(bus, file, "s1");
-    const said = vi.spyOn(console, "error").mockImplementation(() => {});
-    const report = { kind: "tool", attempted: "shell", message: "x", lead: "fake:a" } as const;
-    expect(() => bus.emit("error", report)).not.toThrow();
-    bus.emit("error", report);
-    expect(said).toHaveBeenCalledTimes(1);
-    expect(String(said.mock.calls[0]![0])).toContain("Error log turned off");
-    said.mockRestore();
-  });
-
-  it("says so when there is no log yet", () => {
-    expect(summarize(path.join(tmpdir(), "does-not-exist.jsonl"))).toEqual(["No errors logged yet."]);
+  it("says so when there is no log yet", async () => {
+    const { root } = await project();
+    expect(summarize(projectFile("errors", root))).toEqual(["No errors logged yet."]);
   });
 
   const row = (attempted: string) => JSON.stringify({ at: "2026-10-22T00:00:00.000Z", session: "s1", kind: "tool", attempted, message: "it broke", lead: "fake:a" });
   async function logFile(...lines: string[]) {
-    const file = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "errors.jsonl");
-    writeFileSync(file, `${lines.join("\n")}\n`);
+    const { root } = await project();
+    const file = projectFile("errors", root);
+    writePrivate(file, `${lines.join("\n")}\n`);
     return file;
   }
 
@@ -105,6 +145,22 @@ describe("error log", () => {
     const out = summarize(await logFile(row("shell"), rescue));
     expect(out[0]).toMatch(/^1 errors and 1 refusals another model answered, logged in /);
     expect(out).toContain("  fallback: 1");
+  });
+
+  // Read as the prompt history is: a log with another name is refused, and one others could read is made private first,
+  // which is said. Windows gives a new file the private folder's permissions, so only the first can be made there.
+  it("refuses a log with another name (a hard link)", async () => {
+    const file = await logFile(row("shell"));
+    linkSync(file, path.join(path.dirname(file), "..", "other.jsonl"));
+    expect(() => summarize(file)).toThrow(`${file} has other names (hard links), so it was not used`);
+  });
+
+  it.skipIf(process.platform === "win32")("says when it made a log others could read private (macOS and Linux)", async () => {
+    const { root } = await project();
+    const file = projectFile("errors", root);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, `${row("shell")}\n`, { mode: 0o644 });
+    expect(summarize(file)[0]).toBe(`${file} could be read by others; it is now private to you.`);
   });
 });
 

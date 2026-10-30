@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -8,6 +10,19 @@ export function dataDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.P
   if (platform === "win32") return path.join(env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "tachikoma");
   if (platform === "darwin") return path.join(home, "Library", "Application Support", "tachikoma");
   return path.join(home, ".local", "share", "tachikoma");
+}
+
+// A file of the project folder's own in the data folder, such as its prompt history (release 3 design, "How it is
+// built") or its error log (review fixes plan, fix 3): named after the folder's real path, so two ways of writing one
+// folder share it.
+export function projectFile(folder: string, root: string, data = dataDir()): string {
+  let real: string;
+  try {
+    real = realpathSync.native(root); // Windows gives the folder's own case, whatever was typed
+  } catch {
+    real = path.resolve(root);
+  }
+  return path.join(data, folder, `${createHash("sha256").update(real).digest("hex")}.jsonl`);
 }
 
 // The settings file (release 6 design, "The settings file"): ~/.tachikoma/settings.json, the only one read, so a
