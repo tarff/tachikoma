@@ -303,6 +303,10 @@ was checked against the code before this section. One commit per fix, tests firs
   `realpathSync` when that throws (it can on some virtual drives), so those drives behave as now.
   It runs after the network checks, as now. The root and the path go through the same function, so
   a mapped drive, which `native` gives as its `\\server\share` path, still compares the same way.
+- **The prompt** (asked at the build): `native` writes the real place in Windows' own spelling, so
+  a path typed another way (`\\?\C:\...`, or a short name such as `PROGRA~1`) shows it, as in
+  `read \\?\C:\work\b.txt (really C:\work\b.txt)`. Option chosen: "Show the real place". The
+  long-path test in `networkPaths.test.ts` expects those words.
 - **Tests:** in a folder the test made, a junction made with `mklink /J` to the volume ID spelling
   of another folder the test made outside the project (the ID from `mountvol <drive>: /L`): a
   read there is "outside" and asks. With `realpathSync.native` made to throw, a plain file in the
@@ -339,9 +343,11 @@ was checked against the code before this section. One commit per fix, tests firs
   only for a path inside the project; for one outside it, `<abs> cannot be checked, as the project's
   own folder leads through <link> to <target>, a link the file tools cannot check, so they never
   open it; a shell command can reach it, after asking`.
-- **A root walk past 63 links** names the path asked for, with the root's link count in the words:
-  `<abs> is in a project whose own folder passes through more than 63 links, which the file tools
-  never open; a shell command can reach it, after asking`.
+- **A root walk past 63 links** names the path asked for, with the same pair of wordings as above
+  (option chosen at the build, "Same pair"): for a path inside the project,
+  `<abs> is in a project whose own folder passes through more than 63 links, which the file tools never open; a shell command can reach it, after asking`;
+  for one outside it,
+  `<abs> cannot be checked, as the project's own folder passes through more than 63 links, which the file tools never open; a shell command can reach it, after asking`.
 - **Tests:**
   - every test root in `networkPaths.test.ts` is its own, since the root places are kept for the
     session;
@@ -349,7 +355,11 @@ was checked against the code before this section. One commit per fix, tests firs
   - in a project on the fake share, a project link to another folder in the project's real place
     is allowed;
   - later walks do not go over the root's own parts again (the fake counts `lstatSync` on them);
-  - `search_files` and the `@` menu in a project on the fake share.
+  - the `@` menu in a project on the fake share. `search_files` is left out of it (option chosen at
+    the build, "Leave search out"): search reads files in a worker the fake does not reach, so the
+    test would really try the share's name. The test file says so.
+- **Fix 13's spellings of one share** are the two named there; `\\.\UNC\server\share` is still
+  refused (noted at the build).
 
 ## Checks
 
