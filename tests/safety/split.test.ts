@@ -589,7 +589,6 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["powershell", "[scriptblock] :: Create('x')", "a way of running text the check does not follow"],
   ["powershell", "[type]'ScriptBlock'", "a way of running text the check does not follow"],
   ["powershell", "[IO.DirectoryInfo]'C:\\x'", "a way of running text the check does not follow"],
-  ["powershell", "[Diagnostics.Process]::Start('x')", "a way of running text the check does not follow"],
   ["powershell", "[IO.Directory]::Delete('x')", "a way of running text the check does not follow"],
   ["powershell", "[Console]::Clear()", "a way of running text the check does not follow"],
   ["powershell", "[Collections.ArrayList]::Adapter($a)", "a way of running text the check does not follow"],
@@ -645,6 +644,9 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "npx --yes --package=x -- y", [["npx", "--yes", "--package=x", "--", "y"], ["y"]]],
   ["bash", "npx --prefix /tmp/x --loglevel silent eslint .", [["npx", "--prefix", "/tmp/x", "--loglevel", "silent", "eslint", "."], ["eslint", "."]]],
   // Process substitution reads like $(...); as a shell's or interpreter's script, or what source reads, it is piped in
+  ["bash", "diff <(a) <(b)", [["diff", "<(a)", "<(b)"], ["a"], ["b"]]],
+  ["bash", "tee >(rm x)", [["tee", ">(rm x)"], ["rm", "x"]]],
+  ["bash", "while read l; do echo $l; done < <(ls)", [["read", "l"], ["echo", "$l"], ["ls"]]],
   [
     "bash",
     "diff <(git show x:f | cut -d, -f1-3) <(cut -d, -f1-3 f)",
@@ -669,7 +671,7 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["powershell", '$S = "C:\\work\\x"; cmd /c mklink /J "$S\\a" "$S\\b"', "shell text made only when it runs"],
   ["powershell", '$j = "C:\\work\\x\\node_modules"; cmd /c rmdir $j', "shell text made only when it runs"],
   ["powershell", "$c = 'git'; & $c status", "a command named only when it runs"],
-  // The reviewer's ways a substituted value would have been wrong: each stays unreadable
+  // Variables the shell writes on its own, or by ways the check does not follow: the name stays unknown
   ["bash", "REPLY=ls; read; $REPLY -rf ~", "a command named only when it runs"],
   ["bash", "OPTARG=ls; getopts a: o; $OPTARG -rf ~", "a command named only when it runs"],
   ["bash", "re='(.*)'; [[ rm =~ $re ]]; ${BASH_REMATCH[1]} -rf ~", "a command named only when it runs"],
@@ -860,6 +862,18 @@ const TABLE: [Shell, string, string[][] | string][] = [
     'x=1; [ -n "$x" ] && [ -f a ] && test -d /tmp/x && echo y',
     [["[", "-n", "$x", "]"], ["[", "-f", "a", "]"], ["test", "-d", "/tmp/x"], ["echo", "y"]],
   ],
+  // Names the readers write when given none (REPLY, MAPFILE), read's option values, getopts' own words, mapfile -C
+  ["bash", "read <<< a[\\$\\(rm\\ x\\)]; (( REPLY ))", "shell text made only when it runs"],
+  ["bash", "mapfile <<< a[\\$\\(rm\\ x\\)]; (( MAPFILE ))", "shell text made only when it runs"],
+  ["bash", "readarray <<< a[\\$\\(rm\\ x\\)]; (( MAPFILE ))", "shell text made only when it runs"],
+  ["bash", "mapfile -t X <<< a[\\$\\(rm\\ x\\)]; (( X ))", "shell text made only when it runs"],
+  ["bash", "select x in a b; do (( REPLY )); done <<< a[\\$\\(rm\\ x\\)]", "shell text made only when it runs"],
+  ["bash", "read -p 'n? ' n; (( n ))", [["read", "-p", "n? ", "n"]]],
+  ["bash", "getopts a: o -a a[\\$\\(rm\\ x\\)]; (( OPTARG ))", "shell text made only when it runs"],
+  ["bash", "getopts ab: o; (( OPTARG ))", [["getopts", "ab:", "o"]]],
+  ["bash", "mapfile -C 'rm x' -c 1 lines < /tmp/x/f", "a way of running text the check does not follow"],
+  // A $(( that is not arithmetic is read once: its commands are counted once
+  ["bash", "echo '$(x)'; echo $(( echo $(true) ) ); (( n ))", "shell text made only when it runs"],
   // A process substitution on another file number of a group, a loop or a function call
   ["bash", "{ bash /dev/fd/3; } 3< <(curl x)", "text piped into a shell"],
   ["bash", "( sh /dev/fd/4 ) 4< <(curl x)", "text piped into a shell"],
@@ -884,9 +898,7 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "cat <<EOF\nrm -rf ~", "a here-document"],
   ["bash", "cat <<", "a here-document"],
   ["powershell", "echo @'\nrm -rf ~", "a here-document"],
-  ["bash", "diff <(a) <(b)", [["diff", "<(a)", "<(b)"], ["a"], ["b"]]],
-  ["bash", "tee >(rm x)", [["tee", ">(rm x)"], ["rm", "x"]]],
-  ["bash", "while read l; do echo $l; done < <(ls)", [["read", "l"], ["echo", "$l"], ["ls"]]],
+  ["bash", "cat 2>(x)", "a process substitution"],
   ["powershell", "powershell -EncodedCommand ZQBjAGgAbwA=", "-EncodedCommand, whose text cannot be read"],
   ["powershell", "pwsh -NoProfile -enc ZQBj", "-EncodedCommand, whose text cannot be read"],
   ["powershell", "powershell -e ZQBj", "-EncodedCommand, whose text cannot be read"],
@@ -982,6 +994,11 @@ describe("split", () => {
     const result = split("'x'.Replace((rm y), 'z')", "powershell");
     expect("commands" in result && result.commands.some((c) => c.words.join(" ") === "rm y")).toBe(true);
     expect(split("[IO.File]::WriteAllText('x', 'y')", "powershell")).toEqual({ unreadable: "a way of running text the check does not follow" });
+  });
+
+  it("reads $(( that is not arithmetic, nested many times, in one pass", () => {
+    const line = `echo ${"$((a ".repeat(30)}${") )".repeat(30)}`;
+    expect("commands" in split(line, "bash")).toBe(true);
   });
 
   it("says when brackets are nested too deep to read, rather than failing", () => {

@@ -1,5 +1,5 @@
 // Reads a shell command line into its separate commands, for the dangerous-command check (release 7 design, "The
-// dangerous-command check"; plan, Task 2 and choices 2, 3 and 32-39). Tachikoma's own reader: bash's grammar,
+// dangerous-command check"; plan, Task 2 and choices 2, 3 and 32-42). Tachikoma's own reader: bash's grammar,
 // PowerShell's, and cmd's for the text `cmd /c` runs. It is strict where it does not understand: anything it cannot read
 // makes the whole line unreadable, which the check counts as dangerous.
 
@@ -22,7 +22,7 @@ export function split(line: string, shell: Shell): Split {
   } catch (error) {
     if (error instanceof Unreadable) return { unreadable: error.message };
     // Brackets nested deeper than JavaScript's stack: no depth is set here, as none has a source.
-    if (error instanceof RangeError) return { unreadable: DEEP };
+    if (error instanceof RangeError && /call stack/i.test(error.message)) return { unreadable: DEEP };
     throw error;
   }
 }
@@ -52,6 +52,21 @@ const requoted = (name: string) => new Unreadable(`PowerShell would change its q
 type Grammar = Shell | "cmd";
 // What closes the part being read: a bracket; ;; (or ;& or ;;&) or esac for an arm of bash's case; or "" for the end.
 type Stop = "" | ")" | "}" | ";;";
+// What a redirection was (Reader.redirection): a file; a file in place of the input; a here-document or here-string on
+// the input; another file number copied into the input; a process substitution on the input, on the output, or on any
+// other file number; or no redirection at all.
+type Redirect = "file" | "input" | "text" | "copy" | "piped" | "procsub" | "procsub-other" | false;
+// One command read (Reader.command): its commands and the separator after it, what in it reads its input, the compound
+// commands it opens and closes, how its input is replaced, and whether it is only a PowerShell string.
+interface CommandRead extends Part {
+  sep: string;
+  opens: number;
+  closes: number;
+  fed: boolean;
+  piped: boolean;
+  replaced: boolean;
+  literal: boolean;
+}
 interface Word {
   value: string; // quotes taken off
   start: number; // where it is in the text read
@@ -68,14 +83,24 @@ type Hunger = 0 | 1 | 2;
 const NONE: Hunger = 0;
 const CODE: Hunger = 1;
 const SHELL: Hunger = 2;
-const most = (a: Hunger, b: Hunger): Hunger => (a > b ? a : b);
+const most = <T extends number>(a: T, b: T): T => (a > b ? a : b);
 // The commands read from a part of a line, what in them reads the part's input, and whether a shell or an interpreter is run.
 interface Part {
   commands: Command[];
   hungry: Hunger;
   program?: boolean;
   arith?: string[]; // bash: the names used in the part's arithmetic (Reader.counted)
-  subs?: { dollars: number; ticks: number }; // bash: the command substitutions read in it (Reader.subs)
+  subs?: Subs; // bash: the command substitutions read in it (Reader.subs)
+}
+// bash: command substitutions read as such: $( and backtick pairs (Reader.checkArithmetic).
+interface Subs {
+  dollars: number;
+  ticks: number;
+}
+// Adds a part's command substitutions to a count.
+function addSubs(into: Subs, part: Part): void {
+  into.dollars += part.subs?.dollars ?? 0;
+  into.ticks += part.subs?.ticks ?? 0;
 }
 // What a shell is given to run: its text in a grammar, and whether that text is made only when the line runs.
 interface Runs {
@@ -190,7 +215,7 @@ const C_ESCAPES: Record<string, string> = {
 };
 const PS_ESCAPES: Record<string, string> = { "0": "\0", a: "\x07", b: "\b", e: "\x1b", f: "\f", n: "\n", r: "\r", t: "\t", v: "\v" };
 // The largest Unicode code point; an escape past it is kept as nothing, as no character has it.
-const code = (n: number) => (n <= 0x10ffff ? String.fromCodePoint(n) : "");
+const codePoint = (n: number) => (n <= 0x10ffff ? String.fromCodePoint(n) : "");
 
 // Where a cd earlier on the line may have left the shell (choice 37): in a known folder; perhaps at /, after climbing with ..;
 // or anywhere, after a cd to a folder under /dev or /proc, or to one known only when the line runs. Ranked, so the larger wins.
@@ -266,9 +291,14 @@ interface Context {
 }
 const MOVES = new Set(["cd", "pushd", "popd"]);
 
-// bash's commands that set a variable named in their words: export, declare and the like (NAME or NAME=value), read,
-// mapfile and readarray (their names), printf -v NAME, let NAME=..., unset and getopts.
-const NAMES = new Set(["export", "declare", "typeset", "local", "readonly", "read", "mapfile", "readarray", "printf", "let", "unset", "getopts"]);
+// bash's commands that declare variables (export, declare and the like), those of them that also take -i and -n (typed),
+// and those that read their input into one (bash's help for each).
+const DECLARERS = ["export", "declare", "typeset", "local", "readonly"];
+const TYPED = ["declare", "typeset", "local"];
+const READERS = ["read", "mapfile", "readarray"];
+// The commands that set a variable named in their words: the declarers (NAME or NAME=value), the readers (their names),
+// printf -v NAME, let NAME=..., unset and getopts.
+const NAMES = new Set([...DECLARERS, ...READERS, "printf", "let", "unset", "getopts"]);
 // bash's builtins (bash 5.2's `help`), which may read a word as a variable's name.
 const BUILTINS = new Set([
   ":", ".", "[", "[[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete", "compopt", "continue",
@@ -277,8 +307,33 @@ const BUILTINS = new Set([
   "return", "set", "shift", "shopt", "source", "suspend", "test", "times", "trap", "true", "type", "typeset", "ulimit", "umask",
   "unalias", "unset", "wait",
 ]);
-// read's, mapfile's and readarray's options that take the next word (bash's help for each).
-const NAME_VALUES = "dinNptuOscC";
+// The readers' options that take the next word (bash's help for each): read's -d, -i, -n, -N, -p, -t and -u; mapfile's
+// and readarray's -d, -n, -O, -s, -u, -C and -c (their -t takes none). Only these are skipped, so that no name is taken
+// for a value.
+const READER_VALUES: Record<string, string> = { read: "dinNptu", mapfile: "dnOsuCc", readarray: "dnOsuCc" };
+
+// The names a reader writes, after its options and their values: the words given, or the variable it writes when given
+// none (REPLY for read, MAPFILE for mapfile and readarray).
+function readerNames(name: string, args: Word[]): string[] {
+  const names: string[] = [];
+  const values = READER_VALUES[name] ?? "";
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!.value;
+    if (!a.startsWith("-")) names.push(a);
+    else if (a.length === 2 && values.includes(a[1]!)) k++;
+  }
+  return names.length > 0 ? names : [name === "read" ? "REPLY" : "MAPFILE"];
+}
+
+// printf -v NAME (or -vNAME): the word naming the variable printf writes, and the name in it.
+function printfTarget(args: Word[]): { word: Word; name: string } | undefined {
+  const k = args.findIndex((w) => /^-v/.test(w.value));
+  const v = args[k];
+  if (!v) return undefined;
+  if (v.value !== "-v") return { word: v, name: v.value.slice(2) };
+  const next = args[k + 1];
+  return next && { word: next, name: next.value };
+}
 // A command anywhere on the line that sets a variable whose name is made only when it runs, or makes a nameref.
 const DYNAMIC_SETTER = new RegExp(
   [
@@ -291,7 +346,8 @@ const DYNAMIC_SETTER = new RegExp(
 // plain integer (quoted or not), exactly one $(( )) or one command substitution (its output is the known limit), a
 // positional argument, or a length ${#x}; "copy:NAME" for exactly $NAME or ${NAME}; "code" for anything else, as text the
 // line writes could hide code there, split or escaped (X=a[\$\(rm\ x\)]).
-function judged(raw: string): string {
+type Judgement = "fine" | "code" | `copy:${string}`;
+function judged(raw: string): Judgement {
   const v = /^"([\s\S]*)"$/.exec(raw)?.[1] ?? raw;
   if (v === "" || /^[+-]?\d+$/.test(v) || /^'[+-]?\d+'$/.test(raw)) return "fine";
   if ((v.startsWith("$(") && closesAtEnd(v, 1)) || /^`[^`]*`$/.test(v) || /^\$(?:\d+|\{\d+\}|[@*#?])$/.test(v)) return "fine";
@@ -316,7 +372,8 @@ function plainName(name: string): RegExp {
   return new RegExp(`(?<![\\w$])(?<!\\$\\{[#!]?)${quotes}${[...name].join(quotes)}${quotes}(?!\\w)`);
 }
 
-// A script block passed to powershell is read twice, as a block and as the shell's text: each command is kept once.
+// Each command is kept once: every repeated command is dropped, so `rm x; rm x` gives one. Some text is read twice, too: a
+// script block passed to powershell, as a block and as the shell's text, and cmd's text read both ways (cmdText).
 function once(commands: Command[]): Command[] {
   const seen = new Set<string>();
   return commands.filter((c) => {
@@ -346,17 +403,17 @@ class Reader {
   // commands may see them, as `set -a` exports every one.
   private readonly exported: Word[] = [];
   private cwd: Cwd = KNOWN;
-  private code = ""; // PowerShell: the line's code with each string as '', for the .NET checks (choice 39)
+  private psCode = ""; // PowerShell: the line's code with each string as '', for the .NET checks (choice 39)
   private readonly written = new Set<string>(); // bash: the names written by name-setting commands read so far
   private writtenAll = false; // bash: a name-setting command whose name is made when it runs, or a nameref, was read
   // bash: the names used in arithmetic (Reader.counted). Arithmetic reads a name's value as arithmetic too, and runs any
   // $(...) in an array index there, as in X='a[$(rm x)]'; (( X )).
   readonly arith = new Set<string>();
   // bash: the command substitutions read as such, $( and backtick pairs, counted against the line's own text (choice 42).
-  readonly subs = { dollars: 0, ticks: 0 };
+  readonly subs: Subs = { dollars: 0, ticks: 0 };
   // bash: each write to a name seen on the line, judged for arithmetic (Reader.judged): "fine", "code" (text the line
   // writes that could hide code), or "copy:NAME" for a plain copy of another variable.
-  private readonly writes = new Map<string, string[]>();
+  private readonly writes = new Map<string, Judgement[]>();
   // bash: names read by read, mapfile or readarray: fine unless a here-document or here-string on the line feeds them,
   // their own or their loop's or group's, which marks them as code there (choice 42).
   private readonly reads: string[] = [];
@@ -382,7 +439,7 @@ class Reader {
     else if (/^[A-Za-z_]\w*$/.test(value)) this.note(value, "code");
   }
 
-  private note(name: string, kind: string): void {
+  private note(name: string, kind: Judgement): void {
     this.writes.set(name, [...(this.writes.get(name) ?? []), kind]);
   }
 
@@ -395,8 +452,7 @@ class Reader {
   // Adds the counts of a reader whose text is part of this line, run by this line's shell or one it starts.
   merge(part: Part): void {
     for (const name of part.arith ?? []) this.arith.add(name);
-    this.subs.dollars += part.subs?.dollars ?? 0;
-    this.subs.ticks += part.subs?.ticks ?? 0;
+    addSubs(this.subs, part);
   }
 
   // bash, choice 42: a line with arithmetic that uses a name asks only when it also holds a $( or a backtick that it does
@@ -421,14 +477,14 @@ class Reader {
     if (dollars > this.subs.dollars || ticks > this.subs.ticks) throw new Unreadable(MADE);
     if (this.writtenAll || DYNAMIC_SETTER.test(src)) throw new Unreadable(MADE);
     // Follows copies; a copy that comes back to a name already being followed is taken as code, to be safe.
-    const code = (name: string, path: Set<string>): boolean => {
+    const hides = (name: string, path: Set<string>): boolean => {
       if (path.has(name)) return true;
       path.add(name);
-      const found = (this.writes.get(name) ?? []).some((k) => k === "code" || (k.startsWith("copy:") && code(k.slice(5), path)));
+      const found = (this.writes.get(name) ?? []).some((k) => k === "code" || (k.startsWith("copy:") && hides(k.slice(5), path)));
       path.delete(name);
       return found;
     };
-    if ([...this.arith].some((name) => code(name, new Set()))) throw new Unreadable(MADE);
+    if ([...this.arith].some((name) => hides(name, new Set()))) throw new Unreadable(MADE);
   }
 
   // Reads commands up to `stop`.
@@ -485,7 +541,7 @@ class Reader {
 
   // Reads one command, and the separator after it. `carried`: the line before ended in |, && or ||, so blank lines
   // before this command are skipped, as bash and PowerShell carry on to the next line.
-  private command(stop: Stop, carried: boolean) {
+  private command(stop: Stop, carried: boolean): CommandRead {
     const { src, g } = this;
     const words: Word[] = [];
     const nested: Command[] = []; // the commands inside this one: $(...), backticks, brackets
@@ -590,16 +646,13 @@ class Reader {
       }
       // Arithmetic, `(( ... ))` on its own or in `for (( ...; ...; ... ))`: only its $(...) and backticks hold commands.
       const arithmeticFor = words.length === 1 && src.slice(words[0]!.start, words[0]!.end) === "for";
-      if (c === "(" && next === "(" && g === "bash" && (first || arithmeticFor)) {
-        const kept = nested.length;
+      // Otherwise, ( (...) ...) is a subshell, as bash reads it.
+      if (c === "(" && next === "(" && g === "bash" && (first || arithmeticFor) && this.arithmeticAhead(at + 2)) {
         this.i += 2;
-        if (this.arithmetic(nested)) {
-          group ||= first;
-          last = this.i;
-          continue;
-        }
-        this.i = at; // ( (...) ...): a subshell after all, as bash reads it
-        nested.length = kept;
+        this.arithmetic(nested);
+        group ||= first;
+        last = this.i;
+        continue;
       }
       if (c === "(" && g === "bash") {
         // A function's definition, `name()`: its body is read as the next command.
@@ -710,7 +763,9 @@ class Reader {
   // and its reader would not know f (choice 37).
   private settings(name: string, args: Word[], vars: Word[], fed: boolean): void {
     const options = args.filter((w) => w.value.startsWith("-")).map((w) => w.value.slice(1)).join("");
-    if (["export", "declare", "typeset", "readonly", "local"].includes(name)) {
+    // mapfile's and readarray's -C runs its callback text as code.
+    if ((name === "mapfile" || name === "readarray") && args.some((w) => /^-\w*C/.test(w.value))) throw new Unreadable(FOLLOW);
+    if (DECLARERS.includes(name)) {
       if ((name === "export" && options.includes("f")) || (name !== "export" && options.includes("f") && options.includes("x"))) {
         throw new Unreadable(FOLLOW);
       }
@@ -720,7 +775,7 @@ class Reader {
     this.arithmeticWords(name, args, options);
     this.writtenBy(name, args, fed);
     if (name === "alias") for (const a of args) if (a.value.indexOf("=") > 0) this.functions.set(a.value.slice(0, a.value.indexOf("=")), SHELL);
-    if (MOVES.has(name)) this.cwd = most(this.cwd, this.moved(name, args, vars)) as Cwd;
+    if (MOVES.has(name)) this.cwd = most(this.cwd, this.moved(name, args, vars));
   }
 
   // The names a bash command reads as arithmetic (Reader.checkArithmetic): let's words, the names declare -i (and typeset
@@ -728,7 +783,7 @@ class Reader {
   // an operand of unset, declare and the like, or of [[ (as in [[ -v a[i] ]]).
   private arithmeticWords(name: string, args: Word[], options: string): void {
     const raw = (w: Word) => this.src.slice(w.start, w.end);
-    if (["declare", "typeset", "local"].includes(name) && options.includes("i")) {
+    if (TYPED.includes(name) && options.includes("i")) {
       for (const w of args) if (!w.value.startsWith("-")) this.counted(w.value.split("=")[0]!);
     }
     if (name === "let") for (const w of args) this.counted(raw(w));
@@ -738,25 +793,30 @@ class Reader {
     if (BUILTINS.has(name)) for (const w of args) this.subscript(w.value);
   }
 
-  // The writes a bash command makes to names, for arithmetic (Reader.checkArithmetic): NAME=value operands of export,
-  // declare and the like, judged by their value; read, mapfile and readarray, code when a here-document or here-string on
-  // the line feeds them (`fed`, or their loop's or group's: Reader.reads), else fine; getopts, which writes an option
-  // letter; printf -v and select, which write text the line gives; and a for loop, whose name takes each of its words,
-  // judged one by one.
+  // The writes a bash command makes to names, for arithmetic (Reader.checkArithmetic): NAME=value operands of the
+  // declarers, judged by their value; the readers' names (REPLY or MAPFILE when none is given), and select's REPLY, code
+  // when a here-document or here-string on the line feeds them (`fed`, or their loop's or group's: Reader.reads), else
+  // fine; getopts, which writes an option letter, and OPTARG from words the line gives it; printf -v and select's name,
+  // which take text the line gives; and a for loop, whose name takes each of its words, judged one by one.
   private writtenBy(name: string, args: Word[], fed: boolean): void {
     const raw = (w: Word) => this.src.slice(w.start, w.end);
     const operands = args.filter((w) => !w.value.startsWith("-"));
-    if (["export", "declare", "typeset", "local", "readonly"].includes(name)) {
-      for (const w of operands) if (w.value.includes("=")) this.wrote(raw(w));
+    const read = (variable: string) => {
+      if (fed) this.note(variable, "code");
+      else this.reads.push(variable);
+    };
+    if (DECLARERS.includes(name)) for (const w of operands) if (w.value.includes("=")) this.wrote(raw(w));
+    if (READERS.includes(name)) for (const variable of readerNames(name, args)) read(variable);
+    if (name === "getopts" && operands[1]) {
+      this.note(operands[1].value, "fine");
+      if (operands.length > 2) this.note("OPTARG", "code"); // the words after the name, rather than the script's own
     }
-    if (["read", "mapfile", "readarray"].includes(name)) for (const w of operands) fed ? this.note(w.value, "code") : this.reads.push(w.value);
-    if (name === "getopts" && operands[1]) this.note(operands[1].value, "fine");
-    if (name === "select" && operands[0]) this.note(operands[0].value, "code");
-    if (name === "printf") {
-      const k = args.findIndex((w) => /^-v/.test(w.value));
-      const target = args[k]?.value === "-v" ? args[k + 1]?.value : args[k]?.value.slice(2);
-      if (target) this.note(target, "code");
+    if (name === "select" && operands[0]) {
+      this.note(operands[0].value, "code");
+      read("REPLY");
     }
+    const target = name === "printf" ? printfTarget(args) : undefined;
+    if (target) this.note(target.name, "code");
     if (name === "for" && args[1]?.value === "in") for (const w of args.slice(2)) this.note(args[0]!.value, judged(raw(w)));
   }
 
@@ -776,17 +836,15 @@ class Reader {
       else this.written.add(/^[A-Za-z_]\w*/.exec(value)?.[0] ?? value);
     };
     if (name === "printf") {
-      const k = args.findIndex((w) => /^-v/.test(w.value));
-      const v = args[k];
-      if (v?.value === "-v" && args[k + 1]) note(args[k + 1]!);
-      else if (v && v.value !== "-v") note(v, v.value.slice(2));
+      const target = printfTarget(args);
+      if (target) note(target.word, target.name);
       return;
     }
     for (let k = 0; k < args.length; k++) {
       const w = args[k]!;
       if (!w.value.startsWith("-") || name === "let") note(w);
-      else if (/n/.test(w.value) && ["declare", "typeset", "local"].includes(name)) this.writtenAll = true; // a nameref
-      else if (["read", "mapfile", "readarray"].includes(name) && w.value.length === 2 && NAME_VALUES.includes(w.value[1]!)) k++;
+      else if (/n/.test(w.value) && TYPED.includes(name)) this.writtenAll = true; // a nameref
+      else if (w.value.length === 2 && (READER_VALUES[name] ?? "").includes(w.value[1]!)) k++;
     }
   }
 
@@ -923,7 +981,7 @@ class Reader {
   // here-string is left out the same way (choice 35). Says what it was: "text" for a here-document or here-string on the
   // input, "input" for a file read as the input, "copy" for another file number copied into the input (<&N, 0<&N), which
   // may be the pipe, and "file" for any other. Only file number 0, written or left out, is the input.
-  private redirection(stop: Stop, nested: Command[]): "file" | "input" | "text" | "copy" | "piped" | "procsub" | "procsub-other" | false {
+  private redirection(stop: Stop, nested: Command[]): Redirect {
     const { src, g } = this;
     if (g === "bash" && /[<>]\(/y.test(src.slice(this.i, this.i + 2))) return false; // a process substitution, read as a word
     const re =
@@ -1041,7 +1099,7 @@ class Reader {
     let parts = 0;
     let string = false; // PowerShell: the word's first part is a string or here-string
     let fed = false;
-    if (g === "powershell") this.code += " ";
+    if (g === "powershell") this.psCode += " ";
     // bash's process substitution, <(...) or >(...): its commands are read as in $(...), and the word is a file they feed.
     // Those in >(...) read what the command writes there, so a shell or an interpreter among them runs it.
     if (g === "bash" && /[<>]\(/y.test(src.slice(start, start + 2))) {
@@ -1067,7 +1125,7 @@ class Reader {
         this.i += n === undefined ? 1 : 2;
         value += n === "\n" ? "" : (n ?? c);
         shape += "\0";
-        if (g === "powershell") this.code += n ?? "";
+        if (g === "powershell") this.psCode += n ?? "";
       } else if (g === "bash") {
         shape += "'\"$`".includes(c) ? "\0" : c;
         value += this.bashPart(nested);
@@ -1095,32 +1153,32 @@ class Reader {
     const c = src[from]!;
     const n = src[from + 1];
     // Each part also goes into the line's code text (choice 39), strings as '' and brackets around their own code.
-    const string = (value: string) => ((this.code += "''"), value);
+    const string = (value: string) => ((this.psCode += "''"), value);
     if (PS_SINGLE.has(c)) return string(this.psQuoted(PS_SINGLE));
     if (PS_DOUBLE.has(c)) return string(this.psQuoted(PS_DOUBLE, nested));
     if (c === "@" && this.looking(HERE_STRING)) return string(this.psHere(n!, nested));
     if (c === "(" || ((c === "$" || c === "@") && n === "(")) {
       this.i += c === "(" ? 1 : 2;
-      this.code += src.slice(from, this.i);
+      this.psCode += src.slice(from, this.i);
       this.inner(")", nested);
-      this.code += ")";
+      this.psCode += ")";
       this.dynamic = true;
       return src.slice(from, this.i);
     }
     if (c === "{" || (c === "@" && n === "{")) {
       this.i += c === "{" ? 1 : 2;
-      this.code += src.slice(from, this.i);
+      this.psCode += src.slice(from, this.i);
       this.inner("}", nested);
-      this.code += "}";
+      this.psCode += "}";
       return src.slice(from, this.i);
     }
     if (c === "$" && n === "{") {
-      this.code += "$v";
+      this.psCode += "$v";
       return this.psBraced();
     }
     if (c === "$" && /[\w:?^$]/.test(n ?? "")) this.dynamic = true;
     this.i++;
-    this.code += c;
+    this.psCode += c;
     return c;
   }
 
@@ -1128,7 +1186,7 @@ class Reader {
   // [Type]::Member is allowed only for the types and members in DOTNET_READS, which only read or compute.
   dotnet(): void {
     if (this.g !== "powershell") return;
-    const code = this.code.toLowerCase();
+    const code = this.psCode.toLowerCase();
     if (PS_DOTNET.test(code)) throw new Unreadable(FOLLOW);
     // The type in the [...] that ends at `at`, in lower case, without blanks or System.
     const typeBefore = (at: number) => {
@@ -1207,11 +1265,11 @@ class Reader {
     if (n === "(" || n === "{") this.dynamic = true;
     if (n === "(") {
       this.subs.dollars++;
-      if (src[from + 2] === "(") {
-        const kept = nested.length;
+      // $(( ... )) is arithmetic only if its bracket closes with )), as bash reads it; else it is $( (...) ... ).
+      if (src[from + 2] === "(" && this.arithmeticAhead(from + 3)) {
         this.i = from + 3;
-        if (this.arithmetic(nested)) return src.slice(from, this.i);
-        nested.length = kept; // $( (...) ...), a command after all, as bash reads it
+        this.arithmetic(nested);
+        return src.slice(from, this.i);
       }
       this.i = from + 2;
       this.inner(")", nested);
@@ -1240,8 +1298,27 @@ class Reader {
     return "$";
   }
 
-  // $((...)): arithmetic, whose only commands are in its own $(...) and backticks. False when it turns out to be $( (...) ).
-  private arithmetic(nested: Command[]): boolean {
+  // Whether the text from `at`, just after (( or $((, is arithmetic: whether its bracket closes with )) rather than ) and
+  // something else, as bash decides. Looked at before anything is read, so the text is read once either way: reading it
+  // one way and then again the other would take time doubling with each level and count what it holds twice. Quotes
+  // and escapes are skipped; a line that ends first is left to the reading to call unpaired.
+  private arithmeticAhead(at: number): boolean {
+    const { src } = this;
+    let depth = 0;
+    for (let k = at; k < src.length; k++) {
+      const c = src[k]!;
+      if (c === "\\") k++;
+      else if (c === "'" || c === '"' || c === "`") {
+        for (k++; k < src.length && src[k] !== c; k++) if (c !== "'" && src[k] === "\\") k++;
+      } else if (c === "(") depth++;
+      else if (c === ")" && depth-- === 0) return src[k + 1] === ")";
+    }
+    return true;
+  }
+
+  // (( ... )) or $(( ... )), known to be arithmetic (Reader.arithmeticAhead): its only commands are in its own $(...) and
+  // backticks.
+  private arithmetic(nested: Command[]): void {
     const { src } = this;
     const from = this.i;
     let depth = 0;
@@ -1249,10 +1326,10 @@ class Reader {
       const c = src[this.i];
       if (c === undefined) throw new Unreadable(UNPAIRED);
       if (c === ")" && depth === 0) {
-        if (src[this.i + 1] !== ")") return false;
+        if (src[this.i + 1] !== ")") throw new Unreadable(UNPAIRED);
         this.counted(src.slice(from, this.i));
         this.i += 2;
-        return true;
+        return;
       }
       if (c === "(") depth++;
       if (c === ")") depth--;
@@ -1315,9 +1392,9 @@ class Reader {
       if (!m) throw new Unreadable(UNCLOSED);
       this.i = re.lastIndex;
       const hex = m[1] ?? m[2] ?? m[3];
-      if (hex) value += code(parseInt(hex, 16));
-      else if (m[4]) value += code(parseInt(m[4], 8));
-      else if (m[5]) value += code(m[5].charCodeAt(0) % 32); // a control character is its letter's code modulo 32 (ASCII)
+      if (hex) value += codePoint(parseInt(hex, 16));
+      else if (m[4]) value += codePoint(parseInt(m[4], 8));
+      else if (m[5]) value += codePoint(m[5].charCodeAt(0) % 32); // a control character is its letter's code modulo 32 (ASCII)
       else value += C_ESCAPES[m[6]!] ?? `\\${m[6]}`;
     }
   }
@@ -1394,7 +1471,7 @@ class Reader {
     const m = unicode.exec(src);
     if (m) {
       this.i = unicode.lastIndex;
-      return code(parseInt(m[1]!, 16));
+      return codePoint(parseInt(m[1]!, 16));
     }
     this.i += n === undefined ? 1 : 2;
     return n === undefined ? "`" : (PS_ESCAPES[n] ?? n);
@@ -1522,11 +1599,10 @@ function expand(words: Word[], text: string, src: string, g: Grammar, ctx: Conte
   const commands: Command[] = [{ words: words.map((w) => w.value), text }];
   // The arithmetic names and command substitutions in the shell texts it gives, for the line's check (Reader.checkArithmetic).
   const arith: string[] = [];
-  const subs = { dollars: 0, ticks: 0 };
+  const subs: Subs = { dollars: 0, ticks: 0 };
   const gather = (part: Part) => {
     arith.push(...(part.arith ?? []));
-    subs.dollars += part.subs?.dollars ?? 0;
-    subs.ticks += part.subs?.ticks ?? 0;
+    addSubs(subs, part);
   };
   // A bash function or alias made earlier on the line runs here, with this command's input (choice 37).
   let hungry = g === "bash" ? (ctx.functions.get(first.value) ?? NONE) : NONE;
