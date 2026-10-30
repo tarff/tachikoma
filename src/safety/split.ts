@@ -466,8 +466,8 @@ class Reader {
   private counted(text: string): void {
     const bare = text.replace(/\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`/g, "");
     for (const m of bare.matchAll(/[A-Za-z_]\w*/g)) this.arith.add(m[0]);
-    // A positional parameter, whatever follows its name: $1, ${1}, ${1:-0}, ${#1}, ${!1}, $@, ${@:2}.
-    if (/\$(?:\d|[@*]|\{[#!]?(?:\d|[@*]))/.test(bare)) this.arith.add(POSITIONAL);
+    // A positional parameter, whatever follows its name: $1, ${1}, ${1:-0}, ${#1}, ${!1}, $@, ${@:2}, and the last, ${!#}.
+    if (/\$(?:\d|[@*]|\{[#!]?(?:\d|[@*])|\{!#)/.test(bare)) this.arith.add(POSITIONAL);
   }
 
   // Adds the counts of a reader whose text is part of this line, run by this line's shell or one it starts.
@@ -1401,7 +1401,7 @@ class Reader {
         if (parts?.[2]) this.counted(parts[2]);
         // ${!X}, ${!X:-...} and the like read X's value as a variable's name, and bash evaluates a subscript in it as
         // arithmetic, so X counts as used there; ${!prefix*}, ${!prefix@} and ${!a[@]} only list names or keys.
-        const indirect = /^!([A-Za-z_]\w*|\d+|[@*])([\s\S]*)$/.exec(inside);
+        const indirect = /^!([A-Za-z_]\w*|\d+|[@*#])([\s\S]*)$/.exec(inside); // ${!#} is the last positional parameter
         if (indirect && !/^([@*]|\[[@*]\])$/.test(indirect[2]!)) this.arith.add(/^[A-Za-z_]/.test(indirect[1]!) ? indirect[1]! : POSITIONAL);
         // ${X:=...} and ${X=...} write X as they expand: text the line gives.
         const assigned = /^([A-Za-z_]\w*):?=/.exec(inside);
@@ -1720,7 +1720,7 @@ function shellRuns(name: string, args: Word[], g: Grammar, cwd: Cwd): Runs | nul
     return "none" in run || "exec" in run ? null : undefined;
   }
   if (name === "sudo" || name === "doas") {
-    const { rest, used } = sudoRun(name, args);
+    const { rest, used } = sudoRun(name, args, g);
     return rest.length === 0 && (used.has("s") || used.has("i") || used.has("shell") || used.has("login")) ? undefined : null;
   }
   if (SH.has(name)) return shText(args, cwd);
@@ -1939,18 +1939,23 @@ const SUDO: Options = {
 const DOAS: Options = { flags: "Lns", values: "aCu" };
 
 // sudo's or doas's command, after its options and sudo's NAME=value words, the options it was given, and those words.
-function sudoRun(name: string, args: Word[]): { rest: Word[]; used: Set<string>; vars: Word[] } {
+// Windows 11's sudo, met in PowerShell's or cmd's grammar, also has `run`, which takes the same options before its
+// command, and `config`, which runs nothing (microsoft/sudo); Linux's sudo would run a program named run or config.
+function sudoRun(name: string, args: Word[], g: Grammar): { rest: Word[]; used: Set<string>; vars: Word[] } {
   const used = new Set<string>();
-  const from = skip(name, args, name === "sudo" ? SUDO : DOAS, used);
+  const windows = name === "sudo" && g !== "bash";
+  let from = skip(name, args, name === "sudo" ? SUDO : DOAS, used);
+  if (windows && args[from]?.value === "run") from = skip(name, args, SUDO, used, from + 1);
   let k = from;
   if (name === "sudo") while (k < args.length && /^[A-Za-z_]\w*=/.test(args[k]!.value)) k++;
   // sudo -e edits files, -l lists what may run, -v, -K and -V run nothing; doas -C checks its settings and -L logs out.
   const none = name === "sudo" ? ["e", "edit", "l", "list", "v", "validate", "K", "remove-timestamp", "V"] : ["C", "L"];
-  return { rest: none.some((o) => used.has(o)) ? [] : args.slice(k), used, vars: args.slice(from, k) };
+  const config = windows && args[from]?.value === "config";
+  return { rest: config || none.some((o) => used.has(o)) ? [] : args.slice(k), used, vars: args.slice(from, k) };
 }
 
 // wsl's own options (`wsl --help`, Windows 11): those for running a command, and those that manage WSL and run none.
-const WSL_VALUES = ["--cd", "--distribution", "-d", "--distribution-id", "--user", "-u", "--shell-type"];
+export const WSL_VALUES = ["--cd", "--distribution", "-d", "--distribution-id", "--user", "-u", "--shell-type"];
 const WSL_MANAGE = [
   "--help", "--debug-shell", "--install", "--manage", "--mount", "--set-default-version", "--shutdown", "--status", "--unmount",
   "--uninstall", "--update", "--version", "-v", "--export", "--import", "--import-in-place", "--list", "-l", "--set-default", "-s",
@@ -2386,7 +2391,7 @@ type Wrapped = { words: Word[]; placeholder?: string; grammar?: Grammar; vars?: 
 function wrapped(name: string, args: Word[], g: Grammar, src: string): Wrapped[] {
   if (name === "find") return execs(args).map((words) => ({ words, placeholder: "{}" }));
   if (name === "sudo" || name === "doas") {
-    const { rest, vars } = sudoRun(name, args);
+    const { rest, vars } = sudoRun(name, args, g);
     return rest.length > 0 ? [{ words: rest, vars }] : [];
   }
   if (name === "wsl") {

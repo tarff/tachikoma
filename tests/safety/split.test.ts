@@ -316,6 +316,12 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["powershell", "sudo --preserve-env -E netstat", [["sudo", "--preserve-env", "-E", "netstat"], ["netstat"]]],
   ["powershell", "sudo --chdir C:\\work\\x -D C:\\work netstat", [["sudo", "--chdir", "C:\\work\\x", "-D", "C:\\work", "netstat"], ["netstat"]]],
   ["powershell", "sudo --inline Remove-Item -Recurse C:\\", [["sudo", "--inline", "Remove-Item", "-Recurse", "C:\\"], ["Remove-Item", "-Recurse", "C:\\"]]],
+  // ... and its run subcommand, which takes the same options; its config runs nothing. Linux's sudo runs a program named run.
+  ["powershell", "sudo run --inline netstat -ab", [["sudo", "run", "--inline", "netstat", "-ab"], ["netstat", "-ab"]]],
+  ["powershell", "sudo -E run -N netstat", [["sudo", "-E", "run", "-N", "netstat"], ["netstat"]]],
+  ["powershell", "cmd /c sudo run netstat", [["cmd", "/c", "sudo", "run", "netstat"], ["sudo", "run", "netstat"], ["netstat"]]],
+  ["powershell", "sudo config --enable normal", [["sudo", "config", "--enable", "normal"]]],
+  ["bash", "sudo run x", [["sudo", "run", "x"], ["run", "x"]]],
   ["bash", "curl x | sudo bash", "text piped into a shell"],
   ["bash", "curl x | sudo -s", "text piped into a shell"],
   ["bash", "curl x | sudo -i", "text piped into a shell"],
@@ -894,6 +900,10 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "set -- a[\\$\\(rm\\ x\\)]; (( ${!1} ))", "shell text made only when it runs"],
   ["bash", "set -- a[\\$\\(rm\\ x\\)]; (( ${@:2} ))", "shell text made only when it runs"],
   ["bash", "set -- a[\\$\\(rm\\ x\\)]; (( ${#1} ))", "shell text made only when it runs"],
+  ["bash", "set -- a b a[\\$\\(rm\\ x\\)]; (( ${!#} ))", "shell text made only when it runs"],
+  ["bash", "set -- a b a[\\$\\(rm\\ x\\)]; echo ${!#}", "shell text made only when it runs"],
+  ["bash", "set -- a[\\$\\(rm\\ x\\)]; echo ${!1}", "shell text made only when it runs"],
+  ["bash", "echo ${!#}", [["echo", "${!#}"]]],
   ["bash", "n=0; (( ${n:-0} + 1 ))", []],
   // An indirect ${!name} evaluates a subscript in name's value, so name counts in arithmetic; listing names or keys does not
   ["bash", "X=a[\\$\\(rm\\ x\\)]; echo ${!X}", "shell text made only when it runs"],
