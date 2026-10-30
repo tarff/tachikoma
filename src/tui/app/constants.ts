@@ -130,7 +130,7 @@ export type Got = { action: string } | { pending: Stroke[] } | { typed: string }
 export const NOTHING: Got = { action: "held" };
 // A key typed into a field: printable, without Ctrl or Alt (release 6 plan, Task 6, Claude Code's "Text fields" rule).
 export const printable = (s: Stroke) => !s.ctrl && !s.alt && (s.key === "space" || [...s.key].length === 1);
-// The line while the editor runs, and the codes that erase it (App, away; release 6 plan, choice 33).
+// The line while the editor runs, and the codes that erase it (handover.tsx, away; release 6 plan, choice 33).
 export const WAITING = "Waiting for your editor to close the file... (Tachikoma ignores Ctrl-C until then) ";
 export const ERASE_LINE = "\r\u001b[K";
 // The wheel's reports carry no key, so no flag of one is set.

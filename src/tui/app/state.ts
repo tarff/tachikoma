@@ -92,9 +92,9 @@ export function useAppState({
   // screen (the user's check, release 5 plan, "Before you start").
   const [switching, setSwitching] = useState(false);
   const [kept] = useState(() => new Rows(columns - 1));
-  // The lines said in classic mode since `kept` last took them: going to full screen adds them (/screen, App.tsx), so `kept`
-  // holds every line said, in order, from then on. `lines` cannot give them then: what is said is in it only once React
-  // draws again.
+  // The lines said in classic mode since `kept` last took them: going to full screen adds them (/screen, handover.tsx),
+  // so `kept` holds every line said, in order, from then on. `lines` cannot give them then: what is said is in it only
+  // once React draws again.
   const unkept = useRef<Line[]>([]);
   const view = useRef<View>(FOLLOWING);
   // The detail view, while it is open (DetailView.tsx); it takes the conversation's place. The keys, the wheel, the bar,
@@ -106,7 +106,7 @@ export function useAppState({
   // which a question closes while it is out.
   const printed = useRef<Printed | null>(null);
   // Once back, a paste that was coming in when a question brought the view back, until its end; and the model list of a
-  // /model that ended while printed out, until the view is back (comeBack, App.tsx).
+  // /model that ended while printed out, until the view is back (comeBack, handover.tsx).
   const dropping = useRef<Printed | null>(null);
   const waitingList = useRef<ModelGroup[] | null>(null);
   const ended = useRef(false); // Ink has unmounted the App (the cleanup in App.tsx)
@@ -122,9 +122,9 @@ export function useAppState({
       }),
   );
   // The mode as it is now, which `say`, `next` and the rest read from here, not from `full`: /screen sets it as the
-  // switch starts, `full` following (switchScreen, App.tsx), and a drawing's functions can run after a later drawing:
-  // History's warning is the first drawing's, and a turn or a command, once it ends, calls the next() of the drawing
-  // that started it.
+  // switch starts, `full` following (switchScreen, handover.tsx), and a drawing's functions can run after a later
+  // drawing: History's warning is the first drawing's, and a turn or a command, once it ends, calls the next() of the
+  // drawing that started it.
   const fullNow = useRef(full);
   // The live area's rows a click acts on (release 5 design, "Clicking"): the prompt's first row, how many it draws and
   // which of its rows they are (layout.ts, frame), and the menu's under it, no prompt rows while a question, the model
@@ -208,7 +208,7 @@ export function useAppState({
   const [branch, setBranch] = useState(gitBranch);
   const abort = useRef<AbortController | null>(null);
   const nextId = useRef(0);
-  const printUpTo = useRef<number | null>(null); // while an editor has the terminal in classic mode (away, App.tsx)
+  const printUpTo = useRef<number | null>(null); // while an editor has the terminal in classic mode (away, handover.tsx)
   const lookups = useRef(0);
   // Live edits of the settings file (release 6 design, "Live edits"): the status line's parts and the wheel's speed
   // as the file last set them; the file's settings and warnings as last applied, to tell which entries an edit
