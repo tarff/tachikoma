@@ -231,6 +231,13 @@ first and seen failing for the right reason.
   gives before it is resolved. That covers every internal form, and also refuses the rare link
   written as `\folder`.
 - **Message:** the "leads through" words, with the stored target as it is written.
+- **On the way to the project's own folder** (asked at the build, since the root's walk lets network
+  targets through and fix 8 starts later walks from where it ends): option chosen, "Refuse, own
+  message". Tachikoma cannot tell where such a project really is, so every path given to the file
+  tools in it is refused with
+  `<abs> is in a project whose own folder leads through <link> to <target>, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`.
+  A test gives the fake root such a link and checks a file in the project is refused with those
+  words.
 - **Tests:** the fake file system makes two links, one to `\??\GLOBALROOT\Device\Mup\tachi-test.invalid\share`
   and one to `\Device\Mup\tachi-test.invalid\share`. Both are refused, and nothing under either is
   touched.
@@ -242,7 +249,9 @@ first and seen failing for the right reason.
   Codex `AGENTS.md` and what they import are refused, though they loaded before this branch.
 - **Option chosen: "Allow your own files".** `resolveIn` takes a third, optional argument that lets
   network paths through. The loader passes it for trusted files (`opts.trusted`: your two files and
-  what they import). The data-folder, settings-file and program-environment checks still apply to
+  what they import). With it, the whole link check is skipped (the text check, the 63-link count
+  and the single-slash refusal), and so is the walk of the project's own folder, as these files
+  were read before this branch (settled at the build). The data-folder, settings-file and program-environment checks still apply to
   them. A project's own files are checked as now.
 - **Tests:** a trusted file at the fake share is read; an untrusted import of the same path is
   refused, as now.
