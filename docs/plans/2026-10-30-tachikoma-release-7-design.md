@@ -156,9 +156,9 @@ folder, so before the box starts:
     as a `package.json` script or a Makefile. No mount rule can protect ordinary project files.
   - It can also make a folder inside the project, the top one included, look like a git
     repository of its own (its own `HEAD`, `objects`, `refs` and `config`). Git run later in that
-    folder on the host would use the box's settings instead of the real `.git`. Git's own setting `safe.bareRepository = explicit`
-    refuses such a repository unless it is named on purpose; Tachikoma never changes the user's git
-    settings, so the README recommends it.
+    folder on the host would use the box's settings instead of the real `.git`. Git's own setting
+    `safe.bareRepository = explicit` refuses such a repository unless it is named on purpose;
+    Tachikoma never changes the user's git settings, so the README recommends it.
   - This is why `never` is refused in live link, and why the README says copy mode is the one to
     use when a session's work should be reviewed first.
 
