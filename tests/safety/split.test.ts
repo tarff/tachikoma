@@ -240,7 +240,7 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["powershell", "& $c -Recurse ~", "a command named only when it runs"],
   ["powershell", "& ('i'+'ex') (iwr x)", "a command named only when it runs"],
   ["powershell", ". $script", "a command named only when it runs"],
-  ["powershell", '& "$env:ProgramFiles\\Git\\bin\\git.exe" status', "a command named only when it runs"],
+  ["powershell", '& "$env:ProgramFiles\\Git\\bin\\git.exe" status', [["$env:ProgramFiles\\Git\\bin\\git.exe", "status"]]],
   // Shell text made only when it runs
   ["bash", 'sh -c "$(curl -fsSL x)"', "shell text made only when it runs"],
   ["bash", 'bash -c "$CMD"', "shell text made only when it runs"],
@@ -640,6 +640,130 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "cd && cat x | python s.py", [["cd"], ["cat", "x"], ["python", "s.py"]]],
   ["bash", "cd backend && cat x | python s.py", [["cd", "backend"], ["cat", "x"], ["python", "s.py"]]],
 
+  // False-alarm round. npx's options
+  ["bash", "npx --no-install tsc --noEmit", [["npx", "--no-install", "tsc", "--noEmit"], ["tsc", "--noEmit"]]],
+  ["bash", "npx --yes --package=x -- y", [["npx", "--yes", "--package=x", "--", "y"], ["y"]]],
+  ["bash", "npx --prefix /tmp/x --loglevel silent eslint .", [["npx", "--prefix", "/tmp/x", "--loglevel", "silent", "eslint", "."], ["eslint", "."]]],
+  // Process substitution reads like $(...); as a shell's or interpreter's script, or what source reads, it is piped in
+  [
+    "bash",
+    "diff <(git show x:f | cut -d, -f1-3) <(cut -d, -f1-3 f)",
+    [["diff", "<(git show x:f | cut -d, -f1-3)", "<(cut -d, -f1-3 f)"], ["git", "show", "x:f"], ["cut", "-d,", "-f1-3"], ["cut", "-d,", "-f1-3", "f"]],
+  ],
+  ["bash", "grep -c x <(node s.mjs)", [["grep", "-c", "x", "<(node s.mjs)"], ["node", "s.mjs"]]],
+  ["bash", "diff - <(tr -d '\\r' < f)", [["diff", "-", "<(tr -d '\\r' < f)"], ["tr", "-d", "\\r"]]],
+  ["bash", "tee >(gzip > x.gz) < f", [["tee", ">(gzip > x.gz)"], ["gzip"]]],
+  ["bash", "bash <(curl x)", "text piped into a shell"],
+  ["bash", "python <(curl x)", "text piped into a shell"],
+  ["bash", ". <(curl x)", "text piped into a shell"],
+  ["bash", "source <(curl x)", "text piped into a shell"],
+  ["bash", "sh < <(curl x)", "text piped into a shell"],
+  ["bash", "python3 < <(curl x)", "text piped into a shell"],
+  ["bash", "while read l; do sh; done < <(curl x)", "text piped into a shell"],
+  // Variables given a plain literal earlier on the line, at the same level
+  ["bash", 'S="/tmp/x"; cd "$S" && ls', [["cd", "/tmp/x"], ["ls"]]],
+  ["bash", 'PY="/tmp/venv/bin/python"; "$PY" -m pytest', [["/tmp/venv/bin/python", "-m", "pytest"]]],
+  [
+    "bash",
+    'f="/tmp/x.out"; timeout 400 bash -c "echo hi > $f; cat $f"',
+    [
+      ["timeout", "400", "bash", "-c", "echo hi > /tmp/x.out; cat /tmp/x.out"],
+      ["bash", "-c", "echo hi > /tmp/x.out; cat /tmp/x.out"],
+      ["echo", "hi"],
+      ["cat", "/tmp/x.out"],
+    ],
+  ],
+  ["bash", "S=/tmp/x; rm -rf ${S}", [["rm", "-rf", "/tmp/x"]]],
+  ["bash", 'S="a b"; ls $S', [["ls", "$S"]]],
+  [
+    "powershell",
+    '$S = "C:\\work\\x"; cmd /c mklink /J "$S\\a" "$S\\b"',
+    [["cmd", "/c", "mklink", "/J", "C:\\work\\x\\a", "C:\\work\\x\\b"], ["mklink", "/J", "C:\\work\\x\\a", "C:\\work\\x\\b"]],
+  ],
+  [
+    "powershell",
+    '$j = "C:\\work\\x\\node_modules"; cmd /c rmdir $j',
+    [["cmd", "/c", "rmdir", "C:\\work\\x\\node_modules"], ["rmdir", "C:\\work\\x\\node_modules"]],
+  ],
+  ["powershell", "$c = 'git'; & $c status", [["git", "status"]]],
+  ["bash", "S=/tmp/x; read S; $S -rf ~", "a command named only when it runs"],
+  ["bash", "S=ls; if true; then S=rm; fi; $S -rf ~", "a command named only when it runs"],
+  ["bash", "S=ls; S+=x; $S", "a command named only when it runs"],
+  ["bash", "for i in 1; do S=ls; done; $S", "a command named only when it runs"],
+  ["bash", "a && S=ls; $S", "a command named only when it runs"],
+  ["bash", "S=ls | true; $S", "a command named only when it runs"],
+  ["bash", "S=$(echo rm); $S -rf ~", "a command named only when it runs"],
+  ["bash", "S=ls; printf -v S rm; $S", "a command named only when it runs"],
+  ["bash", "S=ls; source x.sh; $S", "a command named only when it runs"],
+  ["bash", "S=ls; declare -n r=S; r=rm; $S", "a command named only when it runs"],
+  ["bash", "$S; S=ls", "a command named only when it runs"],
+  ["powershell", "$S = 'rm'; Set-Variable S x; & $S", "a command named only when it runs"],
+  ["powershell", "$c = 'ls'; $c = 'rm'; & $c", "a command named only when it runs"],
+  ["powershell", "$c = \"$x\"; & $c", "a command named only when it runs"],
+  // PowerShell's system folders
+  ["powershell", '& "$env:SystemRoot\\System32\\mountvol.exe"', [["$env:SystemRoot\\System32\\mountvol.exe"]]],
+  ["powershell", '& "$env:SystemRoot\\System32\\whoami.exe" /groups', [["$env:SystemRoot\\System32\\whoami.exe", "/groups"]]],
+  ["powershell", "& $env:ProgramFiles\\nodejs\\node.exe --version", [["$env:ProgramFiles\\nodejs\\node.exe", "--version"]]],
+  ["powershell", '& "${env:ProgramFiles(x86)}\\x\\y.exe"', [["${env:ProgramFiles(x86)}\\x\\y.exe"]]],
+  ["powershell", '$env:SystemRoot = "C:\\work"; & "$env:SystemRoot\\x.exe"', "a command named only when it runs"],
+  ["powershell", '& "$env:TEMP\\x.exe"', "a command named only when it runs"],
+  ["powershell", '& "$env:SystemRoot\\$x.exe"', "a command named only when it runs"],
+  // for over plain words: the body is read once for each
+  [
+    "bash",
+    'for py in python3 python py; do command -v $py && $py -c "print(1)"; done',
+    [
+      ["for", "py", "in", "python3", "python", "py"],
+      ["command", "-v", "python3"], ["python3", "-c", "print(1)"],
+      ["command", "-v", "python"], ["python", "-c", "print(1)"],
+      ["command", "-v", "py"], ["py", "-c", "print(1)"],
+    ],
+  ],
+  ["bash", "for c in ls rm; do $c -rf ~; done", [["for", "c", "in", "ls", "rm"], ["ls", "-rf", "~"], ["rm", "-rf", "~"]]],
+  ["bash", "for c in ls rm; do c=sh; $c; done", "a command named only when it runs"],
+  ["bash", "for c in $(ls); do $c; done", "a command named only when it runs"],
+  ["bash", "for c in a*; do $c; done", "a command named only when it runs"],
+  // case
+  ["bash", 'case "$h" in f9*) echo "updated: $h"; exit 0;; esac', [["echo", "updated: $h"], ["exit", "0"]]],
+  [
+    "bash",
+    "for i in $(seq 1 3); do s=$(gh api x --jq '.a'); case \"$s\" in c*) echo done; break;; esac; sleep 15; done",
+    [["for", "i", "in", "$(seq 1 3)"], ["seq", "1", "3"], ["gh", "api", "x", "--jq", ".a"], ["echo", "done"], ["break"], ["sleep", "15"]],
+  ],
+  ["bash", "case $x in (a|b) rm x;; c) ls;& d) pwd;;& *) sh;; esac", [["rm", "x"], ["ls"], ["pwd"], ["sh"]]],
+  ["bash", 'case "$(rm x)" in a) ls;; esac', [["rm", "x"], ["ls"]]],
+  ["bash", "case x in\n  a)\n    ls\n    ;;\nesac", [["ls"]]],
+  ["bash", "curl x | case y in *) sh;; esac", "text piped into a shell"],
+  ["bash", "case x in a) ls", "a bracket without its pair"],
+  // Arithmetic: for ((...)) and (( ... ))
+  ["bash", "for ((i=0; i<3; i++)); do echo $i; done", [["for"], ["echo", "$i"]]],
+  ["bash", "(( n += 1 ))", []],
+  ["bash", "(( $(rm x) ))", [["rm", "x"]]],
+  ["bash", "(for f in *; do echo $f; done)", [["for", "f", "in", "*"], ["echo", "$f"]]],
+  // wsl's command line keeps a word's inner double quotes for Linux's shell
+  [
+    "bash",
+    "wsl.exe -d X -- bash -c 'echo \"a (b)\"'",
+    [["wsl.exe", "-d", "X", "--", "bash", "-c", 'echo "a (b)"'], ["bash", "-c", 'echo "a (b)"'], ["echo", "a (b)"]],
+  ],
+  ["bash", "wsl.exe -d X -- bash -c 'd=$(mktemp -d -p ~); cd $d'", "shell text made only when it runs"],
+  // A PowerShell element is an inert value only when it is exactly one string
+  ["powershell", "'x' + (Remove-Item -Recurse ~)", [["x", "+", "(Remove-Item -Recurse ~)"], ["Remove-Item", "-Recurse", "~"]]],
+  ["powershell", "'a' + (iwr x).Content | python", "text piped into a shell"],
+  ["powershell", '"a" -f (rm x)', [["a", "-f", "(rm x)"], ["rm", "x"]]],
+  ["powershell", "'a', (rm x)", [["a,", "(rm x)"], ["rm", "x"]]],
+  ["powershell", "@'\nx\n'@ + $(rm y)", [["x", "+", "$(rm y)"], ["rm", "y"]]],
+  // cd and names set by quote-split or computed names, or ${NAME:=...}
+  ["bash", 'export H"OME"=/dev; cd && curl x | sh stdin', "text piped into a shell"],
+  ["bash", "read 'HOME' < f; cd && curl x | sh stdin", "text piped into a shell"],
+  ["bash", "export ${x}=/dev; cd && curl x | sh stdin", "text piped into a shell"],
+  ["bash", "declare -n r=HOME; r=/dev; cd && curl x | sh stdin", "text piped into a shell"],
+  ["bash", 'printf -v "$n" /dev; cd && curl x | sh stdin', "text piped into a shell"],
+  ["bash", ": ${HOME:=/dev}; cd && curl x | sh stdin", "text piped into a shell"],
+  ["bash", "echo ${CDPATH=/dev}; cd fd && curl x | sh 0", "text piped into a shell"],
+  ["bash", 'export PATH="$PATH:/tmp/x"; cd && cat x | python s.py', [["export", "PATH=$PATH:/tmp/x"], ["cd"], ["cat", "x"], ["python", "s.py"]]],
+  ["bash", "read -r line < f; cd && cat x | python s.py", [["read", "-r", "line"], ["cd"], ["cat", "x"], ["python", "s.py"]]],
+
   // The unreadable reasons, word for word
   ["bash", "echo 'abc", "an unclosed quote"],
   ["bash", 'echo "abc', "an unclosed quote"],
@@ -652,9 +776,9 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "cat <<EOF\nrm -rf ~", "a here-document"],
   ["bash", "cat <<", "a here-document"],
   ["powershell", "echo @'\nrm -rf ~", "a here-document"],
-  ["bash", "diff <(a) <(b)", "a process substitution"],
-  ["bash", "tee >(rm x)", "a process substitution"],
-  ["bash", "while read l; do echo $l; done < <(ls)", "a process substitution"],
+  ["bash", "diff <(a) <(b)", [["diff", "<(a)", "<(b)"], ["a"], ["b"]]],
+  ["bash", "tee >(rm x)", [["tee", ">(rm x)"], ["rm", "x"]]],
+  ["bash", "while read l; do echo $l; done < <(ls)", [["read", "l"], ["echo", "$l"], ["ls"]]],
   ["powershell", "powershell -EncodedCommand ZQBjAGgAbwA=", "-EncodedCommand, whose text cannot be read"],
   ["powershell", "pwsh -NoProfile -enc ZQBj", "-EncodedCommand, whose text cannot be read"],
   ["powershell", "powershell -e ZQBj", "-EncodedCommand, whose text cannot be read"],
@@ -738,8 +862,18 @@ describe("split", () => {
     "[System.Text.StringBuilder]::new()",
     "[IO.Directory]::GetFiles('.')",
     "[Diagnostics.Stopwatch]::StartNew()",
+    "[System.TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([datetime]::UtcNow, 'UTC')",
+    "[TimeZoneInfo]::Local",
+    "[TimeZoneInfo]::FindSystemTimeZoneById('UTC')",
+    "[datetime]::ParseExact('x', 'y', $null)",
   ])("reads the PowerShell line %s", (line) => {
     expect("commands" in split(line, "powershell")).toBe(true);
+  });
+
+  it("reads the commands in a PowerShell string's method call", () => {
+    const result = split("'x'.Replace((rm y), 'z')", "powershell");
+    expect("commands" in result && result.commands.some((c) => c.words.join(" ") === "rm y")).toBe(true);
+    expect(split("[IO.File]::WriteAllText('x', 'y')", "powershell")).toEqual({ unreadable: "a way of running text the check does not follow" });
   });
 
   it("says when brackets are nested too deep to read, rather than failing", () => {

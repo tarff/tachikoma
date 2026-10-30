@@ -50,13 +50,16 @@ const unknownOption = (name: string, option: string) => new Unreadable(`${name} 
 const requoted = (name: string) => new Unreadable(`PowerShell would change its quotes before ${name} reads it`);
 
 type Grammar = Shell | "cmd";
-type Stop = "" | ")" | "}"; // what closes the part being read: a bracket, or "" for the end of the text
+// What closes the part being read: a bracket; ;; (or ;& or ;;&) or esac for an arm of bash's case; or "" for the end.
+type Stop = "" | ")" | "}" | ";;";
 interface Word {
   value: string; // quotes taken off
   start: number; // where it is in the text read
   end: number;
   dynamic: boolean; // holds a variable or a command's output, so it is known only when it runs
   shape: string; // bash: the word as written, with each quoted or escaped part as \0, for globs and brace expansion
+  single?: boolean; // PowerShell: the word is exactly one string or here-string, with nothing before or after it
+  fed?: boolean; // bash: the word is a process substitution, <(...) or >(...), whose file is a command's output
 }
 // Whether something in a part of a line reads the part's input as code: a shell, or an interpreter such as python. Fed a
 // pipe, either runs text the check never sees. Fed a here-document or here-string, an interpreter runs code written in the
@@ -132,6 +135,7 @@ const DOTNET_READS: Record<string, true | string[]> = {
   boolean: true,
   guid: true,
   timespan: true,
+  timezoneinfo: true, // finding and converting time zones
   bitconverter: true,
   regex: ["escape", "match", "matches", "ismatch", "split", "replace"],
   "text.regularexpressions.regex": ["escape", "match", "matches", "ismatch", "split", "replace"],
@@ -240,8 +244,12 @@ function holdsInput(text: string, cwd: Cwd = KNOWN): boolean {
   return text.split(/[\s=,;]+/).some((t) => t === "-" || ownInput(t, cwd) || ownInput(t.replace(/^-[A-Za-z]+/, ""), cwd));
 }
 
-// Whether a word names a process's own input, or a file known only when the line runs: either may be the pipe.
-const takesInput = (word: Word, cwd: Cwd = KNOWN) => word.dynamic || ownInput(word.value, cwd);
+// Whether a word names a process's own input, or a file known only when the line runs: either may be the pipe. A process
+// substitution, as in `bash <(curl x)`, is another command's output given as the script: text piped into a shell.
+function takesInput(word: Word, cwd: Cwd = KNOWN): boolean {
+  if (word.fed) throw new Unreadable(PIPED);
+  return word.dynamic || ownInput(word.value, cwd);
+}
 
 // What a command's reading depends on, beyond its words.
 interface Context {
@@ -253,6 +261,39 @@ interface Context {
   lost?: () => void; // called for a cd, pushd or popd in another's words, which leaves the shell anywhere
 }
 const MOVES = new Set(["cd", "pushd", "popd"]);
+
+// A variable given a plain literal (Reader.assigned): its name (PowerShell's in lower case) and its value.
+interface Assign {
+  name: string;
+  value: string;
+}
+// bash's commands that set a variable named in their words: export, declare and the like (NAME or NAME=value), read,
+// mapfile and readarray (their names), printf -v NAME, let NAME=..., unset and getopts.
+const NAMES = new Set(["export", "declare", "typeset", "local", "readonly", "read", "mapfile", "readarray", "printf", "let", "unset", "getopts"]);
+// read's, mapfile's and readarray's options that take the next word (bash's help for each).
+const NAME_VALUES = "dinNptuOscC";
+// A command anywhere on the line that sets a variable whose name is made only when it runs, or makes a nameref.
+const DYNAMIC_SETTER = new RegExp(
+  [
+    /\b(export|declare|typeset|local|readonly|read|mapfile|readarray|unset|getopts|let)\b[^\n;&|]*?\s["']?[$`]/.source,
+    /\bprintf\b[^\n;&|]*?\s-v\s*["']?[$`]/.source,
+    /\b(declare|typeset|local)\b[^\n;&|]*?\s-\w*n/.source,
+  ].join("|"),
+);
+// PowerShell's ways to write a variable other than `$name =` (about_Variables, about_CommonParameters), and its loops.
+const PS_VARIABLE_SETTERS = new RegExp(
+  [
+    /set-variable|new-variable|get-variable|remove-variable|clear-variable|\b(sv|nv|gv|rv|clv)\b|\[ref\]|variable:/.source,
+    /-(outvariable|ov|pipelinevariable|pv|errorvariable|ev|warningvariable|wv|informationvariable|iv)\b/.source,
+    /\bforeach\s*\(|\bfor\s*\(/.source,
+  ].join("|"),
+  "i",
+);
+// A variable's name as a plain word on the line, its letters perhaps split by quotes (H"OME"), not inside $NAME or ${NAME}.
+function plainName(name: string, flags = ""): RegExp {
+  const quotes = "[\"']*";
+  return new RegExp(`(?<![\\w$])(?<!\\$\\{[#!]?)${quotes}${[...name].join(quotes)}${quotes}(?!\\w)`, flags);
+}
 
 // A script block passed to powershell is read twice, as a block and as the shell's text: each command is kept once.
 function once(commands: Command[]): Command[] {
@@ -285,6 +326,11 @@ class Reader {
   private readonly exported: Word[] = [];
   private cwd: Cwd = KNOWN;
   private code = ""; // PowerShell: the line's code with each string as '', for the .NET checks (choice 39)
+  private readonly written = new Set<string>(); // bash: the names written by name-setting commands read so far
+  private writtenAll = false; // bash: a name-setting command whose name is made when it runs, or a nameref, was read
+  // Variables given a plain literal earlier on the line at its top level, and written no other way anywhere on it: their
+  // values are read in their place (PowerShell's names in lower case).
+  private readonly known = new Map<string, string>();
 
   constructor(
     private readonly src: string,
@@ -314,12 +360,14 @@ class Reader {
     let piped = false;
     let carried = false;
     let literal = false; // PowerShell: the pipe carries only a string written in the line
+    let before = ""; // the separator before the command being read
     const add = (h: Hunger) => {
       const inside = open.at(-1);
       if (inside) inside.hungry = most(inside.hungry, h);
       else hungry = most(hungry, h);
     };
-    for (;;) {
+    // Reads one command and returns the separator after it.
+    const step = (): string => {
       const r = this.command(stop, carried);
       // A compound command after a pipe takes its input in every command inside it.
       const fed = piped || open.some((o) => o.piped);
@@ -332,14 +380,38 @@ class Reader {
       for (let k = 0; k < r.closes && open.length > 0; k++) {
         const inside = open.pop()!;
         // A here-document, here-string or file after done or fi feeds every command inside (choices 35 and 38).
-        if (r.fed && inside.hungry === SHELL) throw new Unreadable(PIPED);
+        if ((r.fed && inside.hungry === SHELL) || (r.piped && inside.hungry)) throw new Unreadable(PIPED);
         add(r.replaced ? NONE : inside.hungry);
       }
-      if (r.sep === stop) break;
+      // A variable given a plain literal, by a command that surely runs (at the top level, after nothing that may skip it,
+      // and not in a pipeline or in the background), and written no other way anywhere on the line, is known from here on.
+      const sure = !stop && open.length === 0 && r.opens === 0 && r.closes === 0 && ["", ";", "\n"].includes(before) && !["|", "&"].includes(r.sep);
+      for (const a of r.assigns) if (sure && this.single(a.name)) this.known.set(a.name, a.value);
+      before = r.sep;
       literal = r.literal && !piped;
       piped = r.sep === "|";
       carried = piped || r.sep === "&&" || r.sep === "||";
-    }
+      // `for NAME in WORD...` over plain words: the body is read once for each word, with NAME known as it (item 5 of the
+      // false-alarm round). The body ends where the loop's done closes it.
+      if (r.loop && r.sep !== stop && this.single(r.loop.name, r.loop.values.filter((v) => v === r.loop!.name).length)) {
+        const at = this.i;
+        const loop = open.at(-1)!;
+        const depth = open.length;
+        const state = { before, literal, piped, carried };
+        let sep = r.sep;
+        r.loop.values.forEach((value, k) => {
+          this.known.set(r.loop!.name, value);
+          this.i = at;
+          ({ before, literal, piped, carried } = state);
+          if (k > 0) open.push({ piped: loop.piped, hungry: NONE });
+          do sep = step();
+          while (open.length >= depth && sep !== stop);
+        });
+        return sep;
+      }
+      return r.sep;
+    };
+    while (step() !== stop);
     for (const inside of open) hungry = most(hungry, inside.hungry); // a compound with no end, which bash would refuse
     if (stop) {
       if (this.pending.length > 0) throw new Unreadable(HEREDOC); // its body would have to come after the bracket's end
@@ -366,6 +438,7 @@ class Reader {
     let fed = false; // a here-document or here-string is this command's input
     let input = false; // a file is this command's input
     let copied = false; // <&N or 0<&N copies another file number into the input, which may be the pipe
+    let piped = false; // a process substitution, as in `< <(curl x)`, is this command's input
     let opens = 0;
     let closes = 0;
     const outerHungry = this.hungry;
@@ -375,15 +448,18 @@ class Reader {
       const subs = this.hungry; // $(...) and backticks read the line's input, not the command's
       this.hungry = outerHungry;
       const hungry = most(own.hungry, groupHungry);
-      if (hungry === SHELL && fed) throw new Unreadable(PIPED);
+      if ((hungry === SHELL && fed) || (hungry && piped)) throw new Unreadable(PIPED);
       // A here-document, here-string or file in place of the input: an interpreter reading it runs code written in the line.
       const replaced = (fed || input) && !copied;
       // PowerShell: a command that is only a string or here-string written in the line, with nothing in it made when it runs.
-      const raw0 = words.length === 1 ? src.slice(words[0]!.start, words[0]!.end) : "";
-      const quoteAt = (k: number) => PS_SINGLE.has(raw0[k] ?? "") || PS_DOUBLE.has(raw0[k] ?? "");
-      const opened = quoteAt(0) || (raw0[0] === "@" && quoteAt(1));
-      const literal = g === "powershell" && raw0 !== "" && !words[0]!.dynamic && opened && (quoteAt(raw0.length - 1) || raw0.endsWith("@"));
-      return { commands: [...own.commands, ...nested], sep, hungry: most(replaced ? NONE : hungry, subs), opens, closes, fed, replaced, literal };
+      const literal = g === "powershell" && words.length === 1 && !!words[0]!.single && !words[0]!.dynamic;
+      // bash: `for NAME in WORD...` over plain words, no globs or brace expansions among them.
+      const raw = (k: number) => (words[k] ? src.slice(words[k]!.start, words[k]!.end) : "");
+      const plain = (w: Word) => !w.dynamic && !/\{[^{}]*(,|\.\.)[^{}]*\}|[*?]|\[[^\]]*\]/.test(w.shape);
+      const looped = g === "bash" && raw(0) === "for" && /^[A-Za-z_]\w*$/.test(raw(1)) && raw(2) === "in" && words.length > 3 && words.slice(3).every(plain);
+      const loop = looped ? { name: raw(1), values: words.slice(3).map((w) => w.value) } : undefined;
+      const result = { commands: [...own.commands, ...nested], sep, hungry: most(replaced ? NONE : hungry, subs), opens, closes };
+      return { ...result, fed, piped, replaced, literal, assigns: own.assigns, loop };
     };
     for (;;) {
       this.space();
@@ -400,9 +476,15 @@ class Reader {
         fed ||= redirected === "text";
         input ||= redirected === "input";
         copied ||= redirected === "copy";
+        piped ||= redirected === "piped";
         if (start < 0) start = at;
         last = this.i;
         continue;
+      }
+      // The end of a case arm: ;; or ;& or ;;&, or esac where a command would start.
+      if (stop === ";;" && ((c === ";" && (next === ";" || next === "&")) || (start < 0 && words.length === 0 && this.looking(/(?=esac(?![^\s;&|)]))/y)))) {
+        if (c === ";") this.i += src.startsWith(";;&", at) ? 3 : 2;
+        return done(";;");
       }
       if (c === "\n" || (c === ";" && g !== "cmd")) {
         if (c === "\n" && this.waiting > 0) throw new Unreadable(HEREDOC);
@@ -429,11 +511,24 @@ class Reader {
         this.i++;
         return done(")");
       }
-      const first = words.length === 0 && !group;
+      const first: boolean = words.length === 0 && !group;
       if (c === "}" && (g === "powershell" || (g === "bash" && first && this.ends(next, stop)))) {
         if (stop !== "}") throw new Unreadable(UNPAIRED);
         this.i++;
         return done("}");
+      }
+      // Arithmetic, `(( ... ))` on its own or in `for (( ...; ...; ... ))`: only its $(...) and backticks hold commands.
+      const arithmeticFor = words.length === 1 && src.slice(words[0]!.start, words[0]!.end) === "for";
+      if (c === "(" && next === "(" && g === "bash" && (first || arithmeticFor)) {
+        const kept = nested.length;
+        this.i += 2;
+        if (this.arithmetic(nested)) {
+          group ||= first;
+          last = this.i;
+          continue;
+        }
+        this.i = at; // ( (...) ...): a subshell after all, as bash reads it
+        nested.length = kept;
       }
       if (c === "(" && g === "bash") {
         // A function's definition, `name()`: its body is read as the next command.
@@ -480,14 +575,24 @@ class Reader {
           name.lastIndex = this.i;
           if (name.test(src)) continue;
         }
+        if (raw === "case") {
+          groupHungry = most(groupHungry, this.cases(nested));
+          group = true;
+          last = this.i;
+          continue;
+        }
         if (raw === "coproc") coproc = true;
         if (raw === "function") named = true;
         if (OPENS.has(raw)) opens++;
         if (CLOSES.has(raw)) closes++;
         if (raw === "coproc" || raw === "function" || RESERVED.has(raw)) continue;
       }
-      // After & or ., PowerShell runs whatever the word holds when the line runs (choice 37); a script block is read.
-      if (called && words.length === 0 && w.dynamic) throw new Unreadable(NAMED);
+      // After & or ., PowerShell runs whatever the word holds when the line runs (choice 37); a script block is read. A
+      // Windows system folder's variable with a literal path after it names the program at the path's end.
+      if (called && words.length === 0 && w.dynamic) {
+        if (!this.systemFolder(raw)) throw new Unreadable(NAMED);
+        w.dynamic = false;
+      }
       if (g === "powershell" && raw === "--%") {
         this.verbatim(words);
         last = this.i;
@@ -499,20 +604,20 @@ class Reader {
     }
   }
 
-  private emit(words: Word[], start: number, last: number, called: boolean): Part {
+  private emit(words: Word[], start: number, last: number, called: boolean): Part & { assigns: Assign[] } {
     const { src, g } = this;
     const k = g === "bash" ? assignments(words, src) : 0;
     const own = g === "bash" ? words.slice(k) : g === "powershell" ? psUnassigned(words, src) : cmdOwn(words);
     const vars = [...this.exported, ...words.slice(0, k)];
+    const assigns = this.assigned(words, k, own);
     if (own.length === 0) {
       this.exported.push(...words.slice(0, k));
-      return { commands: [], hungry: NONE };
+      return { commands: [], hungry: NONE, assigns };
     }
-    // PowerShell: an element that starts with a string or here-string, as in `$x = 'format'` or `'x' | Out-File f`, is a
-    // value, not a command; only & or . would run it. Its $(...) are read all the same.
-    const head = src.slice(own[0]!.start, own[0]!.start + 2);
-    const quote = (c: string | undefined) => PS_SINGLE.has(c ?? "") || PS_DOUBLE.has(c ?? "");
-    if (g === "powershell" && !called && (quote(head[0]) || (head[0] === "@" && quote(head[1])))) return { commands: [], hungry: NONE };
+    // PowerShell: an element that is exactly one string or here-string, as in `$x = 'format'` or `'x' | Out-File f`, is a
+    // value, not a command; only & or . would run it. Its $(...) are read all the same. Anything after the string, as in
+    // `'x' + (...)` or `'x'.Replace(...)`, makes it an expression, whose brackets are read as commands.
+    if (g === "powershell" && !called && own.length === 1 && own[0]!.single) return { commands: [], hungry: NONE, assigns };
     const name = own[0]!.value;
     const args = own.slice(1);
     if (g === "bash") this.settings(name, args, vars);
@@ -520,7 +625,30 @@ class Reader {
     const lost = () => {
       this.cwd = ANYWHERE;
     };
-    return expand(own, src.slice(start, last), src, g, { inner: false, vars, functions: this.functions, cwd: this.cwd, lost });
+    const part = expand(own, src.slice(start, last), src, g, { inner: false, vars, functions: this.functions, cwd: this.cwd, lost });
+    return { ...part, assigns };
+  }
+
+  // The variables a command gives a plain literal (choice 37, item 3 of the false-alarm round): bash's `NAME=literal` on its
+  // own, or `export NAME=literal`, and PowerShell's `$name = 'literal'` or "literal" with no $ in it. Whether a value is
+  // then used in place of the variable is the reader's to decide (Reader.sequence).
+  private assigned(words: Word[], k: number, own: Word[]): Assign[] {
+    const { src, g } = this;
+    const literal = (w: Word, head: string) => (w.dynamic ? undefined : { name: head, value: w.value.slice(w.value.indexOf("=") + 1) });
+    if (g === "bash") {
+      const exported = own[0]?.value === "export" && own.slice(1).every((w) => !w.value.startsWith("-"));
+      const plain = own.length === 0 ? words.slice(0, k) : exported ? own.slice(1) : [];
+      return plain.flatMap((w) => {
+        const head = /^([A-Za-z_]\w*)=/.exec(src.slice(w.start, w.end))?.[1];
+        const found = head && literal(w, head);
+        return found ? [found] : [];
+      });
+    }
+    if (g !== "powershell" || own.length !== 1 || !own[0]!.single || own[0]!.dynamic) return [];
+    const target = src.slice(words[0]!.start, words[0]!.end);
+    const spaced = words.length === 3 && words[1]!.value === "=";
+    const head = spaced ? /^\$([A-Za-z_]\w*)$/.exec(target) : words.length === 1 ? /^\$([A-Za-z_]\w*)=/.exec(target) : null;
+    return head ? [{ name: head[1]!.toLowerCase(), value: own[0]!.value }] : [];
   }
 
   // What a bash command sets for the rest of the line: variables (export, declare, typeset, readonly, local), aliases, and
@@ -534,8 +662,72 @@ class Reader {
       }
       this.exported.push(...args.filter((w) => !w.value.startsWith("-") && w.value.includes("=")));
     }
+    if (NAMES.has(name)) this.names(name, args);
+    if (name === "source" || name === ".") this.known.clear(); // the file it reads may set any variable
     if (name === "alias") for (const a of args) if (a.value.indexOf("=") > 0) this.functions.set(a.value.slice(0, a.value.indexOf("=")), SHELL);
     if (MOVES.has(name)) this.cwd = most(this.cwd, this.moved(name, args, vars)) as Cwd;
+  }
+
+  // The variables a name-setting command writes (NAMES): each name argument, after its quotes are taken off. A name made
+  // when the line runs, or a nameref (declare -n), may write any variable.
+  private names(name: string, args: Word[]): void {
+    const note = (w: Word, value = w.value) => {
+      const head = this.src.slice(w.start, w.end).split("=")[0]!;
+      if (/[$`]/.test(head) || (w.dynamic && !value.includes("="))) this.writtenAll = true;
+      else this.written.add(/^[A-Za-z_]\w*/.exec(value)?.[0] ?? value);
+    };
+    if (name === "printf") {
+      const k = args.findIndex((w) => /^-v/.test(w.value));
+      const v = args[k];
+      if (v?.value === "-v" && args[k + 1]) note(args[k + 1]!);
+      else if (v && v.value !== "-v") note(v, v.value.slice(2));
+      return;
+    }
+    for (let k = 0; k < args.length; k++) {
+      const w = args[k]!;
+      if (!w.value.startsWith("-") || name === "let") note(w);
+      else if (/n/.test(w.value) && ["declare", "typeset", "local"].includes(name)) this.writtenAll = true; // a nameref
+      else if (["read", "mapfile", "readarray"].includes(name) && w.value.length === 2 && NAME_VALUES.includes(w.value[1]!)) k++;
+    }
+  }
+
+  // Whether a PowerShell word is a Windows system folder's variable ($env:SystemRoot, $env:windir, $env:ProgramFiles,
+  // ${env:ProgramFiles(x86)} or $env:ProgramW6432) followed by a literal path, as in "$env:SystemRoot\System32\x.exe", so
+  // the command is the path's last part. The variable must not be set on the line, as by `$env:SystemRoot = ...` or
+  // `Set-Item env:SystemRoot`.
+  private systemFolder(raw: string): boolean {
+    const m = /^"?(?:\$env:(systemroot|windir|programfiles|programw6432)|\$\{env:(programfiles\(x86\))\})((?:\\[^\\$`"'(){}@;&|]+)+)"?$/i.exec(raw);
+    if (!m) return false;
+    const name = (m[1] ?? m[2])!.replace(/[()]/g, "\\$&");
+    return !new RegExp(`(?<![$\\{])env:\\\\?${name}|\\$\\{?env:${name}\\}?\\s*=`, "i").test(this.src);
+  }
+
+  // Whether a variable is written only once on the line (plus `extra` times its name stands as a loop's word): by the plain
+  // literal or the for loop being looked at. Any other way to write it anywhere on the line (read, printf -v, declare, a
+  // second assignment, +=, a nameref, ${NAME:=...}; PowerShell's Set-Variable, [ref] and the like) keeps it unknown.
+  private single(name: string, extra = 0): boolean {
+    const { src } = this;
+    if (this.g === "powershell") {
+      const assigned = src.match(new RegExp(`\\$${name}\\s*(?:[-+*/%]|\\?\\?)?=(?!=)`, "gi"))?.length ?? 0;
+      const other = new RegExp(`\\$\\w+:${name}\\b|\\$\\{${name}\\}|\\$${name}\\s*(\\+\\+|--)|(\\+\\+|--)\\s*\\$${name}\\b`, "i");
+      return assigned === 1 && !PS_VARIABLE_SETTERS.test(src) && !other.test(src);
+    }
+    const count = src.match(plainName(name, "g"))?.length ?? 0;
+    return count === 1 + extra && !DYNAMIC_SETTER.test(src) && !new RegExp(`\\$\\{${name}:?=`).test(src);
+  }
+
+  // Whether `name` is set anywhere on the line, in any way: by a name-setting command read so far (NAMES), by a name made
+  // when the line runs or a nameref anywhere, as a plain word anywhere (perhaps split by quotes, as in H"OME"), by
+  // ${NAME:=...} or ${NAME=...}, or through env, sudo or an export the line's shell inherits.
+  private set(name: string, vars: Word[] = []): boolean {
+    return (
+      this.writtenAll ||
+      this.written.has(name) ||
+      DYNAMIC_SETTER.test(this.src) ||
+      plainName(name).test(this.src) ||
+      new RegExp(`\\$\\{${name}:?=`).test(this.src) ||
+      [...vars, ...this.exported].some((v) => v.value.startsWith(`${name}=`))
+    );
   }
 
   // Where a cd, pushd or popd may leave the shell. Its options are skipped up to --, and the target is tidied as paths are
@@ -543,10 +735,7 @@ class Reader {
   // does not know; the folder stack (`cd -`, popd, pushd +N); a ~ form other than ~ and ~/... (~- and ~+ are the folders
   // before and now, ~user another's home); and HOME, CDPATH or PWD set anywhere on the line.
   private moved(name: string, args: Word[], vars: Word[]): Cwd {
-    // A variable counts as set when its name is on the line as a plain word, as NAME=, `read NAME`, `printf -v NAME`,
-    // `for NAME in`, mapfile or declare would write it, not only inside a $NAME or ${NAME} expansion.
-    const set = (variable: string) =>
-      new RegExp(`(?<!\\$|\\$\\{[#!]?|\\w)${variable}(?!\\w)`).test(this.src) || vars.some((v) => v.value.startsWith(`${variable}=`));
+    const set = (variable: string) => this.set(variable, vars);
     let target: Word | undefined;
     for (let k = 0; k < args.length; k++) {
       const value = args[k]!.value;
@@ -569,6 +758,47 @@ class Reader {
     if (relative && (this.cwd !== KNOWN || set("CDPATH") || set("PWD"))) return ANYWHERE;
     if (target.value.startsWith("/")) return tidied(target.value).length === 0 ? ROOT : KNOWN;
     return target.value.split("/").includes("..") ? ROOT : KNOWN;
+  }
+
+  // bash's `case WORD in [(]PATTERN[|PATTERN]...) COMMANDS ;; ... esac`, after its `case`: the word and the patterns are words,
+  // whose $(...) are read, and each arm's commands are read up to its ;; (or ;& or ;;&) or the esac. Returns what in the
+  // arms reads the case's input.
+  private cases(nested: Command[]): Hunger {
+    const { src } = this;
+    const blanks = () => {
+      for (this.space(); src[this.i] === "\n"; this.space()) {
+        if (this.waiting > 0) throw new Unreadable(HEREDOC);
+        this.i++;
+        nested.push(...this.bodies());
+      }
+    };
+    const word = () => {
+      const from = this.i;
+      const w = this.word(";;", nested);
+      if (this.i === from) throw new Unreadable(src[from] === undefined ? UNPAIRED : MISPLACED);
+      return src.slice(w.start, w.end);
+    };
+    this.space();
+    word(); // the word matched
+    blanks();
+    if (word() !== "in") throw new Unreadable(UNPAIRED);
+    let hungry = NONE;
+    for (;;) {
+      blanks();
+      if (this.looking(/esac(?![^\s;&|)])/y)) return hungry;
+      if (src[this.i] === undefined) throw new Unreadable(UNPAIRED);
+      if (src[this.i] === "(") this.i++;
+      for (;;) {
+        this.space();
+        if (src[this.i] === ")") break;
+        if (src[this.i] === "|") this.i++;
+        else word(); // a pattern
+      }
+      this.i++;
+      const arm = this.sequence(";;");
+      nested.push(...arm.commands);
+      hungry = most(hungry, arm.hungry);
+    }
   }
 
   // Skips blanks, escaped new lines and comments.
@@ -608,8 +838,9 @@ class Reader {
   // here-string is left out the same way (choice 35). Says what it was: "text" for a here-document or here-string on the
   // input, "input" for a file read as the input, "copy" for another file number copied into the input (<&N, 0<&N), which
   // may be the pipe, and "file" for any other. Only file number 0, written or left out, is the input.
-  private redirection(stop: Stop, nested: Command[]): "file" | "input" | "text" | "copy" | false {
+  private redirection(stop: Stop, nested: Command[]): "file" | "input" | "text" | "copy" | "piped" | false {
     const { src, g } = this;
+    if (g === "bash" && /[<>]\(/y.test(src.slice(this.i, this.i + 2))) return false; // a process substitution, read as a word
     const re =
       g === "bash" ? /(\d*)(&>>|&>|>>|>&|>\||>|<<<|<<-|<<|<&|<>|<)/y : g === "powershell" ? /([*\d]?)(>>|>|<)(&\d)?/y : /(\d?)(>>|>|<)(&\d)?/y;
     re.lastIndex = this.i;
@@ -622,11 +853,13 @@ class Reader {
     if (g === "bash" && src[this.i] === "(") throw new Unreadable(PROCESS);
     if (m[3]) return op === "<" && onInput ? "copy" : "file"; // 2>&1 and the like, which name no file
     while (src[this.i] === " " || src[this.i] === "\t") this.i++;
-    if (g === "bash" && /[<>]\(/y.test(src.slice(this.i, this.i + 2))) throw new Unreadable(PROCESS); // as in `done < <(ls)`
-    if (this.ends(src[this.i], stop)) throw new Unreadable(here ? HEREDOC : NO_FILE);
+    const substituted = g === "bash" && /[<>]\(/y.test(src.slice(this.i, this.i + 2)); // as in `done < <(ls)`
+    if (!substituted && this.ends(src[this.i], stop)) throw new Unreadable(here ? HEREDOC : NO_FILE);
     // A here-string's word is read as any word is, its $(...) and backticks included unless it is in single quotes.
     const w = this.word(stop, nested);
     if (op === "<&") return onInput ? "copy" : "file";
+    // A command's output in place of the input, as in `sh < <(curl x)`: a shell or an interpreter there runs it.
+    if (w.fed) return onInput && (op === "<" || op === "<>") ? "piped" : "file";
     // A quoted end word, as in <<'EOF', <<"EOF" or <<\EOF, keeps bash from expanding the body (bash manual, "Here Documents").
     if (op !== "<<<" && here) this.pending.push({ end: w.value, strip: op === "<<-", expands: !/['"\\]/.test(src.slice(w.start, w.end)) });
     if (here) return onInput ? "text" : "file";
@@ -714,9 +947,25 @@ class Reader {
     this.dynamic = false;
     let value = "";
     let shape = "";
+    let parts = 0;
+    let string = false; // PowerShell: the word's first part is a string or here-string
+    let fed = false;
     if (g === "powershell") this.code += " ";
+    // bash's process substitution, <(...) or >(...): its commands are read as in $(...), and the word is a file they feed.
+    if (g === "bash" && /[<>]\(/y.test(src.slice(start, start + 2))) {
+      this.i += 2;
+      this.inner(")", nested);
+      this.dynamic = fed = true;
+      value = src.slice(start, this.i);
+      shape = "\0";
+    }
     while (!this.ends(src[this.i], stop)) {
       const c = src[this.i]!;
+      if (parts++ === 0) {
+        const quote = (k: number) => PS_SINGLE.has(src[k] ?? "") || PS_DOUBLE.has(src[k] ?? "");
+        const here = c === "@" && quote(this.i + 1) && /^[ \t]*\n/.test(src.slice(this.i + 2, src.indexOf("\n", this.i) + 1));
+        string = quote(this.i) || here;
+      }
       if (c === this.escape) {
         const n = src[this.i + 1];
         this.i += n === undefined ? 1 : 2;
@@ -728,7 +977,7 @@ class Reader {
         value += this.bashPart(nested);
       } else value += g === "powershell" ? this.psPart(nested) : this.cmdPart();
     }
-    const word = { value, start, end: this.i, dynamic: this.dynamic, shape };
+    const word: Word = { value, start, end: this.i, dynamic: this.dynamic, shape, single: g === "powershell" && parts === 1 && string, fed };
     this.dynamic = outer;
     if (g === "powershell" && PS_FOLLOW_TEXT.test(src.slice(start, this.i))) throw new Unreadable(FOLLOW);
     return word;
@@ -773,10 +1022,26 @@ class Reader {
       this.code += "$v";
       return this.psBraced();
     }
+    const known = c === "$" ? this.psKnown() : undefined;
+    if (known !== undefined) {
+      this.code += "$v";
+      return known;
+    }
     if (c === "$" && /[\w:?^$]/.test(n ?? "")) this.dynamic = true;
     this.i++;
     this.code += c;
     return c;
+  }
+
+  // PowerShell's $name of a variable known to hold a plain literal (Reader.known): its value, read in its place. A name
+  // with a scope or drive before a colon, as in $env:x, is another variable.
+  private psKnown(): string | undefined {
+    const name = /\$([A-Za-z_]\w*)(?![\w:])/y;
+    name.lastIndex = this.i;
+    const m = name.exec(this.src);
+    const value = m ? this.known.get(m[1]!.toLowerCase()) : undefined;
+    if (value !== undefined) this.i = name.lastIndex;
+    return value;
   }
 
   // PowerShell's reach into .NET (choice 39), read over the line's code with its strings taken out. A static member call
@@ -859,6 +1124,16 @@ class Reader {
     const { src } = this;
     const from = this.i;
     const n = src[from + 1];
+    // $NAME or ${NAME} of a variable known to hold a plain literal (Reader.known) is that literal. Outside double quotes it
+    // is read only if bash would not split it at blanks or expand a glob in it.
+    const known = /\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})/y;
+    known.lastIndex = from;
+    const m = known.exec(src);
+    const value = m ? this.known.get(m[1] ?? m[2]!) : undefined;
+    if (m && value !== undefined && (quoted || !/[\s*?[\]]/.test(value))) {
+      this.i = known.lastIndex;
+      return value;
+    }
     if (n === "(" || n === "{") this.dynamic = true;
     if (n === "(") {
       if (src[from + 2] === "(") {
@@ -1010,6 +1285,11 @@ class Reader {
         value += src.slice(from, this.i);
       } else if (nested && c === "$" && n === "{") value += this.psBraced();
       else {
+        const known = nested && c === "$" ? this.psKnown() : undefined;
+        if (known !== undefined) {
+          value += known;
+          continue;
+        }
         if (nested && c === "$" && /[\w:?^$]/.test(n ?? "")) this.dynamic = true;
         value += c;
         this.i++;
@@ -1093,9 +1373,12 @@ function psUnassigned(words: Word[], src: string): Word[] {
     const joined = /^([^=]*?)(?:[-+*/%]|\?\?)?=([\s\S]*)$/.exec(w.value);
     if (!joined || !psTargets(joined[1]!)) return words;
     const rest = joined[2]!;
-    // Where the value starts as written, after the = in the word, so a quote there is seen (Reader.emit).
+    // Where the value starts as written, after the = in the word, and whether it is exactly one string (Reader.emit).
     const start = w.start + (/^[^=]*=/.exec(src.slice(w.start, w.end))?.[0].length ?? 0);
-    words = rest ? [{ ...w, value: rest, start }, ...words.slice(k + 1)] : words.slice(k + 1);
+    const raw = src.slice(start, w.end);
+    const kind = PS_SINGLE.has(raw[0] ?? "") ? PS_SINGLE : PS_DOUBLE.has(raw[0] ?? "") ? PS_DOUBLE : undefined;
+    const single = !!kind && raw.length > 1 && kind.has(raw.at(-1)!) && ![...raw.slice(1, -1)].some((ch) => kind.has(ch));
+    words = rest ? [{ ...w, value: rest, start, single }, ...words.slice(k + 1)] : words.slice(k + 1);
   }
 }
 
@@ -1461,9 +1744,23 @@ function wslRun(args: Word[]): { text: Word[] } | { exec: Word[] } | { none: tru
   return { input: true };
 }
 
-// The command line Windows passes on, as Linux's shell reads it: a word holding a blank is put in double quotes.
+// The command line Windows passes on, as Linux's shell reads it. A word holding a blank or a double quote, or empty, is put in
+// double quotes with its inner quotes escaped, as a C program's arguments are written (Microsoft's "Parsing C command-line
+// arguments": a quote becomes \", and the backslashes before it, or before the closing quote, are doubled).
 function linuxLine(words: Word[]): string {
-  return words.map((w) => (w.value === "" || /\s/.test(w.value) ? `"${w.value}"` : w.value)).join(" ");
+  const quoted = (value: string) => {
+    let out = '"';
+    let slashes = "";
+    for (const ch of value) {
+      if (ch === "\\") slashes += ch;
+      else {
+        out += ch === '"' ? `${slashes}${slashes}\\"` : `${slashes}${ch}`;
+        slashes = "";
+      }
+    }
+    return `${out}${slashes}${slashes}"`;
+  };
+  return words.map((w) => (w.value === "" || /[\s"]/.test(w.value) ? quoted(w.value) : w.value)).join(" ");
 }
 
 // Interpreters that run code from their input when given no script, or - or their own input as the script (choice 37). From
@@ -1570,7 +1867,10 @@ interface InterpreterRun {
 
 // Whether a word naming a script or an option's value may be the input: missing, made only when the line runs, - , or a
 // path to the input (holdsInput).
-const namesInput = (word: Word | undefined, cwd: Cwd, value = word?.value) => !word || word.dynamic || holdsInput(value ?? "", cwd);
+function namesInput(word: Word | undefined, cwd: Cwd, value = word?.value): boolean {
+  if (word?.fed) throw new Unreadable(PIPED); // a process substitution: another command's output as the code
+  return !word || word.dynamic || holdsInput(value ?? "", cwd);
+}
 
 function interpreterRun(name: string, args: Word[], cwd: Cwd): InterpreterRun | undefined {
   if (AWK.has(name)) return awkRun(args, cwd);
@@ -1729,9 +2029,9 @@ const NPX: Options = {
   values: "pcw",
   long: [
     "yes", "no", "workspaces", "include-workspace-root", "quiet", "silent", "global", "offline", "prefer-offline", "prefer-online",
-    "legacy-peer-deps", "force", "ignore-scripts",
+    "legacy-peer-deps", "force", "ignore-scripts", "no-install", "ignore-existing", // the last two from npx before npm 7, still taken
   ],
-  longValues: ["package", "call", "workspace", "loglevel", "prefix", "registry", "cache", "userconfig"],
+  longValues: ["package", "call", "workspace", "loglevel", "prefix", "registry", "cache", "userconfig", "shell"],
 };
 const PNPM: Options = {
   flags: "rwcs",
