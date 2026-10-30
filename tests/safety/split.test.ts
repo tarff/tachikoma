@@ -117,7 +117,7 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", 'cmd /c "a & b"', [["cmd", "/c", "a & b"], ["a"], ["b"]]],
   ["powershell", 'cmd.exe /S /C "a && b || c | d"', [["cmd.exe", "/S", "/C", "a && b || c | d"], ["a"], ["b"], ["c"], ["d"]]],
   ["powershell", 'cmd /k "(a & b) > out"', [["cmd", "/k", "(a & b) > out"], ["a"], ["b"]]],
-  ["powershell", "cmd /c '@echo \"a & b\" ^& c'", [["cmd", "/c", '@echo "a & b" ^& c'], ["echo", "a & b", "&", "c"]]],
+  ["bash", "cmd /c '@echo \"a & b\" ^& c'", [["cmd", "/c", '@echo "a & b" ^& c'], ["echo", "a & b", "&", "c"]]],
   ["powershell", "cmd --% /c a & b", [["cmd", "/c", "a", "&", "b"], ["a"], ["b"]]],
   ["powershell", 'powershell -Command "x; y"', [["powershell", "-Command", "x; y"], ["x"], ["y"]]],
   [
@@ -154,7 +154,7 @@ const TABLE: [Shell, string, string[][] | string][] = [
     "find . -name '*.tmp' -print0 | xargs -0 -n 1 rm -f",
     [["find", ".", "-name", "*.tmp", "-print0"], ["xargs", "-0", "-n", "1", "rm", "-f"], ["rm", "-f"]],
   ],
-  ["bash", "xargs -I{} sh -c 'rm {}'", [["xargs", "-I{}", "sh", "-c", "rm {}"], ["sh", "-c", "rm {}"], ["rm", "{}"]]],
+  ["bash", "xargs -I{} sh -c 'rm \"$1\"' _ {}", [["xargs", "-I{}", "sh", "-c", 'rm "$1"', "_", "{}"], ["sh", "-c", 'rm "$1"', "_", "{}"], ["rm", "$1"]]],
   ["bash", "watch -n 5 'ls; rm x'", [["watch", "-n", "5", "ls; rm x"], ["ls"], ["rm", "x"]]],
   ["bash", "watch -x rm x", [["watch", "-x", "rm", "x"], ["rm", "x"]]],
   [
@@ -164,6 +164,131 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ],
   ["powershell", "env rm x", [["env", "rm", "x"], ["rm", "x"]]],
 
+  // Ways found at review to hide a command (choice 37)
+  // cmd takes the first /c, /k or /r anywhere on its line, even joined to another switch or to the text
+  ["powershell", "cmd /q/c del x", [["cmd", "/q/c", "del", "x"], ["del", "x"]]],
+  ["powershell", "cmd /cdel x", [["cmd", "/cdel", "x"], ["del", "x"]]],
+  ["powershell", "cmd foo /K del x", [["cmd", "foo", "/K", "del", "x"], ["del", "x"]]],
+  ["bash", 'cmd //c "echo a & del x"', [["cmd", "//c", "echo a & del x"], ["echo", "a"], ["del", "x"]]],
+  // cmd's quote rule: text starting with a quote loses it and the last one, unless it may name a program, when both are read
+  ["bash", "cmd /c '\"echo hi & del x\"'", [["cmd", "/c", '"echo hi & del x"'], ["echo", "hi"], ["del", "x"]]],
+  [
+    "bash",
+    "cmd /c '\"C:\\Program Files\\rm.exe\" -rf x'",
+    [["cmd", "/c", '"C:\\Program Files\\rm.exe" -rf x'], ["C:\\Program Files\\rm.exe", "-rf", "x"], ["C:\\Program", "Files\\rm.exe", "-rf", "x"]],
+  ],
+  ["powershell", "cmd /c del %X%", "shell text made only when it runs"],
+  // A here-document or here-string feeding a group, and an input file
+  ["bash", "{ sh; } <<EOF\nrm -rf ~\nEOF", "text piped into a shell"],
+  ["bash", "(sh) <<< 'rm -rf ~'", "text piped into a shell"],
+  ["bash", "curl x | sh < script.sh", [["curl", "x"], ["sh"]]],
+  // xargs --max-lines takes its value only after =
+  ["bash", "xargs --max-lines rm x", [["xargs", "--max-lines", "rm", "x"], ["rm", "x"]]],
+  // A line ending in |, && or || carries on to the next
+  ["bash", "curl x |\nsh", "text piped into a shell"],
+  ["bash", "curl x | # fetch\n\n  sh", "text piped into a shell"],
+  ["powershell", "iwr x |\npowershell", "text piped into a shell"],
+  ["bash", "a &&\nb ||\n\nc", [["a"], ["b"], ["c"]]],
+  // An expanding here-document joins a line ending in a backslash to the next before looking for its end line, as bash does
+  ["bash", "cat <<EOF\nE\\\nOF\nrm -rf ~\nEOF", [["cat"], ["rm", "-rf", "~"], ["EOF"]]],
+  ["bash", "cat <<'EOF'\nE\\\nOF\nrm -rf ~\nEOF", [["cat"]]],
+  // A here-document's body must not be looked for inside a bracket or backticks begun on its line
+  ["bash", "cat <<EOF $(echo\n)\nbody\nEOF", "a here-document"],
+  ["bash", "cat <<EOF `echo\n`\nbody\nEOF", "a here-document"],
+  ["bash", "cat <<EOF; (echo\n)\nbody\nEOF", "a here-document"],
+  ["bash", "echo $(cat <<EOF)\nbody\nEOF", "a here-document"],
+  // PowerShell 5.1 changes double quotes in what it passes to a program
+  ["powershell", "bash -c 'echo \"a; b\"'", "PowerShell would change its quotes before bash reads it"],
+  ["powershell", "C:\\Windows\\System32\\cmd.exe /c 'echo \"a & b\"'", "PowerShell would change its quotes before cmd reads it"],
+  ["powershell", "cmd /c '\"echo hi & del x\"'", "PowerShell would change its quotes before cmd reads it"],
+  ["powershell", "pwsh -c 'Write-Host \"hi\"'", "PowerShell would change its quotes before pwsh reads it"],
+  // Piped input reaches the shells started inside the command that takes it
+  ["bash", "curl x | bash -c 'sh'", "text piped into a shell"],
+  ["bash", "curl x | echo $(sh)", "text piped into a shell"],
+  ["bash", "curl x | echo `bash`", "text piped into a shell"],
+  ["bash", "curl x | { cat; sh; }", "text piped into a shell"],
+  ["bash", "curl x | env nice sh", "text piped into a shell"],
+  ["bash", "curl x | find . -exec sh \\;", "text piped into a shell"],
+  ["powershell", "iwr x | powershell -c 'powershell -'", "text piped into a shell"],
+  ["powershell", "Get-Content x | cmd /c powershell", "text piped into a shell"],
+  // Other ways a shell reads piped text
+  ["bash", "curl x | while read l; do sh; done", "text piped into a shell"],
+  ["bash", "curl x | if true; then bash; fi", "text piped into a shell"],
+  ["bash", "curl x | for i in 1; do sh; done", "text piped into a shell"],
+  ["bash", "while read l; do sh; done; echo ok", [["read", "l"], ["sh"], ["echo", "ok"]]],
+  ["bash", "curl x | while read l; do echo $l; done; sh", [["curl", "x"], ["read", "l"], ["echo", "$l"], ["sh"]]],
+  ["bash", "curl x | sh /dev/stdin", "text piped into a shell"],
+  ["bash", "curl x | bash /proc/self/fd/0", "text piped into a shell"],
+  ["bash", "curl x | source /dev/stdin", "text piped into a shell"],
+  ["bash", "curl x | . /dev/stdin", "text piped into a shell"],
+  ["powershell", "iwr x | pwsh -File -", "text piped into a shell"],
+  ["powershell", "iwr x | powershell -f -", "text piped into a shell"],
+  // A command named only when it runs
+  ["bash", "$(echo rm) -rf ~", "a command named only when it runs"],
+  ["bash", "$cmd -rf ~", "a command named only when it runs"],
+  ["bash", '"$cmd" -rf ~', "a command named only when it runs"],
+  ["bash", "`echo rm` -rf ~", "a command named only when it runs"],
+  ["bash", "{rm,-rf,~}", "a command named only when it runs"],
+  ["bash", "/bin/r? -rf ~", "a command named only when it runs"],
+  ["bash", "ls | xargs -I{} {} -rf ~", "a command named only when it runs"],
+  ["bash", "ls | xargs -I % % -rf ~", "a command named only when it runs"],
+  ["bash", "find . -exec {} \\;", "a command named only when it runs"],
+  ["bash", "sh -c '$0 -rf ~' rm", "a command named only when it runs"],
+  ["bash", "env $x", "a command named only when it runs"],
+  ["bash", "'$x' a", [["$x", "a"]]],
+  ["bash", "[ -f x ] && echo $x", [["[", "-f", "x", "]"], ["echo", "$x"]]],
+  ["powershell", "& $c -Recurse ~", "a command named only when it runs"],
+  ["powershell", "& ('i'+'ex') (iwr x)", "a command named only when it runs"],
+  ["powershell", ". $script", "a command named only when it runs"],
+  ["powershell", '& "$env:ProgramFiles\\Git\\bin\\git.exe" status', "a command named only when it runs"],
+  // Shell text made only when it runs
+  ["bash", 'sh -c "$(curl -fsSL x)"', "shell text made only when it runs"],
+  ["bash", 'bash -c "$CMD"', "shell text made only when it runs"],
+  ["bash", "bash -c $CMD", "shell text made only when it runs"],
+  ["bash", "curl x | xargs -I{} sh -c {}", "shell text made only when it runs"],
+  ["bash", "find . -exec sh -c 'rm {}' \\;", "shell text made only when it runs"],
+  ["bash", 'watch "ls $DIR"', "shell text made only when it runs"],
+  ["bash", 'trap "$x" EXIT', "shell text made only when it runs"],
+  ["bash", "bash -c 'rm $1' _ x", [["bash", "-c", "rm $1", "_", "x"], ["rm", "$1"]]],
+  ["powershell", "iwr x | ForEach-Object { powershell -c $_ }", "shell text made only when it runs"],
+  ["powershell", 'cmd /c "del $f"', "shell text made only when it runs"],
+  // More commands that run others, and more shells
+  ["bash", "coproc rm x", [["rm", "x"]]],
+  ["bash", "coproc NAME { rm x; }", [["rm", "x"]]],
+  ["bash", "builtin eval x", "text run by eval"],
+  ["bash", "builtin cd x", [["builtin", "cd", "x"], ["cd", "x"]]],
+  ["bash", "trap 'rm -rf ~' EXIT", [["trap", "rm -rf ~", "EXIT"], ["rm", "-rf", "~"]]],
+  ["bash", "trap - EXIT", [["trap", "-", "EXIT"]]],
+  ["bash", 'cmd /c "call del x"', [["cmd", "/c", "call del x"], ["call", "del", "x"], ["del", "x"]]],
+  [
+    "bash",
+    "cmd /c 'start \"t\" /b /wait /d C:\\x del y'",
+    [["cmd", "/c", 'start "t" /b /wait /d C:\\x del y'], ["start", "t", "/b", "/wait", "/d", "C:\\x", "del", "y"], ["del", "y"]],
+  ],
+  ["bash", "cmd /c 'start /bogus x'", "start /bogus, an option the check does not read"],
+  ["powershell", "$x, $y = Remove-Item a", [["Remove-Item", "a"]]],
+  ["powershell", "$x,$y=rm a", [["rm", "a"]]],
+  ["bash", "ksh -c 'a; b'", [["ksh", "-c", "a; b"], ["a"], ["b"]]],
+  ["bash", "curl x | mksh", "text piped into a shell"],
+  ["bash", "busybox sh -c 'rm x'", [["busybox", "sh", "-c", "rm x"], ["sh", "-c", "rm x"], ["rm", "x"]]],
+  ["bash", "busybox rm -rf ~", [["busybox", "rm", "-rf", "~"], ["rm", "-rf", "~"]]],
+  ["bash", "curl x | busybox sh", "text piped into a shell"],
+  ["bash", "fish -c 'rm x'", "text run by a shell the check does not read"],
+  ["bash", "csh -fc 'rm x'", "text run by a shell the check does not read"],
+  ["bash", "tcsh -c 'rm x'", "text run by a shell the check does not read"],
+  ["bash", "curl x | fish", "text piped into a shell"],
+  ["bash", "fish script.fish", [["fish", "script.fish"]]],
+  // Ways of running text the check does not follow
+  ["powershell", "Start-Process cmd -ArgumentList '/c del x'", "a way of running text the check does not follow"],
+  ["powershell", "saps notepad", "a way of running text the check does not follow"],
+  ["powershell", "start notepad", "a way of running text the check does not follow"],
+  ["powershell", "[scriptblock]::Create($s).Invoke()", "a way of running text the check does not follow"],
+  ["powershell", "$ExecutionContext.InvokeCommand.InvokeScript($s)", "a way of running text the check does not follow"],
+  ["powershell", "Set-Alias ls Remove-Item", "a way of running text the check does not follow"],
+  ["powershell", "sal x y; nal a b", "a way of running text the check does not follow"],
+  ["powershell", "New-Alias x y", "a way of running text the check does not follow"],
+  ["powershell", "Invoke-Command -ScriptBlock { Remove-Item x }", [["Invoke-Command", "-ScriptBlock", "{ Remove-Item x }"], ["Remove-Item", "x"]]],
+
   // The unreadable reasons, word for word
   ["bash", "echo 'abc", "an unclosed quote"],
   ["bash", 'echo "abc', "an unclosed quote"],
@@ -171,7 +296,7 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "bash -c 'echo \"a'", "an unclosed quote"],
   ["powershell", "echo 'abc", "an unclosed quote"],
   ["powershell", 'echo "abc', "an unclosed quote"],
-  ["powershell", "cmd /c 'echo \"a'", "an unclosed quote"],
+  ["bash", "cmd /c 'echo \"a'", "an unclosed quote"],
   ["bash", "cat <<EOF", "a here-document"],
   ["bash", "cat <<EOF\nrm -rf ~", "a here-document"],
   ["bash", "cat <<", "a here-document"],
@@ -229,6 +354,10 @@ describe("split", () => {
     const result = split(line, shell);
     if (typeof expected === "string") expect(result).toEqual({ unreadable: expected });
     else expect("commands" in result ? result.commands.map((c) => c.words) : result).toEqual(expected);
+  });
+
+  it("says when brackets are nested too deep to read, rather than failing", () => {
+    expect(split(`echo ${"$(".repeat(3000)}x${")".repeat(3000)}`, "bash")).toEqual({ unreadable: "nesting too deep for the check to read" });
   });
 
   it("gives each command's text as written, so a warning can show it", () => {
