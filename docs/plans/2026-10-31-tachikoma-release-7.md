@@ -436,8 +436,18 @@ the plan's review.
     measured and dropped: 87 everyday lines asked (1 call in 130). After this round the replay
     finds 0.5% unreadable (184 of 34,507 calls; PowerShell 70 of 598 distinct, from choices 39
     and 41). Known limits for the README (Task 23): a value from command output, a file, a pipe
-    or a download reaches arithmetic unasked, including `$(( $(cmd) ))`; GNU sed's `e`
-    command; `npx --shell` asks rather than naming its program.
+    or a download reaches arithmetic unasked, including `$(( $(cmd) ))`, and a file the line
+    writes and then reads back; inside backticks, a copy of `$1` the outer line set; GNU sed's
+    `e` command; `npx --shell` asks rather than naming its program.
+43. **WSL** (the user's choice): `wsl --unregister` (also `wsl.exe`) is wiping or formatting
+    disks, since it deletes the distribution's virtual disk; `wsl --shutdown` and `wsl
+    --terminate`/`-t` are stopping processes or the machine.
+44. **A script run from a web address** (the user's choice): any interpreter or runner the reader
+    knows (deno, node, python, bun and the rest) given an `http://` or `https://` address as the
+    script to run is downloading and running code, `deno run`, `deno install` and `deno x`
+    included. The reader also reads Windows 11's `sudo` options (`--inline`, `--new-window`,
+    `--disable-input`, `--preserve-env`/`-E`, `--chdir`/`-D`), so the command it runs is listed
+    rather than the line being unreadable; `sudo` itself stays a danger.
 
 ---
 
@@ -549,14 +559,14 @@ arguments that make it dangerous.
 
 | Kind | Rules |
 |---|---|
-| wiping or formatting disks | `format`, `diskpart`, `Clear-Disk`, `Format-Volume`, `Initialize-Disk`, `mkfs` and `mkfs.*`, `wipefs`, `fdisk`, `parted`, `dd` with `of=/dev/…`, `cipher /w` |
+| wiping or formatting disks | `format`, `diskpart`, `Clear-Disk`, `Format-Volume`, `Initialize-Disk`, `mkfs` and `mkfs.*`, `wipefs`, `fdisk`, `parted`, `dd` with `of=/dev/…`, `cipher /w`, `wsl --unregister` (choice 43) |
 | deleting whole folders | `rm` with `-r`/`-R`/`--recursive` (any order with `-f`), `Remove-Item`/`rm`/`del`/`rd`/`rmdir`/`ri` with `-Recurse`, `rmdir /s`, `rd /s`, whose target is a drive root (`/`, `C:\`, `C:/`), `~`, `$HOME`, `$env:USERPROFILE`, the home folder's path, `.`, `*`, `..`, or the project's root (by path, `/work` in the box) |
 | permissions and system settings | `icacls`, `takeown`, `cacls`, `Set-Acl`, `chmod -R`, `chown -R`, `reg`, `Set-ItemProperty` on `HKLM:` or `HKCU:`, `bcdedit`, `Set-ExecutionPolicy`, `netsh`, `sudo`, `su`, `doas`, `runas`, `Start-Process … -Verb RunAs`, `setx` |
-| stopping processes or the machine | `taskkill`, `Stop-Process`, `kill`, `pkill`, `killall`, `shutdown`, `reboot`, `halt`, `poweroff`, `Stop-Computer`, `Restart-Computer`, `systemctl` with `stop`, `poweroff` or `reboot` |
+| stopping processes or the machine | `taskkill`, `Stop-Process`, `kill`, `pkill`, `killall`, `shutdown`, `reboot`, `halt`, `poweroff`, `Stop-Computer`, `Restart-Computer`, `systemctl` with `stop`, `poweroff` or `reboot`, `wsl --shutdown`, `wsl --terminate`/`-t` (choice 43) |
 | rewriting or deleting git history | `git push` with `--force`, `-f`, `--force-with-lease`, `--delete`, `-d` or a `:branch` refspec; `git reset --hard`; `git clean` with `-f` and `-d`; `git checkout -- .` and `git checkout .`; `git restore .`; `git branch -D`; `git filter-branch`; `git filter-repo`; `git rebase`; `git commit --amend` on a pushed branch is not detectable, so not a rule |
 | sending files out | `curl` with `-T`, `--upload-file`, `-F`, `--form`, or `-d`/`--data*` starting with `@`; `wget --post-file`; `scp`; `rsync` with a `host:` target; `sftp`; `Invoke-WebRequest`/`iwr`/`Invoke-RestMethod`/`irm` with `-InFile`; `nc`/`ncat` |
 | installing software | `npm`/`pnpm`/`yarn`/`bun` `install`/`i`/`add` with a package named (choice: a word not starting with `-`); `npx`, `pnpm dlx`, `yarn dlx`, `bunx`; `pip`/`pip3`/`uv pip install` with a package (not `-r <file>` alone); `uv add`, `uvx`, `pipx`; `cargo install`; `go install`; `gem install`; `winget`, `choco`, `scoop`, `apt`, `apt-get`, `brew`, `dnf`, `yum`, `pacman`, `Install-Module`, `Install-Package` |
-| downloading and running code | covered by the unreadable rule (`curl … \| sh`, `iex (iwr …)`); plus running a just-downloaded file is not detectable, so not a rule |
+| downloading and running code | covered by the unreadable rule (`curl … \| sh`, `iex (iwr …)`); an interpreter or runner given an `http://` or `https://` address as its script, `deno run`/`install`/`x` included (choice 44); running a just-downloaded file is not detectable, so not a rule |
 | acting outside the machine | `gh pr merge`, `gh repo delete`, `gh release delete`, `gh api` with `-X DELETE`/`--method DELETE`, `terraform apply`/`destroy`, `pulumi up`/`destroy`, `kubectl delete`/`apply`, `helm uninstall`, `aws … delete*`/`rm`/`terminate*`, `gcloud … delete`, `az … delete`, `docker push`, `npm publish` |
 
 The design's "installs from the lock file pass" holds: `npm ci`, `npm install` with nothing
