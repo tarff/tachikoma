@@ -412,6 +412,32 @@ the plan's review.
     ipython, pypy, irb, tclsh, osascript, jshell; nu, xonsh, elvish as shells the check does not
     read. Not followed: PowerShell's `Set-Location`, yarn's exec and dlx, R itself. For Task 3:
     `deno run https://...` downloads and runs code, and needs a rule of that kind.
+    After the final check, a replay of 34,507 past shell calls (parse only, nothing run) found
+    1.5% unreadable. A false-alarm round then read npx's options, process substitution, `case`,
+    `(( ))`, `for (( ))` and the Windows system folders after `&` (unless the line touches the
+    Env: drive or the path holds `..`). A process substitution that can reach a shell or
+    interpreter (inside `>(…)`, among its words, on any file number, through `exec`, a group,
+    loop or function) still asks.
+41. **The reader does not read variables for their values** (the user's choice): substituting a
+    variable given a plain literal earlier on the line, and reading a `for` body once per word,
+    were tried and removed. Bash and PowerShell write variables on their own (`$_`, REPLY,
+    OPTARG, BASH_REMATCH, MAPFILE, IFS, `$PSItem`, `$matches`, scope and parameter forms), and
+    the spec check found 13 ways to make the reader list the wrong value. The two readings
+    cleared only 46 of 29,974 distinct past commands.
+42. **Arithmetic asks only on visible code** (the user's choice): bash evaluates a variable's
+    value as arithmetic, and `a[$(cmd)]` in it runs `cmd`. Arithmetic is found by parse, at
+    each bash level the reader reads (`(( ))`, `$(( ))`, `$[ ]`, `let`, `-i`, `[[ … -eq … ]]`,
+    `${a[i]}`, `${x:off:len}`, `a[i]=`, and a subscript in any word given to a bash builtin),
+    not inside single quotes or another program's argument. A line with arithmetic asks when
+    it holds a `$(` or backtick the reader does not run, or when a name the arithmetic uses is
+    written on the line with anything but an integer, one `$(( ))`, one `$(…)`, a positional
+    argument, `${#x}`, a plain copy of a name that passes, or `read`/`mapfile`/`getopts` not
+    fed by a here-string or here-document. Asking on every value from command output was
+    measured and dropped: 87 everyday lines asked (1 call in 130). After this round the replay
+    finds 0.5% unreadable (184 of 34,507 calls; PowerShell 70 of 598 distinct, from choices 39
+    and 41). Known limits for the README (Task 23): a value from command output, a file, a pipe
+    or a download reaches arithmetic unasked, including `$(( $(cmd) ))`; GNU sed's `e`
+    command; `npx --shell` asks rather than naming its program.
 
 ---
 
