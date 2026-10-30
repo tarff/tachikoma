@@ -59,8 +59,8 @@ export const mouse = (ui: UI, fns: Fns) => {
   // view, or come after a question closed it, belongs to a screen that is gone, and is dropped, as clickAt drops a
   // click read with a key that changed the prompt.
   const onMouse = (m: Mouse) => {
-    // `ended` never comes here (onInput, App.tsx, says why), and is checked as the first phase. Printed out: a report
-    // read with its `[`, as for keys.
+    // `ended` never comes here (onInput, keyRouting.ts, says why), and is checked as the first phase. Printed out: a
+    // report read with its `[`, as for keys.
     // A wheel notch asks for the menu, as a key does (useInput), so Autocomplete comes first while one is open.
     const h = ui.happening(m.kind === "wheel" ? () => fns.menuFor(ui.editor.current) !== null : undefined);
     const { phase } = h;

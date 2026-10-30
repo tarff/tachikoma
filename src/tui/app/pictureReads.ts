@@ -11,7 +11,7 @@ export const pictureReads = (ui: UI, fns: Fns) => {
   // turn, so Enter meanwhile queues as during a turn. A read that found nothing or failed takes its spans out of the
   // message (settle, below), which goes without it (choice 17). Any stop of the turn during the wait (Ctrl-C in the
   // detail view) ends the reads as stopped, and the turn then stops as usual; at the prompt, Esc and Ctrl-C end only
-  // the reads (promptKey, App.tsx).
+  // the reads (promptKey, keyRouting.ts).
   const readsEnded = async (message: Draft, signal: AbortSignal) => {
     const ids = new Set(message.spans.filter((s) => ui.pictures.get(s.id) === "reading").map((s) => s.id));
     if (!ids.size) return messageParts(message, ui.pictures);

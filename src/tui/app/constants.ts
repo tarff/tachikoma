@@ -121,12 +121,12 @@ export const MOVES: Record<string, Scroll> = {
   "transcript:top": "top",
   "transcript:bottom": "bottom",
 };
-// What a key does, found in the table (route, App.tsx): an action, a chord's first strokes waiting, or a key typed into a
-// field; null for a key no binding takes.
+// What a key does, found in the table (route, keyRouting.ts): an action, a chord's first strokes waiting, or a key
+// typed into a field; null for a key no binding takes.
 export type Got = { action: string } | { pending: Stroke[] } | { typed: string } | null;
-// A key taken that does nothing: one only a live edit binds to chat:cycleMode (App, lookUp; release 6 plan, choice 32).
-// No phase knows this action, so none acts on it, nor gives the key to the prompt's editor or a field, as it would a
-// key no binding takes (null).
+// A key taken that does nothing: one only a live edit binds to chat:cycleMode (keyRouting.ts, lookUp; release 6 plan,
+// choice 32). No phase knows this action, so none acts on it, nor gives the key to the prompt's editor or a field, as
+// it would a key no binding takes (null).
 export const NOTHING: Got = { action: "held" };
 // A key typed into a field: printable, without Ctrl or Alt (release 6 plan, Task 6, Claude Code's "Text fields" rule).
 export const printable = (s: Stroke) => !s.ctrl && !s.alt && (s.key === "space" || [...s.key].length === 1);
