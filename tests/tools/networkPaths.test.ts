@@ -235,6 +235,22 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     expect(fake.state.reached).toEqual([]);
   });
 
+  // Review fixes plan, fix 10: your own instruction files, and what they import, may live on a share, as they do with a
+  // home folder kept on a server; a project's import of the same path is still refused.
+  it("reads your own instruction file on a share, and refuses a project's import of it", async () => {
+    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    await mkdir(path.join(share, "home", ".claude"), { recursive: true });
+    await writeFile(path.join(share, "home", ".claude", "CLAUDE.md"), "mine\n");
+    fake.state.share = share;
+    const { root } = await project("ask");
+    const mine = path.join(fake.TARGET, "home", ".claude", "CLAUDE.md");
+    await writeFile(path.join(root, "AGENTS.md"), `See @${mine}\n`);
+    const got = await readInstructions({ root, home: path.join(fake.TARGET, "home"), top: root }, async () => false);
+    expect(got.read.map((r) => r.path)).toEqual([mine, path.join(root, "AGENTS.md")]);
+    expect(got.left).toEqual([{ path: mine, why: direct(mine) }]);
+    expect(fake.state.reached).toEqual([]);
+  });
+
   it("lists nothing through the link in the @ menu, and leaves it out of its folder's listing", async () => {
     const { root } = await project("ask");
     const link = path.join(root, "linked");

@@ -161,22 +161,27 @@ const rootPlaces = new Map<string, string | Unchecked>();
 
 // `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
 // it somewhere else.
-export function resolveIn(root: string, p: string): { abs: string; outside: boolean; shown: string } {
+export function resolveIn(root: string, p: string, network = false): { abs: string; outside: boolean; shown: string } {
   const abs = path.resolve(root, p);
-  if (!rootPlaces.has(root)) rootPlaces.set(root, linkHops(path.resolve(root), () => true));
-  const place = rootPlaces.get(root)!;
-  if (typeof place !== "string") {
-    throw new Error(`${abs} is in a project whose own folder leads through ${place.link} to ${place.target}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`);
+  // `network` lets network and device paths through, skipping the link check and the root's walk: for the user's own
+  // instruction files and what they import, read before the check was made (review fixes plan, fix 10, the user's
+  // choice, "Allow your own files"). The checks below still apply.
+  if (!network) {
+    if (!rootPlaces.has(root)) rootPlaces.set(root, linkHops(path.resolve(root), () => true));
+    const place = rootPlaces.get(root)!;
+    if (typeof place !== "string") {
+      throw new Error(`${abs} is in a project whose own folder leads through ${place.link} to ${place.target}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`);
+    }
+    // Inside the root by its text, or inside the root's real place.
+    const inRoot = (q: string) => !leaves(path.relative(root, q)) || !leaves(path.relative(place, q));
+    if (networkPath(abs) && !inRoot(abs)) throw new Error(`${abs} is a network or device path outside the project, ${NEVER_OPENED}`);
+    // A path in the root by its text is walked from the root's real place, as the root's own parts were walked
+    // already, so a link on the way to a root on a share is not checked again as if it led out (review fixes plan,
+    // fix 8). Any other path is walked from its drive.
+    const fromRoot = path.relative(root, abs);
+    const walked = leaves(fromRoot) ? linkHops(abs, inRoot) : linkHops(abs, inRoot, place, fromRoot);
+    if (typeof walked !== "string") throw new Error(leadsThrough(abs, walked.link, walked.target));
   }
-  // Inside the root by its text, or inside the root's real place.
-  const inRoot = (q: string) => !leaves(path.relative(root, q)) || !leaves(path.relative(place, q));
-  if (networkPath(abs) && !inRoot(abs)) throw new Error(`${abs} is a network or device path outside the project, ${NEVER_OPENED}`);
-  // A path in the root by its text is walked from the root's real place, as the root's own parts were walked already,
-  // so a link on the way to a root on a share is not checked again as if it led out (review fixes plan, fix 8). Any
-  // other path is walked from its drive.
-  const fromRoot = path.relative(root, abs);
-  const walked = leaves(fromRoot) ? linkHops(abs, inRoot) : linkHops(abs, inRoot, place, fromRoot);
-  if (typeof walked !== "string") throw new Error(leadsThrough(abs, walked.link, walked.target));
   const base = realTarget(root);
   const real = realTarget(abs);
   if (base === null || real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
