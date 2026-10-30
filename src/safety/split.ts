@@ -103,7 +103,6 @@ const PS_COM_RUN = /\.(run|exec|shellexecute)\s*\(/i;
 // PowerShell's reach into .NET that asks (choice 39), matched in the line's code with its strings as '' (Reader.dotnet).
 const PS_DOTNET = new RegExp(
   [
-    /\]\s*''/.source, // a cast of a string, as in [type]'ScriptBlock'
     /[\w)\]]\.\s*''\s*\(/.source, // a quoted member name called, as in .'Delete'()
     /[\w)\]]\.\s*\(/.source, // a member name worked out, as in .($name)
     /[\w)\]]\.\s*\$[\w:]+\s*\(/.source, // a member named by a variable and called
@@ -143,12 +142,36 @@ const DOTNET_READS: Record<string, true | string[]> = {
     "processid", "processpath", "systempagesize", "userinteractive", "hasshutdownstarted", "currentmanagedthreadid",
     "commandline", "stacktrace", "expandenvironmentvariables",
   ],
+  // [Console]: the encodings (as in `[Console]::OutputEncoding = [Text.Encoding]::UTF8`), writing, and what it only reads.
+  console: [
+    "outputencoding", "inputencoding", "write", "writeline", "windowwidth", "windowheight", "bufferwidth", "isoutputredirected",
+    "isinputredirected", "iserrorredirected",
+  ],
+  "io.directory": ["exists", "getfiles", "getdirectories", "enumeratefiles", "enumeratedirectories", "getcurrentdirectory"],
+  "diagnostics.stopwatch": ["startnew"],
+  // Collections and a string builder, which are only made new.
+  "collections.generic.list": ["new"],
+  "collections.generic.dictionary": ["new"],
+  "collections.generic.hashset": ["new"],
+  "collections.generic.queue": ["new"],
+  "collections.generic.stack": ["new"],
+  "collections.generic.sorteddictionary": ["new"],
+  "collections.arraylist": ["new"],
+  "collections.hashtable": ["new"],
+  "text.stringbuilder": ["new"],
 };
+// A generic type's arguments, as in List[string], are taken off before it is looked up.
 function readsOnly(type: string, member: string): boolean {
-  const reads = DOTNET_READS[type];
-  if (type === "environment" && member.startsWith("get")) return true;
+  const plain = type.replace(/\[.*\]$/, "");
+  const reads = DOTNET_READS[plain];
+  if (plain === "environment" && member.startsWith("get")) return true;
   return reads === true || (reads !== undefined && reads.includes(member));
 }
+// Value types a string may be cast to (choice 39), in lower case, without System.: a cast to any other type asks.
+const STRING_CASTS = new Set([
+  "int", "int32", "long", "int64", "double", "decimal", "string", "bool", "boolean", "char", "datetime", "timespan", "version", "guid",
+  "regex", "text.regularexpressions.regex", "uri", "xml", "xml.xmldocument",
+]);
 // PowerShell takes curly quotes as quotes too (about_Quoting_Rules).
 const PS_SINGLE = new Set(["'", "\u2018", "\u2019", "\u201A", "\u201B"]);
 const PS_DOUBLE = new Set(['"', "\u201C", "\u201D", "\u201E"]);
@@ -190,17 +213,23 @@ function ownInput(path: string, cwd: Cwd = KNOWN): boolean {
   if (path === "" || /(^|\/)dev\/+null\/*$/.test(path)) return false;
   const parts = path.split("/").filter((p) => p !== "" && p !== ".");
   if (path.startsWith("/")) {
-    const tidy: string[] = [];
-    for (const part of parts) {
-      if (part === "..") tidy.pop();
-      else tidy.push(part);
-    }
+    const tidy = tidied(path);
     return tidy[0] === "dev" || tidy[0] === "proc";
   }
   const climbed = parts.indexOf("..");
   if (climbed >= 0 && parts.slice(climbed + 1).some((p) => p === "dev" || p === "proc")) return true;
   if (path.startsWith("~")) return false;
   return cwd === ANYWHERE || (cwd === ROOT && (parts[0] === "dev" || parts[0] === "proc"));
+}
+
+// An absolute path's parts, tidied by its text alone: repeated slashes joined, . and .. taken out. / gives none.
+function tidied(path: string): string[] {
+  const tidy: string[] = [];
+  for (const part of path.split("/")) {
+    if (part === "..") tidy.pop();
+    else if (part !== "" && part !== ".") tidy.push(part);
+  }
+  return tidy;
 }
 
 // Whether text holds a path to the input, or a lone -: an option's value, a script, or a start-up setting such as
@@ -221,7 +250,9 @@ interface Context {
   vars: Word[]; // the NAME=value words set for it: before it, through env or sudo, or earlier on the line
   functions: Map<string, Hunger>; // the line's bash functions and aliases, and what in each reads its input
   cwd: Cwd;
+  lost?: () => void; // called for a cd, pushd or popd in another's words, which leaves the shell anywhere
 }
+const MOVES = new Set(["cd", "pushd", "popd"]);
 
 // A script block passed to powershell is read twice, as a block and as the shell's text: each command is kept once.
 function once(commands: Command[]): Command[] {
@@ -340,7 +371,7 @@ class Reader {
     const outerHungry = this.hungry;
     this.hungry = NONE;
     const done = (sep: string) => {
-      const own = this.emit(words, start, last);
+      const own = this.emit(words, start, last, called);
       const subs = this.hungry; // $(...) and backticks read the line's input, not the command's
       this.hungry = outerHungry;
       const hungry = most(own.hungry, groupHungry);
@@ -468,25 +499,34 @@ class Reader {
     }
   }
 
-  private emit(words: Word[], start: number, last: number): Part {
+  private emit(words: Word[], start: number, last: number, called: boolean): Part {
     const { src, g } = this;
     const k = g === "bash" ? assignments(words, src) : 0;
-    const own = g === "bash" ? words.slice(k) : g === "powershell" ? psUnassigned(words) : cmdOwn(words);
+    const own = g === "bash" ? words.slice(k) : g === "powershell" ? psUnassigned(words, src) : cmdOwn(words);
     const vars = [...this.exported, ...words.slice(0, k)];
     if (own.length === 0) {
       this.exported.push(...words.slice(0, k));
       return { commands: [], hungry: NONE };
     }
+    // PowerShell: an element that starts with a string or here-string, as in `$x = 'format'` or `'x' | Out-File f`, is a
+    // value, not a command; only & or . would run it. Its $(...) are read all the same.
+    const head = src.slice(own[0]!.start, own[0]!.start + 2);
+    const quote = (c: string | undefined) => PS_SINGLE.has(c ?? "") || PS_DOUBLE.has(c ?? "");
+    if (g === "powershell" && !called && (quote(head[0]) || (head[0] === "@" && quote(head[1])))) return { commands: [], hungry: NONE };
     const name = own[0]!.value;
     const args = own.slice(1);
-    if (g === "bash") this.settings(name, args);
-    return expand(own, src.slice(start, last), src, g, { inner: false, vars, functions: this.functions, cwd: this.cwd });
+    if (g === "bash") this.settings(name, args, vars);
+    // A cd behind a wrapper (builtin cd, command cd) leaves the shell somewhere the check does not follow.
+    const lost = () => {
+      this.cwd = ANYWHERE;
+    };
+    return expand(own, src.slice(start, last), src, g, { inner: false, vars, functions: this.functions, cwd: this.cwd, lost });
   }
 
   // What a bash command sets for the rest of the line: variables (export, declare, typeset, readonly, local), aliases, and
   // the folder (cd, pushd, popd). A function exported for child shells is unreadable: a child's `bash -c f` would run it,
   // and its reader would not know f (choice 37).
-  private settings(name: string, args: Word[]): void {
+  private settings(name: string, args: Word[], vars: Word[]): void {
     const options = args.filter((w) => w.value.startsWith("-")).map((w) => w.value.slice(1)).join("");
     if (["export", "declare", "typeset", "readonly", "local"].includes(name)) {
       if ((name === "export" && options.includes("f")) || (name !== "export" && options.includes("f") && options.includes("x"))) {
@@ -495,18 +535,33 @@ class Reader {
       this.exported.push(...args.filter((w) => !w.value.startsWith("-") && w.value.includes("=")));
     }
     if (name === "alias") for (const a of args) if (a.value.indexOf("=") > 0) this.functions.set(a.value.slice(0, a.value.indexOf("=")), SHELL);
-    if (name === "cd" || name === "pushd" || name === "popd") this.cwd = most(this.cwd, this.moved(name, args)) as Cwd;
+    if (MOVES.has(name)) this.cwd = most(this.cwd, this.moved(name, args, vars)) as Cwd;
   }
 
-  // Where a cd, pushd or popd may leave the shell.
-  private moved(name: string, args: Word[]): Cwd {
-    const target = args.find((w) => !/^-[LPe@]+$/.test(w.value));
-    if (name === "popd" || (name === "pushd" && !target) || (target && /^[-+]\d*$/.test(target.value))) return ANYWHERE; // the folder stack
-    if (!target) return KNOWN; // cd alone goes home
-    if (target.dynamic || ownInput(target.value, this.cwd)) return ANYWHERE;
-    if (this.cwd !== KNOWN && !/^[/~]/.test(target.value)) return ANYWHERE; // a relative cd from a folder not known
-    const climbs = target.value.split("/").includes("..");
-    return climbs || /^\/+$/.test(target.value) ? ROOT : KNOWN;
+  // Where a cd, pushd or popd may leave the shell. Its options are skipped up to --, and the target is tidied as paths are
+  // (ownInput), so `cd -- /dev` and `cd /./` are read for what they are. An option the check does not know, the folder
+  // stack (`cd -`, popd, pushd +N), and HOME or CDPATH set anywhere on the line leave the shell anywhere.
+  private moved(name: string, args: Word[], vars: Word[]): Cwd {
+    const set = (variable: string) => new RegExp(`\\b${variable}\\+?=`).test(this.src) || vars.some((v) => v.value.startsWith(`${variable}=`));
+    let target: Word | undefined;
+    for (let k = 0; k < args.length; k++) {
+      const value = args[k]!.value;
+      if (value === "--") {
+        target = args[k + 1];
+        break;
+      }
+      if (/^-[LPe@]+$/.test(value) || (name !== "cd" && value === "-n")) continue; // cd's -L, -P, -e, -@; pushd's and popd's -n
+      if (value.startsWith("-") || value.startsWith("+")) return ANYWHERE; // `cd -`, the folder stack, or an option not known
+      target = args[k];
+      break;
+    }
+    if (name === "popd" || (name === "pushd" && !target)) return ANYWHERE;
+    if (!target) return set("HOME") ? ANYWHERE : KNOWN; // cd alone goes home
+    if (target.dynamic || ownInput(target.value, this.cwd) || (target.value.startsWith("~") && set("HOME"))) return ANYWHERE;
+    const relative = !/^[/~]/.test(target.value);
+    if (relative && (this.cwd !== KNOWN || set("CDPATH"))) return ANYWHERE; // from a folder not known, or found through CDPATH
+    if (target.value.startsWith("/")) return tidied(target.value).length === 0 ? ROOT : KNOWN;
+    return target.value.split("/").includes("..") ? ROOT : KNOWN;
   }
 
   // Skips blanks, escaped new lines and comments.
@@ -723,19 +778,24 @@ class Reader {
     if (this.g !== "powershell") return;
     const code = this.code.toLowerCase();
     if (PS_DOTNET.test(code)) throw new Unreadable(FOLLOW);
+    // The type in the [...] that ends at `at`, in lower case, without blanks or System.
+    const typeBefore = (at: number) => {
+      let depth = 0;
+      let from = at;
+      for (; from >= 0; from--) {
+        if (code[from] === "]") depth++;
+        if (code[from] === "[" && --depth === 0) break;
+      }
+      return code.slice(from + 1, at).replace(/\s+/g, "").replace(/^system\./, "");
+    };
+    // A string cast to a type, as in [type]'ScriptBlock', asks unless the type is a plain value (STRING_CASTS).
+    for (const m of code.matchAll(/\]\s*''/g)) if (!STRING_CASTS.has(typeBefore(m.index))) throw new Unreadable(FOLLOW);
     for (const m of code.matchAll(/::/g)) {
       let at = m.index - 1;
       while (code[at] === " ") at--;
       const member = /^\s*([\w]+)/.exec(code.slice(m.index + 2))?.[1];
       if (code[at] === "]") {
-        let depth = 0;
-        let from = at;
-        for (; from >= 0; from--) {
-          if (code[from] === "]") depth++;
-          if (code[from] === "[" && --depth === 0) break;
-        }
-        const type = code.slice(from + 1, at).replace(/\s+/g, "").replace(/^system\./, "");
-        if (!member || !readsOnly(type, member)) throw new Unreadable(FOLLOW);
+        if (!member || !readsOnly(typeBefore(at), member)) throw new Unreadable(FOLLOW);
         continue;
       }
       // A provider path, as in FileSystem::C:\x, is allowed; a type held in a variable ($t::) or made some other way is not.
@@ -1013,7 +1073,7 @@ function assignments(words: Word[], src: string): number {
 // NAME=value is.
 const PS_OPERATOR = /^([-+*/%]|\?\?)?=$/;
 const psTargets = (v: string) => /\$|^,$/.test(v) && v.split(",").every((p) => p === "" || /^(\[[^\]]*\])*\$[^=]*$/.test(p));
-function psUnassigned(words: Word[]): Word[] {
+function psUnassigned(words: Word[], src: string): Word[] {
   for (;;) {
     let k = 0;
     while (k < words.length && !words[k]!.value.includes("=") && psTargets(words[k]!.value)) k++;
@@ -1026,7 +1086,9 @@ function psUnassigned(words: Word[]): Word[] {
     const joined = /^([^=]*?)(?:[-+*/%]|\?\?)?=([\s\S]*)$/.exec(w.value);
     if (!joined || !psTargets(joined[1]!)) return words;
     const rest = joined[2]!;
-    words = rest ? [{ ...w, value: rest, start: w.end - rest.length }, ...words.slice(k + 1)] : words.slice(k + 1);
+    // Where the value starts as written, after the = in the word, so a quote there is seen (Reader.emit).
+    const start = w.start + (/^[^=]*=/.exec(src.slice(w.start, w.end))?.[0].length ?? 0);
+    words = rest ? [{ ...w, value: rest, start }, ...words.slice(k + 1)] : words.slice(k + 1);
   }
 }
 
@@ -1078,6 +1140,7 @@ function expand(words: Word[], text: string, src: string, g: Grammar, ctx: Conte
   if (g === "powershell" && (name === "iex" || name === "invoke-expression")) throw new Unreadable(IEX);
   if (g === "powershell" && PS_FOLLOW.has(name)) throw new Unreadable(FOLLOW);
   if (g === "powershell" && parses(name) && args.some(changed)) throw requoted(shown);
+  if (ctx.inner && MOVES.has(name)) ctx.lost?.();
   const commands: Command[] = [{ words: words.map((w) => w.value), text }];
   // A bash function or alias made earlier on the line runs here, with this command's input (choice 37).
   let hungry = g === "bash" ? (ctx.functions.get(first.value) ?? NONE) : NONE;
