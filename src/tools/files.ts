@@ -1,4 +1,4 @@
-import { type BigIntStats, existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { type BigIntStats, existsSync, lstatSync, readdirSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { dataDir, KEYBINDINGS, SETTINGS, settingsDir } from "../core/datadir.js";
@@ -7,8 +7,9 @@ import { defineTool } from "./tool.js";
 
 // Where a path really leads, following symlinks and Windows junctions. Parts that don't exist yet
 // (a new file in a new folder) are added back onto the deepest part that does. Null for a link that
-// leads nowhere: writing through it could create its missing target, wherever that is.
-function realTarget(abs: string): string | null {
+// leads nowhere: writing through it could create its missing target, wherever that is. Undefined when
+// the system's lookup (Windows' own on Windows) cannot say where it leads (review fixes plan, fix 15).
+function realTarget(abs: string): string | null | undefined {
   let existing = abs;
   const rest: string[] = [];
   while (!existsSync(existing) && path.dirname(existing) !== existing) {
@@ -16,7 +17,22 @@ function realTarget(abs: string): string | null {
     rest.unshift(path.basename(existing));
     existing = path.dirname(existing);
   }
-  return path.join(realpathSync(existing), ...rest);
+  const place = realPlace(existing);
+  return place === undefined ? undefined : path.join(place, ...rest);
+}
+
+// Where an existing path really is, as Windows says (realpathSync.native): Node's lstat does not see a junction to a
+// drive named by its ID (\\?\Volume{...}\) as a link and follows it, so the JavaScript realpath, which goes part by
+// part, gave such a junction's target as the junction's own place (review fixes plan, fix 12). Undefined when the
+// lookup throws, as Windows' does (ENOENT) for a junction to a volume with no drive letter, where the JavaScript one
+// gave the junction's own place too, and (EPERM) for a folder the user is denied (fix 15, the user's choice, "always
+// ask"). On other systems it is the system's own realpath, which rarely throws for a path that exists.
+function realPlace(p: string): string | undefined {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return undefined;
+  }
 }
 
 // Whether `rel`, a path relative to some folder, leads out of it. On Windows a path on another drive
@@ -106,26 +122,139 @@ export function inSettings(folder: string, real: string, platform: NodeJS.Platfo
 // /proc/self leads to Tachikoma's own.
 export const programEnvironment = (real: string) => /^\/proc\/[^/]+\/(task\/[^/]+\/)?environ$/.test(real);
 
-// `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
-// it somewhere else.
-export function resolveIn(root: string, p: string): { abs: string; outside: boolean; shown: string } {
+// A network or device path (review fixes plan, fix 2): on Windows, one starting with \\ or // once resolved, a share,
+// \\?\UNC\, a named pipe or a device, but not \\?\ or \\.\ before a drive letter, Windows' long-path spelling of an
+// ordinary local file (the user's choice at the build, "Count as local"). Touching one can make Windows sign in to a
+// server, so the file tools refuse one outside the project before anything opens it.
+const networkPath = (p: string) => process.platform === "win32" && /^[\\/]{2}/.test(p) && !/^[\\/]{2}[?.][\\/][a-z]:\\/i.test(p);
+// The share a path is on, \\server\share in lower case, whether written \\server\share or \\?\UNC\server\share; none
+// for a device path (\\?\ or \\.\ before anything else, \\.\UNC\ included) or a local one (review fixes plan, fix 13).
+function shareOf(p: string): string | undefined {
+  const m = /^\\\\(?:\?\\unc\\)?([^\\]+)\\([^\\]+)/i.exec(p);
+  return m && m[1] !== "?" && m[1] !== "." ? `${m[1]}\\${m[2]}`.toLowerCase() : undefined;
+}
+const NEVER_OPENED = "which the file tools never open; a shell command can reach it, after asking";
+const leadsThrough = (start: string, link: string, target: string) =>
+  `${start} leads through ${link} to a network or device path outside the project (${target}), ${NEVER_OPENED}`;
+
+// A link whose stored target begins with one \ or / (not two, and not a drive letter): on Windows, the internal forms
+// such as \??\GLOBALROOT\Device\Mup\server\share and \Device\Mup\server\share, which path.resolve would make a local
+// path (C:\Device\...) though the link leads to the network, and the rare link written as \folder (review fixes plan,
+// fix 9, the user's choice, "Any single-slash start"). Where it leads cannot be told without following it.
+type Unchecked = { link: string; target: string };
+
+// Where a walk starts: the path's drive, or for a share its root, \\server\share\ or \\?\UNC\server\share\; path.parse
+// gives \\?\UNC\ alone for the second, which would make the server on its own the walk's first part (review fixes plan,
+// fix 13, found at the spec review).
+const walkRoot = (p: string) => /^\\\\\?\\unc\\[^\\]+\\[^\\]+/i.exec(p)?.[0].concat("\\") ?? path.parse(p).root;
+
+// Walks `start` one part at a time from walkRoot, its drive or its share's root, or from `from` with the parts in
+// `after`, as realpath would, but looks before it follows (the plan, fix 2):
+// lstat does not follow the part it is given, and the parts above it are already plain folders or links whose targets
+// were checked; a link's target is read without opening it. A target that is a network or device path for which
+// `allowed` is false is refused; any other takes the place of the parts walked so far. The walk ends at the first part
+// that does not exist. A link can rightly be passed twice, so a loop is ended by counting: past 63 links the walk
+// stops, the most reparse points Windows allows on one path ("Reparse Points", learn.microsoft.com; review fixes
+// plan, fix 7, the user's choice; 64 junctions gave ELOOP when probed, 2026-10-30). Returns where it ended, the first
+// link whose stored target is Unchecked, which is not followed (fix 9), or null past 63 links, so the root's walk
+// can say it in its own words (fix 14).
+function linkHops(start: string, allowed: (target: string) => boolean, from = walkRoot(start), after = start.slice(from.length)): string | Unchecked | null {
+  let done = from;
+  const rest = after.split(path.sep).filter(Boolean);
+  let links = 0;
+  while (rest.length) {
+    const next = path.join(done, rest[0]!);
+    const kind = lstatSync(next, { throwIfNoEntry: false });
+    if (!kind) break;
+    rest.shift();
+    if (!kind.isSymbolicLink()) {
+      done = next;
+      continue;
+    }
+    if (++links > 63) return null;
+    const stored = readlinkSync(next);
+    if (/^[\\/](?![\\/])/.test(stored)) return { link: next, target: stored };
+    const target = path.resolve(path.dirname(next), stored);
+    // Named without the backslash Node adds at the end of a share's root (review fixes plan, fix 11).
+    if (networkPath(target) && !allowed(target)) throw new Error(leadsThrough(start, next, target.replace(/\\$/, "")));
+    done = walkRoot(target);
+    rest.unshift(...target.slice(done.length).split(path.sep).filter(Boolean));
+  }
+  return path.join(done, ...rest);
+}
+
+// Each project root's real place, from its walk at the first resolveIn for it. A network target there is allowed: the
+// user started Tachikoma in that folder. One that met an Unchecked link is kept as that link: where the project really
+// is cannot be told, so every path in it is refused (fix 9, the user's choice at the build, "Refuse, own message"), and
+// so is every path for one past 63 links (null). rulesIn (search.ts) passes the folder of a .gitignore with more than
+// one name as the root, so such folders get their own entry. The project's own folder, as well as the folders above
+// it, is taken once a session: one replaced by a link during the session (only a shell command, which asks, can do
+// that) is not seen (fix 14).
+const rootPlaces = new Map<string, string | Unchecked | null>();
+
+// `shown` is what the approval prompt names: the path, plus where it really leads when a link, or Windows' own
+// spelling of the real place (a path typed as \\?\C:\... or with a short name), differs from what was typed (review
+// fixes plan, fix 12, the user's choice, "Show the real place").
+export function resolveIn(root: string, p: string, { trusted = false }: { trusted?: boolean } = {}): { abs: string; outside: boolean; shown: string } {
   const abs = path.resolve(root, p);
-  const base = realTarget(root);
+  // `trusted` skips the root's walk, the text check and the link check, with its 63-link count, so network and device
+  // paths go through: for the user's own instruction files and what they import, read before the check was made
+  // (review fixes plan, fix 10, the user's choice, "Allow your own files"; fix 14). The checks below still apply. Only
+  // on Windows, as networkPath is false elsewhere: the walks double the cost of each path check, and the @ menu checks
+  // every entry of a folder on each keystroke (fix 11).
+  if (!trusted && process.platform === "win32") {
+    if (!rootPlaces.has(root)) rootPlaces.set(root, linkHops(path.resolve(root), () => true));
+    const place = rootPlaces.get(root) as string | Unchecked | null;
+    const fromRoot = path.relative(root, abs);
+    if (typeof place !== "string") {
+      // "In a project" only of a path in it by its text (fix 14).
+      const why =
+        place === null
+          ? `passes through more than 63 links, ${NEVER_OPENED}`
+          : `leads through ${place.link} to ${place.target}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`;
+      throw new Error(leaves(fromRoot) ? `${abs} cannot be checked, as the project's own folder ${why}` : `${abs} is in a project whose own folder ${why}`);
+    }
+    // Inside the root by its text, or inside the root's real place, or on the share that place is on: Windows has
+    // already signed in there for the project (fix 13, the user's choice, "Same share is fine"). One outside the
+    // project still asks, as any path outside it does.
+    const share = shareOf(place);
+    const inRoot = (q: string) => !leaves(path.relative(root, q)) || !leaves(path.relative(place, q)) || (share !== undefined && shareOf(q) === share);
+    // By its text, so \\localhost\C$\<project> is refused though it is the project (fix 11, the words).
+    if (networkPath(abs) && !inRoot(abs)) {
+      throw new Error(`${abs} is a network or device path not written as a path in the project, so the file tools do not open it; a shell command can reach it, after asking`);
+    }
+    // A path in the root by its text is walked from the root's real place, as the root's own parts were walked
+    // already, so a link on the way to a root on a share is not checked again as if it led out (review fixes plan,
+    // fix 8). Any other path is walked from its drive.
+    // From the root's real place (`from`), with the path from the root to abs (`after`).
+    const walked = leaves(fromRoot) ? linkHops(abs, inRoot) : linkHops(abs, inRoot, place, fromRoot);
+    if (walked === null) throw new Error(`${abs} passes through more than 63 links, ${NEVER_OPENED}`);
+    if (typeof walked !== "string") throw new Error(leadsThrough(abs, walked.link, walked.target));
+  }
   const real = realTarget(abs);
-  if (base === null || real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
+  if (real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
+  if (real === undefined) return { abs, outside: true, shown: `${abs} (where it really leads cannot be told)` };
   // The saved login lives there. Refused in every mode, `never` included, and after following links,
   // so a link cannot get round it.
   const data = realTarget(path.resolve(dataDir()));
-  if (data === null || inData(data, real)) throw new Error(`${abs} is in Tachikoma's data folder, which the file tools never touch`);
+  if (!data || inData(data, real)) throw new Error(`${abs} is in Tachikoma's data folder, which the file tools never touch`);
   // The settings and keys files, the same way: when the project is the home folder they are inside it,
   // where `project` mode would let the model rewrite them unasked.
   const settings = realTarget(settingsDir());
-  if (settings === null || inSettings(settings, real)) {
+  if (!settings || inSettings(settings, real)) {
     throw new Error(`${abs} is one of Tachikoma's settings files, which the file tools never touch; edit it with /settings or /keybindings`);
   }
   if (programEnvironment(real)) throw new Error(`${abs} is a program's environment, which can hold API keys, so the file tools never read it`);
+  // The project's own place only after those refusals, so one that cannot be told still refuses them (from the outside
+  // review of PR #8).
+  const base = realTarget(root);
+  if (base === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
+  if (base === undefined) return { abs, outside: true, shown: `${abs} (where it really leads cannot be told)` };
   const rel = path.relative(base, real);
-  return { abs, outside: leaves(rel), shown: rel === path.relative(root, abs) ? abs : `${abs} (really ${real})` };
+  // Case ignored on Windows, where A.TXT and a.txt are one file (fix 16, the user's choice, "Hide case-only").
+  const typed = path.relative(root, abs);
+  const asTyped = process.platform === "win32" ? rel.toLowerCase() === typed.toLowerCase() : rel === typed;
+  return { abs, outside: leaves(rel), shown: asTyped ? abs : `${abs} (really ${real})` };
 }
 
 // Read the way Claude Code's own Read tool does (its tool description, 2026-10-22): up to 2,000 lines

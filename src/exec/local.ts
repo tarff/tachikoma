@@ -9,8 +9,9 @@ export function shellFor(platform: NodeJS.Platform = process.platform): { name: 
   if (platform === "win32") {
     return {
       name: "PowerShell",
-      // Without this PowerShell writes the console code page, which garbles anything outside ASCII.
-      argv: (c) => ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${c}`],
+      // By its full path: Windows looks for a bare "powershell.exe" in the project folder before PATH (review fixes plan,
+      // fix 1). Without the encoding line PowerShell writes the console code page, which garbles anything outside ASCII.
+      argv: (c) => [system32("WindowsPowerShell/v1.0/powershell.exe"), "-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${c}`],
     };
   }
   return { name: "sh", argv: (c) => ["/bin/sh", "-c", c] };

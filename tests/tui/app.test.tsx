@@ -723,10 +723,12 @@ describe("App", () => {
   });
 
   it("shows an error, and keeps running, when the error log cannot be read", async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    // A folder in one the test made: the log's own folder is made private when it is read (review fixes plan, fix 3).
+    const dir = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "log");
+    mkdirSync(dir);
     const { app } = await mount([reply("still here")], { errorFile: dir });
     await type(app, "/errors");
-    await until(app, "EISDIR");
+    await until(app, `${dir} is not a plain file, so it was not used`);
     await type(app, "hi");
     await until(app, "still here");
   });
@@ -3284,6 +3286,18 @@ describe("App's detail view in full screen", () => {
     await press(app, "\u001b");
     expect(plain(app)[20]).toBe(KEYS);
     expect(plain(app)[0]).toBe("the login 30.");
+  });
+
+  // Review fixes plan, fix 4: keys that are not typed into the search can step while it has no match, which once crashed.
+  it("stays drawn when moving between matches of a search with none", async () => {
+    const bindings = new Bindings(
+      tableOf({ ...DEFAULTS, Transcript: { ...DEFAULTS.Transcript, "ctrl+n": "transcript:nextMatch", "ctrl+p": "transcript:previousMatch" } }),
+    );
+    const { app } = await mount([], { full: true, bindings });
+    await press(app, "\u000f", "/", "zzz");
+    expect(app.lastFrame()).toContain("\n/zzz (no match)\n");
+    await press(app, "\u000e", "\u0010");
+    expect(app.lastFrame()).toContain("\n/zzz (no match)\n");
   });
 
   it("scrolls on PgUp, PgDn, Ctrl+Home and Ctrl+End", async () => {
@@ -6263,6 +6277,19 @@ describe("App's live settings", () => {
     from = top();
     await wheel(mouse, "up");
     expect(top()).toBe(from - 3);
+  });
+
+  // Review fixes plan, fix 6: 0.99 leaves 99 hundredths over, which speed 3 once read as 99 rows.
+  it("starts a new scrollSpeed's first notch with nothing left over from the old one", async () => {
+    const { app, mouse, write } = await watching([], { scrollSpeed: 0.99 }, { full: true, intro: said(80), scrollSpeed: 0.99 });
+    const top = () => Number(/^said (\d+)\.$/.exec(shown(app)[0]!)![1]);
+    await press(app, "\u001b[5~"); // PgUp, so there is room below
+    await wheel(mouse, "down"); // moves no row, leaving 0.99 of one over
+    write({ scrollSpeed: 3 });
+    await sees(app, `scrollSpeed is now 3 ${FROM}`);
+    const from = top();
+    await wheel(mouse, "down");
+    expect(top()).toBe(from + 3);
   });
 
   it("leaves an entry a flag or variable gave at launch as given, and says so", async () => {

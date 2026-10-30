@@ -102,8 +102,10 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     else if (key === "editorMode") fns.setVim(s.editorMode === "vim", FROM); // at once, as /vim (design's table)
     else if (key === "vimInsertModeRemaps") line(Object.keys(s.vimInsertModeRemaps ?? {}).join(", ") || "none");
     else {
-      // scrollSpeed
+      // scrollSpeed. The wheel's carried fraction is in the old speed's units, so the new one starts with none (review
+      // fixes plan, fix 6).
       ui.setSpeed(now.speed);
+      ui.wheel.current = 0;
       line(String(now.speed));
     }
   };

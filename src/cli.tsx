@@ -25,6 +25,7 @@ import {
   screenMode,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
+import { projectFile } from "./core/datadir.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
 import { type Ask, type Mode, PermissionGate, visible } from "./core/permissions.js";
@@ -181,7 +182,7 @@ if (mode === "never") {
 }
 
 const root = process.cwd();
-const errorFile = path.join(root, ".tachikoma", "errors.jsonl");
+const errorFile = projectFile("errors", root);
 const bus = new Bus();
 attachErrorLog(bus, errorFile, randomUUID());
 const stats = new Stats(bus);

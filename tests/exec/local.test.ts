@@ -1,9 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
-import { LocalExecutor } from "../../src/exec/local.js";
+import { system32 } from "../../src/exec/env.js";
+import { LocalExecutor, shellFor } from "../../src/exec/local.js";
 import { tempContext } from "../helpers.js";
 
 const alive = (pid: number) => {
@@ -106,5 +107,22 @@ describe("LocalExecutor", () => {
     const [kept] = r.stdout.split("\n[cut: ");
     expect(r.stdout).not.toContain("�");
     expect(kept).toBe("€".repeat(MAX_TOOL_OUTPUT));
+  }, 15_000);
+  // Review fixes plan, fix 1: Windows looks in the working folder before PATH, so a plain "powershell.exe" there ran first.
+  it("starts PowerShell by its System32 path", () => {
+    expect(shellFor("win32").argv("x")[0]).toBe(system32("WindowsPowerShell/v1.0/powershell.exe"));
+  });
+
+  it.runIf(process.platform === "win32")("does not run a powershell.exe in the project folder", async () => {
+    // Windows skips the working folder when this is set, as it was in the shell this test was written in, which would
+    // hide the old behaviour; users cannot be counted on to have it.
+    vi.stubEnv("NoDefaultCurrentDirectoryInExePath", undefined);
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
+    const { root } = await tempContext();
+    copyFileSync(system32("whoami.exe"), path.join(root, "powershell.exe"));
+    const r = await new LocalExecutor().exec("Write-Output tachi-shell", root);
+    expect(r.stdout.trim()).toBe("tachi-shell");
   }, 15_000);
 });

@@ -171,27 +171,30 @@ export class AnthropicProvider implements Provider {
       ...(effort ? { output_config: { effort } } : {}),
       ...(FALLBACK_MODELS.has(this.model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
     });
-    const limits = { ...LIMITS.anthropic, maxCount: await this.#maxPictures(messages) };
+    const limits = { ...LIMITS.anthropic, maxCount: await this.#maxPictures(messages, signal) };
     const stream = this.#client.beta.messages.stream(await fitted(req, limits, params), { signal });
     return fromAnthropic(await stream.finalMessage());
   }
 
   // Anthropic's vision page, "Request limits": 100 pictures a request "for models with a 200k-token context window",
   // 600 for all others. The window is looked up only when the request holds more than 100; one that cannot be found
-  // counts as 200k, since leaving a picture out costs less than a refused request.
-  async #maxPictures(messages: Message[]): Promise<number> {
+  // counts as 200k, since leaving a picture out costs less than a refused request. The lookup stops with the turn
+  // (review fixes plan, fix 5).
+  async #maxPictures(messages: Message[], signal?: AbortSignal): Promise<number> {
     const count = messages.reduce((n, m) => n + m.parts.filter((p) => p.type === "image").length, 0);
     if (count <= SMALL_WINDOW_PICTURES) return LIMITS.anthropic.maxCount!;
-    const window = await this.contextWindow();
+    const window = await this.contextWindow(signal);
     return window !== null && window > 200_000 ? LIMITS.anthropic.maxCount! : SMALL_WINDOW_PICTURES;
   }
 
-  // Only a successful lookup is kept; a failed one (offline, say) is tried again next time.
-  async contextWindow(): Promise<number | null> {
+  // Only a successful lookup is kept; a failed one (offline, say) is tried again next time. One stopped by `signal`
+  // rejects, so the turn ends as cancelled.
+  async contextWindow(signal?: AbortSignal): Promise<number | null> {
     if (this.#window === undefined) {
       try {
-        this.#window = (await this.#client.models.retrieve(this.model)).max_input_tokens;
-      } catch {
+        this.#window = (await this.#client.models.retrieve(this.model, {}, { signal })).max_input_tokens;
+      } catch (err) {
+        if (signal?.aborted) throw err;
         return null;
       }
     }

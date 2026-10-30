@@ -1,22 +1,14 @@
-import { createHash } from "node:crypto";
-import { realpathSync } from "node:fs";
 import path from "node:path";
 import { withLock } from "../auth/lock.js";
 import { privateDir, readPrivate, writePrivate } from "../auth/private.js";
-import { dataDir } from "../core/datadir.js";
+import { dataDir, projectFile } from "../core/datadir.js";
 import { errorText } from "../core/types.js";
 
 // Each project folder's past prompts (release 3 design, "How it is built"): a private file in the data
 // folder, named after the folder's real path, so two ways of writing one folder share it. One prompt a
 // line, as a JSON string, so a prompt's own line breaks stay inside it; kept in full.
 export function historyFile(root: string, data = dataDir()): string {
-  let real: string;
-  try {
-    real = realpathSync.native(root); // Windows gives the folder's own case, whatever was typed
-  } catch {
-    real = path.resolve(root);
-  }
-  return path.join(data, "history", `${createHash("sha256").update(real).digest("hex")}.jsonl`);
+  return projectFile("history", root, data);
 }
 
 // A damaged line is skipped, so the rest can still be used.

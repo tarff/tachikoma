@@ -46,9 +46,11 @@ export function searchFor(d: Detail, query: string, height: number) {
   else d.view.current = s.before;
 }
 
-// n and N: the next or previous match, round from the last to the first and back (plan, choice 12).
+// n and N: the next or previous match, round from the last to the first and back (plan, choice 12). With none there is
+// nothing to move to (review fixes plan, fix 4).
 export function step(d: Detail, by: 1 | -1, height: number) {
   const s = d.search!;
+  if (!s.found.length) return;
   s.at = (s.at + by + s.found.length) % s.found.length;
   bring(d, s.at, d.view.current, height);
 }

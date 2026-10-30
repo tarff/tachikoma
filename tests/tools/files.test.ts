@@ -9,6 +9,9 @@ import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { editFileTool, programEnvironment, readFileTool, inData, inSettings, resolveIn, sameIgnoringCase, writeFileTool } from "../../src/tools/files.js";
 import { shortName, tempContext } from "../helpers.js";
 
+const onShare = (abs: string) =>
+  `${abs} is a network or device path not written as a path in the project, so the file tools do not open it; a shell command can reach it, after asking`;
+
 describe("resolveIn", () => {
   it("marks paths that leave the project", () => {
     const root = path.resolve("/proj");
@@ -62,6 +65,22 @@ describe("the data folder", () => {
     await expect(readFileTool.run({ path: "innocent/chatgpt.json" }, ctx)).rejects.toThrow("Tachikoma's data folder");
   });
 
+  // From the outside review of PR #8: a project folder the lookup cannot place still refuses the data folder.
+  it("is refused when the project's own folder cannot be looked up", async () => {
+    const ctx = await setup();
+    const real = realpathSync.native;
+    const native = vi.spyOn(realpathSync, "native").mockImplementation((p, ...rest) => {
+      if (p === ctx.root) throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${ctx.root}'`), { code: "ENOENT" });
+      return real(p, ...rest);
+    });
+    try {
+      expect(() => resolveIn(ctx.root, "data/chatgpt.json")).toThrow("Tachikoma's data folder");
+      expect(() => resolveIn(ctx.root, "data/chatgpt.json", { trusted: true })).toThrow("Tachikoma's data folder");
+    } finally {
+      native.mockRestore();
+    }
+  });
+
   it("is refused through a hard link to one of its files", async () => {
     const ctx = await setup();
     linkSync(path.join(ctx.root, "data", "chatgpt.json"), path.join(ctx.root, "innocent.json"));
@@ -92,8 +111,10 @@ describe("the data folder", () => {
     const reaching = spellings.filter((p) => existsSync(p));
     expect(reaching.length).toBeGreaterThan(0);
     for (const p of reaching) {
-      await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow("Tachikoma's data folder");
-      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow("Tachikoma's data folder");
+      // The loopback share is refused before the disk, as any share outside the project is (review fixes plan, fix 2).
+      const words = p.startsWith("\\\\localhost") ? onShare(p) : "Tachikoma's data folder";
+      await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow(words);
+      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(words);
     }
     expect(await readFile(file, "utf8")).toBe("{}");
   });
@@ -265,7 +286,10 @@ describe("the settings and keys files", () => {
     if (process.platform === "win32") spellings.push(`\\\\?\\${file}`, `\\\\localhost\\${file[0]}$${file.slice(2)}`);
     const reaching = spellings.filter((p) => existsSync(p));
     expect(reaching.length).toBeGreaterThan(0);
-    for (const p of reaching) await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(refused(path.resolve(p)));
+    for (const p of reaching) {
+      const words = p.startsWith("\\\\localhost") ? onShare(p) : refused(path.resolve(p)); // as for the data folder
+      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(words);
+    }
     expect(await readFile(file, "utf8")).toBe("{}");
   });
 
@@ -352,6 +376,53 @@ describe("file tools", () => {
     expect(resolveIn(ctx.root, "linked/x.txt").outside).toBe(true);
     await expect(writeFileTool.run({ path: "linked/x.txt", content: "x" }, ctx)).rejects.toThrow("The user declined");
     expect(ctx.asked).toHaveLength(1);
+  });
+
+  // Review fixes plan, fix 12: Node's lstat does not see a junction to a drive named by its ID (\\?\Volume{...}\) as a
+  // link, and follows it, so the JavaScript realpath, which goes part by part, put its target inside the project.
+  // Windows' own answer, realpathSync.native, is used, and the JavaScript one when that throws.
+  it.runIf(process.platform === "win32")("treats a junction to a folder named by its volume ID as leading there", async () => {
+    const ctx = await tempContext("ask", [false]);
+    const elsewhere = realpathSync.native(await mkdtemp(path.join(tmpdir(), "tachi-outside-")));
+    await writeFile(path.join(elsewhere, "b.txt"), "elsewhere");
+    const mountvol = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "mountvol.exe");
+    const volume = execFileSync(mountvol, [elsewhere.slice(0, 2), "/L"], { encoding: "utf8" }).trim();
+    const link = path.join(ctx.root, "byId");
+    execFileSync("cmd", ["/c", "mklink", "/J", link, volume + elsewhere.slice(3)]);
+    try {
+      expect(resolveIn(ctx.root, path.join("byId", "b.txt")).outside).toBe(true);
+      await expect(readFileTool.run({ path: path.join("byId", "b.txt") }, ctx)).rejects.toThrow("The user declined");
+      expect(ctx.asked).toEqual([`read ${path.join(link, "b.txt")} (really ${path.join(elsewhere, "b.txt")})`]);
+    } finally {
+      execFileSync("cmd", ["/c", "rmdir", link]);
+    }
+  });
+
+  // Fix 15: Windows' lookup throws ENOENT for a junction to a volume with no drive letter, and the JavaScript one put
+  // it inside the project, so a path it cannot look up is outside and asks (the user's choice, "always ask").
+  it.runIf(process.platform === "win32")("treats a file Windows' own realpath cannot look up as outside", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), "fine");
+    const abs = path.join(ctx.root, "a.txt");
+    const real = realpathSync.native;
+    const native = vi.spyOn(realpathSync, "native").mockImplementation((p, ...rest) => {
+      if (p === abs) throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${abs}'`), { code: "ENOENT" });
+      return real(p, ...rest);
+    });
+    try {
+      expect(resolveIn(ctx.root, "a.txt")).toEqual({ abs, outside: true, shown: `${abs} (where it really leads cannot be told)` });
+      expect(native).toHaveBeenCalled();
+    } finally {
+      native.mockRestore();
+    }
+  });
+
+  // Fix 16: Windows' lookup gives the real case, which is the same file there (the user's choice, "Hide case-only").
+  it.runIf(process.platform === "win32")("names a path typed in another case without its real place", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), "fine");
+    const abs = path.join(ctx.root, "A.TXT");
+    expect(resolveIn(ctx.root, "A.TXT")).toEqual({ abs, outside: false, shown: abs });
   });
 
   it("shows where a path through a link really leads when asking", async () => {

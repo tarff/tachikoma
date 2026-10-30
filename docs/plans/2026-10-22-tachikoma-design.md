@@ -619,8 +619,9 @@ against the 3.11.0 source):
 
 ### Error log
 
-Every failure is written as one line of JSON to `.tachikoma/errors.jsonl` in the project. Failures
-include:
+Every failure is written as one line of JSON to a private file of the project's own in Tachikoma's
+data folder, `errors/<hash>.jsonl`, named after the project's real path as the prompt history is,
+so nothing in a project can lead it elsewhere (review fixes plan, fix 3). Failures include:
 - tool errors and commands that exit with an error
 - provider errors and rate limits
 - workers that give up

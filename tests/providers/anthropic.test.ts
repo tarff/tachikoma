@@ -299,4 +299,31 @@ describe("AnthropicProvider", () => {
     expect(await provider.contextWindow()).toBe(1_000);
     expect(retrieve).toHaveBeenCalledTimes(2);
   });
+
+  // Review fixes plan, fix 5: the lookup for a request with over 100 pictures takes the turn's signal, so Esc stops it.
+  it("stops the context-window lookup with the turn, keeping nothing", async () => {
+    const retrieve = vi
+      .spyOn(Models.prototype, "retrieve")
+      .mockImplementationOnce(
+        (_model, _params, options) =>
+          new Promise((_, reject) => {
+            // Waits for good without a signal, as a lookup that never answers would.
+            options?.signal?.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
+          }) as never,
+      )
+      .mockResolvedValue({ max_input_tokens: 1_000_000 } as never);
+    vi.stubGlobal("fetch", async () => {
+      throw new Error("no network in this test");
+    });
+    const pictures: Message["parts"] = Array.from({ length: 101 }, (_, i) => ({ type: "image", id: i + 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50]) }));
+    const provider = new AnthropicProvider("claude-opus-5-5");
+    const turn = new AbortController();
+    const asked = provider.complete({ system: "s", messages: [{ role: "user", parts: pictures }], tools: [], signal: turn.signal });
+    await vi.waitFor(() => expect(retrieve).toHaveBeenCalledTimes(1));
+    turn.abort();
+    await expect(asked).rejects.toThrow("This operation was aborted");
+    expect(retrieve.mock.calls[0]![2]?.signal).toBe(turn.signal);
+    expect(await provider.contextWindow()).toBe(1_000_000);
+    expect(retrieve).toHaveBeenCalledTimes(2);
+  });
 });

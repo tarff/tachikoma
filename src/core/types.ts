@@ -80,7 +80,7 @@ export interface CompletionRequest {
 export interface Provider {
   readonly id: string; // "<provider>:<model>", e.g. "anthropic:claude-opus-5-5"
   complete(req: CompletionRequest): Promise<Turn>;
-  contextWindow?(): Promise<number | null>;
+  contextWindow?(signal?: AbortSignal): Promise<number | null>; // the signal stops the lookup (review fixes plan, fix 5)
   setEffort?(effort: Effort | undefined): void; // Anthropic's only, as --effort is
 }
 
