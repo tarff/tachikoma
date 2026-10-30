@@ -1603,7 +1603,7 @@ function cmdOwn(words: Word[]): Word[] {
 }
 
 // A command's name without its folder or .exe, in lower case, as Windows finds it.
-function nameOf(word: string): string {
+export function nameOf(word: string): string {
   return word.replace(/^.*[\\/]/, "").replace(/\.exe$/i, "").toLowerCase();
 }
 
@@ -1920,13 +1920,14 @@ const WRAPPERS: Record<string, Options> = {
 const START_FLAGS = ["/i", "/min", "/max", "/separate", "/shared", "/low", "/normal", "/high", "/realtime", "/abovenormal", "/belownormal", "/wait", "/b"];
 const START_VALUES = ["/d", "/node", "/affinity", "/machine"];
 
-// sudo's options (sudo(8), 1.9) and doas's (doas(1), OpenBSD 7.5). sudo's -h is both help and -h HOST, so it is not read.
+// sudo's options (sudo(8), 1.9), with Windows 11's (microsoft/sudo: --inline, --new-window, --disable-input; its -N, -E and
+// -D are sudo's own letters), and doas's (doas(1), OpenBSD 7.5). sudo's -h is both help and -h HOST, so it is not read.
 const SUDO: Options = {
   flags: "ABbEeHiKklNnPSsVv",
   values: "CDgpRrtTUu",
   long: [
     "askpass", "bell", "background", "preserve-env", "edit", "set-home", "login", "remove-timestamp", "reset-timestamp", "list",
-    "no-update", "non-interactive", "preserve-groups", "stdin", "shell", "validate",
+    "no-update", "non-interactive", "preserve-groups", "stdin", "shell", "validate", "inline", "new-window", "disable-input",
   ],
   longValues: ["close-from", "chdir", "group", "prompt", "chroot", "role", "type", "command-timeout", "other-user", "user"],
 };
@@ -2105,6 +2106,23 @@ function interpreterRun(name: string, args: Word[], cwd: Cwd): InterpreterRun | 
   const key = /^(python|pypy|ipython)[\d.]*$/.test(name) ? "python" : /^lua(jit|[\d.]*)$/.test(name) ? "lua" : /^tclsh[\d.]*$/.test(name) ? "tclsh" : name;
   const it = INTERPRETERS[key];
   return it && interpreted(args, it, 0, cwd);
+}
+
+// The script a command's words give an interpreter the reader knows, for the rule on a script from a web address (choice
+// 44): the word its options end at, read with the same tables. Undefined when it runs code given in the line or reads its
+// input, and for awk, whose first word is its program.
+export function scriptOf(words: string[]): string | undefined {
+  const [first, ...rest] = words;
+  const name = nameOf(first ?? "");
+  if (AWK.has(name)) return undefined;
+  const args = rest.map((value): Word => ({ value, start: 0, end: 0, dynamic: false, shape: value }));
+  try {
+    const run = interpreterRun(name, args, KNOWN);
+    return run && !run.reads && !run.code ? args[run.decides - 1]?.value : undefined;
+  } catch (error) {
+    if (error instanceof Unreadable) return undefined; // as python -c with no code: no script
+    throw error;
+  }
 }
 
 // Code given in the line, as with -c, is not read by the check (the plan's known limit). With none, xargs gives it.

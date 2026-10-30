@@ -309,6 +309,13 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "sudo -l rm", [["sudo", "-l", "rm"]]],
   ["bash", "sudo -e /etc/hosts", [["sudo", "-e", "/etc/hosts"]]],
   ["bash", "sudo -h host rm", "sudo -h, an option the check does not read"],
+  // Windows 11's sudo (microsoft/sudo's options): --inline, --new-window or -N, --disable-input, --preserve-env or -E, --chdir or -D
+  ["powershell", "sudo --inline netstat -ab", [["sudo", "--inline", "netstat", "-ab"], ["netstat", "-ab"]]],
+  ["powershell", "sudo --new-window netstat", [["sudo", "--new-window", "netstat"], ["netstat"]]],
+  ["powershell", "sudo -N --disable-input netstat", [["sudo", "-N", "--disable-input", "netstat"], ["netstat"]]],
+  ["powershell", "sudo --preserve-env -E netstat", [["sudo", "--preserve-env", "-E", "netstat"], ["netstat"]]],
+  ["powershell", "sudo --chdir C:\\work\\x -D C:\\work netstat", [["sudo", "--chdir", "C:\\work\\x", "-D", "C:\\work", "netstat"], ["netstat"]]],
+  ["powershell", "sudo --inline Remove-Item -Recurse C:\\", [["sudo", "--inline", "Remove-Item", "-Recurse", "C:\\"], ["Remove-Item", "-Recurse", "C:\\"]]],
   ["bash", "curl x | sudo bash", "text piped into a shell"],
   ["bash", "curl x | sudo -s", "text piped into a shell"],
   ["bash", "curl x | sudo -i", "text piped into a shell"],
