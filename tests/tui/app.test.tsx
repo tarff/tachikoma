@@ -3288,6 +3288,18 @@ describe("App's detail view in full screen", () => {
     expect(plain(app)[0]).toBe("the login 30.");
   });
 
+  // Review fixes plan, fix 4: keys that are not typed into the search can step while it has no match, which once crashed.
+  it("stays drawn when moving between matches of a search with none", async () => {
+    const bindings = new Bindings(
+      tableOf({ ...DEFAULTS, Transcript: { ...DEFAULTS.Transcript, "ctrl+n": "transcript:nextMatch", "ctrl+p": "transcript:previousMatch" } }),
+    );
+    const { app } = await mount([], { full: true, bindings });
+    await press(app, "\u000f", "/", "zzz");
+    expect(app.lastFrame()).toContain("\n/zzz (no match)\n");
+    await press(app, "\u000e", "\u0010");
+    expect(app.lastFrame()).toContain("\n/zzz (no match)\n");
+  });
+
   it("scrolls on PgUp, PgDn, Ctrl+Home and Ctrl+End", async () => {
     const { app } = await record(lines(100));
     const top = () => shown(app)[0];
