@@ -9,6 +9,9 @@ import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { editFileTool, programEnvironment, readFileTool, inData, inSettings, resolveIn, sameIgnoringCase, writeFileTool } from "../../src/tools/files.js";
 import { shortName, tempContext } from "../helpers.js";
 
+const onShare = (abs: string) =>
+  `${abs} is a network or device path outside the project, which the file tools never open; a shell command can reach it, after asking`;
+
 describe("resolveIn", () => {
   it("marks paths that leave the project", () => {
     const root = path.resolve("/proj");
@@ -92,8 +95,10 @@ describe("the data folder", () => {
     const reaching = spellings.filter((p) => existsSync(p));
     expect(reaching.length).toBeGreaterThan(0);
     for (const p of reaching) {
-      await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow("Tachikoma's data folder");
-      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow("Tachikoma's data folder");
+      // The loopback share is refused before the disk, as any share outside the project is (review fixes plan, fix 2).
+      const words = p.startsWith("\\\\localhost") ? onShare(p) : "Tachikoma's data folder";
+      await expect(readFileTool.run({ path: p }, ctx)).rejects.toThrow(words);
+      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(words);
     }
     expect(await readFile(file, "utf8")).toBe("{}");
   });
@@ -265,7 +270,10 @@ describe("the settings and keys files", () => {
     if (process.platform === "win32") spellings.push(`\\\\?\\${file}`, `\\\\localhost\\${file[0]}$${file.slice(2)}`);
     const reaching = spellings.filter((p) => existsSync(p));
     expect(reaching.length).toBeGreaterThan(0);
-    for (const p of reaching) await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(refused(path.resolve(p)));
+    for (const p of reaching) {
+      const words = p.startsWith("\\\\localhost") ? onShare(p) : refused(path.resolve(p)); // as for the data folder
+      await expect(writeFileTool.run({ path: p, content: "x" }, ctx)).rejects.toThrow(words);
+    }
     expect(await readFile(file, "utf8")).toBe("{}");
   });
 

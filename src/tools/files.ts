@@ -1,4 +1,4 @@
-import { type BigIntStats, existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { type BigIntStats, existsSync, lstatSync, readdirSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { dataDir, KEYBINDINGS, SETTINGS, settingsDir } from "../core/datadir.js";
@@ -106,10 +106,59 @@ export function inSettings(folder: string, real: string, platform: NodeJS.Platfo
 // /proc/self leads to Tachikoma's own.
 export const programEnvironment = (real: string) => /^\/proc\/[^/]+\/(task\/[^/]+\/)?environ$/.test(real);
 
+// A network or device path (review fixes plan, fix 2): on Windows, one starting with \\ or // once resolved, a share,
+// \\?\UNC\, a named pipe or a device, but not \\?\ or \\.\ before a drive letter, Windows' long-path spelling of an
+// ordinary local file (the user's choice at the build, "Count as local"). Touching one can make Windows sign in to a
+// server, so the file tools refuse one outside the project before anything opens it.
+const networkPath = (p: string) => process.platform === "win32" && /^[\\/]{2}/.test(p) && !/^[\\/]{2}[?.][\\/][a-z]:\\/i.test(p);
+const NEVER_OPENED = "which the file tools never open; a shell command can reach it, after asking";
+
+// Walks `start` one part at a time from its drive, as realpath would, but looks before it follows (the plan, fix 2):
+// lstat does not follow the part it is given, and the parts above it are already plain folders or links whose targets
+// were checked; a link's target is read without opening it. A target that is a network or device path for which
+// `allowed` is false is refused; any other takes the place of the parts walked so far. The walk ends at the first part
+// that does not exist, or at a link met a second time (a loop, which realTarget then reports). Returns where it ended.
+function linkHops(start: string, allowed: (target: string) => boolean): string {
+  let done = path.parse(start).root;
+  const rest = start.slice(done.length).split(path.sep).filter(Boolean);
+  const seen = new Set<string>();
+  while (rest.length) {
+    const next = path.join(done, rest[0]!);
+    const kind = lstatSync(next, { throwIfNoEntry: false });
+    if (!kind || (kind.isSymbolicLink() && seen.has(next))) break;
+    rest.shift();
+    if (!kind.isSymbolicLink()) {
+      done = next;
+      continue;
+    }
+    seen.add(next);
+    const target = path.resolve(path.dirname(next), readlinkSync(next));
+    if (networkPath(target) && !allowed(target)) {
+      throw new Error(`${start} leads through ${next} to a network or device path outside the project (${target}), ${NEVER_OPENED}`);
+    }
+    done = path.parse(target).root;
+    rest.unshift(...target.slice(done.length).split(path.sep).filter(Boolean));
+  }
+  return path.join(done, ...rest);
+}
+
+// Each project root's real place, from its walk at the first resolveIn for it. A network target there is allowed: the
+// user started Tachikoma in that folder.
+const rootPlaces = new Map<string, string>();
+
 // `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
 // it somewhere else.
 export function resolveIn(root: string, p: string): { abs: string; outside: boolean; shown: string } {
   const abs = path.resolve(root, p);
+  let place = rootPlaces.get(root);
+  if (place === undefined) {
+    place = linkHops(path.resolve(root), () => true);
+    rootPlaces.set(root, place);
+  }
+  // Inside the root by its text, or inside the root's real place.
+  const inRoot = (q: string) => !leaves(path.relative(root, q)) || !leaves(path.relative(place, q));
+  if (networkPath(abs) && !inRoot(abs)) throw new Error(`${abs} is a network or device path outside the project, ${NEVER_OPENED}`);
+  linkHops(abs, inRoot);
   const base = realTarget(root);
   const real = realTarget(abs);
   if (base === null || real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
