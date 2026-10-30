@@ -319,6 +319,12 @@ Each is marked in its task. None approved yet.
 30. **The terminal is probed first, with the user (Task 22).** The user runs a small probe script
     in Windows Terminal. Only if kitty still gets no answer is win32 input mode built.
 
+**Found at the plan's review**
+31. **In live link, a missing `.tachikoma` is made by Tachikoma before the box starts** (Task 15),
+    an empty folder of its own in the project, so it can be hidden. Unmounted, the box could make
+    one, and Tachikoma later keeps backups and sessions there. Refusing live link instead would
+    refuse it for nearly every project.
+
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
@@ -683,7 +689,9 @@ Commit: `feat: the judge, a fresh request that sees the user's words and the act
 The gate gets `judge: (action, signal) => Promise<Verdict>` from cli.tsx. The judge is `--judge`'s
 provider, or the lead's own spec through `createProvider` when unset. In `auto` each action is
 decided in the design's order:
-1. A read, or a write inside the project that is not protected, passes.
+1. A read inside the project, or a write inside it that is not protected, passes. A read outside
+   the project goes to the judge (step 3), as Claude Code's fast path covers only the working
+   directory (design, Sources; from the plan's review).
 2. Dangers ask the user, with the red lines, and the judge is never asked. Headless, they are
    refused.
 3. Everything else goes to the judge, under the turn's signal.
@@ -706,6 +714,8 @@ decided in the design's order:
 
 **Tests** (FakeProvider judges, held answers with `Held` from tests/helpers.ts):
 - yes runs; no reaches the model with the reason;
+- a read outside the project, by `read_file` and by `search_files`, reaching the judge, and a read
+  inside it not reaching it;
 - an unreadable answer and a failed judge;
 - 3 in a row, and 20 in a session, each pausing, with the line, then approving to resume;
 - headless never asking;
@@ -900,8 +910,20 @@ export function liveMounts(root: string, git: GitSettings | undefined): { mounts
   - top-level `HEAD`, `objects`, `refs` and `config` when they exist.
 
   Each is a `-v <host>:/work/<rel>:ro` after the project's own mount.
-- **Hidden:** `.tachikoma` gets an empty tmpfs over it, when it exists. When it does not, nothing
-  is mounted. A mount over a missing folder would make Docker create it in the real folder.
+- **Hidden:** `.tachikoma` gets an empty tmpfs over it. When it does not exist, Tachikoma first
+  makes it on the host, an empty folder of its own (choice 31), so that it can be hidden. A mount
+  over a missing folder makes Docker create it in the real folder (Docker's bind-mount docs), and
+  a folder left unmounted could be made by the box.
+- **Nothing is mounted over a path that does not exist** (from the plan's review). Docker would
+  create it in the real folder, and leaving it unmounted would leave it writable:
+  - a `core.hooksPath` folder inside the project that does not exist refuses live link:
+    `Live link is refused: git's hooks folder <path> does not exist yet, so the box could make
+    it. Create the folder, or launch with --sandbox copy instead.` Once the user makes it, it is
+    mounted read-only.
+  - an included settings file inside the project that does not exist is already a problem from
+    Task 5 ("it cannot be read"), so it refuses too;
+  - top-level `HEAD`, `objects`, `refs` and `config` are mounted only when they exist. The
+    design accepts the missing case and says so plainly (design, "What stays open").
 - **Refused:**
   - git missing: choice 11's line;
   - a problem from Task 5: `Live link is refused: git's settings include <file>, which <why>.
@@ -914,8 +936,13 @@ export function liveMounts(root: string, git: GitSettings | undefined): { mounts
 - top-level `HEAD` and `config` read-only;
 - a `.git` file read-only;
 - `.tachikoma` empty in the box, with the host's untouched;
+- a project with no `.tachikoma`: the empty folder made by Tachikoma, hidden in the box, and a
+  file written to `/work/.tachikoma/x` in the box not reaching the host;
 - an included link refusing;
-- no new folder made in the project by Docker.
+- a `core.hooksPath` naming a missing folder in the project: refused with the line, and no
+  folder made (real Docker never started); then with the folder made, mounted read-only;
+- an included settings file that does not exist: refused;
+- no new folder made in the project by Docker, checked by listing the project before and after.
 
 Commit: `feat: live link: all of .git, git's included files and the hooks folders read-only, .tachikoma hidden`.
 
@@ -1000,14 +1027,19 @@ export function changes(manifest: Manifest, work: string): Promise<Change[]>;   
 export function lineDiff(before: string, after: string): Line[];                  // Myers, choice 25; Line is describe.ts's
 ```
 
-- **`changes`** compares `work/` with the manifest. It skips `.git`, the box's own repository.
+- **`changes`** compares `work/` with the manifest. It skips every `.git` and `.tachikoma`
+  folder or file at any depth, the box's own repository and Tachikoma's own records included,
+  even when the box made them after the snapshot (main design: "never applied back"; from the
+  plan's review). The new ones are listed as left out, so the review can show them.
 - **`lineDiff`** gives `Line`s for the detail view:
   - an `@@ -a,b +c,d @@` header row (cyan);
   - removed lines red with `-`, added lines green with `+`, and three lines of context around
     each change;
   - a binary file as one row: `binary file: <n> bytes before, <m> after`.
 
-**Tests:** each change kind; executable flips; a link changed; a file made a folder; the diff of
+**Tests:** each change kind; executable flips; a link changed; a file made a folder; a
+`.tachikoma` folder and a nested `sub/.git` made in `work/` after the snapshot, both left out and
+listed; the diff of
 known small texts against hand-written expectations, including empty files and no final new
 line.
 
@@ -1027,29 +1059,57 @@ export function appliedSoFar(session: string): Outcome[];       // from applied.
 The main design's apply rules, one by one:
 - **The checks.** The real file still matches its snapshot (hash, a plain file, the same
   executable flag), or for an added file it still does not exist. Otherwise it is a conflict.
-- **Each write.**
-  1. The parent folders are resolved and refused if any part is a link or leaves the project.
-  2. The destination must be a plain file, not a hard link with more than one name.
-  3. The new content is written to a temporary file in the same folder's real place; the real
-     file is checked once more; then the new file is renamed into place.
-  4. The old file goes first to `.tachikoma/backups/<session>/<path>`.
-  5. The `applied.jsonl` row is written before the rename. If the backup or the row cannot be
-     written, nothing is replaced.
+- **Reserved paths.** A change whose path has a `.git` or `.tachikoma` part at any depth is
+  `refused`, with why `Tachikoma's own and git's folders are never applied`, even if one reaches
+  it (from the plan's review).
+- **Every path apply writes or deletes gets the same checks** (from the plan's review): the
+  changed file, its backup under `.tachikoma/backups/<session>/`, a deleted file, and a merge's
+  file of conflict markers. For each:
+  1. Every parent folder is resolved, and the path is refused if any part is a link or leaves
+     the project. So a `.tachikoma` or `.tachikoma/backups` that is a junction refuses the
+     change, and nothing is replaced.
+  2. An existing destination must be a plain file, not a hard link with more than one name.
+  3. A new file (the backup, the markers file, the temporary file) is created only if nothing is
+     there yet (`wx`), so nothing already there is overwritten.
+- **Each replacement, in order:**
+  1. The old file is copied to its backup.
+  2. The `applied.jsonl` row `{path, state: "pending", before, after}` is written, with the two
+     SHA-256 hashes.
+  3. The new content goes to a temporary file in the same folder's real place, the real file is
+     checked once more, and the temporary file is renamed into place.
+  4. The row `{path, state: "done"}` is written.
+
+  If the backup or the pending row cannot be written, nothing is replaced. A delete follows the
+  same steps, with `after` empty.
 - **Deletes** apply only when the file still matches.
 - **Links and type changes** are never applied: `refused`, with why `links are applied by hand`.
 - **Merges.** For a conflict with `merge`, `git merge-file -p` runs on copies of the three
   versions in a fresh temporary folder (choice 25). A clean merge is applied as above. Conflict
-  markers go to `<path>.tachikoma-merge` beside it, which is reported. A binary file is never
-  merged: `conflict`, with why `a binary file; resolve it by hand`.
+  markers go to `<path>.tachikoma-merge` beside it, which is reported. If that name is already
+  taken, nothing is written, with why `<path>.tachikoma-merge already exists; move it, then merge
+  again`. A binary file is never merged: `conflict`, with why `a binary file; resolve it by
+  hand`.
+- **`appliedSoFar` reads the log against the disk** (from the plan's review):
+  - a `done` row is applied;
+  - a `pending` row with no `done` is checked by hashing the real file: `after` means applied,
+    `before` means not applied, and anything else means `changed since`, which is reported and
+    never rolled back (main design, "After a crash").
 
 **Tests:**
 - each rule, with the real folder changed in the meantime;
 - a parent replaced by a junction, refused;
+- `.tachikoma` and `.tachikoma/backups` each a junction to a test folder outside: refused,
+  nothing written there, and the real file unchanged;
+- a delete whose parent is a junction, refused;
 - a hard link, refused;
-- a clean merge and a conflicting one;
+- a `.tachikoma` path and a nested `.git` path handed to `applyChange`, refused;
+- a clean merge and a conflicting one; a conflicting one whose `.tachikoma-merge` name is taken,
+  with the existing file unchanged;
 - a binary conflict;
-- the backup and the log written before the swap;
-- `appliedSoFar` after a simulated crash between two files.
+- the backup and the pending row written before the swap;
+- `appliedSoFar` after simulated crashes (a test hook) right before the rename, right after it
+  before the `done` row, and between two files, each reported correctly; and a pending file the
+  user edited since, reported as `changed since`.
 
 Commit: `feat: copy mode's apply: checked file by file, backed up, logged, conflicts merged or skipped`.
 
@@ -1105,6 +1165,19 @@ Commit: `feat: the review of a copy's changes, file by file, with each diff`.
 - **`tachi review`** (choice 28) is a subcommand dispatched as `login` is. It lists the copies
   (`No copies are waiting.` when none), opens one, or discards one. A copy whose `applied.jsonl`
   shows a half-done apply first prints which files were applied (main design, "After a crash").
+- **No review while the copy's box runs** (design: review and apply "run on the host only after
+  the box has stopped"; from the plan's review).
+  - The manifest records the session's process id. The box carries the label
+    `tachikoma.session=<id>`.
+  - Before the review lists changes or applies anything, `tachi review` and `leave()` ask Docker
+    for any box with that label (`docker ps -a --filter label=…`).
+    - **A box that is running while its session's process is alive** refuses: `The copy <name>
+      is still in use by a running Tachikoma session; review it after that session ends.`
+    - **A box whose process is gone** (a crash) is stopped and removed first, and the review goes
+      on only once Docker reports it gone.
+    - **With Docker not running,** no box can be running, and the review goes on.
+  - Two reviews of one copy at once are kept apart by `withLock` on the copy's folder. The
+    second one waits.
 - **`never` works** with `--sandbox copy`. Task 7's not-built lines go.
 
 **Tests:**
@@ -1114,7 +1187,11 @@ Commit: `feat: the review of a copy's changes, file by file, with each diff`.
   review;
 - `never` launching with copy, still refused with live link and off;
 - a crash's copy listed;
-- the half-done apply's report.
+- the half-done apply's report;
+- `tachi review` on a copy whose box is running and whose session is alive (real Docker, the
+  session's process a test-started stand-in): refused with the line, nothing listed or applied;
+- the same box with its process gone: stopped and removed, then the review opens;
+- two `tachi review` runs of one copy at once: the second waits for the first.
 
 Commit: `feat: copy mode in a session, the review at the end, tachi review, and never in copy mode`.
 
