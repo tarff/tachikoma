@@ -370,6 +370,25 @@ the plan's review.
     in PowerShell ask. The README (Task 23) says the check is a list of known patterns, not a
     wall: the box is what holds.
 
+    The spec re-review and three more automatic security findings found further ways, closed the
+    same way: PowerShell 5.1 also changes a word holding a blank that ends in a backslash, and
+    drops an empty word; any name for the shell's own input (`/dev/./stdin`, `//dev/stdin`,
+    `/dev/fd/0`, `/proc/self/fd/0`, anything under `/dev` or `/proc` but `/dev/null`) counts as
+    that input, also in `BASH_ENV`/`ENV` and in node's `-r`/`--import` and php's `-f`/`-d`; a
+    function or alias defined on the line and fed by a pipe; `xargs` handing its input to
+    `python -c`, `node -e` or `cmd /c`; `ash`, `rbash`, `yash`, `posh` read as bash; `deno`,
+    `bun`, `awk -f -`, `lua` and `Rscript` reading piped code; `wsl ~` and `wsl --` followed by
+    nothing (wsl then reads its input) and a leading `~` skipped; an empty `-c` or `cmd /c` text
+    counts as reading the input; PowerShell's `.(...)` and `.$c`, `[ScriptBlock]::Create` under
+    any type name, `.AddScript`, `[Diagnostics.Process]::Start`, CIM and WMI process creation,
+    COM `.Run`/`.Exec`/`.ShellExecute`, and functions made on the `function:` drive. Still not
+    followed: a relative path after `cd /dev`, and code sent to a container or another machine
+    (`docker exec -i c sh`, `ssh host sh`), which does not run here.
+38. **A here-document fed to an interpreter reads like its `-c`** (the user's choice, after the
+    re-review found `python - <<'PY'` asked): the code is written in the line, so it is the
+    known limit for inline code. A here-document fed to a shell still asks (choice 35), and so
+    does code really piped in (`curl x | python`).
+
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
