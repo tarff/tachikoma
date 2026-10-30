@@ -347,6 +347,24 @@ the plan's review.
     follow: `a bracket without its pair`, `a bracket where a command cannot have one`,
     `a redirection without its file`, `cmd's if or for, which the check does not read`, and
     `<name> <option>, an option the check does not read` for a wrapper's option it does not know.
+37. **Every way found at Task 2's review to hide a command is closed, failing safe** (the
+    user's choice, after the spec review and two automatic security findings showed lines read as
+    harmless while the real shell ran something else). Where a command can be unpacked it is
+    (`coproc`, `builtin`, cmd's `call` and `start`, `trap`'s text, `ksh`/`mksh`/`busybox sh` read
+    as bash); otherwise the line is unreadable, with these reasons:
+    - `a command named only when it runs` (a command name that is a variable, a substitution,
+      `{a,b}` braces, `$0` or `{}`, or `&` with anything but a plain name);
+    - `shell text made only when it runs` (`sh -c "$(curl …)"`, `-c` text built from a variable);
+    - `PowerShell would change its quotes before <name> reads it` (Windows PowerShell 5.1 drops
+      inner double quotes from what it hands bash, sh, cmd or PowerShell);
+    - `a way of running text the check does not follow` (`Start-Process`,
+      `[scriptblock]::Create`, `.InvokeScript`, `Set-Alias`/`New-Alias`);
+    - `text run by a shell the check does not read` (`fish`, `csh`, `tcsh` with `-c`);
+    - `nesting too deep for the check to read`.
+
+    Everyday cost: `Start-Process notepad`, `$tool --version`, and `bash -c 'echo "hi"'` typed
+    in PowerShell ask. The README (Task 23) says the check is a list of known patterns, not a
+    wall: the box is what holds.
 
 ---
 
