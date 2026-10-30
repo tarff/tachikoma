@@ -184,7 +184,8 @@ stop and ask the controller, who asks the user.
 
 ## Choices this plan makes that the design leaves open
 
-Each is marked in its task. None approved yet.
+Each is marked in its task. All 31 approved by the user on 2026-10-31 ("Yes. Approved."), after
+the plan's review.
 
 **The order**
 1. **Part 2 comes before the box.** The check, protected paths, `auto` and the judge work on the
