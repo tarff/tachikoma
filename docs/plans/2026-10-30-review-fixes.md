@@ -367,7 +367,7 @@ The code review of `0c5bc67..046dc3f` approved fixes 12 to 14 and the walk-root 
 the points below. Each was checked against the code before this section. One commit per fix,
 tests first, seen failing.
 
-### 15. A lookup Windows cannot answer asks, unless the drive never answers
+### 15. A lookup Windows cannot answer asks
 
 - **The gap** (left by fix 12, confirmed by running): for a junction to a volume that has no drive
   letter (a Recovery or EFI partition; this machine has nine in `mountvol`), `realpathSync.native`
@@ -376,18 +376,16 @@ tests first, seen failing.
   read or write through it is inside the project and not asked about. A symbolic link to the same
   place is refused already, as Node sees it as a link to a device path. Fix 12's "it can on some
   virtual drives" was never measured: no drive that fails is known.
-- **Option chosen: "Check the drive".** When Windows' lookup throws, it is tried on the drive's own
-  top folder (`path.parse(p).root`). If that throws too, the drive does not answer at all, and the
-  JavaScript lookup is used, as now. If it answers, where the path leads cannot be told: the path
-  is outside the project, so it asks, and the prompt names it as
+- **Option chosen: always ask** (the user first chose "Check the drive", then, asked whether it was
+  needed, the simpler way, since the drive check only kept a fallback for drives no one has
+  measured). The JavaScript lookup goes. When Windows' lookup throws, where the path leads cannot
+  be told: the path is outside the project, so it asks, and the prompt names it as
   `<abs> (where it really leads cannot be told)`. A project folder that cannot be told makes every
   path in it ask the same way. Tachikoma's data folder or settings folder that cannot be told is
-  treated as one that leads nowhere, as now: the file tools are refused there.
-- **Tests:** in `files.test.ts`, a junction to a volume without a letter, taken from `mountvol`
-  output (skipped when there is none; the test only resolves the path, it opens nothing there):
-  outside, with those words. With `realpathSync.native` made to throw for a path but not its
-  drive: outside, with those words. With it made to throw for both: a plain file in the project
-  still resolves inside it (the fix 12 test, changed to throw for the drive too).
+  treated as one that leads nowhere, as now: the file tools are refused there. If a drive is ever
+  found where Windows' lookup always fails, every path on it asks; it is fixed then, measured.
+- **Test:** in `files.test.ts`, with `realpathSync.native` made to throw for one path: that path is
+  outside, with those words (the fix 12 test that expected the fallback is changed to this).
 
 ### 16. A path typed in another case shows no "(really ...)"
 
@@ -404,13 +402,13 @@ tests first, seen failing.
 - **`linkHops`' comment**: it walks from `walkRoot`, the drive or the share's root, not "from its
   drive"; past 63 links it returns null and the caller refuses.
 - **Fix 12's line in this plan** ("it can on some virtual drives") is left as written; fix 15 says
-  what was measured.
+  what was measured. The comment in `realPlace` that repeats it goes with the fallback.
 - **Tests** in `networkPaths.test.ts`:
   - the project root itself written as `\\?\UNC\...`: a file in it resolves inside, one elsewhere
     on the share asks;
-  - in a project on the share, a project link to another share is refused by the link check;
-  - the project's own share written in other case (`\\TACHI-TEST.INVALID\SHARE\...`) and as
-    `//tachi-test.invalid/share/...` counts as the same share.
+  - in a project on the share, a project link to another share is refused by the link check.
+  - Left out (the user agreed): the share written in capitals or with forward slashes. Both are
+    turned into one form before the check, and the reviewer tried about 30 spellings by hand.
 
 ## Checks
 
