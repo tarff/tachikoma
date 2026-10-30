@@ -326,6 +326,17 @@ the plan's review.
     one, and Tachikoma later keeps backups and sessions there. Refusing live link instead would
     refuse it for nearly every project.
 
+**Found before Task 2's build** (the user's choices, 2026-10-31)
+32. **Redirections are read, and left out of a command's words.** `>`, `>>`, `<`, `2>`, `2>&1`,
+    `&>` and PowerShell's `*>` and `3>` style are understood; the operator and its file are dropped,
+    so `npm test > out.txt 2>&1` reads as `npm test`. Treating them as unreadable would make
+    nearly every build command dangerous.
+33. **Leading `NAME=value` words are skipped** in bash, so `FOO=1 rm -rf ~` reads as `rm -rf ~`.
+34. **Commands that run the rest of their words have that command checked too,** as `bash -c` is:
+    `env`, `nohup`, `time`, `nice`, `timeout`, `stdbuf`, `exec`, `command`, `xargs`, `watch`
+    (whose words are shell text, as `sh -c`), and `find` with `-exec`, `-execdir`, `-ok` or
+    `-okdir`. Each one's own options are skipped. Otherwise `env rm -rf ~` would pass the check.
+
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
