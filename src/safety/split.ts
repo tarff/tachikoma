@@ -1,5 +1,5 @@
 // Reads a shell command line into its separate commands, for the dangerous-command check (release 7 design, "The
-// dangerous-command check"; plan, Task 2 and choices 2, 3, 32-35 and 37). Tachikoma's own reader: bash's grammar,
+// dangerous-command check"; plan, Task 2 and choices 2, 3 and 32-39). Tachikoma's own reader: bash's grammar,
 // PowerShell's, and cmd's for the text `cmd /c` runs. It is strict where it does not understand: anything it cannot read
 // makes the whole line unreadable, which the check counts as dangerous.
 
@@ -83,9 +83,10 @@ const RESERVED = new Set(["if", "then", "else", "elif", "fi", "do", "done", "whi
 const OPENS = new Set(["if", "while", "until", "for", "select"]);
 const CLOSES = new Set(["fi", "done"]);
 const SH = new Set(["bash", "sh", "zsh", "dash", "ksh", "mksh", "ash", "rbash", "yash", "posh"]);
-const OTHER_SHELLS = new Set(["fish", "csh", "tcsh"]);
 // PowerShell's ways of running text, starting a program, or making a command, that the check does not follow (choice 37).
-const PS_FOLLOW = new Set(["start-process", "saps", "start", "set-alias", "new-alias", "sal", "nal", "invoke-cimmethod", "invoke-wmimethod", "iwmi"]);
+const PS_FOLLOW = new Set([
+  "start-process", "saps", "start", "set-alias", "new-alias", "sal", "nal", "invoke-cimmethod", "invoke-wmimethod", "iwmi", "add-type",
+]);
 const PS_FOLLOW_TEXT = new RegExp(
   [
     /\[\s*(system\.)?(management\.automation\.)?scriptblock\s*\]\s*::\s*create/.source,
@@ -99,6 +100,55 @@ const PS_FOLLOW_TEXT = new RegExp(
 // A COM object's Run, Exec or ShellExecute (WScript.Shell, Shell.Application) starts a program from text.
 const PS_COM = /-com(o|ob|obj|obje|objec|object)?\b/i;
 const PS_COM_RUN = /\.(run|exec|shellexecute)\s*\(/i;
+// PowerShell's reach into .NET that asks (choice 39), matched in the line's code with its strings as '' (Reader.dotnet).
+const PS_DOTNET = new RegExp(
+  [
+    /\]\s*''/.source, // a cast of a string, as in [type]'ScriptBlock'
+    /[\w)\]]\.\s*''\s*\(/.source, // a quoted member name called, as in .'Delete'()
+    /[\w)\]]\.\s*\(/.source, // a member name worked out, as in .($name)
+    /[\w)\]]\.\s*\$[\w:]+\s*\(/.source, // a member named by a variable and called
+    /\.\s*(invoke|create|start)\s*\(/.source,
+    /createpipeline|getscriptblock|parseinput|invokemember|gettypefromprogid|activator/.source,
+    /\[\s*(system\.management\.)?(wmiclass|wmi|wmisearcher|managementclass|managementobject)\s*\]/.source,
+  ].join("|"),
+);
+// The .NET types whose static members only read or compute (choice 39): all of a type's members (true), or those listed.
+// Names are in lower case, without System.
+const DOTNET_READS: Record<string, true | string[]> = {
+  "io.path": true,
+  "io.file": ["exists", "readalltext", "readalllines", "readallbytes"], // not Delete, Move, Write... which change files
+  datetime: true,
+  math: true,
+  convert: true,
+  "text.encoding": true,
+  string: true,
+  char: true,
+  int: true,
+  int32: true,
+  long: true,
+  int64: true,
+  double: true,
+  decimal: true,
+  bool: true,
+  boolean: true,
+  guid: true,
+  timespan: true,
+  bitconverter: true,
+  regex: ["escape", "match", "matches", "ismatch", "split", "replace"],
+  "text.regularexpressions.regex": ["escape", "match", "matches", "ismatch", "split", "replace"],
+  // [Environment]: its Get... members and the properties it only reads, not Set... or Exit.
+  environment: [
+    "newline", "machinename", "currentdirectory", "osversion", "processorcount", "username", "userdomainname",
+    "is64bitoperatingsystem", "is64bitprocess", "systemdirectory", "tickcount", "tickcount64", "version", "workingset",
+    "processid", "processpath", "systempagesize", "userinteractive", "hasshutdownstarted", "currentmanagedthreadid",
+    "commandline", "stacktrace", "expandenvironmentvariables",
+  ],
+};
+function readsOnly(type: string, member: string): boolean {
+  const reads = DOTNET_READS[type];
+  if (type === "environment" && member.startsWith("get")) return true;
+  return reads === true || (reads !== undefined && reads.includes(member));
+}
 // PowerShell takes curly quotes as quotes too (about_Quoting_Rules).
 const PS_SINGLE = new Set(["'", "\u2018", "\u2019", "\u201A", "\u201B"]);
 const PS_DOUBLE = new Set(['"', "\u201C", "\u201D", "\u201E"]);
@@ -112,26 +162,66 @@ const PS_ESCAPES: Record<string, string> = { "0": "\0", a: "\x07", b: "\b", e: "
 // The largest Unicode code point; an escape past it is kept as nothing, as no character has it.
 const code = (n: number) => (n <= 0x10ffff ? String.fromCodePoint(n) : "");
 
-function read(text: string, grammar: Grammar): Part {
-  return new Reader(text.replace(/\r\n/g, "\n"), grammar).sequence("");
+// Where a cd earlier on the line may have left the shell (choice 37): in a known folder; perhaps at /, after climbing with ..;
+// or anywhere, after a cd to a folder under /dev or /proc, or to one known only when the line runs. Ranked, so the larger wins.
+type Cwd = 0 | 1 | 2;
+const KNOWN: Cwd = 0;
+const ROOT: Cwd = 1;
+const ANYWHERE: Cwd = 2;
+
+// What a shell started by a command inherits from the line: its exported NAME=value words, and the folder it starts in.
+interface Inherited {
+  env: Word[];
+  cwd: Cwd;
 }
 
-// Whether a path names a process's own input (choice 37). The path is tidied by its text alone: repeated slashes joined,
-// . and .. taken out. Then anything under /dev or /proc counts, as /dev/stdin, /dev/fd/0 and /proc/<n>/fd/0 have many
-// spellings; /dev/null, which reads as nothing, does not.
-function ownInput(path: string): boolean {
-  if (!path.startsWith("/")) return false;
-  const parts: string[] = [];
-  for (const part of path.split("/")) {
-    if (part === "..") parts.pop();
-    else if (part !== "" && part !== ".") parts.push(part);
+function read(text: string, grammar: Grammar, from?: Inherited): Part {
+  const reader = new Reader(text.replace(/\r\n/g, "\n"), grammar, from);
+  const part = reader.sequence("");
+  reader.dotnet();
+  return part;
+}
+
+// Whether a path names a process's own input (choice 37). An absolute path is tidied by its text alone: repeated slashes
+// joined, . and .. taken out; then anything under /dev or /proc counts, as /dev/stdin, /dev/fd/0 and /proc/<n>/fd/0 have
+// many spellings. A relative or ~ path counts when /dev or /proc comes after a .., as enough .. reaches / from any folder,
+// and also, after a cd, as `cwd` says. /dev/null, which reads as nothing, never counts.
+function ownInput(path: string, cwd: Cwd = KNOWN): boolean {
+  if (path === "" || /(^|\/)dev\/+null\/*$/.test(path)) return false;
+  const parts = path.split("/").filter((p) => p !== "" && p !== ".");
+  if (path.startsWith("/")) {
+    const tidy: string[] = [];
+    for (const part of parts) {
+      if (part === "..") tidy.pop();
+      else tidy.push(part);
+    }
+    return tidy[0] === "dev" || tidy[0] === "proc";
   }
-  const tidy = `/${parts.join("/")}`;
-  return tidy !== "/dev/null" && (parts[0] === "dev" || parts[0] === "proc");
+  const climbed = parts.indexOf("..");
+  if (climbed >= 0 && parts.slice(climbed + 1).some((p) => p === "dev" || p === "proc")) return true;
+  if (path.startsWith("~")) return false;
+  return cwd === ANYWHERE || (cwd === ROOT && (parts[0] === "dev" || parts[0] === "proc"));
+}
+
+// Whether text holds a path to the input, or a lone -: an option's value, a script, or a start-up setting such as
+// NODE_OPTIONS='--import=/dev/stdin' or RUBYOPT=-r/dev/stdin. It is taken apart at blanks, = and commas, and a short
+// option's letters before a path are taken off. PHP's php://stdin and php://fd/0 count too.
+function holdsInput(text: string, cwd: Cwd = KNOWN): boolean {
+  if (/php:\/\/(stdin|fd\/0)/i.test(text)) return true;
+  return text.split(/[\s=,;]+/).some((t) => t === "-" || ownInput(t, cwd) || ownInput(t.replace(/^-[A-Za-z]+/, ""), cwd));
 }
 
 // Whether a word names a process's own input, or a file known only when the line runs: either may be the pipe.
-const takesInput = (word: Word) => word.dynamic || ownInput(word.value);
+const takesInput = (word: Word, cwd: Cwd = KNOWN) => word.dynamic || ownInput(word.value, cwd);
+
+// What a command's reading depends on, beyond its words.
+interface Context {
+  inner: boolean; // it is in another's words, as in `env rm`, so its name is a program's whatever the grammar
+  placeholder?: string; // what xargs -I or find -exec replaces in the words when it runs
+  vars: Word[]; // the NAME=value words set for it: before it, through env or sudo, or earlier on the line
+  functions: Map<string, Hunger>; // the line's bash functions and aliases, and what in each reads its input
+  cwd: Cwd;
+}
 
 // A script block passed to powershell is read twice, as a block and as the shell's text: each command is kept once.
 function once(commands: Command[]): Command[] {
@@ -159,14 +249,23 @@ class Reader {
   hungry: Hunger = NONE; // what in the brackets of the command being read reads that command's input
   // bash functions and aliases made on this line, and what in each reads its input; an alias's text is not read.
   private readonly functions = new Map<string, Hunger>();
-  private readonly exported: Word[] = []; // NAME=value words set on their own or by export, which later commands may see
+  // NAME=value words set on the line in any way: on their own, by export, declare, typeset, readonly or local. Later
+  // commands may see them, as `set -a` exports every one.
+  private readonly exported: Word[] = [];
+  private cwd: Cwd = KNOWN;
+  private code = ""; // PowerShell: the line's code with each string as '', for the .NET checks (choice 39)
 
   constructor(
     private readonly src: string,
     private readonly g: Grammar,
+    from?: Inherited,
   ) {
     this.escape = g === "bash" ? "\\" : g === "powershell" ? "`" : "^";
     if (g === "powershell" && PS_COM.test(src) && PS_COM_RUN.test(src)) throw new Unreadable(FOLLOW);
+    if (from) {
+      this.exported.push(...from.env);
+      this.cwd = from.cwd;
+    }
   }
 
   // Reads commands up to `stop`.
@@ -177,23 +276,40 @@ class Reader {
       this.pending = [];
     }
     const commands: Command[] = [];
-    const open: boolean[] = []; // compound commands begun here (while, if, ...): whether each takes a pipe's input
+    // Compound commands begun here (while, if, ...): whether a pipe feeds each, and what inside reads its input, which a
+    // redirect after its done or fi decides.
+    const open: { piped: boolean; hungry: Hunger }[] = [];
     let hungry = NONE;
     let piped = false;
     let carried = false;
+    let literal = false; // PowerShell: the pipe carries only a string written in the line
+    const add = (h: Hunger) => {
+      const inside = open.at(-1);
+      if (inside) inside.hungry = most(inside.hungry, h);
+      else hungry = most(hungry, h);
+    };
     for (;;) {
       const r = this.command(stop, carried);
       // A compound command after a pipe takes its input in every command inside it.
-      const fed = piped || open.includes(true);
-      if (r.hungry && fed) throw new Unreadable(PIPED);
-      hungry = most(hungry, r.hungry);
+      const fed = piped || open.some((o) => o.piped);
+      for (let k = 0; k < r.opens; k++) open.push({ piped: fed, hungry: NONE });
+      // Choice 38, extended: in PowerShell, a string piped straight into an interpreter is code written in the line, as with -c.
+      const written = piped && literal && r.hungry === CODE;
+      if (r.hungry && fed && !written) throw new Unreadable(PIPED);
+      add(written ? NONE : r.hungry);
       commands.push(...r.commands);
-      for (let k = 0; k < r.opens; k++) open.push(fed);
-      open.length = Math.max(0, open.length - r.closes);
+      for (let k = 0; k < r.closes && open.length > 0; k++) {
+        const inside = open.pop()!;
+        // A here-document, here-string or file after done or fi feeds every command inside (choices 35 and 38).
+        if (r.fed && inside.hungry === SHELL) throw new Unreadable(PIPED);
+        add(r.replaced ? NONE : inside.hungry);
+      }
       if (r.sep === stop) break;
+      literal = r.literal && !piped;
       piped = r.sep === "|";
       carried = piped || r.sep === "&&" || r.sep === "||";
     }
+    for (const inside of open) hungry = most(hungry, inside.hungry); // a compound with no end, which bash would refuse
     if (stop) {
       if (this.pending.length > 0) throw new Unreadable(HEREDOC); // its body would have to come after the bracket's end
       this.waiting -= outer.length;
@@ -218,6 +334,7 @@ class Reader {
     let called = false; // after PowerShell's & or .: the next word names the command
     let fed = false; // a here-document or here-string is this command's input
     let input = false; // a file is this command's input
+    let copied = false; // <&N or 0<&N copies another file number into the input, which may be the pipe
     let opens = 0;
     let closes = 0;
     const outerHungry = this.hungry;
@@ -229,7 +346,13 @@ class Reader {
       const hungry = most(own.hungry, groupHungry);
       if (hungry === SHELL && fed) throw new Unreadable(PIPED);
       // A here-document, here-string or file in place of the input: an interpreter reading it runs code written in the line.
-      return { commands: [...own.commands, ...nested], sep, hungry: most(fed || input ? NONE : hungry, subs), opens, closes };
+      const replaced = (fed || input) && !copied;
+      // PowerShell: a command that is only a string or here-string written in the line, with nothing in it made when it runs.
+      const raw0 = words.length === 1 ? src.slice(words[0]!.start, words[0]!.end) : "";
+      const quoteAt = (k: number) => PS_SINGLE.has(raw0[k] ?? "") || PS_DOUBLE.has(raw0[k] ?? "");
+      const opened = quoteAt(0) || (raw0[0] === "@" && quoteAt(1));
+      const literal = g === "powershell" && raw0 !== "" && !words[0]!.dynamic && opened && (quoteAt(raw0.length - 1) || raw0.endsWith("@"));
+      return { commands: [...own.commands, ...nested], sep, hungry: most(replaced ? NONE : hungry, subs), opens, closes, fed, replaced, literal };
     };
     for (;;) {
       this.space();
@@ -245,6 +368,7 @@ class Reader {
       if (redirected) {
         fed ||= redirected === "text";
         input ||= redirected === "input";
+        copied ||= redirected === "copy";
         if (start < 0) start = at;
         last = this.i;
         continue;
@@ -354,13 +478,35 @@ class Reader {
       return { commands: [], hungry: NONE };
     }
     const name = own[0]!.value;
-    if (g === "bash" && name === "export") this.exported.push(...own.slice(1).filter((w) => w.value.includes("=")));
-    if (g === "bash" && name === "alias") {
-      for (const a of own.slice(1)) if (a.value.indexOf("=") > 0) this.functions.set(a.value.slice(0, a.value.indexOf("=")), SHELL);
+    const args = own.slice(1);
+    if (g === "bash") this.settings(name, args);
+    return expand(own, src.slice(start, last), src, g, { inner: false, vars, functions: this.functions, cwd: this.cwd });
+  }
+
+  // What a bash command sets for the rest of the line: variables (export, declare, typeset, readonly, local), aliases, and
+  // the folder (cd, pushd, popd). A function exported for child shells is unreadable: a child's `bash -c f` would run it,
+  // and its reader would not know f (choice 37).
+  private settings(name: string, args: Word[]): void {
+    const options = args.filter((w) => w.value.startsWith("-")).map((w) => w.value.slice(1)).join("");
+    if (["export", "declare", "typeset", "readonly", "local"].includes(name)) {
+      if ((name === "export" && options.includes("f")) || (name !== "export" && options.includes("f") && options.includes("x"))) {
+        throw new Unreadable(FOLLOW);
+      }
+      this.exported.push(...args.filter((w) => !w.value.startsWith("-") && w.value.includes("=")));
     }
-    const part = expand(own, src.slice(start, last), src, g, false, undefined, vars);
-    const fn = g === "bash" ? this.functions.get(name) : undefined;
-    return fn === undefined ? part : { ...part, hungry: most(part.hungry, fn) };
+    if (name === "alias") for (const a of args) if (a.value.indexOf("=") > 0) this.functions.set(a.value.slice(0, a.value.indexOf("=")), SHELL);
+    if (name === "cd" || name === "pushd" || name === "popd") this.cwd = most(this.cwd, this.moved(name, args)) as Cwd;
+  }
+
+  // Where a cd, pushd or popd may leave the shell.
+  private moved(name: string, args: Word[]): Cwd {
+    const target = args.find((w) => !/^-[LPe@]+$/.test(w.value));
+    if (name === "popd" || (name === "pushd" && !target) || (target && /^[-+]\d*$/.test(target.value))) return ANYWHERE; // the folder stack
+    if (!target) return KNOWN; // cd alone goes home
+    if (target.dynamic || ownInput(target.value, this.cwd)) return ANYWHERE;
+    if (this.cwd !== KNOWN && !/^[/~]/.test(target.value)) return ANYWHERE; // a relative cd from a folder not known
+    const climbs = target.value.split("/").includes("..");
+    return climbs || /^\/+$/.test(target.value) ? ROOT : KNOWN;
   }
 
   // Skips blanks, escaped new lines and comments.
@@ -397,9 +543,10 @@ class Reader {
   }
 
   // Reads a redirection if one starts here, and leaves it out of the command's words (choice 32). A here-document or
-  // here-string is left out the same way (choice 35). Says what it was: "text" for a here-document or here-string, "input"
-  // for a file read as the command's input, "file" for any other.
-  private redirection(stop: Stop, nested: Command[]): "file" | "input" | "text" | false {
+  // here-string is left out the same way (choice 35). Says what it was: "text" for a here-document or here-string on the
+  // input, "input" for a file read as the input, "copy" for another file number copied into the input (<&N, 0<&N), which
+  // may be the pipe, and "file" for any other. Only file number 0, written or left out, is the input.
+  private redirection(stop: Stop, nested: Command[]): "file" | "input" | "text" | "copy" | false {
     const { src, g } = this;
     const re =
       g === "bash" ? /(\d*)(&>>|&>|>>|>&|>\||>|<<<|<<-|<<|<&|<>|<)/y : g === "powershell" ? /([*\d]?)(>>|>|<)(&\d)?/y : /(\d?)(>>|>|<)(&\d)?/y;
@@ -408,18 +555,21 @@ class Reader {
     if (!m) return false;
     const op = m[2]!;
     const here = op.startsWith("<<");
+    const onInput = m[1] === "" || m[1] === "0";
     this.i = re.lastIndex;
     if (g === "bash" && src[this.i] === "(") throw new Unreadable(PROCESS);
-    if (m[3]) return "file"; // 2>&1 and the like, which name no file
+    if (m[3]) return op === "<" && onInput ? "copy" : "file"; // 2>&1 and the like, which name no file
     while (src[this.i] === " " || src[this.i] === "\t") this.i++;
+    if (g === "bash" && /[<>]\(/y.test(src.slice(this.i, this.i + 2))) throw new Unreadable(PROCESS); // as in `done < <(ls)`
     if (this.ends(src[this.i], stop)) throw new Unreadable(here ? HEREDOC : NO_FILE);
     // A here-string's word is read as any word is, its $(...) and backticks included unless it is in single quotes.
     const w = this.word(stop, nested);
+    if (op === "<&") return onInput ? "copy" : "file";
     // A quoted end word, as in <<'EOF', <<"EOF" or <<\EOF, keeps bash from expanding the body (bash manual, "Here Documents").
     if (op !== "<<<" && here) this.pending.push({ end: w.value, strip: op === "<<-", expands: !/['"\\]/.test(src.slice(w.start, w.end)) });
-    if (here) return "text";
+    if (here) return onInput ? "text" : "file";
     // A file in place of the command's input; not its own input under another name, nor a file known only when it runs.
-    const replaces = (op === "<" || op === "<>") && (m[1] === "" || m[1] === "0") && !takesInput(w);
+    const replaces = (op === "<" || op === "<>") && onInput && !takesInput(w, this.cwd);
     return replaces ? "input" : "file";
   }
 
@@ -502,6 +652,7 @@ class Reader {
     this.dynamic = false;
     let value = "";
     let shape = "";
+    if (g === "powershell") this.code += " ";
     while (!this.ends(src[this.i], stop)) {
       const c = src[this.i]!;
       if (c === this.escape) {
@@ -509,6 +660,7 @@ class Reader {
         this.i += n === undefined ? 1 : 2;
         value += n === "\n" ? "" : (n ?? c);
         shape += "\0";
+        if (g === "powershell") this.code += n ?? "";
       } else if (g === "bash") {
         shape += "'\"$`".includes(c) ? "\0" : c;
         value += this.bashPart(nested);
@@ -535,24 +687,61 @@ class Reader {
     const from = this.i;
     const c = src[from]!;
     const n = src[from + 1];
-    if (PS_SINGLE.has(c)) return this.psQuoted(PS_SINGLE);
-    if (PS_DOUBLE.has(c)) return this.psQuoted(PS_DOUBLE, nested);
-    if (c === "@" && this.looking(HERE_STRING)) return this.psHere(n!, nested);
+    // Each part also goes into the line's code text (choice 39), strings as '' and brackets around their own code.
+    const string = (value: string) => ((this.code += "''"), value);
+    if (PS_SINGLE.has(c)) return string(this.psQuoted(PS_SINGLE));
+    if (PS_DOUBLE.has(c)) return string(this.psQuoted(PS_DOUBLE, nested));
+    if (c === "@" && this.looking(HERE_STRING)) return string(this.psHere(n!, nested));
     if (c === "(" || ((c === "$" || c === "@") && n === "(")) {
       this.i += c === "(" ? 1 : 2;
+      this.code += src.slice(from, this.i);
       this.inner(")", nested);
+      this.code += ")";
       this.dynamic = true;
       return src.slice(from, this.i);
     }
     if (c === "{" || (c === "@" && n === "{")) {
       this.i += c === "{" ? 1 : 2;
+      this.code += src.slice(from, this.i);
       this.inner("}", nested);
+      this.code += "}";
       return src.slice(from, this.i);
     }
-    if (c === "$" && n === "{") return this.psBraced();
+    if (c === "$" && n === "{") {
+      this.code += "$v";
+      return this.psBraced();
+    }
     if (c === "$" && /[\w:?^$]/.test(n ?? "")) this.dynamic = true;
     this.i++;
+    this.code += c;
     return c;
+  }
+
+  // PowerShell's reach into .NET (choice 39), read over the line's code with its strings taken out. A static member call
+  // [Type]::Member is allowed only for the types and members in DOTNET_READS, which only read or compute.
+  dotnet(): void {
+    if (this.g !== "powershell") return;
+    const code = this.code.toLowerCase();
+    if (PS_DOTNET.test(code)) throw new Unreadable(FOLLOW);
+    for (const m of code.matchAll(/::/g)) {
+      let at = m.index - 1;
+      while (code[at] === " ") at--;
+      const member = /^\s*([\w]+)/.exec(code.slice(m.index + 2))?.[1];
+      if (code[at] === "]") {
+        let depth = 0;
+        let from = at;
+        for (; from >= 0; from--) {
+          if (code[from] === "]") depth++;
+          if (code[from] === "[" && --depth === 0) break;
+        }
+        const type = code.slice(from + 1, at).replace(/\s+/g, "").replace(/^system\./, "");
+        if (!member || !readsOnly(type, member)) throw new Unreadable(FOLLOW);
+        continue;
+      }
+      // A provider path, as in FileSystem::C:\x, is allowed; a type held in a variable ($t::) or made some other way is not.
+      const name = /([$\w.\\-]+)$/.exec(code.slice(0, at + 1))?.[1] ?? "";
+      if (!/^[\w.\\-]+$/.test(name) || name.startsWith("$")) throw new Unreadable(FOLLOW);
+    }
   }
 
   // cmd's quotes have no escapes inside; ^ escapes outside them.
@@ -789,6 +978,7 @@ class Reader {
         if (marks === PS_DOUBLE) {
           const reader = new Reader(body, "powershell");
           nested.push(...reader.expansions());
+          reader.dotnet();
           this.hungry = most(this.hungry, reader.hungry);
           this.dynamic ||= reader.src.includes("$");
         }
@@ -857,57 +1047,78 @@ function nameOf(word: string): string {
 
 // Programs whose words the check reads, which Windows PowerShell 5.1 passes on changed (choice 37): inner double quotes are
 // dropped, a word with a blank that ends in a backslash takes in the next word, and an empty word is left out.
-const PARSED = new Set(["busybox", "cmd", "powershell", "pwsh", "wsl", "sudo", "doas", "find"]);
+const PARSED = new Set([
+  "busybox", "cmd", "powershell", "pwsh", "wsl", "sudo", "doas", "find", "forfiles", "uv", "uvx", "pipenv", "poetry", "npx", "bunx", "conda",
+]);
 const parses = (name: string) => PARSED.has(name) || SH.has(name) || OTHER_SHELLS.has(name) || name in WRAPPERS;
 const changed = (w: Word) => w.value.includes('"') || w.value === "" || (/\s/.test(w.value) && w.value.endsWith("\\"));
 
+// Start-up settings a program reads from its environment, which can name a file of code it runs first (choice 37): bash's
+// BASH_ENV and the ENV of sh and the others (bash manual, "Bash Startup Files"), node's NODE_OPTIONS (--require, --import),
+// ruby's RUBYOPT (-r) and perl's PERL5OPT (-M).
+const STARTUP: Record<string, (name: string) => boolean> = {
+  BASH_ENV: (name) => SH.has(name),
+  ENV: (name) => SH.has(name),
+  NODE_OPTIONS: (name) => name === "node" || name === "nodejs",
+  RUBYOPT: (name) => name === "ruby",
+  PERL5OPT: (name) => name === "perl",
+};
+
 // A command, then what it runs: the text it gives a shell (choice 2), or the command in the rest of its words (choice 34).
-// `inner`: the command is in another's words, as in `env rm`, so its name is a program's whatever the grammar.
-// `placeholder`: what xargs -I or find -exec replaces in the words when it runs.
-// `vars`: the NAME=value words set for the command, before it or through env and sudo.
-function expand(words: Word[], text: string, src: string, g: Grammar, inner: boolean, placeholder?: string, vars: Word[] = []): Part {
+function expand(words: Word[], text: string, src: string, g: Grammar, ctx: Context): Part {
   const [first, ...args] = words as [Word, ...Word[]];
+  const { placeholder, cwd } = ctx;
   const name = nameOf(first.value);
   const shown = first.value.replace(/^.*[\\/]/, "").replace(/\.exe$/i, "");
   // A name known only when the line runs: a variable, a command's output, a glob, a brace expansion, or a placeholder.
   // PowerShell's own are checked after & and . (Reader.command); a first word there is an expression, not a name.
   const glob = g === "bash" && /\{[^{}]*(,|\.\.)[^{}]*\}|[*?]|\[[^\]]*\]/.test(first.shape);
-  if (((g === "bash" || inner) && first.dynamic) || glob || (placeholder && first.value.includes(placeholder))) throw new Unreadable(NAMED);
+  if (((g === "bash" || ctx.inner) && first.dynamic) || glob || (placeholder && first.value.includes(placeholder))) throw new Unreadable(NAMED);
   if (g === "bash" && name === "eval") throw new Unreadable(EVAL);
   if (g === "powershell" && (name === "iex" || name === "invoke-expression")) throw new Unreadable(IEX);
   if (g === "powershell" && PS_FOLLOW.has(name)) throw new Unreadable(FOLLOW);
   if (g === "powershell" && parses(name) && args.some(changed)) throw requoted(shown);
   const commands: Command[] = [{ words: words.map((w) => w.value), text }];
-  let hungry = NONE;
+  // A bash function or alias made earlier on the line runs here, with this command's input (choice 37).
+  let hungry = g === "bash" ? (ctx.functions.get(first.value) ?? NONE) : NONE;
   const run = (runs: Runs) => {
     if (runs.dynamic || (placeholder && runs.texts.some((t) => t.includes(placeholder)))) throw new Unreadable(MADE);
     for (const t of runs.texts) {
-      const part = read(t, runs.grammar);
+      // An empty text is filled in by xargs or by a word PowerShell dropped: the shell reads its input.
+      if (t.trim() === "") hungry = SHELL;
+      const part = read(t, runs.grammar, { env: ctx.vars, cwd });
       commands.push(...part.commands);
       hungry = most(hungry, part.hungry); // the shell's own commands read its input
     }
   };
-  const code = interpreterRun(name, args);
+  const code = interpreterRun(name, args, cwd);
   if (code) {
     // For an interpreter, only the words up to the one that settles what it runs matter.
     if (g === "powershell" && args.slice(0, code.decides).some(changed)) throw requoted(shown);
     if (code.code && placeholder && code.code.value.includes(placeholder)) throw new Unreadable(MADE);
-    if (code.reads) hungry = CODE;
+    if (code.reads) hungry = most(hungry, CODE);
   } else {
-    const runs = shellRuns(name, args, g);
+    const runs = shellRuns(name, args, g, cwd);
     if (runs === undefined) hungry = SHELL;
     else if (runs) run(runs);
   }
-  // BASH_ENV (bash) and ENV (sh and the others) name a file of commands a shell runs first (bash manual, "Bash Startup Files").
-  const startup = vars.some((v) => /^(BASH_ENV|ENV)=/.test(v.value) && (v.dynamic || ownInput(v.value.slice(v.value.indexOf("=") + 1))));
-  if (SH.has(name) && startup) hungry = SHELL;
+  const startup = ctx.vars.some((v) => {
+    const eq = v.value.indexOf("=");
+    const matches = STARTUP[v.value.slice(0, eq)];
+    return matches?.(name) && (v.dynamic || holdsInput(v.value.slice(eq + 1), cwd));
+  });
+  if (startup) hungry = most(hungry, SH.has(name) ? SHELL : CODE);
   for (const w of wrapped(name, args, g, src)) {
     if ("texts" in w) {
       run(w);
       continue;
     }
-    const text = src.slice(w.words[0]!.start, w.words.at(-1)!.end);
-    const part = expand(w.words, text, src, w.grammar ?? g, true, w.placeholder ?? placeholder, [...vars, ...(w.vars ?? [])]);
+    if ("reads" in w) {
+      hungry = most(hungry, w.reads);
+      continue;
+    }
+    const inner: Context = { ...ctx, inner: true, placeholder: w.placeholder ?? placeholder, vars: [...ctx.vars, ...(w.vars ?? [])] };
+    const part = expand(w.words, src.slice(w.words[0]!.start, w.words.at(-1)!.end), src, w.grammar ?? g, inner);
     // xargs gives the command its input, so a shell or an interpreter there runs it.
     if (name === "xargs" && part.hungry) throw new Unreadable(PIPED);
     commands.push(...part.commands);
@@ -919,7 +1130,7 @@ function expand(words: Word[], text: string, src: string, g: Grammar, inner: boo
 // The text a command gives a shell to run; null when it gives none; undefined when the shell reads its input, as in
 // `curl x | sh`, and runs what comes down the pipe. Empty text counts as reading its input, as xargs or a dropped word
 // may fill it in.
-function shellRuns(name: string, args: Word[], g: Grammar): Runs | null | undefined {
+function shellRuns(name: string, args: Word[], g: Grammar, cwd: Cwd): Runs | null | undefined {
   if (name === "wsl") {
     const run = wslRun(args);
     if ("text" in run && run.text.length > 0) return { grammar: "bash", texts: [linuxLine(run.text)], dynamic: run.text.some((w) => w.dynamic) };
@@ -929,18 +1140,18 @@ function shellRuns(name: string, args: Word[], g: Grammar): Runs | null | undefi
     const { rest, used } = sudoRun(name, args);
     return rest.length === 0 && (used.has("s") || used.has("i") || used.has("shell") || used.has("login")) ? undefined : null;
   }
-  if (SH.has(name)) return shText(args);
+  if (SH.has(name)) return shText(args, cwd);
   if (name === "cmd") return cmdText(args);
   if (name === "powershell" || name === "pwsh") return psText(name, args);
-  if (OTHER_SHELLS.has(name)) return otherShell(args);
+  if (OTHER_SHELLS.has(name)) return otherShell(name, args, cwd);
   if (g === "bash" && name === "trap") return trapText(args);
-  if (g === "bash" && (name === "source" || name === ".") && args[0] && takesInput(args[0])) return undefined;
+  if (g === "bash" && (name === "source" || name === ".") && args[0] && takesInput(args[0], cwd)) return undefined;
   return null;
 }
 
 // What bash, sh, zsh, dash, ksh or mksh runs: the text after -c, null for a script file, undefined when it reads its input:
 // with no script, with -s, or with its own input as the script. Without its text, -c runs what xargs gives it.
-function shText(args: Word[]): Runs | null | undefined {
+function shText(args: Word[], cwd: Cwd): Runs | null | undefined {
   let c = false;
   let s = false;
   let k = 0;
@@ -961,16 +1172,36 @@ function shText(args: Word[]): Runs | null | undefined {
   }
   const text = args[k];
   if (c) return text && text.value.trim() !== "" ? { grammar: "bash", texts: [text.value], dynamic: text.dynamic } : undefined;
-  return s || !text || takesInput(text) ? undefined : null;
+  return s || !text || takesInput(text, cwd) ? undefined : null;
 }
 
-// fish, csh and tcsh: text given to them (-c; fish's -C, --command and --init-command) is in a grammar the check does not
-// read; with no script they read their input.
-function otherShell(args: Word[]): null | undefined {
-  for (const word of args) {
+// Shells whose grammar the check does not read: fish, csh, tcsh, nu, xonsh and elvish (choice 37). Text given to them
+// (-c; fish's -C, --command and --init-command; nu's -e and --execute) is unreadable; with no script, with tcsh's -s or with
+// nu's --stdin they read their input. Their options on their own are listed (each one's --help); any other is taken to
+// have a value in the next word, so that a script it hides makes the line read as reading the input.
+const OTHER_SHELLS = new Set(["fish", "csh", "tcsh", "nu", "xonsh", "elvish"]);
+const OTHER_FLAGS = new Set([
+  "-i", "-l", "-n", "-N", "-p", "-P", "-v", "-V", "-x", "-X", "-f", "-b", "-q", "-t", "-h", "-m", "-F", "-D", "-st",
+  "--login", "--interactive", "--private", "--no-config", "--no-execute", "--version", "--help", "--no-rc", "--no-config-file",
+  "--no-std-lib", "--no-script-cache", "--cache-everything", "--timings", "-norc", "-help", "-version", "-buildinfo", "-json",
+  "-compileonly", "-noisy",
+]);
+function otherShell(name: string, args: Word[], cwd: Cwd): null | undefined {
+  for (let k = 0; k < args.length; k++) {
+    const word = args[k]!;
     const { value } = word;
-    if (/^--(init-)?command/.test(value) || /^-[^-]*[cC]/.test(value)) throw new Unreadable(OTHER);
-    if (!value.startsWith("-")) return takesInput(word) ? undefined : null;
+    if (OTHER_FLAGS.has(value)) continue;
+    if (/^--(init-)?command|^--execute|^--commands/.test(value) || /^-[a-zA-Z]*[cC][a-zA-Z]*$/.test(value) || (name === "nu" && value === "-e")) {
+      throw new Unreadable(OTHER);
+    }
+    if (value === "--stdin" || (/^-[a-zA-Z]*s[a-zA-Z]*$/.test(value) && (name === "csh" || name === "tcsh"))) return undefined;
+    if (value === "-") return undefined;
+    if (value === "--") {
+      const script = args[k + 1];
+      return !script || takesInput(script, cwd) ? undefined : null;
+    }
+    if (!value.startsWith("-")) return takesInput(word, cwd) ? undefined : null;
+    if (!value.includes("=")) k++;
   }
   return undefined;
 }
@@ -1023,7 +1254,7 @@ function psText(name: string, args: Word[]): Runs | null | undefined {
   const rest = (from: number): Runs | undefined => {
     const words = args.slice(from);
     const text = words.map((w) => w.value).join(" ");
-    return text === "" || text === "-" ? undefined : { grammar: "powershell", texts: [text], dynamic: words.some((w) => w.dynamic) };
+    return text.trim() === "" || text === "-" ? undefined : { grammar: "powershell", texts: [text], dynamic: words.some((w) => w.dynamic) };
   };
   for (let k = 0; k < args.length; k++) {
     const a = args[k]!.value;
@@ -1166,10 +1397,12 @@ function linuxLine(words: Word[]): string {
 }
 
 // Interpreters that run code from their input when given no script, or - or their own input as the script (choice 37). From
-// each one's --help: Python 3.12, Node.js 24, perl 5.38 (perlrun), ruby 3.3, PHP 8.3, Lua 5.4, R 4.4's Rscript, Deno 2
-// (`deno run --help`) and Bun 1.1. `code` options give the code themselves (`files` give a script file, as php -f);
-// `interactive` ones read code from the input after the script. An option not listed is taken to have a value in the next
-// word, so that a script it hides makes the line read as code from the input; an option's value naming the input counts too.
+// each one's --help: Python 3.12 (and PyPy and IPython, read as Python), Node.js 24, perl 5.38 (perlrun), ruby 3.3 and irb,
+// PHP 8.3, Lua 5.4, R 4.4's Rscript, Tcl 8.6's tclsh, osascript (macOS), Deno 2 (`deno run --help`) and Bun 1.1. `code`
+// options give the code themselves (`files` give a script file, as php -f); `interactive` ones read code from the input
+// after the script; `words` are options written with one dash that take a value, as tclsh's -encoding. An option not
+// listed is taken to have a value in the next word, so that a script it hides makes the line read as code from the input;
+// a value that is - or names the input counts as reading the input too.
 interface Interpreter {
   flags: string;
   values: string;
@@ -1180,6 +1413,7 @@ interface Interpreter {
   long: string[];
   longValues: string[];
   longCode?: string[];
+  words?: string[];
 }
 const INTERPRETERS: Record<string, Interpreter> = {
   python: {
@@ -1214,6 +1448,7 @@ const INTERPRETERS: Record<string, Interpreter> = {
     long: ["help", "version", "verbose", "copyright", "yjit"],
     longValues: [],
   },
+  irb: { flags: "fdUwv", values: "rIE", attached: "W", code: "", interactive: "", long: ["noinspect", "inspect", "noprompt", "simple-prompt"], longValues: [] },
   php: { flags: "hilmnsvwHq", values: "cdztS", code: "rBRE", files: "fF", interactive: "a", long: [], longValues: [] },
   lua: { flags: "vEW", values: "l", code: "e", interactive: "i", long: [], longValues: [] },
   rscript: {
@@ -1224,6 +1459,8 @@ const INTERPRETERS: Record<string, Interpreter> = {
     long: ["verbose", "vanilla", "restore", "save", "version", "help", "slave", "quiet", "silent"],
     longValues: [],
   },
+  tclsh: { flags: "", values: "", code: "", interactive: "", long: [], longValues: [], words: ["-encoding"] },
+  osascript: { flags: "", values: "ls", code: "e", interactive: "i", long: [], longValues: [] },
 };
 const DENO: Interpreter = {
   flags: "Aqr",
@@ -1261,17 +1498,18 @@ interface InterpreterRun {
   code?: Word;
 }
 
-// An option's value or a script naming the input: a path to it, PHP's php://stdin or php://fd/0, or either after a NAME=,
-// as in php -d auto_prepend_file=/dev/stdin.
-const naming = (value: string) => value.split("=").some(ownInput) || /php:\/\/(stdin|fd\/0)/i.test(value);
-const namesInput = (word: Word | undefined, value = word?.value) => !word || word.dynamic || naming(value ?? "");
+// Whether a word naming a script or an option's value may be the input: missing, made only when the line runs, - , or a
+// path to the input (holdsInput).
+const namesInput = (word: Word | undefined, cwd: Cwd, value = word?.value) => !word || word.dynamic || holdsInput(value ?? "", cwd);
 
-function interpreterRun(name: string, args: Word[]): InterpreterRun | undefined {
-  if (AWK.has(name)) return awkRun(args);
-  if (name === "deno") return denoRun(args);
-  if (name === "bun") return bunRun(args);
-  const it = INTERPRETERS[/^python[\d.]*$/.test(name) ? "python" : /^lua(jit|[\d.]*)$/.test(name) ? "lua" : name];
-  return it && interpreted(args, it, 0);
+function interpreterRun(name: string, args: Word[], cwd: Cwd): InterpreterRun | undefined {
+  if (AWK.has(name)) return awkRun(args, cwd);
+  if (name === "deno") return denoRun(args, cwd);
+  if (name === "bun") return bunRun(args, cwd);
+  if (name === "jshell") return { reads: true, decides: args.length }; // it reads code from its input after any files it loads
+  const key = /^(python|pypy|ipython)[\d.]*$/.test(name) ? "python" : /^lua(jit|[\d.]*)$/.test(name) ? "lua" : /^tclsh[\d.]*$/.test(name) ? "tclsh" : name;
+  const it = INTERPRETERS[key];
+  return it && interpreted(args, it, 0, cwd);
 }
 
 // Code given in the line, as with -c, is not read by the check (the plan's known limit). With none, xargs gives it.
@@ -1281,7 +1519,7 @@ function given(code: Word | undefined, at: number): InterpreterRun {
 }
 
 // Reads an interpreter's options from word `from`, up to its code or its script.
-function interpreted(args: Word[], it: Interpreter, from: number): InterpreterRun {
+function interpreted(args: Word[], it: Interpreter, from: number, cwd: Cwd): InterpreterRun {
   let k = from;
   for (; k < args.length; k++) {
     const word = args[k]!;
@@ -1291,6 +1529,11 @@ function interpreted(args: Word[], it: Interpreter, from: number): InterpreterRu
       break;
     }
     if (a === "-" || !a.startsWith("-")) break;
+    if (it.words?.includes(a)) {
+      k++;
+      if (namesInput(args[k], cwd)) return { reads: true, decides: k + 1 };
+      continue;
+    }
     if (a.startsWith("--")) {
       const eq = a.indexOf("=");
       const option = a.slice(2, eq < 0 ? undefined : eq);
@@ -1298,14 +1541,14 @@ function interpreted(args: Word[], it: Interpreter, from: number): InterpreterRu
       if (it.longCode?.includes(option)) return given(attached === undefined ? args[k + 1] : word, k);
       if (option === "interactive") return { reads: true, decides: k + 1 };
       if (attached !== undefined) {
-        if (namesInput(word, attached)) return { reads: true, decides: k + 1 };
+        if (namesInput(word, cwd, attached)) return { reads: true, decides: k + 1 };
         continue;
       }
       // node's and deno's --no-..., --allow-..., --deny-..., --unstable... and --experimental-... are on their own.
       const alone = it.long.includes(option) || /^(no|allow|deny|unstable)-|^unstable$/.test(option);
       if (alone || (option.startsWith("experimental-") && !it.longValues.includes(option))) continue;
       k++; // a value in the next word, for a listed option and, to be safe, for one not listed
-      if (namesInput(args[k])) return { reads: true, decides: k + 1 };
+      if (namesInput(args[k], cwd)) return { reads: true, decides: k + 1 };
       continue;
     }
     for (let j = 1; j < a.length; j++) {
@@ -1313,70 +1556,212 @@ function interpreted(args: Word[], it: Interpreter, from: number): InterpreterRu
       const rest = a.slice(j + 1);
       if (it.files?.includes(letter)) {
         const file = rest ? word : args[k + 1];
-        return { reads: namesInput(file, rest || file?.value), decides: (rest ? k : k + 1) + 1 };
+        return { reads: namesInput(file, cwd, rest || file?.value), decides: (rest ? k : k + 1) + 1 };
       }
       if (it.code.includes(letter)) return given(rest ? word : args[k + 1], k);
       if (it.interactive.includes(letter)) return { reads: true, decides: k + 1 };
       if (it.flags.includes(letter)) continue;
       if (it.attached?.includes(letter)) {
-        if (rest && namesInput(word, rest)) return { reads: true, decides: k + 1 };
+        if (rest && namesInput(word, cwd, rest)) return { reads: true, decides: k + 1 };
         break;
       }
       // A value, attached or in the next word: a listed option's, and, to be safe, one not listed.
       if (!rest) k++;
-      if (namesInput(rest ? word : args[k], rest || args[k]?.value)) return { reads: true, decides: k + 1 };
+      if (namesInput(rest ? word : args[k], cwd, rest || args[k]?.value)) return { reads: true, decides: k + 1 };
       break;
     }
   }
   const script = args[k];
-  return { reads: !script || script.value === "-" || namesInput(script), decides: k + 1 };
+  return { reads: !script || script.value === "-" || namesInput(script, cwd), decides: k + 1 };
 }
 
 // deno: `deno run` and `deno serve` run a script, `deno SCRIPT` too; `deno eval` runs code given; deno alone and `deno repl`
 // read code from the input.
-function denoRun(args: Word[]): InterpreterRun {
+function denoRun(args: Word[], cwd: Cwd): InterpreterRun {
   const first = args[0]?.value;
   if (first === undefined || first === "repl") return { reads: true, decides: 1 };
-  if (first === "run" || first === "serve") return interpreted(args, DENO, 1);
+  if (first === "run" || first === "serve") return interpreted(args, DENO, 1, cwd);
   if (first === "eval") {
     const k = args.findIndex((w, i) => i > 0 && !w.value.startsWith("-"));
     return given(args[k], k < 0 ? 1 : k);
   }
   if (DENO_TOOLS.has(first)) return { reads: false, decides: 1 };
-  return interpreted(args, DENO, 0);
+  return interpreted(args, DENO, 0, cwd);
 }
 
 // bun: `bun run` and `bun SCRIPT` run a script; bun alone and `bun repl` are taken to read code from the input; `bun exec`
 // runs text in Bun's own shell, whose grammar the check does not read.
-function bunRun(args: Word[]): InterpreterRun {
+function bunRun(args: Word[], cwd: Cwd): InterpreterRun {
   const first = args[0]?.value;
   if (first === undefined || first === "repl") return { reads: true, decides: 1 };
   if (first === "exec") throw new Unreadable(OTHER);
-  if (first === "run") return interpreted(args, BUN, 1);
+  if (first === "run") return interpreted(args, BUN, 1, cwd);
   if (BUN_TOOLS.has(first)) return { reads: false, decides: 1 };
-  return interpreted(args, BUN, 0);
+  return interpreted(args, BUN, 0, cwd);
 }
 
-// awk takes its program from its first word, or from -f FILE (gawk's --file, and its -E/--exec and -i/--include too):
-// from the input when that file is the input (gawk manual, "Command-Line Options").
-function awkRun(args: Word[]): InterpreterRun {
+// awk takes its program from its first word, gawk's -e or --source, or a file: -f FILE (gawk's --file, and its -E/--exec
+// and -i/--include too), from the input when that file is the input (gawk manual, "Command-Line Options"). Its program can
+// run shell commands with system(), so a program xargs gives it is made only when the line runs, as with python -c.
+function awkRun(args: Word[], cwd: Cwd): InterpreterRun {
   let k = 0;
+  let program = false;
   for (; k < args.length; k++) {
     const word = args[k]!;
     const a = word.value;
-    if (a === "--" || a === "-" || !a.startsWith("-")) break;
+    if (a === "--") {
+      k++;
+      break;
+    }
+    if (a === "-" || !a.startsWith("-")) break;
     const file = /^(?:-([fEi])(.*)|--(file|exec|include)(?:=(.*))?)$/.exec(a);
+    const source = /^(?:-e(.*)|--source(?:=(.*))?)$/.exec(a);
     if (file) {
       const attached = file[2] || file[4];
       const target = attached ? word : args[++k];
-      const path = attached ?? target?.value;
-      if (path === "-" || namesInput(target, path)) return { reads: true, decides: k + 1 };
+      if (namesInput(target, cwd, attached ?? target?.value)) return { reads: true, decides: k + 1 };
+      program = true;
+    } else if (source) {
+      const attached = source[1] || source[2];
+      given(attached ? word : args[k + 1], k);
+      if (!attached) k++;
+      program = true;
     } else if (/^-[Fvl]$|^--(field-separator|assign|load)$/.test(a)) k++;
   }
-  return { reads: false, decides: k };
+  return program ? { reads: false, decides: k } : given(args[k], k);
 }
 
-type Wrapped = { words: Word[]; placeholder?: string; grammar?: Grammar; vars?: Word[] } | Runs;
+// Runners that start a command in a project's environment (choice 37): the subcommand that does it, if they have one, and
+// their own options, from `uv run --help`, `uvx --help`, `npm exec --help` and `bunx --help` on this machine, and from
+// pnpm's, pipenv's, poetry's and conda's documentation.
+const UV: Options = {
+  flags: "msUnqvhV",
+  values: "wifPCpcb",
+  long: [
+    "all-extras", "no-dev", "only-dev", "no-default-groups", "all-groups", "module", "no-editable", "exact", "no-env-file", "isolated",
+    "active", "no-sync", "locked", "frozen", "script", "gui-script", "all-packages", "no-project", "no-index", "upgrade", "no-sources",
+    "reinstall", "compile-bytecode", "no-build-isolation", "no-build", "no-binary", "require-build-hashes", "no-require-build-hashes",
+    "no-cache", "refresh", "managed-python", "no-managed-python", "no-python-downloads", "quiet", "verbose", "system-certs", "offline",
+    "no-progress", "no-config", "lfs",
+  ],
+  longValues: [
+    "extra", "no-extra", "group", "no-group", "only-group", "no-editable-package", "env-file", "with", "with-editable",
+    "with-requirements", "package", "python-platform", "index", "default-index", "index-url", "extra-index-url", "find-links",
+    "index-strategy", "keyring-provider", "upgrade-package", "upgrade-group", "resolution", "prerelease", "prerelease-package",
+    "fork-strategy", "exclude-newer", "exclude-newer-package", "no-sources-package", "reinstall-package", "link-mode",
+    "config-setting", "config-settings-package", "no-build-isolation-package", "no-build-package", "no-binary-package", "cache-dir",
+    "refresh-package", "python", "color", "allow-insecure-host", "directory", "project", "config-file", "from", "constraints",
+    "build-constraints", "overrides", "torch-backend",
+  ],
+};
+const NPX: Options = {
+  flags: "yqsdg",
+  values: "pcw",
+  long: [
+    "yes", "no", "workspaces", "include-workspace-root", "quiet", "silent", "global", "offline", "prefer-offline", "prefer-online",
+    "legacy-peer-deps", "force", "ignore-scripts",
+  ],
+  longValues: ["package", "call", "workspace", "loglevel", "prefix", "registry", "cache", "userconfig"],
+};
+const PNPM: Options = {
+  flags: "rwcs",
+  values: "C",
+  long: [
+    "recursive", "parallel", "shell-mode", "report-summary", "reverse", "workspace-root", "no-reporter-hide-prefix", "silent", "stream",
+    "aggregate-output",
+  ],
+  longValues: ["dir", "filter", "resume-from", "workspace-concurrency", "reporter", "package", "allow-build"],
+};
+const BUNX: Options = {
+  flags: "",
+  values: "p",
+  long: ["bun", "no-install", "trust", "ignore-scripts", "verbose", "silent"],
+  longValues: ["package", "cwd", "env-file", "minimum-release-age", "registry", "ca", "cafile"],
+};
+const PIPENV: Options = {
+  flags: "qvh",
+  values: "",
+  long: ["where", "venv", "py", "envs", "rm", "bare", "man", "support", "site-packages", "no-site-packages", "clear", "quiet", "verbose", "system"],
+  longValues: ["python", "pypi-mirror"],
+};
+const POETRY: Options = {
+  flags: "qvnVh",
+  values: "CP",
+  long: ["quiet", "verbose", "no-interaction", "ansi", "no-ansi", "no-plugins", "no-cache"],
+  longValues: ["directory", "project"],
+};
+const CONDA: Options = {
+  flags: "vh",
+  values: "np",
+  long: ["verbose", "dev", "debug-wrapper-scripts", "no-capture-output", "live-stream"],
+  longValues: ["name", "prefix", "cwd"],
+};
+const RUNNERS: Record<string, { sub?: string[]; options: Options }> = {
+  uv: { sub: ["run"], options: UV },
+  uvx: { options: UV },
+  pipenv: { sub: ["run"], options: PIPENV },
+  poetry: { sub: ["run"], options: POETRY },
+  npx: { options: NPX },
+  npm: { sub: ["exec", "x"], options: NPX },
+  pnpm: { sub: ["exec", "dlx"], options: PNPM },
+  bunx: { options: BUNX },
+  conda: { sub: ["run"], options: CONDA },
+};
+
+// What a runner starts: its command's words; shell text for npx and npm exec's -c (read in sh's grammar and cmd's, as npm
+// uses either by system) and pnpm's -c; or Python reading its code from the input, for `uv run -`. A runner given another
+// subcommand (`npm install`, `uv pip`) starts nothing here.
+function runner(name: string, args: Word[]): Wrapped[] {
+  const { sub, options } = RUNNERS[name]!;
+  const used = new Set<string>();
+  let k = 0;
+  if (sub) {
+    if (!args.some((w) => sub.includes(w.value))) return [];
+    k = skip(name, args, options, used);
+    if (!sub.includes(args[k]?.value ?? "")) return [];
+    k = skip(name, args, options, used, k + 1);
+  } else k = skip(name, args, options, used);
+  const rest = args.slice(k);
+  const call = args.slice(0, k).findIndex((w) => /^(-c|--call)(=|$)/.test(w.value));
+  if (call >= 0 && (name === "npx" || name === "npm")) {
+    const word = args[call]!;
+    const eq = word.value.indexOf("=");
+    const text = eq >= 0 ? { value: word.value.slice(eq + 1), dynamic: word.dynamic } : args[call + 1];
+    const runs = (grammar: Grammar): Runs => ({ grammar, texts: [text?.value ?? ""], dynamic: !!text?.dynamic });
+    return [runs("bash"), runs("cmd")];
+  }
+  if (name === "pnpm" && (used.has("c") || used.has("shell-mode"))) {
+    return [{ grammar: "bash", texts: [rest.map((w) => w.value).join(" ")], dynamic: rest.some((w) => w.dynamic) }];
+  }
+  if (rest.length === 0 || (name === "uv" && (used.has("m") || used.has("module")))) return [];
+  if (rest[0]!.value === "-" && (name === "uv" || name === "uvx")) return [{ reads: CODE }];
+  return [{ words: rest }];
+}
+
+// forfiles (`forfiles /?`): /p, /m and /d take a value, /s none, and /c gives the command line it runs for each file, by
+// default "cmd /c echo @file", in which 0xHH stands for the character with that hex code. It starts the command with no
+// shell between, so reading it in cmd's grammar finds every command it can run. Its @file and the like are words; a command
+// named by one is named only when it runs.
+function forfiles(args: Word[]): Wrapped[] {
+  let text = "cmd /c echo @file";
+  let dynamic = false;
+  for (let k = 0; k < args.length; k++) {
+    const option = /^[/-](.+)$/.exec(args[k]!.value)?.[1]?.toLowerCase();
+    if (option === "p" || option === "m" || option === "d") k++;
+    else if (option === "c") {
+      const command = args[++k];
+      text = command?.value ?? "";
+      dynamic = !!command?.dynamic;
+    } else if (option !== "s" && option !== "?") throw unknownOption("forfiles", args[k]!.value);
+  }
+  const decoded = text.replace(/0x([\da-f]{2})/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+  if (/^\s*@(file|fname|ext|path|relpath|isdir|fsize|fdate|ftime)\b/i.test(decoded)) throw new Unreadable(NAMED);
+  return [{ grammar: "cmd", texts: [decoded], dynamic }];
+}
+
+// What a wrapper runs: a command's words (with what xargs or find put in them, the grammar they are read in, and the
+// NAME=value words env or sudo set), shell text, or an interpreter reading its input.
+type Wrapped = { words: Word[]; placeholder?: string; grammar?: Grammar; vars?: Word[] } | Runs | { reads: Hunger };
 
 // What a command that runs the rest of its words runs (choice 34): the words, or for watch, shell text.
 function wrapped(name: string, args: Word[], g: Grammar, src: string): Wrapped[] {
@@ -1389,6 +1774,8 @@ function wrapped(name: string, args: Word[], g: Grammar, src: string): Wrapped[]
     const run = wslRun(args);
     return "exec" in run && run.exec.length > 0 ? [{ words: run.exec, grammar: "bash" }] : []; // run in Linux, without a shell
   }
+  if (name === "forfiles") return forfiles(args);
+  if (name in RUNNERS) return runner(name, args);
   if (g === "cmd" && name === "call") return args.length > 0 ? [{ words: args }] : [];
   if (g === "cmd" && name === "start") return started(args, src);
   const options = WRAPPERS[name];
@@ -1431,9 +1818,10 @@ function started(args: Word[], src: string): Wrapped[] {
   return k < args.length ? [{ words: args.slice(k) }] : [];
 }
 
-// Where a command's own options end; one it does not know makes the line unreadable. `used` collects the options given.
-function skip(name: string, args: Word[], options: Options, used?: Set<string>): number {
-  let k = 0;
+// Where a command's own options end, reading from word `from`; one it does not know makes the line unreadable. `used`
+// collects the options given.
+function skip(name: string, args: Word[], options: Options, used?: Set<string>, from = 0): number {
+  let k = from;
   for (; k < args.length; k++) {
     const a = args[k]!.value;
     if (a === "--") return k + 1;
