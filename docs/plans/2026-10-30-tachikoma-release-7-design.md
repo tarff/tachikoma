@@ -150,7 +150,9 @@ folder, so before the box starts:
 - **When `.git` is a file** (a linked worktree or a submodule), it is read-only in the box, so it
   cannot be pointed at a git folder the box controls. The real git folder is outside the project,
   so it is not mounted, and git does not work in the box there; the line at launch says so.
-- **`.tachikoma/` is hidden from the box.** It holds the error log and backups.
+- **`.tachikoma/` is hidden from the box.** It is Tachikoma's own folder in the project, where the
+  main design keeps backups and saved sessions. The error log is no longer there: the review
+  fixes moved it to Tachikoma's data folder (fix 3).
 - **What stays open, said plainly:**
   - A command in the box can change any other project file the user later runs on the host, such
     as a `package.json` script or a Makefile. No mount rule can protect ordinary project files.
