@@ -228,6 +228,7 @@ const ANYWHERE: Cwd = 2;
 interface Inherited {
   env: Word[];
   cwd: Cwd;
+  positional?: boolean; // a shell's text, whose positional parameters may be words the line gives it
 }
 
 function read(text: string, grammar: Grammar, from?: Inherited): Part {
@@ -312,6 +313,18 @@ const BUILTINS = new Set([
 // for a value.
 const READER_VALUES: Record<string, string> = { read: "dinNptu", mapfile: "dnOsuCc", readarray: "dnOsuCc" };
 
+// Whether set gives the positional parameters: any operand, after -- or - or none, other than the name after -o or +o
+// (bash's help set).
+function setsPositional(args: Word[]): boolean {
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!.value;
+    if (a === "--" || a === "-") return k + 1 < args.length;
+    if (!/^[-+]/.test(a)) return true;
+    if (/^[-+]\w*o$/.test(a)) k++;
+  }
+  return false;
+}
+
 // The names a reader writes, after its options and their values: the words given, or the variable it writes when given
 // none (REPLY for read, MAPFILE for mapfile and readarray).
 function readerNames(name: string, args: Word[]): string[] {
@@ -343,14 +356,19 @@ const DYNAMIC_SETTER = new RegExp(
   ].join("|"),
 );
 // How a value the line writes to a variable stands for arithmetic (choice 42), given as written: "fine" for nothing, a
-// plain integer (quoted or not), exactly one $(( )) or one command substitution (its output is the known limit), a
-// positional argument, or a length ${#x}; "copy:NAME" for exactly $NAME or ${NAME}; "code" for anything else, as text the
-// line writes could hide code there, split or escaped (X=a[\$\(rm\ x\)]).
+// plain integer (quoted or not), exactly one $(( )) or one command substitution (its output is the known limit), $#, $?
+// or a length ${#x}; "copy:NAME" for exactly $NAME or ${NAME}, and "copy:@" for a positional parameter ($1, ${1}, $@, $*),
+// which the line may give (POSITIONAL); "code" for anything else, as text the line writes could hide code there, split or
+// escaped (X=a[\$\(rm\ x\)]).
 type Judgement = "fine" | "code" | `copy:${string}`;
+// Positional parameters ($1, ${1}, $@, $*) stand as this one name in arithmetic and in writes: code when the line gives
+// them, by set with an operand, to a function it defines, or to a shell's text it runs; from outside the line otherwise.
+const POSITIONAL = "@";
 function judged(raw: string): Judgement {
   const v = /^"([\s\S]*)"$/.exec(raw)?.[1] ?? raw;
   if (v === "" || /^[+-]?\d+$/.test(v) || /^'[+-]?\d+'$/.test(raw)) return "fine";
-  if ((v.startsWith("$(") && closesAtEnd(v, 1)) || /^`[^`]*`$/.test(v) || /^\$(?:\d+|\{\d+\}|[@*#?])$/.test(v)) return "fine";
+  if ((v.startsWith("$(") && closesAtEnd(v, 1)) || /^`[^`]*`$/.test(v) || /^\$[#?]$/.test(v)) return "fine";
+  if (/^\$(?:\d+|\{\d+\}|[@*])$/.test(v)) return `copy:${POSITIONAL}`;
   if (/^\$\{#[^}]*\}$/.test(v)) return "fine"; // a length, ${#x}, is a number
   const copy = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})$/.exec(v);
   return copy ? `copy:${copy[1] ?? copy[2]}` : "code";
@@ -429,6 +447,7 @@ class Reader {
       this.exported.push(...from.env);
       for (const w of from.env) this.wrote(w.value, w.value);
       this.cwd = from.cwd;
+      if (from.positional) this.note(POSITIONAL, "code");
     }
   }
 
@@ -447,6 +466,7 @@ class Reader {
   private counted(text: string): void {
     const bare = text.replace(/\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`/g, "");
     for (const m of bare.matchAll(/[A-Za-z_]\w*/g)) this.arith.add(m[0]);
+    if (/\$(?:\d|\{\d+\}|\{?[@*])/.test(bare)) this.arith.add(POSITIONAL);
   }
 
   // Adds the counts of a reader whose text is part of this line, run by this line's shell or one it starts.
@@ -465,9 +485,10 @@ class Reader {
   //
   // Visible code can also be split or escaped so that the text never holds $(, as in X=a[\$\(rm\ x\)] or
   // X=$'a[\x24(rm x)]', so each write the line makes to a name used in arithmetic must also be judged fine (Reader.judged):
-  // a plain integer, one $(( )), one command substitution (its output is the known limit), a positional argument, a plain
-  // copy of a name that passes in turn, or read, mapfile or readarray of the line's own input or a file. A dynamic setter or
-  // a nameref anywhere on the line asks whenever there is arithmetic.
+  // a plain integer, one $(( )), one command substitution (its output is the known limit), a plain copy of a name that
+  // passes in turn, or read, mapfile or readarray of the line's own input or a file. Positional parameters, used in
+  // arithmetic or copied, pass unless the line gives them (POSITIONAL). A dynamic setter or a nameref anywhere on the line
+  // asks whenever there is arithmetic.
   checkArithmetic(): void {
     if (this.g !== "bash") return;
     const { src } = this;
@@ -670,7 +691,10 @@ class Reader {
         const part = this.sequence(c === "(" ? ")" : "}");
         nested.push(...part.commands);
         // A function's body runs when the function is called, with the caller's input (choice 37).
-        if (defining !== undefined) this.functions.set(defining, part.hungry);
+        if (defining !== undefined) {
+          this.functions.set(defining, part.hungry);
+          this.note(POSITIONAL, "code"); // its calls give it positional parameters
+        }
         else groupHungry = most(groupHungry, part.hungry);
         defining = undefined;
         group = true;
@@ -802,8 +826,10 @@ class Reader {
   // The writes a bash command makes to names, for arithmetic (Reader.checkArithmetic): NAME=value operands of the
   // declarers, judged by their value; the readers' names (REPLY or MAPFILE when none is given), and select's REPLY, code
   // when a here-document or here-string on the line feeds them (`fed`, or their loop's or group's: Reader.reads), else
-  // fine; getopts, which writes an option letter, and OPTARG from words the line gives it; printf -v and select's name,
-  // which take text the line gives; and a for loop, whose name takes each of its words, judged one by one.
+  // fine; getopts, which writes an option letter, and OPTARG, always code: it comes from the words after the name or the
+  // positional parameters, either of which the line may give; set with an operand, which gives the positional parameters
+  // (POSITIONAL); printf -v and select's name, which take text the line gives; and a for loop, whose name takes each of
+  // its words, judged one by one.
   private writtenBy(name: string, args: Word[], fed: boolean): void {
     const raw = (w: Word) => this.src.slice(w.start, w.end);
     const operands = args.filter((w) => !w.value.startsWith("-"));
@@ -813,10 +839,12 @@ class Reader {
     };
     if (DECLARERS.includes(name)) for (const w of operands) if (w.value.includes("=")) this.wrote(raw(w));
     if (READERS.includes(name)) for (const variable of readerNames(name, args)) read(variable);
-    if (name === "getopts" && args[1]) {
-      this.note(args[1].value, "fine");
-      if (args.length > 2) this.note("OPTARG", "code"); // any word after the name, rather than the script's own arguments
+    if (name === "getopts") {
+      const named = args[0]?.value === "--" ? args[2] : args[1];
+      if (named) this.note(named.value, "fine");
+      this.note("OPTARG", "code"); // from words after the name or the positional parameters, either of which the line may give
     }
+    if (name === "set" && setsPositional(args)) this.note(POSITIONAL, "code");
     if (name === "select" && operands[0]) {
       this.note(operands[0].value, "code");
       read("REPLY");
@@ -1628,7 +1656,7 @@ function expand(words: Word[], text: string, src: string, g: Grammar, ctx: Conte
     for (const t of runs.texts) {
       // An empty text is filled in by xargs or by a word PowerShell dropped: the shell reads its input.
       if (t.trim() === "") hungry = SHELL;
-      const part = read(t, runs.grammar, { env: ctx.vars, cwd });
+      const part = read(t, runs.grammar, { env: ctx.vars, cwd, positional: true });
       commands.push(...part.commands);
       hungry = most(hungry, part.hungry); // the shell's own commands read its input
       gather(part);
