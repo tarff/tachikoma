@@ -117,21 +117,23 @@ const NEVER_OPENED = "which the file tools never open; a shell command can reach
 // lstat does not follow the part it is given, and the parts above it are already plain folders or links whose targets
 // were checked; a link's target is read without opening it. A target that is a network or device path for which
 // `allowed` is false is refused; any other takes the place of the parts walked so far. The walk ends at the first part
-// that does not exist, or at a link met a second time (a loop, which realTarget then reports). Returns where it ended.
+// that does not exist. A link can rightly be passed twice, so a loop is ended by counting: a path past 63 links is
+// refused, the most reparse points Windows allows on one path ("Reparse Points", learn.microsoft.com; review fixes
+// plan, fix 7, the user's choice). Returns where it ended.
 function linkHops(start: string, allowed: (target: string) => boolean): string {
   let done = path.parse(start).root;
   const rest = start.slice(done.length).split(path.sep).filter(Boolean);
-  const seen = new Set<string>();
+  let links = 0;
   while (rest.length) {
     const next = path.join(done, rest[0]!);
     const kind = lstatSync(next, { throwIfNoEntry: false });
-    if (!kind || (kind.isSymbolicLink() && seen.has(next))) break;
+    if (!kind) break;
     rest.shift();
     if (!kind.isSymbolicLink()) {
       done = next;
       continue;
     }
-    seen.add(next);
+    if (++links > 63) throw new Error(`${start} passes through more than 63 links, ${NEVER_OPENED}`);
     const target = path.resolve(path.dirname(next), readlinkSync(next));
     if (networkPath(target) && !allowed(target)) {
       throw new Error(`${start} leads through ${next} to a network or device path outside the project (${target}), ${NEVER_OPENED}`);

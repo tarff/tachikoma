@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -151,6 +151,27 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
       expect(ctx.asked).toEqual([]);
     }
     expect(fake.state.reached).toEqual([]);
+  });
+
+  // Review fixes plan, fix 7: a link can rightly be passed twice, so the walk counts the links it passes and stops past
+  // 63, Windows' own limit, instead of ending at a link seen before. `l` and the `a`, `b` loop are real local junctions.
+  it("refuses a link to a share reached by passing a junction twice, and a loop of junctions past 63 links", async () => {
+    const ctx = await project("never");
+    const [l, a, b] = ["l", "a", "b"].map((name) => path.join(ctx.root, name)) as [string, string, string];
+    await symlink(ctx.root, l, "junction");
+    await symlink(b, a, "junction");
+    await symlink(a, b, "junction");
+    try {
+      for (const p of [path.join("l", "linked", "a.txt"), path.join("l", "l", "linked", "a.txt")]) {
+        expect(await failure(readFileTool.run({ path: p }, ctx))).toBe(through(path.join(ctx.root, p), path.join(ctx.root, "linked")));
+      }
+      const loop = path.join(a, "x.txt");
+      expect(await failure(readFileTool.run({ path: path.join("a", "x.txt") }, ctx))).toBe(`${loop} passes through more than 63 links, ${OPEN}`);
+      expect(ctx.asked).toEqual([]);
+      expect(fake.state.reached).toEqual([]);
+    } finally {
+      for (const link of [l, a, b]) await unlink(link);
+    }
   });
 
   it("lists nothing through the link in the @ menu, and leaves it out of its folder's listing", async () => {
