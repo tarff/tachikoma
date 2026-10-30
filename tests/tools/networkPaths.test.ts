@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
 import { readInstructions } from "../../src/core/instructions.js";
-import { readFileTool, writeFileTool } from "../../src/tools/files.js";
+import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { findFilesTool, searchFilesTool } from "../../src/tools/search.js";
 import { listFolder, pathMenu } from "../../src/tui/menus.js";
 import { tempContext } from "../helpers.js";
@@ -13,7 +13,9 @@ import { tempContext } from "../helpers.js";
 // device path is recorded and refused at once, without calling the real function, so even a test that fails never
 // reaches Windows' network or a pipe. `<root>\linked` is a fake link to a share: lstatSync says it is a link and
 // readlinkSync gives its target; any other call on it or under it is recorded and refused, so following it is caught.
-// The share's name ends in .invalid, which never resolves (RFC 2606), as a second guard only.
+// The share's name ends in .invalid, which never resolves (RFC 2606), as a second guard only. The wrappers go by a
+// path's text, and do not reach search's grep worker or the steps inside realpathSync: that is safe only because every
+// refusal comes before those (fix 11).
 // Fix 8: when `share` is set, the share is a folder the test made, which stands in for it, so a project can live there;
 // `toShare` is then a fake link to the share that is followed, as a real one would be. realpath names the share again.
 // Fix 9: each of `internal` is a fake link whose stored target is in Windows' internal form, refused as `linked` is,
@@ -92,8 +94,9 @@ vi.mock("node:fs/promises", async (original) => {
 });
 
 const OPEN = "which the file tools never open; a shell command can reach it, after asking";
-const direct = (abs: string) => `${abs} is a network or device path outside the project, ${OPEN}`;
-const through = (abs: string, link: string, target = `${fake.TARGET}\\`) => `${abs} leads through ${link} to a network or device path outside the project (${target}), ${OPEN}`;
+const direct = (abs: string) =>
+  `${abs} is a network or device path not written as a path in the project, so the file tools do not open it; a shell command can reach it, after asking`;
+const through = (abs: string, link: string, target = fake.TARGET) => `${abs} leads through ${link} to a network or device path outside the project (${target}), ${OPEN}`;
 const failure = (p: Promise<unknown>) =>
   p.then(
     () => "no error",
@@ -131,6 +134,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
       const ctx = await project(mode);
       expect(await failure(readFileTool.run({ path: p }, ctx))).toBe(words);
       expect(await failure(writeFileTool.run({ path: p, content: "x" }, ctx))).toBe(words);
+      expect(await failure(editFileTool.run({ path: p, old_text: "x", new_text: "y" }, ctx))).toBe(words);
       expect(await failure(searchFilesTool.run({ pattern: "x", path: p }, ctx))).toBe(words);
       expect(ctx.asked).toEqual([]);
     }
@@ -151,6 +155,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
       const ctx = await project(mode);
       expect(await failure(readFileTool.run({ path: pipe }, ctx))).toBe(direct(pipe));
       expect(await failure(writeFileTool.run({ path: pipe, content: "x" }, ctx))).toBe(direct(pipe));
+      expect(await failure(editFileTool.run({ path: pipe, old_text: "x", new_text: "y" }, ctx))).toBe(direct(pipe));
       expect(await failure(searchFilesTool.run({ pattern: "x", path: pipe }, ctx))).toBe(direct(pipe));
       expect(ctx.asked).toEqual([]);
     }
@@ -173,6 +178,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
       const abs = path.join(link, "a.txt");
       expect(await failure(readFileTool.run({ path: "linked\\a.txt" }, ctx))).toBe(through(abs, link));
       expect(await failure(writeFileTool.run({ path: "linked\\a.txt", content: "x" }, ctx))).toBe(through(abs, link));
+      expect(await failure(editFileTool.run({ path: "linked\\a.txt", old_text: "x", new_text: "y" }, ctx))).toBe(through(abs, link));
       expect(await failure(searchFilesTool.run({ pattern: "x", path: "linked" }, ctx))).toBe(through(link, link));
       expect(ctx.asked).toEqual([]);
     }

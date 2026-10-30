@@ -10,7 +10,7 @@ import { editFileTool, programEnvironment, readFileTool, inData, inSettings, res
 import { shortName, tempContext } from "../helpers.js";
 
 const onShare = (abs: string) =>
-  `${abs} is a network or device path outside the project, which the file tools never open; a shell command can reach it, after asking`;
+  `${abs} is a network or device path not written as a path in the project, so the file tools do not open it; a shell command can reach it, after asking`;
 
 describe("resolveIn", () => {
   it("marks paths that leave the project", () => {

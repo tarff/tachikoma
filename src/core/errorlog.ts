@@ -10,6 +10,8 @@ type Row = ErrorEvent & { at: string; session: string };
 // failed inputs (whole files, full commands) that may contain secrets, and nothing in a project can lead it elsewhere.
 // A file made in the private folder has its permissions. One append per row, so two sessions in one project keep each
 // other's rows. The log is optional: if it cannot be written, it says so once and turns itself off.
+// The first error of a session runs PowerShell to make the folder private, about 0.4 s once (the code review measured
+// 385 ms); privateDir remembers the folder after that (review fixes plan, fix 11).
 export function attachErrorLog(bus: Bus, file: string, session: string): void {
   const write = (e: ErrorEvent) => {
     try {

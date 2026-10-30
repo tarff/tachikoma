@@ -147,7 +147,8 @@ function linkHops(start: string, allowed: (target: string) => boolean, from = pa
     const stored = readlinkSync(next);
     if (process.platform === "win32" && /^[\\/](?![\\/])/.test(stored)) return { link: next, target: stored };
     const target = path.resolve(path.dirname(next), stored);
-    if (networkPath(target) && !allowed(target)) throw new Error(leadsThrough(start, next, target));
+    // Named without the backslash Node adds at the end of a share's root (review fixes plan, fix 11).
+    if (networkPath(target) && !allowed(target)) throw new Error(leadsThrough(start, next, target.replace(/\\$/, "")));
     done = path.parse(target).root;
     rest.unshift(...target.slice(done.length).split(path.sep).filter(Boolean));
   }
@@ -157,6 +158,8 @@ function linkHops(start: string, allowed: (target: string) => boolean, from = pa
 // Each project root's real place, from its walk at the first resolveIn for it. A network target there is allowed: the
 // user started Tachikoma in that folder. One that met an Unchecked link is kept as that link: where the project really
 // is cannot be told, so every path in it is refused (fix 9, the user's choice at the build, "Refuse, own message").
+// rulesIn (search.ts) passes the folder of a .gitignore with more than one name as the root, so such folders get their
+// own entry. The real place is taken once a session: a change to the links above the project during one is not seen.
 const rootPlaces = new Map<string, string | Unchecked>();
 
 // `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
@@ -165,8 +168,10 @@ export function resolveIn(root: string, p: string, network = false): { abs: stri
   const abs = path.resolve(root, p);
   // `network` lets network and device paths through, skipping the link check and the root's walk: for the user's own
   // instruction files and what they import, read before the check was made (review fixes plan, fix 10, the user's
-  // choice, "Allow your own files"). The checks below still apply.
-  if (!network) {
+  // choice, "Allow your own files"). The checks below still apply. Only on Windows, as networkPath is false elsewhere:
+  // the walks double the cost of each path check, and the @ menu checks every entry of a folder on each keystroke
+  // (fix 11).
+  if (!network && process.platform === "win32") {
     if (!rootPlaces.has(root)) rootPlaces.set(root, linkHops(path.resolve(root), () => true));
     const place = rootPlaces.get(root)!;
     if (typeof place !== "string") {
@@ -174,7 +179,10 @@ export function resolveIn(root: string, p: string, network = false): { abs: stri
     }
     // Inside the root by its text, or inside the root's real place.
     const inRoot = (q: string) => !leaves(path.relative(root, q)) || !leaves(path.relative(place, q));
-    if (networkPath(abs) && !inRoot(abs)) throw new Error(`${abs} is a network or device path outside the project, ${NEVER_OPENED}`);
+    // By its text, so \\localhost\C$\<project> is refused though it is the project (fix 11, the words).
+    if (networkPath(abs) && !inRoot(abs)) {
+      throw new Error(`${abs} is a network or device path not written as a path in the project, so the file tools do not open it; a shell command can reach it, after asking`);
+    }
     // A path in the root by its text is walked from the root's real place, as the root's own parts were walked
     // already, so a link on the way to a root on a share is not checked again as if it led out (review fixes plan,
     // fix 8). Any other path is walked from its drive.

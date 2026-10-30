@@ -67,7 +67,7 @@ export function privateDir(dir: string): void {
   if (checked.has(dir)) return;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const st = lstatSync(dir);
-  if (st.isSymbolicLink() || !st.isDirectory()) throw new PrivateFileError(`${dir} is not a plain folder, so the login cannot be kept there safely`);
+  if (st.isSymbolicLink() || !st.isDirectory()) throw new PrivateFileError(`${dir} is not a plain folder, so it cannot be kept private`);
   if (windows) {
     if (!onlyUser(windowsAcl([dir])[0]!, true)) {
       // Removes inherited entries and leaves the user alone; files already inside inherit that. Other

@@ -76,7 +76,7 @@ describe("private files", () => {
     privateDir(dir);
     // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink.
     symlinkSync(dir, `${dir}-link`, "junction");
-    expect(() => privateDir(`${dir}-link`)).toThrow("is not a plain folder");
+    expect(() => privateDir(`${dir}-link`)).toThrow("is not a plain folder, so it cannot be kept private");
     mkdirSync(path.join(dir, "chatgpt.json"));
     expect(() => readPrivate(path.join(dir, "chatgpt.json"), () => {})).toThrow("is not a plain file");
   });
