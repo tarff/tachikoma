@@ -79,9 +79,12 @@ covers npm- and pip-style installs, not Docker, which is why this asks. A projec
 own Dockerfile, under the main design's no-special-powers rules.
 
 **The modes:** `ask`, `project`, `auto` (new) and `never` (back).
-- **`never` is allowed only with the sandbox on** (option chosen: "Only in the sandbox"). Asked for
-  without it, the launch stops with one line saying how to turn the sandbox on. On the host it
-  stays refused, as in release 6.
+- **`never` is allowed only with `--sandbox copy`** (options chosen: "Only in the sandbox", then,
+  after the design review, "Copy mode only"). Asked for without it, the launch stops with one line
+  saying how to turn copy mode on. On the host it stays refused, as in release 6. Live link is
+  refused too: there the box writes the real folder, and any project file the user later runs on
+  the host (a `package.json` script, a Makefile, a hook) could be changed unattended. In copy mode
+  nothing written reaches the real folder until the user has seen it in the review.
 - **`auto`** works on the host or in the sandbox, as Claude Code's does (option chosen: "Copy
   Claude Code"). See "Auto mode" below.
 - `--judge <provider:model>`, or `"judge"` in settings.json: the model that judges for auto mode.
@@ -97,15 +100,53 @@ own Dockerfile, under the main design's no-special-powers rules.
 **One container for each session,** started with `docker run`, set up as the main design's section
 3 says: not root, no special powers, no access to Docker itself, nothing from the host mounted but
 the project folder (or its copy), none of Tachikoma's keys or logins, and the network off or on.
-Commands run in it in bash, through `DockerExecutor`; the tools do not change. A file path outside
-the project is refused, since the box cannot see it. Esc stops a running command in the box as it
-does now.
+Shell commands run in it in bash, through `DockerExecutor`. Esc stops a running command in the box
+as it does now.
 
-**Live link: two holes closed.** The container writes straight into the real folder, so:
-- `.git/hooks` and `.git/config` are mounted read-only in the box. A hook written there would
-  otherwise run on the host the next time the user ran git, outside the sandbox. Commits in the box
-  still work.
-- `.tachikoma/` is hidden from the box. It holds the error log and backups.
+**The file tools see what the box sees.** `read_file`, `write_file`, `edit_file`, `find_files` and
+`search_files` run on the host, and today they read the disk directly (`src/tools/search.ts`) and
+work out paths there (`src/tools/files.ts`). In the sandbox they all work on the folder mounted into
+the box, never on another:
+- **The session's root** is the folder the box sees: the real folder in live link, the copy's
+  folder in copy mode. Every tool, listing, search, file check and path lookup starts from it, so
+  in copy mode nothing reads or writes the real folder until the review.
+- **A path outside that folder is refused,** since the box cannot see it either; in the sandbox
+  there is no question to approve it.
+- **Links are never followed in the sandbox.** A command in the box can make or swap a link at any
+  time, so a path with a link in it is refused, and listing and search skip links, saying how many
+  were skipped. Where the operating system allows it, files are opened in a way that refuses a
+  link, as the main design's apply rules say.
+
+**Live link: the holes closed, and the one that is not.** The container writes straight into the
+real folder, so:
+- **Git's own files are read-only in the box:** `.git/config`, and the folder git really runs
+  hooks from, found on the host before the box starts (`git rev-parse --git-path hooks`, which
+  follows `core.hooksPath`, so a `.husky` folder is covered). A hook written there would otherwise
+  run on the host the next time the user ran git, outside the sandbox. Commits in the box still
+  work.
+- **When `.git` is a file** (a linked worktree or a submodule), it is read-only in the box, so it
+  cannot be pointed at a git folder the box controls. The real git folder is outside the project,
+  so it is not mounted, and git does not work in the box there; the line at launch says so, and
+  that copy mode gives the copy a repository of its own (main design, "Git").
+- **`.tachikoma/` is hidden from the box.** It holds the error log and backups.
+- **What stays open, said plainly:** a command in the box can change any other project file the
+  user later runs on the host, such as a `package.json` script or a Makefile. No mount rule can
+  protect ordinary project files. This is why `never` is refused in live link, and why the README
+  says copy mode is the one to use when a session's work should be reviewed first.
+
+**Resource limits.** Docker sets none by default ("a container has no resource constraints",
+docs.docker.com/engine/containers/resource_constraints/, read on 2026-10-30), so a runaway command
+could use all the memory, processes or disk Docker Desktop has. Each container gets a memory limit
+(`--memory`, with `--memory-swap` the same, so no swap), a CPU limit (`--cpus`) and a process limit
+(`--pids-limit`).
+- **No number is set until it is measured** (see "Before the build"). The defaults come from that
+  measurement, chosen with the user and recorded; `"sandboxLimits"` in settings.json changes them.
+- **When a limit is hit:** over the memory limit, the kernel kills processes in the box; Tachikoma
+  reads Docker's out-of-memory flag and says the command was stopped for using more than the limit,
+  naming the setting. Over the process limit, new processes fail, and the command's own error
+  shows.
+- **Disk:** whether Docker Desktop can limit a container's disk is measured too. If it cannot, the
+  design says so and there is no disk limit; a copy lives on the host's disk like any folder.
 
 **Copy, then review:**
 - The snapshot is taken outside the project at the start, as the main design describes.
@@ -117,10 +158,42 @@ does now.
   whenever a session is stopped, crashes or runs headless: `tachi -p` prints the session's name and
   how to review it. Nothing is thrown away until the user has reviewed it or chosen to discard it.
 
+## Protected paths
+
+Some project files are run or read as settings by other programs on the host, so writing one can
+plant a command that runs later, outside any question. Writes to them are never approved without a
+check, in every mode, with or without the sandbox. The list is Claude Code's
+(code.claude.com/docs/en/permission-modes.md, "Protected paths", read on 2026-10-30), plus
+Tachikoma's own:
+- **Folders:** `.git`, `.config/git`, `.vscode`, `.idea`, `.husky`, `.cargo`, `.devcontainer`,
+  `.yarn`, `.mvn`, `.claude`, `.tachikoma`, and the folder git runs hooks from when
+  `core.hooksPath` names another.
+- **Files:** `.gitconfig`, `.gitmodules`; the shell start-up files (`.bashrc`, `.bash_profile`,
+  `.bash_login`, `.bash_aliases`, `.bash_logout`, `.zshrc`, `.zprofile`, `.zshenv`, `.zlogin`,
+  `.zlogout`, `.profile`, `.envrc`); `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.pnp.cjs`,
+  `.pnp.loader.mjs`, `.pnpmfile.cjs`, `bunfig.toml`, `.bunfig.toml`; `.bazelrc`, `.bazelversion`,
+  `.bazeliskrc`; `.pre-commit-config.yaml` and lefthook's files; `gradle-wrapper.properties`,
+  `maven-wrapper.properties`; `.devcontainer.json`; `.ripgreprc`, `pyrightconfig.json`;
+  `.mcp.json`, `.claude.json`.
+- **A path counts by where it really leads,** after links, as release 1's rule for "outside the
+  project" already does.
+
+**What each mode does with a write to one:**
+- `ask`: asks, as for any write.
+- `project`: **asks** (option chosen: "Yes, ask there too"). This changes release 6, where
+  `project` wrote any project file without asking, hooks included.
+- `auto`: goes to the judge, never the fast path below.
+- `never`: refused, and the reason goes back to the model.
+
+This covers the file tools. A shell command that writes such a file is a shell command: it asks in
+`ask` and `project`, goes to the check and the judge in `auto`, and in the sandbox meets the
+read-only mounts above.
+
 ## Auto mode
 
 Each action in `auto` is decided in this order:
-1. Reads, and edits inside the project, run without asking.
+1. Reads, and edits inside the project, run without asking, except writes to a protected path
+   (above), which go to the judge.
 2. The dangerous-command check (below). A match skips the judge and asks the user.
 3. Everything else goes to the judge, as a fresh request with no tools. It gets the user's
    messages, the actions asked for, and the user's AGENTS.md or CLAUDE.md; never what tools
@@ -132,6 +205,17 @@ Each action in `auto` is decided in this order:
      action resumes auto mode. Both numbers are Claude Code's, from its docs (Sources above); they
      have not been measured for Tachikoma.
    - Headless (`tachi -p`), a no is final, and the run carries on.
+
+**An answer counts only for the rules it was given under.** A judge request takes time, and things
+can change while it is out:
+- **Stopping cancels it.** Esc, a stopped turn, or the end of the session cancels the request; a
+  late answer is thrown away, and the action does not run.
+- **Everything is checked again just before the action runs:** the mode is still `auto`, and the
+  dangerous-command check and the protected paths, with the rules as they are at that moment, still
+  let it through to the judge. If the mode changed (Shift+Tab to `ask`, say), the judge's answer is
+  thrown away and the action is decided again under the new mode, so it asks. If a rule the user
+  added since now matches, the action is decided again, so it asks.
+- A judge's yes is never kept for later: the same action asked for again goes to the judge again.
 
 What the user says in the conversation, such as "don't push", counts, since the judge sees the
 user's messages. Release 8's shortening of long conversations could drop such a line, so the README
@@ -209,13 +293,22 @@ stage"). Until then, the first launch with the sandbox asks before building the 
   fall back to the host (main design, "Safeguards").
 - The image build failing: the launch stops, showing the build's last lines.
 - The judge failing: its no-answer counts as a no (above), and the error goes to the error log.
+- A command over the box's memory limit: stopped by the kernel; Tachikoma says so and names the
+  setting (see "Resource limits").
 - A copy-then-review session that crashes or is stopped: its copy is kept for `tachi review`.
 
 ## Before the build
 
-Nothing needs measuring. The only numbers in this design are auto mode's 3 and 20, which are
-Claude Code's, labelled as such, with its docs as the source. The name-lookup measurement moves to
-release 8 with the site list.
+**The resource limits are measured first,** as the plan's first step, with a script whose results
+are recorded:
+- the peak memory, CPU and number of processes in the box for real work: Tachikoma's own `npm ci`,
+  test suite and build, run in the sandbox image;
+- how much memory and how many CPUs Docker Desktop has on the user's PC;
+- whether a container's disk can be limited on Docker Desktop.
+
+The user chooses the defaults from those numbers; none is guessed. The other numbers in this
+design are auto mode's 3 and 20, which are Claude Code's, labelled as such, with its docs as the
+source. The name-lookup measurement moves to release 8 with the site list.
 
 ## Testing
 
@@ -223,10 +316,21 @@ release 8 with the site list.
   or pass, including near misses.
 - **Auto mode:** against a fake provider as judge: yes, no, an answer that cannot be read, the 3 and
   20 limits, approving one action to resume, headless, and that tool results never reach the judge.
-- **The modes:** `never` refused without the sandbox; Shift+Tab's cycle; live edits waiting.
+  A pending answer: thrown away on Esc, on a mode switch (the action then asks), and when a rule
+  added meanwhile matches.
+- **Protected paths:** a write to each kind of path in each mode, including one reached through a
+  link, and `project` mode now asking for them.
+- **The modes:** `never` refused without `--sandbox copy`, live link included; Shift+Tab's cycle;
+  live edits waiting.
 - **The sandbox:** integration tests on real Docker, skipped with a message when Docker is not
-  running: the container's limits, network off, the read-only `.git` parts, `.tachikoma` hidden,
-  Esc stopping a command, and copy-then-review's apply, conflicts and `tachi review`.
+  running:
+  - the container's settings: not root, no special powers, network off, and the memory, CPU and
+    process limits, with a command stopped over the memory limit and the message naming it;
+  - in live link, `.git/config` and the real hooks folder read-only (with `core.hooksPath` set to
+    `.husky` too), a `.git` file read-only, and `.tachikoma` hidden;
+  - the file tools in copy mode reading, listing and searching the copy, never the real folder,
+    and refusing links;
+  - Esc stopping a command, and copy-then-review's apply, conflicts and `tachi review`.
 - **In the user's terminal,** a checklist run once: launching each sandbox mode, a command in the
   box, network off, a dangerous command in each mode, auto mode's judge, the review at the end of a
   copy session, and Shift+Enter.
