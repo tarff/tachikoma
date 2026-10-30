@@ -177,6 +177,23 @@ could use all the memory, processes or disk Docker Desktop has. Each container g
   shows.
 - **Disk:** whether Docker Desktop can limit a container's disk is measured too. If it cannot, the
   design says so and there is no disk limit; a copy lives on the host's disk like any folder.
+- **Measured on 2026-10-31** with `scripts/measure-sandbox.mjs`, in the sandbox image with no limits
+  and the network on, on a copy of Tachikoma's own repo. Docker Desktop had 24 CPUs and 31.2 GB.
+  "Peak memory" is the box's `memory.peak`, which counts file cache too; `docker stats`, which
+  leaves out cache the kernel can drop, peaked lower (the suite's 1.7 GB).
+
+  | Work | Time | Peak memory | Busiest moment | Peak processes |
+  |---|---|---|---|---|
+  | `npm ci` (through `sfw` in the box) | 55 s | 742 MB | 1.7 CPUs | 37 |
+  | the test suite | 1,063 s | 2.0 GB | 4.5 CPUs (0.18 on average) | 348 |
+  | `npm run build` | 3 s | 318 MB | 0.6 CPUs | 181 |
+
+  The suite took 18 minutes in the box against about 6 on the host, with the CPU mostly idle;
+  29 of its 1,723 tests fail on Linux. Neither changes the limits.
+- **The defaults, the user's choice on 2026-10-31:** 4 GB of memory (about twice the suite's
+  peak), 4 CPUs (about its busiest moment) and 1,024 processes (about three times its peak).
+- **There is no disk limit.** Docker accepted `--storage-opt size=100M` on Docker Desktop's
+  `overlayfs`, but a 200 MB write in the box still succeeded, so the limit does not hold there.
 
 **Copy, then review:**
 - The snapshot is taken outside the project at the start, as the main design describes.

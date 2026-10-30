@@ -176,7 +176,7 @@ if the file passes run alone.
 |---|---|---|
 | 3 in a row, 20 in a session | judge refusals before the user is asked | Claude Code's auto mode docs (design, Sources); not measured for Tachikoma |
 | 30,000 characters | each stream of a command's output, in the box as on the host | `MAX_TOOL_OUTPUT`, release 1 |
-| memory, CPUs, processes | the box's limits | **Task 1's measurement, the user's choice** |
+| 4 GB memory, 4 CPUs, 1024 processes | the box's default limits | **Task 1's measurement (`scripts/measure-sandbox.mjs`), the user's choice on 2026-10-31**: the test suite peaked at 2.0 GB, 4.5 CPUs and 348 processes |
 | 1000:1000 | the box's user on Windows and macOS | the image's own user (choice 14) |
 
 No other number is set. Anywhere a builder feels a number is needed (a time-out, a retry), they
@@ -356,6 +356,13 @@ Steps:
      box and record the answer.
 4. Show the user the numbers. They choose the default memory, CPU and process limits. Record the
    numbers, the choice and the script's name in the Numbers table and the design.
+
+**Done 2026-10-31.** Base `node:24-bookworm-slim` (node v24.22.2, Debian 12.15) and uv 0.13.6,
+pinned by the digests in the Dockerfile. The base image's own user `node` held 1000:1000, so the
+Dockerfile removes it before making `tachi`. The user chose `sfw` in the box: Socket's Linux
+`sfw-free` v1.15.4, the host's version, from its GitHub release, its SHA-256 checked against the
+published one, mounted read-only for the measurement only (not in the image). The results and the
+user's choice are in the Numbers table and the design's "Resource limits".
 
 Commit: `feat: the sandbox image's Dockerfile, and the measured limits the user chose`.
 
