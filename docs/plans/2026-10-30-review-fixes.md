@@ -17,7 +17,8 @@ main"), as the App.tsx split was. Release 7's branch takes these fixes once they
 | 5 | Esc cannot cancel the model lookup for a request with over 100 pictures | `contextWindow()` in `src/providers/anthropic.ts:193-202` calls `models.retrieve` without the turn's signal |
 | 6 | A live change of scroll speed reuses the old speed's left-over notch | `notch()` in `src/tui/view.ts:284-290` keeps the carry in units of the speed's decimals: 0.99 leaves 99 hundredths, which speed 3 reads as 99 rows, so the next notch moves 102 |
 
-No new numbers: nothing below sets a threshold, a size or a time.
+No new numbers: nothing below sets a threshold, a size or a time, apart from fix 7's 63 links,
+which is Windows' own limit, with Microsoft's page named there.
 
 ## The fixes
 
@@ -176,14 +177,111 @@ Option chosen: "Tachikoma's data folder".
 - **Tests:** `tests/tui/app.test.tsx`, in the live settings block: speed 0.99 from the file, one
   wheel notch down, a live edit to 3, then one notch moves 3 rows, not 102.
 
+## After the code review
+
+The code review of `61a6967..087204d` approved fixes 1 and 3 to 6, and found three gaps in fix 2.
+It confirmed the first two by running the real `resolveIn` through the tests' fake file system. It
+found the third by reading Node's link code, since it could not make a symbolic link here. Each was
+checked against the code before this section. Each fix below is one commit, with its tests written
+first and seen failing for the right reason.
+
+### 7. A link passed twice no longer ends the check
+
+- **The gap:** `linkHops` (`src/tools/files.ts:128`) ends its walk at a link met a second time,
+  taking that for a loop. A link can rightly be passed twice. With a junction `<root>\l` leading to
+  `<root>`, `l\l\linked\a.txt` passes `l` twice, the walk ends there, and `realTarget` then follows
+  `linked` to the share without anyone looking at it.
+- **Option chosen: "Stop at 63 links".** The walk counts every link it passes and refuses a path
+  past the 63rd. That is the most reparse points Windows allows on one path ([Reparse
+  Points](https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-points): "There is a limit
+  of 63 reparse points on any given path"; symbolic links are reparse points, [Symbolic Link
+  Programming
+  Considerations](https://learn.microsoft.com/en-us/windows/win32/fileio/symbolic-link-programming-considerations)).
+  So no path Windows could open is refused, and a loop of links ends at the 64th link. The set of
+  links seen goes.
+- **Message:** `<abs> passes through more than 63 links, which the file tools never open; a shell
+  command can reach it, after asking`.
+- **Tests:** a real junction `<root>\l` leading to `<root>`, with the fake share link `linked`:
+  `l\linked\a.txt` and `l\l\linked\a.txt` are both refused with the "leads through" words, and the
+  fake records nothing under `linked`. A real junction loop (`a` to `b`, `b` to `a`) is refused with
+  the new words.
+
+### 8. A project reached through a link to a share works
+
+- **The gap:** the root's own walk lets a link to a share through, but every later path is walked
+  again from its drive (`files.ts:159-161`). At the root's link, `inRoot` is asked about that link's
+  target, the share's folder above the project, which is not inside it. With `C:\work` a link to
+  `\\srv\share` and the project at `C:\work\proj`, `a.txt` in the project is refused.
+- **Code:** a path inside the root by its text is walked from the root's real place (`place`, joined
+  with its path from the root), since the root's own parts were walked already. Any other path is
+  walked from its drive, as now. This also stops the walk going over the root's parts on every call.
+- **Tests:** the fake file system gains a fake share holding a project, so that the root walk can
+  end on a share: a root on a share (`\\tachi-test.invalid\share\proj`), and a root reached through
+  a fake link to that share. In each, `a.txt` in the project resolves, and nothing outside the
+  project's share folder is touched.
+
+### 9. A link's target in Windows' internal form is refused
+
+- **The gap:** for a link stored as `\??\GLOBALROOT\Device\Mup\srv\share` or `\Device\Mup\srv\share`,
+  `readlinkSync` gives that text unchanged. `path.resolve` turns it into `C:\??\...` or `C:\Device\...`,
+  which `networkPath` counts as local, and `realTarget` then follows the link to the network.
+- **Option chosen: "Any single-slash start".** On Windows, a link whose stored target begins with
+  one `\` or `/` (not two, and not a drive letter) is refused, checked on the text `readlinkSync`
+  gives before it is resolved. That covers every internal form, and also refuses the rare link
+  written as `\folder`.
+- **Message:** the "leads through" words, with the stored target as it is written.
+- **Tests:** the fake file system makes two links, one to `\??\GLOBALROOT\Device\Mup\tachi-test.invalid\share`
+  and one to `\Device\Mup\tachi-test.invalid\share`. Both are refused, and nothing under either is
+  touched.
+
+### 10. Your own instruction files are not checked for shares
+
+- **The gap:** the instruction loader calls `resolveIn` for every file (`src/core/instructions.ts:110`).
+  On a Windows setup that keeps the home folder on a server, your own `~/.claude/CLAUDE.md`, your
+  Codex `AGENTS.md` and what they import are refused, though they loaded before this branch.
+- **Option chosen: "Allow your own files".** `resolveIn` takes a third, optional argument that lets
+  network paths through. The loader passes it for trusted files (`opts.trusted`: your two files and
+  what they import). The data-folder, settings-file and program-environment checks still apply to
+  them. A project's own files are checked as now.
+- **Tests:** a trusted file at the fake share is read; an untrusted import of the same path is
+  refused, as now.
+
+### 11. Smaller points from the code review
+
+- **The walk only on Windows** (`files.ts:161`): `networkPath` is always false elsewhere, so
+  `linkHops` and the root walk are skipped when the platform is not Windows. It doubles the cost of
+  each path check, about 0.26 ms a path at 8 parts deep (the reviewer's measurement). The `@` menu
+  checks every entry of a folder on each keystroke.
+- **The text check's words:** `\\localhost\C$\<project>\a.txt` is in the project, but its text is
+  not, and the message says "outside the project". It becomes
+  `<abs> is a network or device path not written as a path in the project, so the file tools do not open it; a shell command can reach it, after asking`.
+  `networkPaths.test.ts:134` and the two spelling tests in `files.test.ts` change with it.
+- **The target in the "leads through" words** loses the backslash Node adds at the end of a share's
+  root (`\\tachi-test.invalid\share`, not `...\share\`).
+- **privateDir's words** (`src/auth/private.ts:70`): "so the login cannot be kept there safely"
+  becomes "so it cannot be kept private", since the error log and the history now show it too.
+- **Comments, no change in behaviour:**
+  - `errorlog.ts`: the first error of a session runs PowerShell to make the folder private, about
+    0.4 s once (the reviewer measured 385 ms); `privateDir` remembers the folder after that.
+  - `rootPlaces`: `rulesIn` (`src/tools/search.ts:27`) passes the folder of a `.gitignore` with
+    more than one name as the root, so such folders get their own entry. The root's real place is
+    taken once a session; a change to the links above the project during a session is not seen.
+  - `networkPaths.test.ts`: its wrappers go by a path's text, and do not reach search's grep worker
+    or the steps inside `realpathSync`. That is safe only because every refusal comes before those.
+- **An `edit_file` case** joins the direct and link cases in `networkPaths.test.ts`.
+- **Left as it is:** `files.test.ts:95` and `:271` call `existsSync` on the real `\\localhost\C$`
+  spelling to choose which spellings to test. It was there before this branch and reaches only this
+  machine's own share.
+
 ## Checks
 
 - After each commit: the type check, and that commit's test files.
 - At the end: the type check, `npm run build`, and the full suite. The PowerShell and disk files
   that can pass Vitest's 5 s limit when the suite runs at once are run alone, as for release 6.
 - A code review of the branch, fixing until it approves.
-- A short check in your terminal (Windows): Ctrl+O, a search for text that is not there, `n`, then
-  Esc; and `/errors` after a failed request.
+- A short check in your terminal (Windows): Ctrl+O, a search for text that is not there, Ctrl+N,
+  then Esc; and `/errors` after a failed request. With the default keys `n` is typed into the
+  search, so the step is bound to Ctrl+N in your keys file first, as the test does.
 - Then the pull request, held for your review. Nothing is pushed without your say-so.
 
 **Before any of this,** the packages: they were emptied at 13:45 and restored at 14:48 from the
