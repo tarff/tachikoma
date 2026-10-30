@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { mkdir, mkdtemp, realpath, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -293,6 +294,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
   });
 
   // The user's choice at the build ("Count as local"): \\?\ before a drive letter is a local long path, checked as before.
+  // The prompt shows the real place in Windows' own spelling (fix 12, the user's choice, "Show the real place").
   it("reads a long path (\\\\?\\C:\\) in the project, and asks for one outside it, as local paths", async () => {
     const ctx = await project("never");
     expect(await readFileTool.run({ path: `\\\\?\\${path.join(ctx.root, "a.txt")}` }, ctx)).toBe("     1\tfine");
@@ -301,8 +303,9 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     await writeFile(path.join(other, "sub", "b.txt"), "elsewhere");
     const asking = await tempContext("ask", [false]);
     const long = `\\\\?\\${path.join(other, "sub", "b.txt")}`;
-    expect(await failure(readFileTool.run({ path: long }, asking))).toBe(`The user declined: read ${long}`);
-    expect(asking.asked).toEqual([`read ${long}`]);
+    const shown = `read ${long} (really ${realpathSync.native(path.join(other, "sub", "b.txt"))})`;
+    expect(await failure(readFileTool.run({ path: long }, asking))).toBe(`The user declined: ${shown}`);
+    expect(asking.asked).toEqual([shown]);
     expect(fake.state.reached).toEqual([]);
   });
 });

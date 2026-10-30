@@ -16,7 +16,19 @@ function realTarget(abs: string): string | null {
     rest.unshift(path.basename(existing));
     existing = path.dirname(existing);
   }
-  return path.join(realpathSync(existing), ...rest);
+  return path.join(realPlace(existing), ...rest);
+}
+
+// Where an existing path really is, as Windows says (realpathSync.native): Node's lstat does not see a junction to a
+// drive named by its ID (\\?\Volume{...}\) as a link and follows it, so the JavaScript realpath, which goes part by
+// part, gave such a junction's target as the junction's own place. The JavaScript one when Windows' throws, as it can
+// on some virtual drives (review fixes plan, fix 12).
+function realPlace(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return realpathSync(p);
+  }
 }
 
 // Whether `rel`, a path relative to some folder, leads out of it. On Windows a path on another drive
@@ -162,8 +174,9 @@ function linkHops(start: string, allowed: (target: string) => boolean, from = pa
 // own entry. The real place is taken once a session: a change to the links above the project during one is not seen.
 const rootPlaces = new Map<string, string | Unchecked>();
 
-// `shown` is what the approval prompt names: the path, plus where it really leads when a link takes
-// it somewhere else.
+// `shown` is what the approval prompt names: the path, plus where it really leads when a link, or Windows' own
+// spelling of the real place (a path typed as \\?\C:\... or with a short name), differs from what was typed (review
+// fixes plan, fix 12, the user's choice, "Show the real place").
 export function resolveIn(root: string, p: string, network = false): { abs: string; outside: boolean; shown: string } {
   const abs = path.resolve(root, p);
   // `network` lets network and device paths through, skipping the link check and the root's walk: for the user's own

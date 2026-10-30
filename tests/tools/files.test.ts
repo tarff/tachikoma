@@ -362,6 +362,41 @@ describe("file tools", () => {
     expect(ctx.asked).toHaveLength(1);
   });
 
+  // Review fixes plan, fix 12: Node's lstat does not see a junction to a drive named by its ID (\\?\Volume{...}\) as a
+  // link, and follows it, so the JavaScript realpath, which goes part by part, put its target inside the project.
+  // Windows' own answer, realpathSync.native, is used, and the JavaScript one when that throws.
+  it.runIf(process.platform === "win32")("treats a junction to a folder named by its volume ID as leading there", async () => {
+    const ctx = await tempContext("ask", [false]);
+    const elsewhere = realpathSync.native(await mkdtemp(path.join(tmpdir(), "tachi-outside-")));
+    await writeFile(path.join(elsewhere, "b.txt"), "elsewhere");
+    const mountvol = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "mountvol.exe");
+    const volume = execFileSync(mountvol, [elsewhere.slice(0, 2), "/L"], { encoding: "utf8" }).trim();
+    const link = path.join(ctx.root, "byId");
+    execFileSync("cmd", ["/c", "mklink", "/J", link, volume + elsewhere.slice(3)]);
+    try {
+      expect(resolveIn(ctx.root, path.join("byId", "b.txt")).outside).toBe(true);
+      await expect(readFileTool.run({ path: path.join("byId", "b.txt") }, ctx)).rejects.toThrow("The user declined");
+      expect(ctx.asked).toEqual([`read ${path.join(link, "b.txt")} (really ${path.join(elsewhere, "b.txt")})`]);
+    } finally {
+      execFileSync("cmd", ["/c", "rmdir", link]);
+    }
+  });
+
+  it.runIf(process.platform === "win32")("resolves a file in the project when Windows' own realpath throws", async () => {
+    const ctx = await tempContext();
+    await writeFile(path.join(ctx.root, "a.txt"), "fine");
+    const native = vi.spyOn(realpathSync, "native").mockImplementation(() => {
+      throw Object.assign(new Error("EISDIR: illegal operation on a directory"), { code: "EISDIR" });
+    });
+    try {
+      const abs = path.join(ctx.root, "a.txt");
+      expect(resolveIn(ctx.root, "a.txt")).toEqual({ abs, outside: false, shown: abs });
+      expect(native).toHaveBeenCalled();
+    } finally {
+      native.mockRestore();
+    }
+  });
+
   it("shows where a path through a link really leads when asking", async () => {
     const ctx = await tempContext("project", [false]);
     const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
