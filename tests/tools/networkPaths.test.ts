@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,33 +14,48 @@ import { tempContext } from "../helpers.js";
 // reaches Windows' network or a pipe. `<root>\linked` is a fake link to a share: lstatSync says it is a link and
 // readlinkSync gives its target; any other call on it or under it is recorded and refused, so following it is caught.
 // The share's name ends in .invalid, which never resolves (RFC 2606), as a second guard only.
+// Fix 8: when `share` is set, the share is a folder the test made, which stands in for it, so a project can live there;
+// `toShare` is then a fake link to the share that is followed, as a real one would be. realpath names the share again.
 const fake = vi.hoisted(() => {
-  const state = { reached: [] as string[], linked: undefined as string | undefined };
+  const state = { reached: [] as string[], linked: undefined as string | undefined, share: undefined as string | undefined, toShare: undefined as string | undefined };
   const TARGET = String.raw`\\tachi-test.invalid\share`;
   // As the plan defines it: \\ or // once resolved, except \\?\ or \\.\ before a drive letter, a local long path.
   const network = (p: string) => /^[\\/]{2}/.test(p) && !/^[\\/]{2}[?.][\\/][a-z]:\\/i.test(p);
   const twoPaths = new Set(["rename", "renameSync", "copyFile", "copyFileSync", "link", "linkSync", "symlink", "symlinkSync", "cp", "cpSync"]);
   const sameAs = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const under = (p: string, folder: string) => sameAs(p, folder) || p.toLowerCase().startsWith(`${folder.toLowerCase().replace(/\\$/, "")}\\`);
+  // Where a path really goes: through `toShare` to the share, and from the share to the folder standing in for it.
+  const moved = (p: string) => {
+    const through = state.toShare && under(p, state.toShare) ? TARGET + p.slice(state.toShare.length) : p;
+    return state.share && under(through, TARGET) ? state.share + through.slice(TARGET.length) : through;
+  };
+  const named = (out: unknown) => (typeof out === "string" && state.share && under(out, state.share) ? TARGET + out.slice(state.share.length) : out);
   function wrapAll(real: Record<string, unknown>, promises: boolean, resolve: (p: string) => string, dirname: (p: string) => string) {
     const linkDirent = { name: "linked", isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false };
     const wrap = (name: string, fn: (...a: unknown[]) => unknown) => {
       const wrapped = function (this: unknown, ...args: unknown[]) {
-        const paths = args
-          .slice(0, twoPaths.has(name) ? 2 : 1)
-          .filter((a): a is string => typeof a === "string")
-          .map((p) => resolve(p));
+        const given = args.map((a, i) => (i < (twoPaths.has(name) ? 2 : 1) && typeof a === "string" ? resolve(a) : undefined));
         const linked = state.linked;
-        for (const p of paths) {
-          if (linked && sameAs(p, linked) && name === "lstatSync") return { isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false };
-          if (linked && sameAs(p, linked) && name === "readlinkSync") return TARGET;
-          if (network(p) || (linked && (sameAs(p, linked) || p.toLowerCase().startsWith(`${linked.toLowerCase()}\\`)))) {
-            state.reached.push(`${name} ${p}`);
-            const err = Object.assign(new Error(`ENOENT: no such file or directory, ${name} '${p}'`), { code: "ENOENT" });
+        for (const p of given) {
+          if (p === undefined) continue;
+          for (const link of [linked, state.toShare]) {
+            if (link && sameAs(p, link) && name === "lstatSync") return { isSymbolicLink: () => true, isDirectory: () => false, isFile: () => false };
+            if (link && sameAs(p, link) && name === "readlinkSync") return TARGET;
+          }
+          const q = moved(p);
+          if (network(q) || (linked && under(q, linked))) {
+            state.reached.push(`${name} ${q}`);
+            const err = Object.assign(new Error(`ENOENT: no such file or directory, ${name} '${q}'`), { code: "ENOENT" });
             if (promises) return Promise.reject(err);
             throw err;
           }
         }
-        const out = fn.apply(this, args);
+        const out = fn.apply(
+          this,
+          args.map((a, i) => (given[i] === undefined || moved(given[i]) === given[i] ? a : moved(given[i]))),
+        );
+        if (/^realpath/.test(name)) return out instanceof Promise ? out.then(named) : named(out);
+        const paths = given.filter((p) => p !== undefined);
         if (!linked || !/^readdir(Sync)?$/.test(name) || !paths[0] || !sameAs(paths[0], dirname(linked))) return out;
         // The fake link is listed in its folder, as a real one would be.
         const entry = (args[1] as { withFileTypes?: boolean } | undefined)?.withFileTypes ? linkDirent : "linked";
@@ -90,6 +105,8 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     fake.state.linked = undefined;
+    fake.state.share = undefined;
+    fake.state.toShare = undefined;
   });
 
   async function project(mode: Mode) {
@@ -172,6 +189,22 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     } finally {
       for (const link of [l, a, b]) await unlink(link);
     }
+  });
+
+  // Review fixes plan, fix 8: a path in the project is walked from the root's real place, so a project on a share, or
+  // reached through a link to one, works.
+  it("reads a file in a project on a share, and in one reached through a link to that share", async () => {
+    const share = await realpath(await mkdtemp(path.join(tmpdir(), "tachi-share-")));
+    await mkdir(path.join(share, "proj"));
+    await writeFile(path.join(share, "proj", "a.txt"), "fine");
+    const ctx = await tempContext("never");
+    fake.state.share = share;
+    fake.state.toShare = path.join(ctx.root, "work");
+    for (const root of [path.join(fake.TARGET, "proj"), path.join(ctx.root, "work", "proj")]) {
+      expect(await readFileTool.run({ path: "a.txt" }, { ...ctx, root })).toBe("     1\tfine");
+    }
+    expect(ctx.asked).toEqual([]);
+    expect(fake.state.reached).toEqual([]);
   });
 
   it("lists nothing through the link in the @ menu, and leaves it out of its folder's listing", async () => {

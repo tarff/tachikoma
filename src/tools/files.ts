@@ -113,16 +113,17 @@ export const programEnvironment = (real: string) => /^\/proc\/[^/]+\/(task\/[^/]
 const networkPath = (p: string) => process.platform === "win32" && /^[\\/]{2}/.test(p) && !/^[\\/]{2}[?.][\\/][a-z]:\\/i.test(p);
 const NEVER_OPENED = "which the file tools never open; a shell command can reach it, after asking";
 
-// Walks `start` one part at a time from its drive, as realpath would, but looks before it follows (the plan, fix 2):
+// Walks `start` one part at a time from its drive, or from `from` with the parts in `after`, as realpath would, but
+// looks before it follows (the plan, fix 2):
 // lstat does not follow the part it is given, and the parts above it are already plain folders or links whose targets
 // were checked; a link's target is read without opening it. A target that is a network or device path for which
 // `allowed` is false is refused; any other takes the place of the parts walked so far. The walk ends at the first part
 // that does not exist. A link can rightly be passed twice, so a loop is ended by counting: a path past 63 links is
 // refused, the most reparse points Windows allows on one path ("Reparse Points", learn.microsoft.com; review fixes
 // plan, fix 7, the user's choice). Returns where it ended.
-function linkHops(start: string, allowed: (target: string) => boolean): string {
-  let done = path.parse(start).root;
-  const rest = start.slice(done.length).split(path.sep).filter(Boolean);
+function linkHops(start: string, allowed: (target: string) => boolean, from = path.parse(start).root, after = start.slice(from.length)): string {
+  let done = from;
+  const rest = after.split(path.sep).filter(Boolean);
   let links = 0;
   while (rest.length) {
     const next = path.join(done, rest[0]!);
@@ -160,7 +161,12 @@ export function resolveIn(root: string, p: string): { abs: string; outside: bool
   // Inside the root by its text, or inside the root's real place.
   const inRoot = (q: string) => !leaves(path.relative(root, q)) || !leaves(path.relative(place, q));
   if (networkPath(abs) && !inRoot(abs)) throw new Error(`${abs} is a network or device path outside the project, ${NEVER_OPENED}`);
-  linkHops(abs, inRoot);
+  // A path in the root by its text is walked from the root's real place, as the root's own parts were walked already,
+  // so a link on the way to a root on a share is not checked again as if it led out (review fixes plan, fix 8). Any
+  // other path is walked from its drive.
+  const fromRoot = path.relative(root, abs);
+  if (leaves(fromRoot)) linkHops(abs, inRoot);
+  else linkHops(abs, inRoot, place, fromRoot);
   const base = realTarget(root);
   const real = realTarget(abs);
   if (base === null || real === null) return { abs, outside: true, shown: `${abs} (through a link that leads nowhere)` };
