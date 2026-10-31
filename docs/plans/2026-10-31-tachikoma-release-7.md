@@ -528,6 +528,17 @@ the plan's review.
     word is read by the table's name, so `mkfs.ext4 …` also matches `mkfs.vfat …` and `python3 …`
     matches `py …` (the strict side); a rule cannot hold quotes, and spacing is normalised.
 
+57. **Git's settings files are protected too** (the user's choice): an include can live in the
+    project, and a line added to it can make git run a program on the host; Task 6 protects every
+    file Task 5 lists, not only the hooks folders. Task 5 also: starts git by its full path found
+    on PATH (Windows looks in the working folder first, as review fix 1 found for powershell.exe);
+    lets git expand include paths (`--type=path`: `~/`, `~user/`, `%(prefix)/`); gives real paths
+    (and the written ones) in `files` and `hooksPaths`; leaves out top-level files that do not
+    exist; makes an unreadable or malformed `.git` file, or a top-level file git refuses, a
+    problem. Known limits for the README: settings given by `GIT_CONFIG_COUNT` variables, and a
+    project that is itself a bare repository, are not read.
+58. **The external editor is not looked up in the project first** (the user's choice): release
+    6 starts it through `cmd.exe /c`, which looks in the working folder before PATH.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
@@ -753,18 +764,21 @@ Commit: `feat: git's settings and their includes are read with git config --file
 ```ts
 export const PROTECTED_FOLDERS: readonly string[];   // design, "Protected paths"
 export const PROTECTED_FILES: readonly string[];     // the same, lefthook's names per choice 10
-// `real` is a path's real place (after links); `hooks` from Task 5.
-export function protectedPart(root: string, real: string, hooks: string[]): string | undefined;   // the part that matched
+// `real` is a path's real place (after links); `hooks` and `files` from Task 5 (choice 57).
+export function protectedPart(root: string, real: string, hooks: string[], files: string[]): string | undefined;   // the part that matched
 ```
 
 Matching follows choice 10. `.config/git` matches as two parts in a row. A path inside a hooks
 folder matches with the folder's path as the part.
+A path equal to one of Task 5's git settings `files` matches with that path as the part
+(choice 57), compared without case on Windows.
 
 **Tests:**
 - each folder and file at the top and deeper;
 - the same name in another case on Windows;
 - a near miss (`gitignore`, `my.npmrc.bak`, `.gitignore`, which is not on the list);
 - a path inside a `core.hooksPath` folder;
+- a path that is one of Task 5's git settings files (an include inside the project);
 - a path outside the project, which gives undefined.
 
 Commit: `feat: the protected paths, Claude Code's list plus .tachikoma`.
