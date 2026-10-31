@@ -508,7 +508,18 @@ the plan's review.
     properties and `--setenv`, strace's `-o |`/`!` and `-E`), aws's operation found by position, a
     line that makes a link, CDPATH/HOME/PWD set other than by `NAME=`, and `reg … /?` passing
     anywhere. Each is fixed, mostly by asking; the code-quality review is the check, and later
-    finds go to the known limits.
+    finds go to the known limits. Task 3 was approved at 531db9b (1,753 tests in the two safety
+    files; replay 3.3% of past calls warn, 0.5% unreadable). Known limits for the README (Task 23):
+    links already in the project, and links made by `cp -s`/`-l`; a CDPATH in the user's own
+    environment (Task 8 or 12 could drop it from the shell's environment); `wsl ~` and
+    `/mnt/c/<root>`; cmd's `start /d`; `rm -rf **` and `?*`; a changed HOME does not change what
+    `~` means in a target, nor is a HOME name built from variables seen; registry keys,
+    `find -delete` and aws's `batch-delete-*`; `C:.` targets; PowerShell `switch` and per-item
+    blocks (`Sort-Object { }`) as loops; a line of thousands of `cd`s and climbing targets takes
+    seconds. Asks that are not needed: two relative `cd`s on a line (`cd sub && make && cd .. &&
+    rm -rf dist`), `pushd`/`popd`, `cd build && rm -rf *`, `cd sub && npx vitest` without
+    `sub`'s own copy, `pwsh -Command { cd .. } -args 1`, and every npx in the box until Task 8
+    passes the check a `has` that maps `/work` to the project. `pulumi dn` is not added.
 
 ---
 
