@@ -539,6 +539,11 @@ the plan's review.
     project that is itself a bare repository, are not read.
 58. **The external editor is not looked up in the project first** (the user's choice): release
     6 starts it through `cmd.exe /c`, which looks in the working folder before PATH.
+59. **A git folder kept elsewhere in the project** (the user's choice): a `.git` file naming a
+    folder inside the project (`gitdir: ./.bare`) makes that folder, and its shared `commondir`
+    folder, protected and read-only as a whole, as `.git` is; otherwise its default `hooks`
+    folder and refs were writable. Known limit for the README: on the host, git installed only as
+    a `.cmd` (msysgit 1.x) counts as no git, so only the fixed list protects.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
@@ -723,7 +728,7 @@ Commit: `feat: the user's own dangerous-command rules, with a warning when one l
 **Files:** create `src/safety/gitconfig.ts`, `tests/safety/gitconfig.test.ts`.
 
 ```ts
-export interface GitSettings { files: string[]; hooksPaths: string[]; problems: { file: string; why: string }[] }
+export interface GitSettings { files: string[]; hooksPaths: string[]; gitDirs: string[]; problems: { file: string; why: string }[] }
 // Undefined when git is not installed (choice 11).
 export function gitSettings(root: string, env?: NodeJS.ProcessEnv): Promise<GitSettings | undefined>;
 ```
@@ -740,6 +745,9 @@ export function gitSettings(root: string, env?: NodeJS.ProcessEnv): Promise<GitS
   `~/` expanded. A file met twice is read once.
 - **Problems.** An include that is a link, or cannot be read, is a problem, with a why: `it is a
   link` or `it cannot be read: <reason>`.
+- **Git folders elsewhere** (choice 59). When a `.git` file names a git folder, or its `commondir`
+  a shared one, inside the project and other than `<top>/.git`, that folder is in `gitDirs`
+  (written and real path), so it is treated as `.git` is.
 - **Hooks folders.** `hooksPaths` are made absolute, relative to the repository's top folder as
   git does.
 - **Git itself** runs with `GIT_CONFIG_NOSYSTEM` unset and `commandEnv()`. It never runs with
@@ -764,7 +772,8 @@ Commit: `feat: git's settings and their includes are read with git config --file
 ```ts
 export const PROTECTED_FOLDERS: readonly string[];   // design, "Protected paths"
 export const PROTECTED_FILES: readonly string[];     // the same, lefthook's names per choice 10
-// `real` is a path's real place (after links); `hooks` and `files` from Task 5 (choice 57).
+// `real` is a path's real place (after links); `hooks` (Task 5's hooksPaths and gitDirs, choice
+// 59) and `files` from Task 5 (choice 57).
 export function protectedPart(root: string, real: string, hooks: string[], files: string[]): string | undefined;   // the part that matched
 ```
 
@@ -846,8 +855,9 @@ type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, wa
   - Every refusal goes back to the model as the tool's result, as declines do now.
 - **The question.** `Question` gains `warnings: string[]`. They are drawn as red rows above the
   yellow line, in full screen and classic, and `frame()` counts them in the question's height.
-- **The hooks folders** come from `gitSettings` at launch, kept for the session, and passed to the
-  file tools through the gate.
+- **The hooks folders, settings files and git folders** (`hooksPaths`, `files`, `gitDirs`, choices
+  57 and 59) come from `gitSettings` at launch, kept for the session, and passed to the file tools
+  through the gate.
 
 **Tests:**
 - each mode with a protected write (one reached through a link included) and with a dangerous
@@ -1130,7 +1140,7 @@ export function liveMounts(root: string, git: GitSettings | undefined): { mounts
 
 **From the design's "Live link":**
 - **Read-only:**
-  - `.git` (a folder or a file);
+  - `.git` (a folder or a file), and each of Task 5's `gitDirs` (choice 59);
   - every included settings file inside the project;
   - every `core.hooksPath` folder inside the project;
   - top-level `HEAD`, `objects`, `refs` and `config` when they exist.
