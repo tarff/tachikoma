@@ -462,6 +462,38 @@ the plan's review.
     subcommand are read both ways; Windows `sudo run` is read; long options count by any start of
     their name, as GNU tools and git accept; wsl's own options only, and pip's option values
     skipped. `pnpm exec` runs only what the project holds, so it passes.
+47. **npx of a program the project has** (the user's choice): `npx <name>` with no version and no
+    `-p`/`--package` passes when `<root>/node_modules/.bin/<name>` (or `.cmd`) exists, since npx
+    then runs it without downloading. Past commands: 721 of 829 npx calls named such a program.
+48. **Look-only `reg` and `icacls`** (the user's choice): `reg query` and `icacls <path>` with no
+    change option pass; `reg add`/`delete`/`import` and icacls's `/grant`, `/reset`,
+    `/inheritance` and the other change options still warn.
+49. **Wrappers the reader opens** (the user's choice): `setsid`, `ionice`, `chrt`, `taskset`,
+    `flock`, `unshare`, `chroot`, `strace`, `systemd-run`, `sg`, `caffeinate`, `script -c` and
+    `parallel` join Task 2's wrappers, so the command they run is checked.
+50. **The table's other arguments** (the user's choice): arguments of the table's commands that do
+    the same kind of thing warn as that kind: `git push --mirror`/`--prune`, `git checkout -f`,
+    `systemctl halt`/`kill`, `wget --body-file`, curl's `--variable`/`--url-query` with `@` and
+    `--expand-*`, `aws s3 rb`, `docker image push`, `docker compose push`, `docker buildx
+    --push`, `gh issue`/`gist`/`secret … delete`, `pnpm`/`yarn`/`bun publish`, `pnpx`, `yarn
+    global add`, `npm it`/`install-test`, `uv tool install`/`run`, `deno run npm:`/`jsr:`, and
+    pulumi's aliases of up and destroy.
+51. **Look-only and harmless forms pass** (the user's choice, as choice 48): `git clean` with
+    `-n`/`--dry-run`, `dd` writing to `/dev/null`, `/dev/stdout` or `/dev/stderr`, `fdisk -l`,
+    `parted -l`, `git rebase --abort`/`--continue`, and an option's value read as a package
+    name (`npm install --prefix client`, `pnpm install --filter app`, `bun install --cwd sub`).
+    `aws … delete` counts only as the operation name, a value glued to a curl option (`-uFred`,
+    `-oFoo.zip`) ends the letter bundle, `curl --form-string` sends no file, and helm's `un` counts
+    only as the subcommand.
+52. **Task 3's fixes stop after this round** (the user's choice): what the spec check and the
+    security reviews found so far is fixed, one final check confirms it, and later finds go to the
+    README's known limits (Task 23) unless common. This round also closes: Windows `.cmd`, `.bat`
+    and `.ps1` names; a literal `cd` followed to its folder, other folder changes (`cd\`, `cd..`,
+    `builtin cd`, `find -execdir`, `-WorkingDirectory`, `wsl --cd`, `cd /d`) leaving it unknown;
+    `~+`, `~-` and `~name`; PowerShell's `FileSystem::` and `Registry::` paths, `-Path:value` and
+    comma lists; one variable with a fallback, a member or a subscript (`${d:-/}`, `$d.FullName`,
+    `"$@"`), a command substitution (`"$(pwd)"`) or only variables (`"$d/$e"`) as a delete target;
+    BSD rm letters; `git checkout -- *`, `git restore *`; cmd's `del /s *.*`.
 
 ---
 
