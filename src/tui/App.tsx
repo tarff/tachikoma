@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Box, Static, Text, useInput, usePaste } from "ink";
 import { useEffect, useRef } from "react";
-import type { Given } from "../clilib.js";
+import { checkOffLine, type Given } from "../clilib.js";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
 import { type Ask, type Mode, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
@@ -56,7 +56,7 @@ export interface AppProps {
   onMode: (mode: Mode) => void; // Shift+Tab: the mode the permission check uses from the next action
   // A live edit of settings.json's "dangerousCommands" that tightens the check: the rules it uses from the next action
   // (release 7 plan, Task 4).
-  onRules?: (rules: UserRules) => void;
+  onRules: (rules: UserRules) => void;
   project: string; // the project folder's name, for the status line
   root: string; // the project folder, where `@` paths start
   gitBranch: () => string | null; // read at the start and after each turn: the model may switch branches
@@ -274,8 +274,11 @@ export function App(props: AppProps) {
     ui.bus.on("note", onNote);
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
-    // stderr is seen, and they are not said twice.
-    fns.say(...(ui.fullNow.current ? (ui.live?.loaded.warnings ?? []).map(gray) : []), ...ui.intro);
+    // stderr is seen, and they are not said twice. So does the line naming the kinds of the dangerous-command check that
+    // are off, in red, as it says the check is weaker (release 7 plan, Task 4, the user's choice).
+    const off = ui.fullNow.current && ui.live ? checkOffLine(ui.live.loaded.settings.dangerousCommands) : null;
+    const launchLines: Line[] = [...(ui.fullNow.current ? (ui.live?.loaded.warnings ?? []).map(gray) : []), ...(off ? [{ text: off, color: "red" }] : [])];
+    fns.say(...launchLines, ...ui.intro);
     // A watch that cannot start leaves the session as the launch set it, and says so.
     let unwatch: (() => void) | undefined;
     try {

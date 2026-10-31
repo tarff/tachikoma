@@ -116,7 +116,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       for (const kind of before.off) if (!after.off.includes(kind)) fns.note(gray(`${check} "${kind}" switched back on; it applies now.`));
       const r = ui.rules.current;
       ui.rules.current = { add: [...new Set([...r.add, ...after.add])], off: r.off.filter((kind) => after.off.includes(kind)) };
-      ui.onRules?.(ui.rules.current);
+      ui.onRules(ui.rules.current);
     } else {
       // scrollSpeed. The wheel's carried fraction is in the old speed's units, so the new one starts with none (review
       // fixes plan, fix 6).

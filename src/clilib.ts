@@ -3,6 +3,7 @@ import path from "node:path";
 import type { Instructions, Reached } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, visible } from "./core/permissions.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
+import { NO_RULES, type UserRules } from "./safety/rules.js";
 import type { Settings } from "./settings.js";
 import { screen } from "./tui/describe.js";
 import { k, type Segment, SEGMENTS } from "./tui/StatusLine.js";
@@ -194,6 +195,12 @@ export function exitOn(sig: NodeJS.Signals, programRunning: () => boolean): () =
 export function endOnEpipe(err: NodeJS.ErrnoException): void {
   if (err.code !== "EPIPE") throw err;
   process.exit();
+}
+
+// The launch's line while a kind of the dangerous-command check is off (release 7 plan, Task 4), so what is not checked
+// stays in sight (release 7 design, "Configurable"); null while none is.
+export function checkOffLine(rules: UserRules = NO_RULES): string | null {
+  return rules.off.length ? `The dangerous-command check is off for: ${rules.off.join(", ")}; in auto and never, those commands run without it.` : null;
 }
 
 // The grey line at the start of a session (release 4 design, "Instruction files"): the files read,

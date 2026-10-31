@@ -1843,6 +1843,7 @@ describe("App in full screen", () => {
         stats={new Stats(bus)}
         mode="ask"
         onMode={() => {}}
+        onRules={() => {}}
         project="proj"
         root={ctx.root}
         gitBranch={() => null}
@@ -3752,6 +3753,7 @@ async function onTerminal(
       stats={new Stats(bus)}
       mode="ask"
       onMode={() => {}}
+      onRules={() => {}}
       project="proj"
       root={ctx.root}
       gitBranch={() => null}
@@ -6512,6 +6514,24 @@ describe("App's live settings", () => {
     expect(full.app.lastFrame()).toContain(warning);
     const classic = await mount([], { home: freshHome(), live: { loaded, given: {} } });
     expect(classic.app.lastFrame()).not.toContain(warning);
+  });
+
+  // Release 7 plan, Task 4: the launch's line naming the kinds of the dangerous-command check that are off, in red, as it
+  // says the check is weaker (the user's choice); in classic mode and -p only on stderr.
+  it("shows in full screen, in red, which kinds of the dangerous-command check are off, and nothing while none is", async () => {
+    await inColour(async () => {
+      const start = "The dangerous-command check is off for: installing software, sending files out;";
+      const line = `${start} in auto and never, those commands run without it.`;
+      const launch = (dangerousCommands: Settings["dangerousCommands"]) => ({ loaded: { settings: { dangerousCommands }, warnings: [] }, given: {} });
+      const off = launch({ add: [], off: ["installing software", "sending files out"] });
+      const full = await mount([], { full: true, home: freshHome(), live: off });
+      expect(full.app.lastFrame()).toContain(`\u001b[31m${start}`);
+      expect(stripVTControlCharacters(full.app.lastFrame()!).replaceAll(/ *\n */g, " ")).toContain(line); // a wrapped row's colours sit around its break
+      const classic = await mount([], { home: freshHome(), live: off });
+      expect(classic.app.lastFrame()).not.toContain("dangerous-command check");
+      const none = await mount([], { full: true, home: freshHome(), live: launch({ add: ["make deploy"], off: [] }) });
+      expect(none.app.lastFrame()).not.toContain("dangerous-command check");
+    });
   });
 
   // Release 6 plan, Task 11: the keys file beside the settings file, through the same watcher.

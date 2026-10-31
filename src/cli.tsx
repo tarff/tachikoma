@@ -7,6 +7,7 @@ import { type Instance, render } from "ink";
 import { accountCommand } from "./auth/chatgpt.js";
 import {
   approvalQuestion,
+  checkOffLine,
   endOnEpipe,
   exitOn,
   exitSignals,
@@ -217,10 +218,11 @@ try {
 const interactive = parsed.print === undefined;
 // Before the instruction files are read, so nothing is asked with no terminal to answer.
 if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
-// The user's own rules (release 7 plan, Task 4). A kind switched off is said at each launch, so what is not checked stays
-// in sight (release 7 design, "Configurable").
+// The user's own rules (release 7 plan, Task 4). A kind switched off is said at each launch (checkOffLine), and again in
+// full screen (App.tsx).
 const rules = loaded.settings.dangerousCommands ?? NO_RULES;
-if (rules.off.length) console.error(`The dangerous-command check is off for: ${rules.off.join(", ")}; in auto and never, those commands run without it.`);
+const offLine = checkOffLine(rules);
+if (offLine) console.error(offLine);
 
 // Read once, at the start (release 4 design, "Instruction files"). TACHI_INSTRUCTIONS_TOP moves where
 // the walk down to the project starts, so tests never read the user's files.
