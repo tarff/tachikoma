@@ -42,17 +42,6 @@ export function dangers(line: string, ctx: Context): Danger[] {
   return found;
 }
 
-// For the replay's count (choice 52), not used by the check: whether a line that passes would ask under a stricter rule,
-// that a recursive delete of any relative path asks while the folder is unknown.
-export function stricterAsks(line: string, ctx: Context): boolean {
-  const result = split(line, ctx.shell);
-  if ("unreadable" in result || folders(result.commands, ctx, line) !== undefined || dangers(line, ctx).length > 0) return false;
-  return result.commands.some(({ words: [first = "", ...args] }) => {
-    const name = nameOf(first);
-    return REMOVE.includes(name) && !!targetsOf(name, args, ctx)?.some((t) => relative(t, ctx));
-  });
-}
-
 // The context, with the folders the line's commands may run in, undefined when a change of folder leaves them unknown.
 interface Where extends Context {
   cwds: string[] | undefined;
@@ -236,8 +225,9 @@ const REMOVE = ["rm", "remove-item", "ri", "rd", "rmdir", "del", "erase"];
 const CMD_REMOVE = ["rd", "rmdir", "del", "erase"];
 
 // icacls's switches that change nothing (`icacls /?`): /save writes the lists to a file, /findsid and /verify look, and
-// /t, /c, /l and /q change how it walks and reports. Any other switch changes something, or is not known (choice 48).
-const ICACLS_LOOK = ["/save", "/findsid", "/verify", "/t", "/c", "/l", "/q"];
+// /t, /c, /l and /q change how it walks and reports, and /? prints its help. Any other switch changes something, or is not
+// known (choice 48).
+const ICACLS_LOOK = ["/save", "/findsid", "/verify", "/t", "/c", "/l", "/q", "/?"];
 
 const RULES: Record<Kind, Record<string, Test>> = {
   "wiping or formatting disks": {
@@ -263,7 +253,7 @@ const RULES: Record<Kind, Record<string, Test>> = {
     "set-acl": ANY,
     chmod: (args) => args.some((a) => !!long(a, ["recursive"]) || short(a, "R")),
     chown: (args) => args.some((a) => !!long(a, ["recursive"]) || short(a, "R")),
-    reg: (args) => !/^query$/i.test(args[0] ?? ""), // choice 48: reg query only reads
+    reg: (args) => !/^query$/i.test(args[0] ?? "") && !args.includes("/?"), // choice 48: reg query only reads, /? prints help
     "set-itemproperty": registry,
     sp: registry, // Set-ItemProperty's built-in name
     bcdedit: ANY,
@@ -517,7 +507,8 @@ function leading(t: string, shell: Shell): string | undefined {
 // folder, . and .. resolved). A trailing /* (or \*) and a lone * stand for the folder itself. A target that starts with a
 // variable or a command's output counts when the rest of it adds nothing below the start (choice 45: "$d", "$d/*",
 // "$S/.."), as an empty or wrong value deletes some other folder; parts of the rest that are only variables add nothing, as
-// they may be empty (choice 52: "$d/$e"). So does a target relative to a folder the check cannot place.
+// they may be empty (choice 52: "$d/$e"). While the folder is unknown, any relative path counts (choice 53: of 34,507 past
+// calls, 10 more ask).
 function whole(target: string, ctx: Where, cwd: string | undefined): boolean {
   let t = plain(target, ctx);
   const p = paths(t, cwd, ctx);
@@ -530,20 +521,16 @@ function whole(target: string, ctx: Where, cwd: string | undefined): boolean {
     const parts = t.slice(start.length).split(/[\\/]/);
     rest = parts.filter((s) => !(s !== "" && variables(s, ctx.shell) === s.length)).join("/");
     base = baseOf(start, cwd, ctx);
-  } else if (!p.isAbsolute(t)) base = cwd;
-  else return above(p.normalize(t), ctx, p);
+  } else if (!p.isAbsolute(t)) {
+    if (cwd === undefined) return !DRIVE.test(t);
+    base = cwd;
+  } else return above(p.normalize(t), ctx, p);
   // A base known only when the line runs: whole if the rest stays at it or climbs out of it.
   if (base === undefined) {
     const below = p.normalize(rest.replace(/^[\\/]+/, "") || ".");
     return below === "." || below === ".." || below.startsWith(`..${p.sep}`);
   }
   return above(p.join(base, rest), ctx, p);
-}
-
-// Whether a delete's target is a relative path, which a stricter rule would ask on while the folder is unknown.
-function relative(target: string, ctx: Context): boolean {
-  const t = plain(target, ctx);
-  return leading(t, ctx.shell) === undefined && !paths(t, undefined, ctx).isAbsolute(t) && !DRIVE.test(t);
 }
 
 // Whether a worked-out path is a drive root, or the home folder or the project's root, or a folder they are in.

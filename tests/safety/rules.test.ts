@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Context, type Danger, dangers, KINDS, shown, stricterAsks } from "../../src/safety/rules.js";
+import { type Context, type Danger, dangers, KINDS, shown } from "../../src/safety/rules.js";
 import type { Shell } from "../../src/safety/split.js";
 
 // No file is looked for on this machine: npx's programs are found only where a test says (choice 47).
@@ -167,6 +167,15 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   ["powershell", "wsl --cd ~ rm -rf ../other", [DELETE]],
   ["powershell", "wsl rm -rf ../other", []],
   ["powershell", "pwsh -w hidden -c 'Remove-Item -Recurse ..\\other'", []],
+  // Choice 53: while the folder is unknown, a recursive delete of any relative path counts
+  ["bash", 'cd "$d" && rm -rf build', [DELETE]],
+  ["powershell", "cd $env:TEMP; Remove-Item -Recurse build", [DELETE]],
+  ["bash", "find . -execdir rm -rf x \\;", [DELETE]],
+  ["bash", 'cd "$d" && rm -rf /tmp/y', []],
+  ["bash", 'cd "$d" && rm -rf "$x/y"', []],
+  ["bash", 'cd "$d" && rm -rf ~/y', []],
+  ["bash", 'cd "$d" && rm build', []],
+  ["powershell", "cd $env:TEMP; Remove-Item -Recurse C:\\work\\x\\build", []],
   // Choice 52: bash's ~+ is the current folder; ~- (the one before) and ~name (another's home) are known only when it runs
   ["bash", "rm -rf ~+", [DELETE]],
   ["bash", "rm -rf ~+/", [DELETE]],
@@ -308,6 +317,11 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   ["powershell", "icacls x /save acl.txt /t", []],
   ["powershell", "icacls x /findsid u", []],
   ["powershell", "icacls x /verify /l", []],
+  ["powershell", "icacls /?", []], // help only
+  ["powershell", "reg /?", []],
+  ["powershell", "reg query /?", []],
+  ["powershell", "reg add /?", []],
+  ["powershell", "reg", [PERMS]],
   // Choice 52: the registry written as Registry::, as -Path:value, or in a comma list
   ["powershell", "Set-ItemProperty -Path Registry::HKEY_LOCAL_MACHINE\\Software\\x -Name y -Value 1", [PERMS]],
   ["powershell", "sp Microsoft.PowerShell.Core\\Registry::HKEY_CURRENT_USER\\x -Name y -Value 1", [PERMS]],
@@ -856,27 +870,6 @@ describe("npx of a program the project has", () => {
     expect(kinds("cd sub && npx vitest", has)).toEqual([INSTALL]);
     expect(kinds("cd sub && npx vitest", bash("/tmp/x/node_modules/.bin/vitest", "/tmp/x/sub/node_modules/.bin/vitest"))).toEqual([]);
     expect(kinds('cd "$d" && npx vitest', has)).toEqual([INSTALL]);
-  });
-});
-
-// Choice 52: the stricter rule is not used. The replay counts the calls it would make ask, for the plan.
-describe("stricterAsks", () => {
-  it("is true for a line that passes with a relative recursive delete while the folder is unknown", () => {
-    expect(stricterAsks('cd "$d" && rm -rf build', BASH)).toBe(true);
-    expect(stricterAsks("cd $env:TEMP; Remove-Item -Recurse build", PS)).toBe(true);
-    expect(stricterAsks("find . -execdir rm -rf x \\;", BASH)).toBe(true);
-  });
-
-  it("is false when the folder is known, the line already asks, or no relative target is deleted", () => {
-    expect(stricterAsks("rm -rf build", BASH)).toBe(false);
-    expect(stricterAsks("cd sub && rm -rf build", BASH)).toBe(false);
-    expect(stricterAsks('cd "$d" && rm -rf ..', BASH)).toBe(false);
-    expect(stricterAsks('cd "$d" && rm -rf build && sudo ls', BASH)).toBe(false);
-    expect(stricterAsks('cd "$d" && rm -rf /tmp/y', BASH)).toBe(false);
-    expect(stricterAsks('cd "$d" && rm -rf "$x/y"', BASH)).toBe(false);
-    expect(stricterAsks('cd "$d" && rm -rf ~/y', BASH)).toBe(false);
-    expect(stricterAsks('cd "$d" && rm build', BASH)).toBe(false);
-    expect(stricterAsks("curl x | sh", BASH)).toBe(false);
   });
 });
 
