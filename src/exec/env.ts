@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import path from "node:path";
 
 // The API keys Tachikoma reads. Commands never see them, so one cannot print a key back to the model
@@ -13,3 +14,20 @@ export function commandEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Process
 // A Windows program by its full path, so a program of the same name earlier on PATH (Git Bash has its
 // own whoami) is not run instead.
 export const system32 = (exe: string) => path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", exe);
+
+// A program by its full path, from the first folder on `env`'s PATH that holds it, or undefined when none does. Started
+// by its bare name, Windows would look in the working folder before PATH (review fixes plan, fix 1), so it is never
+// started that way. Empty and relative entries are passed over, as they name the working folder too. Only `<name>.exe`
+// is looked for on Windows: a .cmd or .bat would run through cmd.exe.
+export function onPath(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const windows = process.platform === "win32";
+  const value = Object.entries(env).find(([key]) => (windows ? key.toUpperCase() === "PATH" : key === "PATH"))?.[1] ?? "";
+  for (const entry of value.split(path.delimiter)) {
+    // Windows' PATH may hold a folder in quotes; "\folder" and "C:folder" depend on the working folder's drive or folder.
+    const dir = windows ? entry.replace(/^"(.*)"$/, "$1") : entry;
+    if (!(windows ? /^([a-z]:[\\/]|\\\\)/i.test(dir) : dir.startsWith("/"))) continue;
+    const file = path.join(dir, windows ? `${name}.exe` : name);
+    if (statSync(file, { throwIfNoEntry: false })?.isFile()) return file;
+  }
+  return undefined;
+}

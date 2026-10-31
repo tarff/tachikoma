@@ -1,8 +1,9 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { onPath } from "../../src/exec/env.js";
 import { gitSettings } from "../../src/safety/gitconfig.js";
 
 // Every git run is watched, to see where it ran and with what.
@@ -56,14 +57,14 @@ function fileLink(target: string, link: string): string | undefined {
 }
 
 describe("gitSettings", () => {
-  it("names the system's and the user's files, and the repository's config and config.worktree", async () => {
+  it("names the system's and the user's files and the repository's config, leaving out a config.worktree that does not exist", async () => {
     const w = world();
     w.write("system.cfg", "[core]\n\tautocrlf = true\n");
     w.write("global.cfg", "[user]\n\tname = Sample User\n");
     w.write("project/.git/config", "[core]\n\tbare = false\n");
     const got = await gitSettings(w.root, w.env);
     expect(got).toEqual({
-      files: [w.system, w.global, w.at("project/.git/config"), w.at("project/.git/config.worktree")],
+      files: [w.system, w.global, w.at("project/.git/config")],
       hooksPaths: [],
       problems: [],
     });
@@ -137,6 +138,41 @@ describe("gitSettings", () => {
     expect(got!.problems).toEqual([{ file: w.at("project/joined"), why: "it is a link" }]);
   });
 
+  it("lets git expand %(prefix)/ in an include, as git gives it", async () => {
+    const w = world();
+    const config = w.write("project/.git/config", "[include]\n\tpath = %(prefix)/sample-prefix.cfg\n");
+    const args = ["config", "--file", config, "--type=path", "--get", "include.path"];
+    const given = execFileSync(onPath("git", w.env)!, args, { cwd: tmpdir(), env: w.env, encoding: "utf8" });
+    const expanded = path.resolve(given.trim());
+    expect(given.trim()).not.toContain("%(prefix)");
+    const got = await gitSettings(w.root, w.env);
+    expect(got!.files).toContain(expanded);
+    // Nothing of that name is in git's folder, so it is a missing include.
+    expect(got!.problems).toEqual([{ file: expanded, why: "it cannot be read: no such file" }]);
+  });
+
+  it("finds a file whose ~user/ include git cannot expand a problem", async () => {
+    const w = world();
+    const config = w.write("project/.git/config", "[include]\n\tpath = ~nobody/sample.cfg\n");
+    const got = await gitSettings(w.root, w.env);
+    expect(got!.problems).toEqual([{ file: config, why: "it cannot be read: failed to expand user dir in: '~nobody/sample.cfg'" }]);
+  });
+
+  it("gives an include's and a hooks folder's real path as well as the written one, when a folder on the way is a link", async () => {
+    const w = world();
+    mkdirSync(w.at("project/real"));
+    mkdirSync(w.at("project/real-hooks"));
+    const real = w.write("project/real/extra.cfg", "[core]\n\thooksPath = joined-hooks\n");
+    // Junctions on Windows need no special rights; elsewhere they are ordinary symlinks.
+    symlinkSync(w.at("project/real"), w.at("project/joined"), "junction");
+    symlinkSync(w.at("project/real-hooks"), w.at("project/joined-hooks"), "junction");
+    w.write("project/.git/config", "[include]\n\tpath = ../joined/extra.cfg\n");
+    const got = await gitSettings(w.root, w.env);
+    expect(got!.problems).toEqual([]);
+    expect(got!.files).toEqual(expect.arrayContaining([w.at("project/joined/extra.cfg"), real]));
+    expect(got!.hooksPaths).toEqual([w.at("project/joined-hooks"), w.at("project/real-hooks")]);
+  });
+
   it("finds a missing include, an include that is a folder and one git cannot read problems, and still names them", async () => {
     const w = world();
     mkdirSync(w.at("project/folder.cfg"));
@@ -183,6 +219,16 @@ describe("gitSettings", () => {
     expect(got!.hooksPaths).toEqual([path.join(w.root, ".husky")]);
   });
 
+  it.each([
+    ["one with no gitdir line", "not a gitdir line\n", "invalid gitfile format"],
+    ["one naming no folder", "gitdir: \n", "no path in gitfile"],
+  ])("finds a .git file that is %s a problem, in git's words", async (_, text, words) => {
+    const w = world();
+    const dotGit = w.write("project/.git", text);
+    const got = await gitSettings(w.root, w.env);
+    expect(got).toEqual({ files: [], hooksPaths: [], problems: [{ file: dotGit, why: `it cannot be read: ${words}: ${dotGit}` }] });
+  });
+
   it("follows a .git file with no commondir, as a submodule has", async () => {
     const w = world();
     w.write("project/.git", `gitdir: ${w.at("modules/sub").replaceAll("\\", "/")}\n`);
@@ -192,11 +238,13 @@ describe("gitSettings", () => {
     expect(got!.hooksPaths).toEqual([path.join(w.root, "hooks")]);
   });
 
-  it("gives undefined when git is not installed", async () => {
+  it("gives undefined when git is not installed, starting nothing", async () => {
     const w = world();
     const empty = w.at("no-git");
     mkdirSync(empty);
+    vi.mocked(execFile).mockClear();
     expect(await gitSettings(w.root, { ...w.env, PATH: empty })).toBeUndefined();
+    expect(execFile).not.toHaveBeenCalled();
   });
 
   it("never runs git inside the project folder, and runs it without the API keys", async () => {
@@ -207,7 +255,10 @@ describe("gitSettings", () => {
     await gitSettings(w.root, { ...w.env, ANTHROPIC_API_KEY: "sample-key" });
     const runs = vi.mocked(execFile).mock.calls as unknown as [string, string[], { cwd: string; env: NodeJS.ProcessEnv }][];
     expect(runs.length).toBeGreaterThan(0);
-    for (const [, , options] of runs) {
+    for (const [file, , options] of runs) {
+      // By its full path: a bare name would be looked for in the working folder first on Windows.
+      expect(file).toBe(onPath("git", w.env));
+      expect(path.isAbsolute(file)).toBe(true);
       expect(options.cwd).toBe(tmpdir());
       expect(path.relative(w.root, options.cwd).startsWith("..")).toBe(true);
       expect(options.env.ANTHROPIC_API_KEY).toBeUndefined();
