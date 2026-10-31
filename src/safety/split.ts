@@ -1607,9 +1607,9 @@ function cmdOwn(words: Word[]): Word[] {
   return own;
 }
 
-// A command's name without its folder or .exe, in lower case, as Windows finds it.
+// A command's name without its folder, or .exe, .cmd, .bat or .ps1 (npm.cmd, npx.ps1), in lower case, as Windows finds it.
 export function nameOf(word: string): string {
-  return word.replace(/^.*[\\/]/, "").replace(/\.exe$/i, "").toLowerCase();
+  return word.replace(/^.*[\\/]/, "").replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
 }
 
 // Programs whose words the check reads, which Windows PowerShell 5.1 passes on changed (choice 37): inner double quotes are
@@ -1920,7 +1920,87 @@ const WRAPPERS: Record<string, Options> = {
     long: ["beep", "color", "no-color", "differences", "errexit", "chgexit", "precise", "no-rerun", "no-title", "no-wrap", "exec"],
     longValues: ["interval", "equexit", "shotsdir"],
   },
+  // Choice 49, from each one's --help or man page: util-linux 2.39 (setsid, ionice, chrt, taskset, flock, unshare, script),
+  // coreutils 9 (chroot), strace 6, systemd 255 (systemd-run), shadow (sg), macOS (caffeinate) and GNU parallel. Only options
+  // whose value is certain are listed; any other makes the line unreadable.
+  setsid: { flags: "cfwhV", values: "", long: ["ctty", "fork", "wait"] },
+  ionice: { flags: "thV", values: "cnpPu", long: ["ignore"], longValues: ["class", "classdata", "pid", "pgid", "uid"] },
+  chrt: {
+    flags: "abdfimoprRvhV",
+    values: "DPT",
+    long: ["all-tasks", "batch", "deadline", "fifo", "idle", "max", "other", "pid", "rr", "reset-on-fork", "verbose"],
+    longValues: ["sched-deadline", "sched-period", "sched-runtime"],
+  },
+  taskset: { flags: "acphV", values: "", long: ["all-tasks", "cpu-list", "pid"] },
+  flock: {
+    flags: "sxenouFhV",
+    values: "wE",
+    long: ["shared", "exclusive", "nonblock", "nb", "unlock", "close", "no-fork", "verbose"],
+    longValues: ["timeout", "wait", "conflict-exit-code"],
+  },
+  unshare: {
+    flags: "fimnpuUCTrchV",
+    values: "RwSG",
+    long: [
+      "fork", "ipc", "mount", "net", "pid", "uts", "user", "cgroup", "time", "kill-child", "mount-proc", "map-root-user",
+      "map-current-user", "map-auto", "keep-caps",
+    ],
+    longValues: ["map-user", "map-group", "map-users", "map-groups", "propagation", "setgroups", "root", "wd", "setuid", "setgid", "monotonic", "boottime"],
+  },
+  chroot: { flags: "", values: "", long: ["skip-chdir"], longValues: ["groups", "userspec"] },
+  strace: {
+    flags: "AcCdDfFhiknqrtTvVwxyYzZ",
+    values: "abeEIoOpPsSuUX",
+    long: [
+      "summary-only", "summary", "summary-wall-clock", "debug", "daemonize", "follow-forks", "output-separately", "instruction-pointer",
+      "stack-trace", "syscall-number", "output-append-mode", "quiet", "relative-timestamps", "absolute-timestamps", "timestamps",
+      "syscall-times", "no-abbrev", "strings-in-hex", "decode-fds", "decode-pids", "successful-only", "failed-only", "seccomp-bpf",
+      "kill-on-exit", "pidns-translation", "tips",
+    ],
+    longValues: [
+      "attach", "trace", "trace-path", "signal", "status", "abbrev", "verbose", "raw", "read", "write", "fault", "inject", "detach-on",
+      "env", "user", "argv0", "interruptible", "columns", "output", "string-limit", "const-print-style", "summary-syscall-overhead",
+      "summary-sort-by", "summary-columns",
+    ],
+  },
+  "systemd-run": {
+    flags: "rdtPqGSh",
+    values: "upEHM",
+    long: [
+      "no-ask-password", "scope", "slice-inherit", "remain-after-exit", "send-sighup", "same-dir", "pty", "pipe", "shell", "quiet",
+      "wait", "collect", "user", "system", "on-clock-change", "on-timezone-change", "no-block",
+    ],
+    longValues: [
+      "unit", "property", "description", "slice", "service-type", "uid", "gid", "nice", "working-directory", "setenv", "host", "machine",
+      "on-active", "on-boot", "on-startup", "on-unit-active", "on-unit-inactive", "on-calendar", "path-property", "socket-property",
+      "timer-property",
+    ],
+  },
+  sg: { flags: "", values: "" }, // read by sgRun
+  caffeinate: { flags: "disum", values: "tw" },
+  // util-linux's and BSD's script; -t is a timing file attached in one and the next word in the other, so it is not read.
+  script: {
+    flags: "aefqhVFkdpr",
+    values: "cEBIOTmo",
+    long: ["append", "return", "flush", "force", "quiet", "timing"],
+    longValues: ["command", "echo", "log-io", "log-in", "log-out", "log-timing", "logging-format", "output-limit"],
+  },
+  parallel: {
+    flags: "0kmqrtuvX",
+    values: "aCdEIjLnNPsS",
+    long: [
+      "null", "keep-order", "quote", "no-run-if-empty", "verbose", "ungroup", "xargs", "line-buffer", "lb", "group", "bar", "progress",
+      "eta", "tag", "dry-run", "will-cite", "no-notice", "shuf", "pipe", "pipepart", "plus",
+    ],
+    longValues: [
+      "arg-file", "colsep", "delimiter", "jobs", "max-procs", "max-args", "max-lines", "max-chars", "sshlogin", "halt", "joblog", "results",
+      "tagstring", "timeout", "retries", "nice", "block", "env", "header",
+    ],
+  },
 };
+// ionice, chrt and taskset given a running process (-p, and ionice's -P and -u), and chrt -m, which shows its limits, start
+// no command.
+const STARTS_NONE: Record<string, string[]> = { ionice: ["p", "P", "u", "pid", "pgid", "uid"], chrt: ["p", "pid", "m", "max"], taskset: ["p", "pid"] };
 // cmd's start (`start /?`): switches on their own, and those that take the next word.
 const START_FLAGS = ["/i", "/min", "/max", "/separate", "/shared", "/low", "/normal", "/high", "/realtime", "/abovenormal", "/belownormal", "/wait", "/b"];
 const START_VALUES = ["/d", "/node", "/affinity", "/machine"];
@@ -2342,6 +2422,7 @@ function runner(name: string, args: Word[]): Wrapped[] {
   if (sub) {
     if (!args.some((w) => sub.includes(w.value))) return [];
     k = skip(name, args, options, used);
+    if (name === "uv" && args[k]?.value === "tool") k = skip(name, args, options, used, k + 1); // uv tool run, uvx's long form
     if (!sub.includes(args[k]?.value ?? "")) return [];
     k = skip(name, args, options, used, k + 1);
   } else k = skip(name, args, options, used);
@@ -2402,15 +2483,29 @@ function wrapped(name: string, args: Word[], g: Grammar, src: string): Wrapped[]
   if (name in RUNNERS) return runner(name, args);
   if (g === "cmd" && name === "call") return args.length > 0 ? [{ words: args }] : [];
   if (g === "cmd" && name === "start") return started(args, src);
+  if (name === "sg") return sgRun(args);
+  if (name === "script") return scriptRun(args);
+  if (name === "parallel") return parallelRun(args);
   const options = WRAPPERS[name];
   if (!options) return [];
-  let k = skip(name, args, options);
+  const used = new Set<string>();
+  let k = skip(name, args, options, used);
   const optionsEnd = k;
   if (name === "env") while (k < args.length && (args[k]!.value === "-" || args[k]!.value.includes("="))) k++;
   const vars = name === "env" ? args.slice(optionsEnd, k).filter((w) => w.value.includes("=")) : undefined;
   if (name === "timeout") k++; // its duration
+  if (name === "chroot" || name === "taskset" || name === "flock") k++; // the new root, the CPU mask, the lock's file
+  if (name === "chrt" && /^\d+$/.test(args[k]?.value ?? "")) k++; // the priority, which newer versions need not be given
   const own = args.slice(0, k).map((w) => w.value);
   const rest = args.slice(k);
+  if (STARTS_NONE[name]?.some((o) => used.has(o))) return [];
+  // flock's `file -c text` gives the text to the user's shell.
+  if (name === "flock" && ["-c", "--command"].includes(rest[0]?.value ?? "")) {
+    return [{ grammar: "bash", texts: [rest[1]?.value ?? ""], dynamic: !!rest[1]?.dynamic }];
+  }
+  // With no command, unshare, chroot and systemd-run --shell start a shell, which reads the input.
+  const shell = name === "unshare" || name === "chroot" || (name === "systemd-run" && (used.has("S") || used.has("shell")));
+  if (rest.length === 0 && shell) return [{ reads: SHELL }];
   if (rest.length === 0 || (name === "command" && own.some((o) => /^-\w*[vV]/.test(o)))) return []; // command -v only names it
   if (name === "watch" && !own.some((o) => o === "--exec" || /^-\w*x/.test(o))) {
     return [{ grammar: "bash", texts: [rest.map((w) => w.value).join(" ")], dynamic: rest.some((w) => w.dynamic) }];
@@ -2428,6 +2523,86 @@ function replaced(own: string[]): string | undefined {
     else if (a.startsWith("--replace=")) found = a.slice("--replace=".length);
   });
   return found;
+}
+
+// The values a command's own words (up to `end`, where skip() stopped) give one option, short `letter` or --`name`, read
+// as skip() reads them.
+function valuesOf(args: Word[], end: number, options: Options, letter: string, name?: string): Word[] {
+  const out: Word[] = [];
+  for (let k = 0; k < end; k++) {
+    const w = args[k]!;
+    const a = w.value;
+    if (a.startsWith("--")) {
+      const [option = "", ...value] = a.slice(2).split("=");
+      const given = value.length > 0 ? { ...w, value: value.join("=") } : options.longValues?.includes(option) ? args[++k] : undefined;
+      if (option === name && given) out.push(given);
+      continue;
+    }
+    for (let j = 1; j < a.length; j++) {
+      const ch = a[j]!;
+      if (!options.values.includes(ch) && !options.attached?.includes(ch)) continue;
+      const given = j < a.length - 1 ? { ...w, value: a.slice(j + 1) } : options.values.includes(ch) ? args[++k] : undefined;
+      if (ch === letter && given) out.push(given);
+      break;
+    }
+  }
+  return out;
+}
+
+// shadow's sg: `sg [-] group [-c] command`, the command given whole to /bin/sh -c; with none, it starts a shell, which
+// reads the input.
+function sgRun(args: Word[]): Wrapped[] {
+  let k = args[0]?.value === "-" ? 1 : 0;
+  if (args[k]?.value.startsWith("-")) throw unknownOption("sg", args[k]!.value);
+  k++; // the group
+  if (args[k]?.value === "-c") k++;
+  const text = args[k];
+  return text ? [{ grammar: "bash", texts: [text.value], dynamic: text.dynamic }] : [{ reads: SHELL }];
+}
+
+// util-linux's script (`script [options] [file]`) and BSD's (`script [options] [file [command ...]]`): -c gives shell text
+// to the user's shell, and a command after the file is run itself; with neither, it starts a shell, which reads the input.
+function scriptRun(args: Word[]): Wrapped[] {
+  const options = WRAPPERS.script!;
+  const k = skip("script", args, options);
+  const texts = valuesOf(args, k, options, "c", "command");
+  const rest = args.slice(k + 1); // after the file
+  const out: Wrapped[] = [];
+  if (texts.length > 0) out.push({ grammar: "bash", texts: texts.map((w) => w.value), dynamic: texts.some((w) => w.dynamic) });
+  if (rest.length > 0) out.push({ words: rest });
+  return out.length > 0 ? out : [{ reads: SHELL }];
+}
+
+// GNU parallel: `parallel [options] [command] ::: arguments`. It joins the command's words into shell text, as watch does,
+// and runs it for each argument, put in place of a replacement string ({}, {.}, {1} and the like, or -I's), or after the
+// text when it has none. The arguments of one ::: are on the line, so the text is read once with each, quoted as parallel
+// quotes it. Others (::::, -a, a second :::, the input, or one known only when it runs) are left out, as xargs's are, and a
+// command named by a replacement string is named only when it runs. With no command, the arguments are the command lines.
+// {= ... =} is perl code, which the check does not follow.
+const MARKS = [":::", "::::", ":::+", "::::+"];
+const REPLACEMENT = /\{[\d.\/#%+]*\}/g;
+function parallelRun(args: Word[]): Wrapped[] {
+  const options = WRAPPERS.parallel!;
+  const used = new Set<string>();
+  const k = skip("parallel", args, options, used);
+  const marks = args.flatMap((w, i) => (i >= k && MARKS.includes(w.value) ? [i] : []));
+  const words = args.slice(k, marks[0]);
+  const after = marks.length === 1 && args[marks[0]!]!.value === ":::" ? args.slice(marks[0]! + 1) : [];
+  const given = after.length > 0 && !after.some((w) => w.dynamic) && !used.has("a") && !used.has("arg-file") ? after : undefined;
+  if (words.length === 0) return [{ grammar: "bash", texts: given ? given.map((w) => w.value) : [""], dynamic: !given }];
+  const repl = valuesOf(args, k, options, "I").at(-1)?.value;
+  const holds = (t: string) => (repl ? t.includes(repl) : new RegExp(REPLACEMENT.source).test(t));
+  const text = words.map((w) => w.value).join(" ");
+  if (text.includes("{=")) throw new Unreadable(FOLLOW);
+  if (read(text, "bash", { env: [], cwd: KNOWN, positional: true }).commands.some((c) => holds(c.words[0] ?? ""))) throw new Unreadable(NAMED);
+  const dynamic = words.some((w) => w.dynamic);
+  if (!given) return [{ grammar: "bash", texts: [text], dynamic }];
+  const quoted = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+  const filled = (arg: string) => {
+    if (!holds(text)) return `${text} ${quoted(arg)}`;
+    return repl ? text.split(repl).join(quoted(arg)) : text.replace(REPLACEMENT, () => quoted(arg));
+  };
+  return [{ grammar: "bash", texts: given.map((w) => filled(w.value)), dynamic }];
 }
 
 // cmd's start: a window title in quotes first, then its switches, then the command.
