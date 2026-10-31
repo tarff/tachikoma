@@ -1,9 +1,10 @@
 // The dangerous-command check's rules (release 7 design, "The dangerous-command check"; plan, Task 3 and choices 4 and
-// 43-46). A line is split into its commands (split.ts), and each command is matched by its first word, its name without a
+// 43-52). A line is split into its commands (split.ts), and each command is matched by its first word, its name without a
 // folder or .exe, and where a rule says, by its arguments. A line the reader cannot read counts as dangerous.
 
+import { existsSync } from "node:fs";
 import path from "node:path";
-import { nameOf, scriptOf, type Shell, split, WSL_VALUES } from "./split.js";
+import { type Command, nameOf, scriptOf, type Shell, split, WSL_VALUES } from "./split.js";
 
 export const KINDS = ["wiping or formatting disks", "deleting whole folders", "permissions and system settings",
   "stopping processes or the machine", "rewriting or deleting git history", "sending files out", "installing software",
@@ -14,11 +15,13 @@ export interface Danger {
   kind: Kind | "unreadable";
   command: string;
 }
-// The project's root (/work in the box), the home folder, and the shell the line runs in (choice 3).
+// The project's root (/work in the box), the home folder, the shell the line runs in (choice 3), and whether a file
+// exists, for npx of a program the project has (choice 47; fs.existsSync unless given).
 export interface Context {
   root: string;
   home: string;
   shell: Shell;
+  has?: (file: string) => boolean;
 }
 
 // How a danger is shown, in the red line and in a refusal.
@@ -29,9 +32,7 @@ export function shown(d: Danger): string {
 export function dangers(line: string, ctx: Context): Danger[] {
   const result = split(line, ctx.shell);
   if ("unreadable" in result) return [{ kind: "unreadable", command: result.unreadable }];
-  // A line starts in the project's root. A cd anywhere on it leaves the folder unknown: the reader does not follow
-  // subshells, so it cannot tell where the cd still holds.
-  const where: Where = { ...ctx, cwd: result.commands.some(({ words }) => moves(words)) ? undefined : ctx.root };
+  const where: Where = { ...ctx, cwds: folders(result.commands, ctx, line) };
   const found: Danger[] = [];
   for (const { words, text } of result.commands) {
     for (const kind of matched(words, where)) {
@@ -41,20 +42,122 @@ export function dangers(line: string, ctx: Context): Danger[] {
   return found;
 }
 
-// The context, with the folder the line's commands run in, undefined when a cd leaves it unknown.
-interface Where extends Context {
-  cwd: string | undefined;
+// For the replay's count (choice 52), not used by the check: whether a line that passes would ask under a stricter rule,
+// that a recursive delete of any relative path asks while the folder is unknown.
+export function stricterAsks(line: string, ctx: Context): boolean {
+  const result = split(line, ctx.shell);
+  if ("unreadable" in result || folders(result.commands, ctx, line) !== undefined || dangers(line, ctx).length > 0) return false;
+  return result.commands.some(({ words: [first = "", ...args] }) => {
+    const name = nameOf(first);
+    return REMOVE.includes(name) && !!targetsOf(name, args, ctx)?.some((t) => relative(t, ctx));
+  });
 }
 
-// Commands that change the folder the rest of the line runs in: cd and its PowerShell names (Set-Location's cd, chdir and
-// sl; pushd and popd), and env -C or --chdir and sudo -D or --chdir, which run their command elsewhere.
-const MOVES = ["cd", "chdir", "pushd", "popd", "set-location", "sl", "push-location", "pop-location"];
-function moves(words: string[]): boolean {
+// The context, with the folders the line's commands may run in, undefined when a change of folder leaves them unknown.
+interface Where extends Context {
+  cwds: string[] | undefined;
+}
+
+// The folders a line's commands may run in (choice 52). Each call starts a new shell in the project's root (tools/shell.ts),
+// and a literal cd is followed from the folder before it. Every folder met counts for every command, as the reader does
+// not follow subshells, loops or a cd that fails: `(cd sub)`, or a cd to a folder that is not there, leaves the rest of the
+// line where it was. Undefined when a change of folder cannot be placed, or bash's CDPATH, HOME or PWD is set on the line.
+function folders(commands: Command[], ctx: Context, line: string): string[] | undefined {
+  if (ctx.shell === "bash" && /\b(CDPATH|HOME|PWD)=/.test(line)) return undefined;
+  const found = [ctx.root];
+  let at = ctx.root;
+  for (const { words } of commands) {
+    const to = movedTo(words, at, ctx);
+    if (to === undefined) return undefined;
+    if (to === null) continue;
+    at = to;
+    if (!found.includes(to)) found.push(to);
+  }
+  return found;
+}
+
+// Commands that change the folder: cd and its PowerShell and cmd names (Set-Location's cd, chdir and sl), and pushd and
+// Push-Location, which are followed; popd and Pop-Location go back to a folder the check does not keep.
+const FOLLOWED = ["cd", "chdir", "pushd", "set-location", "sl", "push-location"];
+const BACK = ["popd", "pop-location"];
+// PowerShell's parameters of Set-Location and Remove-Item that name the path, by their full names and other names.
+const PATH_PARAMS = ["path", "literalpath", "pspath", "lp"];
+const pathParam = (a: string) => PATH_PARAMS.some((n) => param(a, n));
+
+// Where a command leaves the line's folder: null when it does not change it, undefined when the check cannot place it.
+// Unplaced: popd; cmd's and PowerShell's cd\ and cd.. (joined to their name); a cd behind builtin or command; a target that
+// is not literal, -, cmd's /d, or more than one word; and commands that run another elsewhere (elsewhere).
+function movedTo(words: string[], from: string, ctx: Context): string | null | undefined {
   const [first = "", ...args] = words;
   const name = nameOf(first);
-  if (MOVES.includes(name)) return true;
-  const option = name === "env" ? "C" : name === "sudo" ? "D" : undefined;
-  return !!option && args.some((a) => !!long(a, ["chdir"]) || (/^-[A-Za-z]+/.test(a) && !a.startsWith("--") && a.includes(option)));
+  if (/^(cd|chdir)[\\/.]/i.test(first) || BACK.includes(name)) return undefined;
+  if ((name === "builtin" || name === "command") && FOLLOWED.includes(nameOf(args[0] ?? ""))) return undefined;
+  if (elsewhere(name, args)) return undefined;
+  if (!FOLLOWED.includes(name)) return null;
+  const targets: string[] = [];
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k]!;
+    if (a === "--") {
+      targets.push(...args.slice(k + 1));
+      break;
+    }
+    if (/^-[LPe@]+$/.test(a) || param(a, "passthru")) continue; // bash's cd -L, -P, -e and -@; PowerShell's -PassThru
+    if (pathParam(a)) {
+      const value = /^-[A-Za-z]+:(.+)$/.exec(a)?.[1];
+      if (value !== undefined) targets.push(value); // -Path:value; with no value, the target is the next word
+    } else if (/^[-+]/.test(a) || /^\/d$/i.test(a)) return undefined; // cd -, the folder stack, an option not known, cmd's /d
+    else targets.push(a);
+  }
+  if (targets.length > 1) return undefined;
+  if (targets.length === 0) return ctx.shell === "bash" && name === "cd" ? ctx.home : undefined; // bash's cd alone goes home
+  return placed(targets[0]!, from, ctx);
+}
+
+// Commands that run another in a folder of their own: find -execdir and -okdir, env -C or --chdir, sudo -D or --chdir,
+// pwsh -WorkingDirectory (-wo... or -wd), Start-Process -WorkingDirectory, wsl --cd, unshare --root or --wd, chroot, and
+// systemd-run, whose service starts in / or the home folder.
+function elsewhere(name: string, args: string[]): boolean {
+  const letter = (l: string) => args.some((a) => /^-[A-Za-z]+/.test(a) && !a.startsWith("--") && a.includes(l));
+  switch (name) {
+    case "find":
+      return args.some((a) => a === "-execdir" || a === "-okdir");
+    case "env":
+      return letter("C") || args.some((a) => !!long(a, ["chdir"]));
+    case "sudo":
+      return letter("D") || args.some((a) => !!long(a, ["chdir"]));
+    case "pwsh":
+    case "powershell":
+      return args.some((a) => (param(a, "workingdirectory") && /^-wo/i.test(a)) || /^-wd(:|$)/i.test(a));
+    case "start-process":
+    case "saps":
+    case "start":
+      return args.some((a) => param(a, "workingdirectory"));
+    case "wsl":
+      return wslOwn(args).includes("--cd");
+    case "unshare":
+      return letter("R") || letter("w") || args.some((a) => !!long(a, ["root", "wd"]));
+    case "chroot":
+    case "systemd-run":
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The folder a cd's target names, from folder `from`; undefined when it is known only when the line runs: a drive's own
+// folder (D:) or another kind of drive (HKLM:, Env:), a variable other than the home names and $PWD, a ~ form other than
+// ~ and ~+, a command's output, or a glob.
+function placed(target: string, from: string, ctx: Context): string | undefined {
+  const t = plain(target, ctx);
+  const p = paths(t, from, ctx);
+  const start = leading(t, ctx.shell);
+  if (start !== undefined) {
+    const base = baseOf(start, from, ctx);
+    const rest = t.slice(start.length);
+    return base === undefined || /[$`*?[{]/.test(rest) ? undefined : p.join(base, rest);
+  }
+  if (/^[^\\/]+:(?![\\/])|^[^\\/]{2,}:/.test(t)) return undefined;
+  return /[$`*?[{]/.test(t) ? undefined : p.resolve(from, t);
 }
 
 // A rule's test of a command's arguments; ANY for a command named alone. `first` is the command's first word as written.
@@ -77,11 +180,13 @@ function matched(words: string[], ctx: Where): Kind[] {
 }
 
 // Choice 44: a script given as a web address to an interpreter the reader knows (scriptOf), a command a runner starts that
-// is named by one (uv run https://...), or one given to deno install or deno x.
+// is named by one (uv run https://...), or one given to deno install or deno x. Choice 50: deno's npm: and jsr: packages.
 const WEB = /^https?:\/\//i;
+const DENO_PACKAGE = /^(npm|jsr):/i;
 function fetched(first: string, words: string[], name: string, args: string[]): boolean {
-  if (WEB.test(first) || WEB.test(scriptOf(words) ?? "")) return true;
-  return name === "deno" && ["install", "x"].includes(args[0] ?? "") && args.some((a) => WEB.test(a));
+  const script = scriptOf(words) ?? "";
+  if (WEB.test(first) || WEB.test(script) || (name === "deno" && DENO_PACKAGE.test(script))) return true;
+  return name === "deno" && ["install", "x"].includes(args[0] ?? "") && args.some((a) => WEB.test(a) || DENO_PACKAGE.test(a));
 }
 
 // Where a command's subcommand may be: its first word that is not an option (- or +, as cargo's +nightly), and while each
@@ -122,10 +227,17 @@ const param = (a: string, full: string) => {
 const inFile: Test = (args) => args.some((a) => param(a, "infile"));
 const aliasInFile = (args: string[], ctx: Where, first: string) =>
   ctx.shell === "powershell" && /^(curl|wget)$/i.test(first) && args.some((a) => a.length > 2 && param(a, "infile"));
+// A key under HKLM: or HKCU:, or any written with the Registry:: provider (choice 52), also as -Path:value or in a comma list.
+const REGISTRY = /^(hklm|hkcu):|^(microsoft\.powershell\.core\\)?registry::/i;
+const registry: Test = (args) => args.some((a) => (/^-[A-Za-z]+:(.+)$/.exec(a)?.[1] ?? a).split(",").some((v) => REGISTRY.test(v)));
 
 // Every built-in name of Remove-Item (its documentation's Notes), and cmd's rd, rmdir, del and erase, which take /s.
 const REMOVE = ["rm", "remove-item", "ri", "rd", "rmdir", "del", "erase"];
 const CMD_REMOVE = ["rd", "rmdir", "del", "erase"];
+
+// icacls's switches that change nothing (`icacls /?`): /save writes the lists to a file, /findsid and /verify look, and
+// /t, /c, /l and /q change how it walks and reports. Any other switch changes something, or is not known (choice 48).
+const ICACLS_LOOK = ["/save", "/findsid", "/verify", "/t", "/c", "/l", "/q"];
 
 const RULES: Record<Kind, Record<string, Test>> = {
   "wiping or formatting disks": {
@@ -136,23 +248,24 @@ const RULES: Record<Kind, Record<string, Test>> = {
     "initialize-disk": ANY,
     mkfs: ANY,
     wipefs: ANY,
-    fdisk: ANY,
-    parted: ANY,
-    dd: (args) => args.some((a) => a.startsWith("of=/dev/")),
+    // Choice 51: fdisk -l only lists, and parted -l too when it is given nothing else to do.
+    fdisk: (args) => !args.some((a) => /^-[lu]*l[lu]*$/.test(a) || long(a, ["list"]) === "list"),
+    parted: (args) => !(args.some((a) => a === "-l" || long(a, ["list"]) === "list") && args.every((a) => a.startsWith("-"))),
+    dd: (args) => args.some((a) => a.startsWith("of=/dev/") && !/^of=\/dev\/(null|stdout|stderr)$/.test(a)),
     cipher: (args) => args.some((a) => /^\/w(:|$)/i.test(a)),
     wsl: (args) => wslOwn(args).includes("--unregister"), // choice 43: it deletes the distribution's disk
   },
-  "deleting whole folders": Object.fromEntries(REMOVE.map((n): [string, Test] => [n, deletesWhole(CMD_REMOVE.includes(n))])),
+  "deleting whole folders": Object.fromEntries(REMOVE.map((n): [string, Test] => [n, deletesWhole])),
   "permissions and system settings": {
-    icacls: ANY,
+    icacls: (args) => args.some((a) => /^[/-]./.test(a) && !ICACLS_LOOK.includes(a.toLowerCase())),
     takeown: ANY,
     cacls: ANY,
     "set-acl": ANY,
     chmod: (args) => args.some((a) => !!long(a, ["recursive"]) || short(a, "R")),
     chown: (args) => args.some((a) => !!long(a, ["recursive"]) || short(a, "R")),
-    reg: ANY,
-    "set-itemproperty": (args) => args.some((a) => /^(hklm|hkcu):/i.test(a)),
-    sp: (args) => args.some((a) => /^(hklm|hkcu):/i.test(a)), // Set-ItemProperty's built-in name
+    reg: (args) => !/^query$/i.test(args[0] ?? ""), // choice 48: reg query only reads
+    "set-itemproperty": registry,
+    sp: registry, // Set-ItemProperty's built-in name
     bcdedit: ANY,
     "set-executionpolicy": ANY,
     netsh: ANY,
@@ -177,13 +290,13 @@ const RULES: Record<Kind, Record<string, Test>> = {
     poweroff: ANY,
     "stop-computer": ANY,
     "restart-computer": ANY,
-    systemctl: named("stop", "poweroff", "reboot"),
+    systemctl: named("stop", "poweroff", "reboot", "halt", "kill"),
     wsl: (args) => wslOwn(args).some((a) => ["--shutdown", "--terminate", "-t"].includes(a)), // choice 43
   },
   "rewriting or deleting git history": { git: rewritesHistory },
   "sending files out": {
     curl: (args, ctx, first) => uploads(args) || aliasInFile(args, ctx, first),
-    wget: (args, ctx, first) => args.some((a) => !!long(a, ["post-file"])) || aliasInFile(args, ctx, first),
+    wget: (args, ctx, first) => args.some((a) => !!long(a, ["post-file", "body-file"])) || aliasInFile(args, ctx, first),
     scp: ANY,
     rsync: (args) => remote(args.filter((a) => !a.startsWith("-")).at(-1) ?? ""),
     sftp: ANY,
@@ -195,15 +308,22 @@ const RULES: Record<Kind, Record<string, Test>> = {
     ncat: ANY,
   },
   "installing software": {
-    npm: (args) => addsPackage(args, NPM_INSTALL) || runsPackage(after(args, "exec", "x")),
-    pnpm: (args, ctx, first) => addsPackage(args, INSTALL) || named("dlx")(args, ctx, first),
-    yarn: (args, ctx, first) => addsPackage(args, INSTALL) || named("dlx")(args, ctx, first),
-    bun: (args) => addsPackage(args, [...INSTALL, "a"]) || runsPackage(after(args, "x")),
-    npx: ANY,
+    npm: (args) => addsPackage(args, NPM_INSTALL, NPM_VALUES) || runsPackage(after(args, "exec", "x")),
+    pnpm: (args, ctx, first) => addsPackage(args, INSTALL, PNPM_VALUES) || named("dlx")(args, ctx, first),
+    // yarn global add, and yarn workspace <name> add, which install as yarn add does.
+    yarn: (args, ctx, first) =>
+      [args, after(args, "global") ?? [], after(args, "workspace")?.slice(1) ?? []].some((w) => addsPackage(w, INSTALL, YARN_VALUES))
+      || named("dlx")(args, ctx, first),
+    bun: (args) => addsPackage(args, [...INSTALL, "a"], BUN_VALUES) || runsPackage(after(args, "x")),
+    npx: (args, ctx) => !local(args, ctx),
+    pnpx: ANY, // pnpm dlx's other name
     bunx: ANY,
     pip: (args) => pipPackage(after(args, "install")),
     python: (args) => pipPackage(after(pipOf(args) ?? [], "install")), // python -m pip, and py's
-    uv: (args) => after(args, "add") !== undefined || pipPackage(after(after(args, "pip") ?? [], "install")),
+    // uv add, uv pip install with a package, and uv tool install or run (uvx's long form).
+    uv: (args) =>
+      after(args, "add") !== undefined || pipPackage(after(after(args, "pip") ?? [], "install"))
+      || after(after(args, "tool") ?? [], "install", "run") !== undefined,
     uvx: ANY,
     pipx: ANY,
     cargo: named("install"),
@@ -230,23 +350,62 @@ const RULES: Record<Kind, Record<string, Test>> = {
         return args.some((w, k) => /^(-X|--method)=?DELETE$/i.test(w) || (/^(-X|--method)$/.test(w) && /^delete$/i.test(args[k + 1] ?? "")));
       }
       const pr = after(args, "pr");
-      const repo = after(args, "repo", "release");
-      return (!!pr && after(pr, "merge") !== undefined) || (!!repo && after(repo, "delete") !== undefined);
+      if (pr && after(pr, "merge") !== undefined) return true;
+      return GH_DELETES.some(([group, names]) => {
+        const rest = group.reduce<string[] | undefined>((w, n) => w && after(w, n), args);
+        return !!rest && after(rest, ...names) !== undefined;
+      });
     },
     terraform: named("apply", "destroy"),
-    pulumi: named("up", "destroy"),
+    pulumi: named("up", "update", "destroy", "down"), // up's and destroy's other names, from pulumi's source
     kubectl: anyWord("delete", "apply"),
-    helm: anyWord("uninstall", "del", "delete", "un"), // uninstall's other names, from helm's source
-    // An operation named delete... or terminate..., s3 rm, and s3 sync --delete, which deletes what is not on the source.
-    aws: (args) =>
-      args.some((a) => /^(delete|terminate)/i.test(a) || /^rm$/i.test(a))
-      || (args.some((a) => /^sync$/i.test(a)) && args.some((a) => !!long(a, ["delete"]))),
+    helm: named("uninstall", "del", "delete", "un"), // uninstall's other names, from helm's source
+    aws: awsDeletes,
     gcloud: anyWord("delete"),
     az: anyWord("delete"),
-    docker: named("push"),
+    // docker push and docker image push, docker compose push, and a build that pushes (buildx's --push, or build's).
+    docker: (args) =>
+      after(args, "push") !== undefined || after(after(args, "image", "compose") ?? [], "push") !== undefined
+      || !!after(args, "buildx", "build")?.some((a) => a === "--push" || /^--push=(true|t|1)$/i.test(a)),
+    "docker-compose": named("push"),
     npm: named("publish"),
+    pnpm: named("publish"),
+    yarn: (args) => after(args, "publish") !== undefined || after(after(args, "npm") ?? [], "publish") !== undefined,
+    bun: named("publish"),
   },
 };
+
+// gh's commands that delete on GitHub (`gh <command> --help`, gh 2): the command's words, and its deleting subcommands with
+// their other names. gh alias delete and gh extension remove change only this machine.
+const GH_DELETES: [string[], string[]][] = [
+  [["repo"], ["delete"]],
+  [["repo", "deploy-key"], ["delete"]],
+  [["repo", "autolink"], ["delete"]],
+  [["release"], ["delete", "delete-asset"]],
+  [["issue"], ["delete"]],
+  [["gist"], ["delete"]],
+  [["secret"], ["delete", "remove"]],
+  [["variable"], ["delete", "remove"]],
+  [["label"], ["delete"]],
+  [["run"], ["delete"]],
+  [["cache"], ["delete"]],
+  [["ssh-key"], ["delete"]],
+  [["gpg-key"], ["delete"]],
+  [["codespace"], ["delete"]],
+  [["cs"], ["delete"]],
+  [["project"], ["delete", "item-delete", "field-delete"]],
+];
+
+// aws's operation, its second word that is not an option (after the service), is a delete when it is named delete... or
+// terminate..., s3's rm or rb, or s3 sync with --delete, which deletes what is not on the source (choice 51: only the
+// operation counts). aws's options need not be known: the words are read both with and without the word after each
+// option taken as its value.
+function awsDeletes(args: string[]): boolean {
+  const loose = args.filter((a) => !a.startsWith("-"));
+  const strict = args.filter((a, k) => !a.startsWith("-") && !(args[k - 1]?.startsWith("-") && !args[k - 1]!.includes("=")));
+  return [loose[1], strict[1]].some((op = "") =>
+    /^(delete|terminate)/i.test(op) || /^(rm|rb)$/i.test(op) || (/^sync$/i.test(op) && args.some((a) => !!long(a, ["delete"]))));
+}
 
 // wsl's own options, before the command it runs (as split.ts reads them): a -t after that is the command's.
 function wslOwn(args: string[]): string[] {
@@ -260,46 +419,118 @@ function wslOwn(args: string[]): string[] {
   return own;
 }
 
-// rm with -r, -R or --recursive (any order with -f, until --), Remove-Item and its names with -Recurse, or cmd's rd,
-// rmdir, del and erase with /s (`cmd` here), whose target is a whole folder.
-function deletesWhole(cmd: boolean): Test {
-  return (args, ctx) => {
-    let recursive = false;
-    let ended = false;
-    const targets: string[] = [];
-    for (const a of args) {
-      if (ended || !a.startsWith("-") || a === "-") {
-        if (cmd && /^(\/[A-Za-z])+$/.test(a)) recursive ||= /\/s/i.test(a); // cmd's switches, as /s/q
-        else targets.push(a);
-      } else if (a === "--") ended = true;
-      else recursive ||= !!long(a, ["recursive"]) || (/^-[dfiIrRv]+$/.test(a) && /[rR]/.test(a)) || param(a, "recurse");
-    }
-    return recursive && targets.some((t) => whole(t, ctx));
-  };
+// A recursive delete whose target, from any folder the line may run in, is a whole folder.
+function deletesWhole(args: string[], ctx: Where, first: string): boolean {
+  return !!targetsOf(nameOf(first), args, ctx)?.some((t) => (ctx.cwds ?? [undefined]).some((cwd) => whole(t, ctx, cwd)));
 }
 
-// The names that stand for the home folder and the current one, as a delete's target starts with them (any case, as
-// PowerShell reads them).
+// A recursive delete's targets, or undefined when it is not recursive: rm with -r, -R or --recursive (in any bundle of GNU's
+// and BSD's letters, until --), Remove-Item and its names with -Recurse, or cmd's rd, rmdir, del and erase with /s (choice
+// 52). PowerShell's -Path:value gives a target; a comma list (C:\,dist) is split into its targets, except for bash's rm,
+// which reads a comma as part of the name; and cmd's *.* is every file, as * is.
+function targetsOf(name: string, args: string[], ctx: Context): string[] | undefined {
+  const cmd = CMD_REMOVE.includes(name);
+  const comma = !(name === "rm" && ctx.shell === "bash");
+  let recursive = false;
+  let ended = false;
+  const targets: string[] = [];
+  const add = (a: string) => {
+    for (const t of comma ? a.split(",").filter(Boolean) : [a]) targets.push(cmd ? t.replace(/(^|[\\/])\*\.\*$/, "$1*") : t);
+  };
+  for (const a of args) {
+    const value = /^-[A-Za-z]+:(.+)$/.exec(a)?.[1];
+    if (ended || !a.startsWith("-") || a === "-") {
+      if (cmd && /^(\/[A-Za-z])+$/.test(a)) recursive ||= /\/s/i.test(a); // cmd's switches, as /s/q
+      else add(a);
+    } else if (a === "--") ended = true;
+    else if (value !== undefined && pathParam(a)) add(value);
+    else {
+      recursive ||= !!long(a, ["recursive"]) || (/^-[dfiIPrRvWx]+$/.test(a) && /[rR]/.test(a)) || (param(a, "recurse") && !/:\$?(false|0)$/i.test(a));
+    }
+  }
+  return recursive ? targets : undefined;
+}
+
+// The names that stand for the home folder and the current one, as a path starts with them (any case, as PowerShell reads
+// them); bash's ~+ is the current folder.
 const HOME = ["~", "$home", "${home}", "$env:userprofile", "${env:userprofile}"];
-const PWD = ["$pwd", "${pwd}"];
+const PWD = ["$pwd", "${pwd}", "$pwd.path", "~+"];
+const baseOf = (start: string, cwd: string | undefined, ctx: Context) =>
+  HOME.includes(start.toLowerCase()) ? ctx.home : PWD.includes(start.toLowerCase()) ? cwd : undefined;
+const DRIVE = /^[A-Za-z]:/;
+
+// The path functions for a path: Windows's in PowerShell, for a path with a drive, or from a folder on one.
+const paths = (t: string, cwd: string | undefined, ctx: Context) =>
+  ctx.shell === "powershell" || DRIVE.test(t) || DRIVE.test(cwd ?? ctx.root) ? path.win32 : path.posix;
+
+// A path as the rules read it (choice 52): PowerShell's FileSystem:: form without its prefix, and Git Bash's /c/... as
+// C:\... when the project's root is on Windows.
+function plain(target: string, ctx: Context): string {
+  const t = target.replace(/^(microsoft\.powershell\.core\\)?filesystem::/i, "");
+  const m = ctx.shell === "bash" && DRIVE.test(ctx.root) ? /^\/([A-Za-z])(?=\/|$)(.*)$/.exec(t) : null;
+  return m ? `${m[1]}:${m[2] || "\\"}` : t;
+}
+
+// Where the variable or command substitution at t[k] ends; k when there is none. $name (and PowerShell's $env:name), ${...}
+// and $(...) with what they hold, bash's backtick pairs and $@, $* and the like, and PowerShell's members and subscripts
+// after a variable ($d.FullName, $a[0]), which it reads in a command's words.
+function token(t: string, k: number, shell: Shell): number {
+  if (t[k] === "`" && shell === "bash") {
+    const close = t.indexOf("`", k + 1);
+    return close < 0 ? k : close + 1;
+  }
+  if (t[k] !== "$") return k;
+  if (t[k + 1] === "{" || t[k + 1] === "(") {
+    const [open, close] = t[k + 1] === "{" ? ["{", "}"] : ["(", ")"];
+    for (let depth = 0, j = k + 1; j < t.length; j++) {
+      if (t[j] === open) depth++;
+      else if (t[j] === close && --depth === 0) return j + 1;
+    }
+    return k;
+  }
+  const name = /\$(?:[\w:]+|[@*#?$!-])/y;
+  name.lastIndex = k;
+  if (!name.exec(t)) return k;
+  if (shell === "bash") return name.lastIndex;
+  const members = /(?:\.\w+|\[[^\]]*\])*/y;
+  members.lastIndex = name.lastIndex;
+  members.exec(t);
+  return members.lastIndex;
+}
+// Where a run of variables and command substitutions from the start of t ends.
+function variables(t: string, shell: Shell): number {
+  let k = 0;
+  for (let end = token(t, 0, shell); end > k; end = token(t, k, shell)) k = end;
+  return k;
+}
+// The ~ form, or the run of variables and command substitutions, a path starts with, up to a separator or its end. bash
+// also has ~+ (the current folder), ~- (the one before) and ~name (another's home).
+function leading(t: string, shell: Shell): string | undefined {
+  const tilde = (shell === "bash" ? /^~(?:[+-]|[\w.-]+)?(?=$|\/)/ : /^~(?=$|[\\/])/).exec(t)?.[0];
+  if (tilde !== undefined) return tilde;
+  const k = variables(t, shell);
+  return k > 0 && (k === t.length || /[\\/]/.test(t[k]!)) ? t.slice(0, k) : undefined;
+}
 
 // Whether a delete's target is a whole folder: a drive root, the home folder or the project's root, or a folder above one
-// of them, once its path is worked out (the home names and $PWD filled in, a relative path taken from the line's folder,
-// . and .. resolved). A trailing /* (or \*) and a lone * stand for the folder itself. A target that starts with a variable
-// counts when the rest of it adds nothing below the variable (choice 45: "$d", "$d/*", "$S/.."), as an empty or wrong
-// value deletes some other folder; so does one relative to a folder a cd left unknown.
-function whole(target: string, ctx: Where): boolean {
-  const windows = ctx.shell === "powershell" || /^[A-Za-z]:/.test(target);
-  const p = windows ? path.win32 : path.posix;
-  const t = (target === "*" ? "." : target).replace(windows ? /[\\/]\*$/ : /\/\*$/, "/");
+// of them, once its path is worked out from folder `cwd` (the home names and $PWD filled in, a relative path taken from the
+// folder, . and .. resolved). A trailing /* (or \*) and a lone * stand for the folder itself. A target that starts with a
+// variable or a command's output counts when the rest of it adds nothing below the start (choice 45: "$d", "$d/*",
+// "$S/.."), as an empty or wrong value deletes some other folder; parts of the rest that are only variables add nothing, as
+// they may be empty (choice 52: "$d/$e"). So does a target relative to a folder the check cannot place.
+function whole(target: string, ctx: Where, cwd: string | undefined): boolean {
+  let t = plain(target, ctx);
+  const p = paths(t, cwd, ctx);
+  t = (t === "*" ? "." : t).replace(p === path.win32 ? /[\\/]\*$/ : /\/\*$/, "/");
   if (/^[A-Za-z]:$/.test(t)) return true; // a drive's own letter
-  const start = /^(~|\$\{[\w:]+\}|\$[\w:]+)(?=$|[\\/])/.exec(t)?.[1];
+  const start = leading(t, ctx.shell);
   let base: string | undefined;
   let rest = t;
   if (start !== undefined) {
-    rest = t.slice(start.length);
-    base = HOME.includes(start.toLowerCase()) ? ctx.home : PWD.includes(start.toLowerCase()) ? ctx.cwd : undefined;
-  } else if (!p.isAbsolute(t)) base = ctx.cwd;
+    const parts = t.slice(start.length).split(/[\\/]/);
+    rest = parts.filter((s) => !(s !== "" && variables(s, ctx.shell) === s.length)).join("/");
+    base = baseOf(start, cwd, ctx);
+  } else if (!p.isAbsolute(t)) base = cwd;
   else return above(p.normalize(t), ctx, p);
   // A base known only when the line runs: whole if the rest stays at it or climbs out of it.
   if (base === undefined) {
@@ -307,6 +538,12 @@ function whole(target: string, ctx: Where): boolean {
     return below === "." || below === ".." || below.startsWith(`..${p.sep}`);
   }
   return above(p.join(base, rest), ctx, p);
+}
+
+// Whether a delete's target is a relative path, which a stricter rule would ask on while the folder is unknown.
+function relative(target: string, ctx: Context): boolean {
+  const t = plain(target, ctx);
+  return leading(t, ctx.shell) === undefined && !paths(t, undefined, ctx).isAbsolute(t) && !DRIVE.test(t);
 }
 
 // Whether a worked-out path is a drive root, or the home folder or the project's root, or a folder they are in.
@@ -332,62 +569,129 @@ function rewritesHistory(args: string[]): boolean {
   const command = args[k]?.toLowerCase();
   const rest = args.slice(k + 1);
   const has = (name: string, letter: string) => rest.some((a) => long(a, [name]) === name || short(a, letter));
-  const dot = rest.some((a) => /^\.[\\/]?$/.test(a));
+  // . or * (which bash expands to every file, and git itself in PowerShell) stands for the whole work tree.
+  const all = rest.some((a) => /^(\.[\\/]?|\*)$/.test(a));
   switch (command) {
     case "push": {
-      // --force, -f, --force-with-lease, --delete, -d, a :branch refspec, or a +branch one, which forces it.
-      // --force-if-includes changes nothing on its own.
-      const options = rest.map((a) => long(a, ["force", "force-with-lease", "delete", "force-if-includes"]));
-      return options.some((o) => o === "force" || o === "force-with-lease" || o === "delete")
+      // --force, -f, --force-with-lease, --delete, -d, --mirror, --prune, a :branch refspec, or a +branch one, which forces
+      // it. --force-if-includes changes nothing on its own.
+      const options = rest.map((a) => long(a, ["force", "force-with-lease", "delete", "force-if-includes", "mirror", "prune"]));
+      return options.some((o) => o !== undefined && o !== "force-if-includes")
         || rest.some((a) => short(a, "f") || short(a, "d") || /^[:+]./.test(a));
     }
     case "reset":
       return rest.some((a) => long(a, ["hard"]));
-    case "clean":
-      return has("force", "f") && rest.some((a) => short(a, "d"));
+    case "clean": // -n or --dry-run only lists
+      return has("force", "f") && rest.some((a) => short(a, "d")) && !has("dry-run", "n");
     case "checkout":
-      return dot;
+      return all || has("force", "f");
     case "restore": // --staged alone only unstages
-      return dot && (!has("staged", "S") || has("worktree", "W"));
+      return all && (!has("staged", "S") || has("worktree", "W"));
     case "branch":
       return rest.some((a) => short(a, "D")) || (has("delete", "d") && has("force", "f"));
+    case "rebase": // --abort and --continue finish one already started
+      return !rest.some((a) => !!long(a, ["abort", "continue"]));
     case "filter-branch":
     case "filter-repo":
-    case "rebase":
       return true;
     default:
       return false;
   }
 }
 
-// curl sending a file: -T or --upload-file, -F or --form..., -K or --config (whose file can hold any of these), or -d,
-// --data..., --json or -H and --header with a value starting with @ (a file's contents); --data-urlencode with @ before
-// any = (name@file). A bundle of short options holding T, F or K counts, and one holding d or H whose value, after it or
-// in the next word, starts with @.
-const CURL_LONG = ["upload-file", "form", "form-string", "config", "json", "header", "data", "data-ascii", "data-binary", "data-raw", "data-urlencode"];
+// curl sending a file: -T or --upload-file, -F or --form, -K or --config (whose file can hold any of these), or -d,
+// --data..., --json or -H and --header with a value starting with @ (a file's contents); --data-urlencode, --variable and
+// --url-query with @ before any = (name@file); and the --expand-* options, whose {{variables}} can hold a file's contents
+// (choice 50). --form-string sends no file (choice 51). In a bundle of short options, the first that takes a value takes
+// the rest of the word, or the next word, as its value (choice 51: -uFred:pw is -u with Fred:pw).
+const CURL_LONG = [
+  "upload-file", "form", "form-string", "config", "json", "header", "data", "data-ascii", "data-binary", "data-raw", "data-urlencode",
+  "variable", "url", "url-query",
+];
+// curl's short options that take a value (`curl --help all`).
+const CURL_VALUES = "AbcCdDeEFHKmoPQrtTuUwxXyYz";
 function uploads(args: string[]): boolean {
   return args.some((a, k) => {
     const next = args[k + 1] ?? "";
+    if (a.startsWith("--expand-")) return true;
     const option = long(a, CURL_LONG);
-    if (option === "data-urlencode") return /^[^=]*@/.test(next);
-    if (option) return ["upload-file", "form", "form-string", "config"].includes(option) || next.startsWith("@");
-    const m = /^-([A-Za-z]*?)[dH](.*)$/.exec(a);
-    return /^-[A-Za-z]*[TFK]/.test(a) || (!!m && /^[A-Za-z]*$/.test(m[1]!) && (m[2] || next).startsWith("@"));
+    if (option === "data-urlencode" || option === "variable" || option === "url-query") return /^[^=]*@/.test(next);
+    if (option === "url" || option === "form-string") return false;
+    if (option) return ["upload-file", "form", "config"].includes(option) || next.startsWith("@");
+    if (!/^-[^-]/.test(a)) return false;
+    const j = [...a].findIndex((ch, i) => i > 0 && CURL_VALUES.includes(ch));
+    if (j < 0) return false;
+    const value = a.slice(j + 1) || next;
+    return "TFK".includes(a[j]!) || ("dH".includes(a[j]!) && value.startsWith("@"));
   });
 }
 
 // rsync's target on another machine: host:path or user@host:path, not a drive letter, or an rsync:// address.
 const remote = (target: string) => /^rsync:\/\//i.test(target) || /^[^/:]{2,}:/.test(target);
 
-// npm's names for install (`npm help install`'s aliases), and the plan's for pnpm, yarn and bun (bun's add is also a).
-const NPM_INSTALL = ["install", "add", "i", "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal", "isntall"];
+// npm's names for install (`npm help install`'s aliases, and install-test's, which installs as install does), and the
+// plan's for pnpm, yarn and bun (bun's add is also a).
+const NPM_INSTALL = [
+  "install", "add", "i", "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal", "isntall", "install-test", "it",
+];
 const INSTALL = ["install", "i", "add"];
-// An install subcommand with a package named: a word after it not starting with -.
-function addsPackage(args: string[], names: string[]): boolean {
-  return !!after(args, ...names)?.some((a) => !a.startsWith("-"));
+// Each tool's options that take the next word as their value (choice 51; npm's config, pnpm's, yarn's and bun's
+// documentation). As with pip, only a name written in full has its value skipped.
+const NPM_VALUES = ["-w", "-C", ...[
+  "prefix", "omit", "include", "loglevel", "registry", "cache", "userconfig", "globalconfig", "workspace", "tag", "install-strategy",
+  "save-prefix", "before", "otp", "scope", "cafile", "ca", "cert", "key", "proxy", "https-proxy", "noproxy", "fetch-retries",
+  "fetch-timeout", "script-shell", "node-options", "location", "lockfile-version", "cpu", "os", "libc",
+].map((n) => `--${n}`)];
+const PNPM_VALUES = ["-C", "-F", ...[
+  "dir", "filter", "filter-prod", "reporter", "loglevel", "store-dir", "virtual-store-dir", "modules-dir", "lockfile-dir", "registry",
+  "network-concurrency", "child-concurrency", "node-linker", "resolution-mode", "workspace-concurrency", "package-import-method",
+  "test-pattern", "changed-files-ignore-pattern",
+].map((n) => `--${n}`)];
+const YARN_VALUES = [
+  "cwd", "modules-folder", "cache-folder", "mutex", "network-timeout", "registry", "use-yarnrc", "global-folder", "link-folder",
+  "network-concurrency", "otp", "preferred-cache-folder", "proxy", "https-proxy", "mode",
+].map((n) => `--${n}`);
+const BUN_VALUES = ["-c", ...[
+  "cwd", "registry", "cache-dir", "config", "backend", "concurrent-scripts", "network-concurrency", "omit", "filter", "linker", "cpu",
+  "os", "ca", "cafile", "minimum-release-age",
+].map((n) => `--${n}`)];
+// An install subcommand with a package named: a word after it not starting with - that is no option's value.
+function addsPackage(args: string[], names: string[], values: string[]): boolean {
+  const rest = after(args, ...names) ?? [];
+  for (let k = 0; k < rest.length; k++) {
+    const a = rest[k]!;
+    if (values.includes(a)) k++;
+    else if (!a.startsWith("-")) return true;
+  }
+  return false;
 }
 // npm exec (or x) and bun x with a package: a word after them that is not an option, or npm's --package.
 const runsPackage = (rest: string[] | undefined) => !!rest?.some((a) => !a.startsWith("-") || !!long(a, ["package"]) || a === "-p");
+
+// Choice 47: npx runs a program the project holds, without downloading, when it is named plainly and every folder the line
+// may run in has it in node_modules/.bin (as itself, or as Windows's .cmd). Its options (split.ts reads them) that take the
+// next word are skipped; a package (-p, --package), shell text (-c, --call), another folder (--prefix) or the global one
+// (-g, --global) run something else.
+const NPX_VALUES = ["--workspace", "--loglevel", "--registry", "--cache", "--userconfig"];
+function local(args: string[], ctx: Where): boolean {
+  let k = 0;
+  for (; k < args.length && args[k]!.startsWith("-"); k++) {
+    const a = args[k]!;
+    if (a === "--") {
+      k++;
+      break;
+    }
+    if (/^--(package|call|prefix|global)(=|$)/.test(a) || /^-[a-z]*[pcg]/.test(a)) return false;
+    if (NPX_VALUES.includes(a) || /^-[a-z]*w$/.test(a)) k++;
+  }
+  const program = args[k] ?? "";
+  if (!/^\w[\w.-]*$/.test(program) || ctx.cwds === undefined) return false;
+  const has = ctx.has ?? existsSync;
+  return ctx.cwds.every((cwd) => {
+    const p = paths("", cwd, ctx);
+    return [program, `${program}.cmd`].some((n) => has(p.join(cwd, "node_modules", ".bin", n)));
+  });
+}
 
 // python -m pip: the words pip is given.
 function pipOf(args: string[]): string[] | undefined {
