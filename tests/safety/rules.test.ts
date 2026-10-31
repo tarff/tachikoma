@@ -141,8 +141,9 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   ["bash", "cd /tmp/y && cd sub && rm -rf build", []],
   ["bash", "cd sub && cd /tmp && rm -rf build", []],
   ["powershell", "cd sub; Remove-Item -Recurse ..\\other", []],
-  // A cd written twice is followed twice; a cd that may not hold (in a subshell or a child shell, or one that fails) is
-  // kept beside the folder before it; and more than one cd from the current folder leaves it unknown
+  // Each cd from the current folder is counted, a repeated one too, and more than one leaves the folder unknown, so a
+  // relative delete asks; a cd that may not hold (in a subshell or a child shell, or one that fails) is kept beside the
+  // folder before it, so a delete that is whole from either asks
   ["bash", "cd .. && cd .. && rm -rf tmp", [DELETE]],
   ["bash", "cd ..; cd ..; rm -rf tmp", [DELETE]],
   ["powershell", "cd ..; cd ..; Remove-Item -Recurse work", [DELETE]],
@@ -151,6 +152,32 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   ["bash", "cd nosuch; cd ..; rm -rf x", [DELETE]],
   ["bash", "(cd sub && make) && cd .. && rm -rf x", [DELETE]],
   ["bash", "cd sub && cd .. && rm -rf build", [DELETE]],
+  // A cd in a loop or a function may run more than once, so with a loop or function on the line a cd from the current
+  // folder leaves it unknown
+  ["bash", "for d in a b c; do cd ..; done; rm -rf tmp", [DELETE]],
+  ["bash", "up() { cd ..; }; up; up; rm -rf tmp", [DELETE]],
+  ["bash", "function up { cd ..; }; up; up; rm -rf tmp", [DELETE]],
+  ["bash", "while true; do cd ..; done; rm -rf tmp", [DELETE]],
+  ["bash", "until false; do cd ..; done; rm -rf tmp", [DELETE]],
+  ["bash", "select d in a; do cd ..; done; rm -rf tmp", [DELETE]],
+  ["powershell", "1..3 | ForEach-Object { cd .. }; Remove-Item -Recurse work", [DELETE]],
+  ["powershell", "1..3 | % { cd .. }; Remove-Item -Recurse work", [DELETE]],
+  ["powershell", "foreach ($i in 1..3) { cd .. }; Remove-Item -Recurse work", [DELETE]],
+  ["powershell", "for ($i = 0; $i -lt 3; $i++) { cd .. }; Remove-Item -Recurse work", [DELETE]],
+  ["powershell", "while ($true) { cd .. }; Remove-Item -Recurse work", [DELETE]],
+  ["powershell", "do { cd .. } while ($true); Remove-Item -Recurse work", [DELETE]],
+  ["powershell", "function up { cd .. }; up; up; Remove-Item -Recurse work", [DELETE]],
+  ["powershell", "filter up { cd .. }; 1, 2 | up; Remove-Item -Recurse work", [DELETE]],
+  ["bash", "for f in a b; do echo $f; done; rm -rf build", []],
+  ["bash", "for f in a; do cd /tmp/y; done; rm -rf build", []],
+  ["powershell", "1..3 | ForEach-Object { $_ }; Remove-Item -Recurse build", []],
+  // A PowerShell script block given to pwsh is read once, though the reader reads it as a block and as pwsh's text
+  ["powershell", "pwsh -Command { Set-Location sub; Remove-Item -Recurse build }", []],
+  ["powershell", "pwsh -Command { Set-Location ..; Remove-Item -Recurse x }", [DELETE]],
+  // cmd ends a built-in's name at ; , = and + too
+  ["powershell", "cmd /c 'cd;.. && rd /s /q x'", [DELETE]],
+  ["powershell", "cmd /c 'cd=.. && rd /s /q x'", [DELETE]],
+  ["powershell", "cmd /c 'cd,.. && rd /s /q x'", [DELETE]],
   // A link can make any relative path lead anywhere, so a line that makes one leaves the folder unknown
   ["bash", "ln -s / x && rm -rf x/home", [DELETE]],
   ["bash", "ln --symbolic / x; cd x && rm -rf home", [DELETE]],
@@ -159,13 +186,36 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   ["powershell", "New-Item -ItemType SymbolicLink -Path x -Target C:\\; Remove-Item -Recurse x\\Users", [DELETE]],
   ["powershell", "ni x -ItemType:Junction -Value C:\\; Remove-Item -Recurse x\\Users", [DELETE]],
   ["powershell", "New-Item -Type HardLink -Path a -Target b; Remove-Item -Recurse build", [DELETE]],
+  // New-Item's FileSystem provider takes any start of a type's name, and wildcards
+  ["powershell", "New-Item -ItemType sym -Path x -Target C:\\; Remove-Item -Recurse x\\Users", [DELETE]],
+  ["powershell", "New-Item -ItemType j -Path x -Target C:\\; Remove-Item -Recurse x\\Users", [DELETE]],
+  ["powershell", "New-Item -ItemType h -Path a -Target b; Remove-Item -Recurse build", [DELETE]],
+  ["powershell", "New-Item -ItemType *link -Path x -Target C:\\; Remove-Item -Recurse x\\Users", [DELETE]],
+  ["powershell", "New-Item -ItemType ?unction -Path x -Target C:\\; Remove-Item -Recurse x\\Users", [DELETE]],
+  ["powershell", "New-Item -ItemType $t -Path x; Remove-Item -Recurse build", [DELETE]],
   ["powershell", "New-Item -ItemType Directory build; Remove-Item -Recurse build", []],
+  ["powershell", "ni -ItemType d build; Remove-Item -Recurse build", []],
+  ["powershell", "New-Item -ItemType:File x; Remove-Item -Recurse build", []],
+  ["powershell", "New-Item -Type container x; Remove-Item -Recurse build", []],
+  ["powershell", "New-Item x; Remove-Item -Recurse build", []],
   // bash's HOME, PWD or CDPATH named bare anywhere (set, read, declared) leaves the folder unknown; reading $HOME does not
   ["bash", "read HOME; rm -rf build", [DELETE]],
   ["bash", "printf -v HOME x; rm -rf build", [DELETE]],
   ["bash", "declare HOME=/; rm -rf build", [DELETE]],
   ["bash", "export PWD; rm -rf build", [DELETE]],
   ["bash", "unset CDPATH; rm -rf build", [DELETE]],
+  // The name split by quotes or a backslash, which the shell joins, and the expansions that set it
+  ["bash", 'export HO""ME=/tmp; cd; rm -rf x', [DELETE]],
+  ["bash", "export H\\OME=/tmp; cd; rm -rf x", [DELETE]],
+  ["bash", "declare H''OME=/tmp; cd; rm -rf x", [DELETE]],
+  ["bash", "read H\\OME; cd; rm -rf x", [DELETE]],
+  ["bash", "printf -v 'HOME' /tmp; cd; rm -rf x", [DELETE]],
+  ["bash", 'declare -n r=H""OME; cd; rm -rf x', [DELETE]],
+  ["bash", ': "${HOME:=/}"; cd; rm -rf x', [DELETE]],
+  ["bash", ": ${HOME=/}; cd; rm -rf x", [DELETE]],
+  ["bash", "HOME=/x cd; rm -rf y", [DELETE]],
+  ["bash", 'echo "${HOME:-x}" "${HOME:?}"; cd; rm -rf x', []],
+  ["bash", 'echo "$HOME" "${HOME}" "$PWD"; cd; rm -rf x', []],
   ["bash", 'rm -rf "$HOME/x"', []],
   ["bash", 'rm -rf "${HOME}/x"', []],
   ["bash", "cd ~ && rm -rf build", []],
@@ -816,6 +866,18 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   ["bash", "parallel rm -rf ::: build /", [DELETE]],
   ["bash", "parallel 'rm -rf {}' ::: build ~", [DELETE]],
   ["bash", "parallel 'rm -rf {}' ::: build dist", []],
+  // parallel's options that put several arguments in one command: the arguments are also read joined
+  ["bash", "parallel -X rm ::: -rf /", [DELETE]],
+  ["bash", "parallel -m rm ::: -rf /", [DELETE]],
+  ["bash", "parallel -n 2 rm ::: -rf /", [DELETE]],
+  ["bash", "parallel -n2 rm ::: -rf /", [DELETE]],
+  ["bash", "parallel --xargs rm ::: -rf /", [DELETE]],
+  ["bash", "parallel -N 2 rm ::: -rf /", [DELETE]],
+  ["bash", "parallel -L 2 rm ::: -rf /", [DELETE]],
+  ["bash", "parallel --max-args 2 rm ::: -rf /", [DELETE]],
+  ["bash", "parallel --max-lines=2 rm ::: -rf /", [DELETE]],
+  ["bash", "parallel -X rm ::: a b", []],
+  ["bash", "parallel rm ::: -rf /", []], // each argument alone: rm -rf, and rm /
   ["bash", "ls -la", []],
   ["bash", "", []],
 ];

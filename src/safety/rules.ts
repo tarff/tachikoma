@@ -48,30 +48,50 @@ interface Where extends Context {
 }
 
 // The folders a line's commands may run in (choice 52, and Task 3's final check). Each call starts a new shell in the
-// project's root (tools/shell.ts), and each literal cd is followed, in the order written with repeats kept (split's
-// `all`). Every folder met counts for every command, as the reader does not follow subshells, loops or a cd that fails:
+// project's root (tools/shell.ts), and each literal cd is followed, in the order written (split's `all`, which keeps a
+// repeated cd). Every folder met counts for every command, as the reader does not follow subshells or a cd that fails:
 // `(cd sub)`, `bash -c 'cd sub'`, or a cd to a folder that is not there, leaves the line where it was. So a cd's folder is
 // added beside those before it, and a cd from the current folder is worked out from each of them. More than one such cd
-// leaves the folder unknown, as each would double the list. Undefined too when a change of folder cannot be placed, the
-// line makes a link, or bash's CDPATH, HOME or PWD is named bare (set, read or declared) anywhere on it; $HOME and ${HOME}
-// only read it.
+// leaves the folder unknown, as each would double the list, and so does one on a line with a loop or a function, which
+// may run it more than once. Undefined too when a change of folder cannot be placed, the line makes a link, or bash's
+// CDPATH, HOME or PWD is set, read or declared anywhere on it (bare, in any quoting, or by ${NAME=} or ${NAME:=});
+// $HOME, ${HOME} and ${HOME:-x} only read it.
 function folders(commands: Command[], ctx: Context, line: string): string[] | undefined {
-  if (ctx.shell === "bash" && /(?<![\w$]|\$\{)(CDPATH|HOME|PWD)\b/.test(line)) return undefined;
-  const found = [ctx.root];
+  const named = /(?<![\w$]|\$\{)(CDPATH|HOME|PWD)\b|\$\{(CDPATH|HOME|PWD):?=/.test(line) || commands.some(({ words }) => words.some((w) => BARE.test(w)));
+  if (ctx.shell === "bash" && named) return undefined;
+  const repeats = REPEATS.test(line);
+  const found = new Set([ctx.root]);
   let relative = 0;
   for (const { words } of commands) {
     const to = movedTo(words, ctx);
     if (to === undefined) return undefined;
     if (to === null) continue;
-    if (fromHere(to, ctx) && ++relative > 1) return undefined;
-    for (const from of [...found]) {
+    const here = fromHere(to, ctx);
+    if (here && (repeats || ++relative > 1)) return undefined;
+    // A cd from the current folder is worked out from each folder met (from a copy, as the set grows here); a cd to a
+    // folder of its own (absolute, ~ or $HOME) is worked out once, except PowerShell's \x, which keeps the current drive.
+    for (const from of here || driveRooted(to, ctx) ? [...found] : [ctx.root]) {
       const folder = placed(to, from, ctx);
       if (folder === undefined) return undefined;
-      if (!found.includes(folder)) found.push(folder);
+      found.add(folder);
     }
   }
-  return found;
+  return [...found];
 }
+// bash's CDPATH, HOME or PWD as a word of a command, after its quotes are taken off: the name alone, NAME=..., or a
+// declare -n's target (r=HOME).
+const BARE = /(^|=)(CDPATH|HOME|PWD)(\+?=|$)/;
+// Loops and functions, found in the line's text: bash's for, while, until and select, and its functions (`name() {` and
+// `function name`); PowerShell's foreach, for, while and do, ForEach-Object and Where-Object (and %, ?, .ForEach() and
+// .Where()), which run a block for each item, and its function and filter.
+const REPEATS = new RegExp(
+  [
+    /(^|[\s;&|(){}])(for|while|until|select|function|foreach|do|filter|foreach-object|where-object|%|\?)(?=[\s{(]|$)/.source,
+    /(^|[\s;&|(){}])[\w.:-]+\s*\(\s*\)\s*[{(]/.source,
+    /\.(foreach|where)\s*\(/.source,
+  ].join("|"),
+  "i",
+);
 
 // Whether a cd's target is worked out from the current folder: a relative path, or one that starts with $PWD or ~+.
 function fromHere(target: string, ctx: Context): boolean {
@@ -79,6 +99,8 @@ function fromHere(target: string, ctx: Context): boolean {
   const start = leading(t, ctx.shell);
   return start !== undefined ? PWD.includes(start.toLowerCase()) : !paths(t, undefined, ctx).isAbsolute(t);
 }
+// A Windows path from the current drive's root (\x), which has no drive of its own.
+const driveRooted = (target: string, ctx: Context) => paths(plain(target, ctx), undefined, ctx) === path.win32 && /^[\\/](?![\\/])/.test(plain(target, ctx));
 
 // Commands that change the folder: cd and its PowerShell and cmd names (Set-Location's cd, chdir and sl), and pushd and
 // Push-Location, which are followed; popd and Pop-Location go back to a folder the check does not keep.
@@ -89,12 +111,13 @@ const PATH_PARAMS = ["path", "literalpath", "pspath", "lp"];
 const pathParam = (a: string) => PATH_PARAMS.some((n) => param(a, n));
 
 // The target of a command that changes the line's folder: null when it does not change it, undefined when the check cannot
-// place it: popd; cmd's and PowerShell's cd\ and cd.. (joined to their name); a cd behind builtin or command; a target of
-// -, cmd's /d, or more than one word; and commands that run another elsewhere or make a link (elsewhere).
+// place it: popd; cmd's and PowerShell's cd\ and cd.. (joined to their name, as cmd also ends it at ; , = and +); a cd
+// behind builtin or command; a target of -, cmd's /d, or more than one word; and commands that run another elsewhere or
+// make a link (elsewhere).
 function movedTo(words: string[], ctx: Context): string | null | undefined {
   const [first = "", ...args] = words;
   const name = nameOf(first);
-  if (/^(cd|chdir)[\\/.]/i.test(first) || BACK.includes(name)) return undefined;
+  if (/^(cd|chdir)[\\/.;,=+]/i.test(first) || BACK.includes(name)) return undefined;
   if ((name === "builtin" || name === "command") && FOLLOWED.includes(nameOf(args[0] ?? ""))) return undefined;
   if (elsewhere(name, args)) return undefined;
   if (!FOLLOWED.includes(name)) return null;
@@ -107,7 +130,7 @@ function movedTo(words: string[], ctx: Context): string | null | undefined {
     }
     if (/^-[LPe@]+$/.test(a) || param(a, "passthru")) continue; // bash's cd -L, -P, -e and -@; PowerShell's -PassThru
     if (pathParam(a)) {
-      const value = /^-[A-Za-z]+:(.+)$/.exec(a)?.[1];
+      const value = psValue(a);
       if (value !== undefined) targets.push(value); // -Path:value; with no value, the target is the next word
     } else if (/^[-+]/.test(a) || /^\/d$/i.test(a)) return undefined; // cd -, the folder stack, an option not known, cmd's /d
     else targets.push(a);
@@ -120,7 +143,7 @@ function movedTo(words: string[], ctx: Context): string | null | undefined {
 // Commands that run another in a folder of their own: find -execdir and -okdir, env -C or --chdir, sudo -D or --chdir,
 // pwsh -WorkingDirectory (-wo... or -wd), Start-Process -WorkingDirectory, wsl --cd, unshare --root or --wd, chroot, and
 // systemd-run, whose service starts in / or the home folder. And commands that make a link, through which any relative
-// path may lead anywhere: ln, cmd's mklink, and New-Item with -ItemType SymbolicLink, Junction or HardLink.
+// path may lead anywhere: ln, cmd's mklink, and New-Item with an -ItemType that may be SymbolicLink, Junction or HardLink.
 function elsewhere(name: string, args: string[]): boolean {
   const letter = (l: string) => args.some((a) => /^-[A-Za-z]+/.test(a) && !a.startsWith("--") && a.includes(l));
   switch (name) {
@@ -148,12 +171,16 @@ function elsewhere(name: string, args: string[]): boolean {
       return true;
     case "new-item":
     case "ni": // -ItemType's other name is -Type
-      return args.some((a, k) =>
-        (param(a, "itemtype") || param(a, "type")) && /^(symboliclink|junction|hardlink)$/i.test(/:(.+)$/.exec(a)?.[1] ?? args[k + 1] ?? ""));
+      return args.some((a, k) => (param(a, "itemtype") || param(a, "type")) && !plainItem(psValue(a) ?? args[k + 1] ?? ""));
     default:
       return false;
   }
 }
+
+// New-Item's FileSystem provider matches -ItemType as `<value>*`, with wildcards, against directory and container, then
+// file, then symboliclink, junction and hardlink. A value without a wildcard that starts directory, file or container makes
+// no link; any other may.
+const plainItem = (v: string) => v !== "" && !/[*?[\]]/.test(v) && ["directory", "file", "container"].some((t) => t.startsWith(v.toLowerCase()));
 
 // The folder a cd's target names, from folder `from`; undefined when it is known only when the line runs: a drive's own
 // folder (D:) or another kind of drive (HKLM:, Env:), a variable other than the home names and $PWD, a ~ form other than
@@ -233,6 +260,10 @@ const param = (a: string, full: string) => {
   const m = /^-([A-Za-z]+)(:.*)?$/.exec(a);
   return !!m && full.startsWith(m[1]!.toLowerCase());
 };
+// The value of a PowerShell parameter written -Name:value, or undefined.
+const psValue = (a: string) => /^-[A-Za-z]+:(.+)$/.exec(a)?.[1];
+// chmod's and chown's -R or --recursive.
+const recursiveOption: Test = (args) => args.some((a) => !!long(a, ["recursive"]) || short(a, "R"));
 // Invoke-WebRequest's and Invoke-RestMethod's -InFile, which uploads a file. Windows PowerShell 5.1's curl and wget name
 // Invoke-WebRequest; there -InFile is taken from -in on, as curl's own -I (only the headers) is the same letter.
 const inFile: Test = (args) => args.some((a) => param(a, "infile"));
@@ -240,7 +271,7 @@ const aliasInFile = (args: string[], ctx: Where, first: string) =>
   ctx.shell === "powershell" && /^(curl|wget)$/i.test(first) && args.some((a) => a.length > 2 && param(a, "infile"));
 // A key under HKLM: or HKCU:, or any written with the Registry:: provider (choice 52), also as -Path:value or in a comma list.
 const REGISTRY = /^(hklm|hkcu):|^(microsoft\.powershell\.core\\)?registry::/i;
-const registry: Test = (args) => args.some((a) => (/^-[A-Za-z]+:(.+)$/.exec(a)?.[1] ?? a).split(",").some((v) => REGISTRY.test(v)));
+const registry: Test = (args) => args.some((a) => (psValue(a) ?? a).split(",").some((v) => REGISTRY.test(v)));
 
 // Every built-in name of Remove-Item (its documentation's Notes), and cmd's rd, rmdir, del and erase, which take /s.
 const REMOVE = ["rm", "remove-item", "ri", "rd", "rmdir", "del", "erase"];
@@ -273,8 +304,8 @@ const RULES: Record<Kind, Record<string, Test>> = {
     takeown: ANY,
     cacls: ANY,
     "set-acl": ANY,
-    chmod: (args) => args.some((a) => !!long(a, ["recursive"]) || short(a, "R")),
-    chown: (args) => args.some((a) => !!long(a, ["recursive"]) || short(a, "R")),
+    chmod: recursiveOption,
+    chown: recursiveOption,
     // Choice 48: reg query only reads, and /? straight after reg or its subcommand only prints help.
     reg: (args) => !/^query$/i.test(args[0] ?? "") && args[0] !== "/?" && args[1] !== "/?",
     "set-itemproperty": registry,
@@ -447,8 +478,17 @@ function wslOwn(args: string[]): string[] {
 }
 
 // A recursive delete whose target, from any folder the line may run in, is a whole folder.
+// A target that is not worked out from the current folder is the same from each, so it is worked out once. One that is,
+// but does not climb (no ..), names the folder or one below it, so it is whole only from a folder that is whole itself.
 function deletesWhole(args: string[], ctx: Where, first: string): boolean {
-  return !!targetsOf(nameOf(first), args, ctx)?.some((t) => (ctx.cwds ?? [undefined]).some((cwd) => whole(t, ctx, cwd)));
+  const cwds = ctx.cwds ?? [undefined];
+  let wholeCwds: (string | undefined)[] | undefined;
+  const from = (t: string) => {
+    if (!fromHere(t, ctx)) return cwds.slice(0, 1);
+    if (/(^|[\\/])\.\.([\\/]|$)/.test(t)) return cwds;
+    return (wholeCwds ??= cwds.filter((c) => c === undefined || above(c, ctx, paths(c, c, ctx))));
+  };
+  return !!targetsOf(nameOf(first), args, ctx)?.some((t) => from(t).some((cwd) => whole(t, ctx, cwd)));
 }
 
 // A recursive delete's targets, or undefined when it is not recursive: rm with -r, -R or --recursive (in any bundle of GNU's
@@ -465,7 +505,7 @@ function targetsOf(name: string, args: string[], ctx: Context): string[] | undef
     for (const t of comma ? a.split(",").filter(Boolean) : [a]) targets.push(cmd ? t.replace(/(^|[\\/])\*\.\*$/, "$1*") : t);
   };
   for (const a of args) {
-    const value = /^-[A-Za-z]+:(.+)$/.exec(a)?.[1];
+    const value = psValue(a);
     if (ended || !a.startsWith("-") || a === "-") {
       if (cmd && /^(\/[A-Za-z])+$/.test(a)) recursive ||= /\/s/i.test(a); // cmd's switches, as /s/q
       else add(a);

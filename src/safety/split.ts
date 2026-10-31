@@ -9,8 +9,9 @@ export interface Command {
   words: string[];
   text: string;
 }
-// `commands` holds each command once; `all` holds every command in the order read, repeats included, so a cd that is
-// written twice is followed twice (rules.ts).
+// `commands` holds each command once; `all` holds every command in the order read, repeats included, so that rules.ts
+// can count each cd written on the line (`cd .. && cd ..` is two). A script block the reader reads both as a block and as
+// powershell's text is in `all` once.
 export type Split = { commands: Command[]; all: Command[] } | { unreadable: string }; // why, in plain words
 
 // The shell a command runs in (choice 3): PowerShell on a Windows host, /bin/sh (read as bash) on any other, bash in the box.
@@ -20,8 +21,8 @@ export function shellOf(where: "host" | "box", platform: NodeJS.Platform = proce
 
 export function split(line: string, shell: Shell): Split {
   try {
-    const all = read(line, shell).commands;
-    return { commands: once(all), all };
+    const commands = read(line, shell).commands;
+    return { commands: once(commands), all: commands.filter((c) => !REREAD.has(c)) };
   } catch (error) {
     if (error instanceof Unreadable) return { unreadable: error.message };
     // Brackets nested deeper than JavaScript's stack: no depth is set here, as none has a source.
@@ -105,12 +106,16 @@ function addSubs(into: Subs, part: Part): void {
   into.dollars += part.subs?.dollars ?? 0;
   into.ticks += part.subs?.ticks ?? 0;
 }
-// What a shell is given to run: its text in a grammar, and whether that text is made only when the line runs.
+// What a shell is given to run: its text in a grammar, whether that text is made only when the line runs, and whether
+// the reader has read it already (a script block given to powershell, read as a block too).
 interface Runs {
   grammar: Grammar;
   texts: string[];
   dynamic: boolean;
+  again?: boolean;
 }
+// The commands read a second time (Runs.again), left out of Split's `all`.
+const REREAD = new WeakSet<Command>();
 
 // Words before a command that are bash's own, not the command's; those that open and close a compound command.
 const RESERVED = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!"]);
@@ -1665,6 +1670,7 @@ function expand(words: Word[], text: string, src: string, g: Grammar, ctx: Conte
       // An empty text is filled in by xargs or by a word PowerShell dropped: the shell reads its input.
       if (t.trim() === "") hungry = SHELL;
       const part = read(t, runs.grammar, { env: ctx.vars, cwd, positional: true });
+      if (runs.again) for (const c of part.commands) REREAD.add(c);
       commands.push(...part.commands);
       hungry = most(hungry, part.hungry); // the shell's own commands read its input
       gather(part);
@@ -1840,7 +1846,9 @@ function psText(name: string, args: Word[]): Runs | null | undefined {
   const rest = (from: number): Runs | undefined => {
     const words = args.slice(from);
     const text = words.map((w) => w.value).join(" ");
-    return text.trim() === "" || text === "-" ? undefined : { grammar: "powershell", texts: [text], dynamic: words.some((w) => w.dynamic) };
+    // A script block alone, not in quotes, was read already as one of the line's words.
+    const again = words.length === 1 && !words[0]!.single && /^\{[\s\S]*\}$/.test(text.trim());
+    return text.trim() === "" || text === "-" ? undefined : { grammar: "powershell", texts: [text], dynamic: words.some((w) => w.dynamic), again };
   };
   for (let k = 0; k < args.length; k++) {
     const a = args[k]!.value;
@@ -1988,15 +1996,16 @@ const WRAPPERS: Record<string, Options> = {
     long: ["append", "return", "flush", "force", "quiet", "timing"],
     longValues: ["command", "echo", "log-io", "log-in", "log-out", "log-timing", "logging-format", "output-limit"],
   },
+  // Not --plus, whose replacement strings ({%x}, {/x/}) change the argument, nor -C or --colsep, which split it.
   parallel: {
     flags: "0kmqrtuvX",
-    values: "aCdEIjLnNPsS",
+    values: "adEIjLnNPsS",
     long: [
       "null", "keep-order", "quote", "no-run-if-empty", "verbose", "ungroup", "xargs", "line-buffer", "lb", "group", "bar", "progress",
-      "eta", "tag", "dry-run", "will-cite", "no-notice", "shuf", "pipe", "pipepart", "plus",
+      "eta", "tag", "dry-run", "will-cite", "no-notice", "shuf", "pipe", "pipepart",
     ],
     longValues: [
-      "arg-file", "colsep", "delimiter", "jobs", "max-procs", "max-args", "max-lines", "max-chars", "sshlogin", "halt", "joblog", "results",
+      "arg-file", "delimiter", "jobs", "max-procs", "max-args", "max-lines", "max-chars", "sshlogin", "halt", "joblog", "results",
       "tagstring", "timeout", "retries", "nice", "block", "env", "header",
     ],
   },
@@ -2496,8 +2505,10 @@ function wrapped(name: string, args: Word[], g: Grammar, src: string): Wrapped[]
   const optionsEnd = k;
   if (name === "env") while (k < args.length && (args[k]!.value === "-" || args[k]!.value.includes("="))) k++;
   const given = (letter: string, ...names: string[]) => names.flatMap((n, i) => valuesOf(args, optionsEnd, options, i === 0 ? letter : "", n));
-  // systemd-run's Exec... properties and strace's -o |command or !command run text the check does not follow.
-  const exec = name === "systemd-run" && given("p", "property", "path-property", "socket-property", "timer-property").some((w) => /^exec/i.test(w.value));
+  // systemd-run's Exec... properties, and those that set the environment or the input (Environment=, EnvironmentFile=,
+  // PassEnvironment=, StandardInput=), and strace's -o |command or !command, run text the check does not follow.
+  const property = /^(exec|environment|passenvironment|standardinput)/i;
+  const exec = name === "systemd-run" && given("p", "property", "path-property", "socket-property", "timer-property").some((w) => property.test(w.value));
   if (exec || (name === "strace" && given("o", "output").some((w) => /^[|!]/.test(w.value)))) throw new Unreadable(FOLLOW);
   // env's NAME=value words, and systemd-run's -E or --setenv and strace's -E or --env, set the command's environment.
   const setenv = name === "systemd-run" ? given("E", "setenv") : name === "strace" ? given("E", "env") : [];
@@ -2579,9 +2590,10 @@ function scriptRun(args: Word[]): Wrapped[] {
   const rest = args.slice(k + 1); // after the file
   const command = (a: string) => {
     if (a.startsWith("--")) return a.length > 2 && "command".startsWith(a.slice(2).split("=")[0]!);
+    if (!a.startsWith("-")) return false;
     const letters = [...a.slice(1)];
     const at = letters.findIndex((ch) => !options.flags.includes(ch));
-    return a.startsWith("-") && at >= 0 && letters[at] === "c";
+    return at >= 0 && letters[at] === "c";
   };
   const late = rest.find((w) => command(w.value));
   if (late) throw unknownOption("script", late.value);
@@ -2593,13 +2605,15 @@ function scriptRun(args: Word[]): Wrapped[] {
 
 // GNU parallel: `parallel [options] [command] ::: arguments`. It joins the command's words into shell text, as watch does,
 // and runs it for each argument, put in place of {} (or -I's string), or after the text when it has none. The arguments of
-// one ::: are on the line, so the text is read once with each, quoted as parallel quotes it; those of one :::: or -a, or of
-// the input, are left out, as xargs's are. Unreadable: {= ... =} anywhere (perl code); more than one list, or an argument
+// one ::: are on the line, so the text is read once with each, quoted as parallel quotes it, and, with an option that puts
+// several in one command (-X, -m, -n, -N, -L, -s, --xargs and their long names), once with them all; those of one :::: or
+// -a, or of the input, are left out, as xargs's are. Unreadable: {= ... =} anywhere (perl code); more than one list, or an argument
 // known only when it runs, which the text cannot be filled with; another replacement string ({.}, {//}, {1} and the like),
 // which changes the argument; and a command named by a replacement string. With no command, the arguments are the command
 // lines.
 const MARKS = [":::", "::::", ":::+", "::::+"];
 const REPLACEMENT = /\{[\d.\/#%+]*\}/g;
+const JOINS = ["X", "m", "n", "N", "L", "s", "xargs", "max-args", "max-lines", "max-chars"];
 function parallelRun(args: Word[]): Wrapped[] {
   if (args.some((w) => w.value.includes("{="))) throw new Unreadable(FOLLOW);
   const options = WRAPPERS.parallel!;
@@ -2618,8 +2632,10 @@ function parallelRun(args: Word[]): Wrapped[] {
   const dynamic = words.some((w) => w.dynamic);
   if (!given) return [{ grammar: "bash", texts: [text], dynamic }];
   const quoted = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-  const filled = (arg: string) => (text.includes(repl) ? text.split(repl).join(quoted(arg)) : `${text} ${quoted(arg)}`);
-  return [{ grammar: "bash", texts: given.map((w) => filled(w.value)), dynamic }];
+  const filled = (quotedArgs: string) => (text.includes(repl) ? text.split(repl).join(quotedArgs) : `${text} ${quotedArgs}`);
+  const texts = given.map((w) => filled(quoted(w.value)));
+  if (JOINS.some((o) => used.has(o))) texts.push(filled(given.map((w) => quoted(w.value)).join(" ")));
+  return [{ grammar: "bash", texts, dynamic }];
 }
 
 // cmd's start: a window title in quotes first, then its switches, then the command.
