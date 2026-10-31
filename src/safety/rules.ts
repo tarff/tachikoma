@@ -53,8 +53,9 @@ export function dangers(line: string, ctx: Context, own: UserRules = NO_RULES): 
   return found;
 }
 
-// Whether a command's first words are a rule the user added, word by word (choice 5): the first word by the table's name
-// (choice 4); the rest compared without case in PowerShell, exactly in bash. readSettings keeps a rule with single spaces.
+// Whether a command's first words are a rule the user added, word by word (choice 5): the first word by the table's
+// name (choice 4); the rest compared without case in PowerShell, exactly in bash. readSettings keeps a rule with
+// single spaces.
 function ownRuleMatches(words: string[], rule: string, ctx: Context): boolean {
   const [first = "", ...rest] = rule.split(" ");
   const same = (a: string, b: string) => (ctx.shell === "powershell" ? a.toLowerCase() === b.toLowerCase() : a === b);

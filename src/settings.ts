@@ -138,7 +138,8 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 // The user's own dangerous-command rules (release 7 plan, Task 4 and choice 5): "add", commands' first words, none blank,
 // as a blank one would be the start of every command, and none with quotes, kept with single spaces; "off", kinds by
-// their table names. Either may be left out, and a repeat is kept once. Other names in it are left out with a warning, as the file's own are.
+// their table names. Either may be left out, and a repeat is kept once. Other names in it are left out with a
+// warning, as the file's own are.
 function userRules(entry: string, value: unknown, warnings: string[]): UserRules {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw wrongType(entry, 'an object, such as {"add": ["terraform apply"], "off": ["installing software"]}', value);
