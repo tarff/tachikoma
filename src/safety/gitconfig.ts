@@ -4,9 +4,9 @@
 // before a write to any file or folder listed here (choice 57), and live link makes those inside the project read-only
 // in the box. What is guaranteed: the only git command run is `git config`, which reads settings and runs nothing; it
 // is started by its full path, from the system's temporary folder, with none of the user's git variables but the two
-// naming the settings files; and GIT_CEILING_DIRECTORIES stops git's search for a repository at the temporary folder,
-// so a project that holds the temporary folder (the home folder, say) is never taken as git's repository. Only a
-// project that is the temporary folder itself would be.
+// naming the settings files. Git still looks for a `.git` in the temporary folder itself; GIT_CEILING_DIRECTORIES
+// only stops it climbing above that folder, so a project that holds the temporary folder (the home folder, say) is
+// never taken as git's repository. A project that is the temporary folder itself would be.
 import { execFile } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
@@ -65,31 +65,34 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
   for (const file of [...system, ...scopeNames(env, "system"), ...global, ...scopeNames(env, "global")]) add(file, false);
   // A missing one is left out: live link would mount over it, and Docker makes a missing mount's path (choice 57).
   for (const file of repo?.files ?? []) if (existsSync(file)) add(file, false);
-  for (let next = queue.shift(); next; next = queue.shift()) {
-    const [file, included] = next;
-    if (included) {
-      const why = refusal(file);
-      if (why) {
-        found.problems.push({ file, why });
-        continue;
+  // The files waiting are read side by side, then their results taken in the order the files were met, so `files`,
+  // `hooksPaths` and `problems` keep that order; the includes they name are the next round.
+  while (queue.length > 0) {
+    const round = queue.splice(0);
+    const read = await Promise.all(
+      round.map(([file, included]) => {
+        const why = included ? refusal(file) : undefined;
+        return why ? { why } : values(run, file);
+      }),
+    );
+    round.forEach(([file], i) => {
+      const got = read[i]!;
+      if (!Array.isArray(got)) {
+        found.problems.push({ file, why: got.why });
+        return;
       }
-    }
-    const got = await values(run, file);
-    if (typeof got === "string") {
-      found.problems.push({ file, why: `it cannot be read: ${got}` });
-      continue;
-    }
-    // Each entry is "<key>\n<value>"; a key with no value names nothing. Git has expanded the value already; an include
-    // still relative is relative to the file it is in, and a hooks folder to the repository's top.
-    for (const entry of got) {
-      const cut = entry.indexOf("\n");
-      const value = cut < 0 ? "" : entry.slice(cut + 1);
-      if (!value) continue;
-      if (entry.slice(0, cut) === "core.hookspath") {
-        const folder = path.resolve(top, value);
-        list(found.hooksPaths, folder, realPath(folder));
-      } else add(path.resolve(path.dirname(file), value), true);
-    }
+      // Each entry is "<key>\n<value>"; a key with no value names nothing. Git has expanded the value already; an include
+      // still relative is relative to the file it is in, and a hooks folder to the repository's top.
+      for (const entry of got) {
+        const cut = entry.indexOf("\n");
+        const value = cut < 0 ? "" : entry.slice(cut + 1);
+        if (!value) continue;
+        if (entry.slice(0, cut) === "core.hookspath") {
+          const folder = path.resolve(top, value);
+          list(found.hooksPaths, folder, realPath(folder));
+        } else add(path.resolve(path.dirname(file), value), true);
+      }
+    });
   }
   return found;
 }
@@ -99,12 +102,32 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
 // ~/.config/git/config); the system's is GIT_CONFIG_SYSTEM, whose default git alone knows, as it depends on where git is
 // installed (git-config, FILES). A relative one is relative to the folder git runs in.
 function scopeNames(env: NodeJS.ProcessEnv, scope: "system" | "global"): string[] {
-  const home = env.HOME || env.USERPROFILE || os.homedir();
+  const home = homeFolder(env);
   const given = scope === "system" ? env.GIT_CONFIG_SYSTEM : env.GIT_CONFIG_GLOBAL;
   const xdg = env.XDG_CONFIG_HOME || path.join(home, ".config");
   const names = given ? [given] : scope === "global" ? [path.join(home, ".gitconfig"), path.join(xdg, "git", "config")] : [];
   return names.map((name) => path.resolve(os.tmpdir(), name)).filter((name) => existsSync(name));
 }
+
+// The home folder git uses for `~/`. With HOME unset, Git for Windows takes HOMEDRIVE and HOMEPATH together when that
+// folder exists, and USERPROFILE otherwise (measured with git 2.41.0.windows.1, 2026-10-31, on folders the check made:
+// HOMEDRIVE+HOMEPATH was read over USERPROFILE, and USERPROFILE when HOMEDRIVE+HOMEPATH named no folder). Not followed:
+// with neither HOMEDRIVE nor HOMEPATH set, that git read the Windows profile folder rather than USERPROFILE; Windows
+// sets both for every user.
+function homeFolder(env: NodeJS.ProcessEnv): string {
+  if (env.HOME) return env.HOME;
+  const share = process.platform === "win32" && env.HOMEDRIVE && env.HOMEPATH ? env.HOMEDRIVE + env.HOMEPATH : undefined;
+  if (share && isFolder(share)) return share;
+  return env.USERPROFILE || os.homedir();
+}
+
+const isFolder = (p: string) => {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
 
 const isLink = (p: string) => {
   try {
@@ -154,12 +177,12 @@ async function scopeFiles(run: Run, scope: string): Promise<string[]> {
 // `%(prefix)/` as it does when it reads the setting; one it cannot expand fails the lookup. Exit 1 with nothing on
 // stderr is "nothing matched", as it is for a file that does not exist; a file git cannot open, such as a folder, also
 // exits 1, with a warning (measured with git 2.41.0, 2026-10-31).
-async function values(run: Run, file: string): Promise<string[] | string> {
+async function values(run: Run, file: string): Promise<string[] | { why: string }> {
   const { code, out, err } = await run(["config", "--file", file, "-z", "--type=path", "--get-regexp", SETTINGS]);
   const why = err.trim().split(/\r?\n/)[0]!.replace(/^(fatal|warning|error): /, "");
   if (code === 0) return out.split("\0").filter(Boolean);
   if (code === 1 && !why) return [];
-  return why || `exit code ${code}`;
+  return { why: `it cannot be read: ${why || `exit code ${code}`}` };
 }
 
 // Why an included file is refused, before git reads it: a link could be changed to lead anywhere.

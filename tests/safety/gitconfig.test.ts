@@ -80,6 +80,32 @@ describe("gitSettings", () => {
     expect(got!.files).toEqual([w.system, w.global]);
   });
 
+  it("names ~/.gitconfig and the XDG file, empty, when GIT_CONFIG_GLOBAL is not set", async () => {
+    const w = world();
+    const gitconfig = w.write("home/.gitconfig", "");
+    const xdg = w.write("home/.config/git/config", "");
+    // Every home variable names a folder the test made; HOME is set, so git reads the test's home and no other.
+    const share = w.at("share");
+    mkdirSync(share);
+    const { GIT_CONFIG_GLOBAL: _, ...env } = w.env;
+    const homes = { HOMEDRIVE: share.slice(0, 2), HOMEPATH: share.slice(2), USERPROFILE: w.home };
+    const got = await gitSettings(w.root, { ...env, ...homes });
+    expect(got!.files).toEqual([w.system, gitconfig, xdg]);
+  });
+
+  it("keeps the files and problems in the order they were met, though files are read side by side", async () => {
+    const w = world();
+    w.write("project/.git/config", "[include]\n\tpath = ../a.cfg\n\tpath = ../bad-one.cfg\n\tpath = ../b.cfg\n\tpath = ../bad-two.cfg\n");
+    const a = w.write("project/a.cfg", "[include]\n\tpath = c.cfg\n");
+    const b = w.write("project/b.cfg", "");
+    const c = w.write("project/c.cfg", "");
+    const badOne = w.write("project/bad-one.cfg", "[core\n");
+    const badTwo = w.write("project/bad-two.cfg", "[core\n");
+    const got = await gitSettings(w.root, w.env);
+    expect(got!.files).toEqual([w.system, w.global, w.at("project/.git/config"), a, badOne, b, badTwo, c]);
+    expect(got!.problems.map((p) => p.file)).toEqual([badOne, badTwo]);
+  });
+
   it("finds no problem when the user's git traces its runs on stderr", async () => {
     const w = world();
     w.write("project/.git/config", "[include]\n\tpath = ../extra.cfg\n");
