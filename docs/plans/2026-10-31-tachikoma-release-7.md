@@ -494,6 +494,13 @@ the plan's review.
     comma lists; one variable with a fallback, a member or a subscript (`${d:-/}`, `$d.FullName`,
     `"$@"`), a command substitution (`"$(pwd)"`) or only variables (`"$d/$e"`) as a delete target;
     BSD rm letters; `git checkout -- *`, `git restore *`; cmd's `del /s *.*`.
+    Each shell call starts a fresh shell in the root (`src/tools/shell.ts`, `src/exec/local.ts`),
+    so a `cd` cannot carry over between calls; the check judges a delete against the root and
+    every folder a literal `cd` on the line leads to. After this round the replay finds 3.2% of
+    past calls warn (1,121 of 34,507, from 5.3%; installing 151, from 844) and 184 unreadable.
+53. **A relative delete while the folder is unknown** (the user's choice): once the line changes
+    folder in a way the check cannot follow, any recursive delete of a relative path counts as
+    deleting whole folders. The replay found 10 more calls ask (1 in about 3,500).
 
 ---
 
