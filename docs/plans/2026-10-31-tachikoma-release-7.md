@@ -524,7 +524,9 @@ the plan's review.
     session in red, since it says the check is weaker; classic mode and `-p` keep stderr only.
 56. **No `<kind> (off)` mark** (the user's choice): nothing lists the kinds, and the launch line
     names those that are off. A user's own rule does not see past an option between its words
-    (`make -C sub deploy` does not match `make deploy`): a known limit for the README.
+    (`make -C sub deploy` does not match `make deploy`): a known limit for the README. Its first
+    word is read by the table's name, so `mkfs.ext4 …` also matches `mkfs.vfat …` and `python3 …`
+    matches `py …` (the strict side); a rule cannot hold quotes, and spacing is normalised.
 
 ---
 
