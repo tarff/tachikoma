@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { commandEnv, system32 } from "../../src/exec/env.js";
@@ -102,7 +103,39 @@ describe("editFile", () => {
   });
 });
 
+// The environment without NoDefaultCurrentDirectoryInExePath in any case: a shell may have set it already, as Claude
+// Code's does, which would hide what Tachikoma sets.
+const withoutNoDefault = (env: NodeJS.ProcessEnv) =>
+  Object.fromEntries(Object.entries(env).filter(([name]) => name.toUpperCase() !== "NODEFAULTCURRENTDIRECTORYINEXEPATH"));
+
 describe("the editor's run", () => {
+  // Plan, choice 58: cmd.exe would look for a bare name such as `code` in its working folder, normally the project,
+  // before PATH. The stand-in there only writes a marker file. Without the variable the same run finds it, so the test
+  // would see a lookup in the folder.
+  it("is not looked up in the working folder first on Windows", async (ctx) => {
+    if (process.platform !== "win32") return ctx.skip("Windows only: sh looks for a bare name on PATH alone");
+    // Tachikoma's own environment without it, as when the user starts Tachikoma (Claude Code's shell sets it).
+    vi.stubEnv("NoDefaultCurrentDirectoryInExePath", undefined);
+    onTestFinished(() => void vi.unstubAllEnvs());
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-editor-lookup-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    writeFileSync(path.join(dir, "sample-editor.cmd"), "@echo off\r\necho ran> marker.txt\r\n");
+    const file = path.join(dir, "settings.json");
+    writeFileSync(file, "{}\n");
+    const marker = path.join(dir, "marker.txt");
+    const inFolder = (strip: boolean): Runner => (exe, args, options) =>
+      new Promise((resolve, reject) => {
+        const env = strip ? withoutNoDefault(options.env!) : options.env;
+        spawn(exe, args, { ...options, env, cwd: dir, stdio: "ignore" })
+          .on("error", reject)
+          .on("exit", (code, signal) => resolve({ code, signal }));
+      });
+    expect(await editFile(file, "sample-editor", inFolder(false))).toEqual({ failed: NOT_FOUND });
+    expect(existsSync(marker)).toBe(false);
+    expect(await editFile(file, "sample-editor", inFolder(true))).toEqual({ ok: true });
+    expect(existsSync(marker)).toBe(true);
+  });
+
   it("gets the terminal (stdio inherited) and the environment commands get, without the API keys", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "sk-secret");
     onTestFinished(() => void vi.unstubAllEnvs());
@@ -116,7 +149,8 @@ describe("the editor's run", () => {
     expect(seen).toHaveLength(2);
     for (const [, , options] of seen) {
       expect(options.stdio).toBe("inherit");
-      expect(options.env).toEqual(commandEnv());
+      // On Windows cmd.exe also gets NoDefaultCurrentDirectoryInExePath (plan, choice 58).
+      expect(options.env).toEqual(process.platform === "win32" ? { ...withoutNoDefault(commandEnv()), NoDefaultCurrentDirectoryInExePath: "1" } : commandEnv());
       expect(options.env).not.toHaveProperty("ANTHROPIC_API_KEY");
     }
     // Choice 4: through the shell, the entry and then the file's path in quotes; on Windows `& exit`, so cmd's exit is
