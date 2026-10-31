@@ -71,6 +71,23 @@ describe("gitSettings", () => {
     });
   });
 
+  it("names an empty system or user file too, though git lists nothing from it, and not one git would not read", async () => {
+    const w = world();
+    // GIT_CONFIG_GLOBAL is set, so git reads neither of these.
+    w.write("home/.gitconfig", "");
+    w.write("home/.config/git/config", "");
+    const got = await gitSettings(w.root, w.env);
+    expect(got!.files).toEqual([w.system, w.global]);
+  });
+
+  it("finds no problem when the user's git traces its runs on stderr", async () => {
+    const w = world();
+    w.write("project/.git/config", "[include]\n\tpath = ../extra.cfg\n");
+    const extra = w.write("project/extra.cfg", "");
+    const got = await gitSettings(w.root, { ...w.env, GIT_TRACE: "1", GIT_TRACE2: "1", GIT_TRACE_SETUP: "1", git_trace_performance: "1" });
+    expect(got).toEqual({ files: [w.system, w.global, w.at("project/.git/config"), extra], hooksPaths: [], gitDirs: [], problems: [] });
+  });
+
   it("reads the system's file even when GIT_CONFIG_NOSYSTEM is set", async () => {
     const w = world();
     w.write("system.cfg", "[core]\n\tautocrlf = true\n");
@@ -129,14 +146,32 @@ describe("gitSettings", () => {
     expect(got!.hooksPaths).toEqual([]);
   });
 
-  it("finds an include that is a junction to a folder a problem", async () => {
+  it("finds an include that is a junction to a folder a problem, and still checks a direct include of its target", async () => {
     const w = world();
     mkdirSync(w.at("project/real"));
     // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink.
     symlinkSync(w.at("project/real"), w.at("project/joined"), "junction");
-    w.write("project/.git/config", "[include]\n\tpath = ../joined\n");
+    w.write("project/.git/config", "[include]\n\tpath = ../joined\n\tpath = ../real\n");
     const got = await gitSettings(w.root, w.env);
-    expect(got!.problems).toEqual([{ file: w.at("project/joined"), why: "it is a link" }]);
+    expect(got!.problems).toEqual([
+      { file: w.at("project/joined"), why: "it is a link" },
+      { file: w.at("project/real"), why: "it cannot be read: it is a folder" },
+    ]);
+  });
+
+  it("reads a file reached by two paths once, matching by its real path, and on Windows without case", async () => {
+    const w = world();
+    mkdirSync(w.at("project/real"));
+    const real = w.write("project/real/extra.cfg", "");
+    symlinkSync(w.at("project/real"), w.at("project/joined"), "junction");
+    const paths = ["../joined/extra.cfg", "../real/extra.cfg", ...(process.platform === "win32" ? ["../REAL/EXTRA.cfg"] : [])];
+    w.write("project/.git/config", `[include]\n${paths.map((p) => `\tpath = ${p}\n`).join("")}`);
+    vi.mocked(execFile).mockClear();
+    const got = await gitSettings(w.root, w.env);
+    const runs = vi.mocked(execFile).mock.calls.map(([, args]) => args as string[]);
+    const reads = runs.filter((args) => args.includes("--file") && /extra\.cfg$/i.test(args[args.indexOf("--file") + 1]!));
+    expect(reads).toHaveLength(1);
+    expect(got!.files).toEqual([w.system, w.global, w.at("project/.git/config"), w.at("project/joined/extra.cfg"), real]);
   });
 
   it("lets git expand %(prefix)/ in an include, as git gives it", async () => {
@@ -154,9 +189,10 @@ describe("gitSettings", () => {
 
   it("finds a file whose ~user/ include git cannot expand a problem", async () => {
     const w = world();
-    const config = w.write("project/.git/config", "[include]\n\tpath = ~nobody/sample.cfg\n");
+    // A made-up name: Linux and macOS have a real `nobody`.
+    const config = w.write("project/.git/config", "[include]\n\tpath = ~tachi-sample-no-such-user/sample.cfg\n");
     const got = await gitSettings(w.root, w.env);
-    expect(got!.problems).toEqual([{ file: config, why: "it cannot be read: failed to expand user dir in: '~nobody/sample.cfg'" }]);
+    expect(got!.problems).toEqual([{ file: config, why: "it cannot be read: failed to expand user dir in: '~tachi-sample-no-such-user/sample.cfg'" }]);
   });
 
   it("gives an include's and a hooks folder's real path as well as the written one, when a folder on the way is a link", async () => {
@@ -215,8 +251,7 @@ describe("gitSettings", () => {
     w.write("main/.git/worktrees/project/config.worktree", "[core]\n\thooksPath = .husky\n");
     w.write("project/.git", "gitdir: ../main/.git/worktrees/project\n");
     const got = await gitSettings(w.root, w.env);
-    // The empty system and user files list nothing, so git does not name them.
-    expect(got!.files).toEqual([w.at("main/.git/config"), w.at("main/.git/worktrees/project/config.worktree"), shared]);
+    expect(got!.files).toEqual([w.system, w.global, w.at("main/.git/config"), w.at("main/.git/worktrees/project/config.worktree"), shared]);
     expect(got!.hooksPaths).toEqual([path.join(w.root, ".husky")]);
     // Both git folders are outside the project, out of the box's reach.
     expect(got!.gitDirs).toEqual([]);
@@ -229,8 +264,16 @@ describe("gitSettings", () => {
     // The project's folder reached through a junction: the written form differs from the real one.
     symlinkSync(w.root, w.at("joined"), "junction");
     const got = await gitSettings(w.at("joined"), w.env);
-    expect(got!.files).toEqual([w.at("joined/.bare/config"), w.at("project/.bare/config")]);
+    expect(got!.files).toEqual([w.system, w.global, w.at("joined/.bare/config"), w.at("project/.bare/config")]);
     expect(got!.gitDirs).toEqual([w.at("joined/.bare"), w.at("project/.bare")]);
+  });
+
+  it("counts a folder whose name starts with two dots as inside the project", async () => {
+    const w = world();
+    w.write("project/..bare/config", "");
+    w.write("project/.git", "gitdir: ./..bare\n");
+    const got = await gitSettings(w.root, w.env);
+    expect(got!.gitDirs).toEqual([w.at("project/..bare")]);
   });
 
   it("lists a worktree's shared git folder when its commondir leads inside the project, and leaves it out when outside", async () => {
@@ -244,7 +287,7 @@ describe("gitSettings", () => {
     w.write("main/.git/config", "");
     const outside = await gitSettings(w.root, w.env);
     expect(outside!.gitDirs).toEqual([w.at("project/gitdata/wt")]);
-    expect(outside!.files).toEqual([w.at("main/.git/config")]);
+    expect(outside!.files).toEqual([w.system, w.global, w.at("main/.git/config")]);
   });
 
   it("finds a commondir that cannot be read a problem", async () => {
@@ -255,7 +298,7 @@ describe("gitSettings", () => {
     expect(got!.problems).toEqual([
       { file: w.at("main/.git/worktrees/project/commondir"), why: expect.stringMatching(/^it cannot be read: EISDIR: illegal operation on a directory/) },
     ]);
-    expect(got!.files).toEqual([]);
+    expect(got!.files).toEqual([w.system, w.global]);
   });
 
   it.each([
@@ -265,7 +308,8 @@ describe("gitSettings", () => {
     const w = world();
     const dotGit = w.write("project/.git", text);
     const got = await gitSettings(w.root, w.env);
-    expect(got).toEqual({ files: [], hooksPaths: [], gitDirs: [], problems: [{ file: dotGit, why: `it cannot be read: ${words}: ${dotGit}` }] });
+    const problems = [{ file: dotGit, why: `it cannot be read: ${words}: ${dotGit}` }];
+    expect(got).toEqual({ files: [w.system, w.global], hooksPaths: [], gitDirs: [], problems });
   });
 
   it("follows a .git file with no commondir, as a submodule has", async () => {
@@ -286,15 +330,21 @@ describe("gitSettings", () => {
     expect(execFile).not.toHaveBeenCalled();
   });
 
-  it("never runs git inside the project folder, and runs it without the API keys", async () => {
+  it("never runs git inside the project folder, nor lets it look for a repository above the temporary folder", async () => {
     const w = world();
     w.write("project/.git/config", "[include]\n\tpath = ../extra.cfg\n");
     w.write("project/extra.cfg", "[core]\n\thooksPath = .husky\n");
     vi.mocked(execFile).mockClear();
-    await gitSettings(w.root, { ...w.env, ANTHROPIC_API_KEY: "sample-key" });
+    await gitSettings(w.root, { ...w.env, ANTHROPIC_API_KEY: "sample-key", GIT_DIR: w.at("project/.git"), Git_Trace: "1" });
     const runs = vi.mocked(execFile).mock.calls as unknown as [string, string[], { cwd: string; env: NodeJS.ProcessEnv }][];
-    expect(runs.length).toBeGreaterThan(0);
+    // The two scopes, then one run for each file: the system's, the user's, the repository's and the include.
+    expect(runs).toHaveLength(6);
     for (const [file, , options] of runs) {
+      // Git's search for a repository stops before it would climb out of the temporary folder.
+      expect(options.env.GIT_CEILING_DIRECTORIES).toBe(path.dirname(tmpdir()));
+      // No other git variable reaches it but the two naming the settings files.
+      const gitVariables = Object.keys(options.env).filter((name) => /^git_/i.test(name));
+      expect(gitVariables.sort()).toEqual(["GIT_CEILING_DIRECTORIES", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"]);
       // By its full path: a bare name would be looked for in the working folder first on Windows.
       expect(file).toBe(onPath("git", w.env));
       expect(path.isAbsolute(file)).toBe(true);

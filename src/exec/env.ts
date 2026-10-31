@@ -21,7 +21,8 @@ export const system32 = (exe: string) => path.join(process.env.SystemRoot ?? "C:
 // is looked for on Windows: a .cmd or .bat would run through cmd.exe.
 export function onPath(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const windows = process.platform === "win32";
-  const value = Object.entries(env).find(([key]) => (windows ? key.toUpperCase() === "PATH" : key === "PATH"))?.[1] ?? "";
+  // The last of two (Path and PATH on Windows), as `{ ...process.env, PATH: x }` means x.
+  const value = Object.entries(env).findLast(([key]) => (windows ? key.toUpperCase() === "PATH" : key === "PATH"))?.[1] ?? "";
   for (const entry of value.split(path.delimiter)) {
     // Windows' PATH may hold a folder in quotes; "\folder" and "C:folder" depend on the working folder's drive or folder.
     const dir = windows ? entry.replace(/^"(.*)"$/, "$1") : entry;

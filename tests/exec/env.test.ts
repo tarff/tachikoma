@@ -45,6 +45,14 @@ describe("onPath", () => {
     expect(onPath("tool", { Path: `"${dir}"` })).toBe(path.join(dir!, "tool.exe"));
   });
 
+  it("follows the last PATH of two on Windows, as { ...process.env, PATH: x } overrides it", (ctx) => {
+    if (!windows) return ctx.skip("Windows only: elsewhere Path and PATH are two variables");
+    const [early, late] = folders("early", "late");
+    writeFileSync(path.join(early!, "tool.exe"), "");
+    writeFileSync(path.join(late!, "tool.exe"), "");
+    expect(onPath("tool", { Path: early, PATH: late })).toBe(path.join(late!, "tool.exe"));
+  });
+
   it("gives undefined when no folder holds it, a .cmd, a .bat or a folder of its name not counting", () => {
     const [dir] = folders("dir");
     if (windows) {
