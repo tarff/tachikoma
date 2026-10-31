@@ -520,6 +520,11 @@ the plan's review.
     rm -rf dist`), `pushd`/`popd`, `cd build && rm -rf *`, `cd sub && npx vitest` without
     `sub`'s own copy, `pwsh -Command { cd .. } -args 1`, and every npx in the box until Task 8
     passes the check a `has` that maps `/work` to the project. `pulumi dn` is not added.
+55. **The launch's "check is off" line in full screen** (the user's choice): said again in the
+    session in red, since it says the check is weaker; classic mode and `-p` keep stderr only.
+56. **No `<kind> (off)` mark** (the user's choice): nothing lists the kinds, and the launch line
+    names those that are off. A user's own rule does not see past an option between its words
+    (`make -C sub deploy` does not match `make deploy`): a known limit for the README.
 
 ---
 
@@ -677,7 +682,8 @@ export interface UserRules { add: string[]; off: Kind[] }       // Settings.dang
   equal it, word by word (case-insensitive on Windows). Its kind is shown as `your own rule:
   <words>`. A kind in `off` never matches.
 - **At launch,** while any kind is off, one line goes to stderr: `The dangerous-command check is
-  off for: <kinds>; in auto and never, those commands run without it.`
+  off for: <kinds>; in auto and never, those commands run without it.` In full screen it is
+  also said in the session, in red (the user's choice 55), as release 6 says its launch warnings.
 - **A live edit** (design, "Configurable"):
   - one that switches a kind off gets a red warning notice, `settings.json: dangerous-command
     check: "<kind>" switched off; in auto and never, those commands will run without the check.
@@ -689,8 +695,9 @@ export interface UserRules { add: string[]; off: Kind[] }       // Settings.dang
   - switching a kind back on also applies at once, with a grey notice.
 
   `"dangerousCommands"` joins `LIVE`.
-- **The `?` shortcuts list** gains no entry. Where the kinds are listed (`tachi --help`'s
-  `--mode` note, and Task 8's red lines), an off kind shows as `<kind> (off)`.
+- **The `?` shortcuts list** gains no entry. No `<kind> (off)` mark (the user's choice 56):
+  nothing lists the kinds (`--help` names none, and Task 8's red lines name only kinds that
+  matched), and the launch line already names every kind that is off.
 
 **Tests:** each message triggered for real; an added rule matching and its near miss; an off
 kind not matching; a loosening edit waiting for the next launch while a tightening one applies
