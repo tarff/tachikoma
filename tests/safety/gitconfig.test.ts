@@ -66,6 +66,7 @@ describe("gitSettings", () => {
     expect(got).toEqual({
       files: [w.system, w.global, w.at("project/.git/config")],
       hooksPaths: [],
+      gitDirs: [],
       problems: [],
     });
   });
@@ -217,6 +218,44 @@ describe("gitSettings", () => {
     // The empty system and user files list nothing, so git does not name them.
     expect(got!.files).toEqual([w.at("main/.git/config"), w.at("main/.git/worktrees/project/config.worktree"), shared]);
     expect(got!.hooksPaths).toEqual([path.join(w.root, ".husky")]);
+    // Both git folders are outside the project, out of the box's reach.
+    expect(got!.gitDirs).toEqual([]);
+  });
+
+  it("lists a git folder a .git file names inside the project, as written and as its real path (choice 59)", async () => {
+    const w = world();
+    w.write("project/.bare/config", "[core]\n\tbare = true\n");
+    w.write("project/.git", "gitdir: ./.bare\n");
+    // The project's folder reached through a junction: the written form differs from the real one.
+    symlinkSync(w.root, w.at("joined"), "junction");
+    const got = await gitSettings(w.at("joined"), w.env);
+    expect(got!.files).toEqual([w.at("joined/.bare/config"), w.at("project/.bare/config")]);
+    expect(got!.gitDirs).toEqual([w.at("joined/.bare"), w.at("project/.bare")]);
+  });
+
+  it("lists a worktree's shared git folder when its commondir leads inside the project, and leaves it out when outside", async () => {
+    const w = world();
+    w.write("project/gitdata/wt/commondir", "../main\n");
+    w.write("project/gitdata/main/config", "");
+    w.write("project/.git", "gitdir: ./gitdata/wt\n");
+    const inside = await gitSettings(w.root, w.env);
+    expect(inside!.gitDirs).toEqual([w.at("project/gitdata/wt"), w.at("project/gitdata/main")]);
+    w.write("project/gitdata/wt/commondir", "../../../main/.git\n");
+    w.write("main/.git/config", "");
+    const outside = await gitSettings(w.root, w.env);
+    expect(outside!.gitDirs).toEqual([w.at("project/gitdata/wt")]);
+    expect(outside!.files).toEqual([w.at("main/.git/config")]);
+  });
+
+  it("finds a commondir that cannot be read a problem", async () => {
+    const w = world();
+    mkdirSync(w.at("main/.git/worktrees/project/commondir"), { recursive: true });
+    w.write("project/.git", "gitdir: ../main/.git/worktrees/project\n");
+    const got = await gitSettings(w.root, w.env);
+    expect(got!.problems).toEqual([
+      { file: w.at("main/.git/worktrees/project/commondir"), why: expect.stringMatching(/^it cannot be read: EISDIR: illegal operation on a directory/) },
+    ]);
+    expect(got!.files).toEqual([]);
   });
 
   it.each([
@@ -226,7 +265,7 @@ describe("gitSettings", () => {
     const w = world();
     const dotGit = w.write("project/.git", text);
     const got = await gitSettings(w.root, w.env);
-    expect(got).toEqual({ files: [], hooksPaths: [], problems: [{ file: dotGit, why: `it cannot be read: ${words}: ${dotGit}` }] });
+    expect(got).toEqual({ files: [], hooksPaths: [], gitDirs: [], problems: [{ file: dotGit, why: `it cannot be read: ${words}: ${dotGit}` }] });
   });
 
   it("follows a .git file with no commondir, as a submodule has", async () => {

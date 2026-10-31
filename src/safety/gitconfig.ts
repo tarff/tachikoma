@@ -14,7 +14,10 @@ import { commandEnv, onPath } from "../exec/env.js";
 // `files` are the settings files git reads for the project that exist, and every file an include names, missing or
 // refused ones included; `hooksPaths` every `core.hooksPath` in any of them, absolute. Each path is given as written and,
 // when it exists and differs, as its real path (after links, junctions and short names), so either form is protected.
-export interface GitSettings { files: string[]; hooksPaths: string[]; problems: { file: string; why: string }[] }
+// `gitDirs` are the git folders a `.git` file names inside the project, other than `<top>/.git`, and their shared folder
+// (commondir) when that is inside too: protected whole and read-only in the box, as `.git` is (choice 59). One outside
+// the project is not listed, as the box cannot reach it.
+export interface GitSettings { files: string[]; hooksPaths: string[]; gitDirs: string[]; problems: { file: string; why: string }[] }
 
 const INCLUDES = "^(include|includeif\\..*)\\.path$";
 
@@ -28,7 +31,12 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
   const named = [...(await scopeFiles(run, "--system")), ...(await scopeFiles(run, "--global"))];
   const repo = repository(root);
   const top = repo?.top ?? path.resolve(root);
-  const found: GitSettings = { files: [], hooksPaths: [], problems: repo?.problem ? [repo.problem] : [] };
+  const found: GitSettings = { files: [], hooksPaths: [], gitDirs: [], problems: repo?.problem ? [repo.problem] : [] };
+  for (const dir of repo?.gitDirs ?? []) {
+    const real = realPath(dir);
+    const inProject = within(root, dir) || (real !== undefined && within(realPath(root) ?? root, real));
+    if (inProject && path.relative(path.join(top, ".git"), dir) !== "") list(found.gitDirs, dir, real);
+  }
   const seen = new Set<string>();
   // Each entry: a file, and whether an include named it (only an include is checked for being a link or missing).
   const queue: [string, boolean][] = [];
@@ -87,6 +95,12 @@ function realPath(p: string): string | undefined {
   }
 }
 
+// Whether `p` is `root` or inside it (path.relative compares without case on Windows).
+function within(root: string, p: string): boolean {
+  const rel = path.relative(path.resolve(root), p);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
 // Adds a path as written and its real path, each once.
 function list(into: string[], written: string, real: string | undefined) {
   for (const p of [written, real]) if (p && !into.includes(p)) into.push(p);
@@ -135,8 +149,9 @@ function refusal(file: string): string | undefined {
 // config.worktree. A `.git` file names the repository's folder ("gitdir: <path>"), and a worktree's folder has a
 // `commondir` file naming the shared one, which holds config (gitrepository-layout); config.worktree is the worktree's
 // own. A `.git` file git would refuse is a problem, in git's own words (setup.c, read_gitfile_error_die), as is a
-// `.git` file or `commondir` that cannot be read.
-function repository(root: string): { top: string; files: string[]; problem?: { file: string; why: string } } | undefined {
+// `.git` file or `commondir` that cannot be read. `gitDirs` are the repository's folder and the shared one, wherever they
+// are; gitSettings keeps those inside the project.
+function repository(root: string): { top: string; files: string[]; gitDirs?: string[]; problem?: { file: string; why: string } } | undefined {
   for (let dir = path.resolve(root); ; dir = path.dirname(dir)) {
     const dotGit = path.join(dir, ".git");
     const st = statSync(dotGit, { throwIfNoEntry: false });
@@ -161,7 +176,7 @@ function repository(root: string): { top: string; files: string[]; problem?: { f
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") return refused(path.join(gitDir, "commondir"), errorText(err));
       }
-      return { top: dir, files: [path.join(common, "config"), path.join(gitDir, "config.worktree")] };
+      return { top: dir, files: [path.join(common, "config"), path.join(gitDir, "config.worktree")], gitDirs: [gitDir, common] };
     }
     if (path.dirname(dir) === dir) return undefined;
   }

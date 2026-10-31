@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import path from "node:path";
 
 // The API keys Tachikoma reads. Commands never see them, so one cannot print a key back to the model
@@ -27,7 +27,19 @@ export function onPath(name: string, env: NodeJS.ProcessEnv = process.env): stri
     const dir = windows ? entry.replace(/^"(.*)"$/, "$1") : entry;
     if (!(windows ? /^([a-z]:[\\/]|\\\\)/i.test(dir) : dir.startsWith("/"))) continue;
     const file = path.join(dir, windows ? `${name}.exe` : name);
-    if (statSync(file, { throwIfNoEntry: false })?.isFile()) return file;
+    if (runnable(file, windows)) return file;
   }
   return undefined;
+}
+
+// A file that can be run: outside Windows its run bit must be set. Any failure (not found, no access, an entry that is a
+// file) passes the entry over, as the system's own lookup does.
+function runnable(file: string, windows: boolean): boolean {
+  try {
+    if (!statSync(file).isFile()) return false;
+    if (!windows) accessSync(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }

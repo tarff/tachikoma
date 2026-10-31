@@ -55,4 +55,19 @@ describe("onPath", () => {
     expect(onPath("tool", { PATH: dir })).toBeUndefined();
     expect(onPath("tool", {})).toBeUndefined();
   });
+
+  it("passes over a PATH entry that is a file, rather than failing", () => {
+    const [dir, next] = folders("dir", "next");
+    writeFileSync(path.join(dir!, "plain.txt"), "");
+    writeFileSync(path.join(next!, exe("tool")), "");
+    expect(onPath("tool", { PATH: [path.join(dir!, "plain.txt"), next].join(path.delimiter) })).toBe(path.join(next!, exe("tool")));
+  });
+
+  it("passes over a file that may not be run, outside Windows", (ctx) => {
+    if (windows) return ctx.skip("Windows has no mark that lets a file be run");
+    // A file made as usual cannot be run (Node's default mode, 0o666, has no run bit); no permission is changed.
+    const [dir] = folders("dir");
+    writeFileSync(path.join(dir!, "tool"), "");
+    expect(onPath("tool", { PATH: dir })).toBeUndefined();
+  });
 });
