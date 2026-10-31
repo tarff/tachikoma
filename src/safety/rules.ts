@@ -32,7 +32,7 @@ export function shown(d: Danger): string {
 export function dangers(line: string, ctx: Context): Danger[] {
   const result = split(line, ctx.shell);
   if ("unreadable" in result) return [{ kind: "unreadable", command: result.unreadable }];
-  const where: Where = { ...ctx, cwds: folders(result.commands, ctx, line) };
+  const where: Where = { ...ctx, cwds: folders(result.all, ctx, line) };
   const found: Danger[] = [];
   for (const { words, text } of result.commands) {
     for (const kind of matched(words, where)) {
@@ -47,22 +47,37 @@ interface Where extends Context {
   cwds: string[] | undefined;
 }
 
-// The folders a line's commands may run in (choice 52). Each call starts a new shell in the project's root (tools/shell.ts),
-// and a literal cd is followed from the folder before it. Every folder met counts for every command, as the reader does
-// not follow subshells, loops or a cd that fails: `(cd sub)`, or a cd to a folder that is not there, leaves the rest of the
-// line where it was. Undefined when a change of folder cannot be placed, or bash's CDPATH, HOME or PWD is set on the line.
+// The folders a line's commands may run in (choice 52, and Task 3's final check). Each call starts a new shell in the
+// project's root (tools/shell.ts), and each literal cd is followed, in the order written with repeats kept (split's
+// `all`). Every folder met counts for every command, as the reader does not follow subshells, loops or a cd that fails:
+// `(cd sub)`, `bash -c 'cd sub'`, or a cd to a folder that is not there, leaves the line where it was. So a cd's folder is
+// added beside those before it, and a cd from the current folder is worked out from each of them. More than one such cd
+// leaves the folder unknown, as each would double the list. Undefined too when a change of folder cannot be placed, the
+// line makes a link, or bash's CDPATH, HOME or PWD is named bare (set, read or declared) anywhere on it; $HOME and ${HOME}
+// only read it.
 function folders(commands: Command[], ctx: Context, line: string): string[] | undefined {
-  if (ctx.shell === "bash" && /\b(CDPATH|HOME|PWD)=/.test(line)) return undefined;
+  if (ctx.shell === "bash" && /(?<![\w$]|\$\{)(CDPATH|HOME|PWD)\b/.test(line)) return undefined;
   const found = [ctx.root];
-  let at = ctx.root;
+  let relative = 0;
   for (const { words } of commands) {
-    const to = movedTo(words, at, ctx);
+    const to = movedTo(words, ctx);
     if (to === undefined) return undefined;
     if (to === null) continue;
-    at = to;
-    if (!found.includes(to)) found.push(to);
+    if (fromHere(to, ctx) && ++relative > 1) return undefined;
+    for (const from of [...found]) {
+      const folder = placed(to, from, ctx);
+      if (folder === undefined) return undefined;
+      if (!found.includes(folder)) found.push(folder);
+    }
   }
   return found;
+}
+
+// Whether a cd's target is worked out from the current folder: a relative path, or one that starts with $PWD or ~+.
+function fromHere(target: string, ctx: Context): boolean {
+  const t = plain(target, ctx);
+  const start = leading(t, ctx.shell);
+  return start !== undefined ? PWD.includes(start.toLowerCase()) : !paths(t, undefined, ctx).isAbsolute(t);
 }
 
 // Commands that change the folder: cd and its PowerShell and cmd names (Set-Location's cd, chdir and sl), and pushd and
@@ -73,10 +88,10 @@ const BACK = ["popd", "pop-location"];
 const PATH_PARAMS = ["path", "literalpath", "pspath", "lp"];
 const pathParam = (a: string) => PATH_PARAMS.some((n) => param(a, n));
 
-// Where a command leaves the line's folder: null when it does not change it, undefined when the check cannot place it.
-// Unplaced: popd; cmd's and PowerShell's cd\ and cd.. (joined to their name); a cd behind builtin or command; a target that
-// is not literal, -, cmd's /d, or more than one word; and commands that run another elsewhere (elsewhere).
-function movedTo(words: string[], from: string, ctx: Context): string | null | undefined {
+// The target of a command that changes the line's folder: null when it does not change it, undefined when the check cannot
+// place it: popd; cmd's and PowerShell's cd\ and cd.. (joined to their name); a cd behind builtin or command; a target of
+// -, cmd's /d, or more than one word; and commands that run another elsewhere or make a link (elsewhere).
+function movedTo(words: string[], ctx: Context): string | null | undefined {
   const [first = "", ...args] = words;
   const name = nameOf(first);
   if (/^(cd|chdir)[\\/.]/i.test(first) || BACK.includes(name)) return undefined;
@@ -98,13 +113,14 @@ function movedTo(words: string[], from: string, ctx: Context): string | null | u
     else targets.push(a);
   }
   if (targets.length > 1) return undefined;
-  if (targets.length === 0) return ctx.shell === "bash" && name === "cd" ? ctx.home : undefined; // bash's cd alone goes home
-  return placed(targets[0]!, from, ctx);
+  if (targets.length === 0) return ctx.shell === "bash" && name === "cd" ? "~" : undefined; // bash's cd alone goes home
+  return targets[0]!;
 }
 
 // Commands that run another in a folder of their own: find -execdir and -okdir, env -C or --chdir, sudo -D or --chdir,
 // pwsh -WorkingDirectory (-wo... or -wd), Start-Process -WorkingDirectory, wsl --cd, unshare --root or --wd, chroot, and
-// systemd-run, whose service starts in / or the home folder.
+// systemd-run, whose service starts in / or the home folder. And commands that make a link, through which any relative
+// path may lead anywhere: ln, cmd's mklink, and New-Item with -ItemType SymbolicLink, Junction or HardLink.
 function elsewhere(name: string, args: string[]): boolean {
   const letter = (l: string) => args.some((a) => /^-[A-Za-z]+/.test(a) && !a.startsWith("--") && a.includes(l));
   switch (name) {
@@ -127,7 +143,13 @@ function elsewhere(name: string, args: string[]): boolean {
       return letter("R") || letter("w") || args.some((a) => !!long(a, ["root", "wd"]));
     case "chroot":
     case "systemd-run":
+    case "ln":
+    case "mklink":
       return true;
+    case "new-item":
+    case "ni": // -ItemType's other name is -Type
+      return args.some((a, k) =>
+        (param(a, "itemtype") || param(a, "type")) && /^(symboliclink|junction|hardlink)$/i.test(/:(.+)$/.exec(a)?.[1] ?? args[k + 1] ?? ""));
     default:
       return false;
   }
@@ -253,7 +275,8 @@ const RULES: Record<Kind, Record<string, Test>> = {
     "set-acl": ANY,
     chmod: (args) => args.some((a) => !!long(a, ["recursive"]) || short(a, "R")),
     chown: (args) => args.some((a) => !!long(a, ["recursive"]) || short(a, "R")),
-    reg: (args) => !/^query$/i.test(args[0] ?? "") && !args.includes("/?"), // choice 48: reg query only reads, /? prints help
+    // Choice 48: reg query only reads, and /? straight after reg or its subcommand only prints help.
+    reg: (args) => !/^query$/i.test(args[0] ?? "") && args[0] !== "/?" && args[1] !== "/?",
     "set-itemproperty": registry,
     sp: registry, // Set-ItemProperty's built-in name
     bcdedit: ANY,
@@ -386,14 +409,28 @@ const GH_DELETES: [string[], string[]][] = [
   [["project"], ["delete", "item-delete", "field-delete"]],
 ];
 
+// aws's own options (`aws help`, AWS CLI 2): those that take the next word as their value, and those that take none.
+const AWS_VALUES = [
+  "--region", "--output", "--profile", "--endpoint-url", "--query", "--ca-bundle", "--cli-read-timeout", "--cli-connect-timeout", "--color",
+  "--cli-binary-format",
+];
+const AWS_FLAGS = [
+  "--debug", "--no-verify-ssl", "--no-paginate", "--no-sign-request", "--no-cli-pager", "--cli-auto-prompt", "--no-cli-auto-prompt", "--version",
+];
 // aws's operation, its second word that is not an option (after the service), is a delete when it is named delete... or
 // terminate..., s3's rm or rb, or s3 sync with --delete, which deletes what is not on the source (choice 51: only the
-// operation counts). aws's options need not be known: the words are read both with and without the word after each
-// option taken as its value.
+// operation counts). An option it does not know is read both with and without the next word as its value.
 function awsDeletes(args: string[]): boolean {
-  const loose = args.filter((a) => !a.startsWith("-"));
-  const strict = args.filter((a, k) => !a.startsWith("-") && !(args[k - 1]?.startsWith("-") && !args[k - 1]!.includes("=")));
-  return [loose[1], strict[1]].some((op = "") =>
+  const words = (unknownTakesValue: boolean) => {
+    const out: string[] = [];
+    for (let k = 0; k < args.length; k++) {
+      const a = args[k]!;
+      if (!a.startsWith("-")) out.push(a);
+      else if (!a.includes("=") && (AWS_VALUES.includes(a) || (unknownTakesValue && !AWS_FLAGS.includes(a)))) k++;
+    }
+    return out;
+  };
+  return [words(false)[1], words(true)[1]].some((op = "") =>
     /^(delete|terminate)/i.test(op) || /^(rm|rb)$/i.test(op) || (/^sync$/i.test(op) && args.some((a) => !!long(a, ["delete"]))));
 }
 

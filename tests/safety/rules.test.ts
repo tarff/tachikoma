@@ -138,7 +138,39 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   ["bash", "cd sub && rm -rf build", []],
   ["bash", "cd sub && rm -rf ../other", []],
   ["bash", "cd /tmp/y && rm -rf build", []],
+  ["bash", "cd /tmp/y && cd sub && rm -rf build", []],
+  ["bash", "cd sub && cd /tmp && rm -rf build", []],
   ["powershell", "cd sub; Remove-Item -Recurse ..\\other", []],
+  // A cd written twice is followed twice; a cd that may not hold (in a subshell or a child shell, or one that fails) is
+  // kept beside the folder before it; and more than one cd from the current folder leaves it unknown
+  ["bash", "cd .. && cd .. && rm -rf tmp", [DELETE]],
+  ["bash", "cd ..; cd ..; rm -rf tmp", [DELETE]],
+  ["powershell", "cd ..; cd ..; Remove-Item -Recurse work", [DELETE]],
+  ["bash", "(cd sub); cd ..; rm -rf x", [DELETE]],
+  ["bash", "bash -c 'cd sub'; cd ..; rm -rf x", [DELETE]],
+  ["bash", "cd nosuch; cd ..; rm -rf x", [DELETE]],
+  ["bash", "(cd sub && make) && cd .. && rm -rf x", [DELETE]],
+  ["bash", "cd sub && cd .. && rm -rf build", [DELETE]],
+  // A link can make any relative path lead anywhere, so a line that makes one leaves the folder unknown
+  ["bash", "ln -s / x && rm -rf x/home", [DELETE]],
+  ["bash", "ln --symbolic / x; cd x && rm -rf home", [DELETE]],
+  ["bash", "ln a b && rm -rf build", [DELETE]],
+  ["powershell", "cmd /c mklink /d x C:\\; Remove-Item -Recurse x\\Users", [DELETE]],
+  ["powershell", "New-Item -ItemType SymbolicLink -Path x -Target C:\\; Remove-Item -Recurse x\\Users", [DELETE]],
+  ["powershell", "ni x -ItemType:Junction -Value C:\\; Remove-Item -Recurse x\\Users", [DELETE]],
+  ["powershell", "New-Item -Type HardLink -Path a -Target b; Remove-Item -Recurse build", [DELETE]],
+  ["powershell", "New-Item -ItemType Directory build; Remove-Item -Recurse build", []],
+  // bash's HOME, PWD or CDPATH named bare anywhere (set, read, declared) leaves the folder unknown; reading $HOME does not
+  ["bash", "read HOME; rm -rf build", [DELETE]],
+  ["bash", "printf -v HOME x; rm -rf build", [DELETE]],
+  ["bash", "declare HOME=/; rm -rf build", [DELETE]],
+  ["bash", "export PWD; rm -rf build", [DELETE]],
+  ["bash", "unset CDPATH; rm -rf build", [DELETE]],
+  ["bash", 'rm -rf "$HOME/x"', []],
+  ["bash", 'rm -rf "${HOME}/x"', []],
+  ["bash", "cd ~ && rm -rf build", []],
+  ["bash", 'cd "$HOME" && rm -rf build', []],
+  ["bash", "echo $OLDPWD $PWD; rm -rf build", []],
   // A change of folder the check cannot place leaves it unknown: what climbs out of it, or is it, counts
   ["bash", 'cd "$d" && rm -rf ../other', [DELETE]],
   ["bash", "cd - && rm -rf ../other", [DELETE]],
@@ -322,6 +354,8 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   ["powershell", "reg query /?", []],
   ["powershell", "reg add /?", []],
   ["powershell", "reg", [PERMS]],
+  ["powershell", 'reg add HKCU\\x /v a /d "/?"', [PERMS]], // only /? straight after reg or its subcommand is help
+  ["powershell", "reg add HKCU\\x /?", [PERMS]],
   // Choice 52: the registry written as Registry::, as -Path:value, or in a comma list
   ["powershell", "Set-ItemProperty -Path Registry::HKEY_LOCAL_MACHINE\\Software\\x -Name y -Value 1", [PERMS]],
   ["powershell", "sp Microsoft.PowerShell.Core\\Registry::HKEY_CURRENT_USER\\x -Name y -Value 1", [PERMS]],
@@ -731,6 +765,14 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   ["bash", "aws s3 cp deleted.txt s3://b/", []],
   ["bash", "aws cloudformation describe-stacks --stack-name delete-test", []],
   ["bash", "aws --profile delete s3 ls", []],
+  // aws's own options: those that take a value, and those that do not, so the service and operation are found
+  ["bash", "aws --no-paginate cloudformation describe-stacks --stack-name delete-x", []],
+  ["bash", "aws --color on cloudformation describe-stacks --stack-name delete-x", []],
+  ["bash", "aws --no-cli-pager s3 rm s3://b/x", [OUTSIDE]],
+  ["bash", "aws --profile p --region r s3 rm s3://b/x", [OUTSIDE]],
+  ["bash", "aws --output json ec2 terminate-instances --instance-ids i-1", [OUTSIDE]],
+  ["bash", "aws --cli-read-timeout 5 --bogus s3 rm s3://b", [OUTSIDE]], // an option it does not know: both readings
+  ["bash", "aws --bogus x s3 rm s3://b", [OUTSIDE]],
   ["bash", "helm install un ./chart", []],
   ["bash", "docker buildx build .", []],
   ["bash", "docker buildx build --push=false .", []],
@@ -818,6 +860,7 @@ describe("dangers", () => {
     expect(kinds("rm -rf /C/Users/u")).toEqual([DELETE]);
     expect(kinds("rm -rf ..")).toEqual([DELETE]);
     expect(kinds("cd /c/work && rm -rf x")).toEqual([DELETE]);
+    expect(kinds("cd .. && cd .. && rm -rf work")).toEqual([DELETE]);
     expect(kinds("rm -rf /c/work/x/build")).toEqual([]);
     expect(kinds("rm -rf build")).toEqual([]);
     expect(kinds("rm -rf /cd")).toEqual([]);

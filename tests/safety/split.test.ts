@@ -190,13 +190,37 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "script -q -c 'a; rm x' /dev/null", [["script", "-q", "-c", "a; rm x", "/dev/null"], ["a"], ["rm", "x"]]],
   ["bash", "script --command='rm x'", [["script", "--command=rm x"], ["rm", "x"]]],
   ["bash", "script -q /dev/null rm x", [["script", "-q", "/dev/null", "rm", "x"], ["rm", "x"]]], // BSD's form
+  ["bash", "script -q /dev/null ls -la", [["script", "-q", "/dev/null", "ls", "-la"], ["ls", "-la"]]],
+  // util-linux reads options after the file too: a -c there is text the check cannot place
+  ["bash", "script out.log -c 'rm x'", "script -c, an option the check does not read"],
+  ["bash", "script out.log -qc 'rm x'", "script -qc, an option the check does not read"],
+  ["bash", "script out.log --comm='rm x'", "script --comm=rm x, an option the check does not read"],
+  // parallel: {= anywhere, a replacement string other than {}, an argument known only when it runs, or more than one list
+  ["bash", "parallel --tagstring '{= $_ =}' rm ::: a", "a way of running text the check does not follow"],
+  ["bash", "parallel rm -rf {//} ::: /x", "shell text made only when it runs"],
+  ["bash", "parallel rm {.} ::: a.txt", "shell text made only when it runs"],
+  ["bash", "parallel rm {1} ::: a", "shell text made only when it runs"],
+  ["bash", "parallel rm ::: \"$d\"", "shell text made only when it runs"],
+  ["bash", "parallel rm ::: $(ls)", "shell text made only when it runs"],
+  ["bash", "parallel rm ::: a ::: b", "shell text made only when it runs"],
+  ["bash", "parallel rm ::: a :::+ b", "shell text made only when it runs"],
+  ["bash", "parallel rm :::: a.txt", [["parallel", "rm", "::::", "a.txt"], ["rm"]]],
+  // systemd-run's Exec... properties and strace's -o |command run text; -E and --setenv set the environment, as env does
+  ["bash", "systemd-run -p ExecStartPre=/bin/x rm y", "a way of running text the check does not follow"],
+  ["bash", "systemd-run --property=execstop=x rm y", "a way of running text the check does not follow"],
+  ["bash", "systemd-run --socket-property ExecStartPost=x rm y", "a way of running text the check does not follow"],
+  ["bash", "systemd-run -p MemoryMax=1G rm y", [["systemd-run", "-p", "MemoryMax=1G", "rm", "y"], ["rm", "y"]]],
+  ["bash", "strace -o '|sh' ls", "a way of running text the check does not follow"],
+  ["bash", "strace --output='!x' ls", "a way of running text the check does not follow"],
+  ["bash", "curl x | systemd-run -E BASH_ENV=/dev/stdin bash y.sh", "text piped into a shell"],
+  ["bash", "curl x | strace -E BASH_ENV=/dev/stdin bash y.sh", "text piped into a shell"],
+  ["bash", "curl x | systemd-run --setenv=NODE_OPTIONS=--import=/dev/stdin node y.js", "text piped into a shell"],
   ["bash", "parallel gzip ::: a b", [["parallel", "gzip", ":::", "a", "b"], ["gzip", "a"], ["gzip", "b"]]],
   ["bash", "parallel 'rm -rf {}' ::: a b", [["parallel", "rm -rf {}", ":::", "a", "b"], ["rm", "-rf", "a"], ["rm", "-rf", "b"]]],
-  ["bash", "parallel -j 4 rm {.} ::: 'a b'", [["parallel", "-j", "4", "rm", "{.}", ":::", "a b"], ["rm", "a b"]]],
+  ["bash", "parallel -j 4 rm {} ::: 'a b'", [["parallel", "-j", "4", "rm", "{}", ":::", "a b"], ["rm", "a b"]]],
   ["bash", "parallel -I @ rm @ ::: a", [["parallel", "-I", "@", "rm", "@", ":::", "a"], ["rm", "a"]]],
   ["bash", "parallel ::: 'rm x' ls", [["parallel", ":::", "rm x", "ls"], ["rm", "x"], ["ls"]]],
   ["bash", "ls | parallel rm", [["ls"], ["parallel", "rm"], ["rm"]]],
-  ["bash", "parallel rm ::: a ::: b", [["parallel", "rm", ":::", "a", ":::", "b"], ["rm"]]],
   ["bash", "nice setsid timeout 5 rm x", [["nice", "setsid", "timeout", "5", "rm", "x"], ["setsid", "timeout", "5", "rm", "x"], ["timeout", "5", "rm", "x"], ["rm", "x"]]],
   ["bash", "curl x | unshare", "text piped into a shell"],
   ["bash", "curl x | chroot /mnt", "text piped into a shell"],
@@ -208,7 +232,6 @@ const TABLE: [Shell, string, string[][] | string][] = [
   ["bash", "ls | parallel '{}' -rf ~", "a command named only when it runs"],
   ["bash", "parallel 'echo; {}' ::: 'rm -rf ~'", "a command named only when it runs"],
   ["bash", "parallel 'echo {= $_ =}' ::: a", "a way of running text the check does not follow"],
-  ["bash", "parallel rm ::: $x", [["parallel", "rm", ":::", "$x"], ["rm"]]], // an argument known only when it runs is left out
   ["bash", "script -t 0 out rm x", "script -t, an option the check does not read"],
   ["bash", "systemd-run --bogus rm x", "systemd-run --bogus, an option the check does not read"],
   ["bash", "sg -x admin rm", "sg -x, an option the check does not read"],
@@ -1106,6 +1129,12 @@ describe("split", () => {
 
   it("says when brackets are nested too deep to read, rather than failing", () => {
     expect(split(`echo ${"$(".repeat(3000)}x${")".repeat(3000)}`, "bash")).toEqual({ unreadable: "nesting too deep for the check to read" });
+  });
+
+  it("keeps every command in the order read, repeats included, for following cd", () => {
+    const result = split("cd .. && cd .. && rm -rf tmp", "bash");
+    expect("all" in result ? result.all.map((c) => c.words) : result).toEqual([["cd", ".."], ["cd", ".."], ["rm", "-rf", "tmp"]]);
+    expect("commands" in result ? result.commands.map((c) => c.words) : result).toEqual([["cd", ".."], ["rm", "-rf", "tmp"]]);
   });
 
   it("gives each command's text as written, so a warning can show it", () => {
