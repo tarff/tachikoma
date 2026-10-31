@@ -501,6 +501,14 @@ the plan's review.
 53. **A relative delete while the folder is unknown** (the user's choice): once the line changes
     folder in a way the check cannot follow, any recursive delete of a relative path counts as
     deleting whole folders. The replay found 10 more calls ask (1 in about 3,500).
+54. **One short round after the final check** (the user's choice): the final check found repeated
+    `cd ..` read once and a `cd` that may not take effect moving the next one; the security
+    reviews found holes in the new wrappers (`script` options after the file, parallel's `{=` in
+    an option and its other replacement strings and unfilled arguments, systemd-run's `Exec`
+    properties and `--setenv`, strace's `-o |`/`!` and `-E`), aws's operation found by position, a
+    line that makes a link, CDPATH/HOME/PWD set other than by `NAME=`, and `reg … /?` passing
+    anywhere. Each is fixed, mostly by asking; the code-quality review is the check, and later
+    finds go to the known limits.
 
 ---
 
