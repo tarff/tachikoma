@@ -137,8 +137,8 @@ function remaps(entry: string, value: unknown, warnings: string[]): Record<strin
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 // The user's own dangerous-command rules (release 7 plan, Task 4 and choice 5): "add", commands' first words, none blank,
-// as a blank one would be the start of every command; "off", kinds by their table names. Either may be left out, and a
-// repeat is kept once. Other names in it are left out with a warning, as the file's own are.
+// as a blank one would be the start of every command, and none with quotes, kept with single spaces; "off", kinds by
+// their table names. Either may be left out, and a repeat is kept once. Other names in it are left out with a warning, as the file's own are.
 function userRules(entry: string, value: unknown, warnings: string[]): UserRules {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw wrongType(entry, 'an object, such as {"add": ["terraform apply"], "off": ["installing software"]}', value);
@@ -150,7 +150,10 @@ function userRules(entry: string, value: unknown, warnings: string[]): UserRules
       if (!Array.isArray(list) || !list.every((v) => typeof v === "string" && v.trim())) {
         throw new Error(`${part} must be a list of commands in quotes, such as ["terraform apply"]`);
       }
-      rules.add = [...new Set<string>(list)];
+      // A command's words have their quotes taken off (split.ts), so a rule holding one could never match.
+      const quoted = list.find((v: string) => /["']/.test(v));
+      if (quoted !== undefined) throw new Error(`${part} rules are matched word by word and cannot hold quotes (got ${JSON.stringify(quoted)})`);
+      rules.add = [...new Set(list.map((v: string) => v.trim().split(/\s+/).join(" ")))]; // " make  deploy " is "make deploy"
     } else if (name === "off") {
       const bad = Array.isArray(list) ? list.find((v) => !(KINDS as readonly unknown[]).includes(v)) : list;
       if (bad !== undefined) throw new Error(`${part} must be a list of: ${KINDS.join(", ")} (got ${JSON.stringify(bad)})`);

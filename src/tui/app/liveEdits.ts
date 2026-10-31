@@ -112,9 +112,10 @@ export const liveEdits = (ui: UI, fns: Fns) => {
         fns.note({ text: `${check} ${what}; in auto and never, those commands will run without the check. Takes effect at the next launch.`, color: "red" });
       for (const kind of after.off) if (!before.off.includes(kind)) loosened(`"${kind}" switched off`);
       for (const rule of before.add) if (!after.add.includes(rule)) loosened(`your rule "${rule}" removed`);
-      for (const rule of after.add) if (!before.add.includes(rule)) fns.note(gray(`${check} rule "${rule}" added; it applies now.`));
-      for (const kind of before.off) if (!after.off.includes(kind)) fns.note(gray(`${check} "${kind}" switched back on; it applies now.`));
       const r = ui.rules.current;
+      for (const rule of after.add) if (!before.add.includes(rule)) fns.note(gray(`${check} rule "${rule}" added; it applies now.`));
+      // A kind switched off in this session was still checked, as that waited, so switching it back on says nothing.
+      for (const kind of r.off) if (!after.off.includes(kind)) fns.note(gray(`${check} "${kind}" switched back on; it applies now.`));
       ui.rules.current = { add: [...new Set([...r.add, ...after.add])], off: r.off.filter((kind) => after.off.includes(kind)) };
       ui.onRules(ui.rules.current);
     } else {

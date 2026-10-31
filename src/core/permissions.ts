@@ -81,7 +81,7 @@ export class PermissionGate {
     this.#rules = rules;
   }
 
-  // A subagent's gate: the lead's mode, and questions that name the subagent.
+  // A subagent's gate: the lead's mode and rules, and questions that name the subagent.
   for(owner: Owner): PermissionGate {
     const gate = new PermissionGate(this.#mode, (summary, detail) => this.ask(summary, detail, owner), this.refusal);
     gate.#parent = this;

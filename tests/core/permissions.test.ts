@@ -76,6 +76,15 @@ describe("a subagent's gate", () => {
     await expect(child.require({ kind: "read", outside: true, summary: "read /x" })).rejects.toThrow("Not allowed: read /x");
     expect(asked).toEqual([["read /x", "t2 (find the login code)"]]);
   });
+
+  // Release 7 plan, Task 4: a live edit that tightens the user's own rules reaches subagents already running.
+  it("reads the lead's dangerous-command rules at each check", () => {
+    const gate = new PermissionGate("ask", async () => false);
+    const child = gate.for({ name: "t2", signal: new AbortController().signal, stop: () => {} });
+    expect(child.rules).toEqual({ add: [], off: [] });
+    gate.rules = { add: ["make deploy"], off: ["installing software"] };
+    expect(child.rules).toEqual({ add: ["make deploy"], off: ["installing software"] });
+  });
 });
 
 describe("visible", () => {

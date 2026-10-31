@@ -6169,11 +6169,30 @@ describe("App's live settings", () => {
       });
     });
 
-    it("gives a subagent's gate the rules in force", async () => {
+    it("gives a subagent's gate the rules in force, one made before the edit too", async () => {
       const { gate, write, app } = await watching([], {});
+      const child = gate.for({ name: "t1", signal: new AbortController().signal, stop: () => {} });
       write({ dangerousCommands: { add: ["make deploy"] } });
       await sees(app, ADDED);
-      expect(gate.for({ name: "t1", signal: new AbortController().signal, stop: () => {} }).rules).toEqual({ add: ["make deploy"], off: [] });
+      expect(child.rules).toEqual({ add: ["make deploy"], off: [] });
+    });
+
+    // The kind was never off in force (the edit switching it off waited), so the check never stopped: nothing to say.
+    it("says nothing when a kind switched off in the session, and so still checked, is switched back on", async () => {
+      const { app, gate, write } = await watching([], {});
+      write({ dangerousCommands: { off: ["installing software"] } });
+      await vi.waitFor(() => expect(plain(app)).toContain(OFF), WATCHED);
+      write({ dangerousCommands: { off: [], add: ["make deploy"] } });
+      await vi.waitFor(() => expect(plain(app)).toContain(ADDED), WATCHED);
+      expect(plain(app)).not.toContain("switched back on");
+      expect(gate.rules).toEqual({ add: ["make deploy"], off: [] });
+    });
+
+    it("takes a spacing-only edit of a rule as no change", async () => {
+      const { app, write } = await watching([], { dangerousCommands: { add: ["make deploy"], off: [] } });
+      write({ dangerousCommands: { add: [" make  deploy "] }, maxTasks: 3 });
+      await sees(app, `maxTasks is now 3 ${FROM}`);
+      expect(plain(app)).not.toContain("dangerous-command check");
     });
   });
 

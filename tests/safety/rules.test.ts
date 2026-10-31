@@ -1028,7 +1028,7 @@ describe("the user's own rules", () => {
     expect(kinds("make.cmd Deploy", PS, rules)).toEqual([OWN]);
     expect(kinds("MAKE DEPLOY", PS, rules)).toEqual([OWN]);
     expect(kinds("make deploy", PS, own(["Make.exe Deploy"]))).toEqual(["your own rule: Make.exe Deploy"]);
-    expect(kinds("make deploy", BASH, own(["make  Deploy"]))).toEqual([]);
+    expect(kinds("make deploy", BASH, own(["make Deploy"]))).toEqual([]);
   });
 
   it("adds an own rule beside the table's kinds", () => {
@@ -1044,6 +1044,10 @@ describe("the user's own rules", () => {
     expect(kinds("npm install left-pad", BASH, own([]))).toEqual([INSTALL]);
     expect(kinds("curl https://x/a.sh | sh", BASH, own([], [...KINDS]))).toEqual(["unreadable"]);
     expect(kinds("python https://x/a.py", BASH, own([], [RUN]))).toEqual([]);
+  });
+
+  it("matches an added rule naming a command whose kind is off", () => {
+    expect(dangers("npm install x", BASH, own(["npm install"], [INSTALL]))).toEqual([{ kind: "your own rule: npm install", command: "npm install x" }]);
   });
 });
 

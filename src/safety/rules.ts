@@ -45,7 +45,7 @@ export function dangers(line: string, ctx: Context, own: UserRules = NO_RULES): 
   const found: Danger[] = [];
   for (const { words, text } of result.commands) {
     const kinds: Danger["kind"][] = matched(words, where).filter((kind) => !own.off.includes(kind));
-    for (const rule of own.add) if (startsWith(words, rule, ctx)) kinds.push(`your own rule: ${rule}`);
+    for (const rule of own.add) if (ownRuleMatches(words, rule, ctx)) kinds.push(`your own rule: ${rule}`);
     for (const kind of kinds) {
       if (!found.some((d) => d.kind === kind && d.command === text)) found.push({ kind, command: text });
     }
@@ -53,12 +53,12 @@ export function dangers(line: string, ctx: Context, own: UserRules = NO_RULES): 
   return found;
 }
 
-// Whether a command's first words are a rule the user added, word by word (choice 5): the first by its name, as the table's
-// rules read it (nameIn), and the rest without case in PowerShell, on Windows (choice 3), as written in bash.
-function startsWith(words: string[], rule: string, ctx: Context): boolean {
-  const [first = "", ...rest] = rule.trim().split(/\s+/);
+// Whether a command's first words are a rule the user added, word by word (choice 5): the first word by the table's name
+// (choice 4); the rest compared without case in PowerShell, exactly in bash. readSettings keeps a rule with single spaces.
+function ownRuleMatches(words: string[], rule: string, ctx: Context): boolean {
+  const [first = "", ...rest] = rule.split(" ");
   const same = (a: string, b: string) => (ctx.shell === "powershell" ? a.toLowerCase() === b.toLowerCase() : a === b);
-  return words.length > rest.length && nameIn(words[0]!) === nameIn(first) && rest.every((w, k) => same(words[k + 1]!, w));
+  return words.length > rest.length && tableName(words[0]!) === tableName(first) && rest.every((w, k) => same(words[k + 1]!, w));
 }
 
 // The context, with the folders the line's commands may run in, undefined when a change of folder leaves them unknown.
@@ -227,13 +227,13 @@ const ANY: Test = () => true;
 function matched(words: string[], ctx: Where): Kind[] {
   const [first, ...args] = words;
   if (first === undefined) return [];
-  const name = nameIn(first);
+  const name = tableName(first);
   const kinds = KINDS.filter((kind) => Object.hasOwn(RULES[kind], name) && RULES[kind][name]!(args, ctx, first)); // not toString
   if (!kinds.includes("downloading and running code") && fetched(first, words, name, args)) kinds.push("downloading and running code");
   return kinds;
 }
 // A command's name as the rules look it up: nameOf's, and format.com, mkfs.ext4, pip3 and python3 by their table names.
-const nameIn = (first: string) =>
+const tableName = (first: string) =>
   nameOf(first)
     .replace(/\.com$/, "")
     .replace(/^mkfs\..+/, "mkfs")

@@ -150,6 +150,22 @@ describe("readSettings", () => {
       }
     });
 
+    it("takes a rule's words with any spacing as one rule, written with single spaces", () => {
+      expect(read({ dangerousCommands: { add: [" make deploy ", "make  deploy", "make\tdeploy", "terraform apply"] } })).toEqual({
+        settings: { dangerousCommands: { add: ["make deploy", "terraform apply"], off: [] } },
+        warnings: [],
+      });
+    });
+
+    // A command's words have their quotes taken off (split.ts), so a rule holding one could never match.
+    it("refuses a rule holding a quote", () => {
+      for (const bad of ['git commit -m "wip"', "echo 'x'", 'say"hi']) {
+        expect(problem({ dangerousCommands: { add: ["make deploy", bad] } })).toBe(
+          `settings.json: "dangerousCommands.add" rules are matched word by word and cannot hold quotes (got ${JSON.stringify(bad)})`,
+        );
+      }
+    });
+
     it("refuses a value that is not an object, and leaves out an unknown name in it with a warning", () => {
       for (const bad of ["installing software", ["installing software"], null]) {
         expect(problem({ dangerousCommands: bad })).toBe(
