@@ -82,13 +82,14 @@ function folders(commands: Command[], ctx: Context, line: string): string[] | un
 // declare -n's target (r=HOME).
 const BARE = /(^|=)(CDPATH|HOME|PWD)(\+?=|$)/;
 // Loops and functions, found in the line's text: bash's for, while, until and select, and its functions (`name() {` and
-// `function name`); PowerShell's foreach, for, while and do, ForEach-Object and Where-Object (and %, ?, .ForEach() and
-// .Where()), which run a block for each item, and its function and filter.
+// `function name`); PowerShell's foreach, for, while and do, ForEach-Object and Where-Object (and %, ?, where with a
+// block, and .ForEach() or .ForEach{ } and .Where's), which run a block for each item, and its function and filter.
 const REPEATS = new RegExp(
   [
     /(^|[\s;&|(){}])(for|while|until|select|function|foreach|do|filter|foreach-object|where-object|%|\?)(?=[\s{(]|$)/.source,
+    /(^|[\s;&|(){}])where(?=\s*\{)/.source,
     /(^|[\s;&|(){}])[\w.:-]+\s*\(\s*\)\s*[{(]/.source,
-    /\.(foreach|where)\s*\(/.source,
+    /\.(foreach|where)\s*[({]/.source,
   ].join("|"),
   "i",
 );
@@ -478,14 +479,16 @@ function wslOwn(args: string[]): string[] {
 }
 
 // A recursive delete whose target, from any folder the line may run in, is a whole folder.
-// A target that is not worked out from the current folder is the same from each, so it is worked out once. One that is,
-// but does not climb (no ..), names the folder or one below it, so it is whole only from a folder that is whole itself.
+// A target that is not worked out from the current folder is the same from each, so it is worked out once; PowerShell's
+// \x is worked out from each, as it is on the current drive. One from the current folder that does not climb (no ..)
+// names the folder or one below it, so it is whole only from a folder that is whole itself.
 function deletesWhole(args: string[], ctx: Where, first: string): boolean {
   const cwds = ctx.cwds ?? [undefined];
   let wholeCwds: (string | undefined)[] | undefined;
   const from = (t: string) => {
+    if (driveRooted(t, ctx)) return cwds;
     if (!fromHere(t, ctx)) return cwds.slice(0, 1);
-    if (/(^|[\\/])\.\.([\\/]|$)/.test(t)) return cwds;
+    if (/(^|[\\/])\.\.([\\/]|$)/.test(plain(t, ctx))) return cwds;
     return (wholeCwds ??= cwds.filter((c) => c === undefined || above(c, ctx, paths(c, c, ctx))));
   };
   return !!targetsOf(nameOf(first), args, ctx)?.some((t) => from(t).some((cwd) => whole(t, ctx, cwd)));
@@ -590,6 +593,11 @@ function whole(target: string, ctx: Where, cwd: string | undefined): boolean {
   let t = plain(target, ctx);
   const p = paths(t, cwd, ctx);
   t = (t === "*" ? "." : t).replace(p === path.win32 ? /[\\/]\*$/ : /\/\*$/, "/");
+  // PowerShell's \x is on the folder's drive; from a folder the check cannot place, on a drive it cannot tell.
+  if (p === path.win32 && /^[\\/](?![\\/])/.test(t)) {
+    if (cwd === undefined) return true;
+    if (DRIVE.test(cwd)) t = cwd.slice(0, 2) + t;
+  }
   if (/^[A-Za-z]:$/.test(t)) return true; // a drive's own letter
   const start = leading(t, ctx.shell);
   let base: string | undefined;

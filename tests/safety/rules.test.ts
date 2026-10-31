@@ -174,6 +174,13 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   // A PowerShell script block given to pwsh is read once, though the reader reads it as a block and as pwsh's text
   ["powershell", "pwsh -Command { Set-Location sub; Remove-Item -Recurse build }", []],
   ["powershell", "pwsh -Command { Set-Location ..; Remove-Item -Recurse x }", [DELETE]],
+  // Text in quotes from bash or cmd is read once, as pwsh's text, so its cds count
+  ["bash", "pwsh -c '{ cd ..; cd .. }'; rm -rf tmp", [DELETE]],
+  ["bash", "cmd /c 'pwsh -Command \"{ cd ..; cd .. }\" && rd /s /q work'", [DELETE]],
+  // PowerShell's where with a block, and .ForEach{ } and .Where{ }, run a block for each item
+  ["powershell", "1..3 | where { cd ..; $true }; Remove-Item -Recurse work", [DELETE]],
+  ["powershell", "(1..3).ForEach{ cd .. }; Remove-Item -Recurse work", [DELETE]],
+  ["powershell", "Get-Command where; cd sub; Remove-Item -Recurse ..\\other", []],
   // cmd ends a built-in's name at ; , = and + too
   ["powershell", "cmd /c 'cd;.. && rd /s /q x'", [DELETE]],
   ["powershell", "cmd /c 'cd=.. && rd /s /q x'", [DELETE]],
@@ -318,6 +325,17 @@ const TABLE: [Shell, string, Danger["kind"][]][] = [
   ["powershell", "Remove-Item -Recurse C:\\,dist", [DELETE]],
   ["powershell", "Remove-Item -Recurse dist,C:\\", [DELETE]],
   ["powershell", "Remove-Item -Recurse -Path:dist,~", [DELETE]],
+  // The FileSystem:: prefix is taken off before a target is read as climbing out of its folder
+  ["powershell", "cd C:\\Users\\v; Remove-Item -Recurse FileSystem::..\\u", [DELETE]],
+  ["powershell", "cd C:\\Users\\v; Remove-Item -Recurse Microsoft.PowerShell.Core\\FileSystem::..\\u", [DELETE]],
+  // PowerShell's \x is on the current folder's drive
+  ["powershell", "Remove-Item -Recurse \\Users", [DELETE]],
+  ["powershell", "Remove-Item -Recurse \\work\\x", [DELETE]],
+  ["powershell", "Remove-Item -Recurse /Users/u", [DELETE]],
+  ["powershell", "cd D:\\y; Remove-Item -Recurse \\Users", [DELETE]],
+  ["powershell", "cd $env:TEMP; Remove-Item -Recurse \\tmp\\x", [DELETE]],
+  ["powershell", "Remove-Item -Recurse \\work\\x\\build", []],
+  ["powershell", "cd D:\\y; Remove-Item -Recurse \\y\\build", []],
   ["powershell", "Remove-Item -Recurse:$false C:\\", []],
   ["powershell", "Remove-Item -Recurse dist,build", []],
   ["powershell", "Remove-Item -Recurse -Path:dist", []],

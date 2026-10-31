@@ -114,8 +114,10 @@ interface Runs {
   dynamic: boolean;
   again?: boolean;
 }
-// The commands read a second time (Runs.again), left out of Split's `all`.
+// The commands read a second time (Runs.again), left out of Split's `all`; and the words PowerShell's reader read as one
+// script block, whose commands it has listed.
 const REREAD = new WeakSet<Command>();
+const BLOCKS = new WeakSet<Word>();
 
 // Words before a command that are bash's own, not the command's; those that open and close a compound command.
 const RESERVED = new Set(["if", "then", "else", "elif", "fi", "do", "done", "while", "until", "!"]);
@@ -1156,12 +1158,14 @@ class Reader {
       value = src.slice(start, this.i);
       shape = "\0";
     }
+    let block = false;
     while (!this.ends(src[this.i], stop)) {
       const c = src[this.i]!;
       if (parts++ === 0) {
         const quote = (k: number) => PS_SINGLE.has(src[k] ?? "") || PS_DOUBLE.has(src[k] ?? "");
         const here = c === "@" && quote(this.i + 1) && /^[ \t]*\n/.test(src.slice(this.i + 2, src.indexOf("\n", this.i) + 1));
         string = quote(this.i) || here;
+        block = g === "powershell" && c === "{"; // psPart reads its commands
       }
       if (c === this.escape) {
         const n = src[this.i + 1];
@@ -1175,6 +1179,7 @@ class Reader {
       } else value += g === "powershell" ? this.psPart(nested) : this.cmdPart();
     }
     const word: Word = { value, start, end: this.i, dynamic: this.dynamic, shape, single: g === "powershell" && parts === 1 && string, fed };
+    if (block && parts === 1) BLOCKS.add(word);
     this.dynamic = outer;
     if (g === "powershell" && PS_FOLLOW_TEXT.test(src.slice(start, this.i))) throw new Unreadable(FOLLOW);
     return word;
@@ -1846,8 +1851,8 @@ function psText(name: string, args: Word[]): Runs | null | undefined {
   const rest = (from: number): Runs | undefined => {
     const words = args.slice(from);
     const text = words.map((w) => w.value).join(" ");
-    // A script block alone, not in quotes, was read already as one of the line's words.
-    const again = words.length === 1 && !words[0]!.single && /^\{[\s\S]*\}$/.test(text.trim());
+    // A script block alone, read as a block by PowerShell's reader (not text in quotes from bash or cmd), was read already.
+    const again = words.length === 1 && BLOCKS.has(words[0]!);
     return text.trim() === "" || text === "-" ? undefined : { grammar: "powershell", texts: [text], dynamic: words.some((w) => w.dynamic), again };
   };
   for (let k = 0; k < args.length; k++) {
