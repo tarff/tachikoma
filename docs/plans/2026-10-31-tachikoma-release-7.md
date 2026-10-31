@@ -448,6 +448,20 @@ the plan's review.
     included. The reader also reads Windows 11's `sudo` options (`--inline`, `--new-window`,
     `--disable-input`, `--preserve-env`/`-E`, `--chdir`/`-D`), so the command it runs is listed
     rather than the line being unreadable; `sudo` itself stays a danger.
+45. **A delete of only a variable** (the user's choice): a recursive delete's target is worked out
+    (home names and `$PWD` filled in, a relative path taken from the root, `.` and `..` resolved;
+    a `cd` on the line leaves the folder unknown) and is whole when it is a drive root, the home
+    folder, the root, or above one of them. A target that is only a variable (`"$d"`, `"$d/"`,
+    `"$d/*"`, PowerShell `$d`) also counts, since an empty or wrong value makes it a disaster;
+    `"$S/review"` passes. Past commands held 171 recursive deletes: 49 ask by this rule, against
+    97 if any variable asked.
+46. **The other spellings of the table's commands** (the user's choice): PowerShell's built-in
+    aliases of the table's cmdlets, npm's and bun's other names for install, `python -m pip`,
+    `npm exec`/`npm x`/`bun x` with a package, `del /s`, curl's `--json @f`, `--data-urlencode
+    …@`, `-H @f` and `-K`, `aws s3 sync --delete`, helm's `delete`/`del`/`un`; options before a
+    subcommand are read both ways; Windows `sudo run` is read; long options count by any start of
+    their name, as GNU tools and git accept; wsl's own options only, and pip's option values
+    skipped. `pnpm exec` runs only what the project holds, so it passes.
 
 ---
 
