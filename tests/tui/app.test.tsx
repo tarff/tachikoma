@@ -26,6 +26,7 @@ import { History } from "../../src/tui/history.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
+import { dangers, NO_RULES } from "../../src/safety/rules.js";
 import { readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
@@ -133,6 +134,7 @@ async function mount(
   const ctx = await tempContext();
   let ask: Ask = async () => false;
   const gate = new PermissionGate(opts.mode ?? "ask", (s, d, o) => ask(s, d, o));
+  gate.rules = opts.live?.loaded.settings.dangerousCommands ?? NO_RULES; // as cli.tsx sets it at launch
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
   const session = new Session({
@@ -165,6 +167,9 @@ async function mount(
       mode={opts.mode ?? "ask"}
       onMode={(m) => {
         gate.mode = m;
+      }}
+      onRules={(r) => {
+        gate.rules = r;
       }}
       project="proj"
       root={ctx.root}
@@ -6113,6 +6118,61 @@ describe("App's live settings", () => {
     b.write({ mode: "ask" });
     await sees(b.app, PINNED("never"));
     expect(b.app.lastFrame()).toContain("perm never");
+  });
+
+  // Release 7 plan, Task 4 (design, "Configurable"): an edit that loosens the dangerous-command check gets a red warning
+  // and waits for the next launch, so a command the user allowed cannot loosen it in the session; one that tightens it
+  // gets a grey notice and applies at once.
+  describe("dangerousCommands", () => {
+    const CHECK = "settings.json: dangerous-command check:";
+    const LOOSENED = "in auto and never, those commands will run without the check. Takes effect at the next launch.";
+    const OFF = `${CHECK} "installing software" switched off; ${LOOSENED}`;
+    const REMOVED = `${CHECK} your rule "make deploy" removed; ${LOOSENED}`;
+    const ADDED = `${CHECK} rule "make deploy" added; it applies now.`;
+    const ON = `${CHECK} "installing software" switched back on; it applies now.`;
+    const SH = { root: "/tmp/x", home: "/home/u", shell: "bash" as const, has: () => false };
+    const kinds = (line: string, gate: PermissionGate) => dangers(line, SH, gate.rules).map((d) => d.kind);
+    // The frame without its colours, as flat() gives it; a wrapped row's colours sit around its line break.
+    const plain = (app: ReturnType<typeof render>) => stripVTControlCharacters(app.lastFrame()!).replaceAll(/ *\n */g, " ");
+
+    it("leaves a kind switched off for the next launch, with a red warning, and applies an added rule at once, in grey", async () => {
+      await inColour(async () => {
+        const { app, gate, write } = await watching([], {});
+        write({ dangerousCommands: { off: ["installing software"] } });
+        await vi.waitFor(() => expect(plain(app)).toContain(OFF), WATCHED);
+        expect(app.lastFrame()).toContain(`\u001b[31m${CHECK} "installing software" switched off;`);
+        expect(gate.rules).toEqual({ add: [], off: [] });
+        expect(kinds("npm install left-pad", gate)).toEqual(["installing software"]);
+        write({ dangerousCommands: { off: ["installing software"], add: ["make deploy"] } });
+        await vi.waitFor(() => expect(plain(app)).toContain(ADDED), WATCHED);
+        expect(app.lastFrame()).toContain(`\u001b[90m${ADDED}`);
+        expect(plain(app).split(OFF).length - 1).toBe(1); // said for the edit that switched it off
+        expect(gate.rules).toEqual({ add: ["make deploy"], off: [] });
+        expect(kinds("make deploy", gate)).toEqual(["your own rule: make deploy"]);
+      });
+    });
+
+    it("leaves a removed rule for the next launch, with a red warning, and applies a kind switched back on at once, in grey", async () => {
+      await inColour(async () => {
+        const { app, gate, write } = await watching([], { dangerousCommands: { add: ["make deploy"], off: ["installing software"] } });
+        expect(kinds("npm install left-pad", gate)).toEqual([]);
+        write({});
+        await vi.waitFor(() => expect(plain(app)).toContain(ON), WATCHED);
+        expect(plain(app)).toContain(REMOVED);
+        expect(app.lastFrame()).toContain(`\u001b[31m${CHECK} your rule "make deploy" removed;`);
+        expect(app.lastFrame()).toContain(`\u001b[90m${CHECK} "installing software" switched back on;`);
+        expect(gate.rules).toEqual({ add: ["make deploy"], off: [] });
+        expect(kinds("npm install left-pad", gate)).toEqual(["installing software"]);
+        expect(kinds("make deploy", gate)).toEqual(["your own rule: make deploy"]);
+      });
+    });
+
+    it("gives a subagent's gate the rules in force", async () => {
+      const { gate, write, app } = await watching([], {});
+      write({ dangerousCommands: { add: ["make deploy"] } });
+      await sees(app, ADDED);
+      expect(gate.for({ name: "t1", signal: new AbortController().signal, stop: () => {} }).rules).toEqual({ add: ["make deploy"], off: [] });
+    });
   });
 
   // Test 7 too: a change made while a tool runs inside a turn is sent from the request after the tool's result.

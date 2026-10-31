@@ -6,6 +6,7 @@ import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode, OFFERED } from "./core/permissions.js";
 import { errorText } from "./core/types.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
+import { type Kind, KINDS, type UserRules } from "./safety/rules.js";
 import type { Segment } from "./tui/StatusLine.js";
 
 // The names live beside the data folder's, so the file tools can refuse them without loading this module.
@@ -31,6 +32,7 @@ export interface Settings {
   editorMode?: "normal" | "vim";
   vimInsertModeRemaps?: Record<string, "<Esc>">;
   editor?: string;
+  dangerousCommands?: UserRules;
 }
 
 export type Loaded = { settings: Settings; warnings: string[] } | { problem: string };
@@ -61,6 +63,7 @@ export function readSettings(text: string): Loaded {
         }
         settings.status = statusSegments(value, entry);
       } else if (name === "vimInsertModeRemaps") settings.vimInsertModeRemaps = remaps(entry, value, warnings);
+      else if (name === "dangerousCommands") settings.dangerousCommands = userRules(entry, value, warnings);
       else warnings.push(`${entry} is not a setting; it was left out`);
     }
   } catch (err) {
@@ -132,3 +135,27 @@ function remaps(entry: string, value: unknown, warnings: string[]): Record<strin
   return kept;
 }
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+// The user's own dangerous-command rules (release 7 plan, Task 4 and choice 5): "add", commands' first words, none blank,
+// as a blank one would be the start of every command; "off", kinds by their table names. Either may be left out, and a
+// repeat is kept once. Other names in it are left out with a warning, as the file's own are.
+function userRules(entry: string, value: unknown, warnings: string[]): UserRules {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw wrongType(entry, 'an object, such as {"add": ["terraform apply"], "off": ["installing software"]}', value);
+  }
+  const rules: UserRules = { add: [], off: [] };
+  for (const [name, list] of Object.entries(value)) {
+    const part = `${SETTINGS}: ${JSON.stringify(`dangerousCommands.${name}`)}`;
+    if (name === "add") {
+      if (!Array.isArray(list) || !list.every((v) => typeof v === "string" && v.trim())) {
+        throw new Error(`${part} must be a list of commands in quotes, such as ["terraform apply"]`);
+      }
+      rules.add = [...new Set<string>(list)];
+    } else if (name === "off") {
+      const bad = Array.isArray(list) ? list.find((v) => !(KINDS as readonly unknown[]).includes(v)) : list;
+      if (bad !== undefined) throw new Error(`${part} must be a list of: ${KINDS.join(", ")} (got ${JSON.stringify(bad)})`);
+      rules.off = [...new Set(list as Kind[])];
+    } else warnings.push(`${part} is not a setting; it was left out`);
+  }
+  return rules;
+}

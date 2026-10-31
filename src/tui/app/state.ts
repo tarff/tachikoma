@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { type Mode, visible } from "../../core/permissions.js";
 import type { Effort } from "../../providers/anthropic.js";
 import type { ModelGroup } from "../../providers/models.js";
+import { NO_RULES } from "../../safety/rules.js";
 import type { TodoItem } from "../../tools/todo.js";
 import type { AppProps, Fns } from "../App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../bindings.js";
@@ -29,6 +30,7 @@ export function useAppState({
   stats,
   mode,
   onMode,
+  onRules,
   project,
   root,
   gitBranch,
@@ -221,6 +223,9 @@ export function useAppState({
   const effortNow = useRef<{ effort: Effort | undefined } | null>(null);
   const waiting = useRef<{ lead?: string; screen?: "full" | "classic" }>({});
   const leadFromFile = useRef(false);
+  // The user's own dangerous-command rules in force: the launch's, with each edit's tightening applied and its loosening
+  // left for the next launch (release 7 plan, Task 4; liveEdits.ts).
+  const rules = useRef(live?.loaded.settings.dangerousCommands ?? NO_RULES);
   // The keys file's problems as last said, and whether a good file has been read (onKeys).
   const keysWarned = useRef<string[]>([]);
   const keysRead = useRef(false);
@@ -252,7 +257,7 @@ export function useAppState({
   // Read-only, so TypeScript narrows `ui.question` through a check kept in a const (`movable`), as it narrowed App's
   // own `question`.
   return {
-    session, tasks, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments,
+    session, tasks, bus, stats, mode, onMode, onRules, project, root, gitBranch, historyFile, intro, errorFile, segments,
     makeProvider, bindAsk, login, listModels, screen, fullPossible, mouse, scrollSpeed, clipboard, input, bindings,
     home, live, picturesGiven, readPicture, exit, suspendTerminal, lines, setLines, editor, goal, vim, vimText, first,
     table, setTable, chordTimer, keyOf, pickerKey, step, search, stash, chosen, closed, listed, columns, height, full,
@@ -261,7 +266,7 @@ export function useAppState({
     pictures, reading, reads, doing, calls, todos, perm, cycle, questions, question, contextWindow, setContextWindow,
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
-    leadFromFile, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
+    leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
     happening, late,
   } as const;
 }

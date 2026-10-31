@@ -1,6 +1,7 @@
 import { resolve } from "../../clilib.js";
 import { errorText, type Provider } from "../../core/types.js";
 import { KEYBINDINGS, type KeysLoaded } from "../../keybindings.js";
+import { NO_RULES } from "../../safety/rules.js";
 import { type Loaded, SETTINGS, type Settings } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { editorCommand } from "../external.js";
@@ -25,7 +26,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       // VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
       const flag = key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : ui.live?.given[key];
       if (flag) fns.note(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
-      else fns.applyEntry(key, read.settings, now);
+      else fns.applyEntry(key, read.settings, now, before);
     }
     fns.next();
   };
@@ -49,10 +50,10 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     ui.keysWarned.current = problems;
     ui.setTable(read.table);
   };
-  // One entry's new value, `s` the file's and `now` what applies (above), with its line. A lead or a screen waits for
-  // next() (queue.ts). A model the file names that cannot be made is said, as at launch (cli.tsx), and the one before
-  // is kept.
-  const applyEntry = (key: (typeof LIVE)[number], s: Settings, now: ReturnType<typeof resolve>) => {
+  // One entry's new value, `s` the file's, `now` what applies (above) and `was` the file's before the edit, with its line.
+  // A lead or a screen waits for next() (queue.ts). A model the file names that cannot be made is said, as at launch
+  // (cli.tsx), and the one before is kept.
+  const applyEntry = (key: (typeof LIVE)[number], s: Settings, now: ReturnType<typeof resolve>, was: Settings) => {
     const line = (value: string) => fns.note(gray(`${key} is now ${value}${FROM}`));
     const model = (spec: string | undefined) => {
       if (!spec) return undefined; // an empty --fallback or --worker is none at launch too (cli.tsx)
@@ -101,7 +102,22 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     else if (key === "editor") line(editorCommand(process.env, s.editor, process.platform)); // read again at each use (away)
     else if (key === "editorMode") fns.setVim(s.editorMode === "vim", FROM); // at once, as /vim (design's table)
     else if (key === "vimInsertModeRemaps") line(Object.keys(s.vimInsertModeRemaps ?? {}).join(", ") || "none");
-    else {
+    else if (key === "dangerousCommands") {
+      // Release 7 design, "Configurable": what the edit loosens, a kind switched off or a rule removed, gets a red warning
+      // and waits for the next launch, so a command the user allowed cannot loosen the check by rewriting the file; what
+      // it tightens, a rule added or a kind switched back on, gets a grey notice and applies at once.
+      const [before, after] = [was.dangerousCommands ?? NO_RULES, s.dangerousCommands ?? NO_RULES];
+      const check = `${SETTINGS}: dangerous-command check:`;
+      const loosened = (what: string) =>
+        fns.note({ text: `${check} ${what}; in auto and never, those commands will run without the check. Takes effect at the next launch.`, color: "red" });
+      for (const kind of after.off) if (!before.off.includes(kind)) loosened(`"${kind}" switched off`);
+      for (const rule of before.add) if (!after.add.includes(rule)) loosened(`your rule "${rule}" removed`);
+      for (const rule of after.add) if (!before.add.includes(rule)) fns.note(gray(`${check} rule "${rule}" added; it applies now.`));
+      for (const kind of before.off) if (!after.off.includes(kind)) fns.note(gray(`${check} "${kind}" switched back on; it applies now.`));
+      const r = ui.rules.current;
+      ui.rules.current = { add: [...new Set([...r.add, ...after.add])], off: r.off.filter((kind) => after.off.includes(kind)) };
+      ui.onRules?.(ui.rules.current);
+    } else {
       // scrollSpeed. The wheel's carried fraction is in the old speed's units, so the new one starts with none (review
       // fixes plan, fix 6).
       ui.setSpeed(now.speed);

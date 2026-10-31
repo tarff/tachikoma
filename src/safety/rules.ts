@@ -10,11 +10,19 @@ export const KINDS = ["wiping or formatting disks", "deleting whole folders", "p
   "stopping processes or the machine", "rewriting or deleting git history", "sending files out", "installing software",
   "downloading and running code", "acting outside the machine"] as const;
 export type Kind = (typeof KINDS)[number];
-// `command` is the command's own text, for the red line; for the one danger of an unreadable line, it is why.
+// `command` is the command's own text, for the red line; for the one danger of an unreadable line, it is why. A rule the
+// user added names itself as its kind.
 export interface Danger {
-  kind: Kind | "unreadable";
+  kind: Kind | "unreadable" | `your own rule: ${string}`;
   command: string;
 }
+// The user's own rules, settings.json's "dangerousCommands" (plan, Task 4 and choice 5): commands' first words added, and
+// kinds switched off.
+export interface UserRules {
+  add: string[];
+  off: Kind[];
+}
+export const NO_RULES: UserRules = { add: [], off: [] };
 // The project's root (/work in the box), the home folder, the shell the line runs in (choice 3), and whether a file
 // exists, for npx of a program the project has (choice 47; fs.existsSync unless given).
 export interface Context {
@@ -29,17 +37,28 @@ export function shown(d: Danger): string {
   return d.kind === "unreadable" ? `the check cannot read it: ${d.command}` : `${d.kind}: ${d.command}`;
 }
 
-export function dangers(line: string, ctx: Context): Danger[] {
+// A kind the user switched off never matches; an unreadable line is no kind, so it still does.
+export function dangers(line: string, ctx: Context, own: UserRules = NO_RULES): Danger[] {
   const result = split(line, ctx.shell);
   if ("unreadable" in result) return [{ kind: "unreadable", command: result.unreadable }];
   const where: Where = { ...ctx, cwds: folders(result.all, ctx, line) };
   const found: Danger[] = [];
   for (const { words, text } of result.commands) {
-    for (const kind of matched(words, where)) {
+    const kinds: Danger["kind"][] = matched(words, where).filter((kind) => !own.off.includes(kind));
+    for (const rule of own.add) if (startsWith(words, rule, ctx)) kinds.push(`your own rule: ${rule}`);
+    for (const kind of kinds) {
       if (!found.some((d) => d.kind === kind && d.command === text)) found.push({ kind, command: text });
     }
   }
   return found;
+}
+
+// Whether a command's first words are a rule the user added, word by word (choice 5): the first by its name, as the table's
+// rules read it (nameIn), and the rest without case in PowerShell, on Windows (choice 3), as written in bash.
+function startsWith(words: string[], rule: string, ctx: Context): boolean {
+  const [first = "", ...rest] = rule.trim().split(/\s+/);
+  const same = (a: string, b: string) => (ctx.shell === "powershell" ? a.toLowerCase() === b.toLowerCase() : a === b);
+  return words.length > rest.length && nameIn(words[0]!) === nameIn(first) && rest.every((w, k) => same(words[k + 1]!, w));
 }
 
 // The context, with the folders the line's commands may run in, undefined when a change of folder leaves them unknown.
@@ -208,15 +227,18 @@ const ANY: Test = () => true;
 function matched(words: string[], ctx: Where): Kind[] {
   const [first, ...args] = words;
   if (first === undefined) return [];
-  const name = nameOf(first)
-    .replace(/\.com$/, "")
-    .replace(/^mkfs\..+/, "mkfs")
-    .replace(/^pip[\d.]+$/, "pip")
-    .replace(/^(python|pypy)[\d.]*$|^py$/, "python");
+  const name = nameIn(first);
   const kinds = KINDS.filter((kind) => Object.hasOwn(RULES[kind], name) && RULES[kind][name]!(args, ctx, first)); // not toString
   if (!kinds.includes("downloading and running code") && fetched(first, words, name, args)) kinds.push("downloading and running code");
   return kinds;
 }
+// A command's name as the rules look it up: nameOf's, and format.com, mkfs.ext4, pip3 and python3 by their table names.
+const nameIn = (first: string) =>
+  nameOf(first)
+    .replace(/\.com$/, "")
+    .replace(/^mkfs\..+/, "mkfs")
+    .replace(/^pip[\d.]+$/, "pip")
+    .replace(/^(python|pypy)[\d.]*$|^py$/, "python");
 
 // Choice 44: a script given as a web address to an interpreter the reader knows (scriptOf), a command a runner starts that
 // is named by one (uv run https://...), or one given to deno install or deno x. Choice 50: deno's npm: and jsr: packages.

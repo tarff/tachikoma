@@ -1,3 +1,5 @@
+import { NO_RULES, type UserRules } from "../safety/rules.js";
+
 // ask:     ask before every write and shell command, and before anything outside the project
 // project: ask before shell commands and anything outside the project
 // never:   never ask (meant for the Docker sandbox)
@@ -52,6 +54,7 @@ export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: bool
 
 export class PermissionGate {
   #mode: Mode;
+  #rules: UserRules = NO_RULES;
   #parent?: PermissionGate;
 
   constructor(
@@ -68,6 +71,14 @@ export class PermissionGate {
   }
   set mode(mode: Mode) {
     this.#mode = mode;
+  }
+  // The user's own dangerous-command rules in force (release 7 plan, Task 4), as the launch read them and as a live edit
+  // that tightens them changes them. A subagent's gate reads the lead's.
+  get rules(): UserRules {
+    return this.#parent?.rules ?? this.#rules;
+  }
+  set rules(rules: UserRules) {
+    this.#rules = rules;
   }
 
   // A subagent's gate: the lead's mode, and questions that name the subagent.

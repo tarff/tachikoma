@@ -277,6 +277,23 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"worker": "nope"}')).stderr).toMatch(/^settings\.json: "worker": Expected/);
   });
 
+  // Release 7 plan, Task 4: while any kind of the dangerous-command check is off, each launch says so in one line. Port 9,
+  // as below: the run gets as far as asking the model and fails there, with nothing sent anywhere.
+  it("says at launch which kinds of the dangerous-command check are off, and nothing while none is", () => {
+    const unreachable = { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" };
+    const run = (rules: string) => tachi("-p", "hi", { ...homeWith(`{"lead": "openai:none", "dangerousCommands": ${rules}}`), ...unreachable });
+    const off = run('{"off": ["installing software", "sending files out"]}');
+    expect(off.stderr).toMatch(/^The dangerous-command check is off for: installing software, sending files out; in auto and never, those commands run without it\.\n/);
+    expect(off.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
+    for (const none of ['{"add": ["make deploy"]}', '{"off": []}']) expect(run(none).stderr).not.toContain("dangerous-command check");
+  });
+
+  it("stops the launch on a bad dangerousCommands entry", () => {
+    const r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"dangerousCommands": {"off": ["installing"]}}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^settings\.json: "dangerousCommands\.off" must be a list of: wiping or formatting disks, .* \(got "installing"\)\n$/);
+  });
+
   // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.
   it("with -p, runs on the settings file's lead", () => {
     const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });

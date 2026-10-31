@@ -10,6 +10,7 @@ import type { Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import { KEYBINDINGS } from "../keybindings.js";
 import type { ModelGroup } from "../providers/models.js";
+import type { UserRules } from "../safety/rules.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
@@ -53,6 +54,9 @@ export interface AppProps {
   stats: Stats;
   mode: Mode; // the mode the session started in
   onMode: (mode: Mode) => void; // Shift+Tab: the mode the permission check uses from the next action
+  // A live edit of settings.json's "dangerousCommands" that tightens the check: the rules it uses from the next action
+  // (release 7 plan, Task 4).
+  onRules?: (rules: UserRules) => void;
   project: string; // the project folder's name, for the status line
   root: string; // the project folder, where `@` paths start
   gitBranch: () => string | null; // read at the start and after each turn: the model may switch branches

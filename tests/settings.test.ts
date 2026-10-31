@@ -111,6 +111,58 @@ describe("readSettings", () => {
     expect(r).toEqual({ settings: { vimInsertModeRemaps: {} }, warnings: pairs.map((k) => `${words(k)}; it was left out`) });
   });
 
+  // Release 7 plan, Task 4 and choice 5: the user's own dangerous-command rules.
+  describe("dangerousCommands", () => {
+    const KINDS_LIST =
+      "wiping or formatting disks, deleting whole folders, permissions and system settings, stopping processes or the machine, " +
+      "rewriting or deleting git history, sending files out, installing software, downloading and running code, acting outside the machine";
+
+    it("takes commands added and kinds switched off, each list optional, a repeat kept once", () => {
+      const both = { add: ["terraform apply", "make deploy"], off: ["installing software", "sending files out"] };
+      expect(read({ dangerousCommands: both })).toEqual({ settings: { dangerousCommands: both }, warnings: [] });
+      expect(read({ dangerousCommands: { add: ["make deploy", "make deploy"] } })).toEqual({
+        settings: { dangerousCommands: { add: ["make deploy"], off: [] } },
+        warnings: [],
+      });
+      expect(read({ dangerousCommands: { off: ["installing software"] } })).toEqual({
+        settings: { dangerousCommands: { add: [], off: ["installing software"] } },
+        warnings: [],
+      });
+      expect(read({ dangerousCommands: {} })).toEqual({ settings: { dangerousCommands: { add: [], off: [] } }, warnings: [] });
+    });
+
+    it("refuses an off that names no kind, listing the kinds", () => {
+      expect(problem({ dangerousCommands: { off: ["x"] } })).toBe(`settings.json: "dangerousCommands.off" must be a list of: ${KINDS_LIST} (got "x")`);
+      expect(problem({ dangerousCommands: { off: ["installing software", "Installing software"] } })).toBe(
+        `settings.json: "dangerousCommands.off" must be a list of: ${KINDS_LIST} (got "Installing software")`,
+      );
+      expect(problem({ dangerousCommands: { off: [5] } })).toBe(`settings.json: "dangerousCommands.off" must be a list of: ${KINDS_LIST} (got 5)`);
+      expect(problem({ dangerousCommands: { off: "installing software" } })).toBe(
+        `settings.json: "dangerousCommands.off" must be a list of: ${KINDS_LIST} (got "installing software")`,
+      );
+    });
+
+    it("refuses an add that is not a list of non-empty text", () => {
+      for (const bad of ["terraform apply", [""], ["  "], [5], ["make deploy", null], null]) {
+        expect(problem({ dangerousCommands: { add: bad } })).toBe(
+          'settings.json: "dangerousCommands.add" must be a list of commands in quotes, such as ["terraform apply"]',
+        );
+      }
+    });
+
+    it("refuses a value that is not an object, and leaves out an unknown name in it with a warning", () => {
+      for (const bad of ["installing software", ["installing software"], null]) {
+        expect(problem({ dangerousCommands: bad })).toBe(
+          `settings.json: "dangerousCommands" must be an object, such as {"add": ["terraform apply"], "off": ["installing software"]} (got ${JSON.stringify(bad)})`,
+        );
+      }
+      expect(read({ dangerousCommands: { of: ["installing software"], add: ["make deploy"] } })).toEqual({
+        settings: { dangerousCommands: { add: ["make deploy"], off: [] } },
+        warnings: ['settings.json: "dangerousCommands.of" is not a setting; it was left out'],
+      });
+    });
+  });
+
   it("says when the file is not valid JSON, in the parser's words", () => {
     let words = "";
     try {

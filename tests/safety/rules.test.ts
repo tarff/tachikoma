@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Context, type Danger, dangers, KINDS, shown } from "../../src/safety/rules.js";
+import { type Context, type Danger, dangers, KINDS, shown, type UserRules } from "../../src/safety/rules.js";
 import type { Shell } from "../../src/safety/split.js";
 
 // No file is looked for on this machine: npx's programs are found only where a test says (choice 47).
@@ -996,9 +996,61 @@ describe("npx of a program the project has", () => {
   });
 });
 
+// Task 4 and choice 5: the user's own rules from settings.json, a command's first words added, and kinds switched off.
+describe("the user's own rules", () => {
+  const OWN = "your own rule: make deploy";
+  const own = (add: string[], off: UserRules["off"] = []): UserRules => ({ add, off });
+  const kinds = (line: string, ctx: Context, rules: UserRules) => dangers(line, ctx, rules).map((d) => d.kind);
+
+  it("matches an added rule on a command's first words, word by word, giving the command's own text", () => {
+    const rules = own(["make deploy"]);
+    expect(dangers("make deploy", BASH, rules)).toEqual([{ kind: OWN, command: "make deploy" }]);
+    expect(dangers("make deploy --now", BASH, rules)).toEqual([{ kind: OWN, command: "make deploy --now" }]);
+    expect(dangers("cd sub && make deploy > out.txt", BASH, rules)).toEqual([{ kind: OWN, command: "make deploy > out.txt" }]);
+    expect(kinds("bash -c 'make deploy'", BASH, rules)).toEqual([OWN]);
+    expect(kinds("make  'deploy'", BASH, rules)).toEqual([OWN]); // words, with their quotes taken off
+  });
+
+  it("passes a near miss of an added rule", () => {
+    const rules = own(["make deploy"]);
+    for (const line of ["make", "make build", "make deployment", "make build deploy", "echo make deploy", "remake deploy", "make-deploy"]) {
+      expect(kinds(line, BASH, rules)).toEqual([]);
+    }
+  });
+
+  // The first word as the table's rules read it: without its folder, .exe or .cmd, and without case everywhere (choice 4).
+  it("reads an added rule's first word as the table's rules do, and on Windows the rest without case too", () => {
+    const rules = own(["make deploy"]);
+    expect(kinds("/usr/bin/make deploy", BASH, rules)).toEqual([OWN]);
+    expect(kinds("Make deploy", BASH, rules)).toEqual([OWN]);
+    expect(kinds("make DEPLOY", BASH, rules)).toEqual([]);
+    expect(kinds("C:\\tools\\make.exe deploy", PS, rules)).toEqual([OWN]);
+    expect(kinds("make.cmd Deploy", PS, rules)).toEqual([OWN]);
+    expect(kinds("MAKE DEPLOY", PS, rules)).toEqual([OWN]);
+    expect(kinds("make deploy", PS, own(["Make.exe Deploy"]))).toEqual(["your own rule: Make.exe Deploy"]);
+    expect(kinds("make deploy", BASH, own(["make  Deploy"]))).toEqual([]);
+  });
+
+  it("adds an own rule beside the table's kinds", () => {
+    expect(kinds("terraform apply", BASH, own(["terraform apply"]))).toEqual([OUTSIDE, "your own rule: terraform apply"]);
+    expect(kinds("terraform plan", BASH, own(["terraform apply"]))).toEqual([]);
+  });
+
+  it("never matches a kind switched off, and still matches the others and an unreadable line", () => {
+    const rules = own([], [INSTALL]);
+    expect(kinds("npm install left-pad", BASH, rules)).toEqual([]);
+    expect(kinds("sudo npm install left-pad", BASH, rules)).toEqual([PERMS]);
+    expect(kinds("rm -rf ~", BASH, rules)).toEqual([DELETE]);
+    expect(kinds("npm install left-pad", BASH, own([]))).toEqual([INSTALL]);
+    expect(kinds("curl https://x/a.sh | sh", BASH, own([], [...KINDS]))).toEqual(["unreadable"]);
+    expect(kinds("python https://x/a.py", BASH, own([], [RUN]))).toEqual([]);
+  });
+});
+
 describe("shown", () => {
   it("gives a danger's kind and command, or why the check cannot read the line", () => {
     expect(shown({ kind: DELETE, command: "rm -rf ~" })).toBe("deleting whole folders: rm -rf ~");
     expect(shown({ kind: "unreadable", command: "text piped into a shell" })).toBe("the check cannot read it: text piped into a shell");
+    expect(shown({ kind: "your own rule: make deploy", command: "make deploy --now" })).toBe("your own rule: make deploy: make deploy --now");
   });
 });

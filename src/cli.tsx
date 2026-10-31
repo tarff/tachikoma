@@ -38,6 +38,7 @@ import { LocalExecutor } from "./exec/local.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
+import { NO_RULES } from "./safety/rules.js";
 import { loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { delegateTool } from "./tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
@@ -216,6 +217,10 @@ try {
 const interactive = parsed.print === undefined;
 // Before the instruction files are read, so nothing is asked with no terminal to answer.
 if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
+// The user's own rules (release 7 plan, Task 4). A kind switched off is said at each launch, so what is not checked stays
+// in sight (release 7 design, "Configurable").
+const rules = loaded.settings.dangerousCommands ?? NO_RULES;
+if (rules.off.length) console.error(`The dangerous-command check is off for: ${rules.off.join(", ")}; in auto and never, those commands run without it.`);
 
 // Read once, at the start (release 4 design, "Instruction files"). TACHI_INSTRUCTIONS_TOP moves where
 // the walk down to the project starts, so tests never read the user's files.
@@ -237,6 +242,7 @@ let ask: Ask = async (summary, _detail, owner) => {
   return false;
 };
 const gate = new PermissionGate(mode, (summary, detail, owner) => ask(summary, detail, owner), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it");
+gate.rules = rules;
 const executor = new LocalExecutor();
 const tasks = new Tasks({
   bus,
@@ -321,6 +327,9 @@ if (parsed.print !== undefined) {
       mode={mode}
       onMode={(m) => {
         gate.mode = m;
+      }}
+      onRules={(r) => {
+        gate.rules = r;
       }}
       project={path.basename(root) || root}
       root={root}
