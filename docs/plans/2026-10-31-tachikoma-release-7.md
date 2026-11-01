@@ -576,6 +576,17 @@ the plan's review.
     that review: the launch waits on `gitSettings` (296-337 ms measured over 6 runs), which could
     start earlier; and its git runs have no time limit, so an include naming a FIFO or a stalled
     network share hangs the launch: a known limit until a timeout is measured.
+64. **The judge sees earlier writes without their text** (the user's choice, before Task 10;
+    Task 9's spec review found the request had no size limit). In "The agent's tool calls so
+    far", a `write_file` call is its path and the content's length in characters, and an
+    `edit_file` call is its path and the two texts' lengths; every other call keeps its whole
+    input. The action being judged keeps its full input and detail. So the request grows by a
+    line per call, and no number is needed. The judge no longer sees what earlier files said.
+65. **A judge that cannot be reached does not fail a run** (the user's choice, before Task 10).
+    Its error still shows (`✗ judge: …` on screen, `judge: …` on stderr with `-p`) and the
+    action is refused, as a judge's no is, but the error kind `judge` sets neither `-p`'s
+    failing exit code nor a subagent's failure. The exit code depends only on how the run
+    ended.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
