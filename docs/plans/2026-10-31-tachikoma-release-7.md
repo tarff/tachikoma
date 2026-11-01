@@ -549,6 +549,12 @@ the plan's review.
     as Tachikoma's own settings-file check does, since `tools/.npmrc.` and `.npmrc:x` write
     `.npmrc`; and case is ignored on macOS too, as the file tools already treat it, which changes
     choice 10's "on Windows".
+61. **A hard link to a protected file asks** (the user's choice, Task 6's spec review): a path
+    after links cannot show a second name for the same file, so after an approved
+    `ln .git/hooks/pre-commit tools/notes.txt` a write to `tools/notes.txt` would change the hook.
+    Task 8 treats a write to an existing file with more than one name as a protected write. Cost,
+    accepted: pnpm's `node_modules` files are hard links, so writes there ask. In the sandbox the
+    protected folders are separate mounts, so such a link cannot be made.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
@@ -848,7 +854,9 @@ type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, wa
 
 - **What fills the new fields.** The shell tool passes `command`, and the gate runs `dangers` on
   it. `write_file` and `edit_file` pass `protectedPart` from Task 6, on the real path
-  `resolveIn` found.
+  `resolveIn` found. A write to an existing file that has more than one name (a hard link,
+  `nlink > 1`, as release 6's data-folder check reads it) counts as a protected write too, with
+  the part `a file with another name` (choice 61).
 - **The decisions:**
   - **A protected write** asks in `ask` and in `project` (a change from release 6, named in the
     commit). In `never` it is refused: `Not allowed: <path> is a protected path (<part>), which
