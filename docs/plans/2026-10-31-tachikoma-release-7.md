@@ -544,6 +544,11 @@ the plan's review.
     folder, protected and read-only as a whole, as `.git` is; otherwise its default `hooks`
     folder and refs were writable. Known limit for the README: on the host, git installed only as
     a `.cmd` (msysgit 1.x) counts as no git, so only the fixed list protects.
+60. **Protected names are matched as the file system reads them** (the user's choice, Task 6):
+    on Windows a part's trailing dots and spaces and any `:stream` are dropped before matching,
+    as Tachikoma's own settings-file check does, since `tools/.npmrc.` and `.npmrc:x` write
+    `.npmrc`; and case is ignored on macOS too, as the file tools already treat it, which changes
+    choice 10's "on Windows".
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
@@ -780,7 +785,7 @@ export function protectedPart(root: string, real: string, hooks: string[], files
 Matching follows choice 10. `.config/git` matches as two parts in a row. A path inside a hooks
 folder matches with the folder's path as the part.
 A path equal to one of Task 5's git settings `files` matches with that path as the part
-(choice 57), compared without case on Windows.
+(choice 57), compared without case on Windows and macOS. Names are matched as choice 60 says.
 
 **Tests:**
 - each folder and file at the top and deeper;
