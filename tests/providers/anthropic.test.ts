@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Session } from "../../src/core/session.js";
 import type { Message, Picture, Prepared } from "../../src/core/types.js";
 import { AnthropicProvider, fromAnthropic, toAnthropic } from "../../src/providers/anthropic.js";
+import { judge } from "../../src/safety/judge.js";
 import { Bus, collectErrors, tempContext } from "../helpers.js";
 
 // Shaped like a real response; only the fields the adapter reads are filled in.
@@ -283,6 +284,18 @@ describe("AnthropicProvider", () => {
     await p.complete({ system: "s", messages: [], tools: [{ name: "echo", description: "Echo text back", inputSchema: { type: "object" } }] });
     expect(stream.mock.calls[0]![0]).not.toHaveProperty("tools");
     expect(stream.mock.calls[1]![0]).toHaveProperty("tools", [{ name: "echo", description: "Echo text back", input_schema: { type: "object" } }]);
+  });
+
+  // Release 7 plan, Task 9: the judge's one message is different every time, so caching it would only add the write price.
+  it("asks for no prompt caching on a judge request, and still does on an ordinary one", async () => {
+    const answer = message({ content: [{ type: "text", text: '{"allow": true}', citations: null }] });
+    const stream = vi.spyOn(Messages.prototype, "stream").mockReturnValue({ finalMessage: async () => answer } as never);
+    const p = new AnthropicProvider("claude-opus-5-5");
+    const action = { kind: "shell", outside: false, summary: "run: npm test", command: "npm test" } as const;
+    expect(await judge(p, { prompts: ["go"], calls: [], action, instructions: "" }, new AbortController().signal, new Bus())).toEqual({ allow: true });
+    await p.complete({ system: "s", messages: [], tools: [] });
+    expect(stream.mock.calls[0]![0]).not.toHaveProperty("cache_control");
+    expect(stream.mock.calls[1]![0]).toHaveProperty("cache_control", { type: "ephemeral" });
   });
 
   it("names the underlying reason a connection failed", async () => {

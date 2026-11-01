@@ -1,6 +1,6 @@
 import type { Bus } from "../core/bus.js";
 import type { Action } from "../core/permissions.js";
-import { errorText, type Provider, type Turn } from "../core/types.js";
+import { errorText, type Message, type Provider, type Turn } from "../core/types.js";
 
 // The judge (release 7 plan, Task 9): a fresh request, apart from the conversation, that decides whether an action in
 // `auto` may run without asking the user. It sees what choice 6 names and nothing else: the user's own prompts, the
@@ -27,14 +27,17 @@ export const SYSTEM = [
 
 const UNREADABLE = "the judge's answer could not be read"; // choice 7
 
-// U+2028 and U+2029, which JSON.stringify leaves as they are and some readers take as line breaks. Made from their codes:
-// an escape typed into a file has landed as the raw character before.
-const SEPARATORS = new RegExp(`[${String.fromCharCode(0x2028, 0x2029)}]`, "g");
+// Characters JSON.stringify leaves as they are that can act as line breaks or controls: the C1 controls, U+0080 to
+// U+009F, U+0085 "next line" among them, which visible() (core/permissions.ts) also treats as control characters; and
+// U+2028 and U+2029, which some readers take as line breaks. Made from their codes: an escape typed into a file has
+// landed as the raw character before.
+const c = String.fromCharCode;
+const RAW = new RegExp(`[${c(0x80)}-${c(0x9f)}${c(0x2028)}${c(0x2029)}]`, "g");
 
-// One block's content: a single line of JSON. JSON writes a line break inside a string as \n, and the two separators
-// are escaped here too, so no text from the user, the model or a file can begin a line of its own, and so none can pass
-// for a label or end its block early.
-const line = (value: unknown) => JSON.stringify(value).replace(SEPARATORS, (c) => `\\u${c.charCodeAt(0).toString(16)}`);
+// One block's content: a single line of JSON. JSON writes a line break inside a string as \n, and the characters above
+// are escaped here too, the same way, so no text from the user, the model or a file can begin a line of its own, and so
+// none can pass for a label or end its block early.
+const line = (value: unknown) => JSON.stringify(value).replace(RAW, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
 // The one user message: each part under a fixed label line, its content on the next line, in choice 6's order. The
 // action is shown by its kind, whether it is outside the project, its summary, detail, command and protected part, so
@@ -75,7 +78,8 @@ export async function judge(provider: Provider, input: JudgeInput, signal: Abort
   signal.throwIfAborted();
   let turn: Turn;
   try {
-    turn = await provider.complete({ system: SYSTEM, messages: [{ role: "user", parts: [{ type: "text", text: request(input) }] }], tools: [], signal });
+    const messages: Message[] = [{ role: "user", parts: [{ type: "text", text: request(input) }] }];
+    turn = await provider.complete({ system: SYSTEM, messages, tools: [], signal, cache: false });
   } catch (err) {
     signal.throwIfAborted();
     const message = errorText(err);
@@ -88,5 +92,7 @@ export async function judge(provider: Provider, input: JudgeInput, signal: Abort
   for (const d of turn.declined ?? []) bus.emit("usage", { ...d, judge: true });
   bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage, judge: true });
   signal.throwIfAborted();
+  // A reply cut off by a limit or a refusal is not the judge's whole answer, whatever its text says (Task 9 review).
+  if (turn.cutOff) return { allow: false, reason: UNREADABLE };
   return read(turn.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n")) ?? { allow: false, reason: UNREADABLE };
 }

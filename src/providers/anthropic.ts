@@ -169,7 +169,7 @@ export class AnthropicProvider implements Provider {
       // Left out when there are none, as the judge's request has (release 7 plan, Task 9), as openai.ts and chatgpt.ts do.
       ...(list.length ? { tools: list } : {}),
       messages: toAnthropic(messages, prepared),
-      cache_control: { type: "ephemeral" as const },
+      ...(req.cache === false ? {} : { cache_control: { type: "ephemeral" as const } }),
       ...(effort ? { output_config: { effort } } : {}),
       ...(FALLBACK_MODELS.has(this.model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
     });
