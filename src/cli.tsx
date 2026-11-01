@@ -275,9 +275,9 @@ const instructions = await readInstructions({ root, codexHome: process.env.CODEX
 const system = [systemPrompt(root), instructions.text].filter(Boolean).join("\n\n");
 
 let declined = false;
-let ask: Ask = async (summary, _detail, owner) => {
+let ask: Ask = async (summary, _detail, owner, _plain, warnings) => {
   declined = true;
-  console.error(headlessDeclined(summary, owner?.name));
+  console.error(headlessDeclined(summary, owner?.name, warnings));
   return false;
 };
 const gate = new PermissionGate(mode, (...a) => ask(...a), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it", {

@@ -31,9 +31,13 @@ export function headlessAnswer(text: string, opts: { raw: boolean; tty: boolean 
 export const jsonLine = (event: string, data: unknown) => visible(JSON.stringify({ event, data }));
 
 // The line for an action a -p run declines, as nobody can approve it: why, then the subagent that asked, if one did, and
-// the action, already escaped by the gate (permissions.ts, require).
-export function headlessDeclined(summary: string, owner?: string): string {
-  return `declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused): ${owner ? `${prose(owner)}: ` : ""}${summary}`;
+// the action, already escaped by the gate (permissions.ts, require). A dangerous command's red lines, escaped by the gate
+// as the action is, come first, a line each (release 7 plan, Task 8).
+export function headlessDeclined(summary: string, owner?: string, warnings: string[] = []): string {
+  const why =
+    "declined, nobody to ask in -p mode (--mode project allows ordinary writes inside the project, " +
+    "but protected files, shell commands and anything outside it are still refused)";
+  return [...warnings, `${why}: ${owner ? `${prose(owner)}: ` : ""}${summary}`].join("\n");
 }
 
 // Stopped wins: an aborted request reports no error, and the shell reads 128 + n as "stopped by signal n".

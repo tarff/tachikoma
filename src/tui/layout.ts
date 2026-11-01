@@ -123,7 +123,7 @@ export interface FrameOut {
   pickerRows: number;
   questionFits: boolean; // the question's line leaves the conversation its one row
   asked: string[]; // the rows of the question's line drawn: its short line's, when it does not fit and can move
-  warned: string[]; // the rows of its red lines, each wrapped, above them; they stay when the line moves
+  warned: string[]; // the red lines drawn above it, a row each, the last saying how many more when they do not all fit
   viewHeight: number; // the conversation's rows, in full screen
   promptFirst: number; // the prompt's first row
 }
@@ -141,10 +141,20 @@ export interface FrameOut {
 // rows are counted as they are drawn; under the detail view only the working line, while something runs, and the key
 // row in the hint's place (release 5 plan, Task 12). A question is wrapped and drawn a row a Text, so its rows are known;
 // one whose rows would leave the conversation less than its one row draws its short line instead, when it has one to
-// move to (release 5 plan, Task 11). A dangerous command's red lines above it are wrapped and drawn so too, and count in
-// its rows; they do not move, as each names one command's danger (release 7 plan, Task 8).
+// move to (release 5 plan, Task 11). A dangerous command's red lines above it are drawn a row each, cut at the
+// terminal's width as Ink's truncate-end cuts, in the rows the question leaves beyond the conversation's one; when they do
+// not all fit, the last row says how many more there are (release 7 plan, Task 8 and choice 63). One red row is kept for
+// them in whether the question fits, so a question that would leave none moves to its short line.
 // The model list takes the rows it needs, up to all but the conversation's least row,
 // its filter line and the status line (release 5 plan, choice 19).
+// The red lines in `room` rows: all when they fit, or else all but the last row's worth and that row counting the rest,
+// which is never one, as the count takes a line's place.
+function fewest(lines: string[], room: number): string[] {
+  if (lines.length <= room) return lines;
+  if (room === 0) return [];
+  return [...lines.slice(0, room - 1), `…and ${lines.length - room + 1} more dangers`];
+}
+
 export function frame(i: FrameIn): FrameOut {
   const base = i.rows - 1 - 1 - (i.working ? 1 : 0) - (i.full ? 1 : 0);
   const cursor = i.detail ? 0 : 1; // the cursor's row, kept while the prompt is drawn
@@ -167,9 +177,10 @@ export function frame(i: FrameIn): FrameOut {
     (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
   const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
-  const warned = i.askedText === null ? [] : i.askedWarnings.flatMap((w) => linesOf(w));
-  const questionFits = i.askedText === null || i.rows - 1 - live(warned.length + linesOf(i.askedText).length) >= 1; // as viewHeight, below
+  const reds = i.askedText === null ? [] : i.askedWarnings;
+  const questionFits = i.askedText === null || i.rows - 1 - live(linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
   const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
+  const warned = fewest(reds, Math.max(0, i.rows - 1 - live(asked.length) - 1)); // 1: the conversation's least row
   const viewHeight = Math.max(1, i.rows - 1 - live(warned.length + asked.length));
   return {
     tooled,

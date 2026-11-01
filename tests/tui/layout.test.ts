@@ -202,25 +202,43 @@ describe("frame", () => {
     expect(frame({ ...asked, full: false })).toMatchObject({ questionFits: true, asked: [], viewHeight: 8 });
   });
 
-  // Release 7 plan, Task 8: a dangerous command's red lines are drawn above the question, each wrapped, and count in its
-  // height.
-  it("counts a question's red lines in its rows, wrapped, and moves a question they leave no room for", () => {
+  // Release 7 plan, Task 8 and choice 63: a dangerous command's red lines are drawn above the question in full screen, one
+  // row each (cut at the terminal's width as it is drawn), in the rows the question leaves the conversation beyond its
+  // one; when they do not all fit, the last row drawn says how many more there are. The frame never passes the terminal.
+  it("draws a question's red lines a row each, as many as fit, the last saying how many more", () => {
     const columns = 60;
     const fitting = "Allow run: git push --force? [y/n] · Esc to decline";
     const short = "Allow run (shown above)? [y/n] · Esc to decline";
-    const red = "Danger: rewriting or deleting git history: git push --force";
+    const red = (n: number) => `Danger: rewriting or deleting git history: git push --force origin b${n}`;
     const long = `Danger: rewriting or deleting git history: git push --force ${"origin ".repeat(5)}`;
-    expect([red, long].map((t) => wrap(t, columns, false).length)).toEqual([1, 2]);
+    expect(wrap(long, columns, false).length).toBe(2); // two rows if wrapped; one row here
+    const reds = (n: number) => Array.from({ length: n }, (_, i) => red(i + 1));
+    // Ten rows: the frame's row short, the conversation's one, the question's and the status line's leave six.
     const asked: FrameIn = { ...base, rows: 10, columns, hint: false, question: true, askedText: fitting, askedShort: short };
-    const one = frame({ ...asked, askedWarnings: [red] });
-    expect(one).toMatchObject({ questionFits: true, warned: [red], asked: [fitting], viewHeight: 6 });
-    expect(frame({ ...asked, askedWarnings: [red, long] })).toMatchObject({ questionFits: true, warned: { length: 3 }, viewHeight: 4 });
-    // Seven rows fit in ten (above); six red rows and a two-row question do not, so it moves, the red rows staying.
-    const two = `${"x".repeat(columns + 1)}`;
-    const six = [red, red, red, red, red, red];
-    expect(frame({ ...asked, askedText: two, askedWarnings: six })).toMatchObject({ questionFits: false, warned: six, asked: [short], viewHeight: 1 });
-    // In classic mode the red lines are Texts of their own, which count no rows here, as the question's.
-    expect(frame({ ...asked, full: false, askedText: null, askedShort: null, askedWarnings: [red] })).toMatchObject({ warned: [], viewHeight: 8 });
+    expect(frame({ ...asked, askedWarnings: [red(1)] })).toMatchObject({ questionFits: true, warned: [red(1)], asked: [fitting], viewHeight: 6 });
+    expect(frame({ ...asked, askedWarnings: [red(1), long] })).toMatchObject({ warned: [red(1), long], viewHeight: 5 });
+    expect(frame({ ...asked, askedWarnings: reds(6) })).toMatchObject({ warned: reds(6), viewHeight: 1 });
+    // Seven and more: five of them and the count of the rest, which is never one, as its row takes one red line's place.
+    expect(frame({ ...asked, askedWarnings: reds(7) })).toMatchObject({ warned: [...reds(5), "…and 2 more dangers"], viewHeight: 1 });
+    expect(frame({ ...asked, askedWarnings: reds(12) })).toMatchObject({ warned: [...reds(5), "…and 7 more dangers"], viewHeight: 1 });
+    // A question of two rows keeps them, as one red row still fits beside it, and the red lines take what is left.
+    const two = "x".repeat(columns + 1);
+    expect(frame({ ...asked, askedText: two, askedWarnings: reds(6) })).toMatchObject({
+      questionFits: true,
+      asked: { length: 2 },
+      warned: [...reds(4), "…and 2 more dangers"],
+      viewHeight: 1,
+    });
+    // One that leaves no row for a red line moves, so they have room again.
+    const eight = "x".repeat(7 * columns + 1);
+    const seven = "x".repeat(7 * columns);
+    expect(frame({ ...asked, askedText: seven, askedWarnings: [red(1)] })).toMatchObject({ questionFits: false, asked: [short], warned: [red(1)] });
+    const moved = frame({ ...asked, askedText: eight, askedWarnings: reds(7) });
+    expect(moved).toMatchObject({ asked: [short], warned: [...reds(5), "…and 2 more dangers"], viewHeight: 1 });
+    // One that cannot move and takes every row leaves none for them.
+    expect(frame({ ...asked, askedText: eight, askedShort: null, askedWarnings: [red(1)] })).toMatchObject({ asked: { length: 8 }, warned: [] });
+    // In classic mode the red lines are Texts of their own, drawn whole, which count no rows here, as the question's.
+    expect(frame({ ...asked, full: false, askedText: null, askedShort: null, askedWarnings: [red(1)] })).toMatchObject({ warned: [], viewHeight: 8 });
   });
 
   describe("one input changed, every other the same", () => {

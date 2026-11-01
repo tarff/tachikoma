@@ -793,6 +793,40 @@ describe("App", () => {
       expect(app.lastFrame()).not.toContain("Danger:");
     });
   });
+
+  // Release 7 plan, choice 63: in full screen the red lines are a row each, cut at the terminal's width, and those that do
+  // not fit are counted in the last red row, so the frame stays inside the terminal. Classic mode draws them whole.
+  it("cuts the red lines to a row each in full screen, and counts those that do not fit, keeping the frame inside the terminal", async () => {
+    await inColour(async () => {
+      const line = [`git push --force origin ${"x".repeat(120)}`, ...Array.from({ length: 6 }, (_, i) => `git push --force origin b${i + 1}`)].join("; ");
+      const { app, gate } = await mount([], { full: true, rows: 10 });
+      const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
+        () => "allowed",
+        (err: Error) => err.message,
+      );
+      await until(app, "more dangers");
+      const frame = app.lastFrame()!;
+      expect(frame.split("\n").length).toBeLessThanOrEqual(9); // the frame's row short of the terminal's ten
+      expect(frame).toContain(`\u001b[31mDanger: rewriting or deleting git history: git push --force origin ${"x".repeat(32)}…`);
+      // Ten rows: the frame's row short, the conversation's one, the question's four and the status line leave three.
+      expect(frame).toContain("\u001b[31mDanger: rewriting or deleting git history: git push --force origin b1\u001b[39m");
+      expect(frame).toContain("\u001b[31m…and 5 more dangers");
+      expect(frame).not.toContain("\u001b[31mDanger: rewriting or deleting git history: git push --force origin b2");
+      await press(app, "n");
+      expect(await asking).toMatch(/^The user declined: run: git push --force/);
+      const classic = await mount([], { rows: 10 });
+      const whole = classic.gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
+        () => "allowed",
+        (err: Error) => err.message,
+      );
+      await until(classic.app, "origin b6");
+      expect(classic.app.lastFrame()!.split("\u001b[31mDanger: ").length - 1).toBe(7);
+      expect(classic.app.lastFrame()).not.toContain("…"); // the long one wraps, whole
+      expect(classic.app.lastFrame()).not.toContain("more dangers");
+      await press(classic.app, "n");
+      expect(await whole).toMatch(/^The user declined/);
+    });
+  });
 });
 
 // Each key in its own read of the terminal, as a person types them.

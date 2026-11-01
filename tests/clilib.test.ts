@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import path from "node:path";
+import { PermissionGate } from "../src/core/permissions.js";
 import {
   approvalQuestion,
   exitOn,
@@ -67,10 +68,32 @@ describe("the instruction files on screen", () => {
 // The line a -p run prints for each action it declines, naming the subagent that asked, if one did (found at the
 // combined review: its space after the colon was lost).
 describe("headlessDeclined", () => {
-  const why = "declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused)";
+  const why =
+    "declined, nobody to ask in -p mode (--mode project allows ordinary writes inside the project, " +
+    "but protected files, shell commands and anything outside it are still refused)";
   it("says why, then the action, after a space, its subagent's name escaped before it", () => {
     expect(headlessDeclined("run: ls")).toBe(`${why}: run: ls`);
     expect(headlessDeclined("run: ls", "t2 (a\u001b[2Jb)")).toBe(`${why}: t2 (a\\u001b[2Jb): run: ls`);
+  });
+
+  // Release 7 plan, Task 8: a dangerous command's red lines, escaped by the gate as the action is, each on its own line
+  // before the declined one. The gate is the one -p mode makes; the command is text it reads, never run.
+  it("says each danger first, a line each, escaped as the gate escapes them", async () => {
+    const line = "git push --force origin a\u001b[8m; git reset --hard HEAD~3";
+    let printed = "";
+    const ask = async (summary: string, _detail?: string, owner?: { name: string }, _plain?: boolean, warnings?: string[]) => {
+      printed = headlessDeclined(summary, owner?.name, warnings);
+      return false;
+    };
+    const gate = new PermissionGate("project", ask, "x", { headless: true });
+    await expect(gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line })).rejects.toThrow("Not allowed: this command matches");
+    expect(printed).toBe(
+      [
+        "Danger: rewriting or deleting git history: git push --force origin a\\u001b[8m",
+        "Danger: rewriting or deleting git history: git reset --hard HEAD~3",
+        `${why}: run: git push --force origin a\\u001b[8m; git reset --hard HEAD~3`,
+      ].join("\n"),
+    );
   });
 });
 
