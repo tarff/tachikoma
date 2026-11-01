@@ -34,8 +34,10 @@ const UNREADABLE = "the judge's answer could not be read"; // choice 7
 const c = String.fromCharCode;
 const RAW = new RegExp(`[${c(0x80)}-${c(0x9f)}${c(0x2028)}${c(0x2029)}]`, "g");
 
-// An earlier call as the calls block shows it (choice 64): a write by its path and its content's length in characters, and
-// an edit by its path and the lengths of its old and new text, as write_file counts them; every other call whole.
+// A call as the calls block shows it (choice 64): a write by its path and its content's length in characters, and an edit
+// by its path and the lengths of its old and new text, as write_file counts them; every other call whole. The block holds
+// every call kept so far, which can be the action itself and later calls of the same reply, as the session keeps a
+// reply's calls before any runs (session.ts).
 function shortened({ name, input }: JudgeInput["calls"][number]) {
   const given = (input ?? {}) as Record<string, unknown>;
   const length = (text: unknown) => (typeof text === "string" ? text.length : text);
@@ -52,7 +54,7 @@ const line = (value: unknown) => JSON.stringify(value).replace(RAW, (ch) => `\\u
 // The one user message: each part under a fixed label line, its content on the next line, in choice 6's order. The
 // action is shown by its kind, whether it is outside the project, its summary, detail, command and protected part, so
 // the judge knows a read or write outside the project and a protected write (Task 9 review); JSON leaves out the ones
-// it does not have. The action keeps its whole detail; only earlier calls are shortened.
+// it does not have. The action keeps its whole detail; only the calls block is shortened.
 function request({ prompts, calls, action, instructions }: JudgeInput): string {
   const { kind, outside, summary, detail, command, protectedPart } = action;
   return [

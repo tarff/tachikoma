@@ -70,9 +70,9 @@ describe("judge", () => {
     ]);
   });
 
-  // Release 7 plan, choice 64: an earlier write or edit is shown by its path and its text's length in characters, as the
-  // judge need not read again what it has judged; every other call keeps its whole input, and so does the action.
-  it("shows earlier writes and edits by their path and their text's length, and keeps the rest whole", async () => {
+  // Release 7 plan, choice 64: in the calls kept so far, a write or an edit is shown by its path and its text's length in
+  // characters; every other call keeps its whole input, and the action keeps its whole detail.
+  it("shows the kept writes and edits by their path and their text's length, and keeps the rest whole", async () => {
     const j = new FakeProvider("judge", [reply('{"allow": true}')]);
     const calls = [
       { name: "write_file", input: { path: "src/a.ts", content: "SECRET-content" } },
