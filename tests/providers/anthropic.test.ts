@@ -275,6 +275,16 @@ describe("AnthropicProvider", () => {
     expect(errors).toEqual([expect.objectContaining({ kind: "provider", status: 400, message: expect.stringContaining("Could not process image") })]);
   });
 
+  // Release 7 plan, Task 9: the judge's request has no tools, and the key is left out then, as openai.ts and chatgpt.ts do.
+  it("leaves out tools when there are none, and sends them when there are", async () => {
+    const stream = vi.spyOn(Messages.prototype, "stream").mockReturnValue({ finalMessage: async () => message({ content: [] }) } as never);
+    const p = new AnthropicProvider("claude-opus-5-5");
+    await p.complete({ system: "s", messages: [], tools: [] });
+    await p.complete({ system: "s", messages: [], tools: [{ name: "echo", description: "Echo text back", inputSchema: { type: "object" } }] });
+    expect(stream.mock.calls[0]![0]).not.toHaveProperty("tools");
+    expect(stream.mock.calls[1]![0]).toHaveProperty("tools", [{ name: "echo", description: "Echo text back", input_schema: { type: "object" } }]);
+  });
+
   it("names the underlying reason a connection failed", async () => {
     const fetchErr = new TypeError("fetch failed", { cause: new Error("getaddrinfo ENOTFOUND api.anthropic.com") });
     vi.spyOn(Messages.prototype, "stream").mockReturnValue({ finalMessage: () => Promise.reject(new Anthropic.APIConnectionError({ cause: fetchErr })) } as never);

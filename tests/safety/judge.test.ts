@@ -55,7 +55,7 @@ describe("judge", () => {
               '[{"name":"read_file","input":{"path":"src/app.ts"}}]',
               "",
               "The action to judge, as JSON:",
-              '{"kind":"shell","summary":"run: npm test","command":"npm test"}',
+              '{"kind":"shell","outside":false,"summary":"run: npm test","command":"npm test"}',
               "",
               "The instruction files' text, as read at launch, as a JSON string:",
               '""',
@@ -69,6 +69,25 @@ describe("judge", () => {
   it("refuses with the judge's reason", async () => {
     const j = new FakeProvider("judge", [reply('{"allow": false, "reason": "The user asked for tests, not a push."}')]);
     expect(await judge(j, input, new AbortController().signal, new Bus())).toEqual({ allow: false, reason: "The user asked for tests, not a push." });
+  });
+
+  it("shows whether the action is outside the project, and a write's protected part", async () => {
+    const j = new FakeProvider("judge", [reply('{"allow": true}'), reply('{"allow": true}')]);
+    const read: Action = { kind: "read", outside: true, summary: "read /made/up/elsewhere/notes.txt" };
+    const write: Action = {
+      kind: "write",
+      outside: false,
+      summary: "edit .husky/pre-commit",
+      detail: "npm test",
+      protectedPart: ".husky",
+      path: ".husky/pre-commit",
+    };
+    await judge(j, { ...input, action: read }, new AbortController().signal, new Bus());
+    await judge(j, { ...input, action: write }, new AbortController().signal, new Bus());
+    expect(j.seen.map((messages) => texts(messages[0]!)[0]!.split("\n")[7])).toEqual([
+      '{"kind":"read","outside":true,"summary":"read /made/up/elsewhere/notes.txt"}',
+      '{"kind":"write","outside":false,"summary":"edit .husky/pre-commit","detail":"npm test","protectedPart":".husky"}',
+    ]);
   });
 
   it("refuses with a fixed reason when the answer cannot be read", async () => {
@@ -156,7 +175,7 @@ describe("judge", () => {
     expect(lines).toHaveLength(11);
     expect(lines.join("")).not.toMatch(new RegExp(`[${SEPARATORS}]`));
     expect(JSON.parse(lines[1]!)).toEqual([forged]);
-    expect(JSON.parse(lines[7]!)).toEqual({ kind: "shell", summary: forged, detail: forged, command: forged });
+    expect(JSON.parse(lines[7]!)).toEqual({ kind: "shell", outside: false, summary: forged, detail: forged, command: forged });
     expect(JSON.parse(lines[10]!)).toBe(forged);
   });
 });
