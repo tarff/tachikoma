@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,15 +6,31 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { onPath } from "../../src/exec/env.js";
 import { gitSettings } from "../../src/safety/gitconfig.js";
 
-// Every git run is watched, to see where it ran and with what.
+// How many git runs the guard below let start.
+const started = vi.hoisted(() => ({ runs: 0 }));
+
+// Every git run is watched, to see where it ran and with what. A run whose home folder (HOME, and HOMEDRIVE+HOMEPATH
+// when either is set) is not inside a test's own tachi-gitconfig- folder throws before git starts, so a mistake in a
+// test fails it rather than have git read the user's own settings.
 vi.mock("node:child_process", async (importOriginal) => {
   const cp = await importOriginal<typeof import("node:child_process")>();
-  return { ...cp, execFile: vi.fn(cp.execFile) };
+  const path = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const inTest = (p: string) => /^tachi-gitconfig-[^\\/]+([\\/]|$)/.test(path.relative(tmpdir(), path.resolve(p)));
+  const guarded = (file: string, args: string[], options: { env?: NodeJS.ProcessEnv }, callback: unknown) => {
+    const env = options.env ?? process.env;
+    const homes = [env.HOME, ...(env.HOMEDRIVE || env.HOMEPATH ? [`${env.HOMEDRIVE ?? ""}${env.HOMEPATH ?? ""}`] : [])];
+    for (const home of homes) if (!home || !inTest(home)) throw new Error(`git run with a home folder no test made: ${home}`);
+    started.runs++;
+    return cp.execFile(file, args, options as never, callback as never);
+  };
+  return { ...cp, execFile: vi.fn(guarded) };
 });
 
 // The variables a test sets itself, so the user's own are never passed on: git then reads only the system and user
 // files the test made (GIT_CONFIG_SYSTEM, GIT_CONFIG_GLOBAL), and `~/` and the XDG folder are inside the test's folder.
-const OWN = /^(path|home|userprofile|xdg_config_home|git_.*)$/i;
+// HOMEDRIVE and HOMEPATH are left out too, as the guard above would refuse the user's own.
+const OWN = /^(path|home|homedrive|homepath|userprofile|xdg_config_home|git_.*)$/i;
 
 // A test's own folder holding a home folder, a project folder, and empty system and user settings files.
 function world() {
@@ -204,7 +220,10 @@ describe("gitSettings", () => {
     const w = world();
     const config = w.write("project/.git/config", "[include]\n\tpath = %(prefix)/sample-prefix.cfg\n");
     const args = ["config", "--file", config, "--type=path", "--get", "include.path"];
-    const given = execFileSync(onPath("git", w.env)!, args, { cwd: tmpdir(), env: w.env, encoding: "utf8" });
+    // Through the guarded execFile, as every git run here is.
+    const given = await new Promise<string>((resolve, reject) =>
+      execFile(onPath("git", w.env)!, args, { cwd: tmpdir(), env: w.env, encoding: "utf8" }, (err, out) => (err ? reject(err) : resolve(out))),
+    );
     const expanded = path.resolve(given.trim());
     expect(given.trim()).not.toContain("%(prefix)");
     const got = await gitSettings(w.root, w.env);
@@ -345,6 +364,19 @@ describe("gitSettings", () => {
     const got = await gitSettings(w.root, w.env);
     expect(got!.files).toContain(w.at("modules/sub/config"));
     expect(got!.hooksPaths).toEqual([path.join(w.root, "hooks")]);
+  });
+
+  it("(the test file's own guard) refuses a git run whose home folder no test made, before git starts", async () => {
+    const w = world();
+    const before = started.runs;
+    // A made-up folder outside the test's: it need not exist, as nothing reaches it.
+    const elsewhere = path.join(path.parse(tmpdir()).root, "sample-elsewhere", "home");
+    const message = `git run with a home folder no test made: ${elsewhere}`;
+    await expect(gitSettings(w.root, { ...w.env, HOME: elsewhere })).rejects.toThrow(message);
+    // HOME inside the test's folder, but HOMEDRIVE+HOMEPATH naming the made-up one.
+    await expect(gitSettings(w.root, { ...w.env, HOMEDRIVE: elsewhere.slice(0, 2), HOMEPATH: elsewhere.slice(2) })).rejects.toThrow(message);
+    await expect(gitSettings(w.root, { ...w.env, HOME: undefined })).rejects.toThrow("git run with a home folder no test made: undefined");
+    expect(started.runs).toBe(before);
   });
 
   it("gives undefined when git is not installed, starting nothing", async () => {
