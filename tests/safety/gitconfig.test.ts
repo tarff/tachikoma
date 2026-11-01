@@ -267,6 +267,16 @@ describe("gitSettings", () => {
     expect(got!.problems).toEqual([{ file: w.at("joined/missing.cfg"), why: "it cannot be read: no such file" }]);
   });
 
+  it("lists only the written form of a hooks folder reached through a junction that leads nowhere", async () => {
+    const w = world();
+    mkdirSync(w.at("gone"));
+    symlinkSync(w.at("gone"), w.at("project/dangling"), "junction");
+    rmSync(w.at("gone"), { recursive: true });
+    w.write("project/.git/config", "[core]\n\thooksPath = dangling/hooks\n");
+    const got = await gitSettings(w.root, w.env);
+    expect(got!.hooksPaths).toEqual([w.at("project/dangling/hooks")]);
+  });
+
   it("finds a missing include, an include that is a folder and one git cannot read problems, and still names them", async () => {
     const w = world();
     mkdirSync(w.at("project/folder.cfg"));
