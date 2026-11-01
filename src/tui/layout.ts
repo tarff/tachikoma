@@ -153,13 +153,18 @@ function fewest(lines: string[], room: number): string[] {
 // move to (release 5 plan, Task 11). The model list takes the rows it needs, up to all but the conversation's least row,
 // its filter line and the status line (release 5 plan, choice 19).
 // A dangerous command's red lines above a question are drawn a row each, cut at the terminal's width as Ink's
-// truncate-end cuts (release 7 plan, Task 8 and choice 63). One red row is taken out first, so the tool line and the hint
-// row give way to it, and it counts in whether the question fits, so a question that would leave none moves to its short
-// line. The red lines take the rows the question leaves beyond the conversation's one, as fewest() above shares them.
+// truncate-end cuts (release 7 plan, Task 8 and choice 63). At least one red row is always kept: the tool line and the
+// hint row count, in place of the cursor's row, the question's own rows (its short line's, when it can move) and one red
+// row, so they give way first; the working line, not drawn under a question, counts none then; and the red row counts in
+// whether the question fits, so one that would leave none moves to its short line. The red lines take the rows the
+// question leaves beyond the conversation's one, as fewest() above shares them; none only when the short line itself
+// fills the terminal.
 export function frame(i: FrameIn): FrameOut {
   const reds = i.askedText === null ? [] : i.askedWarnings;
-  const base = i.rows - 1 - 1 - (i.working ? 1 : 0) - (i.full ? 1 : 0) - Math.min(1, reds.length);
-  const cursor = i.detail ? 0 : 1; // the cursor's row, kept while the prompt is drawn
+  const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
+  const base = i.rows - 1 - 1 - (i.working && !i.question ? 1 : 0) - (i.full ? 1 : 0);
+  // The rows kept below the tool line and the hint: the cursor's, while the prompt is drawn, or a question's least.
+  const cursor = i.askedText !== null ? linesOf(i.askedShort ?? i.askedText).length + Math.min(1, reds.length) : i.detail ? 0 : 1;
   const tooled = i.toolLine && base >= 1 + cursor + (i.hint ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
   const hinted = i.hint && room >= 1 + cursor;
@@ -178,7 +183,6 @@ export function frame(i: FrameIn): FrameOut {
   const live = (askedRows: number) =>
     (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
-  const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
   const questionFits = i.askedText === null || i.rows - 1 - live(linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
   const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
   const warned = fewest(reds, Math.max(0, i.rows - 1 - live(asked.length) - 1)); // 1: the conversation's least row
