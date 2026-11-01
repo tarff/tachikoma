@@ -135,10 +135,10 @@ async function mount(
   const stats = new Stats(bus);
   const ctx = await tempContext();
   let ask: Ask = async () => false;
-  const judge = opts.judge && judgeOf(opts.judge, () => session, "", bus);
-  const gate = new PermissionGate(opts.mode ?? "ask", (...a) => ask(...a), undefined, { root: ctx.root, ...(judge ? { judge } : {}) });
-  gate.rules = opts.live?.loaded.settings.dangerousCommands ?? NO_RULES; // as cli.tsx sets it at launch
   const lead = opts.lead ?? new FakeProvider("a", turns);
+  const judge = judgeOf(opts.judge, () => session, "", bus); // as cli.tsx gives it: unset, the lead leading judges
+  const gate = new PermissionGate(opts.mode ?? "ask", (...a) => ask(...a), undefined, { root: ctx.root, judge });
+  gate.rules = opts.live?.loaded.settings.dangerousCommands ?? NO_RULES; // as cli.tsx sets it at launch
   const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
   const session = new Session({
     lead,
@@ -1848,6 +1848,27 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     await press(app, "n");
     await until(app, "carried on");
     expect(existsSync(target)).toBe(false);
+  });
+
+  // Release 7 plan, Task 10: with no judge set, the lead judges, the one leading at each action (release 7 design, "The
+  // modes": "Unset, the lead's own model judges, through the login already in use"), so a /lead switch moves the judge.
+  it("judges with the lead leading at each action when no judge is set, so /lead moves the judge too", async () => {
+    const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const write = (id: string, n: string) => callTool(id, "write_file", { path: path.join(folder, `${n}.txt`), content: n });
+    const allow = reply('{"allow": true}');
+    const a = new FakeProvider("a", [write("c1", "a"), allow, reply("first done")]);
+    const b = new FakeProvider("b", [write("c2", "b"), allow, reply("second done")]);
+    const { app } = await mount([], { lead: a, newLead: b, mode: "auto" });
+    await type(app, "write a");
+    await until(app, "first done");
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await type(app, "write b");
+    await until(app, "second done");
+    // A judge's request is its one message of labelled blocks (safety/judge.ts, request).
+    const judged = (p: FakeProvider) => p.seen.filter((m) => m.length === 1 && JSON.stringify(m[0]).includes("The user's own messages")).length;
+    expect([judged(a), judged(b)]).toEqual([1, 1]);
+    expect(["a", "b"].map((n) => existsSync(path.join(folder, `${n}.txt`)))).toEqual([true, true]);
   });
 
   it("takes never into the cycle only when the session started in it", async () => {

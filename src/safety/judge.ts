@@ -82,13 +82,15 @@ function read(text: string): Verdict | null {
   return null;
 }
 
-// The gate's judge, as cli.tsx makes it (release 7 plan, Task 10): `provider` judges with the lead session's prompts and
-// calls, read at each action; a subagent's gate adds its own calls after the lead's, and its bus takes the judge's spend
-// and errors.
-export function judgeOf(provider: Provider, lead: () => Pick<JudgeInput, "prompts" | "calls">, instructions: string, bus: Bus): Judge {
+// The gate's judge, as cli.tsx makes it (release 7 plan, Task 10), with the lead session's prompts and calls, read at each
+// action; a subagent's gate adds its own calls after the lead's, and its bus takes the judge's spend and errors. `provider`
+// is --judge's, or the settings file's; unset, the session's lead at each action judges, so a /lead switch moves the
+// judge too (release 7 design, "The modes": "Unset, the lead's own model judges, through the login already in use").
+export function judgeOf(provider: Provider | undefined, lead: () => Pick<JudgeInput, "prompts" | "calls"> & { lead: Provider }, instructions: string, bus: Bus): Judge {
   return (action, signal, own) => {
-    const { prompts, calls } = lead();
-    return judge(provider, { prompts, calls: [...calls, ...(own?.calls() ?? [])], action, instructions }, signal, own?.bus ?? bus);
+    const session = lead();
+    const input = { prompts: session.prompts, calls: [...session.calls, ...(own?.calls() ?? [])], action, instructions };
+    return judge(provider ?? session.lead, input, signal, own?.bus ?? bus);
   };
 }
 

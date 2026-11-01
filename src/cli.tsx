@@ -234,10 +234,11 @@ try {
   fail(visible(`${named("worker", fromFile(parsed.worker, process.env.TACHI_WORKER), "--worker: ")}${errorText(err)}`));
 }
 // The judge for auto mode is made now, so a bad one stops the launch as a bad --worker does (release 7 plan, Task 7), and
-// the gate gets it (Task 10). Unset, the lead's model judges, from the lead's own spec (release 7 design, "The modes").
-let judgeProvider: Provider;
+// the gate gets it (Task 10). Unset (an empty --judge turns the file's off), the lead leading at each action judges
+// (judgeOf), as a subagent gets the lead leading when it starts.
+let judgeProvider: Provider | undefined;
 try {
-  judgeProvider = makeProvider(options.judge || leadSpec); // an empty --judge turns the file's off (clilib.ts, resolve)
+  if (options.judge) judgeProvider = makeProvider(options.judge);
 } catch (err) {
   fail(visible(`${named("judge", fromFile(parsed.judge), "--judge: ")}${errorText(err)}`));
 }
