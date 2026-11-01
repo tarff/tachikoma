@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
@@ -253,6 +253,18 @@ describe("gitSettings", () => {
     expect(got!.problems).toEqual([]);
     expect(got!.files).toEqual(expect.arrayContaining([w.at("project/joined/extra.cfg"), real]));
     expect(got!.hooksPaths).toEqual([w.at("project/joined-hooks"), w.at("project/real-hooks")]);
+  });
+
+  it("gives a missing hooks folder's and include's real place too, when the project is reached through a link (choice 62)", async () => {
+    const w = world();
+    w.write("project/.git/config", "[core]\n\thooksPath = .githooks\n[include]\n\tpath = ../missing.cfg\n");
+    // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink.
+    symlinkSync(w.root, w.at("joined"), "junction");
+    const real = realpathSync.native(w.root);
+    const got = await gitSettings(w.at("joined"), w.env);
+    expect(got!.hooksPaths).toEqual([w.at("joined/.githooks"), path.join(real, ".githooks")]);
+    expect(got!.files).toEqual(expect.arrayContaining([w.at("joined/missing.cfg"), path.join(real, "missing.cfg")]));
+    expect(got!.problems).toEqual([{ file: w.at("joined/missing.cfg"), why: "it cannot be read: no such file" }]);
   });
 
   it("finds a missing include, an include that is a folder and one git cannot read problems, and still names them", async () => {

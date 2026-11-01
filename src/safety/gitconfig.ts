@@ -16,7 +16,8 @@ import { commandEnv, onPath } from "../exec/env.js";
 
 // `files` are the settings files git reads for the project that exist, and every file an include names, missing or
 // refused ones included; `hooksPaths` every `core.hooksPath` in any of them, absolute. Each path is given as written and,
-// when it exists and differs, as its real path (after links, junctions and short names), so either form is protected.
+// when it differs, as its real path (after links, junctions and short names; for a missing one, its deepest existing
+// parent's, choice 62), so either form is protected.
 // `gitDirs` are the git folders a `.git` file names inside the project, other than `<top>/.git`, and their shared folder
 // (commondir) when that is inside too: protected whole and read-only in the box, as `.git` is (choice 59). One outside
 // the project is not listed, as the box cannot reach it.
@@ -153,9 +154,28 @@ function within(root: string, p: string): boolean {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }
 
-// Adds a path as written and its real path, each once.
+// Adds a path as written and its real path, each once. A missing path's real place is its deepest existing parent's
+// real path plus the rest, so a project reached through a link or a short name still matches it (choice 62).
 function list(into: string[], written: string, real: string | undefined) {
-  for (const p of [written, real]) if (p && !into.includes(p)) into.push(p);
+  for (const p of [written, real ?? missingPlace(written)]) if (p && !into.includes(p)) into.push(p);
+}
+
+// Where a path that does not exist would be, as realTarget in tools/files.ts finds it: undefined for a link that leads
+// nowhere, or a parent whose real path cannot be told.
+function missingPlace(p: string): string | undefined {
+  let existing = path.resolve(p);
+  const rest: string[] = [];
+  try {
+    while (!existsSync(existing) && path.dirname(existing) !== existing) {
+      if (lstatSync(existing, { throwIfNoEntry: false })) return undefined;
+      rest.unshift(path.basename(existing));
+      existing = path.dirname(existing);
+    }
+  } catch {
+    return undefined;
+  }
+  const real = realPath(existing);
+  return real === undefined ? undefined : path.join(real, ...rest);
 }
 
 type Run = (args: string[]) => Promise<{ code: number; out: string; err: string }>;

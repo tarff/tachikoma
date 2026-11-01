@@ -168,4 +168,45 @@ describe("protectedPart", () => {
     expect(protectedPart(path.join(dir, "joined"), path.join(real, "tools", ".npmrc"), [], [])).toBe(".npmrc");
     expect(protectedPart(path.join(dir, "joined"), path.join(real, "src", "app.ts"), [], [])).toBeUndefined();
   });
+
+  it("finds a missing hooks folder by the real place Task 5 lists for it, when the project is reached through a link (choice 62)", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-protected-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    mkdirSync(path.join(dir, "real"));
+    symlinkSync(path.join(dir, "real"), path.join(dir, "joined"), "junction");
+    const real = realpathSync.native(path.join(dir, "real"));
+    // githooks is not made: Task 5 lists it as written and at its parent's real place.
+    const hooks = [path.join(dir, "joined", "githooks"), path.join(real, "githooks")];
+    expect(protectedPart(path.join(dir, "joined"), path.join(real, "githooks", "pre-commit"), hooks, [])).toBe(path.join(real, "githooks"));
+  });
+});
+
+describe("protectedPart, for a project inside a protected folder (choice 62)", () => {
+  const home = path.resolve("/tachi-protected-test/home");
+  const write = (project: string) => protectedPart(project, path.join(project, "notes.txt"), [], []);
+
+  it("protects every write, with the folder as the part", () => {
+    expect(write(path.join(home, ".claude"))).toBe(path.join(home, ".claude"));
+    expect(write(path.join(home, ".claude", "skills", "x"))).toBe(path.join(home, ".claude"));
+    expect(write(path.join(home, ".config", "git"))).toBe(path.join(home, ".config", "git"));
+    expect(write(path.join(home, "repo", ".git", "modules", "lib"))).toBe(path.join(home, "repo", ".git"));
+  });
+
+  it("finds .config/git when the project is .config", () => {
+    const project = path.join(home, ".config");
+    expect(protectedPart(project, path.join(project, "git", "config"), [], [])).toBe(path.join(home, ".config", "git"));
+    expect(protectedPart(project, path.join(project, "other", "x"), [], [])).toBeUndefined();
+  });
+
+  it("finds a project inside a hooks folder by the hooks entry", () => {
+    const hooks = path.join(home, "repo", "githooks");
+    const project = path.join(hooks, "sub");
+    expect(protectedPart(project, path.join(project, "x"), [hooks], [])).toBe(hooks);
+  });
+
+  it("passes over a near miss, and a file's name in the project's own folders", () => {
+    expect(write(path.join(home, "my.claude"))).toBeUndefined();
+    expect(write(path.join(home, ".config"))).toBeUndefined();
+    expect(write(path.join(home, ".npmrc", "x"))).toBeUndefined();
+  });
 });
