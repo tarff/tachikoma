@@ -93,7 +93,8 @@ export interface AppProps {
   // The settings file as the launch read it, and the entries a flag or variable gave then (clilib.ts, givenBy): with
   // it the App watches the file and applies each edit (release 6 design, "Live edits"); without it, as in most tests,
   // it does not.
-  live?: { loaded: { settings: Settings; warnings: string[] }; given: Given };
+  // `networkLine`: the launch's line saying --network was ignored without the sandbox, if it said one (clilib.ts).
+  live?: { loaded: { settings: Settings; warnings: string[] }; given: Given; networkLine?: string };
   // The session's pictures (pictures.ts; release 6 plan, choice 9); the App makes its own when not given. Tests give
   // one to end its reads.
   pictures?: Pictures;
@@ -275,9 +276,11 @@ export function App(props: AppProps) {
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
     // stderr is seen, and they are not said twice. So does the line naming the kinds of the dangerous-command check that
-    // are off, in red, as it says the check is weaker (release 7 plan, Task 4, the user's choice).
+    // are off, in red, as it says the check is weaker (release 7 plan, Task 4, the user's choice). The line saying
+    // --network was ignored is a warning too, grey as the settings file's, in the launch's order (release 7 plan, choice 22).
     const off = ui.fullNow.current && ui.live ? checkOffLine(ui.live.loaded.settings.dangerousCommands) : null;
-    const launchLines: Line[] = [...(ui.fullNow.current ? (ui.live?.loaded.warnings ?? []).map(gray) : []), ...(off ? [{ text: off, color: "red" }] : [])];
+    const warnings = ui.fullNow.current && ui.live ? [...ui.live.loaded.warnings, ...(ui.live.networkLine ? [ui.live.networkLine] : [])] : [];
+    const launchLines: Line[] = [...warnings.map(gray), ...(off ? [{ text: off, color: "red" }] : [])];
     fns.say(...launchLines, ...ui.intro);
     // A watch that cannot start leaves the session as the launch set it, and says so.
     let unwatch: (() => void) | undefined;

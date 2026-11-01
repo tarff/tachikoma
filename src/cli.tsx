@@ -21,6 +21,7 @@ import {
   jsonLine,
   leadOf,
   MAX_TASKS,
+  networkLine,
   prose,
   resolve,
   screenMode,
@@ -29,7 +30,7 @@ import { Bus } from "./core/bus.js";
 import { projectFile } from "./core/datadir.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
-import { type Ask, type Mode, PermissionGate, visible } from "./core/permissions.js";
+import { type Ask, PermissionGate, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { Session } from "./core/session.js";
 import { Stats } from "./core/stats.js";
@@ -69,7 +70,7 @@ Options:
   --mode <mode>     when to ask before acting (default: ask):
                     ask: before each write and shell command, and before anything outside the project
                     project: before shell commands and anything outside the project
-                    auto: the judge model decides what ask would ask, but dangerous commands ask you
+                    auto: edits in the project run, the judge model decides the rest, and dangerous commands ask you
                     never: never ask; only with --sandbox copy, where you review changes at the end
   --sandbox <how>   off | live | copy (default: off): commands run in Docker on this folder or a copy
   --network <net>   off | on (default: off): whether commands in the sandbox can reach the internet
@@ -194,9 +195,8 @@ if (mode === "never" && sandbox !== "copy") {
 }
 // Until Task 21 builds the sandbox, asking for it stops the launch, so `never` cannot start yet (release 7 plan, choice 1).
 if (sandbox !== "off") fail(`${parsed.sandbox === undefined ? `${SETTINGS}: "sandbox": ` : "--sandbox "}${sandbox} is not built yet`);
-// The network setting acts only in the sandbox (release 7 design, "Launching"), so a --network typed for this launch
-// without it is said, and the session starts (release 7 plan, choice 22).
-if (parsed.network !== undefined && sandbox === "off") console.error("--network acts only with the sandbox on; it was ignored");
+const netLine = networkLine(parsed, sandbox);
+if (netLine) console.error(netLine);
 
 const root = process.cwd();
 const errorFile = projectFile("errors", root);
@@ -250,7 +250,7 @@ if (offLine) console.error(offLine);
 // the walk down to the project starts, so tests never read the user's files.
 const instructions = await readInstructions({ root, codexHome: process.env.CODEX_HOME || undefined, top: process.env.TACHI_INSTRUCTIONS_TOP || undefined }, async (reached) => {
   // As read_file reads outside the project then. Unreachable until copy mode, which `never` needs, is built (Task 21).
-  if ((mode as Mode) === "never") return true;
+  if (mode === "never") return true;
   if (!interactive) {
     console.error(headlessLeftOut(reached));
     return false;
@@ -375,7 +375,7 @@ if (parsed.print !== undefined) {
       scrollSpeed={speed}
       clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
       home={os.homedir()}
-      live={{ loaded, given: givenBy(parsed, process.env) }}
+      live={{ loaded, given: givenBy(parsed, process.env), ...(netLine ? { networkLine: netLine } : {}) }}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing

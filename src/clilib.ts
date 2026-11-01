@@ -219,6 +219,13 @@ export function checkOffLine(rules: UserRules = NO_RULES): string | null {
   return rules.off.length ? `The dangerous-command check is off for: ${rules.off.join(", ")}; in auto and never, those commands run without it.` : null;
 }
 
+// The network setting acts only in the sandbox (release 7 design, "Launching"), so a --network typed for this launch
+// without it is said, and the session starts (release 7 plan, choice 22): at launch, and again in full screen (App.tsx).
+// null when there is nothing to say.
+export function networkLine(flags: Flags, sandbox: Sandbox): string | null {
+  return flags.network !== undefined && sandbox === "off" ? "--network acts only with the sandbox on; it was ignored" : null;
+}
+
 // The grey line at the start of a session (release 4 design, "Instruction files"): the files read,
 // the user's folder written as ~, their total size, and any left out and why. Paths come from the disk,
 // so they are escaped.

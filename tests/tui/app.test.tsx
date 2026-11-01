@@ -6577,6 +6577,22 @@ describe("App's live settings", () => {
     });
   });
 
+  // Release 7 plan, choice 22: the launch's line saying --network was ignored without the sandbox, which full screen hides
+  // on stderr until the user quits, so it shows in the session too, grey as the settings file's warnings; in classic mode
+  // only on stderr.
+  it("shows in full screen, in grey, that --network was ignored without the sandbox, and nothing without the line", async () => {
+    await inColour(async () => {
+      const line = "--network acts only with the sandbox on; it was ignored";
+      const live = { loaded: { settings: {}, warnings: [] }, given: { network: "--network" }, networkLine: line };
+      const full = await mount([], { full: true, home: freshHome(), live });
+      expect(full.app.lastFrame()).toContain(`\u001b[90m${line}`);
+      const classic = await mount([], { home: freshHome(), live });
+      expect(classic.app.lastFrame()).not.toContain(line);
+      const none = await mount([], { full: true, home: freshHome(), live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+      expect(none.app.lastFrame()).not.toContain("--network");
+    });
+  });
+
   // Release 6 plan, Task 11: the keys file beside the settings file, through the same watcher.
   const keysIn = (home: string) => path.join(settingsDir(home), "keybindings.json");
   const writeKeys = (home: string, data: object | string) => writeFileSync(keysIn(home), typeof data === "string" ? data : JSON.stringify(data));

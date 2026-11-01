@@ -280,7 +280,7 @@ describe("tachi", { timeout: 15_000 }, () => {
         "  --mode <mode>     when to ask before acting (default: ask):",
         "                    ask: before each write and shell command, and before anything outside the project",
         "                    project: before shell commands and anything outside the project",
-        "                    auto: the judge model decides what ask would ask, but dangerous commands ask you",
+        "                    auto: edits in the project run, the judge model decides the rest, and dangerous commands ask you",
         "                    never: never ask; only with --sandbox copy, where you review changes at the end",
         "  --sandbox <how>   off | live | copy (default: off): commands run in Docker on this folder or a copy",
         "  --network <net>   off | on (default: off): whether commands in the sandbox can reach the internet",
