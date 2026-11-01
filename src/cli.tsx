@@ -30,7 +30,7 @@ import { Bus } from "./core/bus.js";
 import { projectFile } from "./core/datadir.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
-import { type Ask, PermissionGate, visible } from "./core/permissions.js";
+import { type Ask, PermissionGate, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { Session } from "./core/session.js";
 import { Stats } from "./core/stats.js";
@@ -40,6 +40,7 @@ import { LocalExecutor } from "./exec/local.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
+import { gitSettings } from "./safety/gitconfig.js";
 import { NO_RULES } from "./safety/rules.js";
 import { loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { delegateTool } from "./tools/delegate.js";
@@ -241,6 +242,19 @@ try {
 const interactive = parsed.print === undefined;
 // Before the instruction files are read, so nothing is asked with no terminal to answer.
 if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
+// Git's settings files, hooks folders and git folders, read once at launch and kept for the session, are protected as the
+// fixed list is (release 7 plan, Task 8; choices 57 and 59). Without git only the fixed list applies (choice 11), and so
+// when git's run fails, killed by a signal or writing more than execFile's maxBuffer (safety/gitconfig.ts, git), which
+// is said here and again in full screen (App.tsx). The `problems` are for live link (Task 15), not the host.
+let protection: Protection = { hooks: [], files: [] };
+let gitLine: string | undefined;
+try {
+  const git = await gitSettings(root);
+  if (git) protection = { hooks: [...git.hooksPaths, ...git.gitDirs], files: git.files };
+} catch (err) {
+  gitLine = visible(`git's settings could not be read (${errorText(err)}); only the fixed list of protected paths applies`);
+  console.error(gitLine);
+}
 // The user's own rules (release 7 plan, Task 4). A kind switched off is said at each launch (checkOffLine), and again in
 // full screen (App.tsx).
 const rules = loaded.settings.dangerousCommands ?? NO_RULES;
@@ -266,8 +280,12 @@ let ask: Ask = async (summary, _detail, owner) => {
   console.error(headlessDeclined(summary, owner?.name));
   return false;
 };
-const gate = new PermissionGate(mode, (summary, detail, owner) => ask(summary, detail, owner), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it");
+const gate = new PermissionGate(mode, (...a) => ask(...a), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it", {
+  root,
+  headless: !interactive,
+});
 gate.rules = rules;
+gate.protection = protection;
 const executor = new LocalExecutor();
 const tasks = new Tasks({
   bus,
@@ -376,7 +394,7 @@ if (parsed.print !== undefined) {
       scrollSpeed={speed}
       clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
       home={os.homedir()}
-      live={{ loaded, given: givenBy(parsed, process.env), ...(netLine ? { networkLine: netLine } : {}) }}
+      live={{ loaded, given: givenBy(parsed, process.env), ...(netLine ? { networkLine: netLine } : {}), ...(gitLine ? { gitLine } : {}) }}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing

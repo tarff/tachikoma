@@ -162,8 +162,8 @@ describe("the settings and keys files", () => {
 
   // The project is the test's home folder, so ~/.tachikoma is inside it, where `project` and `never`
   // mode would otherwise let the model rewrite the files unasked.
-  async function home(mode: Mode, names = ["settings.json", "keybindings.json", "settings.json.lock", "errors.jsonl"]) {
-    const ctx = await tempContext(mode);
+  async function home(mode: Mode, names = ["settings.json", "keybindings.json", "settings.json.lock", "errors.jsonl"], answers: boolean[] = []) {
+    const ctx = await tempContext(mode, answers);
     vi.stubEnv("USERPROFILE", ctx.root);
     vi.stubEnv("HOME", ctx.root);
     await mkdir(path.join(ctx.root, ".tachikoma"));
@@ -293,13 +293,15 @@ describe("the settings and keys files", () => {
     expect(await readFile(file, "utf8")).toBe("{}");
   });
 
+  // `.tachikoma` is a protected folder (release 7 plan, Task 8), so each write asks, and is allowed here.
   it("leave the folder's other files, and settings files elsewhere, alone", async () => {
-    const ctx = await home("never");
+    const ctx = await home("ask", undefined, [true, true, true, true]);
     await mkdir(path.join(ctx.root, "project", ".tachikoma"), { recursive: true });
     for (const p of [".tachikoma/errors.jsonl", ".tachikoma/settings.json5", ".tachikoma/old-settings.json", "project/.tachikoma/settings.json"]) {
       await writeFileTool.run({ path: p, content: "fine" }, ctx);
       expect(await readFileTool.run({ path: p }, ctx)).toBe("     1\tfine");
     }
+    expect(ctx.asked).toHaveLength(4);
   });
 });
 
@@ -422,7 +424,7 @@ describe("file tools", () => {
     const ctx = await tempContext();
     await writeFile(path.join(ctx.root, "a.txt"), "fine");
     const abs = path.join(ctx.root, "A.TXT");
-    expect(resolveIn(ctx.root, "A.TXT")).toEqual({ abs, outside: false, shown: abs });
+    expect(resolveIn(ctx.root, "A.TXT")).toEqual({ abs, outside: false, shown: abs, real: path.join(realpathSync.native(ctx.root), "a.txt") });
   });
 
   it("shows where a path through a link really leads when asking", async () => {
@@ -510,5 +512,93 @@ describe("file tools", () => {
     const ctx = await tempContext("project");
     await writeFileTool.run({ path: "a.txt", content: "x" }, ctx);
     expect(ctx.asked).toEqual([]);
+  });
+});
+
+// Release 7 plan, Task 8: a write to a protected path asks in ask, project and auto (until Task 10), and is refused in
+// never; so is a write to an existing file with more than one name (choice 61).
+describe("protected writes", () => {
+  const notAllowed = (shown: string, part: string) => `Not allowed: ${shown} is a protected path (${part}), which other programs run or read as settings.`;
+  // A project holding .husky/pre-commit, and the question's wording for a path in it.
+  async function hooked(mode: Mode, answers: boolean[] = []) {
+    const ctx = await tempContext(mode, answers);
+    await mkdir(path.join(ctx.root, ".husky"));
+    await writeFile(path.join(ctx.root, ".husky", "pre-commit"), "old");
+    return ctx;
+  }
+  const hook = (ctx: { root: string }) => path.join(ctx.root, ".husky", "pre-commit");
+
+  it.each(["ask", "project", "auto"] as const)("ask in %s mode, for a write and an edit, and go ahead once allowed", async (mode) => {
+    const ctx = await hooked(mode, [true, true]);
+    await writeFileTool.run({ path: ".husky/pre-commit", content: "new" }, ctx);
+    await editFileTool.run({ path: ".husky/pre-commit", old_text: "new", new_text: "newer" }, ctx);
+    expect(ctx.asked).toEqual([`write ${hook(ctx)}`, `edit ${hook(ctx)}`]);
+    expect(await readFile(hook(ctx), "utf8")).toBe("newer");
+  });
+
+  it("are declined in project mode when the user says no, and the file is left", async () => {
+    const ctx = await hooked("project", [false]);
+    await expect(writeFileTool.run({ path: ".husky/pre-commit", content: "new" }, ctx)).rejects.toThrow(`The user declined: write ${hook(ctx)}`);
+    expect(await readFile(hook(ctx), "utf8")).toBe("old");
+  });
+
+  it("are refused in never mode, for a write, an edit and a new file in the folder", async () => {
+    const ctx = await hooked("never");
+    await expect(writeFileTool.run({ path: ".husky/pre-commit", content: "new" }, ctx)).rejects.toThrow(notAllowed(hook(ctx), ".husky"));
+    await expect(editFileTool.run({ path: ".husky/pre-commit", old_text: "old", new_text: "new" }, ctx)).rejects.toThrow(notAllowed(hook(ctx), ".husky"));
+    const added = path.join(ctx.root, ".husky", "pre-push");
+    await expect(writeFileTool.run({ path: ".husky/pre-push", content: "x" }, ctx)).rejects.toThrow(notAllowed(added, ".husky"));
+    expect(await readFile(hook(ctx), "utf8")).toBe("old");
+    expect(existsSync(added)).toBe(false);
+    expect(ctx.asked).toEqual([]);
+  });
+
+  it("are found by their real place, through a link to the folder", async () => {
+    // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink.
+    const ask = await hooked("project", [false]);
+    await symlink(path.join(ask.root, ".husky"), path.join(ask.root, "tools"), "junction");
+    const typed = path.join(ask.root, "tools", "pre-commit");
+    const shown = `${typed} (really ${path.join(realpathSync.native(ask.root), ".husky", "pre-commit")})`;
+    await expect(writeFileTool.run({ path: "tools/pre-commit", content: "new" }, ask)).rejects.toThrow(`The user declined: write ${shown}`);
+    expect(ask.asked).toEqual([`write ${shown}`]);
+    const never = await hooked("never");
+    await symlink(path.join(never.root, ".husky"), path.join(never.root, "tools"), "junction");
+    const neverShown = `${path.join(never.root, "tools", "pre-commit")} (really ${path.join(realpathSync.native(never.root), ".husky", "pre-commit")})`;
+    await expect(writeFileTool.run({ path: "tools/pre-commit", content: "new" }, never)).rejects.toThrow(notAllowed(neverShown, ".husky"));
+    expect(await readFile(hook(never), "utf8")).toBe("old");
+  });
+
+  it("include an existing file with another name, a hard link, which could be a protected file's", async () => {
+    const ask = await hooked("project", [false, false]);
+    linkSync(hook(ask), path.join(ask.root, "notes.txt"));
+    const notes = path.join(ask.root, "notes.txt");
+    await expect(writeFileTool.run({ path: "notes.txt", content: "new" }, ask)).rejects.toThrow(`The user declined: write ${notes}`);
+    await expect(editFileTool.run({ path: "notes.txt", old_text: "old", new_text: "new" }, ask)).rejects.toThrow(`The user declined: edit ${notes}`);
+    const never = await hooked("never");
+    linkSync(hook(never), path.join(never.root, "notes.txt"));
+    const neverNotes = path.join(never.root, "notes.txt");
+    await expect(writeFileTool.run({ path: "notes.txt", content: "new" }, never)).rejects.toThrow(notAllowed(neverNotes, "a file with another name"));
+    expect(await readFile(hook(never), "utf8")).toBe("old");
+    // A file with one name, new or not, is an ordinary write.
+    await writeFileTool.run({ path: "plain.txt", content: "x" }, never);
+    await writeFileTool.run({ path: "plain.txt", content: "y" }, never);
+    expect(await readFile(path.join(never.root, "plain.txt"), "utf8")).toBe("y");
+  });
+
+  it("include the hooks folders and settings files git's settings name, which the gate holds for the session", async () => {
+    const ctx = await tempContext("project", [false, false]);
+    const hooks = path.join(ctx.root, "githooks");
+    const config = path.join(ctx.root, "team.gitconfig");
+    ctx.gate.protection = { hooks: [hooks], files: [config] };
+    const checkout = path.join(hooks, "post-checkout");
+    await expect(writeFileTool.run({ path: "githooks/post-checkout", content: "x" }, ctx)).rejects.toThrow(`The user declined: write ${checkout}`);
+    await expect(writeFileTool.run({ path: "team.gitconfig", content: "x" }, ctx)).rejects.toThrow(`The user declined: write ${config}`);
+    ctx.gate.mode = "never";
+    await expect(writeFileTool.run({ path: "githooks/post-checkout", content: "x" }, ctx)).rejects.toThrow(notAllowed(checkout, hooks));
+    await expect(writeFileTool.run({ path: "team.gitconfig", content: "x" }, ctx)).rejects.toThrow(notAllowed(config, config));
+    expect(readdirSync(ctx.root)).toEqual([]);
+    // A subagent's gate reads the lead's.
+    const child = ctx.gate.for({ name: "t2", signal: new AbortController().signal, stop: () => {} });
+    await expect(writeFileTool.run({ path: "team.gitconfig", content: "x" }, { ...ctx, gate: child })).rejects.toThrow(notAllowed(config, config));
   });
 });

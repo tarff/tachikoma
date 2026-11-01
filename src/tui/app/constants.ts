@@ -25,6 +25,7 @@ export type Question = {
   detail?: [number, number];
   following?: boolean;
   plain?: boolean; // a question of its own, asked without "Allow" (permissions.ts, Ask)
+  warnings: string[]; // the red lines drawn above it, one per danger, escaped (permissions.ts, Ask; release 7 plan, Task 8)
   answer: (ok: boolean, how: string) => void;
 };
 // While the left button is held after a press in the conversation: what the press took (the pressed character, or a

@@ -1,4 +1,6 @@
-import { NO_RULES, type UserRules } from "../safety/rules.js";
+import os from "node:os";
+import { type Context, type Danger, dangers, NO_RULES, shown as named, type UserRules } from "../safety/rules.js";
+import { shellOf } from "../safety/split.js";
 
 // ask:     ask before every write and shell command, and before anything outside the project
 // project: ask before shell commands and anything outside the project
@@ -17,6 +19,18 @@ export interface Action {
   outside: boolean;
   summary: string;
   detail?: string; // what a write puts in the file, shown above the question; not escaped here
+  command?: string; // a shell command's text, which the gate gives the dangerous-command check (release 7 plan, Task 8)
+  // A write's protected part (safety/protected.ts), or "a file with another name" for a hard link (choice 61), and its
+  // path as the question names it, for the refusal in `never` (Task 8).
+  protectedPart?: string;
+  path?: string;
+}
+
+// The git settings' paths the protected paths add, read once at launch (release 7 plan, Task 8; choices 57 and 59):
+// `hooks` the hooks folders and git folders, `files` the settings files (safety/protected.ts, protectedPart).
+export interface Protection {
+  hooks: string[];
+  files: string[];
 }
 
 export function needsApproval(mode: Mode, action: Action): boolean {
@@ -53,20 +67,39 @@ export interface Owner {
 }
 
 // `plain`: the summary is a question of its own, not an action to allow, such as the session's "Send again without the
-// pictures" (release 6 plan, Task 18), so it is asked without "Allow" before it.
-export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean) => Promise<boolean>;
+// pictures" (release 6 plan, Task 18), so it is asked without "Allow" before it. `warnings`: the red lines above it, one
+// per danger the dangerous-command check found, escaped (release 7 plan, Task 8).
+export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, warnings?: string[]) => Promise<boolean>;
+
+// The refusals in `never`, and headless for a danger (release 7 plan, Task 8). Each holds the model's text, escaped.
+const dangerRefusal = (found: Danger[]) => `Not allowed: this command matches the dangerous-command check (${found.map((d) => visible(named(d))).join("; ")}).`;
+const protectedRefusal = (where: string, part: string) =>
+  `Not allowed: ${visible(where)} is a protected path (${visible(part)}), which other programs run or read as settings.`;
+
+// `root`: the project's, for the dangerous-command check; `headless`: -p mode, where a danger is refused (Task 8).
+export interface GateOptions {
+  root?: string;
+  headless?: boolean;
+}
 
 export class PermissionGate {
   #mode: Mode;
   #rules: UserRules = NO_RULES;
+  #protection: Protection = { hooks: [], files: [] };
   #parent?: PermissionGate;
+  // Where the check reads a command (release 7 plan, Task 8): the project's root (cli.tsx gives its own, the folder it
+  // started in), the home folder, and the shell the executor really runs, PowerShell on Windows and /bin/sh elsewhere
+  // (exec/local.ts, shellFor; split.ts, shellOf). Whether a file exists is the check's own default, on the host.
+  readonly #context: Context;
 
   constructor(
     mode: Mode,
     private readonly ask: Ask,
     private readonly refusal = "The user declined", // what the model is told; in -p mode nobody was asked
+    private readonly options: GateOptions = {},
   ) {
     this.#mode = mode;
+    this.#context = { root: options.root ?? process.cwd(), home: os.homedir(), shell: shellOf("host") };
   }
 
   // Read at each check: Shift+Tab changes it during a session. A subagent's gate reads the lead's.
@@ -84,17 +117,42 @@ export class PermissionGate {
   set rules(rules: UserRules) {
     this.#rules = rules;
   }
+  // The git settings' paths, read at launch and kept for the session; the file tools read them here (Task 8). A
+  // subagent's gate reads the lead's.
+  get protection(): Protection {
+    return this.#parent?.protection ?? this.#protection;
+  }
+  set protection(protection: Protection) {
+    this.#protection = protection;
+  }
 
-  // A subagent's gate: the lead's mode and rules, and questions that name the subagent.
+  // A subagent's gate: the lead's mode, rules and protection, and questions that name the subagent.
   for(owner: Owner): PermissionGate {
-    const gate = new PermissionGate(this.#mode, (summary, detail) => this.ask(summary, detail, owner), this.refusal);
+    const ask: Ask = (summary, detail, _owner, plain, warnings) => this.ask(summary, detail, owner, plain, warnings);
+    const gate = new PermissionGate(this.#mode, ask, this.refusal, this.options);
     gate.#parent = this;
     return gate;
   }
 
+  // Release 7 plan, Task 8: a protected write asks in ask and project too (in release 6, project wrote one unasked), and
+  // a dangerous command asks with its red lines; in `never` both are refused, as is a danger headless. Until Task 10 gives
+  // auto its judge, auto asks what ask asks, these included (needsApproval).
   async require(action: Action): Promise<void> {
-    if (!needsApproval(this.mode, action)) return;
+    const mode = this.mode;
+    const found = action.command === undefined ? [] : dangers(action.command, this.#context, this.rules);
+    const part = action.protectedPart;
+    if (mode === "never") {
+      if (part !== undefined) throw new Declined(protectedRefusal(action.path ?? action.summary, part));
+      if (found.length) throw new Declined(dangerRefusal(found));
+      return;
+    }
+    if (part === undefined && !found.length && !needsApproval(mode, action)) return;
     const shown = visible(action.summary);
-    if (!(await this.ask(shown, action.detail))) throw new Declined(`${this.refusal}: ${shown}`);
+    const warnings = found.map((d) => visible(`Danger: ${named(d)}`));
+    const yes = await this.ask(shown, action.detail, undefined, undefined, warnings);
+    // Headless, the ask is the launch's report of a refusal (cli.tsx), so the run fails and says so; a danger is
+    // refused whatever it answers.
+    if (this.options.headless && found.length) throw new Declined(dangerRefusal(found));
+    if (!yes) throw new Declined(`${this.refusal}: ${shown}`);
   }
 }

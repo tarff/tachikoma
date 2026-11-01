@@ -133,7 +133,7 @@ async function mount(
   const stats = new Stats(bus);
   const ctx = await tempContext();
   let ask: Ask = async () => false;
-  const gate = new PermissionGate(opts.mode ?? "ask", (s, d, o) => ask(s, d, o));
+  const gate = new PermissionGate(opts.mode ?? "ask", (...a) => ask(...a), undefined, { root: ctx.root });
   gate.rules = opts.live?.loaded.settings.dangerousCommands ?? NO_RULES; // as cli.tsx sets it at launch
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
@@ -766,6 +766,32 @@ describe("App", () => {
     expect(frame).toContain("> a\\u001b[8mb␍c");
     expect(frame).toContain(`✗ provider: bad${OSC52_SHOWN}`);
     expectNoRawControls(frame);
+  });
+
+  // Release 7 plan, Task 8: one red line per danger above the yellow question, in full screen and classic mode, with the
+  // model's text escaped as the question's is. The gate is asked directly, so nothing runs the command.
+  it.each([true, false])("draws a dangerous command's red lines above its question, escaped (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const { app, gate } = await mount([], { full });
+      const line = "git push --force origin a\u202eb\u001b[8m; git reset --hard HEAD~3";
+      const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
+        () => "allowed",
+        (err: Error) => err.message,
+      );
+      await until(app, "Allow run:");
+      const frame = app.lastFrame()!;
+      const red = [
+        "Danger: rewriting or deleting git history: git push --force origin a\\u202eb\\u001b[8m",
+        "Danger: rewriting or deleting git history: git reset --hard HEAD~3",
+      ];
+      for (const r of red) expect(frame).toContain(`\u001b[31m${r}`);
+      expect(frame.indexOf(red[0]!)).toBeLessThan(frame.indexOf(red[1]!));
+      expect(frame.indexOf(red[1]!)).toBeLessThan(frame.indexOf("\u001b[33mAllow run:"));
+      for (const raw of ["\u202e", "\u001b[8m"]) expect(frame).not.toContain(raw);
+      await press(app, "n");
+      expect(await asking).toMatch(/^The user declined: run: git push --force/);
+      expect(app.lastFrame()).not.toContain("Danger:");
+    });
   });
 });
 
@@ -6597,6 +6623,23 @@ describe("App's live settings", () => {
       expect(classic.app.lastFrame()).not.toContain(line);
       const none = await mount([], { full: true, home: freshHome(), live: { loaded: { settings: {}, warnings: [] }, given: {} } });
       expect(none.app.lastFrame()).not.toContain("--network");
+    });
+  });
+
+  // Release 7 plan, Task 8: the launch's line saying git's settings could not be read, repeated in full screen as the
+  // --network line is, grey as the settings file's warnings; in classic mode only on stderr.
+  it("shows in full screen, in grey, that git's settings could not be read, and nothing without the line", async () => {
+    await inColour(async () => {
+      const line = "git's settings could not be read (stdout maxBuffer length exceeded); only the fixed list of protected paths applies";
+      const live = { loaded: { settings: {}, warnings: [] }, given: {}, gitLine: line };
+      const full = await mount([], { full: true, home: freshHome(), live });
+      // Ink wraps it at the test terminal's 100 columns.
+      expect(full.app.lastFrame()).toContain("\u001b[90mgit's settings could not be read (stdout maxBuffer length exceeded); only the fixed list of ");
+      expect(full.app.lastFrame()).toContain("\u001b[90mprotected paths applies");
+      const classic = await mount([], { home: freshHome(), live });
+      expect(classic.app.lastFrame()).not.toContain("git's settings");
+      const none = await mount([], { full: true, home: freshHome(), live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+      expect(none.app.lastFrame()).not.toContain("git's settings");
     });
   });
 

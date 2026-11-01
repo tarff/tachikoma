@@ -6,9 +6,12 @@ import path from "node:path";
 // get it either.
 export const API_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "MOONSHOT_API_KEY"];
 
-// Windows treats variable names without regard to case, so `openai_api_key` is the same variable.
+// Windows treats variable names without regard to case, so `openai_api_key` is the same variable. CDPATH goes too: bash's
+// cd looks in its folders first, so the user's own could send a command's `cd sub` out of the project, where the
+// dangerous-command check, which takes `cd sub` as the project's `sub`, does not follow it (release 7 plan, Task 3's
+// known limits; Task 8).
 export function commandEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !API_KEYS.includes(name.toUpperCase())));
+  return Object.fromEntries(Object.entries(env).filter(([name]) => ![...API_KEYS, "CDPATH"].includes(name.toUpperCase())));
 }
 
 // A Windows program by its full path, so a program of the same name earlier on PATH (Git Bash has its

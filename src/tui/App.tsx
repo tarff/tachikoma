@@ -93,8 +93,9 @@ export interface AppProps {
   // The settings file as the launch read it, and the entries a flag or variable gave then (clilib.ts, givenBy): with
   // it the App watches the file and applies each edit (release 6 design, "Live edits"); without it, as in most tests,
   // it does not.
-  // `networkLine`: the launch's line saying --network was ignored without the sandbox, if it said one (clilib.ts).
-  live?: { loaded: { settings: Settings; warnings: string[] }; given: Given; networkLine?: string };
+  // `networkLine`: the launch's line saying --network was ignored without the sandbox, if it said one (clilib.ts);
+  // `gitLine`: the one saying git's settings could not be read, escaped (cli.tsx; release 7 plan, Task 8).
+  live?: { loaded: { settings: Settings; warnings: string[] }; given: Given; networkLine?: string; gitLine?: string };
   // The session's pictures (pictures.ts; release 6 plan, choice 9); the App makes its own when not given. Tests give
   // one to end its reads.
   pictures?: Pictures;
@@ -164,7 +165,7 @@ export function App(props: AppProps) {
   ui.history.current ??= new History(ui.historyFile, (line) => fns.say({ text: line, color: "magenta" }));
 
   useEffect(() => {
-    ui.bindAsk((text, detail, owner, plain) => {
+    ui.bindAsk((text, detail, owner, plain, warnings) => {
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped, nor a
       // stopped subagent about anything.
       const signal = owner ? owner.signal : ui.abort.current?.signal;
@@ -191,6 +192,7 @@ export function App(props: AppProps) {
           ...(owner ? { owner } : {}),
           ...(range ? { detail: range } : {}),
           ...(plain ? { plain } : {}),
+          warnings: warnings ?? [],
           answer: (ok, how) => {
             if (!open) return;
             open = false;
@@ -277,9 +279,11 @@ export function App(props: AppProps) {
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
     // stderr is seen, and they are not said twice. So does the line naming the kinds of the dangerous-command check that
     // are off, in red, as it says the check is weaker (release 7 plan, Task 4, the user's choice). The line saying
-    // --network was ignored is a warning too, grey as the settings file's, in the launch's order (release 7 plan, choice 22).
+    // --network was ignored is a warning too, grey as the settings file's, in the launch's order (release 7 plan, choice 22),
+    // and so is the one saying git's settings could not be read (Task 8).
     const off = ui.fullNow.current && ui.live ? checkOffLine(ui.live.loaded.settings.dangerousCommands) : null;
-    const warnings = ui.fullNow.current && ui.live ? [...ui.live.loaded.warnings, ...(ui.live.networkLine ? [ui.live.networkLine] : [])] : [];
+    const said = ui.live ? [ui.live.networkLine, ui.live.gitLine].filter((l) => l !== undefined) : [];
+    const warnings = ui.fullNow.current && ui.live ? [...ui.live.loaded.warnings, ...said] : [];
     const launchLines: Line[] = [...warnings.map(gray), ...(off ? [{ text: off, color: "red" }] : [])];
     fns.say(...launchLines, ...ui.intro);
     // A watch that cannot start leaves the session as the launch set it, and says so.
@@ -504,6 +508,7 @@ export function App(props: AppProps) {
     question: ui.question !== null,
     askedText: ui.full && ui.question && !ui.picker ? allow(ui.question.short ?? ui.question.text, ui.question.plain) : null,
     askedShort: movable ? allow(shortOf(ui.question), ui.question.plain) : null,
+    askedWarnings: ui.question?.warnings ?? [],
   });
   const { tooled, menuRows, panel, promptSpace, promptShown, todoShown, pickerRows, viewHeight, promptFirst } = f;
   ui.late.viewHeight = viewHeight; // for the functions that read it once the drawing is done (state.ts, late)
@@ -630,14 +635,29 @@ export function App(props: AppProps) {
           <ModelPicker groups={ui.picker} current={ui.session.lead.id} onPick={fns.pick} onClose={fns.closePicker} keys={ui.pickerKey} bindings={ui.table} />
         )
       ) : ui.question ? (
+        // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8).
         ui.full ? (
-          f.asked.map((r, i) => (
-            <Text key={i} color="yellow" wrap="truncate-end">
-              {r}
-            </Text>
-          ))
+          <>
+            {f.warned.map((r, i) => (
+              <Text key={`w${i}`} color="red" wrap="truncate-end">
+                {r}
+              </Text>
+            ))}
+            {f.asked.map((r, i) => (
+              <Text key={i} color="yellow" wrap="truncate-end">
+                {r}
+              </Text>
+            ))}
+          </>
         ) : (
-          <Text color="yellow">{allow(ui.question.text, ui.question.plain)}</Text>
+          <>
+            {ui.question.warnings.map((w, i) => (
+              <Text key={i} color="red">
+                {w}
+              </Text>
+            ))}
+            <Text color="yellow">{allow(ui.question.text, ui.question.plain)}</Text>
+          </>
         )
       ) : d ? (
         workingLine // the working line stays under the detail view while a turn runs (release 5 plan, choice 12)

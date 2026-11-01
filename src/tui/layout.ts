@@ -106,6 +106,7 @@ export interface FrameIn {
   question: boolean; // a question drawn in the prompt's place
   askedText: string | null; // in full screen, the question's line, unless the model list is open
   askedShort: string | null; // the line it would show instead if too long to fit, while it can still move into the conversation
+  askedWarnings: string[]; // the question's red lines, drawn above its line wherever askedText is (release 7 plan, Task 8)
 }
 
 export interface FrameOut {
@@ -122,6 +123,7 @@ export interface FrameOut {
   pickerRows: number;
   questionFits: boolean; // the question's line leaves the conversation its one row
   asked: string[]; // the rows of the question's line drawn: its short line's, when it does not fit and can move
+  warned: string[]; // the rows of its red lines, each wrapped, above them; they stay when the line moves
   viewHeight: number; // the conversation's rows, in full screen
   promptFirst: number; // the prompt's first row
 }
@@ -139,7 +141,9 @@ export interface FrameOut {
 // rows are counted as they are drawn; under the detail view only the working line, while something runs, and the key
 // row in the hint's place (release 5 plan, Task 12). A question is wrapped and drawn a row a Text, so its rows are known;
 // one whose rows would leave the conversation less than its one row draws its short line instead, when it has one to
-// move to (release 5 plan, Task 11). The model list takes the rows it needs, up to all but the conversation's least row,
+// move to (release 5 plan, Task 11). A dangerous command's red lines above it are wrapped and drawn so too, and count in
+// its rows; they do not move, as each names one command's danger (release 7 plan, Task 8).
+// The model list takes the rows it needs, up to all but the conversation's least row,
 // its filter line and the status line (release 5 plan, choice 19).
 export function frame(i: FrameIn): FrameOut {
   const base = i.rows - 1 - 1 - (i.working ? 1 : 0) - (i.full ? 1 : 0);
@@ -163,9 +167,10 @@ export function frame(i: FrameIn): FrameOut {
     (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
   const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
-  const questionFits = i.askedText === null || i.rows - 1 - live(linesOf(i.askedText).length) >= 1; // as viewHeight, below
+  const warned = i.askedText === null ? [] : i.askedWarnings.flatMap((w) => linesOf(w));
+  const questionFits = i.askedText === null || i.rows - 1 - live(warned.length + linesOf(i.askedText).length) >= 1; // as viewHeight, below
   const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
-  const viewHeight = Math.max(1, i.rows - 1 - live(asked.length));
+  const viewHeight = Math.max(1, i.rows - 1 - live(warned.length + asked.length));
   return {
     tooled,
     hinted,
@@ -180,6 +185,7 @@ export function frame(i: FrameIn): FrameOut {
     pickerRows,
     questionFits,
     asked,
+    warned,
     viewHeight,
     promptFirst: (i.full ? viewHeight : 0) + abovePrompt,
   };

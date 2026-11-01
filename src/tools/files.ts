@@ -3,7 +3,8 @@ import path from "node:path";
 import { z } from "zod";
 import { dataDir, KEYBINDINGS, SETTINGS, settingsDir } from "../core/datadir.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
-import { defineTool } from "./tool.js";
+import { protectedPart } from "../safety/protected.js";
+import { defineTool, type ToolContext } from "./tool.js";
 
 // Where a path really leads, following symlinks and Windows junctions. Parts that don't exist yet
 // (a new file in a new folder) are added back onto the deepest part that does. Null for a link that
@@ -194,8 +195,13 @@ const rootPlaces = new Map<string, string | Unchecked | null>();
 
 // `shown` is what the approval prompt names: the path, plus where it really leads when a link, or Windows' own
 // spelling of the real place (a path typed as \\?\C:\... or with a short name), differs from what was typed (review
-// fixes plan, fix 12, the user's choice, "Show the real place").
-export function resolveIn(root: string, p: string, { trusted = false }: { trusted?: boolean } = {}): { abs: string; outside: boolean; shown: string } {
+// fixes plan, fix 12, the user's choice, "Show the real place"). `real` is that real place, when it can be told, for the
+// protected paths (release 7 plan, Task 8).
+export function resolveIn(
+  root: string,
+  p: string,
+  { trusted = false }: { trusted?: boolean } = {},
+): { abs: string; outside: boolean; shown: string; real?: string } {
   const abs = path.resolve(root, p);
   // `trusted` skips the root's walk, the text check and the link check, with its 63-link count, so network and device
   // paths go through: for the user's own instruction files and what they import, read before the check was made
@@ -254,7 +260,20 @@ export function resolveIn(root: string, p: string, { trusted = false }: { truste
   // Case ignored on Windows, where A.TXT and a.txt are one file (fix 16, the user's choice, "Hide case-only").
   const typed = path.relative(root, abs);
   const asTyped = process.platform === "win32" ? rel.toLowerCase() === typed.toLowerCase() : rel === typed;
-  return { abs, outside: leaves(rel), shown: asTyped ? abs : `${abs} (really ${real})` };
+  return { abs, outside: leaves(rel), shown: asTyped ? abs : `${abs} (really ${real})`, real };
+}
+
+// What makes a write protected (release 7 plan, Task 8), or undefined: the protected part of its real place, with the
+// hooks folders, git folders and settings files git's settings name, which the gate holds (safety/protected.ts); or else
+// an existing file with more than one name, read as inData reads one, since a hard link to a protected file is another
+// name for it that its path cannot show (choice 61). pnpm's node_modules files are hard links, so writes there ask too.
+function protectedOf(ctx: ToolContext, real: string | undefined): string | undefined {
+  if (real === undefined) return undefined;
+  const { hooks, files } = ctx.gate.protection;
+  const part = protectedPart(ctx.root, real, hooks, files);
+  if (part !== undefined) return part;
+  const file = statSync(real, { bigint: true, throwIfNoEntry: false });
+  return file?.isFile() && file.nlink >= 2n ? "a file with another name" : undefined;
 }
 
 // Read the way Claude Code's own Read tool does (its tool description, 2026-10-22): up to 2,000 lines
@@ -299,8 +318,9 @@ export const writeFileTool = defineTool(
   "Create or overwrite a text file. Paths are relative to the project root.",
   z.object({ path: z.string(), content: z.string() }),
   async ({ path: p, content }, ctx) => {
-    const { abs, outside, shown } = resolveIn(ctx.root, p);
-    await ctx.gate.require({ kind: "write", outside, summary: `write ${shown}`, detail: content });
+    const { abs, outside, shown, real } = resolveIn(ctx.root, p);
+    const part = protectedOf(ctx, real);
+    await ctx.gate.require({ kind: "write", outside, summary: `write ${shown}`, detail: content, ...(part ? { protectedPart: part, path: shown } : {}) });
     await ctx.executor.writeFile(abs, content);
     return `Wrote ${content.length} characters to ${p}`;
   },
@@ -311,13 +331,14 @@ export const editFileTool = defineTool(
   "Replace one exact, unique piece of text in a file. Read the file first; old_text leaves out the line numbers read_file shows.",
   z.object({ path: z.string(), old_text: z.string().min(1), new_text: z.string() }),
   async ({ path: p, old_text, new_text }, ctx) => {
-    const { abs, outside, shown } = resolveIn(ctx.root, p);
+    const { abs, outside, shown, real } = resolveIn(ctx.root, p);
+    const part = protectedOf(ctx, real);
     const marked = (sign: string, s: string) => s.split("\n").map((l) => `${sign} ${l}`);
     const detail = [...marked("-", old_text), ...(new_text ? marked("+", new_text) : [])].join("\n");
     // Inside the project a read needs no approval, so an edit that cannot work fails before the user is
     // asked. It is checked again after: the file may change while the question waits.
     if (!outside) edited(await ctx.executor.readFile(abs), p, old_text, new_text);
-    await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}`, detail });
+    await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}`, detail, ...(part ? { protectedPart: part, path: shown } : {}) });
     await ctx.executor.writeFile(abs, edited(await ctx.executor.readFile(abs), p, old_text, new_text));
     return `Edited ${p}`;
   },

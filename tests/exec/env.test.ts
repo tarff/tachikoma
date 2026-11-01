@@ -15,6 +15,12 @@ describe("commandEnv", () => {
     const env = commandEnv({ PATH: "/bin", OPENAI_API_KEY: "sk-1", openrouter_api_key: "sk-2", MY_API_KEY: "mine" });
     expect(env).toEqual({ PATH: "/bin", MY_API_KEY: "mine" });
   });
+
+  // Release 7 plan, Task 8: bash's cd looks in CDPATH's folders first, so `cd sub` in a command could leave the project
+  // where the dangerous-command check does not see.
+  it("drops CDPATH, in any case", () => {
+    expect(commandEnv({ PATH: "/bin", CDPATH: "/elsewhere", cdpath: "/other", CDPATHS: "kept" })).toEqual({ PATH: "/bin", CDPATHS: "kept" });
+  });
 });
 
 // The programs here are empty files the test made, looked for and never run.

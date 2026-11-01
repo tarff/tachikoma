@@ -4,21 +4,34 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { onPath } from "../src/exec/env.js";
 
 // Runs the real command through tsx, in a fresh project folder with a pretend home folder, and with
 // the walk for instruction files starting at a fresh folder of its own, so no case reads the user's
-// files. Every case here stops before any model answers.
+// files. Every case here stops before any model answers. The launch reads git's settings (release 7 plan, Task 8), so
+// git is given empty system and user settings files of the test's own, and every variable it finds a home folder by
+// (HOME, HOMEDRIVE and HOMEPATH, USERPROFILE, XDG_CONFIG_HOME) names the pretend one: no case has git read the user's.
 function tachi(...args: (string | Record<string, string>)[]) {
   const env = args.find((a) => typeof a === "object") ?? {};
   const words = args.filter((a) => typeof a === "string");
   const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
   const home = path.join(top, "home");
   mkdirSync(home);
+  const system = path.join(top, "system.gitconfig");
+  const global = path.join(top, "global.gitconfig");
+  for (const file of [system, global]) writeFileSync(file, "");
+  const git = {
+    GIT_CONFIG_SYSTEM: system,
+    GIT_CONFIG_GLOBAL: global,
+    HOMEDRIVE: home.slice(0, 2),
+    HOMEPATH: home.slice(2),
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+  };
   const r = spawnSync(process.execPath, ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, path.resolve("src/cli.tsx"), ...words], {
     cwd: env.cwd ?? top,
     input: "x\n",
     encoding: "utf8",
-    env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "", ...env },
+    env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "", ...git, ...env },
   });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
@@ -363,6 +376,21 @@ describe("tachi", { timeout: 15_000 }, () => {
     const r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"dangerousCommands": {"off": ["installing"]}}'));
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/^settings\.json: "dangerousCommands\.off" must be a list of: wiping or formatting disks, .* \(got "installing"\)\n$/);
+  });
+
+  // Release 7 plan, Task 8: when git's settings cannot be read at launch, it says so in one line and starts, with only the
+  // fixed list protecting. The user settings file here is the test's own, of 12,000 entries of 100 letters, so git's
+  // listing of it passes Node's execFile maxBuffer (1 MiB) and the run fails as git killed by a signal would. Port 9, as
+  // below: the run then gets as far as asking the model and fails there.
+  it.skipIf(!onPath("git"))("says at launch when git's settings could not be read, and starts", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-cli-git-"));
+    const big = path.join(dir, "big.gitconfig");
+    writeFileSync(big, `[sample]\n${Array.from({ length: 12_000 }, (_, i) => `\tkey${i} = ${"x".repeat(100)}\n`).join("")}`);
+    const unreachable = { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" };
+    const r = tachi("--lead", "openai:none", "-p", "hi", { GIT_CONFIG_GLOBAL: big, ...unreachable });
+    expect(r.stderr).toMatch(/^git's settings could not be read \(stdout maxBuffer length exceeded\); only the fixed list of protected paths applies\n/);
+    expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
+    expect(tachi("--lead", "openai:none", "-p", "hi", unreachable).stderr).not.toContain("git's settings");
   });
 
   // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.
