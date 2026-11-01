@@ -562,7 +562,11 @@ the plan's review.
     project at `~/.claude` would write `settings.json`, Claude Code's hooks, without asking.
     Missing hooks folders and included files are also listed at their real place (the deepest
     existing parent's real path plus the rest), so a project reached through a link or a short
-    name still matches them.
+    name still matches them. Task 15 must skip missing entries (or merge the two spellings of
+    one place) when mounting, as Docker makes a missing mount's path. Known limits for the
+    README: a project in a Claude Code worktree (`<repo>/.claude/worktrees/<name>`) asks on
+    every write; on Linux and macOS a `core.hooksPath` or include with `..` after a link inside
+    the project is worked out as text, while the system follows the link first.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
