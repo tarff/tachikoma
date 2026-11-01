@@ -571,7 +571,11 @@ the plan's review.
     `Danger:` line is cut to one row there, and when even those do not fit, as many as fit are
     shown and a last red row says `…and N more dangers`. Classic and `-p` keep the full lines.
     A command with 20 dangers, or one that wraps to 8 rows, made the frame taller than the
-    terminal.
+    terminal. At least one red row is always kept, and a question that moves into the
+    conversation takes its red lines with it (Task 8's code-quality review). Later items from
+    that review: the launch waits on `gitSettings` (296-337 ms measured over 6 runs), which could
+    start earlier; and its git runs have no time limit, so an include naming a FIFO or a stalled
+    network share hangs the launch: a known limit until a timeout is measured.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
