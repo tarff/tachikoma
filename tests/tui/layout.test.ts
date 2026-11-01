@@ -266,10 +266,12 @@ describe("frame", () => {
     expect(frame({ ...asked, full: false, askedText: null, askedShort: null, askedWarnings: [red(1)] })).toMatchObject({ warned: [], viewHeight: 8 });
   });
 
-  // Release 7 plan, Task 10: auto mode's pause is a grey row of the question, above its red lines. It is one of the
-  // question's own rows: it counts in whether the question fits and in what the tool line and the hint leave, and a red
-  // row is still always kept.
-  it("draws a question's grey line as one row of its own, above its red lines", () => {
+  // Release 7 plan, Task 10: auto mode's pause is a grey row of the question. It counts as one of the question's own rows,
+  // as the first red row does, in whether the question fits and in what the tool line and the hint leave, and it is drawn
+  // only when there is a row for it beyond the conversation's one. The gate never sends a grey line with red lines today
+  // (a paused question has no dangers), but the frame takes both: the grey row first, above, and the red rows get what is
+  // left.
+  it("draws a question's grey line as a row of its own when there is a row for it, before any red lines", () => {
     const columns = 60;
     const fitting = "Allow read /made/up/notes.txt? [y/n] · Esc to decline";
     const short = "Allow read (shown above)? [y/n] · Esc to decline";
@@ -291,6 +293,11 @@ describe("frame", () => {
     expect(f.viewHeight + 1 + f.warned.length + f.asked.length + 1).toBe(6); // the conversation, grey, red, question, status
     // With no question drawn, as in classic mode or under the model list, there is no grey row.
     expect(frame({ ...asked, askedText: null })).toMatchObject({ noted: false });
+    // Four rows and a one-line question that cannot move: the frame's row short, the conversation's, the question's and
+    // the status line's leave none, so the grey row is left out, as a red row would be, and the frame stays a row short.
+    const four = frame({ ...asked, rows: 4, askedShort: null });
+    expect(four).toMatchObject({ noted: false, asked: [fitting], warned: [], viewHeight: 1 });
+    expect(four.viewHeight + four.asked.length + 1).toBe(3);
   });
 
   describe("one input changed, every other the same", () => {

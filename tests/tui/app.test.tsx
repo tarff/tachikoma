@@ -832,8 +832,10 @@ describe("App", () => {
     });
   });
 
-  // Release 7 plan, Task 10: auto mode's pause is a grey row of its own question, above the red and yellow rows, so it
-  // waits in the line with that question and shows only while it is the one asked. The App's ask is called directly.
+  // Release 7 plan, Task 10: auto mode's pause is a grey row of its own question, above its yellow rows, so it waits in
+  // the line with that question and shows only while it is the one asked. The App's ask is called directly. The gate never
+  // sends a grey line with red lines today (a paused question has no dangers); the two tests below give both, as the
+  // screen takes both, the grey row above.
   const PAUSE = "Auto mode paused after 3 refusals; approving this resumes it.";
   it.each([true, false])("draws a question's grey line with that question, not under one ahead of it in the line (full screen: %s)", async (full) => {
     await inColour(async () => {
@@ -854,7 +856,7 @@ describe("App", () => {
     });
   });
 
-  it("puts a moved question's grey line in its block in the conversation, above its red lines, and keeps it above the short line", async () => {
+  it("puts a moved question's grey line in its block in the conversation, above any red lines, and keeps it above the short line", async () => {
     await inColour(async () => {
       const line = `echo ${"x".repeat(900)}`;
       const { app, ask } = await mount([], { full: true, rows: 12 });
@@ -872,7 +874,7 @@ describe("App", () => {
     });
   });
 
-  it("fits a question's grey line in a small terminal beside its red lines, keeping a red row", async () => {
+  it("fits a question's grey line in a small terminal, with red lines given too, keeping a red row", async () => {
     await inColour(async () => {
       const warnings = Array.from({ length: 7 }, (_, i) => `Danger: rewriting or deleting git history: git push --force origin b${i + 1}`);
       const { app, ask } = await mount([], { full: true, rows: 8 });

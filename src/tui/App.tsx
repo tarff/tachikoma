@@ -539,8 +539,8 @@ export function App(props: AppProps) {
     if (!ui.question.detail) {
       const n = characters(ui.question.text);
       const from = ui.kept.lines.length;
-      // Its red lines go with it, above its text, so "shown above" shows the dangers too (release 7 plan, Task 8), and its
-      // grey line above them (Task 10).
+      // Its red lines go with it, above its text, so "shown above" shows the dangers too (release 7 plan, Task 8), and so
+      // does its grey line, auto mode's pause, above any red lines, which the gate never sends with it today (Task 10).
       fns.say(
         { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" },
         ...(ui.question.note === undefined ? [] : [{ text: ui.question.note, color: "gray" }]),
@@ -644,8 +644,8 @@ export function App(props: AppProps) {
           <ModelPicker groups={ui.picker} current={ui.session.lead.id} onPick={fns.pick} onClose={fns.closePicker} keys={ui.pickerKey} bindings={ui.table} />
         )
       ) : ui.question ? (
-        // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8), and above them its
-        // grey line, auto mode's pause (Task 10).
+        // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8); auto mode's pause, a
+        // grey row, goes above any red lines, which the gate never sends with it today (Task 10).
         ui.full ? (
           <>
             {f.noted && (

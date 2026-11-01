@@ -26,7 +26,7 @@ export type Question = {
   following?: boolean;
   plain?: boolean; // a question of its own, asked without "Allow" (permissions.ts, Ask)
   warnings: string[]; // the red lines drawn above it, one per danger, escaped (permissions.ts, Ask; release 7 plan, Task 8)
-  note?: string; // a grey row above the red lines, auto mode's pause (permissions.ts, Ask; Task 10)
+  note?: string; // a grey row, auto mode's pause, drawn above any red lines, which the gate never sends with it (permissions.ts, Ask; Task 10)
   answer: (ok: boolean, how: string) => void;
 };
 // While the left button is held after a press in the conversation: what the press took (the pressed character, or a
