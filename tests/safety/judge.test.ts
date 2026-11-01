@@ -6,7 +6,7 @@ import { Session } from "../../src/core/session.js";
 import type { CompletionRequest, Part, Turn } from "../../src/core/types.js";
 import { LocalExecutor } from "../../src/exec/local.js";
 import { judge, type JudgeInput, SYSTEM } from "../../src/safety/judge.js";
-import { defineTool } from "../../src/tools/tool.js";
+import { defineTool, type Tool } from "../../src/tools/tool.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, reply, texts, usage } from "../helpers.js";
 
 // A FakeProvider that also keeps each request's system prompt, tools and cache choice, to check the judge's own.
@@ -143,7 +143,6 @@ describe("judge", () => {
     const j = new Held("fake:judge");
     const stop = new AbortController();
     const verdict = judge(j, input, stop.signal, bus);
-    await Promise.resolve();
     expect(j.asked).toHaveLength(1);
     stop.abort();
     await expect(verdict).rejects.toBe(stop.signal.reason);
@@ -216,7 +215,7 @@ describe("what the session keeps for the judge", () => {
     inbox = ["MARKER-waiting-alone"];
     await session.send(""); // a turn of waiting text alone: nothing the user typed
     expect(lead.seen).toHaveLength(4);
-    expect(session.prompts).toEqual(["tidy the notes", "look at  and fix it"]);
+    expect(session.prompts).toEqual(["tidy the notes", "look at [Image #1] and fix it"]);
     expect(session.calls).toEqual([{ name: "peek", input: { at: "notes.txt" } }]);
 
     // The lead was sent every marker, so the judge's request leaving them out is the session's doing.
@@ -228,9 +227,27 @@ describe("what the session keeps for the judge", () => {
     await judge(j, { prompts: session.prompts, calls: session.calls, action, instructions }, new AbortController().signal, new Bus());
     expect(j.seen[0]!.map((m) => m.parts.map((p) => p.type))).toEqual([["text"]]);
     const lines = texts(j.seen[0]![0]!)[0]!.split("\n");
-    expect(lines[1]).toBe('["tidy the notes","look at  and fix it"]');
+    expect(lines[1]).toBe('["tidy the notes","look at [Image #1] and fix it"]');
     expect(lines[4]).toBe('[{"name":"peek","input":{"at":"notes.txt"}}]');
     expect(JSON.stringify(j.seen)).not.toContain("MARKER");
+  });
+
+  it("keeps a picture's marker where it was typed, with no space added, and none of its data", async () => {
+    const session = new Session({ lead: new FakeProvider("lead", [reply("ok")]), tools: [], system: "test", ctx, bus: new Bus() });
+    const picture: Part = { type: "image", id: 1, mediaType: "image/png", data: Buffer.from("picture bytes") };
+    await session.send([{ type: "text", text: "fix" }, picture, { type: "text", text: "now" }]);
+    expect(session.prompts).toEqual(["fix[Image #1]now"]);
+  });
+
+  it("keeps a reply's calls in the reply's order, a side-by-side tool's among them", async () => {
+    const together: Tool = { ...defineTool("together", "Runs beside others", z.object({}), async () => "done"), parallel: true };
+    const both: Turn = { parts: [...callTool("c1", "peek", { at: "a.txt" }).parts, ...callTool("c2", "together", {}).parts], usage };
+    const session = new Session({ lead: new FakeProvider("lead", [both, reply("ok")]), tools: [peek, together], system: "test", ctx, bus: new Bus() });
+    await session.send("go");
+    expect(session.calls).toEqual([
+      { name: "peek", input: { at: "a.txt" } },
+      { name: "together", input: {} },
+    ]);
   });
 
   it("keeps no prompt for a subagent, whose brief the lead wrote, but keeps its calls", async () => {

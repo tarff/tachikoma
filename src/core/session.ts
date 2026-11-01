@@ -3,7 +3,7 @@ import type { Cache } from "../providers/pictures.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { type Ask, Declined } from "./permissions.js";
-import { errorText, type Message, type Part, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
+import { errorText, type Message, marker, type Part, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
 
 export function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
@@ -30,9 +30,9 @@ export interface SessionOptions {
 export class Session {
   // Append-only. Earlier messages are never edited, for the same reason the system prompt is fixed.
   readonly messages: Message[] = [];
-  // For the judge (release 7 plan, Task 9 and choice 6), in order: the user's own prompts, the text given to `send` and
-  // never the tool results or waiting text that also travel in user messages, nor the pictures; and each call the
-  // session takes up, by name and input, never its result.
+  // For the judge (release 7 plan, Task 9 and choice 6), in order: the user's own prompts, the text given to `send` with
+  // each picture as its marker, never the tool results or waiting text that also travel in user messages; and each call
+  // of a reply that is run, in the reply's order, by name and input, never its result.
   readonly prompts: string[] = [];
   readonly calls: { name: string; input: unknown }[] = [];
   #lead: Provider;
@@ -84,7 +84,8 @@ export class Session {
 
   async #turn(typed: Part[], signal?: AbortSignal): Promise<void> {
     const { bus } = this.opts;
-    const words = typed.flatMap((p) => (p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
+    // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept.
+    const words = typed.flatMap((p) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
     if (words && !this.opts.subagent) this.prompts.push(words);
     const parts: Part[] = [...typed, ...this.#waiting()];
     if (!parts.length) return;
@@ -128,6 +129,8 @@ export class Session {
         return;
       }
       if (calls.length === 0) return;
+      // Kept for the judge in the reply's order, before any runs, as delegate's calls start before the others.
+      for (const c of calls) this.calls.push({ name: c.name, input: c.input });
 
       // Calls of a side-by-side tool (delegate) all start first, together; the rest run one after
       // another. The results go back in the reply's order, then whatever is waiting for the lead,
@@ -189,7 +192,6 @@ export class Session {
 
   async #runTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
     const { bus } = this.opts;
-    this.calls.push({ name: call.name, input: call.input });
     bus.emit("tool-start", { id: call.id, name: call.name, input: call.input });
     const [res, outcome] = await this.#execute(call, signal);
     bus.emit("tool-end", { id: call.id, outcome });
