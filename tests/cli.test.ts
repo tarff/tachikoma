@@ -23,12 +23,16 @@ function tachi(...args: (string | Record<string, string>)[]) {
 function tachiLater(...args: (string | Record<string, string>)[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const { argv, options } = launch(args);
   const child = spawn(process.execPath, argv, options);
+  onTestFinished(() => void child.kill()); // a run still going when the test ends, as a failing one can leave it
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
   child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
   child.stdin.end("x\n");
-  return new Promise((resolve) => child.on("close", (code) => resolve({ code, stdout, stderr })));
+  return new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
 }
 
 function launch(args: (string | Record<string, string>)[]) {
@@ -314,7 +318,7 @@ describe("tachi", { timeout: 15_000 }, () => {
         "  --mode <mode>     when to ask before acting (default: ask):",
         "                    ask: before each write and shell command, and before anything outside the project",
         "                    project: before shell commands and anything outside the project",
-        "                    auto: edits in the project run, the judge model decides the rest,",
+        "                    auto: reads and edits in the project run, the judge model decides the rest,",
         "                          and dangerous commands ask you",
         "                    never: never ask; only with --sandbox copy, where you review changes at the end",
         "  --sandbox <how>   off | live | copy (default: off): commands run in Docker on this folder or a copy",
@@ -422,7 +426,8 @@ describe("tachi", { timeout: 15_000 }, () => {
     mkdirSync(proj);
     const notes = path.join(top, "elsewhere", "notes.txt");
     const sent: { model: string; messages: { role: string; content?: unknown }[] }[] = [];
-    const server = http.createServer(async (req, res) => {
+    // An async handler, as FakeOpenAI's, answering 500 if it throws, so a mistake here fails the run, not the test file.
+    const handle = async (req: http.IncomingMessage, res: http.ServerResponse) => {
       let body = "";
       for await (const chunk of req) body += chunk;
       const request = JSON.parse(body) as (typeof sent)[number];
@@ -433,7 +438,14 @@ describe("tachi", { timeout: 15_000 }, () => {
       const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: notes }) } };
       const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
       json(200, { id: "r", object: "chat.completion", created: 0, model: request.model, choices: [{ index: 0, finish_reason: first ? "tool_calls" : "stop", message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
-    });
+    };
+    const server = http.createServer(
+      (req, res) =>
+        void handle(req, res).catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        }),
+    );
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     onTestFinished(() => {
       server.close();
