@@ -1439,7 +1439,8 @@ Commit: `feat: the review of a copy's changes, file by file, with each diff`.
     - **With Docker not running,** no box can be running, and the review goes on.
   - Two reviews of one copy at once are kept apart by `withLock` on the copy's folder. The
     second one waits.
-- **`never` works** with `--sandbox copy`. Task 7's not-built lines go.
+- **`never` works** with `--sandbox copy`. Task 7's not-built lines go, and `OFFERED` gains
+  `never`, so a mistyped mode's message lists it (from Task 7's spec review).
 
 **Tests:**
 - a real copy session in `-p` writing a file, the real folder untouched, the copy kept and listed
