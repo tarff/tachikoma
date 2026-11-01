@@ -110,8 +110,8 @@ export class PermissionGate {
   #parent?: PermissionGate;
   #own?: Own;
   // Auto mode's counts (release 7 plan, Task 10): the lead's gate's, for the session and its subagents' gates. The judge's
-  // refusals in a row and in all; while auto mode is paused, the number its line names; and the rules' version, which
-  // every change of them raises, for the recheck.
+  // refusals in a row and in all; while auto mode is paused, the number its line names; and the version of the mode and
+  // the rules, which every set of either raises, for the recheck.
   #inRow = 0;
   #refused = 0;
   #paused: number | null = null;
@@ -137,6 +137,7 @@ export class PermissionGate {
   }
   set mode(mode: Mode) {
     this.#mode = mode;
+    this.#version++; // a mode that leaves auto and comes back still throws away an answer that was out (Task 10)
   }
   // The user's own dangerous-command rules in force (release 7 plan, Task 4), as the launch read them and as a live edit
   // that tightens them changes them. A subagent's gate reads the lead's.
@@ -200,14 +201,15 @@ export class PermissionGate {
   }
 
   // Task 10, steps 3 to 5. The judge's answer counts only if nothing changed while it was out: a stopped turn runs
-  // nothing, and a changed mode or a live edit of the rules throws the answer away, and the action is decided again from
-  // the start under what is in force now. Nothing is kept: the same action asked again goes to the judge again.
+  // nothing, and a change of the mode, even one back to auto, or a live edit of the rules throws the answer away, and the
+  // action is decided again from the start under what is in force now. Nothing is kept: the same action asked again goes
+  // to the judge again.
   async #judged(action: Action, signal: AbortSignal): Promise<void> {
     const top = this.#parent ?? this;
     const version = top.#version;
     const verdict = await this.options.judge!(action, signal, this.#own);
     signal.throwIfAborted();
-    if (this.mode !== "auto" || top.#version !== version) return this.require(action, signal);
+    if (top.#version !== version) return this.require(action, signal);
     if (verdict.allow) {
       top.#inRow = 0; // a yes ends the row
       return;

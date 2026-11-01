@@ -7,10 +7,15 @@ import { type Action, type Judge, PermissionGate } from "../../src/core/permissi
 import { Session } from "../../src/core/session.js";
 import { Tasks } from "../../src/core/tasks.js";
 import type { Message, Provider, Turn } from "../../src/core/types.js";
+import type { Executor } from "../../src/exec/executor.js";
 import { LocalExecutor } from "../../src/exec/local.js";
 import { judgeOf, type Verdict } from "../../src/safety/judge.js";
 import { delegateTool } from "../../src/tools/delegate.js";
+import { editFileTool, readFileTool } from "../../src/tools/files.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
+import { searchFilesTool } from "../../src/tools/search.js";
+import { shellTool } from "../../src/tools/shell.js";
+import type { Tool } from "../../src/tools/tool.js";
 import { Bus, FakeProvider, callTool, collectErrors, reply, texts, usage } from "../helpers.js";
 
 // Release 7 plan, Task 10: auto mode in the gate. Reads and project edits pass, dangers ask the user, and the judge
@@ -127,18 +132,18 @@ describe("auto mode, in a session", () => {
     expect(existsSync(path.join(s.root, ".husky", "pre-commit"))).toBe(false);
   });
 
-  it("pauses after 3 refusals in a row, asking with the line, and approving one resumes auto mode", async () => {
-    const j = new FakeProvider("judge", [no(), no(), no(), yes]);
+  it("pauses after 3 refusals in a row, asking with the line, and approving one resumes auto mode and starts the row again", async () => {
+    const j = new FakeProvider("judge", [no(), no(), no(), no(), yes]);
     const script: Turn[] = [];
     const lead = new FakeProvider("lead", script);
     const s = await setup(lead, j, { answers: [true] });
-    const writes = ["a", "b", "c", "d", "e"].map((n): [string, unknown] => ["write_file", { path: s.out(`${n}.txt`), content: n }]);
+    const writes = ["a", "b", "c", "d", "e", "f"].map((n): [string, unknown] => ["write_file", { path: s.out(`${n}.txt`), content: n }]);
     script.push(calls(...writes), reply("done"));
     await s.session.send("write them");
     expect(s.asked).toEqual([{ summary: `write ${s.out("d.txt")}`, note: PAUSED(3) }]);
-    expect(judged(j).map((a) => a.summary)).toEqual(["a", "b", "c", "e"].map((n) => `write ${s.out(`${n}.txt`)}`));
-    expect(existsSync(s.out("d.txt"))).toBe(true);
-    expect(existsSync(s.out("e.txt"))).toBe(true);
+    // After the approval one refusal (e) is the first of a new row, so f goes to the judge, not to the user.
+    expect(judged(j).map((a) => a.summary)).toEqual(["a", "b", "c", "e", "f"].map((n) => `write ${s.out(`${n}.txt`)}`));
+    expect(["d", "e", "f"].map((n) => existsSync(s.out(`${n}.txt`)))).toEqual([true, false, true]);
   });
 
   it("goes to the judge again for the same action asked twice", async () => {
@@ -198,6 +203,42 @@ describe("auto mode, in a session", () => {
     expect(s.tasks.all.map((t) => [t.state, t.answer])).toEqual([["done", "found nothing"]]);
     expect(s.errors).toEqual([{ kind: "judge", attempted: "t1: request to fake:judge", message: "judge down", lead: "fake:judge" }]);
     expect(worker.seen.at(-1)!.at(-1)!.parts).toMatchObject([{ type: "tool_result", output: "The judge refused: the judge could not be reached: judge down" }]);
+  });
+});
+
+// Release 7 plan, Task 10: each tool gives the gate the turn's signal, so stopping the turn while the judge is out runs
+// nothing. The judge records the signal it was given and says yes after the stop, whatever the signal says, and the
+// executor records what reaches it, so an action that ran would show.
+describe("auto mode, the turn's signal from each tool", () => {
+  const cases: [string, Tool, (elsewhere: string) => unknown][] = [
+    ["read_file, outside the project", readFileTool, (elsewhere) => ({ path: path.join(elsewhere, "notes.txt") })],
+    ["edit_file", editFileTool, (elsewhere) => ({ path: path.join(elsewhere, "notes.txt"), old_text: "old", new_text: "new" })],
+    ["search_files", searchFilesTool, (elsewhere) => ({ pattern: "old", path: elsewhere })],
+    ["shell", shellTool, () => ({ command: "echo hi" })],
+  ];
+  it.each(cases)("%s: stopping the turn while the judge is out rejects with the stop and runs nothing", async (_, tool, input) => {
+    const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    await writeFile(path.join(elsewhere, "notes.txt"), "old");
+    let given: AbortSignal | undefined;
+    let answer: ((v: Verdict) => void) | undefined;
+    const judge: Judge = (_action, signal) => ((given = signal), new Promise((resolve) => (answer = resolve)));
+    const gate = new PermissionGate("auto", async () => false, undefined, { root, judge });
+    const ran: string[] = [];
+    const executor: Executor = {
+      exec: async (command) => (ran.push(`exec ${command}`), { code: 0, signal: null, stdout: "", stderr: "" }),
+      readFile: async (abs) => (ran.push(`read ${abs}`), "old"),
+      writeFile: async (abs) => void ran.push(`write ${abs}`),
+    };
+    const stop = new AbortController();
+    const running = tool.run(input(elsewhere), { root, executor, gate, signal: stop.signal });
+    for (let i = 0; i < 40 && !answer; i++) await settle();
+    stop.abort();
+    answer!({ allow: true });
+    await expect(running).rejects.toBe(stop.signal.reason);
+    expect(given).toBe(stop.signal);
+    expect(ran).toEqual([]);
+    expect(await readFile(path.join(elsewhere, "notes.txt"), "utf8")).toBe("old");
   });
 });
 
@@ -281,6 +322,21 @@ describe("auto mode, in the gate", () => {
     g.out.shift()!.answer(YES);
     await done;
     expect(g.asked).toEqual([{ summary: "run: echo hi" }]);
+  });
+
+  // The design: an answer counts only for the rules it was given under, so a mode that left auto and came back while the
+  // judge was out throws it away too.
+  it("decides again when the mode went from auto and back while the judge was out", async () => {
+    const g = heldGate();
+    const done = g.gate.require(run("echo hi"), new AbortController().signal);
+    await Promise.resolve();
+    for (const mode of ["ask", "project", "auto"] as const) g.gate.mode = mode;
+    g.out.shift()!.answer(YES);
+    await settle();
+    expect(g.out.map((o) => o.action.summary)).toEqual(["run: echo hi"]); // asked again, under auto
+    g.out.shift()!.answer(YES);
+    await done;
+    expect(g.asked).toEqual([]);
   });
 
   it("decides again with the rules now in force when they changed while the judge was out", async () => {
