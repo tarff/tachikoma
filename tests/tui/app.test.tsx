@@ -1873,6 +1873,25 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     expect(["a", "b"].map((n) => existsSync(path.join(folder, `${n}.txt`)))).toEqual([true, true]);
   });
 
+  // A judge that --judge or the settings file set stays the judge for the session, whoever leads (Task 10).
+  it("keeps a set judge after /lead", async () => {
+    const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const write = (id: string, n: string) => callTool(id, "write_file", { path: path.join(folder, `${n}.txt`), content: n });
+    const judge = new FakeProvider("judge", [reply('{"allow": true}'), reply('{"allow": true}')]);
+    const a = new FakeProvider("a", [write("c1", "a"), reply("first done")]);
+    const b = new FakeProvider("b", [write("c2", "b"), reply("second done")]);
+    const { app } = await mount([], { lead: a, newLead: b, mode: "auto", judge });
+    await type(app, "write a");
+    await until(app, "first done");
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await type(app, "write b");
+    await until(app, "second done");
+    expect(judge.seen).toHaveLength(2);
+    expect([a.seen.length, b.seen.length]).toEqual([2, 2]); // each lead's own two requests, and no judge's
+    expect(["a", "b"].map((n) => existsSync(path.join(folder, `${n}.txt`)))).toEqual([true, true]);
+  });
+
   it("takes never into the cycle only when the session started in it", async () => {
     const { app } = await mount([], { mode: "never" });
     await press(app, "\u001b[Z", "\u001b[Z", "\u001b[Z", "\u001b[Z");
