@@ -34,6 +34,16 @@ const UNREADABLE = "the judge's answer could not be read"; // choice 7
 const c = String.fromCharCode;
 const RAW = new RegExp(`[${c(0x80)}-${c(0x9f)}${c(0x2028)}${c(0x2029)}]`, "g");
 
+// An earlier call as the calls block shows it (choice 64): a write by its path and its content's length in characters, and
+// an edit by its path and the lengths of its old and new text, as write_file counts them; every other call whole.
+function shortened({ name, input }: JudgeInput["calls"][number]) {
+  const given = (input ?? {}) as Record<string, unknown>;
+  const length = (text: unknown) => (typeof text === "string" ? text.length : text);
+  if (name === "write_file") return { name, input: { path: given.path, content_length: length(given.content) } };
+  if (name === "edit_file") return { name, input: { path: given.path, old_text_length: length(given.old_text), new_text_length: length(given.new_text) } };
+  return { name, input };
+}
+
 // One block's content: a single line of JSON. JSON writes a line break inside a string as \n, and the characters above
 // are escaped here too, the same way, so no text from the user, the model or a file can begin a line of its own, and so
 // none can pass for a label or end its block early.
@@ -42,12 +52,12 @@ const line = (value: unknown) => JSON.stringify(value).replace(RAW, (ch) => `\\u
 // The one user message: each part under a fixed label line, its content on the next line, in choice 6's order. The
 // action is shown by its kind, whether it is outside the project, its summary, detail, command and protected part, so
 // the judge knows a read or write outside the project and a protected write (Task 9 review); JSON leaves out the ones
-// it does not have.
+// it does not have. The action keeps its whole detail; only earlier calls are shortened.
 function request({ prompts, calls, action, instructions }: JudgeInput): string {
   const { kind, outside, summary, detail, command, protectedPart } = action;
   return [
     ["The user's own messages, in order, each a JSON string:", line(prompts)],
-    ["The agent's tool calls so far, in order, each its tool's name and input, as JSON:", line(calls.map(({ name, input }) => ({ name, input })))],
+    ["The agent's tool calls so far, in order, each its tool's name and input, as JSON:", line(calls.map(shortened))],
     ["The action to judge, as JSON:", line({ kind, outside, summary, detail, command, protectedPart })],
     ["The instruction files' text, as read at launch, as a JSON string:", line(instructions)],
   ]

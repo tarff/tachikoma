@@ -70,6 +70,27 @@ describe("judge", () => {
     ]);
   });
 
+  // Release 7 plan, choice 64: an earlier write or edit is shown by its path and its text's length in characters, as the
+  // judge need not read again what it has judged; every other call keeps its whole input, and so does the action.
+  it("shows earlier writes and edits by their path and their text's length, and keeps the rest whole", async () => {
+    const j = new FakeProvider("judge", [reply('{"allow": true}')]);
+    const calls = [
+      { name: "write_file", input: { path: "src/a.ts", content: "SECRET-content" } },
+      { name: "edit_file", input: { path: "src/b.ts", old_text: "SECRET-old", new_text: "SECRET-newer" } },
+      { name: "shell", input: { command: "echo kept-whole" } },
+    ];
+    const write: Action = { kind: "write", outside: false, summary: "write src/c.ts", detail: "the action's own text" };
+    await judge(j, { ...input, calls, action: write }, new AbortController().signal, new Bus());
+    const lines = texts(j.seen[0]![0]!)[0]!.split("\n");
+    expect(JSON.parse(lines[4]!)).toEqual([
+      { name: "write_file", input: { path: "src/a.ts", content_length: 14 } },
+      { name: "edit_file", input: { path: "src/b.ts", old_text_length: 10, new_text_length: 12 } },
+      { name: "shell", input: { command: "echo kept-whole" } },
+    ]);
+    expect(lines[4]).not.toContain("SECRET");
+    expect(JSON.parse(lines[7]!)).toEqual({ kind: "write", outside: false, summary: "write src/c.ts", detail: "the action's own text" });
+  });
+
   it("refuses with the judge's reason", async () => {
     const j = new FakeProvider("judge", [reply('{"allow": false, "reason": "The user asked for tests, not a push."}')]);
     expect(await judge(j, input, new AbortController().signal, new Bus())).toEqual({ allow: false, reason: "The user asked for tests, not a push." });
