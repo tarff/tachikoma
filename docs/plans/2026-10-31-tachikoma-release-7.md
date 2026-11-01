@@ -567,6 +567,11 @@ the plan's review.
     README: a project in a Claude Code worktree (`<repo>/.claude/worktrees/<name>`) asks on
     every write; on Linux and macOS a `core.hooksPath` or include with `..` after a link inside
     the project is worked out as text, while the system follows the link first.
+63. **The red lines fit the full screen** (the user's choice, Task 8's spec review): each
+    `Danger:` line is cut to one row there, and when even those do not fit, as many as fit are
+    shown and a last red row says `…and N more dangers`. Classic and `-p` keep the full lines.
+    A command with 20 dangers, or one that wraps to 8 rows, made the frame taller than the
+    terminal.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
@@ -1440,7 +1445,9 @@ Commit: `feat: the review of a copy's changes, file by file, with each diff`.
   - Two reviews of one copy at once are kept apart by `withLock` on the copy's folder. The
     second one waits.
 - **`never` works** with `--sandbox copy`. Task 7's not-built lines go, and `OFFERED` gains
-  `never`, so a mistyped mode's message lists it (from Task 7's spec review).
+  `never`, so a mistyped mode's message lists it (from Task 7's spec review). A write whose real
+  place cannot be told (a link that leads nowhere) has no `real` and so skips the protected
+  check; it counts as outside, and `never` must refuse it (from Task 8's spec review).
 
 **Tests:**
 - a real copy session in `-p` writing a file, the real folder untouched, the copy kept and listed
