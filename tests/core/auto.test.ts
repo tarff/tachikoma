@@ -339,6 +339,34 @@ describe("auto mode, in the gate", () => {
     await expect(f).rejects.toThrow("The user declined: read /made/up/elsewhere/9.txt");
   });
 
+  // A refusal from a judge request already out when auto mode paused continues that pause, so the question waiting
+  // under it still resumes auto mode when approved.
+  it("counts a refusal that comes during a pause in that pause, so the question waiting under it still lifts it", async () => {
+    const questions: { note?: string; answer: (yes: boolean) => void }[] = [];
+    const out: ((v: Verdict) => void)[] = [];
+    const judge: Judge = () => new Promise((answer) => out.push(answer));
+    const ask = (_summary: string, _detail?: string, _owner?: unknown, _plain?: boolean, _warnings?: string[], note?: string) =>
+      new Promise<boolean>((answer) => questions.push({ ...(note ? { note } : {}), answer }));
+    const gate = new PermissionGate("auto", ask, undefined, { root: "/made/up/project", judge });
+    const refused = [1, 2, 3].map((n) => gate.require(outside(n)).catch((err: Error) => err.message));
+    const late = gate.require(outside(4)).catch((err: Error) => err.message); // out at the judge before the pause
+    for (const answer of out.splice(0, 3)) answer(NO);
+    expect(await Promise.all(refused)).toEqual(Array(3).fill("The judge refused: No."));
+    const waiting = gate.require(outside(5)); // asks, under the pause
+    await settle();
+    expect(questions.map((q) => q.note)).toEqual([PAUSED(3)]);
+    out.shift()!(NO); // the late refusal, during the pause
+    expect(await late).toBe("The judge refused: No.");
+    questions.shift()!.answer(true);
+    await waiting; // approved: auto mode resumes
+    const next = gate.require(outside(6));
+    await settle();
+    expect(questions).toEqual([]);
+    expect(out).toHaveLength(1); // it went to the judge
+    out.shift()!(YES);
+    await next;
+  });
+
   it("headless, never asks: every refusal is final, and the run carries on", async () => {
     const g = heldGate({ headless: true });
     for (let n = 0; n < 25; n++) expect(await decide(g, outside(n), NO)).toBe("The judge refused: No.");

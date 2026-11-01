@@ -110,9 +110,10 @@ export class PermissionGate {
   #parent?: PermissionGate;
   #own?: Own;
   // Auto mode's counts (release 7 plan, Task 10): the lead's gate's, for the session and its subagents' gates. The judge's
-  // refusals in a row and in all; while auto mode is paused, the pause, holding the number its line names, a new one at
-  // each refusal that pauses it, so only a question asked under the pause in force can lift it; and the version of the
-  // mode and the rules, which every set of either raises, for the recheck.
+  // refusals in a row and in all; while auto mode is paused, the pause, holding the number its line names, made by the
+  // refusal that starts it and kept, its count raised, by any that comes during it, so only a question asked under the
+  // pause in force can lift it; and the version of the mode and the rules, which every set of either raises, for the
+  // recheck.
   #inRow = 0;
   #refused = 0;
   #pause: { count: number } | null = null;
@@ -218,8 +219,13 @@ export class PermissionGate {
     }
     top.#inRow++;
     top.#refused++;
-    // Once the session has had 20, each later refusal pauses it again, its line naming the session's count (choice 8).
-    if (!this.options.headless && (top.#inRow >= IN_A_ROW || top.#refused >= IN_A_SESSION)) top.#pause = { count: top.#refused >= IN_A_SESSION ? top.#refused : top.#inRow };
+    // Once the session has had 20, each later refusal pauses it again, its line naming the session's count (choice 8). One
+    // that comes during a pause, from a request already out, continues it, so the questions waiting under it still lift it.
+    if (!this.options.headless && (top.#inRow >= IN_A_ROW || top.#refused >= IN_A_SESSION)) {
+      const count = top.#refused >= IN_A_SESSION ? top.#refused : top.#inRow;
+      if (top.#pause) top.#pause.count = count;
+      else top.#pause = { count };
+    }
     throw new Declined(`The judge refused: ${visible(verdict.reason)}`);
   }
 }

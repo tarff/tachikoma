@@ -162,8 +162,8 @@ function fewest(lines: string[], room: number): string[] {
 // question leaves beyond the conversation's one, as fewest() above shares them; none only when the short line itself
 // fills the terminal. A question's grey line, auto mode's pause (Task 10), counts as one of the question's own rows, as the
 // first red row does, and is cut as the red lines are; it is drawn only when there is a row for it beyond the
-// conversation's one, and any red rows get what is left. The gate never sends it with red lines today (a paused question
-// has no dangers), but the frame takes both.
+// conversation's one and beyond the red row always kept, so a red row comes first. The gate never sends it with red lines
+// today (a paused question has no dangers), but the frame takes both.
 export function frame(i: FrameIn): FrameOut {
   const reds = i.askedText === null ? [] : i.askedWarnings;
   const note = i.askedText !== null && i.askedNote ? 1 : 0;
@@ -191,7 +191,7 @@ export function frame(i: FrameIn): FrameOut {
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
   const questionFits = i.askedText === null || i.rows - 1 - live(note + linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
   const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
-  const noted = note === 1 && i.rows - 1 - live(asked.length) - 1 >= 1 ? 1 : 0; // 1: the conversation's least row
+  const noted = note === 1 && i.rows - 1 - live(asked.length + Math.min(1, reds.length)) - 1 >= 1 ? 1 : 0; // 1: the conversation's least row
   const warned = fewest(reds, Math.max(0, i.rows - 1 - live(noted + asked.length) - 1));
   const viewHeight = Math.max(1, i.rows - 1 - live(noted + warned.length + asked.length));
   return {

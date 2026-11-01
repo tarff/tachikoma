@@ -268,9 +268,9 @@ describe("frame", () => {
 
   // Release 7 plan, Task 10: auto mode's pause is a grey row of the question. It counts as one of the question's own rows,
   // as the first red row does, in whether the question fits and in what the tool line and the hint leave, and it is drawn
-  // only when there is a row for it beyond the conversation's one. The gate never sends a grey line with red lines today
-  // (a paused question has no dangers), but the frame takes both: the grey row first, above, and the red rows get what is
-  // left.
+  // only when there is a row for it beyond the conversation's one and, as Task 8 always keeps one red row, beyond that red
+  // row. The gate never sends a grey line with red lines today (a paused question has no dangers), but the frame takes
+  // both, the grey row above.
   it("draws a question's grey line as a row of its own when there is a row for it, before any red lines", () => {
     const columns = 60;
     const fitting = "Allow read /made/up/notes.txt? [y/n] · Esc to decline";
@@ -298,6 +298,11 @@ describe("frame", () => {
     const four = frame({ ...asked, rows: 4, askedShort: null });
     expect(four).toMatchObject({ noted: false, asked: [fitting], warned: [], viewHeight: 1 });
     expect(four.viewHeight + four.asked.length + 1).toBe(3);
+    // Five rows, a red line too, and the question moved to its one-row short line: one row is free, and the red row
+    // takes it; the grey row gives way.
+    const five = frame({ ...asked, rows: 5, askedWarnings: [red(1)] });
+    expect(five).toMatchObject({ questionFits: false, asked: [short], noted: false, warned: [red(1)], viewHeight: 1 });
+    expect(five.viewHeight + five.warned.length + five.asked.length + 1).toBe(4);
   });
 
   describe("one input changed, every other the same", () => {
