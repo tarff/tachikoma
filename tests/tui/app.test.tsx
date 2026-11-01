@@ -215,7 +215,7 @@ async function mount(
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, gate, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
+  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, gate, ask: (...a: Parameters<Ask>) => ask(...a) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -829,6 +829,64 @@ describe("App", () => {
       expect(existsSync(path.join(folder, "d.txt"))).toBe(true);
       expect(existsSync(path.join(folder, "e.txt"))).toBe(true);
       expect(judge.seen).toHaveLength(4);
+    });
+  });
+
+  // Release 7 plan, Task 10: auto mode's pause is a grey row of its own question, above the red and yellow rows, so it
+  // waits in the line with that question and shows only while it is the one asked. The App's ask is called directly.
+  const PAUSE = "Auto mode paused after 3 refusals; approving this resumes it.";
+  it.each([true, false])("draws a question's grey line with that question, not under one ahead of it in the line (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const { app, ask } = await mount([], { full });
+      const first = ask("run: git push --force", undefined, undefined, undefined, ["Danger: rewriting or deleting git history: git push --force"]);
+      const second = ask("read /made/up/elsewhere/notes.txt", undefined, undefined, undefined, [], PAUSE);
+      await until(app, "Allow run: git push --force?");
+      expect(app.lastFrame()).not.toContain("Auto mode paused");
+      await press(app, "n");
+      expect(await first).toBe(false);
+      await until(app, "Allow read /made/up/elsewhere/notes.txt?");
+      const frame = app.lastFrame()!;
+      expect(frame.split(`\u001b[90m${PAUSE}`)).toHaveLength(2); // once, in grey
+      expect(frame.indexOf(PAUSE)).toBeLessThan(frame.indexOf("\u001b[33mAllow read /made/up/elsewhere/notes.txt?"));
+      await press(app, "n");
+      expect(await second).toBe(false);
+      expect(app.lastFrame()).not.toContain("Auto mode paused"); // it went with its question
+    });
+  });
+
+  it("puts a moved question's grey line in its block in the conversation, above its red lines, and keeps it above the short line", async () => {
+    await inColour(async () => {
+      const line = `echo ${"x".repeat(900)}`;
+      const { app, ask } = await mount([], { full: true, rows: 12 });
+      const asking = ask(`run: ${line}`, undefined, undefined, undefined, ["Danger: a made-up danger"], PAUSE);
+      await until(app, "Allow run (shown above)?");
+      const rows = app.lastFrame()!.split("\n");
+      const heading = rows.findIndex((r) => r.includes(`┌ run (${line.length + "run: ".length} characters)`));
+      expect(heading).toBeGreaterThanOrEqual(0);
+      expect(rows[heading + 1]).toContain(`\u001b[90m${PAUSE}`);
+      expect(rows[heading + 2]).toContain("\u001b[31mDanger: a made-up danger");
+      expect(rows[heading + 3]).toContain("\u001b[90mrun: echo xxx");
+      expect(rows.filter((r) => r.includes(PAUSE))).toHaveLength(2); // in the conversation, and above the short line
+      await press(app, "n");
+      expect(await asking).toBe(false);
+    });
+  });
+
+  it("fits a question's grey line in a small terminal beside its red lines, keeping a red row", async () => {
+    await inColour(async () => {
+      const warnings = Array.from({ length: 7 }, (_, i) => `Danger: rewriting or deleting git history: git push --force origin b${i + 1}`);
+      const { app, ask } = await mount([], { full: true, rows: 8 });
+      const asking = ask("run: git push --force origin b1", undefined, undefined, undefined, warnings, PAUSE);
+      await until(app, "more dangers");
+      const frame = app.lastFrame()!;
+      expect(frame.split("\n").length).toBeLessThanOrEqual(7); // the frame's row short of the terminal's eight
+      expect(frame).toContain(`\u001b[90m${PAUSE}`);
+      expect(frame).toContain(`\u001b[31m${warnings[0]}`);
+      expect(frame).toContain("\u001b[31m…and 5 more dangers"); // eight rows: a row short, the conversation, grey, three red, the question, status
+      expect(frame.indexOf(PAUSE)).toBeLessThan(frame.indexOf(warnings[0]!));
+      expect(frame).toContain("\u001b[33mAllow run: git push --force origin b1?");
+      await press(app, "n");
+      expect(await asking).toBe(false);
     });
   });
 

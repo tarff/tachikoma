@@ -94,6 +94,7 @@ const base: FrameIn = {
   askedText: null,
   askedShort: null,
   askedWarnings: [],
+  askedNote: false,
 };
 const subagent = (id: string): Task => ({
   id,
@@ -130,6 +131,7 @@ describe("frame", () => {
       questionFits: true,
       asked: [],
       warned: [],
+      noted: false,
       viewHeight: 16, // with the prompt, the hint and the status line, 19 rows
       promptFirst: 16,
     });
@@ -262,6 +264,33 @@ describe("frame", () => {
     expect(frame({ ...idle, askedWarnings: reds(7) })).toMatchObject({ tooled: false, warned: ["7 dangers"], viewHeight: 1 });
     // In classic mode the red lines are Texts of their own, drawn whole, which count no rows here, as the question's.
     expect(frame({ ...asked, full: false, askedText: null, askedShort: null, askedWarnings: [red(1)] })).toMatchObject({ warned: [], viewHeight: 8 });
+  });
+
+  // Release 7 plan, Task 10: auto mode's pause is a grey row of the question, above its red lines. It is one of the
+  // question's own rows: it counts in whether the question fits and in what the tool line and the hint leave, and a red
+  // row is still always kept.
+  it("draws a question's grey line as one row of its own, above its red lines", () => {
+    const columns = 60;
+    const fitting = "Allow read /made/up/notes.txt? [y/n] · Esc to decline";
+    const short = "Allow read (shown above)? [y/n] · Esc to decline";
+    const red = (n: number) => `Danger: rewriting or deleting git history: git push --force origin b${n}`;
+    const reds = (n: number) => Array.from({ length: n }, (_, i) => red(i + 1));
+    // Ten rows: the frame's row short, the conversation's one, the grey row, the question's and the status line's.
+    const asked: FrameIn = { ...base, rows: 10, columns, hint: false, question: true, askedText: fitting, askedShort: short, askedNote: true };
+    expect(frame(asked)).toMatchObject({ questionFits: true, noted: true, warned: [], asked: [fitting], viewHeight: 6 });
+    expect(frame({ ...asked, askedWarnings: reds(7) })).toMatchObject({ noted: true, warned: [...reds(4), "…and 3 more dangers"], viewHeight: 1 });
+    // Seven rows fit without the grey row (above) and not with it, so the question moves to its short line.
+    const seven = "x".repeat(7 * columns);
+    expect(frame({ ...asked, askedText: seven })).toMatchObject({ questionFits: false, noted: true, asked: [short] });
+    expect(frame({ ...asked, askedText: seven, askedNote: false })).toMatchObject({ questionFits: true, noted: false });
+    // Forty by seven, a moved question of two rows with a red line, the hint and the tool line: the grey row is the
+    // question's own, so the tool line and the hint give way, and the red row keeps its row. The frame is a row short.
+    const small: FrameIn = { ...base, rows: 7, columns: 40, working: true, hint: true, toolLine: true, question: true, askedText: short, askedShort: null, askedNote: true };
+    const f = frame({ ...small, askedWarnings: [red(1)] });
+    expect(f).toMatchObject({ tooled: false, hinted: false, noted: true, asked: { length: 2 }, warned: [red(1)], viewHeight: 1 });
+    expect(f.viewHeight + 1 + f.warned.length + f.asked.length + 1).toBe(6); // the conversation, grey, red, question, status
+    // With no question drawn, as in classic mode or under the model list, there is no grey row.
+    expect(frame({ ...asked, askedText: null })).toMatchObject({ noted: false });
   });
 
   describe("one input changed, every other the same", () => {

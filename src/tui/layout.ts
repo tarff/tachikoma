@@ -107,6 +107,7 @@ export interface FrameIn {
   askedText: string | null; // in full screen, the question's line, unless the model list is open
   askedShort: string | null; // the line it would show instead if too long to fit, while it can still move into the conversation
   askedWarnings: string[]; // the question's red lines, drawn above its line wherever askedText is (release 7 plan, Task 8)
+  askedNote: boolean; // whether it has a grey line, auto mode's pause, drawn above its red lines (Task 10)
 }
 
 export interface FrameOut {
@@ -124,6 +125,7 @@ export interface FrameOut {
   questionFits: boolean; // the question's line leaves the conversation its one row
   asked: string[]; // the rows of the question's line drawn: its short line's, when it does not fit and can move
   warned: string[]; // the red lines drawn above it, a row each, the last saying how many more when they do not all fit
+  noted: boolean; // its grey line drawn, a row above the red lines
   viewHeight: number; // the conversation's rows, in full screen
   promptFirst: number; // the prompt's first row
 }
@@ -158,13 +160,15 @@ function fewest(lines: string[], room: number): string[] {
 // row, so they give way first; the working line, not drawn under a question, counts none then; and the red row counts in
 // whether the question fits, so one that would leave none moves to its short line. The red lines take the rows the
 // question leaves beyond the conversation's one, as fewest() above shares them; none only when the short line itself
-// fills the terminal.
+// fills the terminal. A question's grey line, auto mode's pause (Task 10), is one row of the question's own, cut as the red
+// lines are, so it counts wherever the question's rows do.
 export function frame(i: FrameIn): FrameOut {
   const reds = i.askedText === null ? [] : i.askedWarnings;
+  const note = i.askedText !== null && i.askedNote ? 1 : 0;
   const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
   const base = i.rows - 1 - 1 - (i.working && !i.question ? 1 : 0) - (i.full ? 1 : 0);
   // The rows kept below the tool line and the hint: the cursor's, while the prompt is drawn, or a question's least.
-  const cursor = i.askedText !== null ? linesOf(i.askedShort ?? i.askedText).length + Math.min(1, reds.length) : i.detail ? 0 : 1;
+  const cursor = i.askedText !== null ? note + linesOf(i.askedShort ?? i.askedText).length + Math.min(1, reds.length) : i.detail ? 0 : 1;
   const tooled = i.toolLine && base >= 1 + cursor + (i.hint ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
   const hinted = i.hint && room >= 1 + cursor;
@@ -183,10 +187,10 @@ export function frame(i: FrameIn): FrameOut {
   const live = (askedRows: number) =>
     (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
-  const questionFits = i.askedText === null || i.rows - 1 - live(linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
+  const questionFits = i.askedText === null || i.rows - 1 - live(note + linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
   const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
-  const warned = fewest(reds, Math.max(0, i.rows - 1 - live(asked.length) - 1)); // 1: the conversation's least row
-  const viewHeight = Math.max(1, i.rows - 1 - live(warned.length + asked.length));
+  const warned = fewest(reds, Math.max(0, i.rows - 1 - live(note + asked.length) - 1)); // 1: the conversation's least row
+  const viewHeight = Math.max(1, i.rows - 1 - live(note + warned.length + asked.length));
   return {
     tooled,
     hinted,
@@ -202,6 +206,7 @@ export function frame(i: FrameIn): FrameOut {
     questionFits,
     asked,
     warned,
+    noted: note === 1,
     viewHeight,
     promptFirst: (i.full ? viewHeight : 0) + abovePrompt,
   };

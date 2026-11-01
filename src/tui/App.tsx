@@ -170,9 +170,6 @@ export function App(props: AppProps) {
       // stopped subagent about anything.
       const signal = owner ? owner.signal : ui.abort.current?.signal;
       if (signal?.aborted) return Promise.resolve(false);
-      // A grey line about the question, auto mode's pause (release 7 plan, Task 10), in the conversation just above it and
-      // its preview, as the preview is, so the question's own rows stay as they are.
-      if (note !== undefined) latest.current.say({ text: note, color: "gray" });
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface.
       let range: [number, number] | undefined;
@@ -196,6 +193,7 @@ export function App(props: AppProps) {
           ...(range ? { detail: range } : {}),
           ...(plain ? { plain } : {}),
           warnings: warnings ?? [],
+          ...(note !== undefined ? { note } : {}), // auto mode's pause, a row of the question's own (release 7 plan, Task 10)
           answer: (ok, how) => {
             if (!open) return;
             open = false;
@@ -512,6 +510,7 @@ export function App(props: AppProps) {
     askedText: ui.full && ui.question && !ui.picker ? allow(ui.question.short ?? ui.question.text, ui.question.plain) : null,
     askedShort: movable ? allow(shortOf(ui.question), ui.question.plain) : null,
     askedWarnings: ui.question?.warnings ?? [],
+    askedNote: ui.question?.note !== undefined,
   });
   const { tooled, menuRows, panel, promptSpace, promptShown, todoShown, pickerRows, viewHeight, promptFirst } = f;
   ui.late.viewHeight = viewHeight; // for the functions that read it once the drawing is done (state.ts, late)
@@ -540,9 +539,11 @@ export function App(props: AppProps) {
     if (!ui.question.detail) {
       const n = characters(ui.question.text);
       const from = ui.kept.lines.length;
-      // Its red lines go with it, above its text, so "shown above" shows the dangers too (release 7 plan, Task 8).
+      // Its red lines go with it, above its text, so "shown above" shows the dangers too (release 7 plan, Task 8), and its
+      // grey line above them (Task 10).
       fns.say(
         { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" },
+        ...(ui.question.note === undefined ? [] : [{ text: ui.question.note, color: "gray" }]),
         ...ui.question.warnings.map((text): Line => ({ text, color: "red" })),
         { text: ui.question.text, color: "gray" },
       );
@@ -643,9 +644,15 @@ export function App(props: AppProps) {
           <ModelPicker groups={ui.picker} current={ui.session.lead.id} onPick={fns.pick} onClose={fns.closePicker} keys={ui.pickerKey} bindings={ui.table} />
         )
       ) : ui.question ? (
-        // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8).
+        // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8), and above them its
+        // grey line, auto mode's pause (Task 10).
         ui.full ? (
           <>
+            {f.noted && (
+              <Text color="gray" wrap="truncate-end">
+                {ui.question.note}
+              </Text>
+            )}
             {f.warned.map((r, i) => (
               <Text key={`w${i}`} color="red" wrap="truncate-end">
                 {r}
@@ -659,6 +666,7 @@ export function App(props: AppProps) {
           </>
         ) : (
           <>
+            {ui.question.note !== undefined && <Text color="gray">{ui.question.note}</Text>}
             {ui.question.warnings.map((w, i) => (
               <Text key={i} color="red">
                 {w}
