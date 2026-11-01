@@ -555,6 +555,14 @@ the plan's review.
     Task 8 treats a write to an existing file with more than one name as a protected write. Cost,
     accepted: pnpm's `node_modules` files are hard links, so writes there ask. In the sandbox the
     protected folders are separate mounts, so such a link cannot be made.
+62. **A project inside a protected folder protects every write** (the user's choice, Task 6's
+    code-quality review): when the project's real folder is a protected folder or inside one
+    (`~/.claude`, `~/.config/git`, a repository's `.git`), every write in it counts as protected,
+    with that folder as the part. Choice 10's names otherwise count only inside the project, so a
+    project at `~/.claude` would write `settings.json`, Claude Code's hooks, without asking.
+    Missing hooks folders and included files are also listed at their real place (the deepest
+    existing parent's real path plus the rest), so a project reached through a link or a short
+    name still matches them.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
