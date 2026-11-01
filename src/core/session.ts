@@ -22,11 +22,19 @@ export interface SessionOptions {
   // The permission question's path, for asking whether to send a refused request again without its pictures (release 6
   // plan, Task 18). Subagents have none: they are never sent pictures.
   ask?: Ask;
+  // A subagent's session: the text it is sent is its brief, which the lead wrote, not the user's own words, so it is not
+  // kept as a prompt (release 7 plan, choice 6).
+  subagent?: boolean;
 }
 
 export class Session {
   // Append-only. Earlier messages are never edited, for the same reason the system prompt is fixed.
   readonly messages: Message[] = [];
+  // For the judge (release 7 plan, Task 9 and choice 6), in order: the user's own prompts, the text given to `send` and
+  // never the tool results or waiting text that also travel in user messages, nor the pictures; and each call the
+  // session takes up, by name and input, never its result.
+  readonly prompts: string[] = [];
+  readonly calls: { name: string; input: unknown }[] = [];
   #lead: Provider;
   #fallback: Provider | undefined;
   #running = false;
@@ -76,6 +84,8 @@ export class Session {
 
   async #turn(typed: Part[], signal?: AbortSignal): Promise<void> {
     const { bus } = this.opts;
+    const words = typed.flatMap((p) => (p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
+    if (words && !this.opts.subagent) this.prompts.push(words);
     const parts: Part[] = [...typed, ...this.#waiting()];
     if (!parts.length) return;
     this.#push({ role: "user", parts });
@@ -179,6 +189,7 @@ export class Session {
 
   async #runTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
     const { bus } = this.opts;
+    this.calls.push({ name: call.name, input: call.input });
     bus.emit("tool-start", { id: call.id, name: call.name, input: call.input });
     const [res, outcome] = await this.#execute(call, signal);
     bus.emit("tool-end", { id: call.id, outcome });

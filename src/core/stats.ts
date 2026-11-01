@@ -11,12 +11,13 @@ export class Stats {
   errors = 0; // a refusal another model answered is not one
 
   constructor(bus: Bus) {
-    // A subagent's spend counts toward the totals; its context is its own, not the lead's.
-    bus.on("usage", ({ provider, usage, priceKnown, task }) => {
+    // A subagent's spend counts toward the totals; its context is its own, not the lead's. So is the judge's, whose
+    // request is apart from the conversation (release 7 plan, choice 9).
+    bus.on("usage", ({ provider, usage, priceKnown, task, judge }) => {
       const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
       this.input += prompt;
       this.output += usage.output;
-      if (task === undefined) this.context = prompt + usage.output;
+      if (task === undefined && !judge) this.context = prompt + usage.output;
       const c = priceKnown === false ? null : cost(provider, usage);
       if (c === null) this.unpriced++;
       else this.cost += c;

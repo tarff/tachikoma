@@ -186,6 +186,7 @@ export class Tasks {
       system: this.opts.system,
       ctx: { ...ctx, gate: ctx.gate.for(owner) },
       bus,
+      subagent: true,
     });
     t.messages = session.messages;
     t.state = "running";

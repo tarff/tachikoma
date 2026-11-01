@@ -3,7 +3,8 @@ import type { TodoItem } from "../tools/todo.js";
 import type { Message, Usage } from "./types.js";
 
 export interface ErrorEvent {
-  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback"; // "fallback": a refusal another model rescued
+  // "fallback": a refusal another model rescued; "judge": the judge's request failed (release 7 plan, Task 9)
+  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback" | "judge";
   attempted: string;
   message: string;
   lead: string;
@@ -16,7 +17,8 @@ export type ToolOutcome = "ok" | "failed" | "declined" | "cancelled";
 
 export interface Events {
   message: [Message];
-  usage: [{ provider: string; usage: Usage; priceKnown?: boolean; task?: string }]; // `task`: a subagent's, such as "t3"
+  // `task`: a subagent's, such as "t3"; `judge`: the judge's request (release 7 plan, choice 9)
+  usage: [{ provider: string; usage: Usage; priceKnown?: boolean; task?: string; judge?: boolean }];
   error: [ErrorEvent];
   lead: [string];
   // Each call the session takes up, as it runs; its result reaches the conversation with the others.
