@@ -7,7 +7,8 @@ import { PROTECTED_FILES, PROTECTED_FOLDERS, protectedPart } from "../../src/saf
 // A made-up project folder that does not exist, so its real place is itself.
 const root = path.resolve("/tachi-protected-test/project");
 const at = (...parts: string[]) => path.join(root, ...parts);
-const windows = process.platform === "win32";
+// The systems whose names ignore case (choice 60).
+const ignoresCase = process.platform === "win32" || process.platform === "darwin";
 // Each system's path rules, with a made-up project folder in that system's spelling, so another system's matching can
 // be tested here.
 const SYSTEMS: [NodeJS.Platform, path.PlatformPath, string][] = [
@@ -114,13 +115,20 @@ describe("protectedPart", () => {
     }
   });
 
+  it("compares a Windows path's drive on its own, so C: is not a server named C", () => {
+    const [, , top] = SYSTEMS[0]!;
+    expect(protectedPart(top, "\\\\C\\tachi-protected-test\\project\\.npmrc", [], [], "win32")).toBeUndefined();
+    expect(protectedPart(top, "\\\\c\\tachi-protected-test\\project\\.npmrc", [], [], "win32")).toBeUndefined();
+    expect(protectedPart(top, "c:\\tachi-protected-test\\project\\.npmrc", [], [], "win32")).toBe(".npmrc");
+  });
+
   it("finds a path inside a hooks folder, with the folder as the part", () => {
     const hooks = at("tools", "hooks");
     expect(protectedPart(root, at("tools", "hooks", "pre-commit"), [hooks], [])).toBe(hooks);
     expect(protectedPart(root, at("tools", "hooks", "sub", "x"), [hooks], [])).toBe(hooks);
     expect(protectedPart(root, hooks, [hooks], [])).toBe(hooks);
     expect(protectedPart(root, at("tools", "hooks-old", "pre-commit"), [hooks], [])).toBeUndefined();
-    expect(protectedPart(root, at("TOOLS", "Hooks", "pre-commit"), [hooks], [])).toBe(windows ? hooks : undefined);
+    expect(protectedPart(root, at("TOOLS", "Hooks", "pre-commit"), [hooks], [])).toBe(ignoresCase ? hooks : undefined);
   });
 
   it("finds a path inside a git folder kept elsewhere in the project (choice 59)", () => {
@@ -131,7 +139,7 @@ describe("protectedPart", () => {
   it("finds a path that is one of git's settings files, with that path as the part (choice 57)", () => {
     const include = at("shared", "team.gitconfig");
     expect(protectedPart(root, include, [], [include])).toBe(include);
-    expect(protectedPart(root, at("SHARED", "Team.gitconfig"), [], [include])).toBe(windows ? include : undefined);
+    expect(protectedPart(root, at("SHARED", "Team.gitconfig"), [], [include])).toBe(ignoresCase ? include : undefined);
     expect(protectedPart(root, at("shared", "team.gitconfig.bak"), [], [include])).toBeUndefined();
     expect(protectedPart(root, at("shared", "other"), [], [include])).toBeUndefined();
   });

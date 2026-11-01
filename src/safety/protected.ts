@@ -1,7 +1,9 @@
 // The protected paths (release 7 design, "Protected paths"; plan, Task 6 and choices 10, 57 and 59): Claude Code's
 // list, plus .tachikoma. Other programs run these or read them as settings, so a write to one asks, or is refused in
 // `never` (Task 8). A name counts at any depth in the project: a folder's as any one part of the path, a file's as its
-// last part, ignoring case on Windows (choice 10). So `web/.husky/pre-commit` and `tools/.npmrc` are protected.
+// last part (choice 10), each part as the file system reads it: ignoring case on Windows and macOS, and on Windows the
+// dots and spaces at a name's end and a ":stream" after it (choice 60). So `web/.husky/pre-commit`, `tools/.npmrc` and,
+// on Windows, `tools/.npmrc.` are protected.
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
@@ -34,7 +36,8 @@ export const PROTECTED_FILES: readonly string[] = [
 // links), as resolveIn found it, and it is compared with the project's real place, as resolveIn compares it; so a
 // path outside the project gives undefined, whatever `hooks` and `files` hold. `hooks` are Task 5's hooksPaths and
 // gitDirs (choice 59): a path in one gives the folder. `files` are Task 5's git settings files (choice 57): a path that
-// is one gives that file. Every comparison is part by part, each part as the file system reads it (choice 60).
+// is one gives that file. Every comparison is of the path's root (a drive, a share or /), ignoring case where names do,
+// and then part by part, each part as the file system reads it (choice 60).
 // `platform` is the system's, which a test gives as another's, with that system's path rules, as inData does.
 export function protectedPart(
   root: string,
@@ -43,15 +46,21 @@ export function protectedPart(
   files: string[],
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
-  const { join, resolve, sep } = platform === "win32" ? path.win32 : path.posix;
-  const split = (p: string) => resolve(p).split(sep).filter(Boolean);
+  const { join, parse, resolve, sep } = platform === "win32" ? path.win32 : path.posix;
   const same = (a: string, b: string) => fold(a, platform) === fold(b, platform);
-  // Whether `parts` are `folder`'s, or start with them.
-  const under = (folder: string[], parts: string[]) => folder.length <= parts.length && folder.every((part, i) => same(part, parts[i]!));
-  const parts = split(real);
+  // A path's root and its parts after it. The root is not folded as a part is, as a drive's `C:` would become `c`, a
+  // server's name in a network path.
+  const split = (p: string) => {
+    const whole = resolve(p);
+    const top = parse(whole).root;
+    return { top: platform === "win32" || platform === "darwin" ? top.toLowerCase() : top, parts: whole.slice(top.length).split(sep).filter(Boolean) };
+  };
+  // Whether `p` is `folder`, or inside it.
+  const under = (folder: Split, p: Split) => folder.top === p.top && folder.parts.length <= p.parts.length && folder.parts.every((part, i) => same(part, p.parts[i]!));
+  const at = split(real);
   const base = split(realPath(root) ?? root);
-  if (!under(base, parts)) return undefined;
-  const inside = parts.slice(base.length);
+  if (!under(base, at)) return undefined;
+  const inside = at.parts.slice(base.parts.length);
   for (const folder of PROTECTED_FOLDERS) {
     const names = folder.split("/");
     for (let i = 0; i + names.length <= inside.length; i++) {
@@ -62,8 +71,10 @@ export function protectedPart(
   // A name ending in `.*` is matched by its start and a dot, after which anything may follow.
   const isFile = (name: string) => (name.endsWith(".*") ? fold(last!, platform).startsWith(`${fold(name.slice(0, -2), platform)}.`) : same(last!, name));
   if (last !== undefined && PROTECTED_FILES.some(isFile)) return last;
-  return hooks.find((folder) => under(split(folder), parts)) ?? files.find((file) => split(file).length === parts.length && under(split(file), parts));
+  return hooks.find((folder) => under(split(folder), at)) ?? files.find((file) => split(file).parts.length === at.parts.length && under(split(file), at));
 }
+
+type Split = { top: string; parts: string[] };
 
 // A path part as the file system reads it (choice 60). Windows drops the dots and spaces at a name's end and a
 // ":stream" after it, so `.npmrc.` and `.npmrc:x` write `.npmrc`, and ignores case; macOS ignores case too (as
