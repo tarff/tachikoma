@@ -1,8 +1,9 @@
 import { constants } from "node:os";
 import path from "node:path";
 import type { Instructions, Reached } from "./core/instructions.js";
-import { MODES, type Mode, OFFERED, visible } from "./core/permissions.js";
+import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
+import type { GitSettings } from "./safety/gitconfig.js";
 import { NO_RULES, type UserRules } from "./safety/rules.js";
 import type { Settings } from "./settings.js";
 import { screen } from "./tui/describe.js";
@@ -221,6 +222,13 @@ export function endOnEpipe(err: NodeJS.ErrnoException): void {
 // stays in sight (release 7 design, "Configurable"); null while none is.
 export function checkOffLine(rules: UserRules = NO_RULES): string | null {
   return rules.off.length ? `The dangerous-command check is off for: ${rules.off.join(", ")}; in auto and never, those commands run without it.` : null;
+}
+
+// What the gate holds of git's settings for the file tools (release 7 plan, Task 8; choices 57 and 59): the hooks folders
+// and the git folders, protected whole, and the settings files. Without git, nothing, so only the fixed list protects
+// (choice 11). The `problems` are for live link (Task 15), not the host.
+export function protectionOf(git: GitSettings | undefined): Protection {
+  return git ? { hooks: [...git.hooksPaths, ...git.gitDirs], files: git.files } : { hooks: [], files: [] };
 }
 
 // The network setting acts only in the sandbox (release 7 design, "Launching"), so a --network typed for this launch

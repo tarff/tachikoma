@@ -17,6 +17,7 @@ import {
   jsonLine,
   leadOf,
   prose,
+  protectionOf,
   resolve,
   screenMode,
   scrollSpeed,
@@ -94,6 +95,23 @@ describe("headlessDeclined", () => {
         `${why}: run: git push --force origin a\\u001b[8m; git reset --hard HEAD~3`,
       ].join("\n"),
     );
+  });
+});
+
+// Release 7 plan, Task 8 (choices 57 and 59): what the launch hands the gate from git's settings, for the file tools.
+describe("protectionOf", () => {
+  it("protects the hooks folders and the git folders as folders, and the settings files as files", () => {
+    const git = {
+      files: ["/p/.git/config", "/home/me/.gitconfig"],
+      hooksPaths: ["/p/githooks"],
+      gitDirs: ["/p/.bare"],
+      problems: [{ file: "/p/x", why: "it is a link" }],
+    };
+    expect(protectionOf(git)).toEqual({ hooks: ["/p/githooks", "/p/.bare"], files: ["/p/.git/config", "/home/me/.gitconfig"] });
+  });
+
+  it("is empty without git, so only the fixed list protects (choice 11)", () => {
+    expect(protectionOf(undefined)).toEqual({ hooks: [], files: [] });
   });
 });
 

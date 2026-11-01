@@ -23,6 +23,7 @@ import {
   MAX_TASKS,
   networkLine,
   prose,
+  protectionOf,
   resolve,
   screenMode,
 } from "./clilib.js";
@@ -242,15 +243,13 @@ try {
 const interactive = parsed.print === undefined;
 // Before the instruction files are read, so nothing is asked with no terminal to answer.
 if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
-// Git's settings files, hooks folders and git folders, read once at launch and kept for the session, are protected as the
-// fixed list is (release 7 plan, Task 8; choices 57 and 59). Without git only the fixed list applies (choice 11), and so
-// when git's run fails, killed by a signal or writing more than execFile's maxBuffer (safety/gitconfig.ts, git), which
-// is said here and again in full screen (App.tsx). The `problems` are for live link (Task 15), not the host.
-let protection: Protection = { hooks: [], files: [] };
+// Git's settings files, hooks folders and git folders are read once at launch and protected for the whole session
+// (release 7 plan, Task 8; choices 57 and 59). Without git, only the fixed list applies (choice 11). If git's run fails,
+// only the fixed list applies, and the launch says so here and again in full screen (App.tsx).
+let protection: Protection = protectionOf(undefined);
 let gitLine: string | undefined;
 try {
-  const git = await gitSettings(root);
-  if (git) protection = { hooks: [...git.hooksPaths, ...git.gitDirs], files: git.files };
+  protection = protectionOf(await gitSettings(root));
 } catch (err) {
   gitLine = visible(`git's settings could not be read (${errorText(err)}); only the fixed list of protected paths applies`);
   console.error(gitLine);

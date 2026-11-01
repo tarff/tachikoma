@@ -235,8 +235,26 @@ describe("frame", () => {
     expect(frame({ ...asked, askedText: seven, askedWarnings: [red(1)] })).toMatchObject({ questionFits: false, asked: [short], warned: [red(1)] });
     const moved = frame({ ...asked, askedText: eight, askedWarnings: reds(7) });
     expect(moved).toMatchObject({ asked: [short], warned: [...reds(5), "…and 2 more dangers"], viewHeight: 1 });
-    // One that cannot move and takes every row leaves none for them.
-    expect(frame({ ...asked, askedText: eight, askedShort: null, askedWarnings: [red(1)] })).toMatchObject({ asked: { length: 8 }, warned: [] });
+    // One that cannot move is one that has moved (App.tsx, movable), drawn as its short line; its red row is kept.
+    expect(frame({ ...asked, askedText: short, askedShort: null, askedWarnings: [red(1)] })).toMatchObject({ asked: [short], warned: [red(1)] });
+    // Forty by seven, a turn running, a moved question, the hint and the tool line: the red row is taken first, so the
+    // tool line gives way, and the question's two rows, the hint and the status line leave it its row. With room for one
+    // red row only, it says how many dangers there are.
+    const small: FrameIn = {
+      ...base,
+      rows: 7,
+      columns: 40,
+      working: true,
+      hint: true,
+      toolLine: true,
+      question: true,
+      askedText: "x".repeat(400),
+      askedShort: short,
+    };
+    expect(wrap(short, 40, false).length).toBe(2);
+    expect(frame({ ...small, askedWarnings: [] })).toMatchObject({ tooled: true, hinted: true });
+    expect(frame({ ...small, askedWarnings: [red(1)] })).toMatchObject({ tooled: false, hinted: true, asked: { length: 2 }, warned: [red(1)], viewHeight: 1 });
+    expect(frame({ ...small, askedWarnings: reds(7) })).toMatchObject({ tooled: false, warned: ["7 dangers"], viewHeight: 1 });
     // In classic mode the red lines are Texts of their own, drawn whole, which count no rows here, as the question's.
     expect(frame({ ...asked, full: false, askedText: null, askedShort: null, askedWarnings: [red(1)] })).toMatchObject({ warned: [], viewHeight: 8 });
   });

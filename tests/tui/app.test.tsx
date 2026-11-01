@@ -794,6 +794,29 @@ describe("App", () => {
     });
   });
 
+  // Release 7 plan, Task 8's code review: a question too long to fit moves into the conversation, its red lines with it,
+  // in red, under its heading and above its text, so its short line's "shown above" shows the dangers too.
+  it("puts a moved question's red lines in the conversation, above its text", async () => {
+    await inColour(async () => {
+      const line = `echo ${"x".repeat(900)}; git push --force`;
+      const { app, gate } = await mount([], { full: true, rows: 12 });
+      const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
+        () => "allowed",
+        (err: Error) => err.message,
+      );
+      await until(app, "Allow run (shown above)?");
+      const rows = app.lastFrame()!.split("\n");
+      const red = "\u001b[31mDanger: rewriting or deleting git history: git push --force";
+      const heading = rows.findIndex((r) => r.includes(`┌ run (${line.length + "run: ".length} characters)`));
+      expect(heading).toBeGreaterThanOrEqual(0);
+      expect(rows[heading + 1]).toContain(red);
+      expect(rows[heading + 2]).toContain("\u001b[90mrun: echo xxx");
+      expect(rows.filter((r) => r.includes(red))).toHaveLength(2); // in the conversation, and above the short line
+      await press(app, "n");
+      expect(await asking).toMatch(/^The user declined: run: echo/);
+    });
+  });
+
   // Release 7 plan, choice 63: in full screen the red lines are a row each, cut at the terminal's width, and those that do
   // not fit are counted in the last red row, so the frame stays inside the terminal. Classic mode draws them whole.
   it("cuts the red lines to a row each in full screen, and counts those that do not fit, keeping the frame inside the terminal", async () => {

@@ -537,7 +537,12 @@ export function App(props: AppProps) {
     if (!ui.question.detail) {
       const n = characters(ui.question.text);
       const from = ui.kept.lines.length;
-      fns.say({ text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" }, { text: ui.question.text, color: "gray" });
+      // Its red lines go with it, above its text, so "shown above" shows the dangers too (release 7 plan, Task 8).
+      fns.say(
+        { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" },
+        ...ui.question.warnings.map((text): Line => ({ text, color: "red" })),
+        { text: ui.question.text, color: "gray" },
+      );
       ui.question.detail = [from, ui.kept.lines.length - 1];
     }
     ui.question.short = shortOf(ui.question);
