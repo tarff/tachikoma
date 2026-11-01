@@ -31,29 +31,47 @@ export const PROTECTED_FILES: readonly string[] = [
 ];
 
 // The part of `real` that is protected, as the path spells it, or undefined. `real` is the path's real place (after
-// links), as resolveIn found it, and it is compared with the project's real place, as resolveIn compares them; so a
+// links), as resolveIn found it, and it is compared with the project's real place, as resolveIn compares it; so a
 // path outside the project gives undefined, whatever `hooks` and `files` hold. `hooks` are Task 5's hooksPaths and
 // gitDirs (choice 59): a path in one gives the folder. `files` are Task 5's git settings files (choice 57): a path that
-// is one gives that file.
-export function protectedPart(root: string, real: string, hooks: string[], files: string[]): string | undefined {
-  const base = realPath(root) ?? path.resolve(root);
-  if (!within(base, real)) return undefined;
-  const parts = path.relative(base, real).split(path.sep);
+// is one gives that file. Every comparison is part by part, each part as the file system reads it (choice 60).
+// `platform` is the system's, which a test gives as another's, with that system's path rules, as inData does.
+export function protectedPart(
+  root: string,
+  real: string,
+  hooks: string[],
+  files: string[],
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  const { join, resolve, sep } = platform === "win32" ? path.win32 : path.posix;
+  const split = (p: string) => resolve(p).split(sep).filter(Boolean);
+  const same = (a: string, b: string) => fold(a, platform) === fold(b, platform);
+  // Whether `parts` are `folder`'s, or start with them.
+  const under = (folder: string[], parts: string[]) => folder.length <= parts.length && folder.every((part, i) => same(part, parts[i]!));
+  const parts = split(real);
+  const base = split(realPath(root) ?? root);
+  if (!under(base, parts)) return undefined;
+  const inside = parts.slice(base.length);
   for (const folder of PROTECTED_FOLDERS) {
     const names = folder.split("/");
-    for (let i = 0; i + names.length <= parts.length; i++) {
-      if (names.every((name, j) => sameName(parts[i + j]!, name))) return path.join(...parts.slice(i, i + names.length));
+    for (let i = 0; i + names.length <= inside.length; i++) {
+      if (names.every((name, j) => same(inside[i + j]!, name))) return join(...inside.slice(i, i + names.length));
     }
   }
-  const last = parts.at(-1)!;
-  if (PROTECTED_FILES.some((name) => isFile(last, name))) return last;
-  return hooks.find((folder) => within(folder, real)) ?? files.find((file) => path.relative(file, real) === "");
+  const last = inside.at(-1);
+  // A name ending in `.*` is matched by its start and a dot, after which anything may follow.
+  const isFile = (name: string) => (name.endsWith(".*") ? fold(last!, platform).startsWith(`${fold(name.slice(0, -2), platform)}.`) : same(last!, name));
+  if (last !== undefined && PROTECTED_FILES.some(isFile)) return last;
+  return hooks.find((folder) => under(split(folder), parts)) ?? files.find((file) => split(file).length === parts.length && under(split(file), parts));
 }
 
-const fold = (name: string) => (process.platform === "win32" ? name.toLowerCase() : name);
-const sameName = (a: string, b: string) => fold(a) === fold(b);
-// A name ending in `.*` is matched by its start, up to and including the dot.
-const isFile = (part: string, name: string) => (name.endsWith(".*") ? fold(part).startsWith(fold(name.slice(0, -1))) : sameName(part, name));
+// A path part as the file system reads it (choice 60). Windows drops the dots and spaces at a name's end and a
+// ":stream" after it, so `.npmrc.` and `.npmrc:x` write `.npmrc`, and ignores case; macOS ignores case too (as
+// settingsName and sameIgnoringCase in tools/files.ts do; a copy, since that file will import this one in Task 8).
+function fold(part: string, platform: NodeJS.Platform): string {
+  if (platform === "win32") return part.replace(/:.*/s, "").replace(/[. ]+$/, "").toLowerCase();
+  return platform === "darwin" ? part.toLowerCase() : part;
+}
 
 // A path's real place, or undefined when it cannot be told; `native` gives the long name for a short (8.3) one.
 function realPath(p: string): string | undefined {
@@ -62,11 +80,4 @@ function realPath(p: string): string | undefined {
   } catch {
     return undefined;
   }
-}
-
-// Whether `p` is `folder` or inside it (path.relative compares without case on Windows). A name that only starts with
-// two dots, such as `..bare`, is inside.
-function within(folder: string, p: string): boolean {
-  const rel = path.relative(folder, p);
-  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }

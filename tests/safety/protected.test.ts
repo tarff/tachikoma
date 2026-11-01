@@ -8,6 +8,13 @@ import { PROTECTED_FILES, PROTECTED_FOLDERS, protectedPart } from "../../src/saf
 const root = path.resolve("/tachi-protected-test/project");
 const at = (...parts: string[]) => path.join(root, ...parts);
 const windows = process.platform === "win32";
+// Each system's path rules, with a made-up project folder in that system's spelling, so another system's matching can
+// be tested here.
+const SYSTEMS: [NodeJS.Platform, path.PlatformPath, string][] = [
+  ["win32", path.win32, "C:\\tachi-protected-test\\project"],
+  ["darwin", path.posix, "/tachi-protected-test/project"],
+  ["linux", path.posix, "/tachi-protected-test/project"],
+];
 
 // The design's lists ("Protected paths"), and lefthook's files per choice 10.
 const FOLDERS = [".git", ".config/git", ".vscode", ".idea", ".husky", ".cargo", ".devcontainer", ".yarn", ".mvn", ".claude", ".tachikoma"];
@@ -48,14 +55,46 @@ describe("protectedPart", () => {
     }
   });
 
-  it("ignores case on Windows only", () => {
-    const cases: [string, string][] = [
-      [at(".HUSKY", "pre-commit"), ".HUSKY"],
-      [at("web", ".Config", "GIT", "config"), path.join(".Config", "GIT")],
-      [at("TOOLS", ".NPMRC"), ".NPMRC"],
-      [at("LEFTHOOK-LOCAL.YML"), "LEFTHOOK-LOCAL.YML"],
+  it("ignores case on Windows and macOS, not on Linux (choice 60)", () => {
+    for (const [platform, rules, top] of SYSTEMS) {
+      const ignores = platform !== "linux";
+      const cases: [string, string][] = [
+        [rules.join(top, ".HUSKY", "pre-commit"), ".HUSKY"],
+        [rules.join(top, "web", ".Config", "GIT", "config"), rules.join(".Config", "GIT")],
+        [rules.join(top, "TOOLS", ".NPMRC"), ".NPMRC"],
+        [rules.join(top, "LEFTHOOK-LOCAL.YML"), "LEFTHOOK-LOCAL.YML"],
+      ];
+      for (const [real, part] of cases) expect(protectedPart(top, real, [], [], platform)).toBe(ignores ? part : undefined);
+      const hooks = rules.join(top, "tools", "hooks");
+      const file = rules.join(top, "shared", "team.gitconfig");
+      expect(protectedPart(top, rules.join(top, "TOOLS", "Hooks", "x"), [hooks], [], platform)).toBe(ignores ? hooks : undefined);
+      expect(protectedPart(top, rules.join(top, "Shared", "TEAM.gitconfig"), [], [file], platform)).toBe(ignores ? file : undefined);
+      expect(protectedPart(top, rules.join(top.toUpperCase(), ".npmrc"), [], [], platform)).toBe(ignores ? ".npmrc" : undefined);
+    }
+  });
+
+  it("drops a part's trailing dots and spaces and a :stream on Windows only, as Windows does (choice 60)", () => {
+    const [, w, top] = SYSTEMS[0]!;
+    const hooks = w.join(top, "tools", "hooks");
+    const file = w.join(top, "shared", "team.gitconfig");
+    const cases: [string, string | undefined][] = [
+      [w.join(top, "tools", ".npmrc."), ".npmrc."],
+      [w.join(top, "tools", ".npmrc :x"), ".npmrc :x"],
+      [w.join(top, ".npmrc:x:$DATA"), ".npmrc:x:$DATA"],
+      [w.join(top, ".husky .", "pre-commit"), ".husky ."],
+      [w.join(top, ".config.", "git ", "config"), w.join(".config.", "git ")],
+      [w.join(top, "lefthook-local.yml."), "lefthook-local.yml."],
+      [w.join(top, "tools", ".npmrc.bak"), undefined],
+      [w.join(top, "lefthook-local."), undefined],
     ];
-    for (const [real, part] of cases) expect(protectedPart(root, real, [], [])).toBe(windows ? part : undefined);
+    for (const [real, part] of cases) expect(protectedPart(top, real, [], [], "win32")).toBe(part);
+    expect(protectedPart(top, w.join(top, "tools", "hooks.", "pre-commit"), [hooks], [], "win32")).toBe(hooks);
+    expect(protectedPart(top, w.join(top, "shared", "team.gitconfig. "), [], [file], "win32")).toBe(file);
+    // Elsewhere a trailing dot is part of the name.
+    const [, p, posixTop] = SYSTEMS[2]!;
+    expect(protectedPart(posixTop, p.join(posixTop, "tools", ".npmrc."), [], [], "linux")).toBeUndefined();
+    expect(protectedPart(posixTop, p.join(posixTop, ".husky .", "pre-commit"), [], [], "darwin")).toBeUndefined();
+    expect(protectedPart(posixTop, p.join(posixTop, "tools", "hooks.", "x"), [p.join(posixTop, "tools", "hooks")], [], "darwin")).toBeUndefined();
   });
 
   it("passes over near misses", () => {
