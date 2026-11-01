@@ -32,11 +32,12 @@ const calls = (...made: [string, unknown][]): Turn => ({ parts: made.flatMap(([n
 // What the tools gave back in the last request the lead was sent.
 const results = (lead: FakeProvider) => lead.seen.at(-1)!.flatMap((m: Message) => m.parts.flatMap((p) => (p.type === "tool_result" ? [p.output] : [])));
 // The action line of each judge's request (judge.ts, request).
-const judged = (j: FakeProvider) => j.seen.map((messages) => JSON.parse(texts(messages[0]!)[0]!.split("\n")[7]!) as Action);
+const judged = (j: { seen: Message[][] }) => j.seen.map((messages) => JSON.parse(texts(messages[0]!)[0]!.split("\n")[7]!) as Action);
 
 // A session in auto as cli.tsx makes it: the gate's judge is judgeOf on the session, and a subagent's gate adds its own
 // calls. The user answers each question from `answers`, and no when they run out.
-async function setup(lead: FakeProvider, judge: Provider, opts: { headless?: boolean; answers?: boolean[]; worker?: Provider } = {}) {
+// `judge` undefined: none set, so the lead leading judges, as cli.tsx gives it without --judge.
+async function setup(lead: FakeProvider, judge: Provider | undefined, opts: { headless?: boolean; answers?: boolean[]; worker?: Provider } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "tachi-"));
   const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-"));
   const bus = new Bus();
@@ -194,6 +195,20 @@ describe("auto mode, in a session", () => {
     expect(s.asked).toEqual([{ summary: expect.stringContaining("d.txt"), note: PAUSED(3) }]);
   });
 
+  // With no judge set, the lead leading judges a subagent's action too, never the subagent's own model (release 7 design,
+  // "The modes": "Unset, the lead's own model judges").
+  it("with no judge set, sends a subagent's action to the lead to judge, not to the worker", async () => {
+    const lead = new FakeProvider("lead", [calls(["delegate", { description: "look", task: "find the notes" }]), yes, reply("done")]);
+    const worker = new FakeProvider("w", [calls(["read_file", { path: "/made/up/elsewhere/a.txt" }]), reply("found nothing")]);
+    const s = await setup(lead, undefined, { worker });
+    await s.session.send("find the notes");
+    expect(lead.seen).toHaveLength(3);
+    expect(judged({ seen: [lead.seen[1]!] }).map((a) => a.summary)).toEqual([expect.stringContaining("a.txt")]);
+    expect(worker.seen).toHaveLength(2); // its own two requests, and no judge's
+    expect(JSON.stringify(worker.seen)).not.toContain("The user's own messages");
+    expect(s.tasks.all.map((t) => t.state)).toEqual(["done"]);
+  });
+
   it("gives a subagent's judge errors to the subagent, which still finishes", async () => {
     const worker = new FakeProvider("w", [calls(["read_file", { path: "/made/up/elsewhere/a.txt" }]), reply("found nothing")]);
     const j = new FakeProvider("judge", [new Error("judge down")]);
@@ -296,6 +311,34 @@ describe("auto mode, in the gate", () => {
     expect(g.out).toEqual([]);
   });
 
+  // A question still waiting from an earlier pause, approved after auto mode resumed and paused again, must not lift the
+  // later pause: only one asked under the pause in force does (the code-quality review).
+  it("lets only a question asked under the pause in force lift it, not one still waiting from an earlier pause", async () => {
+    const questions: { summary: string; note?: string; answer: (yes: boolean) => void }[] = [];
+    const judged: string[] = [];
+    const judge: Judge = async (action) => (judged.push(action.summary), judged.length <= 6 ? NO : YES);
+    const ask = (summary: string, _detail?: string, _owner?: unknown, _plain?: boolean, _warnings?: string[], note?: string) =>
+      new Promise<boolean>((answer) => questions.push({ summary, ...(note ? { note } : {}), answer }));
+    const gate = new PermissionGate("auto", ask, undefined, { root: "/made/up/project", judge });
+    const child = gate.for({ name: "t1", signal: new AbortController().signal, stop: () => {} });
+    for (let n = 1; n <= 3; n++) await expect(gate.require(outside(n))).rejects.toThrow("The judge refused: No.");
+    const a = gate.require(outside(4)); // the lead's
+    const b = child.require(outside(5)); // a subagent's, waiting behind it under the same pause
+    await settle();
+    expect(questions.map((q) => q.note)).toEqual([PAUSED(3), PAUSED(3)]);
+    questions.shift()!.answer(true);
+    await a; // auto mode resumes
+    for (let n = 6; n <= 8; n++) await expect(gate.require(outside(n))).rejects.toThrow("The judge refused: No."); // and pauses again
+    questions.shift()!.answer(true);
+    await b; // approved, but asked under the first pause
+    const f = gate.require(outside(9));
+    await settle();
+    expect(questions.map((q) => [q.summary, q.note])).toEqual([["read /made/up/elsewhere/9.txt", PAUSED(3)]]);
+    expect(judged).toHaveLength(6);
+    questions.shift()!.answer(false);
+    await expect(f).rejects.toThrow("The user declined: read /made/up/elsewhere/9.txt");
+  });
+
   it("headless, never asks: every refusal is final, and the run carries on", async () => {
     const g = heldGate({ headless: true });
     for (let n = 0; n < 25; n++) expect(await decide(g, outside(n), NO)).toBe("The judge refused: No.");
@@ -322,6 +365,7 @@ describe("auto mode, in the gate", () => {
     g.out.shift()!.answer(YES);
     await done;
     expect(g.asked).toEqual([{ summary: "run: echo hi" }]);
+    expect(g.out).toEqual([]); // decided under ask: the judge was not asked again
   });
 
   // The design: an answer counts only for the rules it was given under, so a mode that left auto and came back while the

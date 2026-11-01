@@ -110,11 +110,12 @@ export class PermissionGate {
   #parent?: PermissionGate;
   #own?: Own;
   // Auto mode's counts (release 7 plan, Task 10): the lead's gate's, for the session and its subagents' gates. The judge's
-  // refusals in a row and in all; while auto mode is paused, the number its line names; and the version of the mode and
-  // the rules, which every set of either raises, for the recheck.
+  // refusals in a row and in all; while auto mode is paused, the pause, holding the number its line names, a new one at
+  // each refusal that pauses it, so only a question asked under the pause in force can lift it; and the version of the
+  // mode and the rules, which every set of either raises, for the recheck.
   #inRow = 0;
   #refused = 0;
-  #paused: number | null = null;
+  #pause: { count: number } | null = null;
   #version = 0;
   // Where the check reads a command (release 7 plan, Task 8): the project's root (cli.tsx gives its own, the folder it
   // started in), the home folder, and the shell the executor really runs, PowerShell on Windows and /bin/sh elsewhere
@@ -183,19 +184,20 @@ export class PermissionGate {
     if (part === undefined && !found.length && !needsApproval(mode, action)) return;
     const top = this.#parent ?? this;
     // Headless never pauses: every refusal is final (Task 10).
-    const paused = mode === "auto" && !found.length && !this.options.headless ? top.#paused : null;
-    if (mode === "auto" && !found.length && paused === null) return this.#judged(action, signal ?? new AbortController().signal);
+    const pause = mode === "auto" && !found.length && !this.options.headless ? top.#pause : null;
+    if (mode === "auto" && !found.length && pause === null) return this.#judged(action, signal ?? new AbortController().signal);
     const shown = visible(action.summary);
     const warnings = found.map((d) => visible(`Danger: ${named(d)}`));
-    const note = paused === null ? undefined : `Auto mode paused after ${paused} refusals; approving this resumes it.`;
+    const note = pause === null ? undefined : `Auto mode paused after ${pause.count} refusals; approving this resumes it.`;
     const yes = await this.ask(shown, action.detail, undefined, undefined, warnings, note);
     // Headless, the ask is the launch's report of a refusal (cli.tsx), so the run fails and says so; a danger is
     // refused whatever it answers.
     if (this.options.headless && found.length) throw new Declined(dangerRefusal(found));
     if (!yes) throw new Declined(`${this.refusal}: ${shown}`);
-    // Approving one action resumes auto mode and starts the row again; the session's total keeps counting (choice 8).
-    if (paused !== null) {
-      top.#paused = null;
+    // Approving one action resumes auto mode and starts the row again; the session's total keeps counting (choice 8). A
+    // question still waiting from a pause that has since been lifted and come again lifts nothing.
+    if (pause !== null && top.#pause === pause) {
+      top.#pause = null;
       top.#inRow = 0;
     }
   }
@@ -217,7 +219,7 @@ export class PermissionGate {
     top.#inRow++;
     top.#refused++;
     // Once the session has had 20, each later refusal pauses it again, its line naming the session's count (choice 8).
-    if (!this.options.headless && (top.#inRow >= IN_A_ROW || top.#refused >= IN_A_SESSION)) top.#paused = top.#refused >= IN_A_SESSION ? top.#refused : top.#inRow;
+    if (!this.options.headless && (top.#inRow >= IN_A_ROW || top.#refused >= IN_A_SESSION)) top.#pause = { count: top.#refused >= IN_A_SESSION ? top.#refused : top.#inRow };
     throw new Declined(`The judge refused: ${visible(verdict.reason)}`);
   }
 }
