@@ -239,6 +239,7 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.code).toBe(1);
     expect(r.stderr).toBe("--sandbox copy is not built yet\n");
     r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"sandbox": "copy", "mode": "never"}'));
+    expect(r.code).toBe(1);
     expect(r.stderr).toBe('settings.json: "sandbox": copy is not built yet\n');
     // A flag wins over the file, so --sandbox off starts.
     expect(tachi("--lead", "ollama:none", "--sandbox", "off", homeWith('{"sandbox": "copy"}')).stderr).toContain("Interactive mode needs a terminal; use -p");
@@ -280,7 +281,8 @@ describe("tachi", { timeout: 15_000 }, () => {
         "  --mode <mode>     when to ask before acting (default: ask):",
         "                    ask: before each write and shell command, and before anything outside the project",
         "                    project: before shell commands and anything outside the project",
-        "                    auto: edits in the project run, the judge model decides the rest, and dangerous commands ask you",
+        "                    auto: edits in the project run, the judge model decides the rest,",
+        "                          and dangerous commands ask you",
         "                    never: never ask; only with --sandbox copy, where you review changes at the end",
         "  --sandbox <how>   off | live | copy (default: off): commands run in Docker on this folder or a copy",
         "  --network <net>   off | on (default: off): whether commands in the sandbox can reach the internet",

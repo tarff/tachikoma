@@ -2,7 +2,8 @@ import { NO_RULES, type UserRules } from "../safety/rules.js";
 
 // ask:     ask before every write and shell command, and before anything outside the project
 // project: ask before shell commands and anything outside the project
-// auto:    a second model, the judge, decides what would otherwise be asked (release 7 design, "Auto mode")
+// auto:    edits in the project run, the judge decides the rest, and dangerous commands ask the user (release 7 design,
+//          "Auto mode")
 // never:   never ask; only with --sandbox copy, so nothing reaches the folder before the user has reviewed it
 //          (release 7 design, "Launching")
 export type Mode = "ask" | "project" | "auto" | "never";

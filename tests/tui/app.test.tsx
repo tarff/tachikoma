@@ -1618,7 +1618,8 @@ describe("App's keys for the modes, the model list and the last turn", () => {
   });
 
   it("cycles ask, project and auto on Shift+Tab, saying so, and the check uses the new mode from the next action", async () => {
-    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
+    const write = (id: string, file: string) => callTool(id, "write_file", { path: file, content: "x" });
+    const { app, ctx } = await mount([write("c1", "a.txt"), reply("written"), write("c2", "b.txt"), reply("declined")]);
     await press(app, "\u001b[Z");
     expect(app.lastFrame()).toContain("mode is now project");
     expect(app.lastFrame()).toContain("perm project");
@@ -1628,6 +1629,12 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     await press(app, "\u001b[Z");
     expect(app.lastFrame()).toContain("mode is now auto");
     expect(app.lastFrame()).toContain("perm auto");
+    // Until Task 10 gives auto its judge, a write asks, as in ask mode (release 7 plan, Task 7).
+    await type(app, "again");
+    await until(app, "Allow");
+    await press(app, "n");
+    await until(app, "declined");
+    expect(existsSync(path.join(ctx.root, "b.txt"))).toBe(false);
     await press(app, "\u001b[Z");
     expect(app.lastFrame()).toContain("mode is now ask");
     expect(app.lastFrame()).toContain("perm ask");
