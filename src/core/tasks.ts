@@ -170,7 +170,8 @@ export class Tasks {
       this.#changed();
     });
     bus.on("error", (e) => {
-      if (e.kind !== "fallback" && e.kind !== "tool") failure = e;
+      // A judge that cannot be reached refuses one action, as a no does, and fails no subagent (release 7 plan, choice 65).
+      if (e.kind !== "fallback" && e.kind !== "tool" && e.kind !== "judge") failure = e;
       this.opts.bus.emit("error", { ...e, attempted: `${t.id}: ${e.attempted}` });
     });
     bus.on("tool-start", ({ name, input }) => {
@@ -179,12 +180,13 @@ export class Tasks {
     });
     const owner: Owner = { name: `${t.id} (${t.description})`, signal, stop: () => this.stop(t.id) };
     const { ctx } = this.opts;
-    const session = new Session({
+    // The judge sees the subagent's own calls after the lead's, and reports to its bus (release 7 plan, Task 10).
+    const session: Session = new Session({
       lead: provider,
       ...(fallback ? { fallback } : {}),
       tools: this.opts.tools,
       system: this.opts.system,
-      ctx: { ...ctx, gate: ctx.gate.for(owner) },
+      ctx: { ...ctx, gate: ctx.gate.for(owner, { calls: () => session.calls, bus }) },
       bus,
       subagent: true,
     });

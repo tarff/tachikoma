@@ -1,9 +1,11 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { onPath } from "../src/exec/env.js";
 
 // Runs the real command through tsx, in a fresh project folder with a pretend home folder, and with
@@ -12,6 +14,24 @@ import { onPath } from "../src/exec/env.js";
 // git is given empty system and user settings files of the test's own, and every variable it finds a home folder by
 // (HOME, HOMEDRIVE and HOMEPATH, USERPROFILE, XDG_CONFIG_HOME) names the pretend one: no case has git read the user's.
 function tachi(...args: (string | Record<string, string>)[]) {
+  const { argv, options } = launch(args);
+  const r = spawnSync(process.execPath, argv, { ...options, input: "x\n", encoding: "utf8" });
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+// tachi(), without blocking: for a case whose model is a stand-in served by this test (release 7 plan, Task 10).
+function tachiLater(...args: (string | Record<string, string>)[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const { argv, options } = launch(args);
+  const child = spawn(process.execPath, argv, options);
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+  child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+  child.stdin.end("x\n");
+  return new Promise((resolve) => child.on("close", (code) => resolve({ code, stdout, stderr })));
+}
+
+function launch(args: (string | Record<string, string>)[]) {
   const env = args.find((a) => typeof a === "object") ?? {};
   const words = args.filter((a) => typeof a === "string");
   const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
@@ -27,13 +47,13 @@ function tachi(...args: (string | Record<string, string>)[]) {
     HOMEPATH: home.slice(2),
     XDG_CONFIG_HOME: path.join(home, ".config"),
   };
-  const r = spawnSync(process.execPath, ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, path.resolve("src/cli.tsx"), ...words], {
-    cwd: env.cwd ?? top,
-    input: "x\n",
-    encoding: "utf8",
-    env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "", ...git, ...env },
-  });
-  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  return {
+    argv: ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, path.resolve("src/cli.tsx"), ...words],
+    options: {
+      cwd: env.cwd ?? top,
+      env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "", ...git, ...env },
+    },
+  };
 }
 
 // A pretend home folder holding ~/.tachikoma/settings.json, given to tachi() as its HOME and USERPROFILE.
@@ -391,6 +411,41 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.stderr).toMatch(/^git's settings could not be read \(stdout maxBuffer length exceeded\); only the fixed list of protected paths applies\n/);
     expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
     expect(tachi("--lead", "openai:none", "-p", "hi", unreachable).stderr).not.toContain("git's settings");
+  });
+
+  // Release 7 plan, choice 65: in -p, a judge that cannot be reached refuses the action as a no does, says so on stderr,
+  // and fails no run. The lead and the judge are a stand-in for OpenAI's chat completions that this test serves on the
+  // loopback address: the lead asks to read a made-up file outside the project, then answers; the judge's request fails.
+  it("with -p in auto, says a judge's error on stderr, refuses the action, and still ends as the run did", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const notes = path.join(top, "elsewhere", "notes.txt");
+    const sent: { model: string; messages: { role: string; content?: unknown }[] }[] = [];
+    const server = http.createServer(async (req, res) => {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      const request = JSON.parse(body) as (typeof sent)[number];
+      sent.push(request);
+      const json = (status: number, o: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(o));
+      if (request.model === "judge") return void json(400, { error: { message: "the judge is down", type: "invalid_request_error" } });
+      const first = !request.messages.some((m) => m.role === "tool");
+      const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: notes }) } };
+      const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+      json(200, { id: "r", object: "chat.completion", created: 0, model: request.model, choices: [{ index: 0, finish_reason: first ? "tool_calls" : "stop", message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const r = await tachiLater("--lead", "openai:lead", "--judge", "openai:judge", "--mode", "auto", "-p", "read the notes", { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url });
+    expect(r.stderr).toBe("judge: 400 the judge is down\n");
+    expect(r.stdout).toBe("done\n");
+    expect(r.code).toBe(0);
+    expect(sent.map((x) => x.model)).toEqual(["lead", "judge", "lead"]);
+    expect(sent[2]!.messages.at(-1)).toMatchObject({ role: "tool", content: "Error: The judge refused: the judge could not be reached: 400 the judge is down" }); // the provider marks a refused call so
   });
 
   // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.

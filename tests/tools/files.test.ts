@@ -515,8 +515,8 @@ describe("file tools", () => {
   });
 });
 
-// Release 7 plan, Task 8: a write to a protected path asks in ask, project and auto (until Task 10), and is refused in
-// never; so is a write to an existing file with more than one name (choice 61).
+// Release 7 plan, Task 8: a write to a protected path asks in ask and project, and is refused in never; so is a write to
+// an existing file with more than one name (choice 61). In auto it goes to the judge (Task 10; tests/core/auto.test.ts).
 describe("protected writes", () => {
   const notAllowed = (shown: string, part: string) => `Not allowed: ${shown} is a protected path (${part}), which other programs run or read as settings.`;
   // A project holding .husky/pre-commit, and the question's wording for a path in it.
@@ -528,7 +528,7 @@ describe("protected writes", () => {
   }
   const hook = (ctx: { root: string }) => path.join(ctx.root, ".husky", "pre-commit");
 
-  it.each(["ask", "project", "auto"] as const)("ask in %s mode, for a write and an edit, and go ahead once allowed", async (mode) => {
+  it.each(["ask", "project"] as const)("ask in %s mode, for a write and an edit, and go ahead once allowed", async (mode) => {
     const ctx = await hooked(mode, [true, true]);
     await writeFileTool.run({ path: ".husky/pre-commit", content: "new" }, ctx);
     await editFileTool.run({ path: ".husky/pre-commit", old_text: "new", new_text: "newer" }, ctx);

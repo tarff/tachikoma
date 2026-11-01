@@ -1,5 +1,5 @@
 import type { Bus } from "../core/bus.js";
-import type { Action } from "../core/permissions.js";
+import type { Action, Judge } from "../core/permissions.js";
 import { errorText, type Message, type Provider, type Turn } from "../core/types.js";
 
 // The judge (release 7 plan, Task 9): a fresh request, apart from the conversation, that decides whether an action in
@@ -80,6 +80,16 @@ function read(text: string): Verdict | null {
   if (allow === true) return { allow: true };
   if (allow === false && typeof reason === "string" && reason.trim()) return { allow: false, reason };
   return null;
+}
+
+// The gate's judge, as cli.tsx makes it (release 7 plan, Task 10): `provider` judges with the lead session's prompts and
+// calls, read at each action; a subagent's gate adds its own calls after the lead's, and its bus takes the judge's spend
+// and errors.
+export function judgeOf(provider: Provider, lead: () => Pick<JudgeInput, "prompts" | "calls">, instructions: string, bus: Bus): Judge {
+  return (action, signal, own) => {
+    const { prompts, calls } = lead();
+    return judge(provider, { prompts, calls: [...calls, ...(own?.calls() ?? [])], action, instructions }, signal, own?.bus ?? bus);
+  };
 }
 
 // A stopped signal rejects with its abort and gives no verdict, before the request, while it is out, or once it has

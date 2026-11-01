@@ -42,6 +42,7 @@ import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
 import { gitSettings } from "./safety/gitconfig.js";
+import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
 import { loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { delegateTool } from "./tools/delegate.js";
@@ -232,10 +233,11 @@ try {
 } catch (err) {
   fail(visible(`${named("worker", fromFile(parsed.worker, process.env.TACHI_WORKER), "--worker: ")}${errorText(err)}`));
 }
-// The judge for auto mode is made now, so a bad one stops the launch as a bad --worker does (release 7 plan, Task 7);
-// Task 10 gives it to the gate. Unset, the lead's model judges (release 7 design, "The modes").
+// The judge for auto mode is made now, so a bad one stops the launch as a bad --worker does (release 7 plan, Task 7), and
+// the gate gets it (Task 10). Unset, the lead's model judges, from the lead's own spec (release 7 design, "The modes").
+let judgeProvider: Provider;
 try {
-  if (options.judge) makeProvider(options.judge);
+  judgeProvider = makeProvider(options.judge || leadSpec); // an empty --judge turns the file's off (clilib.ts, resolve)
 } catch (err) {
   fail(visible(`${named("judge", fromFile(parsed.judge), "--judge: ")}${errorText(err)}`));
 }
@@ -279,9 +281,11 @@ let ask: Ask = async (summary, _detail, owner, _plain, warnings) => {
   console.error(headlessDeclined(summary, owner?.name, warnings));
   return false;
 };
+// The judge reads the session's prompts and calls at each action, and the instruction files' text as read above (Task 10).
 const gate = new PermissionGate(mode, (...a) => ask(...a), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it", {
   root,
   headless: !interactive,
+  judge: judgeOf(judgeProvider, () => session, instructions.text, bus),
 });
 gate.rules = rules;
 gate.protection = protection;
@@ -315,7 +319,8 @@ for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, pro
 if (parsed.print !== undefined) {
   let failed = false;
   bus.on("error", (e) => {
-    if (e.kind !== "tool" && e.kind !== "fallback") failed = true;
+    // A judge that cannot be reached refuses one action, as a no does, and fails no run (release 7 plan, choice 65).
+    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge") failed = true;
   });
   if (parsed.json) {
     for (const event of ["message", "usage", "error", "lead"] as const) {

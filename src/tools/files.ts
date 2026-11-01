@@ -287,7 +287,7 @@ export const readFileTool = defineTool(
   z.object({ path: z.string(), offset: z.number().int().min(1).optional(), limit: z.number().int().min(1).optional() }),
   async ({ path: p, offset = 1, limit = READ_LINES }, ctx) => {
     const { abs, outside, shown } = resolveIn(ctx.root, p);
-    await ctx.gate.require({ kind: "read", outside, summary: `read ${shown}` });
+    await ctx.gate.require({ kind: "read", outside, summary: `read ${shown}` }, ctx.signal);
     const text = await ctx.executor.readFile(abs);
     if (!text) return `(${p} is empty)`;
     const lines = text.replace(/\r?\n$/, "").split(/\r?\n/);
@@ -320,7 +320,7 @@ export const writeFileTool = defineTool(
   async ({ path: p, content }, ctx) => {
     const { abs, outside, shown, real } = resolveIn(ctx.root, p);
     const part = protectedOf(ctx, real);
-    await ctx.gate.require({ kind: "write", outside, summary: `write ${shown}`, detail: content, ...(part ? { protectedPart: part, path: shown } : {}) });
+    await ctx.gate.require({ kind: "write", outside, summary: `write ${shown}`, detail: content, ...(part ? { protectedPart: part, path: shown } : {}) }, ctx.signal);
     await ctx.executor.writeFile(abs, content);
     return `Wrote ${content.length} characters to ${p}`;
   },
@@ -338,7 +338,7 @@ export const editFileTool = defineTool(
     // Inside the project a read needs no approval, so an edit that cannot work fails before the user is
     // asked. It is checked again after: the file may change while the question waits.
     if (!outside) edited(await ctx.executor.readFile(abs), p, old_text, new_text);
-    await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}`, detail, ...(part ? { protectedPart: part, path: shown } : {}) });
+    await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}`, detail, ...(part ? { protectedPart: part, path: shown } : {}) }, ctx.signal);
     await ctx.executor.writeFile(abs, edited(await ctx.executor.readFile(abs), p, old_text, new_text));
     return `Edited ${p}`;
   },

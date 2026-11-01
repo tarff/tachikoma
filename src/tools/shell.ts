@@ -8,7 +8,7 @@ export const shellTool = defineTool(
   z.object({ command: z.string().min(1) }),
   async ({ command }, ctx) => {
     // The command goes to the gate, whose dangerous-command check reads it (release 7 plan, Task 8).
-    await ctx.gate.require({ kind: "shell", outside: false, summary: `run: ${command}`, command });
+    await ctx.gate.require({ kind: "shell", outside: false, summary: `run: ${command}`, command }, ctx.signal);
     const r = await ctx.executor.exec(command, ctx.root, ctx.signal);
     const status = r.signal ? `killed by ${r.signal}` : `exit code: ${r.code}`;
     // stderr first: the session keeps only the start of a long result, and the errors matter most.

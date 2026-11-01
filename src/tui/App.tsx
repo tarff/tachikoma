@@ -165,11 +165,14 @@ export function App(props: AppProps) {
   ui.history.current ??= new History(ui.historyFile, (line) => fns.say({ text: line, color: "magenta" }));
 
   useEffect(() => {
-    ui.bindAsk((text, detail, owner, plain, warnings) => {
+    ui.bindAsk((text, detail, owner, plain, warnings, note) => {
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped, nor a
       // stopped subagent about anything.
       const signal = owner ? owner.signal : ui.abort.current?.signal;
       if (signal?.aborted) return Promise.resolve(false);
+      // A grey line about the question, auto mode's pause (release 7 plan, Task 10), in the conversation just above it and
+      // its preview, as the preview is, so the question's own rows stay as they are.
+      if (note !== undefined) latest.current.say({ text: note, color: "gray" });
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface.
       let range: [number, number] | undefined;

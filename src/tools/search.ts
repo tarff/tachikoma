@@ -72,7 +72,7 @@ async function* walk(folder: string, rules: Rules, data: BigIntStats | null, set
 // data folder, and outside the project only once the user allows it.
 async function* files(start: string, ctx: ToolContext, verb: string): AsyncGenerator<string> {
   const { abs, outside, shown } = resolveIn(ctx.root, start);
-  await ctx.gate.require({ kind: "read", outside, summary: `${verb} ${shown}` });
+  await ctx.gate.require({ kind: "read", outside, summary: `${verb} ${shown}` }, ctx.signal);
   const real = await realpath(abs);
   // The rules of each folder above the start, from the project root down; the walk reads the start's own.
   const rules: Rules = [];

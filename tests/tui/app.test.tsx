@@ -26,6 +26,7 @@ import { History } from "../../src/tui/history.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
+import { judgeOf } from "../../src/safety/judge.js";
 import { dangers, NO_RULES } from "../../src/safety/rules.js";
 import { readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
@@ -127,13 +128,15 @@ async function mount(
     live?: AppProps["live"]; // the settings file as launch read it, which the App then watches; not watched when not given
     pictures?: Pictures; // the session's pictures, whose reads the test ends
     readPicture?: AppProps["readPicture"]; // Alt+V's read; one that never answers when not given, null for no reader
+    judge?: Provider; // auto mode's judge, given to the gate as cli.tsx gives it (release 7 plan, Task 10)
   } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
   let ask: Ask = async () => false;
-  const gate = new PermissionGate(opts.mode ?? "ask", (...a) => ask(...a), undefined, { root: ctx.root });
+  const judge = opts.judge && judgeOf(opts.judge, () => session, "", bus);
+  const gate = new PermissionGate(opts.mode ?? "ask", (...a) => ask(...a), undefined, { root: ctx.root, ...(judge ? { judge } : {}) });
   gate.rules = opts.live?.loaded.settings.dangerousCommands ?? NO_RULES; // as cli.tsx sets it at launch
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
@@ -794,6 +797,41 @@ describe("App", () => {
     });
   });
 
+  // Release 7 plan, Task 10 and choice 65: a judge that cannot be reached refuses the action, which the screen shows as an
+  // error, and the turn goes on.
+  it("shows a judge that cannot be reached as an error, refuses the action, and the turn goes on", async () => {
+    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const judge = new FakeProvider("judge", [new Error("judge down")]);
+    const { app } = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("carried on")], { mode: "auto", judge });
+    await type(app, "write it");
+    await until(app, "carried on");
+    expect(app.lastFrame()).toContain("✗ judge: judge down");
+    expect(existsSync(target)).toBe(false);
+  });
+
+  // Release 7 plan, Task 10: after 3 refusals in a row the next action that would go to the judge asks, with auto mode's
+  // pause in grey just above it, in full screen and classic; approving it resumes auto mode, so the next goes to the judge.
+  it.each([true, false])("says auto mode's pause in grey above its question, and approving resumes it (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
+      const writes = ["a", "b", "c", "d", "e"].map((n, i) => callTool(`c${i + 1}`, "write_file", { path: path.join(folder, `${n}.txt`), content: n }).parts).flat();
+      const no = reply('{"allow": false, "reason": "No."}');
+      const judge = new FakeProvider("judge", [no, no, no, reply('{"allow": true}')]);
+      const { app } = await mount([{ parts: writes, usage }, reply("carried on")], { mode: "auto", judge, full });
+      await type(app, "write them");
+      await until(app, "Allow write");
+      const frame = app.lastFrame()!;
+      const line = "\u001b[90mAuto mode paused after 3 refusals; approving this resumes it.";
+      expect(frame).toContain(line);
+      expect(frame.indexOf(line)).toBeLessThan(frame.indexOf(`\u001b[33mAllow write ${path.join(folder, "d.txt")}?`));
+      await press(app, "y");
+      await until(app, "carried on");
+      expect(existsSync(path.join(folder, "d.txt"))).toBe(true);
+      expect(existsSync(path.join(folder, "e.txt"))).toBe(true);
+      expect(judge.seen).toHaveLength(4);
+    });
+  });
+
   // Release 7 plan, Task 8's code review: a question too long to fit moves into the conversation, its red lines with it,
   // in red, under its heading and above its text, so its short line's "shown above" shows the dangers too.
   it("puts a moved question's red lines in the conversation, above its text", async () => {
@@ -931,6 +969,21 @@ describe("App's keys for stopping and exiting", () => {
     await press(app, "\u001b");
     await gone(app, "Esc to stop");
     expect(app.lastFrame()).toContain("> hi");
+  });
+
+  // Release 7 plan, Task 10: Esc while the judge is out stops its request, and the action does not run.
+  it("runs nothing when Esc stops the turn while the judge is out", async () => {
+    const judge = new Held("fake:judge");
+    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const { app } = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("never sent")], { mode: "auto", judge });
+    await type(app, "write it");
+    await waitFor(() => judge.asked.length === 1);
+    await press(app, "\u001b");
+    await gone(app, "Esc to stop");
+    await tick();
+    expect(existsSync(target)).toBe(false);
+    expect(app.lastFrame()).not.toContain("never sent");
+    expect(app.lastFrame()).not.toContain("✗");
   });
 
   it("declines one action on Esc at a question, and the turn carries on", async () => {
@@ -1702,7 +1755,7 @@ describe("App's keys for the modes, the model list and the last turn", () => {
 
   it("cycles ask, project and auto on Shift+Tab, saying so, and the check uses the new mode from the next action", async () => {
     const write = (id: string, file: string) => callTool(id, "write_file", { path: file, content: "x" });
-    const { app, ctx } = await mount([write("c1", "a.txt"), reply("written"), write("c2", "b.txt"), reply("declined")]);
+    const { app, ctx } = await mount([write("c1", "a.txt"), reply("written"), write("c2", "b.txt"), reply("written again")]);
     await press(app, "\u001b[Z");
     expect(app.lastFrame()).toContain("mode is now project");
     expect(app.lastFrame()).toContain("perm project");
@@ -1712,16 +1765,31 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     await press(app, "\u001b[Z");
     expect(app.lastFrame()).toContain("mode is now auto");
     expect(app.lastFrame()).toContain("perm auto");
-    // Until Task 10 gives auto its judge, a write asks, as in ask mode (release 7 plan, Task 7).
+    // Auto writes a file in the project without asking, as project does (release 7 plan, Task 10).
     await type(app, "again");
-    await until(app, "Allow");
-    await press(app, "n");
-    await until(app, "declined");
-    expect(existsSync(path.join(ctx.root, "b.txt"))).toBe(false);
+    await until(app, "written again");
+    expect(existsSync(path.join(ctx.root, "b.txt"))).toBe(true);
     await press(app, "\u001b[Z");
     expect(app.lastFrame()).toContain("mode is now ask");
     expect(app.lastFrame()).toContain("perm ask");
     expect(app.lastFrame()).not.toContain("mode is now never");
+  });
+
+  // Release 7 plan, Task 10: the judge's answer counts only under the mode it was asked under. Shift+Tab while it is out
+  // takes the session to ask, so the write asks, though the judge said yes.
+  it("asks when Shift+Tab changes the mode while the judge is out, whatever it answers", async () => {
+    const judge = new Held("fake:judge");
+    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const { app } = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("carried on")], { mode: "auto", judge });
+    await type(app, "write it");
+    await waitFor(() => judge.asked.length === 1);
+    await press(app, "\u001b[Z");
+    expect(app.lastFrame()).toContain("mode is now ask");
+    judge.answer('{"allow": true}');
+    await until(app, `Allow write ${target}?`);
+    await press(app, "n");
+    await until(app, "carried on");
+    expect(existsSync(target)).toBe(false);
   });
 
   it("takes never into the cycle only when the session started in it", async () => {

@@ -17,9 +17,9 @@ describe("needsApproval", () => {
     ["never", act("shell"), false],
     ["never", act("write", true), false],
     ["never", act("read", true), false],
-    // Until Task 10 gives auto its judge, it asks what ask asks, never less (release 7 plan, Task 7).
+    // In auto, what its fast path does not pass, which the judge decides, or the user for a danger (release 7 plan, Task 10).
     ["auto", act("read"), false],
-    ["auto", act("write"), true],
+    ["auto", act("write"), false],
     ["auto", act("shell"), true],
     ["auto", act("read", true), true],
     ["auto", act("write", true), true],
@@ -81,6 +81,24 @@ describe("a subagent's gate", () => {
     expect(child.mode).toBe("ask");
     await expect(child.require({ kind: "read", outside: true, summary: "read /x" })).rejects.toThrow("Not allowed: read /x");
     expect(asked).toEqual([["read /x", "t2 (find the login code)"]]);
+  });
+
+  // Release 7 plan, Task 10: auto mode's counts are the lead's gate's, and a paused question names the subagent and
+  // carries its grey line.
+  it("counts its judge's refusals in the lead's gate, and asks with the pause's line", async () => {
+    const asked: [string, string | undefined, string | undefined][] = [];
+    const gate = new PermissionGate("auto", async (summary, _detail, owner, _plain, _warnings, note) => (asked.push([summary, owner?.name, note]), false), undefined, {
+      judge: async () => ({ allow: false, reason: "No." }),
+    });
+    const child = gate.for({ name: "t2", signal: new AbortController().signal, stop: () => {} });
+    for (let i = 0; i < 3; i++) await expect(child.require(act("read", true))).rejects.toThrow("The judge refused: No.");
+    await expect(child.require(act("read", true))).rejects.toThrow("The user declined: read outside");
+    await expect(gate.require(act("read", true))).rejects.toThrow("The user declined: read outside");
+    const line = "Auto mode paused after 3 refusals; approving this resumes it.";
+    expect(asked).toEqual([
+      ["read outside", "t2", line],
+      ["read outside", undefined, line],
+    ]);
   });
 
   // Release 7 plan, Task 4: a live edit that tightens the user's own rules reaches subagents already running.
@@ -224,7 +242,8 @@ describe("the gate's dangerous commands and protected writes", () => {
     await expect(gateIn("never").gate.require(run(line))).rejects.toThrow(`(${GIT}: ${push} origin a\\u202eb\\u001b[8m).`);
   });
 
-  it.each(["ask", "project", "auto"] as const)("in %s, asks before a protected write", async (mode) => {
+  // In auto a protected write goes to the judge instead (Task 10; tests/core/auto.test.ts).
+  it.each(["ask", "project"] as const)("in %s, asks before a protected write", async (mode) => {
     const { gate, asked } = gateIn(mode);
     await gate.require(write(".husky"));
     expect(asked).toEqual([{ summary: "write /p/.husky/pre-commit", warnings: [] }]);
