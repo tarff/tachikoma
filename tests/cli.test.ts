@@ -198,27 +198,96 @@ describe("tachi", { timeout: 15_000 }, () => {
   it("stops on a broken settings file, with its problem", () => {
     let r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"mode": "x"}'));
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/^settings\.json: "mode" must be one of: ask, project \(got "x"\)/);
+    expect(r.stderr).toMatch(/^settings\.json: "mode" must be one of: ask, project, auto \(got "x"\)/);
     r = tachi("--lead", "ollama:none", "-p", "hi", homeWith("{"));
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/^settings\.json is not valid JSON: /);
   });
 
-  // Release 6 plan, choice 30: `never` is switched off until release 7, from the flag or the file, with -p and without.
-  // Without -p the stand-in terminal would stop the start later, so the refusal comes first.
-  it("refuses never mode, from --mode or the settings file, with and without -p", () => {
-    const off = "never is switched off until release 7, which adds the safety checks it needs; use ask or project\n";
-    for (const r of [tachi("--lead", "ollama:none", "--mode", "never", "-p", "hi"), tachi("--lead", "ollama:none", "--mode", "never")]) {
+  // Release 7 plan, Task 7 and choice 1: `never` only with copy mode, so nothing reaches the folder before the user has
+  // reviewed it, from the flag or the file, with -p and without; live link is not enough. Without -p the stand-in terminal
+  // would stop the start later, so the refusal comes first. Seven starts.
+  it("refuses never mode without --sandbox copy, from --mode or the settings file, with and without -p", { timeout: 60_000 }, () => {
+    const needs = "never needs --sandbox copy, so nothing reaches your folder before you have reviewed it; launch with --sandbox copy --mode never.\n";
+    const flag = [["--mode", "never", "-p", "hi"], ["--mode", "never"], ["--mode", "never", "--sandbox", "live", "-p", "hi"]];
+    for (const args of flag) {
+      const r = tachi("--lead", "ollama:none", ...args);
       expect(r.code).toBe(1);
-      expect(r.stderr).toBe(`--mode: ${off}`);
+      expect(r.stderr).toBe(`--mode ${needs}`);
     }
     for (const r of [tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"mode": "never"}')), tachi("--lead", "ollama:none", homeWith('{"mode": "never"}'))]) {
       expect(r.code).toBe(1);
-      expect(r.stderr).toBe(`settings.json: "mode": ${off}`);
+      expect(r.stderr).toBe(`settings.json: "mode": ${needs}`);
     }
-    // A flag still wins over the file, so --mode ask starts.
+    // A flag still wins over the file, so --mode ask starts, and so does auto.
     expect(tachi("--lead", "ollama:none", "--mode", "ask", homeWith('{"mode": "never"}')).stderr).toContain("Interactive mode needs a terminal; use -p");
-    expect(tachi("--help").stdout).toMatch(/^ {2}--mode <mode> +when to ask before acting: ask \| project \(default: ask\);\n +never is switched off until release 7\n/m);
+    expect(tachi("--lead", "ollama:none", "--mode", "auto").stderr).toBe('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.\n');
+  });
+
+  // Release 7 plan, Task 7: until Task 21 builds the sandbox, asking for it stops the launch, never with copy mode too, so
+  // never cannot start yet (choice 1). Eight starts.
+  it("stops on --sandbox live or copy, from the flag or the settings file, as neither is built yet", { timeout: 60_000 }, () => {
+    for (const how of ["live", "copy"]) {
+      let r = tachi("--lead", "ollama:none", "--sandbox", how, "-p", "hi");
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(`--sandbox ${how} is not built yet\n`);
+      r = tachi("--lead", "ollama:none", "-p", "hi", homeWith(`{"sandbox": "${how}"}`));
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(`settings.json: "sandbox": ${how} is not built yet\n`);
+    }
+    let r = tachi("--lead", "ollama:none", "--sandbox", "copy", "--mode", "never", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe("--sandbox copy is not built yet\n");
+    r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"sandbox": "copy", "mode": "never"}'));
+    expect(r.stderr).toBe('settings.json: "sandbox": copy is not built yet\n');
+    // A flag wins over the file, so --sandbox off starts.
+    expect(tachi("--lead", "ollama:none", "--sandbox", "off", homeWith('{"sandbox": "copy"}')).stderr).toContain("Interactive mode needs a terminal; use -p");
+    r = tachi("--lead", "ollama:none", "--sandbox", "x", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe('--sandbox must be one of: off, live, copy (got "x")\n');
+  });
+
+  // Release 7 plan, choice 22: the network setting acts only in the sandbox, so --network without it is said once at
+  // launch, and the session starts. The file's entry is not warned of, as only a flag is typed for this launch. Four starts.
+  it("warns that --network was ignored without the sandbox, and starts", { timeout: 60_000 }, () => {
+    const started = 'Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.\n'; // the stand-in terminal stops it there
+    for (const net of ["on", "off"]) {
+      const r = tachi("--lead", "ollama:none", "--network", net);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(`--network acts only with the sandbox on; it was ignored\n${started}`);
+    }
+    expect(tachi("--lead", "ollama:none", homeWith('{"network": "on"}')).stderr).toBe(started);
+    const r = tachi("--lead", "ollama:none", "--network", "x", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe('--network must be one of: off, on (got "x")\n');
+  });
+
+  // Release 7 plan, Task 7: the judge is made at launch, as --worker is, so a bad one stops it in its own words.
+  it("names --judge, or the settings file's judge, when its value is bad", () => {
+    const bad = 'Expected <provider>:<model>, e.g. anthropic:claude-opus-5-5 (got "nope")\n';
+    let r = tachi("--lead", "ollama:none", "--judge", "nope", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe(`--judge: ${bad}`);
+    r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"judge": "nope"}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe(`settings.json: "judge": ${bad}`);
+  });
+
+  it("describes the four modes and --sandbox, --network and --judge in the help, one line each", () => {
+    const help = tachi("--help").stdout;
+    expect(help).toContain(
+      [
+        "  --mode <mode>     when to ask before acting (default: ask):",
+        "                    ask: before each write and shell command, and before anything outside the project",
+        "                    project: before shell commands and anything outside the project",
+        "                    auto: the judge model decides what ask would ask, but dangerous commands ask you",
+        "                    never: never ask; only with --sandbox copy, where you review changes at the end",
+        "  --sandbox <how>   off | live | copy (default: off): commands run in Docker on this folder or a copy",
+        "  --network <net>   off | on (default: off): whether commands in the sandbox can reach the internet",
+        "  --judge <spec>    the model that judges in auto mode; the lead's model unless set",
+        "",
+      ].join("\n"),
+    );
   });
 
   // The security review's finding 2: a bad value in the settings file reaches stderr with its control characters as

@@ -69,11 +69,16 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       // A session cannot be without a lead, so removing the entry keeps the one it has (the design's table).
       if (s.lead === undefined) fns.note(gray(`"lead" was removed from ${SETTINGS}; the lead stays ${ui.session.lead.id}`));
     } else if (key === "mode") {
-      // `never` is refused live (the user's choice, design's table), and at launch too until release 7 (plan, choice 30).
-      if (now.mode === "never") return fns.note(gray(`"mode": "never" is switched off until release 7; the mode stays ${ui.perm.current}`));
       // A live edit never changes the mode, so a shell command the user allowed cannot rewrite the file to put the
       // session in project mode; Shift+Tab still does (plan, choice 32, the user's: "Pin at launch").
       fns.note(gray(`"mode" changes in ${SETTINGS} take effect at the next launch; the mode stays ${ui.perm.current}`));
+    } else if (key === "sandbox" || key === "network" || key === "judge") {
+      // These wait for the next launch too, with the same kind of line (release 7 design, "The modes"; plan, Task 7), so a
+      // shell command the user allowed cannot rewrite the file to change where commands run or who judges them. A flag
+      // that gave one at launch was said above, so the session's value is what the launch read in the file. Only the judge
+      // is ever unset, and then the lead's model judges.
+      const launched = resolve({}, {}, ui.live?.loaded.settings ?? {})[key] || "the lead's model";
+      fns.note(gray(`"${key}" changes in ${SETTINGS} take effect at the next launch; it stays ${launched}`));
     } else if (key === "effort") {
       ui.effortNow.current = { effort: now.effort };
       ui.session.lead.setEffort?.(now.effort);

@@ -66,8 +66,9 @@ export interface Piece {
   dim?: boolean;
 }
 
-// The mode by risk, as claude-hud has no such part (release 5 design, "The status line's colours").
-const MODE_COLOR: Record<Mode, Piece["color"]> = { ask: "green", project: "yellow", never: "red" };
+// The mode by risk, as claude-hud has no such part (release 5 design, "The status line's colours"). Auto takes magenta,
+// which no other mode uses, so it stands apart (release 7 plan, Task 7).
+const MODE_COLOR: Record<Mode, Piece["color"]> = { ask: "green", project: "yellow", auto: "magenta", never: "red" };
 
 // The one place each part's words and colours are written (release 5 design, "The status line's colours").
 export function pieces(s: LineSegment, i: StatusInfo): Piece[] {

@@ -49,7 +49,7 @@ export const MAX_TASKS = 8;
 
 // The flags' own checks take the name to put before their words: `--mode`, or the settings file's `settings.json: "mode"`
 // (release 6 plan, choice 8), so a flag and the file get the same rule and the same words. `shown` is the list the words
-// name, where a value is read but not offered, as `never` is until release 7 (choice 30).
+// name, where a value is read but not offered, as `never` is until copy mode is built (release 7 plan, Task 7).
 export function oneOf<T extends string>(name: string, value: string | undefined, allowed: readonly T[], shown: readonly T[] = allowed): T | undefined {
   if (value === undefined) return undefined;
   if (!(allowed as readonly string[]).includes(value)) throw new Error(`${name} must be one of: ${shown.join(", ")} (got "${value}")`);
@@ -120,12 +120,22 @@ export interface Flags {
   classic?: boolean;
   "scroll-speed"?: string;
   print?: string;
+  sandbox?: string;
+  network?: string;
+  judge?: string;
 }
+
+// Where commands run, and whether the box reaches the internet (release 7 design, "Launching"): both off unless asked for.
+export const SANDBOXES = ["off", "live", "copy"] as const;
+export type Sandbox = (typeof SANDBOXES)[number];
+export const NETWORKS = ["off", "on"] as const;
+export type Network = (typeof NETWORKS)[number];
 
 // Each launch option from its flag, then its TACHI_ variable, then the settings file, then the default (release 6 design,
 // "Which wins"). A bad flag throws in its own words; the file's values were checked when it was read. An empty variable is
-// unset; an empty --fallback or --worker still wins, so it turns the file's off as it turned the variable's off before.
-// The screen is screenMode's, which also asks the terminal; createProvider checks the lead, fallback and worker at use.
+// unset; an empty --fallback, --worker or --judge still wins, so it turns the file's off as it turned the variable's off
+// before. The screen is screenMode's, which also asks the terminal; createProvider checks the lead, fallback, worker and
+// judge at use. The sandbox, the network and the judge have no TACHI_ variable (release 7 plan, Task 7).
 // The flags are checked in release 5's order. The lead is leadOf's.
 export function resolve(flags: Flags, env: NodeJS.ProcessEnv, settings: Settings) {
   return {
@@ -133,6 +143,9 @@ export function resolve(flags: Flags, env: NodeJS.ProcessEnv, settings: Settings
     effort: oneOf<Effort>("--effort", flags.effort, EFFORTS) ?? settings.effort,
     fallback: flags.fallback ?? settings.fallback,
     worker: flags.worker ?? (env.TACHI_WORKER || undefined) ?? settings.worker,
+    sandbox: oneOf<Sandbox>("--sandbox", flags.sandbox, SANDBOXES) ?? settings.sandbox ?? "off",
+    network: oneOf<Network>("--network", flags.network, NETWORKS) ?? settings.network ?? "off",
+    judge: flags.judge ?? settings.judge, // unset, the lead's model judges (release 7 design, "The modes")
     maxTasks: flags["max-tasks"] === undefined ? (settings.maxTasks ?? MAX_TASKS) : taskCount(flags["max-tasks"], "--max-tasks"),
     segments: flags.status === undefined ? (settings.status ?? SEGMENTS) : statusSegments(flags.status),
     // -p has no screen to scroll, so it ignores TACHI_SCROLL_SPEED as it does TACHI_CLASSIC, and the file's scrollSpeed too,
@@ -156,6 +169,9 @@ const GIVERS: [keyof Settings, keyof Flags, string?][] = [
   ["status", "status"],
   ["screen", "classic", "TACHI_CLASSIC"],
   ["scrollSpeed", "scroll-speed", "TACHI_SCROLL_SPEED"],
+  ["sandbox", "sandbox"],
+  ["network", "network"],
+  ["judge", "judge"],
 ];
 export function givenBy(flags: Flags, env: NodeJS.ProcessEnv): Given {
   const given: Given = {};

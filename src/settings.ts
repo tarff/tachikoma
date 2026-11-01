@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { oneOf, speedValue, statusSegments, taskCount } from "./clilib.js";
+import { type Network, NETWORKS, oneOf, SANDBOXES, type Sandbox, speedValue, statusSegments, taskCount } from "./clilib.js";
 import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode, OFFERED } from "./core/permissions.js";
 import { errorText } from "./core/types.js";
@@ -33,13 +33,17 @@ export interface Settings {
   vimInsertModeRemaps?: Record<string, "<Esc>">;
   editor?: string;
   dangerousCommands?: UserRules;
+  sandbox?: Sandbox;
+  network?: Network;
+  judge?: string;
 }
 
 export type Loaded = { settings: Settings; warnings: string[] } | { problem: string };
 
 // Each value gets its flag's check and words, after the file's and the entry's names (the plan's choice 8); a value of the
 // wrong JSON type is a problem too. An unknown name is a warning and the rest applies. $schema, which editors use to check
-// the file, is allowed and ignored. The lead, fallback and worker are checked by createProvider at use, as flags are.
+// the file, is allowed and ignored. The lead, fallback, worker and judge are checked by createProvider at use, as flags
+// are.
 export function readSettings(text: string): Loaded {
   const settings: Settings = {};
   const warnings: string[] = [];
@@ -47,8 +51,10 @@ export function readSettings(text: string): Loaded {
     for (const [name, value] of Object.entries(entriesOf(text))) {
       const entry = `${SETTINGS}: ${JSON.stringify(name)}`;
       if (name === "$schema") continue;
-      else if (name === "lead" || name === "fallback" || name === "worker" || name === "editor") settings[name] = textOf(entry, value);
+      else if (name === "lead" || name === "fallback" || name === "worker" || name === "editor" || name === "judge") settings[name] = textOf(entry, value);
       else if (name === "mode") settings.mode = oneOf(entry, textOf(entry, value), MODES, OFFERED);
+      else if (name === "sandbox") settings.sandbox = oneOf(entry, textOf(entry, value), SANDBOXES);
+      else if (name === "network") settings.network = oneOf(entry, textOf(entry, value), NETWORKS);
       else if (name === "effort") settings.effort = oneOf(entry, textOf(entry, value), EFFORTS);
       else if (name === "screen") settings.screen = oneOf(entry, textOf(entry, value), ["full", "classic"] as const);
       else if (name === "editorMode") settings.editorMode = oneOf(entry, textOf(entry, value), ["normal", "vim"] as const);

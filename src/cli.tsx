@@ -66,8 +66,14 @@ Options:
   --lead <spec>     anthropic:<model> | chatgpt:<model> | openai:<model> | openrouter:<model>
                     | kimi:<model> | ollama:<model> (or set TACHI_LEAD)
                     chatgpt: uses your ChatGPT plan; openai: uses OPENAI_API_KEY
-  --mode <mode>     when to ask before acting: ask | project (default: ask);
-                    never is switched off until release 7
+  --mode <mode>     when to ask before acting (default: ask):
+                    ask: before each write and shell command, and before anything outside the project
+                    project: before shell commands and anything outside the project
+                    auto: the judge model decides what ask would ask, but dangerous commands ask you
+                    never: never ask; only with --sandbox copy, where you review changes at the end
+  --sandbox <how>   off | live | copy (default: off): commands run in Docker on this folder or a copy
+  --network <net>   off | on (default: off): whether commands in the sandbox can reach the internet
+  --judge <spec>    the model that judges in auto mode; the lead's model unless set
   --effort <level>  Anthropic models only: ${EFFORTS.join(" | ")}
   --fallback <spec> retry a turn the lead refuses on this model, e.g. openai:<model> (off unless set)
   --worker <spec>   the model subagents run on (or set TACHI_WORKER); the lead's model unless set
@@ -137,6 +143,9 @@ try {
     options: {
       lead: { type: "string" },
       mode: { type: "string" },
+      sandbox: { type: "string" },
+      network: { type: "string" },
+      judge: { type: "string" },
       effort: { type: "string" },
       fallback: { type: "string" },
       worker: { type: "string" },
@@ -175,13 +184,19 @@ try {
 } catch (err) {
   fail(errorText(err));
 }
-const { mode, effort, maxTasks, segments, speed } = options;
-// `never` is switched off until release 7 brings the sandbox, auto mode and a check on dangerous commands (release 6
-// plan, choice 30). Refused once the mode is resolved, so the flag and the file are caught alike, as the flag's own
-// check names its source.
-if (mode === "never") {
-  fail(`${parsed.mode === undefined ? `${SETTINGS}: "mode": ` : "--mode: "}never is switched off until release 7, which adds the safety checks it needs; use ask or project`);
+const { mode, effort, maxTasks, segments, speed, sandbox } = options;
+// Checked once the options are resolved, so the flag and the file are caught alike, each named as its source.
+// `never` only with copy mode, where nothing written reaches the folder before the user has reviewed it; live link is not
+// enough (release 7 design, "Launching").
+if (mode === "never" && sandbox !== "copy") {
+  const source = parsed.mode === undefined ? `${SETTINGS}: "mode": ` : "--mode ";
+  fail(`${source}never needs --sandbox copy, so nothing reaches your folder before you have reviewed it; launch with --sandbox copy --mode never.`);
 }
+// Until Task 21 builds the sandbox, asking for it stops the launch, so `never` cannot start yet (release 7 plan, choice 1).
+if (sandbox !== "off") fail(`${parsed.sandbox === undefined ? `${SETTINGS}: "sandbox": ` : "--sandbox "}${sandbox} is not built yet`);
+// The network setting acts only in the sandbox (release 7 design, "Launching"), so a --network typed for this launch
+// without it is said, and the session starts (release 7 plan, choice 22).
+if (parsed.network !== undefined && sandbox === "off") console.error("--network acts only with the sandbox on; it was ignored");
 
 const root = process.cwd();
 const errorFile = projectFile("errors", root);
@@ -214,6 +229,13 @@ try {
 } catch (err) {
   fail(visible(`${named("worker", fromFile(parsed.worker, process.env.TACHI_WORKER), "--worker: ")}${errorText(err)}`));
 }
+// The judge for auto mode is made now, so a bad one stops the launch as a bad --worker does (release 7 plan, Task 7);
+// Task 10 gives it to the gate. Unset, the lead's model judges (release 7 design, "The modes").
+try {
+  if (options.judge) makeProvider(options.judge);
+} catch (err) {
+  fail(visible(`${named("judge", fromFile(parsed.judge), "--judge: ")}${errorText(err)}`));
+}
 
 const interactive = parsed.print === undefined;
 // Before the instruction files are read, so nothing is asked with no terminal to answer.
@@ -227,7 +249,7 @@ if (offLine) console.error(offLine);
 // Read once, at the start (release 4 design, "Instruction files"). TACHI_INSTRUCTIONS_TOP moves where
 // the walk down to the project starts, so tests never read the user's files.
 const instructions = await readInstructions({ root, codexHome: process.env.CODEX_HOME || undefined, top: process.env.TACHI_INSTRUCTIONS_TOP || undefined }, async (reached) => {
-  // As read_file reads outside the project then. Unreachable while `never` is switched off, kept for release 7 (choice 30).
+  // As read_file reads outside the project then. Unreachable until copy mode, which `never` needs, is built (Task 21).
   if ((mode as Mode) === "never") return true;
   if (!interactive) {
     console.error(headlessLeftOut(reached));

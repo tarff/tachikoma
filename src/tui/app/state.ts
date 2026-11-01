@@ -176,9 +176,9 @@ export function useAppState({
   // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
   const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a
-  // session started with.
+  // session started with (release 7 design, "The modes").
   const perm = useRef(mode);
-  const cycle: Mode[] = mode === "never" ? ["ask", "project", "never"] : ["ask", "project"];
+  const cycle: Mode[] = mode === "never" ? ["ask", "project", "auto", "never"] : ["ask", "project", "auto"];
   // The lead's and every subagent's questions, shown one at a time, so none replaces the one on screen.
   const questions = useRef<Question[]>([]);
   const question = questions.current[0] ?? null;

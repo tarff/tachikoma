@@ -28,10 +28,14 @@ describe("readSettings", () => {
       editorMode: "vim",
       vimInsertModeRemaps: { jj: "<Esc>" },
       editor: "code --wait",
+      sandbox: "off",
+      network: "off",
+      judge: "anthropic:claude-haiku-5-5",
     };
     expect(read(file)).toEqual({ settings: file, warnings: [] });
-    const others = { mode: "never", effort: "max", screen: "classic", editorMode: "normal", maxTasks: 1, scrollSpeed: 0.5 };
+    const others = { mode: "never", effort: "max", screen: "classic", editorMode: "normal", maxTasks: 1, scrollSpeed: 0.5, sandbox: "copy", network: "on" };
     expect(read(others)).toEqual({ settings: others, warnings: [] });
+    expect(read({ mode: "auto", sandbox: "live" })).toEqual({ settings: { mode: "auto", sandbox: "live" }, warnings: [] });
   });
 
   it("has every entry optional", () => {
@@ -47,7 +51,9 @@ describe("readSettings", () => {
   });
 
   it("refuses a value its flag would refuse, in the flag's words after the file and the entry", () => {
-    expect(problem({ mode: "x" })).toBe('settings.json: "mode" must be one of: ask, project (got "x")');
+    expect(problem({ mode: "x" })).toBe('settings.json: "mode" must be one of: ask, project, auto (got "x")');
+    expect(problem({ sandbox: "on" })).toBe('settings.json: "sandbox" must be one of: off, live, copy (got "on")');
+    expect(problem({ network: "yes" })).toBe('settings.json: "network" must be one of: off, on (got "yes")');
     expect(problem({ effort: "huge" })).toBe('settings.json: "effort" must be one of: low, medium, high, xhigh, max (got "huge")');
     expect(problem({ screen: "half" })).toBe('settings.json: "screen" must be one of: full, classic (got "half")');
     expect(problem({ editorMode: "emacs" })).toBe('settings.json: "editorMode" must be one of: normal, vim (got "emacs")');
@@ -63,7 +69,7 @@ describe("readSettings", () => {
   it("refuses a value of the wrong JSON type, naming the entry", () => {
     expect(problem({ maxTasks: "8" })).toBe('settings.json: "maxTasks" must be a number, without quotes (got "8")');
     expect(problem({ scrollSpeed: "3" })).toBe('settings.json: "scrollSpeed" must be a number, without quotes (got "3")');
-    for (const name of ["lead", "fallback", "worker", "editor", "mode", "effort", "screen", "editorMode"]) {
+    for (const name of ["lead", "fallback", "worker", "editor", "mode", "effort", "screen", "editorMode", "sandbox", "network", "judge"]) {
       expect(problem({ [name]: 5 })).toBe(`settings.json: "${name}" must be text in quotes (got 5)`);
     }
     expect(problem({ lead: null })).toBe('settings.json: "lead" must be text in quotes (got null)');

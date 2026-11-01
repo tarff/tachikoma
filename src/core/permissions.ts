@@ -2,12 +2,14 @@ import { NO_RULES, type UserRules } from "../safety/rules.js";
 
 // ask:     ask before every write and shell command, and before anything outside the project
 // project: ask before shell commands and anything outside the project
-// never:   never ask (meant for the Docker sandbox)
-export type Mode = "ask" | "project" | "never";
-export const MODES: Mode[] = ["ask", "project", "never"];
-// The modes a mistake's words offer: `never` is still read, so the launch can say it is switched off until release 7
-// (release 6 plan, choice 30).
-export const OFFERED: Mode[] = ["ask", "project"];
+// auto:    a second model, the judge, decides what would otherwise be asked (release 7 design, "Auto mode")
+// never:   never ask; only with --sandbox copy, so nothing reaches the folder before the user has reviewed it
+//          (release 7 design, "Launching")
+export type Mode = "ask" | "project" | "auto" | "never";
+export const MODES: Mode[] = ["ask", "project", "auto", "never"];
+// The modes a mistake's words offer: `never` is still read, so the launch can say it needs --sandbox copy, which is not
+// built until Task 21 (release 7 plan, Task 7 and choice 1).
+export const OFFERED: Mode[] = ["ask", "project", "auto"];
 
 export interface Action {
   kind: "read" | "write" | "shell";
@@ -19,7 +21,8 @@ export interface Action {
 export function needsApproval(mode: Mode, action: Action): boolean {
   if (mode === "never") return false;
   if (action.outside) return true;
-  if (mode === "ask") return action.kind !== "read";
+  // Until auto has its judge, it asks what ask asks, never less; Task 10 replaces this (release 7 plan, Task 7).
+  if (mode === "ask" || mode === "auto") return action.kind !== "read";
   return action.kind === "shell";
 }
 

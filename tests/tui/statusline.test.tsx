@@ -64,6 +64,7 @@ describe("StatusLine's pieces", () => {
     for (const [mode, color] of [
       ["ask", "green"],
       ["project", "yellow"],
+      ["auto", "magenta"],
       ["never", "red"],
     ] as const)
       expect(pieces("mode", { ...info, mode })).toEqual([{ text: "perm", dim: true }, { text: " " }, { text: mode, color }]);

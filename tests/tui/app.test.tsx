@@ -1617,7 +1617,7 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     expect(app.lastFrame()).toContain("›  ?\n");
   });
 
-  it("switches between ask and project on Shift+Tab, saying so, and the check uses the new mode from the next action", async () => {
+  it("cycles ask, project and auto on Shift+Tab, saying so, and the check uses the new mode from the next action", async () => {
     const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
     await press(app, "\u001b[Z");
     expect(app.lastFrame()).toContain("mode is now project");
@@ -1626,14 +1626,18 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     await until(app, "written"); // not asked: project mode allows writes inside the project
     expect(existsSync(path.join(ctx.root, "a.txt"))).toBe(true);
     await press(app, "\u001b[Z");
+    expect(app.lastFrame()).toContain("mode is now auto");
+    expect(app.lastFrame()).toContain("perm auto");
+    await press(app, "\u001b[Z");
     expect(app.lastFrame()).toContain("mode is now ask");
     expect(app.lastFrame()).toContain("perm ask");
+    expect(app.lastFrame()).not.toContain("mode is now never");
   });
 
   it("takes never into the cycle only when the session started in it", async () => {
     const { app } = await mount([], { mode: "never" });
-    await press(app, "\u001b[Z", "\u001b[Z", "\u001b[Z");
-    expect(app.lastFrame()).toContain("mode is now ask\nmode is now project\nmode is now never\n");
+    await press(app, "\u001b[Z", "\u001b[Z", "\u001b[Z", "\u001b[Z");
+    expect(app.lastFrame()).toContain("mode is now ask\nmode is now project\nmode is now auto\nmode is now never\n");
   });
 
   it("does nothing on Shift+Tab while a question is showing", async () => {
@@ -6111,15 +6115,35 @@ describe("App's live settings", () => {
     expect(gate.mode).toBe("project");
   });
 
-  it("refuses a live never, and keeps a session started in never in it", async () => {
+  // Release 7 plan, Task 7: `never` is no longer switched off, so a live one gets the same line as any other mode.
+  it("keeps the mode as at launch on a live never, and a session started in never in it", async () => {
     const a = await watching([], {});
     a.write({ mode: "never" });
-    await sees(a.app, '"mode": "never" is switched off until release 7; the mode stays ask');
+    await sees(a.app, PINNED("ask"));
+    expect(flat(a.app)).not.toContain("switched off");
     expect(a.app.lastFrame()).toContain("perm ask");
     const b = await watching([], { mode: "never" }, { mode: "never" });
     b.write({ mode: "ask" });
     await sees(b.app, PINNED("never"));
     expect(b.app.lastFrame()).toContain("perm never");
+  });
+
+  // Release 7 design, "The modes": a live edit of the sandbox, its network or the judge waits for the next launch, as
+  // "mode" does, with the same kind of grey line (release 7 plan, Task 7); one a flag gave stays as the flag set it.
+  it("keeps the sandbox, the network and the judge as at launch on a live edit, and says so", async () => {
+    const stays = (key: string, value: string) => `"${key}" changes in settings.json take effect at the next launch; it stays ${value}`;
+    const a = await watching([], {});
+    a.write({ sandbox: "copy", network: "on", judge: "ollama:j" });
+    await sees(a.app, stays("sandbox", "off"));
+    await sees(a.app, stays("network", "off"));
+    await sees(a.app, stays("judge", "the lead's model"));
+    const b = await watching([], { network: "on", judge: "ollama:j" });
+    b.write({});
+    await sees(b.app, stays("network", "on"));
+    await sees(b.app, stays("judge", "ollama:j"));
+    const c = await watching([], {}, {}, { sandbox: "--sandbox", network: "--network", judge: "--judge" });
+    c.write({ sandbox: "live", network: "on", judge: "ollama:j" });
+    for (const key of ["sandbox", "network", "judge"]) await sees(c.app, `settings.json's "${key}" was left as --${key} set it for this session`);
   });
 
   // Release 7 plan, Task 4 (design, "Configurable"): an edit that loosens the dangerous-command check gets a red warning

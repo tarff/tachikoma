@@ -67,9 +67,10 @@ export const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.
 
 // The settings file's entries a live edit applies here, in the design's table's order ("When a live change applies").
 // vimInsertModeRemaps is read at each key (vimTakes), and the editor at each Ctrl+G, /settings and /keybindings; both
-// are here for their lines (plan, Tasks 12 and 21). dangerousCommands is release 7's (release 7 plan, Task 4).
+// are here for their lines (plan, Tasks 12 and 21). dangerousCommands is release 7's (release 7 plan, Task 4), and so are
+// sandbox, network and judge, here for their lines too, as each waits for the next launch (Task 7).
 export const LIVE = [
-  "lead", "mode", "effort", "fallback", "worker", "maxTasks",
+  "lead", "mode", "sandbox", "network", "judge", "effort", "fallback", "worker", "maxTasks",
   "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor", "dangerousCommands",
 ] as const;
 export const FROM = ` (from ${SETTINGS})`;

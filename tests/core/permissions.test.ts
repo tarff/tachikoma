@@ -17,6 +17,12 @@ describe("needsApproval", () => {
     ["never", act("shell"), false],
     ["never", act("write", true), false],
     ["never", act("read", true), false],
+    // Until Task 10 gives auto its judge, it asks what ask asks, never less (release 7 plan, Task 7).
+    ["auto", act("read"), false],
+    ["auto", act("write"), true],
+    ["auto", act("shell"), true],
+    ["auto", act("read", true), true],
+    ["auto", act("write", true), true],
   ] as const)("%s mode, %o -> %s", (mode, action, expected) => {
     expect(needsApproval(mode, action)).toBe(expected);
   });
