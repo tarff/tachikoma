@@ -761,6 +761,8 @@ the plan's review.
     - a box Docker made but could not start stays until the next launch's sweep;
     - a fork bomb that fills the box's processes after Esc's kill has got in can stop the kill
       itself (its `touch` and `cat` need new processes), and `Cancelled` is shown;
+    - on Windows, a user outside the `docker-users` group gets Docker's `Access is denied`, which
+      reads as not running (choice 78's not-allowed line is for Linux);
     - choices 88 and 92.
 ---
 
