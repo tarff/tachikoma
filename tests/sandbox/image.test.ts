@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { docker as realDocker, type DockerRun, dockerState } from "../../src/sandbox/docker.js";
 import {
   BUILD_FAILED,
@@ -20,6 +20,7 @@ import {
   NO_TERMINAL,
   prepareImage,
   sandboxCommand,
+  sandboxHeld,
   SHIPPED,
   UNBUILT,
   WINDOWS_CONTAINERS,
@@ -426,6 +427,37 @@ describe("tachi sandbox build", () => {
     expect(NO_TERMINAL).toBe("tachi sandbox build needs a terminal, to ask before it downloads anything.");
     expect(t.printed).toEqual([`err: ${NO_TERMINAL}`]);
     expect(docker.builds()).toEqual([]);
+  });
+
+  // Choice 71: a folder holding Tachikoma's own (choice 13) is refused before Docker is asked anything, so a Dockerfile in
+  // the settings folder is never read. The data folder is put inside the project for it.
+  it("refuses a folder that holds Tachikoma's data folder, before Docker, after its usage", async () => {
+    const root = project();
+    vi.stubEnv("TACHI_DATA_DIR", path.join(root, "data"));
+    onTestFinished(() => void vi.unstubAllEnvs());
+    const docker = fakeDocker();
+    const t = terminal([true]);
+    expect(await sandboxCommand(["build"], root, { ...t, signal: new AbortController().signal, run: docker.run })).toBe(1);
+    expect(t.printed).toEqual([
+      `err: The sandbox cannot run on ${root}: it holds Tachikoma's data folder, which must never be in the box. Start Tachikoma in a project folder.`,
+    ]);
+    expect(docker.calls).toEqual([]);
+    expect(await sandboxCommand(["make"], root, { ...t, signal: new AbortController().signal, run: docker.run })).toBe(1);
+    expect(t.printed.at(-1)).toBe("err: Usage: tachi sandbox build");
+  });
+
+  // Choice 107: the home folder itself is named as such, before the folders it holds; a folder above it names the first
+  // of those it holds.
+  it("names the home folder when the project is it, and the folders it holds otherwise", () => {
+    const top = realpathSync.native(project());
+    const home = path.join(top, "home");
+    mkdirSync(home);
+    const data = path.join(home, "data");
+    expect(sandboxHeld(home, home, data)).toBe("the home folder");
+    expect(sandboxHeld(top, home, data)).toBe("Tachikoma's data folder");
+    expect(sandboxHeld(top, home, path.join(tmpdir(), "elsewhere-data"))).toBe("Tachikoma's settings folder");
+    mkdirSync(path.join(home, "project"));
+    expect(sandboxHeld(path.join(home, "project"), home, data)).toBeUndefined();
   });
 
   it("explains its usage for anything but build", async () => {

@@ -1613,6 +1613,16 @@ tests run on Windows with the case check injected.
 
 Commit: `feat: a session in the box with live link`.
 
+**As built (7c0428d and its follow-up):** `sandboxReady` (clilib.ts) runs choice 13's refusal
+(`heldLine`, image.ts, which `tachi sandbox build` gives too, choice 71), the letter-case check
+(choice 108), Docker's state and the image, git's settings and the mounts; `sandboxStart` sweeps,
+starts the box and checks its node, and gives the session `/work`, bash and the box's
+protected paths. `BoxState` (executor.ts) is the stopped state and memory-kill count the
+executor and `BoxWorkspace` share. Tests give `io.run`, `io.gitSettings` and `io.ignoresCase`;
+no flag or variable turns the case check off. The real `-p` path through cli.tsx is untested on
+this PC, where live link is refused (choice 104); it waits for Linux CI (choice 79). The box's
+`resolve` also says whether a file has another name (`linked`), for the write tools' check.
+
 ## Task 17: Copy mode: the snapshot
 
 **Files:** create `src/sandbox/snapshot.ts`, `tests/sandbox/snapshot.test.ts`.

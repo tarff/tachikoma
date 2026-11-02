@@ -3,13 +3,14 @@
 // prepareImage after choice 13's refusal; `tachi sandbox build` calls sandboxCommand. Docker is reached only through a
 // DockerRun (choice 69), and the question through `ask`, so tests never touch Docker or the terminal.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdtemp, rmdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { SETTINGS_DIR } from "../core/datadir.js";
+import { dataDir, SETTINGS_DIR, settingsDir } from "../core/datadir.js";
 import { visible } from "../core/permissions.js";
+import { within } from "../safety/gitconfig.js";
 import { docker, type DockerRun, dockerState, type DockerState } from "./docker.js";
 
 // Shipped with Tachikoma (package.json's `files`), beside src and dist alike.
@@ -161,10 +162,15 @@ export async function prepareImage(root: string, io: ImageIo): Promise<{ tag: st
 }
 
 // `tachi sandbox build`: the launch's steps, with its own lines for Docker (choice 71), saying so when the image is up
-// to date.
+// to date. Choice 13's refusal comes first, as at the launch, so a Dockerfile in the settings folder is never read.
 export async function sandboxCommand(args: string[], root: string, io: ImageIo): Promise<number> {
   if (args.length !== 1 || args[0] !== "build") {
     io.err(USAGE);
+    return 1;
+  }
+  const held = heldLine(root);
+  if (held) {
+    io.err(held);
     return 1;
   }
   const run = io.run ?? docker;
@@ -182,6 +188,29 @@ export async function sandboxCommand(args: string[], root: string, io: ImageIo):
   }
   const done = await askAndBuild(info, io.ask, io, run);
   return "exit" in done ? done.exit : 0;
+}
+
+// Choice 13: what must never be in the box, by real place where it exists: the home folder when the project is it
+// (choice 107), else the first the project folder holds of the data folder's logins, the settings folder's settings and
+// keys, and the home folder. The launch (clilib.ts, sandboxReady) and `tachi sandbox build` (choice 71) refuse it.
+export function sandboxHeld(root: string, home = os.homedir(), data = dataDir()): string | undefined {
+  const real = (p: string) => {
+    try {
+      return realpathSync.native(p);
+    } catch {
+      return path.resolve(p); // not made yet: where it would be
+    }
+  };
+  const at = real(root);
+  if (within(at, real(home)) && within(real(home), at)) return "the home folder";
+  const kept: [string, string][] = [["Tachikoma's data folder", data], ["Tachikoma's settings folder", settingsDir(home)], ["the home folder", home]];
+  return kept.find(([, p]) => within(at, real(p)))?.[0];
+}
+
+// Choice 13's line, escaped, as the folder's name comes from the disk; undefined when the folder holds none of them.
+export function heldLine(root: string): string | undefined {
+  const held = sandboxHeld(root);
+  return held && visible(`The sandbox cannot run on ${root}: it holds ${held}, which must never be in the box. Start Tachikoma in a project folder.`);
 }
 
 // Docker's state: undefined when it can be used, or the exit code once the line saying what to do is printed. No time

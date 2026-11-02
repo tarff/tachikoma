@@ -1,21 +1,20 @@
 import { realpathSync } from "node:fs";
-import os, { constants } from "node:os";
+import { constants } from "node:os";
 import path from "node:path";
-import { dataDir, settingsDir } from "./core/datadir.js";
 import type { Instructions, Reached } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { errorText } from "./core/types.js";
 import type { Executor } from "./exec/executor.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
-import { type GitSettings, gitSettings, within } from "./safety/gitconfig.js";
+import { gitFolderOutside, type GitSettings, gitSettings, within } from "./safety/gitconfig.js";
 import { NO_RULES, type UserRules } from "./safety/rules.js";
 import { type Shell, shellOf } from "./safety/split.js";
 import { BoxWorkspace } from "./sandbox/boxWorkspace.js";
 import { docker } from "./sandbox/docker.js";
 import { BOX_HOME, boxLimits, boxUser, DockerExecutor, dockerRoom, memoryText, type Room, sweepBoxes, unlimitedLine } from "./sandbox/executor.js";
-import { type ImageIo, prepareImage } from "./sandbox/image.js";
-import { liveMounts, type Mount } from "./sandbox/mounts.js";
+import { heldLine, type ImageIo, prepareImage } from "./sandbox/image.js";
+import { CASE_REFUSED, ignoresCase, liveMounts, type Mount } from "./sandbox/mounts.js";
 import type { SandboxLimits, Settings } from "./settings.js";
 import { shellToolOf } from "./tools/shell.js";
 import type { Tool } from "./tools/tool.js";
@@ -261,12 +260,16 @@ export interface SandboxIo extends ImageIo {
   gitSettings?: (root: string) => Promise<GitSettings | undefined>;
   ignoresCase?: (folder: string) => boolean;
 }
-export type Ready = { tag: string; git: GitSettings | undefined; mounts: Mount[]; env: Record<string, string> };
+// `gitOutside`: the project's `.git` is a file naming a git folder outside it (choice 107).
+export type Ready = { tag: string; git: GitSettings | undefined; mounts: Mount[]; env: Record<string, string>; gitOutside: boolean };
 
 export async function sandboxReady(root: string, io: SandboxIo): Promise<Ready | { exit: number }> {
   const refuse = (line: string) => (io.err(visible(line)), { exit: 1 });
-  const held = sandboxHeld(root);
-  if (held) return refuse(`The sandbox cannot run on ${root}: it holds ${held}, which must never be in the box. Start Tachikoma in a project folder.`);
+  const held = heldLine(root);
+  if (held) return refuse(held);
+  // The letter-case check right after, before Docker is asked anything, so Windows and macOS users are not asked to build
+  // the image only to be refused (choice 108). The mounts below then take it as passed.
+  if ((io.ignoresCase ?? ignoresCase)(root)) return refuse(CASE_REFUSED);
   const image = await prepareImage(root, io);
   if ("exit" in image) return image;
   let git: GitSettings | undefined;
@@ -276,24 +279,9 @@ export async function sandboxReady(root: string, io: SandboxIo): Promise<Ready |
     // Without them the mounts cannot be worked out, so live link is refused, as for Task 5's problems.
     return refuse(`Live link is refused: git's settings could not be read (${errorText(err)}). Launch with --sandbox copy instead.`);
   }
-  const live = liveMounts(root, git, io.ignoresCase ? { ignoresCase: io.ignoresCase } : {});
+  const live = liveMounts(root, git, { ignoresCase: () => false });
   if ("refused" in live) return refuse(live.refused);
-  return { tag: image.tag, git, ...live };
-}
-
-// Choice 13: what must never be in the box, the first of these the project folder holds, by real place where it exists:
-// the logins in the data folder, the settings and keys in the settings folder, or the whole home folder.
-export function sandboxHeld(root: string, home = os.homedir(), data = dataDir()): string | undefined {
-  const real = (p: string) => {
-    try {
-      return realpathSync.native(p);
-    } catch {
-      return path.resolve(p); // not made yet: where it would be
-    }
-  };
-  const at = real(root);
-  const kept: [string, string][] = [["Tachikoma's data folder", data], ["Tachikoma's settings folder", settingsDir(home)], ["the home folder", home]];
-  return kept.find(([, p]) => within(at, real(p)))?.[0];
+  return { tag: image.tag, git, ...live, gitOutside: gitFolderOutside(root) };
 }
 
 // The box's folder for the project, where the model works (choice 19), and its home (executor.ts, choice 77).
@@ -365,7 +353,11 @@ export async function sandboxStart(
     gate: { root: BOX_ROOT, home: BOX_HOME, shell: shellOf("box") },
     shellTool: shellToolOf("bash"),
     protection: boxProtection(root, protectionOf(ready.git)),
-    lines: [visible(line), ...room.unlimited.map(unlimitedLine)],
+    lines: [
+      visible(line),
+      ...room.unlimited.map(unlimitedLine),
+      ...(ready.gitOutside ? ["Git does not work in the box here: .git points to a git folder outside the project. Commit on this computer."] : []),
+    ],
   };
 }
 

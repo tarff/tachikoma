@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { boxProtection, type Network, sandboxHeld, sandboxReady, sandboxStart } from "../src/clilib.js";
+import { boxProtection, type Network, sandboxReady, sandboxStart } from "../src/clilib.js";
 import { onPath } from "../src/exec/env.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
@@ -498,7 +498,7 @@ describe("live link's launch, with a stand-in Docker", () => {
   afterEach(() => vi.unstubAllEnvs());
   type Answer = { code: number; out: string; err: string } | "missing";
   const ok = (out = ""): Answer => ({ code: 0, out, err: "" });
-  const STEPS = ["home", "missing", "stopped", "image", "git-throws", "case", "git-missing", "room", "limits", "start", "node-missing", "node-old"] as const;
+  const STEPS = ["home", "case", "missing", "stopped", "image", "git-throws", "git-missing", "room", "limits", "start", "node-missing", "node-old"] as const;
   type Step = (typeof STEPS)[number];
   // This PC's `docker info`, the parts read (executor.test.ts), with the limit flags given.
   const INFO = (more: Record<string, unknown> = {}) =>
@@ -527,10 +527,12 @@ describe("live link's launch, with a stand-in Docker", () => {
   }
 
   // A project folder of the test's own, and the data folder beside it, or inside it for choice 13's step.
-  async function launch(broken: Set<Step>, info?: string, network: Network = "off") {
+  // `made` adds to the project and the folder around it before the launch.
+  async function launch(broken: Set<Step>, info?: string, network: Network = "off", made?: (top: string, root: string) => void) {
     const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-box-"));
     const root = path.join(top, "project");
     mkdirSync(root);
+    made?.(top, root);
     vi.stubEnv("TACHI_DATA_DIR", broken.has("home") ? path.join(root, "data") : path.join(top, "data"));
     const fake = stand(broken, info);
     const lines: string[] = [];
@@ -627,6 +629,23 @@ describe("live link's launch, with a stand-in Docker", () => {
     ]);
   });
 
+  // Choice 107 (design, "Live link"): a .git file naming a git folder outside the project, which is not mounted, so git
+  // does not work in the box; one naming a folder inside it, or a .git folder, says nothing.
+  it("says when .git is a file naming a git folder outside the project", async () => {
+    const line = "Git does not work in the box here: .git points to a git folder outside the project. Commit on this computer.";
+    const pointing = (where: (top: string, root: string) => string) => (top: string, root: string) => {
+      mkdirSync(where(top, root), { recursive: true });
+      writeFileSync(path.join(root, ".git"), `gitdir: ${where(top, root)}
+`);
+    };
+    const outside = await launch(new Set(), undefined, "off", pointing((top) => path.join(top, "main", ".git", "worktrees", "project")));
+    expect(outside.started!.lines.slice(1)).toEqual([line]);
+    const inside = await launch(new Set(), undefined, "off", pointing((_, root) => path.join(root, "repo.git")));
+    expect(inside.started!.lines).toHaveLength(1);
+    const folder = await launch(new Set(), undefined, "off", (_, root) => mkdirSync(path.join(root, ".git")));
+    expect(folder.started!.lines).toHaveLength(1);
+  });
+
   // Choice 21: with the network off, every failed command gets the line, as which failures were the network's cannot be told.
   it("adds the network line to a failed command's result with the network off, and not with it on", async () => {
     const line = "(The box's network is off, so nothing in it can reach the internet. To allow it, launch with --network on.)";
@@ -636,20 +655,6 @@ describe("live link's launch, with a stand-in Docker", () => {
     };
     expect((await failing("off")).stderr).toBe(line);
     expect((await failing("on")).stderr).toBe("");
-  });
-});
-
-// Choice 13: what must never be in the box, by its real place.
-describe("sandboxHeld", () => {
-  it("names Tachikoma's data folder, its settings folder or the home folder inside the project, and nothing beside them", () => {
-    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-held-")));
-    const home = path.join(top, "home");
-    mkdirSync(home);
-    const data = path.join(top, "data");
-    expect(sandboxHeld(top, home, data)).toBe("Tachikoma's data folder");
-    expect(sandboxHeld(home, home, path.join(tmpdir(), "elsewhere-data"))).toBe("Tachikoma's settings folder");
-    mkdirSync(path.join(home, "project"));
-    expect(sandboxHeld(path.join(home, "project"), home, data)).toBeUndefined();
   });
 });
 

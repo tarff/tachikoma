@@ -20,6 +20,11 @@ const BOX = "/work";
 // `config/` folder is the project's own, which the box must be able to edit (choice 103).
 const TOP = ["HEAD", "objects", "refs"];
 
+// Choice 104's refusal. The launch says it right after choice 13's (choice 108; clilib.ts, sandboxReady).
+export const CASE_REFUSED =
+  "Live link is refused: this folder ignores letter case, as Windows and macOS do by default, so the box could reach " +
+  "git's files by another spelling. Launch with --sandbox copy instead.";
+
 // The mounts, and the variables the box's git needs, or why live link is refused. Only once nothing refuses is a missing
 // `.tachikoma` made, an empty folder of Tachikoma's own (choice 31): left unmounted, the box could make one. First of
 // all, a folder that ignores letter case is refused (choice 104): a mount covers one spelling, and on Docker Desktop for
@@ -29,13 +34,7 @@ export function liveMounts(
   git: GitSettings | undefined,
   opts: { ignoresCase?: (folder: string) => boolean } = {},
 ): { mounts: Mount[]; env: Record<string, string> } | { refused: string } {
-  if ((opts.ignoresCase ?? ignoresCase)(root)) {
-    return {
-      refused:
-        "Live link is refused: this folder ignores letter case, as Windows and macOS do by default, so the box could reach " +
-        "git's files by another spelling. Launch with --sandbox copy instead.",
-    };
-  }
+  if ((opts.ignoresCase ?? ignoresCase)(root)) return { refused: CASE_REFUSED };
   if (!git) return { refused: "Live link needs git on this PC to read git's settings; use --sandbox copy, or install git." }; // choice 11
   const problem = git.problems[0];
   // Task 5's whys start "it is" or "it cannot", which the line's "which" stands for.

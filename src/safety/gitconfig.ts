@@ -60,9 +60,7 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
   const top = repo?.top ?? path.resolve(root);
   const found: GitSettings = { files: [], hooksPaths: [], gitDirs: [], problems: repo?.problem ? [repo.problem] : [], lineEndings: {} };
   for (const dir of repo?.gitDirs ?? []) {
-    const real = realPath(dir);
-    const inProject = within(root, dir) || (real !== undefined && within(realPath(root) ?? root, real));
-    if (inProject && path.relative(path.join(top, ".git"), dir) !== "") list(found.gitDirs, dir, real);
+    if (inProject(root, dir) && path.relative(path.join(top, ".git"), dir) !== "") list(found.gitDirs, dir, realPath(dir));
   }
   const seen = new Set<string>();
   // Each entry: a file, whether an include named it (only an include is checked for being a link or missing), and the key
@@ -204,6 +202,20 @@ function realPath(p: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+// Whether a git folder is inside the project, as written or at its real place: gitSettings lists only those, and live
+// link mounts only those (choice 59).
+function inProject(root: string, dir: string): boolean {
+  const real = realPath(dir);
+  return within(root, dir) || (real !== undefined && within(realPath(root) ?? root, real));
+}
+
+// Whether the project's own `.git` is a file naming a git folder (or its shared one) outside the project, which live
+// link does not mount, so git does not work in the box (design, "Live link"; choice 107).
+export function gitFolderOutside(root: string): boolean {
+  if (!lstatSync(path.join(root, ".git"), { throwIfNoEntry: false })?.isFile()) return false;
+  return repository(root)?.gitDirs?.some((dir) => !inProject(root, dir)) ?? false;
 }
 
 // Whether `p` is `root` or inside it (path.relative compares without case on Windows). A name that only starts with
