@@ -602,6 +602,16 @@ the plan's review.
     declined call keeps its result row, as `⎿ You declined this.`, so each result keeps its
     place in call order and an allowed call's `⎿ ok` is not read as the declined one's. Under
     its tool line the declined row stays hidden, as in choice 66.
+68. **The Dockerfile's line endings never change its tag** (the user's choice, before Task 11).
+    The user's git checks text out with Windows line endings (`core.autocrlf=true`), which would
+    give a Windows clone a different tag from a Mac or Linux one, and can break the Dockerfile's
+    shell steps. So `.gitattributes` gains `sandbox/Dockerfile text eol=lf`. Both the shipped
+    Dockerfile's tag and a project's (choice 16) hash the file with each `\r\n` read as `\n`.
+    An LF file keeps the tag Task 1 built.
+69. **Docker is faked by a function, not a script** (the user's choice, before Task 11). The
+    Docker code takes the command runner as a parameter, and the tests hand it a stand-in that
+    records its calls and returns set answers. No file is written or run for it, and no test
+    changes `PATH`.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
@@ -1061,8 +1071,8 @@ its image, built here once. It downloads: <images>, and Debian's packages. Build
 image says `The sandbox's image is up to date (<tag>).`
 
 **Tests:**
-- `dockerState` through a fake `docker` on a test `PATH` (a small script) for missing and stopped;
-- the tag from a test Dockerfile's hash;
+- `dockerState` through a stand-in command runner (choice 69) for missing and stopped;
+- the tag from a test Dockerfile's hash, the same for its LF and CRLF forms (choice 68);
 - `downloads` reading `FROM` and `COPY --from`;
 - headless with no image giving the line and no `docker build` call (the fake records its calls);
 - the question's words.
