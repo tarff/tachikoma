@@ -751,6 +751,18 @@ the plan's review.
     between Windows and WSL, each numbering processes on its own. So `tachikoma.host` is
     `<hostname>/<platform>`, and on Linux also `/proc/self/ns/pid`'s link, and the sweep removes
     a box only when all of it matches.
+95. **The box helper's answers have no size cap** (the user's choice, Task 13). A cut JSON answer
+    cannot be read, and a normal answer is no bigger than the same read on the host. Only a
+    tampered `node` in the box could flood Tachikoma's memory, and the worst case is Tachikoma
+    closing. A known limit (choice 94).
+96. **The box workspace's two messages** (the user's approval, Task 13): `<path> goes through a
+    link that leads nowhere, which the sandbox never opens`, and `The sandbox's file tools could
+    not reach the box: <docker's words>`.
+97. **The `node` check also checks what the file tools need** (the user's choice, Task 13).
+    find and search in the box use `path.matchesGlob` (Node 22.5 or newer, Node's own docs). Task
+    16's node check (choice 17) asks the box's node whether `path.matchesGlob` is a function,
+    and stops with `The sandbox's image has node <version>, but Tachikoma's file tools need Node
+    22.5 or newer in the box.` The shipped image has Node 24, so only a project's image can hit it.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -763,6 +775,7 @@ the plan's review.
       itself (its `touch` and `cat` need new processes), and `Cancelled` is shown;
     - on Windows, a user outside the `docker-users` group gets Docker's `Access is denied`, which
       reads as not running (choice 78's not-allowed line is for Linux);
+    - the box helper's answers have no size cap (choice 95);
     - choices 88 and 92.
 ---
 
@@ -1348,6 +1361,9 @@ tests in the files of each.
   `ctx.workspace` / `ui.workspace` instead of `node:fs`, `resolveIn` or `gitBranch` directly.
   With the sandbox off, `LocalWorkspace` keeps today's behaviour exactly.
 - **`resolveIn` stays,** as `LocalWorkspace.resolve`, and for instruction files at launch.
+- **`Executor.readFile`/`writeFile`.** Once the file tools use the Workspace, these are either
+  still used (then `DockerExecutor`'s go through `BoxWorkspace`) or dropped from the interface,
+  whichever leaves no dead code. `DockerExecutor`'s throw `not yet` until then (Task 13's report).
 - **A grep test.** No module in `src/tools/`, `src/tui/menus.ts` or `src/tui/app/` imports
   `node:fs` for project paths. The test fails if a new `node:fs` import appears there; a short
   list of allowed imports is kept in the test with each one's reason.
@@ -1427,7 +1443,9 @@ Commit: `feat: live link: all of .git, git's included files and the hooks folder
   8. the box started;
   9. the `node` check (choice 17);
   10. the session.
-- **Where the model works.** The executor is `DockerExecutor` and the workspace is the box's.
+- **Where the model works.** The executor is `DockerExecutor` and the workspace is the box's
+  (`BoxWorkspace`). They share one "stopped working" state: once either finds Docker failing,
+  shell and file tools are both off, as Task 12 says.
   The system prompt names `/work` (choice 19).
 - **The launch line, in grey:** `Sandbox: live link on <folder>, network <off|on>, limits <memory>,
   <cpus> CPUs, <pids> processes.`, then a grey line for each limit Docker cannot apply (choice 83).
