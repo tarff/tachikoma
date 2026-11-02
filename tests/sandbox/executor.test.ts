@@ -459,6 +459,7 @@ async function ready(ctx: TestContext, needs: Needs = {}): Promise<{ image: stri
   const state = await dockerState();
   if (state === "missing") ctx.skip("no docker program on PATH");
   if (state === "stopped") ctx.skip("Docker is not running");
+  if (state !== "ready") ctx.skip(state === "denied" ? "this user is not allowed to use Docker" : "Docker is set to Windows containers");
   const folder = await mkdtemp(path.join(os.tmpdir(), "tachi-box-"));
   onTestFinished(() => rmdir(folder));
   const info = await imageFor(folder);
