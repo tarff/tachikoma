@@ -614,6 +614,18 @@ the plan's review.
     changes `PATH`.
 70. **Docker's check has no time limit** (the user's choice, after Task 11 was built). `docker
     version` is waited for, and Ctrl-C stops it. No number is set without measuring one.
+71. **`tachi sandbox build` has its own lines** (the user's choice, Task 11's spec review). The
+    launch keeps Task 11's words; the subcommand says `The sandbox needs Docker, which is not
+    installed. Install Docker Desktop, then run tachi sandbox build again.`, `The sandbox needs
+    Docker, which is not running. Start Docker Desktop, then run tachi sandbox build again.`,
+    and, with no terminal to ask in, `tachi sandbox build needs a terminal, to ask before it
+    downloads anything.` (exit 1, nothing built). Task 16 gives the subcommand choice 13's
+    refusal too, so it never reads a Dockerfile from the settings folder.
+72. **A project's build question says it is the project's** (the user's choice, Task 11's spec
+    review). The shipped image keeps Task 11's question. A project's is `The sandbox needs this
+    project's image, from .tachikoma/sandbox.Dockerfile, built here once. It downloads what that
+    file asks for, starting with: <images>. Build it now? [y/n]`; with no image names read,
+    `, starting with: <images>` is left out.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
