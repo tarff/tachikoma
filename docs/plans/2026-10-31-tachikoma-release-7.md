@@ -794,6 +794,25 @@ the plan's review.
     spec review). Rails and many Node projects have a `config/` folder the agent must edit. In a
     normal project the box can already make the other parts of a repository (design, "What stays
     open"), so a folder's mount protected nothing more.
+104. **Live link only where the project folder minds letter case** (the user's choice, Task 15's
+    quality review). A read-only mount covers one spelling. Measured on this PC (Docker Desktop
+    for Windows, 2026-11-02, a test folder, network off): from the box, `touch .GIT/hooks/x1`
+    made the file in the real `.git\hooks`, `echo x >> CONFIG` and `>> .HUSKY/pre-commit`
+    changed the read-only files, `ls .TACHIKOMA` listed the hidden folder, and `ls GIT~1` (the
+    short name) listed `.git`; only the exact spellings were refused. macOS folders ignore case
+    by default too. So before anything else, live link checks on the host whether the project
+    folder ignores letter case (another spelling of its own name reaching the same folder), and
+    if it does refuses: `Live link is refused: this folder ignores letter case, as Windows and
+    macOS do by default, so the box could reach git's files by another spelling. Launch with
+    --sandbox copy instead.` On Windows and macOS the sandbox is then copy mode (Tasks 17-21).
+    The real-Docker live link tests still run here, with the check injected.
+105. **The folders above a protected path are pinned** (the user's choice, Task 15's quality
+    review). Linux lets a folder holding a mount be renamed, the mount moving with it, so
+    `mv settings s2` then a new `settings/extra.cfg` gets round an included file's mount (measured
+    on this PC with the same probe). Every folder between `/work` and a read-only mount is also
+    mounted onto itself, writable, once each; a mount point cannot be renamed or removed, and the
+    folder's other files stay editable. A test: `mv settings s2` fails in the box and the host
+    file is unchanged.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -814,6 +833,17 @@ the plan's review.
     - in copy mode, the `@` menu lists the host folder, not the copy (choice 98);
     - SELinux on in Docker denies the box the linked folder (choice 101);
     - lefthook's and pre-commit's files are writable from the box in live link (choice 102);
+    - live link's letter-case check looks at the project folder only, so a subfolder made to
+      mind case differently (Windows' per-folder setting, a case-sensitive Mac volume) is not
+      seen (choice 104); Docker Desktop on a case-sensitive Mac volume is untested;
+    - from Task 15's quality review: when the project is a subfolder of a repository, or not a
+      repository, the box can make its own `.git` there, which git on the host then uses
+      (`safe.bareRepository = explicit` stops only bare repositories, so the README must not
+      say it covers this); with no top-level `config` file the top-level block protects nothing;
+      a project's own `objects/` or `refs/` folder is read-only in the box; a `.tachikoma` that
+      cannot be made, or a hooks-folder check failing other than as missing, shows the raw
+      error; a project on a mapped network drive resolves to a `\\server\share` path Docker
+      Desktop cannot mount;
     - from Task 15: a hooks folder or top-level entry that is a link inside the project;
       `safe.directory` covering only `/work`, not nested repositories; a `.tachikoma` that is a
       file, or a git or hooks folder that is the project or `.tachikoma` (both fail at start);
@@ -1520,6 +1550,9 @@ Commit: `feat: live link: all of .git, git's included files and the hooks folder
   box`, so a helper killed by the memory limit during a big read would turn the tools off;
   `DockerExecutor` asks `docker inspect` whether the box still runs before blaming Docker.
   The system prompt names `/work` (choice 19).
+- **Live link refuses on folders that ignore letter case (choice 104),** so on Windows and macOS
+  its session test runs only with the check injected, and the user's terminal check of the
+  sandbox waits for copy mode.
 - **From Task 14's reviews:**
   - `ctx.root` and `workspace.root` are separate values; set them to match.
   - The write tools' hard-link check (`protectedOf`) looks at the host path; in the box the
@@ -1628,7 +1661,9 @@ The main design's apply rules, one by one:
   executable flag), or for an added file it still does not exist. Otherwise it is a conflict.
 - **Reserved paths.** A change whose path has a `.git` or `.tachikoma` part at any depth is
   `refused`, with why `Tachikoma's own and git's folders are never applied`, even if one reaches
-  it (from the plan's review).
+  it (from the plan's review). Parts are compared as `protected.ts` compares them (letter case
+  folded on Windows and macOS, Windows' trailing dots and spaces dropped), since `.GIT` reaches
+  `.git` there (choice 104's measurement).
 - **Every path apply writes or deletes gets the same checks** (from the plan's review): the
   changed file, its backup under `.tachikoma/backups/<session>/`, a deleted file, and a merge's
   file of conflict markers. For each:
