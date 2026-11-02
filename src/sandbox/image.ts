@@ -31,7 +31,9 @@ export const BUILD_NOT_RUNNING = "The sandbox needs Docker, which is not running
 const STOP = 128 + os.constants.signals.SIGINT;
 const USAGE = "Usage: tachi sandbox build";
 
-export interface ImageInfo { tag: string; dockerfile: string; built: boolean; project: boolean }
+// `text` is the Dockerfile as read once, with LF line endings (choice 68): what its tag hashes, what the question
+// names and what the build is given, so the user approves, builds and tags the same file.
+export interface ImageInfo { tag: string; dockerfile: string; text: Buffer; built: boolean; project: boolean }
 
 // How a flow reaches the user and Docker. Without `ask` there is nobody to answer (headless), so nothing is built.
 export interface ImageIo {
@@ -48,9 +50,10 @@ export async function imageFor(root: string, run: DockerRun = docker): Promise<I
   const own = path.join(root, SETTINGS_DIR, "sandbox.Dockerfile");
   const project = existsSync(own);
   const dockerfile = project ? own : SHIPPED;
-  const tag = `tachikoma-sandbox:${createHash("sha256").update(dockerText(dockerfile)).digest("hex").slice(0, 12)}${project ? "-project" : ""}`;
+  const text = dockerText(dockerfile);
+  const tag = `tachikoma-sandbox:${createHash("sha256").update(text).digest("hex").slice(0, 12)}${project ? "-project" : ""}`;
   const got = await run(["image", "inspect", "--format", "{{.Id}}", tag]);
-  return { tag, dockerfile, built: got !== "missing" && got.code === 0, project };
+  return { tag, dockerfile, text, built: got !== "missing" && got.code === 0, project };
 }
 
 // The Dockerfile's bytes with each \r\n read as \n, so its line endings never change its tag (choice 68). Through latin1,
@@ -61,11 +64,13 @@ function dockerText(dockerfile: string): Buffer {
 
 // The images the build downloads, for the question: each FROM's and COPY --from's, in the file's order, once each. A
 // stage of the file's own, by name or number, is not one, nor is `scratch`. Comment lines are passed over, and a line
-// ending in `\` goes on in the next, as Docker reads them.
-export function downloads(dockerfile: string): string[] {
+// ending in `\` goes on in the next, as Docker reads them. A byte order mark at the start is passed over, as Docker
+// passes it over: JavaScript's trim takes it off with the white space. The tag still hashes it, as it hashes the file's
+// bytes (choice 68).
+export function downloads(text: string): string[] {
   const instructions: string[] = [];
   let held = "";
-  for (const line of readFileSync(dockerfile, "utf8").split(/\r?\n/)) {
+  for (const line of text.split(/\r?\n/)) {
     if (line.trimStart().startsWith("#")) continue;
     held += line;
     if (held.trimEnd().endsWith("\\")) held = held.trimEnd().slice(0, -1);
@@ -116,7 +121,7 @@ export function buildQuestion(images: string[], project: boolean): string {
 export async function buildImage(info: ImageInfo, out: (line: string) => void, signal: AbortSignal, run: DockerRun = docker): Promise<void> {
   const context = await mkdtemp(path.join(os.tmpdir(), "tachi-build-"));
   try {
-    const got = await run(["build", "--tag", info.tag, "--file", "-", context], { line: out, input: dockerText(info.dockerfile), signal });
+    const got = await run(["build", "--tag", info.tag, "--file", "-", context], { line: out, input: info.text, signal });
     if (got === "missing" || got.code !== 0) throw new Error(BUILD_FAILED);
   } finally {
     // Never recursive, so nothing but the empty folder is ever removed. A folder that cannot be removed is left, and
@@ -132,12 +137,13 @@ export async function prepareImage(root: string, io: ImageIo): Promise<{ tag: st
   const stopped = await dockerReady(run, io, NOT_INSTALLED, NOT_RUNNING);
   if (stopped !== undefined) return { exit: stopped };
   const info = await imageFor(root, run);
+  if (io.signal.aborted) return { exit: STOP };
   if (info.built) return { tag: info.tag };
   if (!io.ask) {
     io.err(NOT_BUILT);
     return { exit: 1 };
   }
-  return askAndBuild(info, io.ask, io);
+  return askAndBuild(info, io.ask, io, run);
 }
 
 // `tachi sandbox build`: the launch's steps, with its own lines for Docker (choice 71), saying so when the image is up
@@ -151,6 +157,7 @@ export async function sandboxCommand(args: string[], root: string, io: ImageIo):
   const stopped = await dockerReady(run, io, BUILD_NOT_INSTALLED, BUILD_NOT_RUNNING);
   if (stopped !== undefined) return stopped;
   const info = await imageFor(root, run);
+  if (io.signal.aborted) return STOP;
   if (info.built) {
     io.out(`The sandbox's image is up to date (${info.tag}).`);
     return 0;
@@ -159,7 +166,7 @@ export async function sandboxCommand(args: string[], root: string, io: ImageIo):
     io.err(NO_TERMINAL);
     return 1;
   }
-  const done = await askAndBuild(info, io.ask, io);
+  const done = await askAndBuild(info, io.ask, io, run);
   return "exit" in done ? done.exit : 0;
 }
 
@@ -182,13 +189,18 @@ async function dockerReady(run: DockerRun, io: ImageIo, missing: string, notRunn
 
 // The question, then the build on a yes. What a project's Dockerfile names, and what its build prints, are escaped, so
 // neither can act on the terminal.
-async function askAndBuild(info: ImageInfo, ask: (question: string) => Promise<boolean>, io: ImageIo): Promise<{ tag: string } | { exit: number }> {
-  if (!(await ask(visible(buildQuestion(downloads(info.dockerfile), info.project))))) {
+async function askAndBuild(
+  info: ImageInfo,
+  ask: (question: string) => Promise<boolean>,
+  io: ImageIo,
+  run: DockerRun,
+): Promise<{ tag: string } | { exit: number }> {
+  if (!(await ask(visible(buildQuestion(downloads(info.text.toString("utf8")), info.project))))) {
     io.out(UNBUILT);
     return { exit: 0 };
   }
   try {
-    await buildImage(info, (line) => io.out(visible(line, { tabs: true })), io.signal, io.run);
+    await buildImage(info, (line) => io.out(visible(line, { tabs: true })), io.signal, run);
   } catch {
     if (io.signal.aborted) return { exit: STOP }; // a stop is not a failure
     io.err(BUILD_FAILED);

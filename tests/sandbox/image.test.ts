@@ -1,11 +1,9 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
-import { onPath } from "../../src/exec/env.js";
-import type { DockerRun } from "../../src/sandbox/docker.js";
+import { docker as realDocker, type DockerRun, dockerState } from "../../src/sandbox/docker.js";
 import {
   BUILD_FAILED,
   BUILD_NOT_INSTALLED,
@@ -35,10 +33,13 @@ function project(dockerfile?: string) {
 }
 
 const hex = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 12);
+// The shipped Dockerfile's text as imageFor keeps it, with LF line endings (choice 68).
+const shipped = () => Buffer.from(readFileSync(SHIPPED, "utf8").replaceAll("\r\n", "\n"));
 
 // A stand-in for Docker (choice 69): it records each call and its stdin, and answers by the call's first words. Docker
 // is running unless told otherwise; an image is built when it is in `built`; a build gives `lines`, then runs `during`
-// with its context folder, as if Docker were still building, and exits `buildCode`. `version` runs during the version call.
+// with its context folder, as if Docker were still building, and exits `buildCode`. `version` and `inspect` run during
+// those calls.
 function fakeDocker(
   opts: {
     state?: "missing" | "stopped";
@@ -47,6 +48,7 @@ function fakeDocker(
     buildCode?: number;
     during?: (context: string) => void;
     version?: () => void;
+    inspect?: () => void;
   } = {},
 ) {
   const calls: { args: string[]; input?: string; signal?: AbortSignal; context?: string[] }[] = [];
@@ -58,9 +60,14 @@ function fakeDocker(
     };
     calls.push(call);
     if (opts.state === "missing") return "missing";
-    if (args[0] === "version") opts.version?.();
-    if (args[0] === "version") return { code: opts.state === "stopped" ? 1 : 0, out: "", err: "" };
-    if (args[0] === "image" && args[1] === "inspect") return { code: opts.built?.includes(args.at(-1)!) ? 0 : 1, out: "", err: "" };
+    if (args[0] === "version") {
+      opts.version?.();
+      return { code: opts.state === "stopped" ? 1 : 0, out: "", err: "" };
+    }
+    if (args[0] === "image" && args[1] === "inspect") {
+      opts.inspect?.();
+      return { code: opts.built?.includes(args.at(-1)!) ? 0 : 1, out: "", err: "" };
+    }
     if (args[0] === "build") {
       call.context = readdirSync(args.at(-1)!);
       for (const line of opts.lines ?? []) o.line?.(line);
@@ -95,8 +102,8 @@ describe("imageFor", () => {
   it("is the shipped Dockerfile's image, tagged by its hash, when the project has none (choice 15)", async () => {
     const docker = fakeDocker();
     const info = await imageFor(project(), docker.run);
-    const tag = `tachikoma-sandbox:${hex(readFileSync(SHIPPED, "utf8").replaceAll("\r\n", "\n"))}`;
-    expect(info).toEqual({ tag, dockerfile: SHIPPED, built: false, project: false });
+    const tag = `tachikoma-sandbox:${hex(shipped().toString())}`;
+    expect(info).toEqual({ tag, dockerfile: SHIPPED, text: shipped(), built: false, project: false });
     expect(docker.calls.map((c) => c.args)).toEqual([["image", "inspect", "--format", "{{.Id}}", tag]]);
   });
 
@@ -104,7 +111,7 @@ describe("imageFor", () => {
     const root = project(PROJECT);
     const tag = `tachikoma-sandbox:${hex(PROJECT)}-project`;
     const info = await imageFor(root, fakeDocker({ built: [tag] }).run);
-    expect(info).toEqual({ tag, dockerfile: path.join(root, ".tachikoma", "sandbox.Dockerfile"), built: true, project: true });
+    expect(info).toEqual({ tag, dockerfile: path.join(root, ".tachikoma", "sandbox.Dockerfile"), text: Buffer.from(PROJECT), built: true, project: true });
   });
 
   it("gives a Dockerfile the same tag with Windows line endings as with LF (choice 68)", async () => {
@@ -116,46 +123,34 @@ describe("imageFor", () => {
 
   // The one test of real Docker. It builds nothing: it looks for the image Task 1 built, and skips, saying why, when
   // there is no docker program, Docker is not running, or the image is not there.
+  // Docker is asked only in the test's body, so a run that leaves the test out never reaches it.
   const TASK_1 = "tachikoma-sandbox:5879e9863c31";
-  const whyNot = (() => {
-    const exe = onPath("docker");
-    if (!exe) return "no docker program on PATH";
-    const ok = (args: string[]) => {
-      try {
-        execFileSync(exe, args, { stdio: "ignore", windowsHide: true });
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    if (!ok(["version", "--format", "{{.Server.Version}}"])) return "Docker is not running";
-    if (!ok(["image", "inspect", "--format", "{{.Id}}", TASK_1])) return `the image of Task 1 (${TASK_1}) is not built`;
-    return undefined;
-  })();
   it("finds the image Task 1 built from the shipped Dockerfile (real Docker)", async (ctx) => {
-    if (whyNot) return ctx.skip(whyNot);
-    expect(await imageFor(project())).toEqual({ tag: TASK_1, dockerfile: SHIPPED, built: true, project: false });
+    const state = await dockerState();
+    if (state === "missing") return ctx.skip("no docker program on PATH");
+    if (state === "stopped") return ctx.skip("Docker is not running");
+    const got = await realDocker(["image", "inspect", "--format", "{{.Id}}", TASK_1]);
+    if (got === "missing" || got.code !== 0) return ctx.skip(`the image of Task 1 (${TASK_1}) is not built`);
+    expect(await imageFor(project())).toEqual({ tag: TASK_1, dockerfile: SHIPPED, text: shipped(), built: true, project: false });
   });
 });
 
 describe("downloads", () => {
   it("reads the images of FROM and COPY --from, but not earlier stages or scratch", () => {
-    const root = project(
-      [
-        "# syntax comment FROM example.test/not-this:1",
-        "FROM --platform=linux/amd64 example.test/base:1@sha256:abc AS build",
-        "from example.test/other:2",
-        "COPY --from=build /a /b",
-        "COPY --chown=1000:1000 --from=example.test/tool:3 /t /usr/local/bin/",
-        "COPY --from=0 /c /d",
-        "FROM build",
-        "FROM scratch",
-        "COPY \\",
-        "  --from=example.test/split:4 /e /f",
-        "COPY --from=example.test/tool:3 /g /h",
-      ].join("\r\n"),
-    );
-    expect(downloads(path.join(root, ".tachikoma", "sandbox.Dockerfile"))).toEqual([
+    const text = [
+      "# syntax comment FROM example.test/not-this:1",
+      "FROM --platform=linux/amd64 example.test/base:1@sha256:abc AS build",
+      "from example.test/other:2",
+      "COPY --from=build /a /b",
+      "COPY --chown=1000:1000 --from=example.test/tool:3 /t /usr/local/bin/",
+      "COPY --from=0 /c /d",
+      "FROM build",
+      "FROM scratch",
+      "COPY \\",
+      "  --from=example.test/split:4 /e /f",
+      "COPY --from=example.test/tool:3 /g /h",
+    ].join("\r\n");
+    expect(downloads(text)).toEqual([
       "example.test/base:1@sha256:abc",
       "example.test/other:2",
       "example.test/tool:3",
@@ -163,8 +158,16 @@ describe("downloads", () => {
     ]);
   });
 
+  it("reads a first FROM after a byte order mark, as Docker does", async () => {
+    const bom = String.fromCodePoint(0xfeff);
+    expect(downloads(`${bom}FROM example.test/base:1\n`)).toEqual(["example.test/base:1"]);
+    const t = terminal([false]);
+    await prepareImage(project(`${bom}FROM example.test/base:1\n`), { ...t, signal: new AbortController().signal, run: fakeDocker().run });
+    expect(t.asked).toEqual([buildQuestion(["example.test/base:1"], true)]);
+  });
+
   it("names the shipped Dockerfile's base and uv's image", () => {
-    expect(downloads(SHIPPED).map((image) => image.split("@")[0])).toEqual(["node:24-bookworm-slim", "ghcr.io/astral-sh/uv"]);
+    expect(downloads(shipped().toString()).map((image) => image.split("@")[0])).toEqual(["node:24-bookworm-slim", "ghcr.io/astral-sh/uv"]);
   });
 });
 
@@ -189,7 +192,7 @@ describe("the question", () => {
   it("asks about the shipped image when the project has no Dockerfile", async () => {
     const t = terminal([false]);
     await prepareImage(project(), { ...t, signal: new AbortController().signal, run: fakeDocker().run });
-    expect(t.asked).toEqual([buildQuestion(downloads(SHIPPED), false)]);
+    expect(t.asked).toEqual([buildQuestion(downloads(shipped().toString()), false)]);
   });
 
   // The characters are made from their codes, and their escapes from parts, so no escape in this file's text is turned
@@ -279,9 +282,11 @@ describe("prepareImage (the launch)", () => {
 
   it("Ctrl-C during the build claims no failure, and exits 130", async () => {
     const stop = new AbortController();
+    let context = "";
     const docker = fakeDocker({
       lines: ["#1 load"],
-      during: () => {
+      during: (dir) => {
+        context = dir;
         stop.abort();
         throw Object.assign(new Error("The operation was aborted"), { name: "AbortError" }); // as the real run rejects
       },
@@ -289,6 +294,18 @@ describe("prepareImage (the launch)", () => {
     const t = terminal([true]);
     expect(await prepareImage(project(PROJECT), { ...t, signal: stop.signal, run: docker.run })).toEqual({ exit: 130 });
     expect(t.printed).toEqual(["out: #1 load"]);
+    expect(existsSync(context)).toBe(false);
+  });
+
+  it("Ctrl-C while the image is looked for asks nothing, claims nothing, and exits 130", async () => {
+    const stop = new AbortController();
+    const docker = fakeDocker({ inspect: () => stop.abort() });
+    const t = terminal([true]);
+    expect(await prepareImage(project(PROJECT), { ...t, signal: stop.signal, run: docker.run })).toEqual({ exit: 130 });
+    expect(await sandboxCommand(["build"], project(PROJECT), { ...t, signal: stop.signal, run: docker.run })).toBe(130);
+    expect(t.asked).toEqual([]);
+    expect(t.printed).toEqual([]);
+    expect(docker.builds()).toEqual([]);
   });
 
   it("Ctrl-C while Docker's state is read claims nothing, and exits 130 (choice 70)", async () => {
