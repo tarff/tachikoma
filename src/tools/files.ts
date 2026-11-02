@@ -286,9 +286,9 @@ export const readFileTool = defineTool(
   `Read a text file. Paths are relative to the project root. Shows up to ${READ_LINES} lines, each after its line number and a tab; offset (the first line, from 1) and limit read other parts. The numbers are not part of the file.`,
   z.object({ path: z.string(), offset: z.number().int().min(1).optional(), limit: z.number().int().min(1).optional() }),
   async ({ path: p, offset = 1, limit = READ_LINES }, ctx) => {
-    const { abs, outside, shown } = resolveIn(ctx.root, p);
+    const { abs, outside, shown } = await ctx.workspace.resolve(p);
     await ctx.gate.require({ kind: "read", outside, summary: `read ${shown}` }, ctx.signal);
-    const text = await ctx.executor.readFile(abs);
+    const text = await ctx.workspace.readText(abs);
     if (!text) return `(${p} is empty)`;
     const lines = text.replace(/\r?\n$/, "").split(/\r?\n/);
     if (offset > lines.length) return `(${p} has ${lines.length} lines)`;
@@ -318,10 +318,10 @@ export const writeFileTool = defineTool(
   "Create or overwrite a text file. Paths are relative to the project root.",
   z.object({ path: z.string(), content: z.string() }),
   async ({ path: p, content }, ctx) => {
-    const { abs, outside, shown, real } = resolveIn(ctx.root, p);
+    const { abs, outside, shown, real } = await ctx.workspace.resolve(p);
     const part = protectedOf(ctx, real);
     await ctx.gate.require({ kind: "write", outside, summary: `write ${shown}`, detail: content, ...(part ? { protectedPart: part, path: shown } : {}) }, ctx.signal);
-    await ctx.executor.writeFile(abs, content);
+    await ctx.workspace.writeText(abs, content);
     return `Wrote ${content.length} characters to ${p}`;
   },
 );
@@ -331,15 +331,15 @@ export const editFileTool = defineTool(
   "Replace one exact, unique piece of text in a file. Read the file first; old_text leaves out the line numbers read_file shows.",
   z.object({ path: z.string(), old_text: z.string().min(1), new_text: z.string() }),
   async ({ path: p, old_text, new_text }, ctx) => {
-    const { abs, outside, shown, real } = resolveIn(ctx.root, p);
+    const { abs, outside, shown, real } = await ctx.workspace.resolve(p);
     const part = protectedOf(ctx, real);
     const marked = (sign: string, s: string) => s.split("\n").map((l) => `${sign} ${l}`);
     const detail = [...marked("-", old_text), ...(new_text ? marked("+", new_text) : [])].join("\n");
     // Inside the project a read needs no approval, so an edit that cannot work fails before the user is
     // asked. It is checked again after: the file may change while the question waits.
-    if (!outside) edited(await ctx.executor.readFile(abs), p, old_text, new_text);
+    if (!outside) edited(await ctx.workspace.readText(abs), p, old_text, new_text);
     await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}`, detail, ...(part ? { protectedPart: part, path: shown } : {}) }, ctx.signal);
-    await ctx.executor.writeFile(abs, edited(await ctx.executor.readFile(abs), p, old_text, new_text));
+    await ctx.workspace.writeText(abs, edited(await ctx.workspace.readText(abs), p, old_text, new_text));
     return `Edited ${p}`;
   },
 );

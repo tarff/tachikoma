@@ -93,15 +93,6 @@ export class LocalExecutor implements Executor {
       child.on("close", onClose);
     });
   }
-
-  readFile(abs: string): Promise<string> {
-    return readFile(abs, "utf8");
-  }
-
-  async writeFile(abs: string, content: string): Promise<void> {
-    await mkdir(path.dirname(abs), { recursive: true });
-    await writeFile(abs, content, "utf8");
-  }
 }
 
 // The project's files on the host (workspace.ts): today's code for each, unchanged (plan, Task 13). The checks a path
@@ -121,7 +112,7 @@ export class LocalWorkspace implements Workspace {
     return readFile(abs);
   }
 
-  // As LocalExecutor.writeFile.
+  // Makes the parent folders first, as write_file always has.
   async writeText(abs: string, content: string): Promise<void> {
     await mkdir(path.dirname(abs), { recursive: true });
     await writeFile(abs, content, "utf8");

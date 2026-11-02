@@ -8,7 +8,7 @@ import { Session } from "../../src/core/session.js";
 import { Tasks } from "../../src/core/tasks.js";
 import type { Message, Provider, Turn } from "../../src/core/types.js";
 import type { Executor } from "../../src/exec/executor.js";
-import { LocalExecutor } from "../../src/exec/local.js";
+import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import { judgeOf, type Verdict } from "../../src/safety/judge.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { editFileTool, readFileTool } from "../../src/tools/files.js";
@@ -54,9 +54,10 @@ async function setup(lead: FakeProvider, judge: Provider | undefined, opts: { he
     opts.headless ? "Not allowed in -p mode, where nobody can approve it" : undefined,
     { root, headless: opts.headless ?? false, judge: judgeOf(judge, () => session!, "Run the tests before committing.", bus) },
   );
-  const executor = new LocalExecutor();
-  const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { root, executor, gate } });
-  session = new Session({ lead, tools: [...TOOLS, delegateTool(tasks, { headless: opts.headless ?? false })], system: "t", ctx: { root, executor, gate }, bus, inbox: () => tasks.take() });
+  const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate };
+  const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx });
+  const tools = [...TOOLS, delegateTool(tasks, { headless: opts.headless ?? false })];
+  session = new Session({ lead, tools, system: "t", ctx, bus, inbox: () => tasks.take() });
   return { root, elsewhere, bus, errors, asked, gate, session, tasks, out: (name: string) => path.join(elsewhere, name) };
 }
 
@@ -242,11 +243,9 @@ describe("auto mode, the turn's signal from each tool", () => {
     const ran: string[] = [];
     const executor: Executor = {
       exec: async (command) => (ran.push(`exec ${command}`), { code: 0, signal: null, stdout: "", stderr: "" }),
-      readFile: async (abs) => (ran.push(`read ${abs}`), "old"),
-      writeFile: async (abs) => void ran.push(`write ${abs}`),
     };
     const stop = new AbortController();
-    const running = tool.run(input(elsewhere), { root, executor, gate, signal: stop.signal });
+    const running = tool.run(input(elsewhere), { root, executor, workspace: new LocalWorkspace(root), gate, signal: stop.signal });
     for (let i = 0; i < 40 && !answer; i++) await settle();
     stop.abort();
     answer!({ allow: true });

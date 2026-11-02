@@ -170,7 +170,7 @@ describe("the helper, run by the host's Node, against LocalWorkspace on the same
     expect(await local.branch()).toBe("side");
   });
 
-  it("writes text, making the parent folders, as LocalExecutor.writeFile does", async () => {
+  it("writes text, making the parent folders, as LocalWorkspace.writeText does", async () => {
     const { root, box } = await both({});
     await box.writeText(path.join(root, "made/here/new.txt"), "caf\u00e9\r\nnext\n");
     expect(await readFile(path.join(root, "made/here/new.txt"), "utf8")).toBe("caf\u00e9\r\nnext\n");

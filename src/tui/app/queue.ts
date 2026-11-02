@@ -146,7 +146,9 @@ export const queue = (ui: UI, fns: Fns) => {
       } finally {
         ui.setBusy(false);
         ui.working.current = false;
-        ui.setBranch(ui.gitBranch());
+        // The model may have switched branches. Through the Workspace, so it lands just after the turn ends (release 7
+        // plan, Task 14).
+        void ui.workspace.branch().then(ui.setBranch, (err) => fns.say({ text: errorText(err), color: "red" }));
       }
     } catch (err) {
       fns.say({ text: errorText(err), color: "red" });

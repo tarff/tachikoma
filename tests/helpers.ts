@@ -7,7 +7,8 @@ import { onTestFinished } from "vitest";
 import { Bus, type ErrorEvent } from "../src/core/bus.js";
 import { type Mode, PermissionGate } from "../src/core/permissions.js";
 import type { CompletionRequest, Message, Part, Provider, Turn, Usage } from "../src/core/types.js";
-import { LocalExecutor } from "../src/exec/local.js";
+import { LocalExecutor, LocalWorkspace } from "../src/exec/local.js";
+import type { Workspace } from "../src/exec/workspace.js";
 import type { ToolContext } from "../src/tools/tool.js";
 
 // An animated GIF of two frames, white then black, made in memory: two frames the same would be stored as one. sharp is
@@ -75,7 +76,38 @@ export async function tempContext(mode: Mode = "never", answers: boolean[] = [])
     details.push(detail);
     return answers.shift() ?? false;
   });
-  return { root, executor: new LocalExecutor(), gate, asked, details };
+  return { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate, asked, details };
+}
+
+// A Workspace that keeps each call, as its name and what it was given, and answers from `files`, a made-up project's
+// files by absolute path, so a caller given it is seen reaching the Workspace and never the disk (release 7 plan, Task
+// 14). A path leaving `root` is outside; find and search give one canned answer each.
+export function fakeWorkspace(root: string, files: Record<string, string | Buffer> = {}) {
+  const calls: string[] = [];
+  const file = (abs: string) => {
+    const f = files[abs];
+    if (f === undefined) throw new Error(`${abs} is not in the fake workspace`);
+    return f;
+  };
+  const workspace: Workspace = {
+    root,
+    resolve: async (p) => {
+      calls.push(`resolve ${p}`);
+      const abs = path.resolve(root, p);
+      return { abs, outside: path.relative(root, abs).startsWith(".."), shown: abs };
+    },
+    readText: async (abs) => (calls.push(`readText ${abs}`), file(abs).toString()),
+    readBytes: async (abs) => (calls.push(`readBytes ${abs}`), Buffer.from(file(abs))),
+    writeText: async (abs, content) => void (calls.push(`writeText ${abs}`), (files[abs] = content)),
+    list: async (folder) => (calls.push(`list ${folder}`), []),
+    find: async (start, pattern) => (calls.push(`find ${start} ${pattern}`), ["made/up.ts"]),
+    search: async (start, pattern, glob) => {
+      calls.push(`search ${start} ${pattern} ${glob}`);
+      return { matches: [{ file: "made/up.ts", line: 1, text: "made up" }], beyond: 0 };
+    },
+    branch: async () => (calls.push("branch"), "made-up-branch"),
+  };
+  return { workspace, calls, files };
 }
 
 export const texts = (m: Message) => m.parts.flatMap((p: Part) => (p.type === "text" ? [p.text] : []));

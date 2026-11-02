@@ -37,7 +37,7 @@ import { Session } from "./core/session.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
 import { errorText, type Provider } from "./core/types.js";
-import { LocalExecutor } from "./exec/local.js";
+import { LocalExecutor, LocalWorkspace } from "./exec/local.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
@@ -51,7 +51,6 @@ import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
-import { gitBranch } from "./tui/git.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { programRunning } from "./tui/owner.js";
@@ -312,6 +311,7 @@ const gate = new PermissionGate(mode, (...a) => ask(...a), interactive ? undefin
 gate.rules = rules;
 gate.protection = protection;
 const executor = new LocalExecutor();
+const workspace = new LocalWorkspace(root);
 const tasks = new Tasks({
   bus,
   max: maxTasks,
@@ -319,7 +319,7 @@ const tasks = new Tasks({
   ...(fallback ? { fallback } : {}),
   system: [subagentPrompt(root), instructions.text].filter(Boolean).join("\n\n"), // the same instructions as the lead
   tools: SUBAGENT_TOOLS,
-  ctx: { root, executor, gate },
+  ctx: { root, executor, workspace, gate },
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus.
 const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items)), delegateTool(tasks, { headless: !interactive })];
@@ -328,7 +328,7 @@ const session: Session = new Session({
   fallback,
   tools,
   system,
-  ctx: { root, executor, gate },
+  ctx: { root, executor, workspace, gate },
   bus,
   inbox: () => tasks.take(),
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
@@ -402,7 +402,8 @@ if (parsed.print !== undefined) {
       }}
       project={path.basename(root) || root}
       root={root}
-      gitBranch={() => gitBranch(root)}
+      workspace={workspace}
+      branch={await workspace.branch()} // before the first frame, which shows it
       historyFile={historyFile(root)}
       intro={[instructionsLine(instructions, os.homedir())].flatMap((text) => (text === null ? [] : [{ text, color: "gray" }]))}
       errorFile={errorFile}

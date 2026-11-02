@@ -253,8 +253,6 @@ describe("DockerExecutor with a stand-in Docker", () => {
     await expect(box.exec("echo hi", "/work")).rejects.toThrow(message);
     const made = fake.calls.length;
     await expect(box.exec("echo again", "/work")).rejects.toThrow(message);
-    await expect(box.readFile("/work/a.txt")).rejects.toThrow(message);
-    await expect(box.writeFile("/work/a.txt", "x")).rejects.toThrow(message);
     expect(fake.calls.length).toBe(made);
   });
 
@@ -419,13 +417,6 @@ describe("DockerExecutor with a stand-in Docker", () => {
     const fake = fakeDocker((args) => (args[0] === "run" ? { code: 0, out: "b0x\n", err: warning } : ok("oom_kill 0\n")));
     const box = await DockerExecutor.start(OPTS, fake.run);
     expect(box.id).toBe("b0x");
-    await box.stop();
-  });
-
-  it("has no file reads or writes until the helper is built (Task 13)", async () => {
-    const box = await DockerExecutor.start(OPTS, answering(() => ok()).run);
-    await expect(box.readFile("/work/a.txt")).rejects.toThrow("not yet");
-    await expect(box.writeFile("/work/a.txt", "x")).rejects.toThrow("not yet");
     await box.stop();
   });
 });

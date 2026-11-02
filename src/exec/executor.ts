@@ -9,9 +9,8 @@ export interface ExecResult {
   stderr: string;
 }
 
-// Everything a tool does to the machine goes through here, so the Docker sandbox can replace it.
+// The shell tool's commands go through here, so the Docker sandbox can replace it; the file tools go through the
+// Workspace (workspace.ts).
 export interface Executor {
   exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult>;
-  readFile(abs: string): Promise<string>;
-  writeFile(abs: string, content: string): Promise<void>;
 }

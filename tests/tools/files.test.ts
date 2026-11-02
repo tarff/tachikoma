@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { editFileTool, programEnvironment, readFileTool, inData, inSettings, resolveIn, sameIgnoringCase, writeFileTool } from "../../src/tools/files.js";
-import { shortName, tempContext } from "../helpers.js";
+import { fakeWorkspace, shortName, tempContext } from "../helpers.js";
 
 const onShare = (abs: string) =>
   `${abs} is a network or device path not written as a path in the project, so the file tools do not open it; a shell command can reach it, after asking`;
@@ -512,6 +512,32 @@ describe("file tools", () => {
     const ctx = await tempContext("project");
     await writeFileTool.run({ path: "a.txt", content: "x" }, ctx);
     expect(ctx.asked).toEqual([]);
+  });
+});
+
+// Release 7 plan, Task 14: the file tools reach the project only through the Workspace, here a fake one for a made-up
+// folder that is on no disk, and ask as before.
+describe("the file tools through the Workspace", () => {
+  it("read, write and edit through it, asking before the write and the edit", async () => {
+    const root = path.resolve("/made/up/project");
+    const [a, b] = [path.join(root, "a.txt"), path.join(root, "b.txt")];
+    const { workspace, calls, files } = fakeWorkspace(root, { [a]: "one\ntwo\n" });
+    const ctx = { ...(await tempContext("ask", [true, true])), root, workspace };
+    expect(await readFileTool.run({ path: "a.txt" }, ctx)).toBe("     1\tone\n     2\ttwo");
+    expect(await writeFileTool.run({ path: "b.txt", content: "new" }, ctx)).toBe("Wrote 3 characters to b.txt");
+    expect(await editFileTool.run({ path: "a.txt", old_text: "two", new_text: "three" }, ctx)).toBe("Edited a.txt");
+    expect(files).toEqual({ [a]: "one\nthree\n", [b]: "new" });
+    expect(calls.slice(0, 4)).toEqual(["resolve a.txt", `readText ${a}`, "resolve b.txt", `writeText ${b}`]);
+    expect(calls.slice(4)).toEqual(["resolve a.txt", `readText ${a}`, `readText ${a}`, `writeText ${a}`]); // the edit reads before asking
+    expect(ctx.asked).toEqual([`write ${b}`, `edit ${a}`]);
+  });
+
+  it("writes nothing when the user declines", async () => {
+    const root = path.resolve("/made/up/project");
+    const { workspace, calls } = fakeWorkspace(root);
+    const ctx = { ...(await tempContext("ask", [false])), root, workspace };
+    await expect(writeFileTool.run({ path: "b.txt", content: "new" }, ctx)).rejects.toThrow("The user declined");
+    expect(calls).toEqual(["resolve b.txt"]);
   });
 });
 

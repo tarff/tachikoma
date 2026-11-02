@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
 import { readInstructions } from "../../src/core/instructions.js";
+import { LocalWorkspace } from "../../src/exec/local.js";
 import { editFileTool, leaves, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { findFilesTool, searchFilesTool } from "../../src/tools/search.js";
 import { listFolder, pathMenu } from "../../src/tui/menus.js";
@@ -101,6 +102,8 @@ const OPEN = "which the file tools never open; a shell command can reach it, aft
 const direct = (abs: string) =>
   `${abs} is a network or device path not written as a path in the project, so the file tools do not open it; a shell command can reach it, after asking`;
 const through = (abs: string, link: string, target = fake.TARGET) => `${abs} leads through ${link} to a network or device path outside the project (${target}), ${OPEN}`;
+// A context for the project at `root`, with the Workspace the file tools reach it through (release 7 plan, Task 14).
+const rootedAt = <T extends object>(ctx: T, root: string) => ({ ...ctx, root, workspace: new LocalWorkspace(root) });
 const failure = (p: Promise<unknown>) =>
   p.then(
     () => "no error",
@@ -226,7 +229,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
       const abs = path.join(first64, "a.txt");
       expect(await failure(readFileTool.run({ path: abs }, ctx))).toBe(`${abs} passes through more than 63 links, ${OPEN}`);
       const outside = path.join(ctx.root, "a.txt");
-      const root = { ...ctx, root: first64 };
+      const root = rootedAt(ctx, first64);
       expect(await failure(readFileTool.run({ path: "a.txt" }, root))).toBe(`${abs} is in a project whose own folder passes through more than 63 links, ${OPEN}`);
       expect(await failure(readFileTool.run({ path: outside }, root))).toBe(`${outside} cannot be checked, as the project's own folder passes through more than 63 links, ${OPEN}`);
       expect(ctx.asked).toEqual([]);
@@ -250,7 +253,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     await writeFile(path.join(share, name, "a.txt"), "fine");
     await writeFile(path.join(share, "other", "b.txt"), "elsewhere");
     fake.state.share = share;
-    const root = { ...ctx, root: path.join(fake.TARGET, name) };
+    const root = rootedAt(ctx, path.join(fake.TARGET, name));
     const unc = String.raw`\\?\UNC\tachi-test.invalid\share`;
     expect(await readFileTool.run({ path: path.join(unc, name, "a.txt") }, root)).toBe("     1\tfine");
     expect(ctx.asked).toEqual([]);
@@ -259,7 +262,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     expect(ctx.asked).toHaveLength(1);
     // Fix 17: the project's own folder written that way too.
     const asking = await tempContext("ask", [false]);
-    const uncRoot = { ...asking, root: path.join(unc, name) };
+    const uncRoot = rootedAt(asking, path.join(unc, name));
     expect(await readFileTool.run({ path: "a.txt" }, uncRoot)).toBe("     1\tfine");
     expect(await failure(readFileTool.run({ path: elsewhere }, uncRoot))).toBe(`The user declined: read ${elsewhere}`);
     expect(asking.asked).toHaveLength(1);
@@ -278,7 +281,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     const other = String.raw`\\tachi-test.invalid\other`;
     fake.state.follow = [[link, other]];
     const abs = path.join(link, "a.txt");
-    expect(await failure(readFileTool.run({ path: path.join("out", "a.txt") }, { ...ctx, root }))).toBe(through(abs, link, other));
+    expect(await failure(readFileTool.run({ path: path.join("out", "a.txt") }, rootedAt(ctx, root)))).toBe(through(abs, link, other));
     expect(ctx.asked).toEqual([]);
     expect(fake.state.reached).toEqual([]);
   });
@@ -297,7 +300,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
       [work, fake.TARGET],
       [path.join(place, "inner"), path.join(place, "sub")],
     ];
-    const root = { ...ctx, root: path.join(work, name) };
+    const root = rootedAt(ctx, path.join(work, name));
     expect(await readFileTool.run({ path: "a.txt" }, root)).toBe("     1\tfine");
     fake.state.lstats = [];
     expect(await readFileTool.run({ path: path.join("sub", "b.txt") }, root)).toBe("     1\tsub");
@@ -322,7 +325,7 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
     fake.state.share = share;
     fake.state.follow = [[path.join(ctx.root, "work"), fake.TARGET]];
     for (const root of [path.join(fake.TARGET, name), path.join(ctx.root, "work", name)]) {
-      expect(await readFileTool.run({ path: "a.txt" }, { ...ctx, root })).toBe("     1\tfine");
+      expect(await readFileTool.run({ path: "a.txt" }, rootedAt(ctx, root))).toBe("     1\tfine");
     }
     expect(ctx.asked).toEqual([]);
     expect(fake.state.reached).toEqual([]);
@@ -341,11 +344,11 @@ describe.runIf(process.platform === "win32")("network and device paths", () => {
       const root = path.join(link, "proj");
       const inside = path.join(root, "a.txt");
       const words = `${inside} is in a project whose own folder leads through ${link} to ${stored}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`;
-      expect(await failure(readFileTool.run({ path: "a.txt" }, { ...ctx, root }))).toBe(words);
+      expect(await failure(readFileTool.run({ path: "a.txt" }, rootedAt(ctx, root)))).toBe(words);
       // Fix 14: a path outside such a project is not "in" it.
       const outside = path.join(ctx.root, "a.txt");
       const unchecked = `${outside} cannot be checked, as the project's own folder leads through ${link} to ${stored}, a link the file tools cannot check, so they never open it; a shell command can reach it, after asking`;
-      expect(await failure(readFileTool.run({ path: outside }, { ...ctx, root }))).toBe(unchecked);
+      expect(await failure(readFileTool.run({ path: outside }, rootedAt(ctx, root)))).toBe(unchecked);
     }
     expect(ctx.asked).toEqual([]);
     expect(fake.state.reached).toEqual([]);

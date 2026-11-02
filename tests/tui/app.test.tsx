@@ -16,6 +16,8 @@ import type { Given } from "../../src/clilib.js";
 import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { system32 } from "../../src/exec/env.js";
 import type { Executor } from "../../src/exec/executor.js";
+import { LocalWorkspace } from "../../src/exec/local.js";
+import type { Workspace } from "../../src/exec/workspace.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import type { Provider, Turn } from "../../src/core/types.js";
@@ -38,7 +40,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
-import { Bus, FakeProvider, Held, callTool, reply, standInEditor, tempContext, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, fakeWorkspace, reply, standInEditor, tempContext, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 
@@ -131,12 +133,14 @@ async function mount(
     readPicture?: AppProps["readPicture"]; // Alt+V's read; one that never answers when not given, null for no reader
     judge?: Provider; // auto mode's judge, given to the gate as cli.tsx gives it (release 7 plan, Task 10)
     executor?: Executor; // what the tools run through; a real one in a temp folder when not given
+    workspace?: Workspace; // the project's files, for the tools and the App; the temp folder's, with `branches`, when not given
   } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
   if (opts.executor) ctx.executor = opts.executor;
+  ctx.workspace = opts.workspace ?? Object.assign(new LocalWorkspace(ctx.root), { branch: async () => opts.branches?.shift() ?? null });
   let ask: Ask = async () => false;
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const judge = judgeOf(opts.judge, () => session, "", bus); // as cli.tsx gives it: unset, the lead leading judges
@@ -179,7 +183,8 @@ async function mount(
       }}
       project="proj"
       root={ctx.root}
-      gitBranch={() => opts.branches?.shift() ?? null}
+      workspace={ctx.workspace}
+      branch={opts.branches?.shift() ?? null}
       historyFile={historyFile}
       intro={opts.intro ?? []}
       errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
@@ -249,6 +254,16 @@ describe("App", () => {
     expect(app.lastFrame()).toContain("proj git:(main)");
     await type(app, "switch");
     await until(app, "proj git:(side)");
+  });
+
+  // Release 7 plan, Task 14: the branch after a turn comes from the Workspace, here a fake one, never the disk.
+  it("reads the branch after a turn through the Workspace", async () => {
+    const { workspace, calls } = fakeWorkspace(path.resolve("/made/up/project"));
+    const { app } = await mount([reply("ok")], { segments: ["project"], workspace });
+    expect(app.lastFrame()).not.toContain("git:(");
+    await type(app, "switch");
+    await until(app, "proj git:(made-up-branch)");
+    expect(calls).toEqual(["branch"]);
   });
 
   it("shows the project folder, and counts the session's length once a minute", async () => {
@@ -1687,12 +1702,6 @@ function noShell() {
       ran.push(command);
       return { code: 0, signal: null, stdout: "", stderr: "" };
     },
-    readFile: async () => {
-      throw new Error("not read in this test");
-    },
-    writeFile: async () => {
-      throw new Error("not written in this test");
-    },
   };
   return { ran, executor };
 }
@@ -1845,9 +1854,8 @@ describe("App's answers", () => {
   // earlier call of the reply came first: the answer names its call, and each result keeps its place (choice 67).
   it("names a reply's last call in its answer when an earlier call asked nothing", async () => {
     const { ran, executor } = noShell();
-    const reads = { ...executor, readFile: async (abs: string) => readFileSync(abs, "utf8") };
     const parts = [...callTool("c1", "read_file", { path: "a.txt" }).parts, ...callTool("c2", "shell", { command: "git push --force" }).parts];
-    const { app, ctx } = await mount([{ parts, usage }, reply("done")], { executor: reads });
+    const { app, ctx } = await mount([{ parts, usage }, reply("done")], { executor });
     writeFileSync(path.join(ctx.root, "a.txt"), "a line\n");
     await type(app, "look and push");
     await until(app, "Allow run: git push --force?");
@@ -2365,7 +2373,8 @@ describe("App in full screen", () => {
         onRules={() => {}}
         project="proj"
         root={ctx.root}
-        gitBranch={() => null}
+        workspace={ctx.workspace}
+        branch={null}
         historyFile={path.join(histories, `${nextHistory++}.jsonl`)}
         intro={said(60)}
         errorFile={path.join(ctx.root, "errors.jsonl")}
@@ -4275,7 +4284,8 @@ async function onTerminal(
       onRules={() => {}}
       project="proj"
       root={ctx.root}
-      gitBranch={() => null}
+      workspace={ctx.workspace}
+      branch={null}
       historyFile={path.join(histories, `${nextHistory++}.jsonl`)}
       intro={opts.intro ?? []}
       errorFile={path.join(ctx.root, "errors.jsonl")}
@@ -6180,6 +6190,21 @@ describe("App's picture reads", () => {
     expect(userParts(session)).toEqual([
       [{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }, { type: "image", id: 2, mediaType: "image/jpeg", data: JPEG }],
     ]);
+  });
+
+  // Release 7 plan, Task 14: the picture comes from the Workspace, here a fake one giving other bytes than the file's.
+  // Whether the pasted path is a file is still asked of the host's disk (constants.ts, isFile).
+  it("reads a pasted path's picture through the Workspace", async () => {
+    const shot = path.join(folder(), "shot.png");
+    writeFileSync(shot, JPEG);
+    const { workspace, calls } = fakeWorkspace(path.dirname(shot), { [shot]: PNG.data });
+    const { app, session } = await mount([reply("ok")], { workspace });
+    await press(app, "see ", paste(shot));
+    expect(app.lastFrame()).toContain("› see [Image #1]");
+    await press(app, "\r");
+    await until(app, "ok");
+    expect(userParts(session)).toEqual([[{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]]);
+    expect(calls).toEqual([`readBytes ${shot}`, "branch"]); // the branch, read after the turn
   });
 
   it("keeps a paste of paths as text when a file it names is missing", async () => {

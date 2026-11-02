@@ -68,16 +68,15 @@ async function* walk(folder: string, rules: Rules, data: BigIntStats | null, set
   }
 }
 
-// The files under `start`, a folder or one file, with the project's .gitignore rules from the root
-// down when it is inside the project. The start is checked as read_file checks a path: refused in the
-// data folder, and outside the project only once the user allows it.
-async function* files(start: string, ctx: ToolContext, verb: string): AsyncGenerator<string> {
-  const { abs, outside, shown } = resolveIn(ctx.root, start);
+// The search tools' start, checked as read_file checks a path: refused in the data folder, and outside the project
+// only once the user allows it. The Workspace's find and search take it after this (release 7 plan, Task 14).
+async function allowed(start: string, ctx: ToolContext, verb: string): Promise<void> {
+  const { outside, shown } = await ctx.workspace.resolve(start);
   await ctx.gate.require({ kind: "read", outside, summary: `${verb} ${shown}` }, ctx.signal);
-  yield* filesIn(ctx.root, abs, outside, ctx.signal);
 }
 
-// The files under `abs`, once checked: files()'s walk, and LocalWorkspace's (exec/local.ts).
+// The files under `abs`, a folder or one file, once checked, with the project's .gitignore rules from the root down
+// when it is inside the project: LocalWorkspace's walk (exec/local.ts).
 export async function* filesIn(root: string, abs: string, outside: boolean, signal?: AbortSignal): AsyncGenerator<string> {
   const real = await realpath(abs);
   // The rules of each folder above the start, from the project root down; the walk reads the start's own.
@@ -114,8 +113,7 @@ const shownPath = (base: string, real: string) => {
   return rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) ? real : posix(rel);
 };
 
-// The files `walked` gives whose path matches `pattern`, as shown, sorted: find_files' list before it is cut, and
-// LocalWorkspace's find.
+// The files `walked` gives whose path matches `pattern`, as shown, sorted: LocalWorkspace's find.
 export async function findIn(root: string, walked: AsyncIterable<string>, pattern: string): Promise<string[]> {
   const glob = pattern.replaceAll("\\", "/"); // the model may write Windows paths
   const base = await realpath(root);
@@ -132,7 +130,8 @@ export const findFilesTool = defineTool(
   "Find files by path, with a pattern such as src/**/*.ts (** for any depth of folders, * for any part of a name). Paths are relative to the project root. As in a shell, a name starting with a dot matches only a pattern that names the dot, such as .github/**. Skips .git and what the .gitignore files list. Sorted by path.",
   z.object({ pattern: z.string().min(1) }),
   async ({ pattern }, ctx) => {
-    const found = await findIn(ctx.root, files(".", ctx, "list"), pattern);
+    await allowed(".", ctx, "list");
+    const found = await ctx.workspace.find(".", pattern, ctx.signal);
     if (!found.length) return `No files match ${pattern}`;
     return capped(found, "files");
   },
@@ -199,8 +198,7 @@ function grep(pattern: string, files: { abs: string; shown: string }[], signal?:
   });
 }
 
-// The lines matching `pattern` in the files `walked` gives, narrowed by `glob`: search_files' before they are joined, and
-// LocalWorkspace's search.
+// The lines matching `pattern` in the files `walked` gives, narrowed by `glob`: LocalWorkspace's search.
 export async function searchIn(
   root: string,
   walked: AsyncIterable<string>,
@@ -243,7 +241,8 @@ export const searchFilesTool = defineTool(
       const hint = flag ? `. JavaScript has no flags inside a pattern, such as ${flag[0]}; search_files matches case exactly, so give both cases where it matters, as in [Mm]ax` : "";
       throw new Error(`${pattern} is not a regular expression: ${errorText(err)}${hint}`);
     }
-    const { matches, beyond } = await searchIn(ctx.root, files(start, ctx, "search"), pattern, glob, ctx.signal);
+    await allowed(start, ctx, "search");
+    const { matches, beyond } = await ctx.workspace.search(start, pattern, glob, ctx.signal);
     if (!matches.length) return `No lines match ${pattern}`;
     return capped(matches.map((m) => `${m.file}:${m.line}: ${m.text}`), "matching lines", beyond);
   },

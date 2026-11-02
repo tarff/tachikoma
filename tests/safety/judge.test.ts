@@ -4,7 +4,7 @@ import type { Action } from "../../src/core/permissions.js";
 import { PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import type { CompletionRequest, Part, Turn } from "../../src/core/types.js";
-import { LocalExecutor } from "../../src/exec/local.js";
+import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import { judge, type JudgeInput, SYSTEM } from "../../src/safety/judge.js";
 import { defineTool, type Tool } from "../../src/tools/tool.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, reply, texts, usage } from "../helpers.js";
@@ -223,7 +223,8 @@ describe("judge", () => {
 
 describe("what the session keeps for the judge", () => {
   const peek = defineTool("peek", "Reads something", z.object({ at: z.string() }), async () => "MARKER-from-a-tool");
-  const ctx = { root: "/made/up/project", executor: new LocalExecutor(), gate: new PermissionGate("never", async () => false) };
+  const root = "/made/up/project";
+  const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate: new PermissionGate("never", async () => false) };
 
   it("keeps the user's prompts and the calls, never a tool's result, a subagent's report or a picture", async () => {
     const lead = new FakeProvider("lead", [callTool("c1", "peek", { at: "notes.txt" }), reply("done"), reply("seen"), reply("read it")]);

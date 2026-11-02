@@ -33,7 +33,8 @@ export function useAppState({
   onRules,
   project,
   root,
-  gitBranch,
+  workspace,
+  branch: firstBranch,
   historyFile,
   intro,
   errorFile,
@@ -212,7 +213,7 @@ export function useAppState({
   };
   const started = useRef(Date.now());
   const [now, setNow] = useState(started.current);
-  const [branch, setBranch] = useState(gitBranch);
+  const [branch, setBranch] = useState(firstBranch);
   const abort = useRef<AbortController | null>(null);
   const nextId = useRef(0);
   const printUpTo = useRef<number | null>(null); // while an editor has the terminal in classic mode (away, handover.tsx)
@@ -262,7 +263,7 @@ export function useAppState({
   // Read-only, so TypeScript narrows `ui.question` through a check kept in a const (`movable`), as it narrowed App's
   // own `question`.
   return {
-    session, tasks, bus, stats, mode, onMode, onRules, project, root, gitBranch, historyFile, intro, errorFile, segments,
+    session, tasks, bus, stats, mode, onMode, onRules, project, root, workspace, historyFile, intro, errorFile, segments,
     makeProvider, bindAsk, login, listModels, screen, fullPossible, mouse, scrollSpeed, clipboard, input, bindings,
     home, live, picturesGiven, readPicture, exit, suspendTerminal, lines, setLines, editor, goal, vim, vimText, first,
     table, setTable, chordTimer, keyOf, pickerKey, step, search, stash, chosen, closed, listed, columns, height, full,

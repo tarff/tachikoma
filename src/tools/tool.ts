@@ -2,10 +2,12 @@ import { z } from "zod";
 import type { PermissionGate } from "../core/permissions.js";
 import type { ToolSpec } from "../core/types.js";
 import type { Executor } from "../exec/executor.js";
+import type { Workspace } from "../exec/workspace.js";
 
 export interface ToolContext {
   root: string;
   executor: Executor;
+  workspace: Workspace; // the project's files, which the file tools read, write and search (release 7 plan, Task 14)
   gate: PermissionGate;
   signal?: AbortSignal;
 }

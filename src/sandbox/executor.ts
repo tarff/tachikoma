@@ -203,17 +203,6 @@ export class DockerExecutor implements Executor {
     return { code: got.code, signal: null, stdout: got.out, stderr };
   }
 
-  // The helper comes with Task 13.
-  async readFile(_abs: string): Promise<string> {
-    if (this.#broken) throw this.#broken;
-    throw new Error("not yet");
-  }
-
-  async writeFile(_abs: string, _content: string): Promise<void> {
-    if (this.#broken) throw this.#broken;
-    throw new Error("not yet");
-  }
-
   // Removes the box. What it held that is kept lives in /work, a host folder (choice 18). A removal that fails leaves the
   // box to the next launch's sweep.
   async stop(): Promise<void> {

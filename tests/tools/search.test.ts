@@ -9,7 +9,7 @@ import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { TOOLS } from "../../src/tools/index.js";
 import { findFilesTool, searchFilesTool } from "../../src/tools/search.js";
 import { brief } from "../../src/tui/describe.js";
-import { shortName, tempContext } from "../helpers.js";
+import { fakeWorkspace, shortName, tempContext } from "../helpers.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -274,7 +274,10 @@ describe("search_files", () => {
     const script = [
       `import { searchFilesTool } from ${url("src/tools/search.ts")};`,
       `import { PermissionGate } from ${url("src/core/permissions.ts")};`,
-      `console.log(await searchFilesTool.run({ pattern: "needle" }, { root: process.argv[1], gate: new PermissionGate("project", async () => false) }));`,
+      `import { LocalWorkspace } from ${url("src/exec/local.ts")};`,
+      "const root = process.argv[1];",
+      'const ctx = { root, workspace: new LocalWorkspace(root), gate: new PermissionGate("project", async () => false) };',
+      'console.log(await searchFilesTool.run({ pattern: "needle" }, ctx));',
     ].join("\n");
     const r = spawnSync(process.execPath, ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, "--input-type=module", "-e", script, ctx.root], { encoding: "utf8" });
     expect(r.stderr).toBe("");
@@ -290,6 +293,22 @@ describe("search_files", () => {
     setTimeout(() => stop.abort(), 300);
     await expect(searchFilesTool.run({ pattern: "(a+)+$" }, { ...ctx, signal: stop.signal })).rejects.toThrow();
     expect(Date.now() - started).toBeLessThan(5000);
+  });
+});
+
+// Release 7 plan, Task 14: find_files and search_files reach the project only through the Workspace, here a fake one for
+// a made-up folder that is on no disk. The question comes first, as before: nothing is searched when it is declined.
+describe("the search tools through the Workspace", () => {
+  it("find and search through it, asking before a search outside the project", async () => {
+    const root = path.resolve("/made/up/project");
+    const { workspace, calls } = fakeWorkspace(root);
+    const ctx = { ...(await tempContext("ask", [false, true])), root, workspace };
+    expect(await findFilesTool.run({ pattern: "**/*.ts" }, ctx)).toBe("made/up.ts");
+    await expect(searchFilesTool.run({ pattern: "up", path: "../elsewhere" }, ctx)).rejects.toThrow("The user declined");
+    expect(await searchFilesTool.run({ pattern: "up", path: "../elsewhere", glob: "*.ts" }, ctx)).toBe("made/up.ts:1: made up");
+    expect(calls).toEqual(["resolve .", "find . **/*.ts", "resolve ../elsewhere", "resolve ../elsewhere", "search ../elsewhere up *.ts"]);
+    const elsewhere = path.resolve(root, "../elsewhere");
+    expect(ctx.asked).toEqual([`search ${elsewhere}`, `search ${elsewhere}`]);
   });
 });
 
