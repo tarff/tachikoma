@@ -334,8 +334,8 @@ const session: Session = new Session({
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
 });
 
-// The executor stops running commands from an "exit" handler, which dying by a signal skips. SIGQUIT is ignored while the
-// editor has the terminal (clilib.ts, exitOn).
+// The executor stops running commands, and the sandbox's box is removed (src/sandbox/executor.ts), from "exit" handlers,
+// which dying by a signal skips. SIGQUIT is ignored while the editor has the terminal (clilib.ts, exitOn).
 for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));
 
 if (parsed.print !== undefined) {

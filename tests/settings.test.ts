@@ -185,6 +185,49 @@ describe("readSettings", () => {
     });
   });
 
+  // Release 7 plan, Task 12 and choice 75: the box's limits, each optional, kept as written; Docker's figures are checked
+  // at the launch (src/sandbox/executor.ts, boxLimits).
+  describe("sandboxLimits", () => {
+    it("takes memory in Docker's g or m, CPUs and processes, each optional", () => {
+      const all = { memory: "8g", cpus: 1.5, pids: 2048 };
+      expect(read({ sandboxLimits: all })).toEqual({ settings: { sandboxLimits: all }, warnings: [] });
+      expect(read({ sandboxLimits: { memory: "512m" } })).toEqual({ settings: { sandboxLimits: { memory: "512m" } }, warnings: [] });
+      expect(read({ sandboxLimits: {} })).toEqual({ settings: { sandboxLimits: {} }, warnings: [] });
+    });
+
+    it("refuses what is not an object", () => {
+      expect(problem({ sandboxLimits: "8g" })).toBe(
+        'settings.json: "sandboxLimits" must be an object, such as {"memory": "8g", "cpus": 4, "pids": 1024} (got "8g")',
+      );
+    });
+
+    it("refuses each entry's wrong values", () => {
+      for (const bad of ["8", "8gb", "0g", "1.5g", "8G", 8, "-1m"]) {
+        expect(problem({ sandboxLimits: { memory: bad } })).toBe(
+          'settings.json: "sandboxLimits.memory" must be a whole number of gigabytes or megabytes in quotes, such as "8g" or "512m" ' +
+            `(got ${JSON.stringify(bad)})`,
+        );
+      }
+      for (const bad of [0, -2, "4"]) {
+        expect(problem({ sandboxLimits: { cpus: bad } })).toBe(
+          `settings.json: "sandboxLimits.cpus" must be a number of CPUs above 0, such as 2 or 1.5 (got ${JSON.stringify(bad)})`,
+        );
+      }
+      for (const bad of [0, 1.5, -1, "1024"]) {
+        expect(problem({ sandboxLimits: { pids: bad } })).toBe(
+          `settings.json: "sandboxLimits.pids" must be a whole number of processes from 1, such as 1024 (got ${JSON.stringify(bad)})`,
+        );
+      }
+    });
+
+    it("leaves out a name it does not know, with a warning, and keeps the rest", () => {
+      expect(read({ sandboxLimits: { disk: "10g", cpus: 2 } })).toEqual({
+        settings: { sandboxLimits: { cpus: 2 } },
+        warnings: ['settings.json: "sandboxLimits.disk" is not a setting; it was left out'],
+      });
+    });
+  });
+
   it("says when the file is not valid JSON, in the parser's words", () => {
     let words = "";
     try {

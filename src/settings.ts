@@ -36,6 +36,16 @@ export interface Settings {
   sandbox?: Sandbox;
   network?: Network;
   judge?: string;
+  sandboxLimits?: SandboxLimits;
+}
+
+// The box's limits as the user wrote them (release 7 plan, Task 12): memory in Docker's own units, g or m. Each one
+// left out is the default for the Docker in use, and each one given is checked against it at the launch (choice 75,
+// src/sandbox/executor.ts, boxLimits).
+export interface SandboxLimits {
+  memory?: string;
+  cpus?: number;
+  pids?: number;
 }
 
 export type Loaded = { settings: Settings; warnings: string[] } | { problem: string };
@@ -70,6 +80,7 @@ export function readSettings(text: string): Loaded {
         settings.status = statusSegments(value, entry);
       } else if (name === "vimInsertModeRemaps") settings.vimInsertModeRemaps = remaps(entry, value, warnings);
       else if (name === "dangerousCommands") settings.dangerousCommands = userRules(entry, value, warnings);
+      else if (name === "sandboxLimits") settings.sandboxLimits = sandboxLimits(entry, value, warnings);
       else warnings.push(`${entry} is not a setting; it was left out`);
     }
   } catch (err) {
@@ -168,4 +179,31 @@ function userRules(entry: string, value: unknown, warnings: string[]): UserRules
     } else warnings.push(`${part} is not a setting; it was left out`);
   }
   return rules;
+}
+
+// The box's limits (release 7 plan, Task 12): memory as a whole number of Docker's g or m, which Docker reads as
+// gibibytes and mebibytes; CPUs above 0, with decimals, as Docker's --cpus takes them; processes a whole number from 1,
+// as Docker's --pids-limit takes 0 and below as no limit. Other names in it are left out with a warning, as the file's
+// own are.
+function sandboxLimits(entry: string, value: unknown, warnings: string[]): SandboxLimits {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw wrongType(entry, 'an object, such as {"memory": "8g", "cpus": 4, "pids": 1024}', value);
+  }
+  const limits: SandboxLimits = {};
+  for (const [name, v] of Object.entries(value)) {
+    const part = `${SETTINGS}: ${JSON.stringify(`sandboxLimits.${name}`)}`;
+    if (name === "memory") {
+      if (typeof v !== "string" || !/^[1-9]\d*[gm]$/.test(v)) {
+        throw wrongType(part, 'a whole number of gigabytes or megabytes in quotes, such as "8g" or "512m"', v);
+      }
+      limits.memory = v;
+    } else if (name === "cpus") {
+      if (typeof v !== "number" || !(v > 0)) throw wrongType(part, "a number of CPUs above 0, such as 2 or 1.5", v);
+      limits.cpus = v;
+    } else if (name === "pids") {
+      if (!Number.isInteger(v) || (v as number) < 1) throw wrongType(part, "a whole number of processes from 1, such as 1024", v);
+      limits.pids = v as number;
+    } else warnings.push(`${part} is not a setting; it was left out`);
+  }
+  return limits;
 }

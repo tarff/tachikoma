@@ -39,8 +39,8 @@ const running = new Set<ChildProcess>();
 process.on("exit", () => running.forEach(killTree));
 
 // Keeps the first MAX_TOOL_OUTPUT characters and reads (and drops) the rest, so the command never
-// blocks on a full pipe and a flood of output cannot exhaust memory.
-function collect(stream: Readable): () => string {
+// blocks on a full pipe and a flood of output cannot exhaust memory. The box's commands are cut the same (docker.ts).
+export function collect(stream: Readable): () => string {
   let text = "";
   let dropped = 0;
   stream.setEncoding("utf8"); // decodes characters split across chunks
