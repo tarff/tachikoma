@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
-import { type Entry, entryOrder, type Match, type Workspace } from "../exec/workspace.js";
+import type { Match, Workspace } from "../exec/workspace.js";
 import { BINARY_TEST_BYTES, LINE_CUT } from "../tools/search.js";
 import { docker, type DockerRun } from "./docker.js";
 import { inGroup } from "./executor.js";
@@ -50,16 +50,8 @@ export class BoxWorkspace implements Workspace {
     return (await this.#call({ op: "readText", path: abs })) as string;
   }
 
-  async readBytes(abs: string): Promise<Buffer> {
-    return Buffer.from((await this.#call({ op: "readBytes", path: abs })) as string, "base64");
-  }
-
   async writeText(abs: string, content: string): Promise<void> {
     await this.#call({ op: "writeText", path: abs, content });
-  }
-
-  async list(folder: string): Promise<Entry[]> {
-    return ((await this.#call({ op: "list", path: folder })) as Entry[]).sort(entryOrder);
   }
 
   async find(start: string, pattern: string, signal?: AbortSignal): Promise<string[]> {

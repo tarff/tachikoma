@@ -5,10 +5,9 @@ import type { Readable } from "node:stream";
 import { resolveIn } from "../tools/files.js";
 import { filesIn, findIn, searchIn } from "../tools/search.js";
 import { gitBranch } from "../tui/git.js";
-import { listEntries } from "../tui/menus.js";
 import { commandEnv, system32 } from "./env.js";
 import { type ExecResult, type Executor, MAX_TOOL_OUTPUT } from "./executor.js";
-import type { Entry, Match, Workspace } from "./workspace.js";
+import type { Match, Workspace } from "./workspace.js";
 
 export function shellFor(platform: NodeJS.Platform = process.platform): { name: string; argv: (command: string) => string[] } {
   if (platform === "win32") {
@@ -108,18 +107,10 @@ export class LocalWorkspace implements Workspace {
     return readFile(abs, "utf8");
   }
 
-  readBytes(abs: string): Promise<Buffer> {
-    return readFile(abs);
-  }
-
   // Makes the parent folders first, as write_file always has.
   async writeText(abs: string, content: string): Promise<void> {
     await mkdir(path.dirname(abs), { recursive: true });
     await writeFile(abs, content, "utf8");
-  }
-
-  async list(folder: string): Promise<Entry[]> {
-    return listEntries(this.root, folder);
   }
 
   find(start: string, pattern: string, signal?: AbortSignal): Promise<string[]> {

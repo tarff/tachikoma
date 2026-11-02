@@ -22,7 +22,7 @@ const ALLOWED: Record<string, { lines: string[]; why: string }> = {
     why: "the walk and the search on the host, with the search's worker, which only LocalWorkspace calls (filesIn, findIn, searchIn)",
   },
   "tui/menus.ts": {
-    lines: ['import { lstatSync, readdirSync, statSync } from "node:fs";'],
+    lines: ['import { readdirSync, statSync } from "node:fs";'],
     why: "choice 98: the @ menu lists the host folder",
   },
   "tui/app/constants.ts": {

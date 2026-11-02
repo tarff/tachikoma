@@ -82,7 +82,7 @@ export async function tempContext(mode: Mode = "never", answers: boolean[] = [])
 // A Workspace that keeps each call, as its name and what it was given, and answers from `files`, a made-up project's
 // files by absolute path, so a caller given it is seen reaching the Workspace and never the disk (release 7 plan, Task
 // 14). A path leaving `root` is outside; find and search give one canned answer each.
-export function fakeWorkspace(root: string, files: Record<string, string | Buffer> = {}) {
+export function fakeWorkspace(root: string, files: Record<string, string> = {}) {
   const calls: string[] = [];
   const file = (abs: string) => {
     const f = files[abs];
@@ -96,10 +96,8 @@ export function fakeWorkspace(root: string, files: Record<string, string | Buffe
       const abs = path.resolve(root, p);
       return { abs, outside: path.relative(root, abs).startsWith(".."), shown: abs };
     },
-    readText: async (abs) => (calls.push(`readText ${abs}`), file(abs).toString()),
-    readBytes: async (abs) => (calls.push(`readBytes ${abs}`), Buffer.from(file(abs))),
+    readText: async (abs) => (calls.push(`readText ${abs}`), file(abs)),
     writeText: async (abs, content) => void (calls.push(`writeText ${abs}`), (files[abs] = content)),
-    list: async (folder) => (calls.push(`list ${folder}`), []),
     find: async (start, pattern) => (calls.push(`find ${start} ${pattern}`), ["made/up.ts"]),
     search: async (start, pattern, glob) => {
       calls.push(`search ${start} ${pattern} ${glob}`);

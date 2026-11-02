@@ -60,11 +60,9 @@ describe("BoxWorkspace in real Docker", { timeout: 0 }, () => {
     for (const [start, glob] of [[".", undefined], ["src", "*.ts"]] as const) {
       expect(await ws.search(start, "match", glob)).toEqual(await local.search(start, "match", glob));
     }
-    for (const f of ["", "src", "notes"]) expect(await ws.list(f)).toEqual(await local.list(f));
     expect(await ws.branch()).toBe("feature/x");
     expect(await ws.readText("/work/src/b.ts")).toBe("line one\r\nmatch here\r\n");
     expect(await ws.readText("/work/notes/caf\u00e9.txt")).toBe("caf\u00e9 match\n");
-    expect(await ws.readBytes("/work/bin.dat")).toEqual(await local.readBytes(path.join(folder, "bin.dat")));
     expect(await ws.resolve("src/a.ts")).toEqual({ abs: "/work/src/a.ts", outside: false, shown: "/work/src/a.ts", real: "/work/src/a.ts" });
     expect(await ws.resolve("new/file.txt")).toEqual({ abs: "/work/new/file.txt", outside: false, shown: "/work/new/file.txt", real: "/work/new/file.txt" });
   });
@@ -77,7 +75,6 @@ describe("BoxWorkspace in real Docker", { timeout: 0 }, () => {
     await expect(ws.resolve("etc-link/hostname")).rejects.toThrow(refused);
     await expect(ws.readText("/work/etc-link/hostname")).rejects.toThrow(refused);
     await expect(ws.writeText("/work/etc-link/hostname", "x")).rejects.toThrow(refused);
-    expect(await ws.list("")).toEqual([{ name: "a.txt", type: "file" }]);
   });
 
   it("writes through the box into the host folder, making its folders", async (ctx) => {

@@ -8,7 +8,7 @@ import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalWorkspace } from "../../src/exec/local.js";
 import { BoxWorkspace, helperCode, LOADER } from "../../src/sandbox/boxWorkspace.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
-import { removeTree, TREE, ZERO } from "../helpers.js";
+import { removeTree, TREE } from "../helpers.js";
 
 // Runs `node -e <loader>` with its input on the host, as the call would in the box: what node writes, and how it ends.
 function node(args: string[], input: Buffer | undefined, signal?: AbortSignal): Promise<{ code: number; out: string; err: string }> {
@@ -116,27 +116,13 @@ describe("the helper, run by the host's Node, against LocalWorkspace on the same
     expect(size).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
   });
 
-  it("lists the same entries: folders first, then files, by name", async () => {
-    const { local, box } = await both();
-    for (const folder of ["", "src", "src/", "notes"]) expect(await box.list(folder)).toEqual(await local.list(folder));
-    expect(await box.list("src")).toEqual([
-      { name: "core", type: "folder" },
-      { name: ".gitignore", type: "file" },
-      { name: "a.ts", type: "file" },
-      { name: "b.ts", type: "file" },
-      { name: "secret.ts", type: "file" },
-    ]);
-  });
-
-  it("reads the same text and bytes, CRLF and non-ASCII kept", async () => {
+  it("reads the same text, CRLF and non-ASCII kept", async () => {
     const { root, local, box } = await both();
     for (const p of ["src/b.ts", "notes/caf\u00e9.txt"]) {
       const abs = path.join(root, p);
       expect(await box.readText(abs)).toBe(await local.readText(abs));
-      expect(await box.readBytes(abs)).toEqual(await local.readBytes(abs));
     }
     expect(await box.readText(path.join(root, "src/b.ts"))).toBe("line one\r\nmatch here\r\n");
-    expect(await box.readBytes(path.join(root, "bin.dat"))).toEqual(Buffer.from(`match${ZERO}binary\n`));
   });
 
   it("fails a read of a missing file with Node's own words and code", async () => {
@@ -188,7 +174,6 @@ describe("the helper's refusals", () => {
     await expect(box.readText(abs)).rejects.toThrow(refused);
     await expect(box.writeText(abs, "x")).rejects.toThrow(refused);
     await expect(box.find("out", "**")).rejects.toThrow(`${path.join(root, "out")} is outside the project, which the sandbox never opens`);
-    expect(await box.list("")).toEqual([{ name: "near.txt", type: "file" }]);
     expect((await local.resolve("out/secret.txt")).outside).toBe(true);
     expect(await readFile(path.join(elsewhere, "secret.txt"), "utf8")).toBe("far away\n");
   });
@@ -211,7 +196,7 @@ describe("a call to the helper", () => {
   it("is docker exec -i of node -e, by bash and setsid, with the code and request on stdin", async () => {
     const root = await folderWith({ "a.txt": "a\n" });
     const fake = hostNode();
-    await new BoxWorkspace("box1", fake.run, root).list("");
+    await new BoxWorkspace("box1", fake.run, root).branch();
     expect(fake.calls).toHaveLength(1);
     const [call] = fake.calls;
     expect(call!.slice(0, 5)).toEqual(["exec", "-i", "box1", "bash", "-c"]);
@@ -242,10 +227,10 @@ describe("a call to the helper", () => {
 
   it("says when Docker fails, in its words", async () => {
     const run: DockerRun = async () => ({ code: 1, out: "", err: "Error response from daemon: container box1 is not running\n" });
-    await expect(new BoxWorkspace("box1", run).list("")).rejects.toThrow(
+    await expect(new BoxWorkspace("box1", run).branch()).rejects.toThrow(
       "The sandbox's file tools could not reach the box: Error response from daemon: container box1 is not running",
     );
-    await expect(new BoxWorkspace("box1", async () => "missing").list("")).rejects.toThrow(
+    await expect(new BoxWorkspace("box1", async () => "missing").branch()).rejects.toThrow(
       "The sandbox's file tools could not reach the box: no docker program is on PATH any more",
     );
   });

@@ -1,11 +1,11 @@
 // The helper: what the box's Workspace (boxWorkspace.ts) runs in the box, by the box's own Node, to resolve, read, write,
-// list, find and search there (release 7 design, "Nothing on the host opens a path in the box's folder while the box
+// find and search there (release 7 design, "Nothing on the host opens a path in the box's folder while the box
 // runs"; plan, Task 13). Its function's own source is sent with each call, so it stands alone: it uses nothing from
 // outside the function but its arguments, takes Node's modules from the `require` it is given, and gets the `ignore`
 // library as given. Only types are imported, which go. tsx adds a `__name(...)` call for each named function in it,
 // which the call's code defines (boxWorkspace.ts, helperCode).
 //
-// Each answer is what the same code on the host gives (files.ts, search.ts, menus.ts, git.ts), but that every path
+// Each answer is what the same code on the host gives (files.ts, search.ts, git.ts), but that every path
 // whose real place leaves the root is refused, as in the box there is no question to allow it (design, "A path outside
 // it is refused"). Tachikoma's data folder, its settings files and other programs' environments are not in the box, so
 // they are not checked for.
@@ -17,7 +17,7 @@ type Rules = { base: string; rules: { test(p: string): { ignored: boolean; unign
 export type Ignore = () => { add(text: string): Rules[number]["rules"] };
 
 export type Request = { root: string } & (
-  | { op: "resolve" | "readText" | "readBytes" | "list"; path: string }
+  | { op: "resolve" | "readText"; path: string }
   | { op: "writeText"; path: string; content: string }
   | { op: "find"; path: string; pattern: string }
   | { op: "search"; path: string; pattern: string; glob?: string; cap: number; binaryBytes: number; lineCut: number }
@@ -111,28 +111,11 @@ export function helper(request: Request, ignore: Ignore, require: NodeJS.Require
     }
     case "readText":
       return fs.readFileSync(place(request.path).abs, "utf8");
-    case "readBytes":
-      return fs.readFileSync(place(request.path).abs).toString("base64");
     case "writeText": {
       const { abs } = place(request.path);
       fs.mkdirSync(path.dirname(abs), { recursive: true });
       fs.writeFileSync(abs, request.content, "utf8");
       return null;
-    }
-    // menus.ts's listEntries, but that the host sorts them, by its own locale. A link that leads nowhere is refused, so
-    // left out.
-    case "list": {
-      const dir = place(request.path || ".").abs;
-      return fs.readdirSync(dir).flatMap((name) => {
-        const abs = path.join(dir, name);
-        try {
-          place(abs);
-        } catch {
-          return [];
-        }
-        const kind = fs.statSync(abs, { throwIfNoEntry: false });
-        return [{ name, type: kind?.isDirectory() ? "folder" : kind?.isFile() ? "file" : "other" }];
-      });
     }
     case "find": {
       const glob = request.pattern.replaceAll("\\", "/");

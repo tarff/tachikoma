@@ -1,7 +1,6 @@
-import { lstatSync, readdirSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { errorText } from "../core/types.js";
-import { type Entry as FileEntry, entryOrder } from "../exec/workspace.js";
 import { resolveIn } from "../tools/files.js";
 
 // The `/` and `@` menus (release 3 design, "Menus and modes"), worked out from the prompt's text: what
@@ -72,26 +71,18 @@ export function pathMenu(text: string, cursor: number, list: (folder: string) =>
 // by the same check.
 export function listFolder(root: string, folder: string): Listing {
   try {
-    return { entries: listEntries(root, folder).map((e) => ({ name: e.name, folder: e.type === "folder" })) };
+    const dir = resolveIn(root, folder || ".").abs;
+    const entries = readdirSync(dir).flatMap((name) => {
+      const abs = path.join(dir, name);
+      try {
+        resolveIn(root, abs);
+      } catch {
+        return [];
+      }
+      return [{ name, folder: statSync(abs, { throwIfNoEntry: false })?.isDirectory() === true }];
+    });
+    return { entries: entries.sort((a, b) => Number(b.folder) - Number(a.folder) || a.name.localeCompare(b.name)) };
   } catch (err) {
     return { error: errorText(err) };
   }
-}
-
-// listFolder's entries, each with what it leads to, for LocalWorkspace's list (exec/local.ts). Throws when the folder
-// cannot be listed.
-export function listEntries(root: string, folder: string): FileEntry[] {
-  const dir = resolveIn(root, folder || ".").abs;
-  const entries = readdirSync(dir).flatMap((name) => {
-    const abs = path.join(dir, name);
-    try {
-      resolveIn(root, abs);
-    } catch {
-      return [];
-    }
-    const kind = statSync(abs, { throwIfNoEntry: false });
-    const type = kind?.isDirectory() ? "folder" : kind?.isFile() ? "file" : !kind && lstatSync(abs, { throwIfNoEntry: false }) ? "link" : "other";
-    return [{ name, type } as const];
-  });
-  return entries.sort(entryOrder);
 }
