@@ -1,0 +1,264 @@
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { describe, expect, it, onTestFinished } from "vitest";
+import { onPath } from "../../src/exec/env.js";
+import type { DockerRun } from "../../src/sandbox/docker.js";
+import { BUILD_FAILED, buildQuestion, downloads, imageFor, NOT_BUILT, NOT_INSTALLED, NOT_RUNNING, NO_TERMINAL, prepareImage, sandboxCommand, SHIPPED, UNBUILT } from "../../src/sandbox/image.js";
+
+// A project folder of the test's own, removed when the test ends; `dockerfile` puts .tachikoma/sandbox.Dockerfile in it.
+function project(dockerfile?: string) {
+  const root = mkdtempSync(path.join(tmpdir(), "tachi-image-"));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  if (dockerfile !== undefined) {
+    mkdirSync(path.join(root, ".tachikoma"));
+    writeFileSync(path.join(root, ".tachikoma", "sandbox.Dockerfile"), dockerfile);
+  }
+  return root;
+}
+
+const hex = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 12);
+
+// A stand-in for Docker (choice 69): it records each call and its stdin, and answers by the call's first words. Docker
+// is running unless told otherwise; an image is built when it is in `built`; a build gives `lines` and exits `buildCode`.
+function fakeDocker(opts: { state?: "missing" | "stopped"; built?: string[]; lines?: string[]; buildCode?: number } = {}) {
+  const calls: { args: string[]; input?: string; signal?: AbortSignal; context?: string[] }[] = [];
+  const run: DockerRun = async (args, o = {}) => {
+    const call: (typeof calls)[number] = { args, ...(o.input !== undefined ? { input: o.input.toString("utf8") } : {}), ...(o.signal ? { signal: o.signal } : {}) };
+    calls.push(call);
+    if (opts.state === "missing") return "missing";
+    if (args[0] === "version") return { code: opts.state === "stopped" ? 1 : 0, out: "", err: "" };
+    if (args[0] === "image" && args[1] === "inspect") return { code: opts.built?.includes(args.at(-1)!) ? 0 : 1, out: "", err: "" };
+    if (args[0] === "build") {
+      call.context = readdirSync(args.at(-1)!);
+      for (const line of opts.lines ?? []) o.line?.(line);
+      return { code: opts.buildCode ?? 0, out: "", err: "" };
+    }
+    throw new Error(`unexpected docker ${args.join(" ")}`);
+  };
+  return { run, calls, builds: () => calls.filter((c) => c.args[0] === "build") };
+}
+
+// What a flow printed, each line marked with where it went, and the questions it asked, answered from `answers`.
+function terminal(answers: boolean[] = []) {
+  const printed: string[] = [];
+  const asked: string[] = [];
+  return {
+    printed,
+    asked,
+    out: (line: string) => printed.push(`out: ${line}`),
+    err: (line: string) => printed.push(`err: ${line}`),
+    ask: async (question: string) => {
+      asked.push(question);
+      return answers.shift() ?? false;
+    },
+  };
+}
+
+// With a letter outside ASCII, so the build is seen to get the file's own bytes.
+const PROJECT = "# The project's own image, café\nFROM example.test/base:1\nRUN echo hi\n";
+
+describe("imageFor", () => {
+  it("is the shipped Dockerfile's image, tagged by its hash, when the project has none (choice 15)", async () => {
+    const docker = fakeDocker();
+    const info = await imageFor(project(), docker.run);
+    const tag = `tachikoma-sandbox:${hex(readFileSync(SHIPPED, "utf8").replaceAll("\r\n", "\n"))}`;
+    expect(info).toEqual({ tag, dockerfile: SHIPPED, built: false, project: false });
+    expect(docker.calls.map((c) => c.args)).toEqual([["image", "inspect", "--format", "{{.Id}}", tag]]);
+  });
+
+  it("is the project's own, tagged by its hash with -project, when it has .tachikoma/sandbox.Dockerfile (choice 16)", async () => {
+    const root = project(PROJECT);
+    const tag = `tachikoma-sandbox:${hex(PROJECT)}-project`;
+    const info = await imageFor(root, fakeDocker({ built: [tag] }).run);
+    expect(info).toEqual({ tag, dockerfile: path.join(root, ".tachikoma", "sandbox.Dockerfile"), built: true, project: true });
+  });
+
+  it("gives a Dockerfile the same tag with Windows line endings as with LF (choice 68)", async () => {
+    const lf = await imageFor(project(PROJECT), fakeDocker().run);
+    const crlf = await imageFor(project(PROJECT.replaceAll("\n", "\r\n")), fakeDocker().run);
+    expect(crlf.tag).toBe(lf.tag);
+    expect(lf.tag).toBe(`tachikoma-sandbox:${hex(PROJECT)}-project`);
+  });
+
+  // The one test of real Docker. It builds nothing: it looks for the image Task 1 built, and skips when it is not there.
+  const TASK_1 = "tachikoma-sandbox:5879e9863c31";
+  const task1Built = (() => {
+    const exe = onPath("docker");
+    if (!exe) return false;
+    try {
+      execFileSync(exe, ["image", "inspect", "--format", "{{.Id}}", TASK_1], { stdio: "ignore", windowsHide: true });
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  it.skipIf(!task1Built)("finds the image Task 1 built from the shipped Dockerfile (real Docker)", async () => {
+    expect(await imageFor(project())).toEqual({ tag: TASK_1, dockerfile: SHIPPED, built: true, project: false });
+  });
+});
+
+describe("downloads", () => {
+  it("reads the images of FROM and COPY --from, but not earlier stages or scratch", () => {
+    const root = project(
+      [
+        "# syntax comment FROM example.test/not-this:1",
+        "FROM --platform=linux/amd64 example.test/base:1@sha256:abc AS build",
+        "from example.test/other:2",
+        "COPY --from=build /a /b",
+        "COPY --chown=1000:1000 --from=example.test/tool:3 /t /usr/local/bin/",
+        "COPY --from=0 /c /d",
+        "FROM build",
+        "FROM scratch",
+        "COPY \\",
+        "  --from=example.test/split:4 /e /f",
+        "COPY --from=example.test/tool:3 /g /h",
+      ].join("\r\n"),
+    );
+    expect(downloads(path.join(root, ".tachikoma", "sandbox.Dockerfile"))).toEqual([
+      "example.test/base:1@sha256:abc",
+      "example.test/other:2",
+      "example.test/tool:3",
+      "example.test/split:4",
+    ]);
+  });
+
+  it("names the shipped Dockerfile's base and uv's image", () => {
+    expect(downloads(SHIPPED).map((image) => image.split("@")[0])).toEqual(["node:24-bookworm-slim", "ghcr.io/astral-sh/uv"]);
+  });
+});
+
+describe("the question", () => {
+  it("names what the build downloads", () => {
+    expect(buildQuestion(["example.test/base:1", "example.test/tool:3"])).toBe(
+      "The sandbox needs its image, built here once. It downloads: example.test/base:1, example.test/tool:3, and Debian's packages. Build it now? [y/n]",
+    );
+  });
+});
+
+describe("prepareImage (the launch)", () => {
+  it("stops when Docker is not installed, before looking for the image", async () => {
+    const docker = fakeDocker({ state: "missing" });
+    const t = terminal();
+    expect(await prepareImage(project(), { ...t, signal: new AbortController().signal, run: docker.run })).toEqual({ exit: 1 });
+    expect(NOT_INSTALLED).toBe("The sandbox needs Docker, which is not installed. Install Docker Desktop, or launch with --sandbox off.");
+    expect(t.printed).toEqual([`err: ${NOT_INSTALLED}`]);
+    expect(docker.calls).toHaveLength(1);
+  });
+
+  it("stops when Docker is not running, before looking for the image", async () => {
+    const docker = fakeDocker({ state: "stopped" });
+    const t = terminal();
+    expect(await prepareImage(project(), { ...t, signal: new AbortController().signal, run: docker.run })).toEqual({ exit: 1 });
+    expect(NOT_RUNNING).toBe("The sandbox needs Docker, which is not running. Start Docker Desktop, then launch again.");
+    expect(t.printed).toEqual([`err: ${NOT_RUNNING}`]);
+    expect(docker.calls.map((c) => c.args[0])).toEqual(["version"]);
+  });
+
+  it("headless with no image, stops at once: nothing is asked and nothing is built", async () => {
+    const docker = fakeDocker();
+    const t = terminal();
+    const { ask: _, ...headless } = t;
+    expect(await prepareImage(project(PROJECT), { ...headless, signal: new AbortController().signal, run: docker.run })).toEqual({ exit: 1 });
+    expect(NOT_BUILT).toBe("The sandbox's image is not built. Run tachi sandbox build first.");
+    expect(t.printed).toEqual([`err: ${NOT_BUILT}`]);
+    expect(t.asked).toEqual([]);
+    expect(docker.builds()).toEqual([]);
+  });
+
+  it("gives the image's tag when it is built, asking nothing", async () => {
+    const tag = `tachikoma-sandbox:${hex(PROJECT)}-project`;
+    const docker = fakeDocker({ built: [tag] });
+    const t = terminal();
+    expect(await prepareImage(project(PROJECT), { ...t, signal: new AbortController().signal, run: docker.run })).toEqual({ tag });
+    expect(t.printed).toEqual([]);
+    expect(t.asked).toEqual([]);
+  });
+
+  it("asks before building, and a no exits 0 without building", async () => {
+    const docker = fakeDocker();
+    const t = terminal([false]);
+    expect(await prepareImage(project(PROJECT), { ...t, signal: new AbortController().signal, run: docker.run })).toEqual({ exit: 0 });
+    expect(t.asked).toEqual([buildQuestion(["example.test/base:1"])]);
+    expect(UNBUILT).toBe("Not built; the sandbox needs it.");
+    expect(t.printed).toEqual([`out: ${UNBUILT}`]);
+    expect(docker.builds()).toEqual([]);
+  });
+
+  it("a yes builds the project's image from an empty folder, showing the build's lines (choice 16)", async () => {
+    const tag = `tachikoma-sandbox:${hex(PROJECT)}-project`;
+    const docker = fakeDocker({ lines: ["#1 load", "#2 DONE"] });
+    const t = terminal([true]);
+    const stop = new AbortController();
+    expect(await prepareImage(project(PROJECT.replaceAll("\n", "\r\n")), { ...t, signal: stop.signal, run: docker.run })).toEqual({ tag });
+    const [build] = docker.builds();
+    expect(build!.args.slice(0, -1)).toEqual(["build", "--tag", tag, "--file", "-"]);
+    expect(build!.context).toEqual([]); // nothing of the project's can be copied in
+    expect(existsSync(build!.args.at(-1)!)).toBe(false); // the empty folder is removed after
+    expect(build!.input).toBe(PROJECT); // the text the tag hashes, with LF line endings (choice 68)
+    expect(build!.signal).toBe(stop.signal);
+    expect(t.printed).toEqual(["out: #1 load", "out: #2 DONE"]);
+  });
+
+  it("says when the build failed, after its lines, and exits 1", async () => {
+    const docker = fakeDocker({ lines: ["ERROR: failed to solve"], buildCode: 1 });
+    const t = terminal([true]);
+    expect(await prepareImage(project(PROJECT), { ...t, signal: new AbortController().signal, run: docker.run })).toEqual({ exit: 1 });
+    expect(BUILD_FAILED).toBe("The image could not be built.");
+    expect(t.printed).toEqual(["out: ERROR: failed to solve", `err: ${BUILD_FAILED}`]);
+  });
+
+  it("asks again when the Dockerfile changed since its image was built", async () => {
+    const docker = fakeDocker({ built: [`tachikoma-sandbox:${hex(PROJECT)}-project`] });
+    const t = terminal([false]);
+    const changed = `${PROJECT}RUN echo more\n`;
+    await prepareImage(project(changed), { ...t, signal: new AbortController().signal, run: docker.run });
+    expect(t.asked).toEqual([buildQuestion(["example.test/base:1"])]);
+  });
+});
+
+describe("tachi sandbox build", () => {
+  it("says the image is up to date when it is built", async () => {
+    const tag = `tachikoma-sandbox:${hex(PROJECT)}-project`;
+    const t = terminal();
+    expect(await sandboxCommand(["build"], project(PROJECT), { ...t, signal: new AbortController().signal, run: fakeDocker({ built: [tag] }).run })).toBe(0);
+    expect(t.printed).toEqual([`out: The sandbox's image is up to date (${tag}).`]);
+    expect(t.asked).toEqual([]);
+  });
+
+  it("asks the same question, and builds on a yes", async () => {
+    const docker = fakeDocker({ lines: ["#1 DONE"] });
+    const t = terminal([true]);
+    expect(await sandboxCommand(["build"], project(PROJECT), { ...t, signal: new AbortController().signal, run: docker.run })).toBe(0);
+    expect(t.asked).toEqual([buildQuestion(["example.test/base:1"])]);
+    expect(docker.builds()).toHaveLength(1);
+    expect(t.printed).toEqual(["out: #1 DONE"]);
+  });
+
+  it("gives the launch's line when Docker is not running", async () => {
+    const t = terminal();
+    expect(await sandboxCommand(["build"], project(), { ...t, signal: new AbortController().signal, run: fakeDocker({ state: "stopped" }).run })).toBe(1);
+    expect(t.printed).toEqual([`err: ${NOT_RUNNING}`]);
+  });
+
+  it("with no terminal to ask in, builds nothing", async () => {
+    const docker = fakeDocker();
+    const { ask: _, ...t } = terminal();
+    expect(await sandboxCommand(["build"], project(PROJECT), { ...t, signal: new AbortController().signal, run: docker.run })).toBe(1);
+    expect(NO_TERMINAL).toBe("tachi sandbox build needs a terminal, to ask before it downloads anything.");
+    expect(t.printed).toEqual([`err: ${NO_TERMINAL}`]);
+    expect(docker.builds()).toEqual([]);
+  });
+
+  it("explains its usage for anything but build", async () => {
+    for (const args of [[], ["make"], ["build", "now"]]) {
+      const docker = fakeDocker();
+      const t = terminal();
+      expect(await sandboxCommand(args, project(), { ...t, signal: new AbortController().signal, run: docker.run })).toBe(1);
+      expect(t.printed).toEqual(["err: Usage: tachi sandbox build"]);
+      expect(docker.calls).toEqual([]);
+    }
+  });
+});

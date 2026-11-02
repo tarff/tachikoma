@@ -41,6 +41,7 @@ import { LocalExecutor } from "./exec/local.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
+import { sandboxCommand } from "./sandbox/image.js";
 import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
@@ -65,6 +66,7 @@ Usage:
   tachi login chatgpt [--new | --account <number>]   sign in to use your ChatGPT plan;
                       [--keychain]                   --keychain seals the tokens with a key in the keychain
   tachi logout chatgpt                               sign out of ChatGPT
+  tachi sandbox build                                build the sandbox's image, after asking
 
 Options:
   --lead <spec>     anthropic:<model> | chatgpt:<model> | openai:<model> | openrouter:<model>
@@ -136,6 +138,25 @@ if (verb === "login" || verb === "logout") {
   try {
     await accountCommand(verb, process.argv.slice(3), (line) => console.log(prose(line)), stop.signal);
     process.exit(stop.signal.aborted ? 128 + constants.signals.SIGINT : 0); // Ctrl-C can end the wait for OpenAI to cancel the sign-in, after signing out here
+  } catch (err) {
+    console.error(prose(errorText(err)));
+    process.exit(stop.signal.aborted ? 128 + constants.signals.SIGINT : 1);
+  }
+}
+
+// `tachi sandbox build` builds the sandbox's image after asking, or says it is up to date, then exits (release 7 plan,
+// Task 11). The question needs a terminal; with none, nothing is built.
+if (verb === "sandbox") {
+  const stop = new AbortController();
+  process.once("SIGINT", () => stop.abort()); // Ctrl-C while the build runs, with raw mode off
+  try {
+    const code = await sandboxCommand(process.argv.slice(3), process.cwd(), {
+      ...(process.stdin.isTTY ? { ask: askAtStart } : {}),
+      out: (line) => console.log(line),
+      err: (line) => console.error(line),
+      signal: stop.signal,
+    });
+    process.exit(stop.signal.aborted ? 128 + constants.signals.SIGINT : code);
   } catch (err) {
     console.error(prose(errorText(err)));
     process.exit(stop.signal.aborted ? 128 + constants.signals.SIGINT : 1);

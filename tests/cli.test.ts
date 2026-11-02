@@ -131,6 +131,13 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.stderr).toContain("Usage: tachi login chatgpt [--new | --account <number>]");
   });
 
+  // Only the usage, so Docker is never run: the command's steps are tested with a stand-in Docker (tests/sandbox).
+  it("explains tachi sandbox's usage, before any launch check", () => {
+    const r = tachi("sandbox", "make");
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe("Usage: tachi sandbox build");
+  });
+
   it("with -p, leaves out instruction files from outside the project and says which, printing nothing about the rest", () => {
     const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
     const proj = path.join(top, "proj");
