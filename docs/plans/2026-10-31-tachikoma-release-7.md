@@ -1312,13 +1312,13 @@ of it needs no Docker), `tests/sandbox/boxWorkspace.test.ts` (real Docker, skipp
 export interface Entry { name: string; type: "file" | "folder" | "link" | "other" }
 export interface Workspace {
   root: string;                                                   // "/work" in the box (choice 19)
-  resolve(p: string, opts?: { trusted?: boolean }): Promise<{ abs: string; outside: boolean; shown: string; real: string }>;
+  resolve(p: string, opts?: { trusted?: boolean }): Promise<{ abs: string; outside: boolean; shown: string; real?: string }>;
   readText(abs: string): Promise<string>;
   readBytes(abs: string): Promise<Buffer>;                         // pasted pictures
   writeText(abs: string, content: string): Promise<void>;
   list(folder: string): Promise<Entry[]>;
   find(start: string, pattern: string, signal?: AbortSignal): Promise<string[]>;
-  search(start: string, pattern: string, glob: string | undefined, signal?: AbortSignal): Promise<{ file: string; line: number; text: string }[]>;
+  search(start: string, pattern: string, glob: string | undefined, signal?: AbortSignal): Promise<{ matches: { file: string; line: number; text: string }[]; beyond: number }>;
   branch(): Promise<string | null>;
 }
 ```
@@ -1347,6 +1347,10 @@ export interface Workspace {
 - in the box (skipping): the same operations on `/work`;
 - a link made in the box to `/etc` refused;
 - writing through the box landing in the host folder.
+
+As built: `real` is optional, as `resolveIn`'s is; `search` also gives `beyond`, the count past
+the cap, for search_files' note; `Entry.type` follows a link to its target ("link" is a link that
+leads nowhere), as the `@` menu shows; the box's `branch` looks only in `/work`.
 
 Commit: `feat: the Workspace, and the helper that reads, writes, lists and searches inside the box`.
 
