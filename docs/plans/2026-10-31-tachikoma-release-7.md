@@ -618,8 +618,8 @@ the plan's review.
     version` is waited for, and Ctrl-C stops it. No number is set without measuring one.
 71. **`tachi sandbox build` has its own lines** (the user's choice, Task 11's spec review). The
     launch keeps Task 11's words; the subcommand says `The sandbox needs Docker, which is not
-    installed. Install Docker Desktop, then run tachi sandbox build again.`, `The sandbox needs
-    Docker, which is not running. Start Docker Desktop, then run tachi sandbox build again.`,
+    installed. Install Docker, then run tachi sandbox build again.`, `The sandbox needs
+    Docker, which is not running. Start Docker, then run tachi sandbox build again.`,
     and, with no terminal to ask in, `tachi sandbox build needs a terminal, to ask before it
     downloads anything.` (exit 1, nothing built). Task 16 gives the subcommand choice 13's
     refusal too, so it never reads a Dockerfile from the settings folder.
@@ -1196,7 +1196,7 @@ Commit: `feat: auto mode: reads and project edits pass, dangers ask, the judge d
 gains `sandbox/`).
 
 ```ts
-export function dockerState(): Promise<"ready" | "missing" | "stopped">;          // `docker version --format {{.Server.Version}}`
+export function dockerState(): Promise<DockerState>;  // "ready" | "missing" | "stopped" | "denied" | "windows"; `docker version --format {{.Server.Os}}` (choice 78)
 export interface ImageInfo { tag: string; dockerfile: string; built: boolean; project: boolean }
 export function imageFor(root: string): Promise<ImageInfo>;                      // choices 15, 16
 export function downloads(dockerfile: string): string[];                          // the FROM and COPY --from images, for the question
@@ -1209,9 +1209,10 @@ question and the build's input; `downloads` takes that text, not a path. Task 16
 `prepareImage(root, io)`, which returns `{ tag }` or `{ exit }`.
 
 **The launch lines, in order** (each exits 1):
-- `The sandbox needs Docker, which is not installed. Install Docker Desktop, or launch with
+- `The sandbox needs Docker, which is not installed. Install Docker, or launch with
   --sandbox off.`
-- `The sandbox needs Docker, which is not running. Start Docker Desktop, then launch again.`
+- `The sandbox needs Docker, which is not running. Start Docker, then launch again.`
+- choice 78's two lines: a user not allowed to use Docker, and Docker set to Windows containers;
 - headless with no image, or a changed Dockerfile: `The sandbox's image is not built. Run tachi
   sandbox build first.` This comes at once. Nothing is built, and nothing waits.
 
