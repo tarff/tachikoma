@@ -106,6 +106,7 @@ describe("protectionOf", () => {
       hooksPaths: ["/p/githooks"],
       gitDirs: ["/p/.bare"],
       problems: [{ file: "/p/x", why: "it is a link" }],
+      lineEndings: {},
     };
     expect(protectionOf(git)).toEqual({ hooks: ["/p/githooks", "/p/.bare"], files: ["/p/.git/config", "/home/me/.gitconfig"] });
   });

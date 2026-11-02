@@ -2,7 +2,8 @@
 // design, "Live link"; plan, Task 5 and choices 11, 12 and 57). A line added to any of these files, or a program put in
 // a hooks folder, can make the user's next git command on the host run a program. So protected paths (Task 6) ask
 // before a write to any file or folder listed here (choice 57), and live link makes those inside the project read-only
-// in the box. What is guaranteed: the only git command run is `git config`, which reads settings and runs nothing; it
+// in the box. The same lookup gives the line-ending settings live link passes into the box's git (choice 100). What is
+// guaranteed: the only git command run is `git config`, which reads settings and runs nothing; it
 // is started by its full path, from the system's temporary folder, with none of the user's git variables but the two
 // naming the settings files. Git still looks for a `.git` in the temporary folder itself; GIT_CEILING_DIRECTORIES
 // only stops it climbing above that folder, so a project that holds the temporary folder (the home folder, say) is
@@ -21,11 +22,23 @@ import { commandEnv, onPath } from "../exec/env.js";
 // `gitDirs` are the git folders a `.git` file names inside the project, other than `<top>/.git`, and their shared folder
 // (commondir) when that is inside too: protected whole and read-only in the box, as `.git` is (choice 59). One outside
 // the project is not listed, as the box cannot reach it.
-export interface GitSettings { files: string[]; hooksPaths: string[]; gitDirs: string[]; problems: { file: string; why: string }[] }
+// `lineEndings` are the project's core.autocrlf and core.eol in force, by git's lower-case names, each as written: the
+// last one set in the files as git reads them, the system's, the user's, then the repository's, each include read where it
+// stands, whatever its condition (choice 100).
+export interface GitSettings {
+  files: string[];
+  hooksPaths: string[];
+  gitDirs: string[];
+  problems: { file: string; why: string }[];
+  lineEndings: Record<string, string>;
+}
 
-// Every include, whatever its condition, and every hooks folder, in one lookup: git gives each key in lower case, but
-// for an includeIf's condition, in the file's order (checked with git 2.41.0 by the code review, 2026-10-31).
-const SETTINGS = "^(include\\.path|includeif\\..*\\.path|core\\.hookspath)$";
+// Every include, whatever its condition, every hooks folder and the two line-ending settings, in one lookup: git gives
+// each key in lower case, but for an includeIf's condition, in the file's order (checked with git 2.41.0 by the code
+// review, 2026-10-31; for the line endings, 2026-11-02).
+const SETTINGS = "^(include\\.path|includeif\\..*\\.path|core\\.hookspath|core\\.autocrlf|core\\.eol)$";
+const LINE_ENDINGS = ["core.autocrlf", "core.eol"];
+type Step = { set: [string, string] } | { include: string };
 // Of git's own variables, only these two pass to it. Any other could change what it reads or prints: GIT_TRACE and its
 // kin write to stderr, which `values` reads as a failure; GIT_CONFIG_NOSYSTEM would hide the system's file, which a git
 // run elsewhere may read; GIT_DIR names a repository.
@@ -44,28 +57,34 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
   const [system, global] = await Promise.all([scopeFiles(run, "--system"), scopeFiles(run, "--global")]);
   const repo = repository(root);
   const top = repo?.top ?? path.resolve(root);
-  const found: GitSettings = { files: [], hooksPaths: [], gitDirs: [], problems: repo?.problem ? [repo.problem] : [] };
+  const found: GitSettings = { files: [], hooksPaths: [], gitDirs: [], problems: repo?.problem ? [repo.problem] : [], lineEndings: {} };
   for (const dir of repo?.gitDirs ?? []) {
     const real = realPath(dir);
     const inProject = within(root, dir) || (real !== undefined && within(realPath(root) ?? root, real));
     if (inProject && path.relative(path.join(top, ".git"), dir) !== "") list(found.gitDirs, dir, real);
   }
   const seen = new Set<string>();
-  // Each entry: a file, and whether an include named it (only an include is checked for being a link or missing).
-  const queue: [string, boolean][] = [];
-  const add = (file: string, included: boolean) => {
+  // Each entry: a file, whether an include named it (only an include is checked for being a link or missing), and the key
+  // it is known by.
+  const queue: [string, boolean, string][] = [];
+  // Each file read, by its key: its line-ending settings and includes in the file's order, so the line endings can be
+  // worked out as git reads them (below). `tops` are the files git starts from, in its order.
+  const steps = new Map<string, Step[]>();
+  const tops: string[] = [];
+  const add = (file: string, included: boolean): string => {
     const real = realPath(file);
     // An included link is known by its own path, so its target named directly is still read, or refused, in its turn.
     const same = included && isLink(file) ? file : (real ?? file);
     const key = process.platform === "win32" ? same.toLowerCase() : same;
-    if (seen.has(key)) return;
+    if (seen.has(key)) return key;
     seen.add(key);
     list(found.files, file, real);
-    queue.push([file, included]);
+    queue.push([file, included, key]);
+    return key;
   };
-  for (const file of [...system, ...scopeNames(env, "system"), ...global, ...scopeNames(env, "global")]) add(file, false);
+  for (const file of [...system, ...scopeNames(env, "system"), ...global, ...scopeNames(env, "global")]) tops.push(add(file, false));
   // A missing one is left out: live link would mount over it, and Docker makes a missing mount's path (choice 57).
-  for (const file of repo?.files ?? []) if (existsSync(file)) add(file, false);
+  for (const file of repo?.files ?? []) if (existsSync(file)) tops.push(add(file, false));
   // The files waiting are read side by side, then their results taken in the order the files were met, so `files`,
   // `hooksPaths` and `problems` keep that order; the includes they name are the next round.
   while (queue.length > 0) {
@@ -76,25 +95,44 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
         return why ? { why } : values(run, file);
       }),
     );
-    round.forEach(([file], i) => {
+    round.forEach(([file, , key], i) => {
       const got = read[i]!;
       if (!Array.isArray(got)) {
         found.problems.push({ file, why: got.why });
         return;
       }
-      // Each entry is "<key>\n<value>"; a key with no value names nothing. Git has expanded the value already; an include
-      // still relative is relative to the file it is in, and a hooks folder to the repository's top.
+      const own: Step[] = [];
+      steps.set(key, own);
+      // Each entry is "<key>\n<value>". A line-ending setting counts even when empty, as git reads an empty autocrlf as
+      // false; one with no value at all fails the lookup (`--type=path`; measured with git 2.41.0, 2026-11-02). Any other
+      // key with no value names nothing. Git has expanded the value already; an include still relative is relative to the
+      // file it is in, and a hooks folder to the repository's top.
       for (const entry of got) {
         const cut = entry.indexOf("\n");
+        const name = cut < 0 ? entry : entry.slice(0, cut);
         const value = cut < 0 ? "" : entry.slice(cut + 1);
-        if (!value) continue;
-        if (entry.slice(0, cut) === "core.hookspath") {
+        if (LINE_ENDINGS.includes(name)) own.push({ set: [name, value] });
+        else if (!value) continue;
+        else if (name === "core.hookspath") {
           const folder = path.resolve(top, value);
           list(found.hooksPaths, folder, realPath(folder));
-        } else add(path.resolve(path.dirname(file), value), true);
+        } else own.push({ include: add(path.resolve(path.dirname(file), value), true) });
       }
     });
   }
+  // The line endings: each file's settings in order, an include's where it stands, the last one set winning. A file is not
+  // read again inside itself, so a loop of includes ends (git itself refuses one).
+  const open = new Set<string>();
+  const walk = (key: string) => {
+    if (open.has(key)) return;
+    open.add(key);
+    for (const step of steps.get(key) ?? []) {
+      if ("include" in step) walk(step.include);
+      else found.lineEndings[step.set[0]] = step.set[1];
+    }
+    open.delete(key);
+  };
+  for (const key of tops) walk(key);
   return found;
 }
 
@@ -148,8 +186,8 @@ function realPath(p: string): string | undefined {
 }
 
 // Whether `p` is `root` or inside it (path.relative compares without case on Windows). A name that only starts with
-// two dots, such as `..bare`, is inside.
-function within(root: string, p: string): boolean {
+// two dots, such as `..bare`, is inside. Live link's mounts use it too (sandbox/mounts.ts).
+export function within(root: string, p: string): boolean {
   const rel = path.relative(path.resolve(root), p);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }

@@ -84,6 +84,7 @@ describe("gitSettings", () => {
       hooksPaths: [],
       gitDirs: [],
       problems: [],
+      lineEndings: { "core.autocrlf": "true" },
     });
   });
 
@@ -127,7 +128,7 @@ describe("gitSettings", () => {
     w.write("project/.git/config", "[include]\n\tpath = ../extra.cfg\n");
     const extra = w.write("project/extra.cfg", "");
     const got = await gitSettings(w.root, { ...w.env, GIT_TRACE: "1", GIT_TRACE2: "1", GIT_TRACE_SETUP: "1", git_trace_performance: "1" });
-    expect(got).toEqual({ files: [w.system, w.global, w.at("project/.git/config"), extra], hooksPaths: [], gitDirs: [], problems: [] });
+    expect(got).toEqual({ files: [w.system, w.global, w.at("project/.git/config"), extra], hooksPaths: [], gitDirs: [], problems: [], lineEndings: {} });
   });
 
   it("reads the system's file even when GIT_CONFIG_NOSYSTEM is set", async () => {
@@ -376,7 +377,7 @@ describe("gitSettings", () => {
     const dotGit = w.write("project/.git", text);
     const got = await gitSettings(w.root, w.env);
     const problems = [{ file: dotGit, why: `it cannot be read: ${words}: ${dotGit}` }];
-    expect(got).toEqual({ files: [w.system, w.global], hooksPaths: [], gitDirs: [], problems });
+    expect(got).toEqual({ files: [w.system, w.global], hooksPaths: [], gitDirs: [], problems, lineEndings: {} });
   });
 
   it("follows a .git file with no commondir, as a submodule has", async () => {
@@ -386,6 +387,28 @@ describe("gitSettings", () => {
     const got = await gitSettings(w.root, w.env);
     expect(got!.files).toContain(w.at("modules/sub/config"));
     expect(got!.hooksPaths).toEqual([path.join(w.root, "hooks")]);
+  });
+
+  it("works out the line endings as git reads its files: the system's, the user's, the repository's, each include in its place (choice 100)", async () => {
+    const w = world();
+    w.write("system.cfg", "[core]\n\tautocrlf = true\n\teol = crlf\n");
+    w.write("global.cfg", "[core]\n\tautocrlf = false\n");
+    // The include sits between the repository's two lines: its autocrlf wins over the one before it, and the eol after it
+    // wins over its own.
+    w.write("project/.git/config", "[core]\n\tautocrlf = true\n[include]\n\tpath = ../extra.cfg\n[core]\n\teol = lf\n");
+    w.write("project/extra.cfg", "[core]\n\tautocrlf = Input\n\teol = native\n");
+    const got = await gitSettings(w.root, w.env);
+    expect(got!.lineEndings).toEqual({ "core.autocrlf": "Input", "core.eol": "lf" });
+  });
+
+  it("takes a line-ending setting from an includeIf whatever its condition, and an empty value as git gives it", async () => {
+    const w = world();
+    w.write("system.cfg", "[core]\n\tautocrlf = true\n");
+    // Git reads an empty autocrlf as false, so it still overrides the system's true.
+    w.write("global.cfg", '[core]\n\tautocrlf =\n[includeIf "onbranch:sample-no-such-branch"]\n\tpath = ~/eol.cfg\n');
+    w.write("home/eol.cfg", "[core]\n\teol = crlf\n");
+    const got = await gitSettings(w.root, w.env);
+    expect(got!.lineEndings).toEqual({ "core.autocrlf": "", "core.eol": "crlf" });
   });
 
   it("(the test file's own guard) refuses a git run whose home folder no test made, before git starts", async () => {

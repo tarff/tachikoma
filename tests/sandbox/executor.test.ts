@@ -210,6 +210,14 @@ describe("DockerExecutor with a stand-in Docker", () => {
     expect(fake.calls.at(-1)).toEqual(["rm", "-f", "b0x"]);
   });
 
+  it("gives the box the variables it is given, after HOME, so every docker exec has them (choice 100)", async () => {
+    const fake = answering(() => ok());
+    await (await DockerExecutor.start({ ...OPTS, env: { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.autocrlf", GIT_CONFIG_VALUE_0: "" } }, fake.run)).stop();
+    const run = fake.calls[0]!;
+    const home = run.indexOf("HOME=/tmp");
+    expect(run.slice(home + 1, home + 7)).toEqual(["-e", "GIT_CONFIG_COUNT=1", "-e", "GIT_CONFIG_KEY_0=core.autocrlf", "-e", "GIT_CONFIG_VALUE_0="]);
+  });
+
   it("adds the labels it is given after its own", async () => {
     const fake = answering(() => ok());
     await (await DockerExecutor.start({ ...OPTS, labels: { "tachikoma.test": "1" } }, fake.run)).stop();

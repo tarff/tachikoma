@@ -9,13 +9,13 @@ import { commandEnv, onPath } from "../exec/env.js";
 import type { ExecResult, Executor } from "../exec/executor.js";
 import type { SandboxLimits } from "../settings.js";
 import { docker, type DockerRun } from "./docker.js";
+import type { Mount } from "./mounts.js";
 
 // Memory in bytes, as Docker takes --memory, and CPUs with decimals, as it takes --cpus (choice 75): a default is rounded
 // down only to a whole MiB (choice 80) and to 9 decimal places (choice 82).
 export interface Limits { memory: number; cpus: number; pids: number }
-// Live link's mounts (Task 15 makes them): a host path read-only in the box, or a box path hidden under an empty tmpfs.
-export type Mount = { host: string; box: string; readOnly: true } | { box: string; hidden: true };
-// `user` is boxUser's; `labels` are added to the box's own.
+// `mounts` are live link's (mounts.ts); `user` is boxUser's; `env` are variables every command in the box gets, as live
+// link's git settings (choice 100); `labels` are added to the box's own.
 export interface BoxOptions {
   image: string;
   folder: string;
@@ -24,6 +24,7 @@ export interface BoxOptions {
   mounts: Mount[];
   session: string;
   user: string;
+  env?: Record<string, string>;
   labels?: Record<string, string>;
 }
 // The limits Docker can be asked for but may not apply (choice 83), as its line names them.
@@ -150,14 +151,16 @@ export class DockerExecutor implements Executor {
   ) {}
 
   // Choice 18's container, never pulled (the image is built here, after asking: image.ts), with no host environment but
-  // HOME=/tmp, which every user can write: a Linux user the image does not know has no home (choice 77). Its
+  // HOME=/tmp, which every user can write: a Linux user the image does not know has no home (choice 77), and the
+  // variables it is given, which `docker exec` passes to each command. Its
   // labels let the next launch find it when this session's process is gone (sweepBoxes): the session, this machine and
   // this process.
   static async start(opts: BoxOptions, run: DockerRun = docker): Promise<DockerExecutor> {
     const { memory, cpus, pids } = opts.limits;
     const mounts = opts.mounts.flatMap((m) => ("hidden" in m ? ["--tmpfs", m.box] : ["-v", `${m.host}:${m.box}:ro`]));
     const got = await run([
-      "run", "-d", "--pull", "never", "--init", "--user", opts.user, "-e", "HOME=/tmp", "--cap-drop", "ALL",
+      "run", "-d", "--pull", "never", "--init", "--user", opts.user, "-e", "HOME=/tmp",
+      ...Object.entries(opts.env ?? {}).flatMap(([name, value]) => ["-e", `${name}=${value}`]), "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges", "--network", opts.network === "on" ? "bridge" : "none",
       "--memory", String(memory), "--memory-swap", String(memory), "--cpus", String(cpus), "--pids-limit", String(pids),
       "-v", `${opts.folder}:/work`, ...mounts, "-w", "/work",
