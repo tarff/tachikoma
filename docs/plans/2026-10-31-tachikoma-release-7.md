@@ -587,6 +587,15 @@ the plan's review.
     action is refused, as a judge's no is, but the error kind `judge` sets neither `-p`'s
     failing exit code nor a subagent's failure. The exit code depends only on how the run
     ended.
+66. **An answered question is one clear line under its tool line** (the user's choice, from
+    the auto-mode terminal check after Part 2; built before Part 3). A declined command
+    showed its text three times (`● shell …`, `run: …: declined`, `⎿ The user declined: run:
+    …`) and lost its red line once the question closed. Now the tool line keeps the action,
+    and the answer is one line under it: `⎿ You allowed this.` or `⎿ You declined this.`,
+    followed by each danger as `Danger: <kind>: <command>`, so the reason stays in the record.
+    An allowed call's own result follows as before. The model is still told its full message;
+    only the screen stops repeating it. A refusal nobody was asked about (a mode's, the
+    judge's) keeps its own message.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
