@@ -220,6 +220,20 @@ describe("readSettings", () => {
       }
     });
 
+    // Choice 91: Docker's own limit for --cpus (choice 82), and numbers past JSON's range, which read as Infinity.
+    it("refuses cpus with more than 9 decimal places, and cpus or pids that are not finite", () => {
+      expect(read({ sandboxLimits: { cpus: 1.123456789 } })).toEqual({ settings: { sandboxLimits: { cpus: 1.123456789 } }, warnings: [] });
+      expect(problem({ sandboxLimits: { cpus: 1.1234567891 } })).toBe(
+        'settings.json: "sandboxLimits.cpus" can have at most 9 decimal places (got 1.1234567891)',
+      );
+      expect(readSettings('{"sandboxLimits": {"cpus": 1e999}}')).toEqual({
+        problem: 'settings.json: "sandboxLimits.cpus" must be a number of CPUs above 0, such as 2 or 1.5 (got null)',
+      });
+      expect(readSettings('{"sandboxLimits": {"pids": 1e999}}')).toEqual({
+        problem: 'settings.json: "sandboxLimits.pids" must be a whole number of processes from 1, such as 1024 (got null)',
+      });
+    });
+
     it("leaves out a name it does not know, with a warning, and keeps the rest", () => {
       expect(read({ sandboxLimits: { disk: "10g", cpus: 2 } })).toEqual({
         settings: { sandboxLimits: { cpus: 2 } },

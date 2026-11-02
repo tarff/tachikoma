@@ -3,6 +3,7 @@
 // exit, which cannot wait for one.
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readlinkSync } from "node:fs";
 import os from "node:os";
 import { commandEnv, onPath } from "../exec/env.js";
 import type { ExecResult, Executor } from "../exec/executor.js";
@@ -53,23 +54,24 @@ const DOCKER_MIN_MEMORY = 6 * UNIT.m;
 
 export async function dockerRoom(run: DockerRun = docker): Promise<Room> {
   const got = await run(["info", "--format", "{{json .}}"]);
-  if (got === "missing" || got.code !== 0) {
-    throw new Error(`The sandbox could not read Docker's CPUs and memory: ${got === "missing" ? NO_DOCKER : got.err.trim()}`);
+  const unread = (why: string) => new Error(`The sandbox could not read Docker's CPUs and memory: ${why}`);
+  if (got === "missing" || got.code !== 0) throw unread(got === "missing" ? NO_DOCKER : got.err.trim());
+  let info: { NCPU?: number; MemTotal?: number; SecurityOptions?: string[] | null; MemoryLimit?: boolean; CpuCfsQuota?: boolean; PidsLimit?: boolean };
+  try {
+    info = JSON.parse(got.out);
+  } catch {
+    throw unread("docker info's answer is not JSON");
   }
-  const info = JSON.parse(got.out) as {
-    NCPU: number;
-    MemTotal: number;
-    SecurityOptions?: string[] | null;
-    MemoryLimit?: boolean;
-    CpuCfsQuota?: boolean;
-    PidsLimit?: boolean;
-  };
+  const { NCPU, MemTotal } = info;
+  if (!(Number.isFinite(NCPU) && NCPU! > 0 && Number.isFinite(MemTotal) && MemTotal! > 0)) {
+    throw unread(`docker info gave ${NCPU} CPUs and ${MemTotal} bytes of memory`);
+  }
   // Each option is "name=<name>" and its settings, comma-separated: "name=seccomp,profile=builtin".
   const rootless = info.SecurityOptions?.some((o) => o.split(",")[0] === "name=rootless") ?? false;
   // Only a flag that says false is a limit Docker cannot apply; one it does not give is taken as applied.
   const flags = { memory: info.MemoryLimit, CPUs: info.CpuCfsQuota, processes: info.PidsLimit };
   const unlimited = (Object.keys(flags) as Unlimited[]).filter((what) => flags[what] === false);
-  return { cpus: info.NCPU, memory: info.MemTotal, rootless, unlimited };
+  return { cpus: NCPU!, memory: MemTotal!, rootless, unlimited };
 }
 
 // The limits in force: the user's values as given, the defaults for the rest. A value of the user's above what Docker has
@@ -111,6 +113,9 @@ export function memoryText(bytes: number, unit: "g" | "m" = bytes % UNIT.g === 0
 }
 
 const NO_DOCKER = "no docker program is on PATH any more";
+// The process space this Tachikoma's pid belongs to, for the box's label (choice 93): the computer's name, which WSL's
+// distros share with Windows, its system, and on Linux its pid namespace, which tells two distros or containers apart.
+const HOST = [os.hostname(), process.platform, ...(process.platform === "linux" ? [readlinkSync("/proc/self/ns/pid")] : [])].join("/");
 // The box's cgroup's memory events, as the box sees them. Only cgroup v2 has the file (Docker Desktop's, and most Linux
 // today); cgroup v1, Ubuntu 20.04's and RHEL 8's default, has none, and OOMKilled is read instead (exec, below).
 const EVENTS = "/sys/fs/cgroup/memory.events";
@@ -156,7 +161,7 @@ export class DockerExecutor implements Executor {
       "--security-opt", "no-new-privileges", "--network", opts.network === "on" ? "bridge" : "none",
       "--memory", String(memory), "--memory-swap", String(memory), "--cpus", String(cpus), "--pids-limit", String(pids),
       "-v", `${opts.folder}:/work`, ...mounts, "-w", "/work",
-      "--label", `tachikoma.session=${opts.session}`, "--label", `tachikoma.host=${os.hostname()}`, "--label", `tachikoma.pid=${process.pid}`,
+      "--label", `tachikoma.session=${opts.session}`, "--label", `tachikoma.host=${HOST}`, "--label", `tachikoma.pid=${process.pid}`,
       ...Object.entries(opts.labels ?? {}).flatMap(([name, value]) => ["--label", `${name}=${value}`]),
       opts.image, "sleep", "infinity",
     ]);
@@ -178,14 +183,21 @@ export class DockerExecutor implements Executor {
     if (this.#broken) throw this.#broken;
     if (signal?.aborted) throw new Error("Cancelled");
     if (this.#oomKills === undefined) this.#oomKills = await this.#oomKillCount(); // again, until it can be read
+    if (signal?.aborted) throw new Error("Cancelled"); // an Esc during that read: nothing has started
     const before = this.#oomKills;
     const group = `/tmp/tachikoma-${randomUUID()}`;
     const wrapper =
       `exec 3>&2 2>/dev/null; setsid -w bash -c 'echo $$ > ${group}; [ -e ${group}.stop ] && exit; exec bash -c "$1"' _ "$1" 2>&3 3>&-; ` +
       `s=$?; rm -f ${group} ${group}.stop; exit $s`;
-    let kill: Promise<unknown> | undefined;
+    // Esc's kill ends with exit 0 once it runs in the box, the group gone or not yet made, so a failure is Docker's: its
+    // words, or undefined when it reached the box. A kill that cannot reach the box stops the sandbox (choice 87).
+    let kill: Promise<string | undefined> | undefined;
     const onAbort = () => {
-      kill = this.run(["exec", this.id, "bash", "-c", `touch ${group}.stop; kill -KILL -- -"$(cat ${group} 2>/dev/null)" 2>/dev/null`]).catch(() => {});
+      const line = `touch ${group}.stop; kill -KILL -- -"$(cat ${group} 2>/dev/null)" 2>/dev/null; exit 0`;
+      kill = this.run(["exec", this.id, "bash", "-c", line]).then(
+        (r) => (r === "missing" ? NO_DOCKER : r.code !== 0 ? r.err.trim() || "the box stopped" : undefined),
+        (err: Error) => err.message,
+      );
     };
     signal?.addEventListener("abort", onAbort, { once: true });
     let got: Awaited<ReturnType<DockerRun>>;
@@ -193,7 +205,8 @@ export class DockerExecutor implements Executor {
       got = await this.run(["exec", "-w", cwd, this.id, "bash", "-c", wrapper, "_", command], { signal, cut: true });
     } catch (err) {
       if (signal?.aborted) {
-        await kill;
+        const unreached = await kill;
+        if (unreached !== undefined) throw this.#fail(`Esc could not reach the box (${unreached})`);
         throw new Error("Cancelled");
       }
       throw this.#fail((err as Error).message);
@@ -211,10 +224,11 @@ export class DockerExecutor implements Executor {
     // Out of memory, the kernel kills with signal 9: the shell's 137. Measured on 2026-11-02 in a 512 MB box (Docker
     // 29.9.2, cgroup v2): memory.events' oom_kill went up by one at each kill by the memory limit and stayed the same at
     // a plain `kill -9`, while OOMKilled stayed true for the box's life after its first one, so it would blame a later
-    // kill -9. So the count is used, read after a 137 only, against the last read: a kill by the limit in a process left
-    // running by an earlier command, found after a later 137, is laid on that later one. Without the file (cgroup v1),
-    // or for a command whose count before it could not be read, OOMKilled is the only sign, with that flaw.
-    if (got.code === 137 && (await this.#outOfMemory(before))) {
+    // kill -9. So the count is used, read again after every command that fails (choice 89), as a build that exits 2 may
+    // hold a process the limit killed, against the count before it: a kill by the limit in a process left running by an
+    // earlier command, found after a later failure, is laid on that later one. Without the file (cgroup v1), or for a
+    // command whose count before it could not be read, OOMKilled is the only sign, after a 137 only, with that flaw.
+    if (got.code !== 0 && (await this.#outOfMemory(before, got.code))) {
       const limit = memoryText(this.limits.memory);
       const line = `(Stopped: the command used more than the box's memory limit of ${limit}. "sandboxLimits" in settings.json changes it.)`;
       stderr += `${stderr && !stderr.endsWith("\n") ? "\n" : ""}${line}`;
@@ -241,20 +255,23 @@ export class DockerExecutor implements Executor {
   }
 
   // From now on every call throws the same, and nothing runs, in the box or on the host.
-  #fail(words: string): Error {
+  #fail(given: string): Error {
+    const words = given || "the box stopped"; // Docker gave none (choice 92)
     const stop = words.endsWith(".") ? "" : ".";
     this.#broken = new Error(`The sandbox stopped working: ${words}${stop} Shell and file tools are off until Tachikoma is launched again.`);
     return this.#broken;
   }
 
-  // Whether the box's memory limit killed something since `before`, the count before the command. Nothing read is no.
-  async #outOfMemory(before: number | null | undefined): Promise<boolean> {
+  // Whether the box's memory limit killed something since `before`, the count before the command; without one, OOMKilled
+  // after a 137 only, as it stays true for the box's life. Nothing read is no.
+  async #outOfMemory(before: number | null | undefined, code: number): Promise<boolean> {
     if (typeof before === "number") {
       const now = await this.#oomKillCount();
       if (typeof now !== "number") return false;
       this.#oomKills = now;
       return now > before;
     }
+    if (code !== 137) return false;
     const got = await this.run(["inspect", "--format", "{{.State.OOMKilled}}", this.id]).catch(() => undefined);
     return !!got && got !== "missing" && got.code === 0 && got.out.trim() === "true";
   }
@@ -270,16 +287,17 @@ export class DockerExecutor implements Executor {
   }
 }
 
-// At the launch, before a box starts: removes the boxes of this machine whose Tachikoma process is gone, as one that died
-// without its exit handler leaves (killed outright, or the machine stopped). A box of another machine sharing the Docker
-// (a remote Docker, or WSL beside Windows with a host name of its own), or with no labels to tell, is left alone. A
-// process id the system has given to another program reads as alive, so that box waits for a later launch.
+// At the launch, before a box starts: removes the boxes of this process space whose Tachikoma process is gone, as one that
+// died without its exit handler leaves (killed outright, or the machine stopped). A box of another (another machine on a
+// remote Docker, or WSL beside Windows on Docker Desktop's one Docker, with the computer's name but pids of its own), or
+// with no labels to tell, is left alone. A process id the system has given to another program reads as alive, so that box
+// waits for a later launch.
 export async function sweepBoxes(run: DockerRun = docker): Promise<void> {
   const got = await run(["ps", "-a", "--filter", "label=tachikoma.session", "--format", '{{.ID}}\t{{.Label "tachikoma.host"}}\t{{.Label "tachikoma.pid"}}']);
   if (got === "missing" || got.code !== 0) return;
   for (const line of got.out.split("\n")) {
     const [id, host, pid] = line.trim().split("\t");
-    if (id && host === os.hostname() && pid && /^\d+$/.test(pid) && !alive(Number(pid))) await run(["rm", "-f", id]);
+    if (id && host === HOST && pid && /^\d+$/.test(pid) && !alive(Number(pid))) await run(["rm", "-f", id]);
   }
 }
 

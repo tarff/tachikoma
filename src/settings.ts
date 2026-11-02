@@ -198,7 +198,9 @@ function sandboxLimits(entry: string, value: unknown, warnings: string[]): Sandb
       }
       limits.memory = v;
     } else if (name === "cpus") {
-      if (typeof v !== "number" || !(v > 0)) throw wrongType(part, "a number of CPUs above 0, such as 2 or 1.5", v);
+      if (typeof v !== "number" || !Number.isFinite(v) || !(v > 0)) throw wrongType(part, "a number of CPUs above 0, such as 2 or 1.5", v);
+      // Docker refuses more ("value is too precise"; release 7 plan, choices 82 and 91).
+      if (Number(v.toFixed(9)) !== v) throw new Error(`${part} can have at most 9 decimal places (got ${v})`);
       limits.cpus = v;
     } else if (name === "pids") {
       if (!Number.isInteger(v) || (v as number) < 1) throw wrongType(part, "a whole number of processes from 1, such as 1024", v);

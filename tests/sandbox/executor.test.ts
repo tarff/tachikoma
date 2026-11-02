@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readlinkSync } from "node:fs";
 import { mkdtemp, rmdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -45,6 +46,8 @@ const info = (cpus: number, memory: number, more: Record<string, unknown> = {}) 
   JSON.stringify({ NCPU: cpus, MemTotal: memory, SecurityOptions: DESKTOP, MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true, ...more });
 const THIS_PC = info(24, 33518923776);
 const room = async (answer: string) => dockerRoom(fakeDocker(() => ok(`${answer}\n`)).run);
+// The process space this test runs in, as choice 93 names it.
+const HOST = [os.hostname(), process.platform, ...(process.platform === "linux" ? [readlinkSync("/proc/self/ns/pid")] : [])].join("/");
 const OPTS: BoxOptions = {
   image: "tachikoma-sandbox:0123456789ab",
   folder: path.join(os.tmpdir(), "project"),
@@ -73,6 +76,12 @@ describe("the box's limits (choices 75, 76, 80, 82 and 83)", () => {
   it("still passes a limit Docker cannot apply (choice 83)", async () => {
     const space = await room(info(24, 33518923776, { MemoryLimit: false, CpuCfsQuota: false, PidsLimit: false }));
     expect(boxLimits(undefined, space)).toEqual({ limits: { memory: 4 * GB, cpus: 4, pids: 1024 } });
+  });
+
+  it("says so when docker info's answer is not JSON, or has no CPUs or memory", async () => {
+    await expect(room("Client: Docker Engine")).rejects.toThrow("The sandbox could not read Docker's CPUs and memory: ");
+    await expect(room(JSON.stringify({ MemTotal: 8 * GB }))).rejects.toThrow("The sandbox could not read Docker's CPUs and memory: ");
+    await expect(room(JSON.stringify({ NCPU: 0, MemTotal: 8 * GB }))).rejects.toThrow("The sandbox could not read Docker's CPUs and memory: ");
   });
 
   it("says so when docker info fails", async () => {
@@ -193,7 +202,7 @@ describe("DockerExecutor with a stand-in Docker", () => {
       "run", "-d", "--pull", "never", "--init", "--user", "1000:1000", "-e", "HOME=/tmp", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
       "--network", "none", "--memory", String(4 * GB), "--memory-swap", String(4 * GB), "--cpus", "4", "--pids-limit", "1024",
       "-v", `${OPTS.folder}:/work`, "-v", `${path.join(OPTS.folder, ".git")}:/work/.git:ro`, "--tmpfs", "/work/.tachikoma", "-w", "/work",
-      "--label", "tachikoma.session=s1", "--label", `tachikoma.host=${os.hostname()}`, "--label", `tachikoma.pid=${process.pid}`,
+      "--label", "tachikoma.session=s1", "--label", `tachikoma.host=${HOST}`, "--label", `tachikoma.pid=${process.pid}`,
       OPTS.image, "sleep", "infinity",
     ]);
     expect(fake.calls[1]).toEqual(["exec", "b0x", "cat", "/sys/fs/cgroup/memory.events"]);
@@ -261,6 +270,61 @@ describe("DockerExecutor with a stand-in Docker", () => {
     );
   });
 
+  it("says the box stopped when Docker gives no words (choice 92)", async () => {
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) return ok("oom_kill 0\n");
+      if (args[0] === "inspect") return ok("false\n");
+      return { code: 137, out: "", err: "" };
+    });
+    const box = await DockerExecutor.start(OPTS, fake.run);
+    await expect(box.exec("kill -9 -1", "/work")).rejects.toThrow(
+      "The sandbox stopped working: the box stopped. Shell and file tools are off until Tachikoma is launched again.",
+    );
+  });
+
+  it("when Esc cannot reach the box, stops the sandbox instead of saying Cancelled (choice 87)", async () => {
+    const words = "OCI runtime exec failed: unable to start container process: resource temporarily unavailable";
+    let release: () => void = () => {};
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) return ok("oom_kill 0\n");
+      if (args[0] === "exec" && args[1] !== "-w") return { code: 126, out: "", err: `${words}\n` }; // Esc's kill
+      return ok();
+    });
+    const run: DockerRun = (args, opts) =>
+      args[1] === "-w"
+        ? new Promise((_, reject) => {
+            release = () => reject(new Error("The operation was aborted"));
+            opts?.signal?.addEventListener("abort", () => setImmediate(release));
+          })
+        : fake.run(args, opts);
+    const box = await DockerExecutor.start(OPTS, run);
+    const stop = new AbortController();
+    const running = box.exec("sleep 600", "/work", stop.signal);
+    await new Promise((resolve) => setImmediate(resolve)); // the command is started
+    stop.abort();
+    const message = `The sandbox stopped working: Esc could not reach the box (${words}). Shell and file tools are off until Tachikoma is launched again.`;
+    await expect(running).rejects.toThrow(message);
+    await expect(box.exec("echo hi", "/work")).rejects.toThrow(message);
+  });
+
+  it("an Esc while the count is read, before the command starts, runs nothing", async () => {
+    const stop = new AbortController();
+    let reads = 0;
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) {
+        if (++reads === 2) stop.abort(); // the read before the command
+        return reads === 1 ? { code: 1, out: "", err: "Error response from daemon: busy\n" } : ok("oom_kill 0\n");
+      }
+      return ok();
+    });
+    const box = await DockerExecutor.start(OPTS, fake.run);
+    await expect(box.exec("echo hi", "/work", stop.signal)).rejects.toThrow("Cancelled");
+    expect(fake.calls.some((c) => c[1] === "-w")).toBe(false);
+  });
+
   it("when docker leaves PATH during the session, says so in the same message", async () => {
     let gone = false;
     const fake = fakeDocker((args) => {
@@ -323,6 +387,33 @@ describe("DockerExecutor with a stand-in Docker", () => {
     await box.stop();
   });
 
+  it("reads the count after any failed command, so a memory kill inside a build that exits 2 is said there (choice 89)", async () => {
+    let reads = 0;
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) return ok(`oom_kill ${reads++ === 0 ? 0 : 1}\n`);
+      if (args[0] === "exec") return { code: 2, out: "", err: "make: *** [build] Killed\n" };
+      return ok("true\n");
+    });
+    const box = await DockerExecutor.start({ ...OPTS, limits: { memory: 512 * MB, cpus: 1, pids: 64 } }, fake.run);
+    expect((await box.exec("make build", "/work")).stderr).toBe(
+      `make: *** [build] Killed\n(Stopped: the command used more than the box's memory limit of 512m. "sandboxLimits" in settings.json changes it.)`,
+    );
+    await box.stop();
+  });
+
+  it("without memory.events, does not take OOMKilled for a command that failed with another code than 137", async () => {
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) return { code: 1, out: "", err: "cat: /sys/fs/cgroup/memory.events: No such file or directory\n" };
+      if (args[0] === "exec") return { code: 2, out: "", err: "" };
+      return ok("true\n"); // OOMKilled stays true once it has been (measured): it cannot tell this command's failure
+    });
+    const box = await DockerExecutor.start(OPTS, fake.run);
+    expect((await box.exec("make build", "/work")).stderr).toBe("");
+    await box.stop();
+  });
+
   it("takes Docker's warnings on stderr as no failure when the box starts", async () => {
     const warning = "WARNING: Your kernel does not support swap limit capabilities or the cgroup is not mounted. Memory limited without swap.\n";
     const fake = fakeDocker((args) => (args[0] === "run" ? { code: 0, out: "b0x\n", err: warning } : ok("oom_kill 0\n")));
@@ -345,10 +436,12 @@ describe("sweepBoxes (the boxes of sessions whose process is gone)", () => {
       const child = spawn(process.execPath, ["-e", ""]);
       child.on("close", () => resolve(child.pid!));
     });
-    const host = os.hostname();
-    const fake = fakeDocker((args) =>
-      args[0] === "ps" ? ok([`aaa\t${host}\t${gone}`, `bbb\t${host}\t${process.pid}`, `ccc\tanother-pc\t${gone}`, `ddd\t\t`].join("\n") + "\n") : ok(),
-    );
+    // Only the whole label is this process space (choice 93): the same computer's name for another system, as a WSL
+    // distro beside Windows has, or with no system at all, is not.
+    const other = `${os.hostname()}/${process.platform === "linux" ? "win32" : "linux"}`;
+    const boxes = [`aaa\t${HOST}\t${gone}`, `bbb\t${HOST}\t${process.pid}`, `ccc\tanother-pc\t${gone}`, `ddd\t\t`, `eee\t${other}\t${gone}`];
+    boxes.push(`fff\t${os.hostname()}\t${gone}`);
+    const fake = fakeDocker((args) => (args[0] === "ps" ? ok(`${boxes.join("\n")}\n`) : ok()));
     await sweepBoxes(fake.run);
     expect(fake.calls).toEqual([
       ["ps", "-a", "--filter", "label=tachikoma.session", "--format", '{{.ID}}\t{{.Label "tachikoma.host"}}\t{{.Label "tachikoma.pid"}}'],
@@ -389,11 +482,13 @@ async function realBoxAs(ctx: TestContext, needs?: Needs): Promise<{ box: Docker
   return { box, user: opts.user };
 }
 
-// The box's processes, as `<pid> <command line>` lines, read from /proc: the image has no ps.
 const TEST_LABEL = { "tachikoma.test": "1" }; // the plan's rule for every container a test starts
 
+// The box's processes, as `<pid> <command line>` lines, read from /proc: the image has no ps.
 const processes = async (box: DockerExecutor) =>
   (await box.exec('for p in /proc/[0-9]*; do echo "${p#/proc/} $(tr "\\0" " " < $p/cmdline)"; done', "/")).stdout;
+// The sleep itself, not a wrapper's command line that names it.
+const SLEEPING = /^\d+ sleep 600 $/m;
 
 // No time limit, as Docker's own check has none (choice 70): a test here took 3 to 9.5 s (2026-11-02), past Vitest's
 // 5 s, and no other number is set without measuring one.
@@ -401,7 +496,13 @@ describe("DockerExecutor in real Docker", { timeout: 0 }, () => {
   it("runs as the user Tachikoma chose, with HOME at /tmp (choices 14 and 77)", async (ctx) => {
     const { box, user } = await realBoxAs(ctx);
     expect(await box.exec('id -u; echo "$HOME"', "/work")).toEqual({ code: 0, signal: null, stdout: `${user.split(":")[0]}\n/tmp\n`, stderr: "" });
-    expect(user).toBe(boxUser(await dockerRoom(), process.platform));
+    const space = await dockerRoom();
+    if ((process.platform === "win32" || process.platform === "darwin") && !space.rootless) expect(user).toBe("1000:1000");
+  });
+
+  it("gives the command to bash whole, as $1, its quotes and $ untouched", async (ctx) => {
+    const box = await realBox(ctx);
+    expect((await box.exec(String.raw`printf '%s' "a'b\"c\$HOME"`, "/work")).stdout).toBe(`a'b"c$HOME`);
   });
 
   it("runs in the cwd it is given", async (ctx) => {
@@ -466,12 +567,15 @@ for i in range(${box.limits.pids + 1}): subprocess.Popen(['sleep', '600'], stdou
     const box = await realBox(ctx);
     const stop = new AbortController();
     const running = box.exec("sleep 600", "/work", stop.signal);
-    while (!(await processes(box)).includes("sleep 600")) {
+    let ended = false;
+    void running.catch(() => {}).finally(() => (ended = true)); // a command that ends early stops the wait
+    while (!ended && !SLEEPING.test(await processes(box))) {
       // looked for again at once: each look is a docker exec of its own
     }
+    expect(ended).toBe(false);
     stop.abort();
     await expect(running).rejects.toThrow("Cancelled");
-    expect(await processes(box)).not.toContain("sleep 600");
+    expect(await processes(box)).not.toMatch(SLEEPING);
   });
 
   it("Esc at once, before the command has started, leaves nothing running", async (ctx) => {
@@ -480,7 +584,7 @@ for i in range(${box.limits.pids + 1}): subprocess.Popen(['sleep', '600'], stdou
     const running = box.exec("sleep 600", "/work", stop.signal);
     stop.abort();
     await expect(running).rejects.toThrow("Cancelled");
-    expect(await processes(box)).not.toContain("sleep 600");
+    expect(await processes(box)).not.toMatch(SLEEPING);
   });
 
   it("stop() removes the box", async (ctx) => {
