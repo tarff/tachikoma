@@ -1784,7 +1784,7 @@ describe("App's answers", () => {
     await gone(app, "Esc to stop");
     const r = from(app, full, "● shell git status");
     expect(r.slice(0, 2)).toEqual(["● shell git status", "  ⎿ You cancelled this."]);
-    expect(r[2]).not.toContain("⎿"); // no result row of its own, short or whole
+    expect(r[2] ?? "").not.toContain("⎿"); // no result row of its own, short or whole
     expect(app.lastFrame()).not.toContain("The user declined");
     expect(session.messages.at(-1)!.parts[0]).toMatchObject({ output: "The user declined: run: git status" });
     expect(ran).toEqual([]);
