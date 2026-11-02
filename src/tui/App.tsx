@@ -186,7 +186,7 @@ export function App(props: AppProps) {
         const cancel = () => q.answer(false, plain ? "cancelled" : "This was cancelled.");
         // The lead's own question comes from its call running now, the last to start: delegate's calls, which ask only
         // through their subagents, start before the rest (session.ts; release 7 plan, choice 66).
-        const running = owner || plain ? undefined : ui.calls.current.at(-1);
+        const asking = owner || plain ? undefined : ui.calls.current.at(-1);
         const q: Question = {
           text: owner ? `${visible(owner.name)} to ${text}` : text,
           // A subagent's name is its id, then its description in brackets (tasks.ts); a summary starts with its action:
@@ -197,7 +197,7 @@ export function App(props: AppProps) {
           ...(plain ? { plain } : {}),
           warnings: warnings ?? [],
           ...(note !== undefined ? { note } : {}), // auto mode's pause, a row of the question's own (release 7 plan, Task 10)
-          ...(running && !running.outcome ? { call: running.id } : {}),
+          ...(asking && !asking.outcome ? { call: asking.id } : {}),
           answer: (ok, how) => {
             if (!open) return;
             open = false;
@@ -215,13 +215,14 @@ export function App(props: AppProps) {
             // A permission's answer is one line (release 7 plan, choice 66): under its call's tool line while that is still
             // the conversation's last line, and otherwise naming what it answers, as a subagent's does, a write's after its
             // preview and one that waited in the line. Each danger follows it, the whole line red then. A declined call's
-            // result row is left out, as this line says it; the model is still told its full message. A plain question
-            // keeps its own record.
+            // result row is left out under its tool line, as this line says it, and is otherwise the answer alone, so the
+            // results keep their places in call order (choice 67); the model is still told its full message. A plain
+            // question keeps its own record.
             if (q.plain) latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
             else {
               const said = [how, ...q.warnings].join(" ");
               const under = q.call !== undefined && ui.toolLine.current === q.call;
-              if (!ok && q.call !== undefined) ui.answered.current.add(q.call);
+              if (!ok && q.call !== undefined) ui.answered.current.set(q.call, under ? null : how);
               latest.current.say({ text: under ? `  ⎿ ${said}` : `${q.short ?? q.text}: ${said}`, color: q.warnings.length ? "red" : "gray" });
             }
             resolve(ok);

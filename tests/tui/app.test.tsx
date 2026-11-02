@@ -293,6 +293,7 @@ describe("App", () => {
     app.stdin.write("\u0003");
     await until(app, `write ${target}: You cancelled this.`);
     await gone(app, "Esc to stop");
+    expect(app.lastFrame()).toContain("  ⎿ You cancelled this."); // its result row, short, after the preview (release 7 plan, choice 67)
     expect(app.lastFrame()).not.toContain("[y/n]");
     expect(app.lastFrame()).not.toContain("written");
     expect(existsSync(target)).toBe(false);
@@ -1698,7 +1699,8 @@ function noShell() {
 
 // Release 7 plan, choice 66: an answered question is one line under its tool line, "You allowed this." or "You declined
 // this." with each danger after it, red when it has one; a declined call's own result row is left out, as that line says
-// it, while the model is told its full message. A line not under its tool line names what it answers.
+// it, while the model is told its full message. A line not under its tool line names what it answers, and the declined
+// call keeps a short result row in its place, in call order (choice 67).
 describe("App's answers", () => {
   // The frame's rows without colour, in full screen without the scroll bar's column (shown, below).
   const rows = (app: ReturnType<typeof render>, full: boolean) =>
@@ -1801,7 +1803,7 @@ describe("App's answers", () => {
     });
   });
 
-  it.each([true, false])("names a write in its answer, as its preview comes between, and leaves out its result row (full screen: %s)", async (full) => {
+  it.each([true, false])("names a write in its answer, as its preview comes between, and keeps a short result row (full screen: %s)", async (full) => {
     const lead = new FakeProvider("a", [callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("carried on")]);
     const { app, ctx } = await mount([], { lead, full });
     await type(app, "make a file");
@@ -1810,7 +1812,7 @@ describe("App's answers", () => {
     await press(app, "n");
     await until(app, "carried on");
     const r = from(app, full, "● write_file a.txt");
-    expect(r.slice(0, 4)).toEqual(["● write_file a.txt", `┌ write ${target} (1 line)`, "x", `write ${target}: You declined this.`]);
+    expect(r.slice(0, 5)).toEqual(["● write_file a.txt", `┌ write ${target} (1 line)`, "x", `write ${target}: You declined this.`, "  ⎿ You declined this."]);
     expect(app.lastFrame()).not.toContain("The user declined");
     expect(lead.seen[1]!.at(-1)!.parts[0]).toMatchObject({ output: `The user declined: write ${target}` });
     expect(existsSync(target)).toBe(false);
@@ -1826,12 +1828,13 @@ describe("App's answers", () => {
     await until(app, "Allow run: git log?");
     await press(app, "n");
     await until(app, "done");
-    expect(from(app, false, "● shell git status").slice(0, 5)).toEqual([
+    expect(from(app, false, "● shell git status").slice(0, 6)).toEqual([
       "● shell git status",
       "● shell git log",
       "run: git status: You allowed this.",
       "run: git log: You declined this.",
       "  ⎿ ok",
+      "  ⎿ You declined this.", // in call order, so the ok above is not read as git log's (choice 67)
     ]);
     expect(ran).toEqual(["git status"]);
   });
@@ -1854,11 +1857,29 @@ describe("App's answers", () => {
     await waitFor(() => lead.asked.length === 2);
     lead.answer("done");
     await until(app, "done");
-    expect(from(app, false, "● shell git status").slice(0, 3)).toEqual([
+    expect(from(app, false, "● shell git status").slice(0, 4)).toEqual([
       "● shell git status",
       "t2 (x) to read /made/up/b.txt: You allowed this.",
       "run: git status: You declined this.",
+      "  ⎿ You declined this.",
     ]);
+  });
+
+  // An answered call's id is let go with its result, as a provider may use an id again: a later call of the same id
+  // shows its result.
+  it("shows the result of a later call that has a declined call's id", async () => {
+    const { ran, executor } = noShell();
+    const turns = [callTool("c1", "shell", { command: "git status" }), callTool("c1", "shell", { command: "git log" }), reply("done")];
+    const { app } = await mount(turns, { executor });
+    await type(app, "look");
+    await until(app, "Allow run: git status?");
+    await press(app, "n");
+    await until(app, "Allow run: git log?");
+    await press(app, "y");
+    await until(app, "done");
+    expect(from(app, false, "● shell git status").slice(0, 4)).toEqual(["● shell git status", "  ⎿ You declined this.", "● shell git log", "  ⎿ You allowed this."]);
+    expect(from(app, false, "● shell git log")[2]).toBe("  ⎿ ok");
+    expect(ran).toEqual(["git log"]);
   });
 
   it("keeps the result row of a refusal nobody was asked about: the judge's, and a mode's", async () => {

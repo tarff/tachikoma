@@ -174,9 +174,10 @@ export function useAppState({
   const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
   const calls = useRef<Call[]>([]);
   // The call whose tool line is the conversation's last line, so a question it asks is answered in a line under it; and
-  // the lead's calls a question was declined for, whose result row that line stands for (release 7 plan, choice 66).
+  // the lead's calls a question was declined for, each with the short row in its result row's place, or null for none
+  // when its answer is under its tool line (release 7 plan, choices 66 and 67; describe.ts).
   const toolLine = useRef<string | null>(null);
-  const answered = useRef(new Set<string>());
+  const answered = useRef(new Map<string, string | null>());
   // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
   const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a

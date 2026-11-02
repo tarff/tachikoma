@@ -30,9 +30,10 @@ export function screen(l: Line): Line {
   return { text, ...(l.color === undefined ? {} : { color: l.color }), ...(l.oneLine ? { oneLine: true } : {}) };
 }
 
-// How one message appears in the scrollback. `answered`: the calls whose result row is left out, as their question's
-// answer line says what came of them (release 7 plan, choice 66; App.tsx).
-export function describe(m: Message, answered?: ReadonlySet<string>): Line[] {
+// How one message appears in the scrollback. `answered`: the calls a question was declined for, each with the short row
+// that takes its result row's place, or null for none, as its answer line under the tool line says what came of it
+// (release 7 plan, choices 66 and 67; App.tsx).
+export function describe(m: Message, answered?: ReadonlyMap<string, string | null>): Line[] {
   const lines: Line[] = [];
   let typed: Line | null = null; // the user's prompt so far, its text and pictures one line
   let picture = false; // the last part put in it was a picture
@@ -49,7 +50,9 @@ export function describe(m: Message, answered?: ReadonlySet<string>): Line[] {
     } else if (p.type === "tool_call")
       lines.push({ text: `● ${p.name} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
     else if (p.type === "tool_result") {
-      if (!answered?.has(p.callId)) lines.push({ text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, color: p.isError ? "red" : "gray", oneLine: true });
+      const short = answered?.get(p.callId);
+      if (short === undefined) lines.push({ text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, color: p.isError ? "red" : "gray", oneLine: true });
+      else if (short !== null) lines.push({ text: `  ⎿ ${short}`, color: "gray", oneLine: true });
     } else {
       const _: never = p; // a new kind of part must be given its own line here
     }
