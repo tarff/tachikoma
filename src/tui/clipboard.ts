@@ -1,9 +1,9 @@
 // Copying (release 5 design, "Copying"): Tachikoma sends OSC 52 and also runs the system's own tool, as it cannot tell
 // whether the terminal took the OSC 52.
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { errorText } from "../core/types.js";
 import { commandEnv, system32 } from "../exec/env.js";
-import type { Workspace } from "../exec/workspace.js";
 import type { Picture, Read } from "./pictures.js";
 
 export const osc52 = (text: string): string => `\u001b]52;c;${Buffer.from(text, "utf8").toString("base64")}\u0007`;
@@ -226,12 +226,12 @@ function typeOf(data: Buffer): Picture["mediaType"] | null {
   return null;
 }
 
-// The picture in a file a paste named, its type from its first bytes, not its name (release 6 plan, Task 15), read
-// through the Workspace (release 7 plan, Task 14). It never throws, as readImage.
-export async function pictureFile(file: string, workspace: Workspace): Promise<Read> {
+// The picture in a file a paste named, its type from its first bytes, not its name (release 6 plan, Task 15). It never
+// throws, as readImage.
+export async function pictureFile(file: string): Promise<Read> {
   let data: Buffer;
   try {
-    data = await workspace.readBytes(file);
+    data = await readFile(file);
   } catch (err) {
     return { failed: errorText(err) };
   }

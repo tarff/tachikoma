@@ -3,8 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-// Release 7 plan, Task 14: the file tools, the @ menu and the App's areas reach the project's files through the
-// Workspace (src/exec/workspace.ts), so in the sandbox nothing on the host opens a path in the box's folder. Each line
+// Release 7 plan, Task 14: the file tools and the App's areas reach the project's files through the Workspace
+// (src/exec/workspace.ts), so in the sandbox nothing on the host opens a path in the box's folder. Each line
 // there that names node:fs is listed here, with its reason: a new one fails, and so does a listed one that has gone.
 const ALLOWED: Record<string, { lines: string[]; why: string }> = {
   "tools/files.ts": {
@@ -23,13 +23,11 @@ const ALLOWED: Record<string, { lines: string[]; why: string }> = {
   },
   "tui/menus.ts": {
     lines: ['import { lstatSync, readdirSync, statSync } from "node:fs";'],
-    why:
-      "listEntries, LocalWorkspace's list; and listFolder, the @ menu's listing, synchronous until the user chooses how the menu waits for the " +
-      "Workspace (Task 14's report)",
+    why: "choice 98: the @ menu lists the host folder",
   },
   "tui/app/constants.ts": {
     lines: ['import { statSync } from "node:fs";'],
-    why: "isFile, whether a pasted path is a file, synchronous so a paste is pictures or text before the next key (Task 14's report)",
+    why: "choice 99: pasted paths are read on the host",
   },
   "tui/app/handover.tsx": {
     lines: ['import { mkdirSync, writeFileSync } from "node:fs";'],

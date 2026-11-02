@@ -60,7 +60,7 @@ export interface AppProps {
   onRules: (rules: UserRules) => void;
   project: string; // the project folder's name, for the status line
   root: string; // the project folder, where `@` paths start
-  workspace: Workspace; // the project's files, for the branch and pasted pictures (release 7 plan, Task 14)
+  workspace: Workspace; // the project's files, for the branch (release 7 plan, Task 14)
   branch: string | null; // the git branch at the start, read before the first frame; read again after each turn
   historyFile: string; // this project's past prompts
   intro: Line[]; // shown first: the instruction files read

@@ -18,8 +18,6 @@ import {
   type Tool,
 } from "../../src/tui/clipboard.js";
 import { system32 } from "../../src/exec/env.js";
-import { LocalWorkspace } from "../../src/exec/local.js";
-import { fakeWorkspace } from "../helpers.js";
 
 // Each tool's process, so a test can see what runTool left open.
 vi.mock("node:child_process", async (importOriginal) => {
@@ -503,24 +501,16 @@ describe("pictureFile", () => {
   it.each(KINDS)("takes %s from the file's first bytes, not its name", async (mediaType, data) => {
     const file = path.join(tempFolder(), "named.png");
     writeFileSync(file, data);
-    await expect(pictureFile(file, new LocalWorkspace(path.dirname(file)))).resolves.toEqual({ mediaType, data });
-  });
-
-  // Release 7 plan, Task 14: a pasted path's picture is read through the Workspace, here a fake one for a made-up folder.
-  it("reads the file through the Workspace it is given", async () => {
-    const file = path.resolve("/made/up/project/shot.png");
-    const { workspace, calls } = fakeWorkspace(path.dirname(file), { [file]: PNG });
-    await expect(pictureFile(file, workspace)).resolves.toEqual({ mediaType: "image/png", data: PNG });
-    expect(calls).toEqual([`readBytes ${file}`]);
+    await expect(pictureFile(file)).resolves.toEqual({ mediaType, data });
   });
 
   it("fails for a file that is none of them, and for one it cannot read", async () => {
     const dir = tempFolder();
     const text = path.join(dir, "notes.png");
     writeFileSync(text, "hello");
-    await expect(pictureFile(text, new LocalWorkspace(dir))).resolves.toEqual({ failed: "not a PNG, JPEG, GIF or WebP picture" });
+    await expect(pictureFile(text)).resolves.toEqual({ failed: "not a PNG, JPEG, GIF or WebP picture" });
     const missing = path.join(dir, "missing.png");
-    await expect(pictureFile(missing, new LocalWorkspace(dir))).resolves.toEqual({ failed: `ENOENT: no such file or directory, open '${missing}'` });
+    await expect(pictureFile(missing)).resolves.toEqual({ failed: `ENOENT: no such file or directory, open '${missing}'` });
   });
 
   // Near misses: JPEG's SOI with no marker after it, and a RIFF file that is not WebP (a WAVE sound).
@@ -530,6 +520,6 @@ describe("pictureFile", () => {
   ])("fails for a file starting %s", async (_, data) => {
     const file = path.join(tempFolder(), "near.png");
     writeFileSync(file, data);
-    await expect(pictureFile(file, new LocalWorkspace(path.dirname(file)))).resolves.toEqual({ failed: "not a PNG, JPEG, GIF or WebP picture" });
+    await expect(pictureFile(file)).resolves.toEqual({ failed: "not a PNG, JPEG, GIF or WebP picture" });
   });
 });

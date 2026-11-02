@@ -88,7 +88,7 @@ export const pictureReads = (ui: UI, fns: Fns) => {
     for (const file of files) {
       const id = fns.newPicture(file);
       ui.editor.current = insertPicture(ui.editor.current, id);
-      void pictureFile(path.resolve(ui.root, file), ui.workspace).then((r) => ui.pictures.set(id, r));
+      void pictureFile(path.resolve(ui.root, file)).then((r) => ui.pictures.set(id, r));
     }
     ui.goal.current = null;
   };

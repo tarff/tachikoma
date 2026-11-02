@@ -6192,21 +6192,6 @@ describe("App's picture reads", () => {
     ]);
   });
 
-  // Release 7 plan, Task 14: the picture comes from the Workspace, here a fake one giving other bytes than the file's.
-  // Whether the pasted path is a file is still asked of the host's disk (constants.ts, isFile).
-  it("reads a pasted path's picture through the Workspace", async () => {
-    const shot = path.join(folder(), "shot.png");
-    writeFileSync(shot, JPEG);
-    const { workspace, calls } = fakeWorkspace(path.dirname(shot), { [shot]: PNG.data });
-    const { app, session } = await mount([reply("ok")], { workspace });
-    await press(app, "see ", paste(shot));
-    expect(app.lastFrame()).toContain("› see [Image #1]");
-    await press(app, "\r");
-    await until(app, "ok");
-    expect(userParts(session)).toEqual([[{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]]);
-    expect(calls).toEqual([`readBytes ${shot}`, "branch"]); // the branch, read after the turn
-  });
-
   it("keeps a paste of paths as text when a file it names is missing", async () => {
     const dir = folder();
     const shot = path.join(dir, "shot.png");
