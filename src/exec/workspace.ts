@@ -7,10 +7,12 @@
 export interface Match { file: string; line: number; text: string }
 
 // `root` is "/work" in the box (choice 19). `real` is resolveIn's: unknown where a link leads nowhere or the place cannot
-// be told. `search` gives the lines up to search_files' output cap and counts the rest in `beyond`.
+// be told. `linked`, the box's alone, says whether the file there has another name (a hard link), as its `real` is a
+// /work path the host cannot look at (Task 16); on the host the write tools look at `real` themselves. `search` gives the
+// lines up to search_files' output cap and counts the rest in `beyond`.
 export interface Workspace {
   root: string;
-  resolve(p: string, opts?: { trusted?: boolean }): Promise<{ abs: string; outside: boolean; shown: string; real?: string }>;
+  resolve(p: string, opts?: { trusted?: boolean }): Promise<{ abs: string; outside: boolean; shown: string; real?: string; linked?: boolean }>;
   readText(abs: string): Promise<string>;
   writeText(abs: string, content: string): Promise<void>;
   find(start: string, pattern: string, signal?: AbortSignal): Promise<string[]>;

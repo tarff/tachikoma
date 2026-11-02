@@ -107,7 +107,9 @@ export function helper(request: Request, ignore: Ignore, require: NodeJS.Require
       const typed = path.relative(root, abs);
       const rel = path.relative(base, real);
       const asTyped = process.platform === "win32" ? rel.toLowerCase() === typed.toLowerCase() : rel === typed;
-      return { abs, outside: false, shown: asTyped ? abs : `${abs} (really ${real})`, real };
+      // files.ts's protectedOf: an existing file with more than one name (Task 16).
+      const file = fs.statSync(real, { throwIfNoEntry: false });
+      return { abs, outside: false, shown: asTyped ? abs : `${abs} (really ${real})`, real, linked: !!file?.isFile() && file.nlink >= 2 };
     }
     case "readText":
       return fs.readFileSync(place(request.path).abs, "utf8");

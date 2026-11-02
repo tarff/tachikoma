@@ -8,7 +8,7 @@ import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import type { Match, Workspace } from "../exec/workspace.js";
 import { BINARY_TEST_BYTES, LINE_CUT } from "../tools/search.js";
 import { docker, type DockerRun } from "./docker.js";
-import { inGroup } from "./executor.js";
+import { BoxState, inGroup, NO_DOCKER } from "./executor.js";
 import { helper, type Request } from "./helper.js";
 
 // What `node -e` runs in the box: it reads the call's JSON from stdin, {code, request}, runs the code with the request
@@ -34,16 +34,20 @@ export function helperCode(source = String(helper)): string {
 let code: string | undefined;
 
 export class BoxWorkspace implements Workspace {
+  #branch: string | null = null;
+
   // `root` is the box's folder for the project; a test gives a host folder, with the host's Node standing in for Docker.
+  // `state` is the box's, shared with its DockerExecutor (Task 16), so once either finds Docker failing both are off.
   constructor(
     readonly id: string,
     private readonly run: DockerRun = docker,
     readonly root = "/work",
+    private readonly state = new BoxState(id, run),
   ) {}
 
   // `trusted` is the host's, for instruction files, which are read before the box starts.
   async resolve(p: string, _opts?: { trusted?: boolean }) {
-    return (await this.#call({ op: "resolve", path: p })) as { abs: string; outside: boolean; shown: string; real: string };
+    return (await this.#call({ op: "resolve", path: p })) as { abs: string; outside: boolean; shown: string; real: string; linked: boolean };
   }
 
   async readText(abs: string): Promise<string> {
@@ -63,29 +67,40 @@ export class BoxWorkspace implements Workspace {
     return (await this.#call(request, signal)) as { matches: Match[]; beyond: number };
   }
 
+  // Read after every turn (queue.ts), so while the tools are off it is the branch last read, with no Docker call and no
+  // red line after each turn (Task 14's review).
   async branch(): Promise<string | null> {
-    return (await this.#call({ op: "branch" })) as string | null;
+    if (this.state.broken) return this.#branch;
+    this.#branch = (await this.#call({ op: "branch" })) as string | null;
+    return this.#branch;
   }
 
   // One call, in a process group of its own, as DockerExecutor.exec runs a command (executor.ts, inGroup), so an abort
-  // kills the whole group in the box.
+  // kills the whole group in the box. Docker failing stops the box's shell and file tools, as the executor's does. An
+  // answer that is not JSON asks first whether the box still runs (choice 106): while it does, only this call fails,
+  // naming the memory limit when the box's memory-kill count rose, as the executor's out-of-memory line does.
   async #call(request: DistributiveOmit<Request, "root">, signal?: AbortSignal): Promise<unknown> {
+    const { state } = this;
+    if (state.broken) throw state.broken;
     if (signal?.aborted) throw new Error("Cancelled");
+    const before = state.oomKills;
     const input = Buffer.from(JSON.stringify({ code: (code ??= helperCode()), request: { ...request, root: this.root } }), "utf8");
     const got = await inGroup(this.run, this.id, ["-i"], "node -e", LOADER, { input, signal });
     if ("cancelled" in got) throw new Error("Cancelled");
-    if ("unreached" in got) throw unreached(got.unreached);
+    if ("unreached" in got) throw state.fail(got.unreached);
     let answer: { ok?: unknown; error?: string; code?: string };
     try {
       answer = JSON.parse(got.out);
     } catch {
-      throw unreached(got.err.trim() || `exit code ${got.code}`);
+      const gone = await state.gone();
+      if (gone === NO_DOCKER) throw state.fail(NO_DOCKER);
+      if (gone !== undefined) throw state.fail(got.err.trim() || gone);
+      const words = (await state.outOfMemory(before, got.code)) ? `it used more than ${state.memoryLine()}` : got.err.trim() || `exit code ${got.code}`;
+      throw new Error(`The file tool stopped in the box before it answered: ${words}${words.endsWith(".") ? "" : "."}`);
     }
     if (answer.error !== undefined) throw Object.assign(new Error(answer.error), answer.code ? { code: answer.code } : {});
     return answer.ok ?? null;
   }
 }
-
-const unreached = (words: string) => new Error(`The sandbox's file tools could not reach the box: ${words}`);
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;

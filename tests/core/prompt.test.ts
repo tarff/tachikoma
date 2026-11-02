@@ -9,6 +9,13 @@ describe("systemPrompt", () => {
     expect(prompt).not.toContain("chain commands with ;");
   });
 
+  // Choice 19: in the box the model sees /work, and commands run there with bash (Task 16).
+  it("names the box's folder and its shell when given them", () => {
+    const prompt = systemPrompt("/work", "linux", "bash");
+    expect(prompt).toContain("The project root is /work.");
+    expect(prompt).toContain("Shell commands run with bash on linux.");
+  });
+
   it("does not promise that someone will be asked", () => {
     // In headless runs nobody is there to ask: the action is refused instead.
     expect(systemPrompt("/proj", "linux")).not.toContain("asks the user before risky actions");

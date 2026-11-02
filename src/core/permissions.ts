@@ -1,7 +1,7 @@
 import os from "node:os";
 import type { Verdict } from "../safety/judge.js";
 import { type Context, type Danger, dangers, NO_RULES, shown as named, type UserRules } from "../safety/rules.js";
-import { shellOf } from "../safety/split.js";
+import { type Shell, shellOf } from "../safety/split.js";
 import type { Bus } from "./bus.js";
 
 // ask:     ask before every write and shell command, and before anything outside the project
@@ -96,9 +96,12 @@ const protectedRefusal = (where: string, part: string) =>
   `Not allowed: ${visible(where)} is a protected path (${visible(part)}), which other programs run or read as settings.`;
 
 // `root`: the project's, for the dangerous-command check; `headless`: -p mode, where a danger is refused (Task 8);
-// `judge`: auto mode's (Task 10), which cli.tsx always gives.
+// `judge`: auto mode's (Task 10), which cli.tsx always gives. `home` and `shell` are the box's in the sandbox, its
+// HOME=/tmp and bash (choices 3 and 77; Task 16), and the host's otherwise.
 export interface GateOptions {
   root?: string;
+  home?: string;
+  shell?: Shell;
   headless?: boolean;
   judge?: Judge;
 }
@@ -130,7 +133,7 @@ export class PermissionGate {
     private readonly options: GateOptions = {},
   ) {
     this.#mode = mode;
-    this.#context = { root: options.root ?? process.cwd(), home: os.homedir(), shell: shellOf("host") };
+    this.#context = { root: options.root ?? process.cwd(), home: options.home ?? os.homedir(), shell: options.shell ?? shellOf("host") };
   }
 
   // Read at each check: Shift+Tab changes it during a session. A subagent's gate reads the lead's.

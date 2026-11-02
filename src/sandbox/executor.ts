@@ -114,6 +114,8 @@ export function memoryText(bytes: number, unit: "g" | "m" = bytes % UNIT.g === 0
 }
 
 export const NO_DOCKER = "no docker program is on PATH any more";
+// The box's home, which every user can write (choice 77): the dangerous-command check reads `~` in the box as it.
+export const BOX_HOME = "/tmp";
 // The process space this Tachikoma's pid belongs to, for the box's label (choice 93): the computer's name, which WSL's
 // distros share with Windows, its system, and on Linux its pid namespace, which tells two distros or containers apart.
 const HOST = [os.hostname(), process.platform, ...(process.platform === "linux" ? [readlinkSync("/proc/self/ns/pid")] : [])].join("/");
@@ -138,17 +140,79 @@ export function boxUser(room: Room, platform: NodeJS.Platform = process.platform
   return platform === "linux" ? `${process.getuid!()}:${process.getgid!()}` : "1000:1000";
 }
 
-export class DockerExecutor implements Executor {
-  #broken: Error | undefined;
+// What the box's executor and its workspace (boxWorkspace.ts) share (release 7 plan, Task 16): one "stopped working"
+// state, so once either finds Docker failing the shell and the file tools are both off, and nothing runs on the host; and
+// the box's memory-kill count, so either can tell a kill by the memory limit. `limits` is undefined only for a
+// workspace a test makes on its own, which then never names the memory limit.
+export class BoxState {
+  broken: Error | undefined;
   // The box's last count of kills by its memory limit: null when the box has no memory.events (cgroup v1), undefined
   // while it could not be read.
-  #oomKills: number | null | undefined;
+  oomKills: number | null | undefined;
+
+  constructor(
+    readonly id: string,
+    private readonly run: DockerRun = docker,
+    readonly limits?: Limits,
+  ) {}
+
+  // From now on every call of either throws the same, and nothing runs, in the box or on the host.
+  fail(given: string): Error {
+    const words = given || "the box stopped"; // Docker gave none (choice 92)
+    const stop = words.endsWith(".") ? "" : ".";
+    this.broken = new Error(`The sandbox stopped working: ${words}${stop} Shell and file tools are off until Tachikoma is launched again.`);
+    return this.broken;
+  }
+
+  // Whether the box still runs: undefined while it does, or Docker's words when it does not (empty when Docker gave none),
+  // NO_DOCKER when docker has left PATH.
+  async gone(): Promise<string | undefined> {
+    const state = await this.run(["inspect", "--format", "{{.State.Running}}", this.id]);
+    if (state === "missing") return NO_DOCKER;
+    return state.code !== 0 || state.out.trim() !== "true" ? state.err.trim() : undefined;
+  }
+
+  // The memory limit's line, for a failure the limit caused.
+  memoryLine(): string {
+    return `the box's memory limit of ${memoryText(this.limits!.memory)}. "sandboxLimits" in settings.json changes it.`;
+  }
+
+  // Whether the box's memory limit killed something since `before`, the count before the command; without one, OOMKilled
+  // after a 137 only, as it stays true for the box's life. Nothing read is no.
+  async outOfMemory(before: number | null | undefined, code: number): Promise<boolean> {
+    if (!this.limits) return false;
+    if (typeof before === "number") {
+      const now = await this.oomKillCount();
+      if (typeof now !== "number") return false;
+      this.oomKills = now;
+      return now > before;
+    }
+    if (code !== 137) return false;
+    const got = await this.run(["inspect", "--format", "{{.State.OOMKilled}}", this.id]).catch(() => undefined);
+    return !!got && got !== "missing" && got.code === 0 && got.out.trim() === "true";
+  }
+
+  // The box's count of kills by its memory limit; null when the box has no such file (cgroup v1), in cat's words, so it
+  // is not read again before each command; undefined when it could not be read.
+  async oomKillCount(): Promise<number | null | undefined> {
+    const got = await this.run(["exec", this.id, "cat", EVENTS]).catch(() => undefined);
+    if (!got || got === "missing") return undefined;
+    if (got.code !== 0) return got.err.includes("No such file or directory") ? null : undefined;
+    const count = /^oom_kill (\d+)$/m.exec(got.out)?.[1];
+    return count === undefined ? undefined : Number(count);
+  }
+}
+
+export class DockerExecutor implements Executor {
+  readonly state: BoxState;
 
   private constructor(
     readonly id: string,
     readonly limits: Limits,
     private readonly run: DockerRun,
-  ) {}
+  ) {
+    this.state = new BoxState(id, run, limits);
+  }
 
   // Choice 18's container, never pulled (the image is built here, after asking: image.ts), with no host environment but
   // HOME=/tmp, which every user can write: a Linux user the image does not know has no home (choice 77), and the
@@ -159,7 +223,7 @@ export class DockerExecutor implements Executor {
     const { memory, cpus, pids } = opts.limits;
     const mounts = opts.mounts.flatMap((m) => ("hidden" in m ? ["--tmpfs", m.box] : ["-v", `${m.host}:${m.box}${m.readOnly ? ":ro" : ""}`]));
     const got = await run([
-      "run", "-d", "--pull", "never", "--init", "--user", opts.user, "-e", "HOME=/tmp",
+      "run", "-d", "--pull", "never", "--init", "--user", opts.user, "-e", `HOME=${BOX_HOME}`,
       ...Object.entries(opts.env ?? {}).flatMap(([name, value]) => ["-e", `${name}=${value}`]), "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges", "--network", opts.network === "on" ? "bridge" : "none",
       "--memory", String(memory), "--memory-swap", String(memory), "--cpus", String(cpus), "--pids-limit", String(pids),
@@ -171,24 +235,25 @@ export class DockerExecutor implements Executor {
     if (got === "missing" || got.code !== 0) throw new Error(`The sandbox could not start: ${got === "missing" ? NO_DOCKER : got.err.trim()}`);
     const box = new DockerExecutor(got.out.trim(), opts.limits, run);
     boxes.add(box.id);
-    box.#oomKills = await box.#oomKillCount();
+    box.state.oomKills = await box.state.oomKillCount();
     return box;
   }
 
   async exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult> {
-    if (this.#broken) throw this.#broken;
+    const { state } = this;
+    if (state.broken) throw state.broken;
     if (signal?.aborted) throw new Error("Cancelled");
-    if (this.#oomKills === undefined) this.#oomKills = await this.#oomKillCount(); // again, until it can be read
+    if (state.oomKills === undefined) state.oomKills = await state.oomKillCount(); // again, until it can be read
     if (signal?.aborted) throw new Error("Cancelled"); // an Esc during that read: nothing has started
-    const before = this.#oomKills;
+    const before = state.oomKills;
     const got = await inGroup(this.run, this.id, ["-w", cwd], "bash -c", command, { signal, cut: true });
     if ("cancelled" in got) throw new Error("Cancelled");
-    if ("unreached" in got) throw this.#fail(got.unreached);
+    if ("unreached" in got) throw state.fail(got.unreached);
     // A failure may be Docker's own: the box is asked whether it still runs, and if not, Docker's words are given.
     if (got.code !== 0) {
-      const state = await this.run(["inspect", "--format", "{{.State.Running}}", this.id]);
-      if (state === "missing") throw this.#fail(NO_DOCKER);
-      if (state.code !== 0 || state.out.trim() !== "true") throw this.#fail(got.err.trim() || state.err.trim());
+      const gone = await state.gone();
+      if (gone === NO_DOCKER) throw state.fail(NO_DOCKER);
+      if (gone !== undefined) throw state.fail(got.err.trim() || gone);
     }
     let stderr = got.err;
     // Out of memory, the kernel kills with signal 9: the shell's 137. Measured on 2026-11-02 in a 512 MB box (Docker
@@ -198,9 +263,8 @@ export class DockerExecutor implements Executor {
     // hold a process the limit killed, against the count before it: a kill by the limit in a process left running by an
     // earlier command, found after a later failure, is laid on that later one. Without the file (cgroup v1), or for a
     // command whose count before it could not be read, OOMKilled is the only sign, after a 137 only, with that flaw.
-    if (got.code !== 0 && (await this.#outOfMemory(before, got.code))) {
-      const limit = memoryText(this.limits.memory);
-      const line = `(Stopped: the command used more than the box's memory limit of ${limit}. "sandboxLimits" in settings.json changes it.)`;
+    if (got.code !== 0 && (await state.outOfMemory(before, got.code))) {
+      const line = `(Stopped: the command used more than ${state.memoryLine()})`;
       stderr += `${stderr && !stderr.endsWith("\n") ? "\n" : ""}${line}`;
     }
     return { code: got.code, signal: null, stdout: got.out, stderr };
@@ -211,38 +275,6 @@ export class DockerExecutor implements Executor {
   async stop(): Promise<void> {
     boxes.delete(this.id);
     await this.run(["rm", "-f", this.id]).catch(() => {});
-  }
-
-  // From now on every call throws the same, and nothing runs, in the box or on the host.
-  #fail(given: string): Error {
-    const words = given || "the box stopped"; // Docker gave none (choice 92)
-    const stop = words.endsWith(".") ? "" : ".";
-    this.#broken = new Error(`The sandbox stopped working: ${words}${stop} Shell and file tools are off until Tachikoma is launched again.`);
-    return this.#broken;
-  }
-
-  // Whether the box's memory limit killed something since `before`, the count before the command; without one, OOMKilled
-  // after a 137 only, as it stays true for the box's life. Nothing read is no.
-  async #outOfMemory(before: number | null | undefined, code: number): Promise<boolean> {
-    if (typeof before === "number") {
-      const now = await this.#oomKillCount();
-      if (typeof now !== "number") return false;
-      this.#oomKills = now;
-      return now > before;
-    }
-    if (code !== 137) return false;
-    const got = await this.run(["inspect", "--format", "{{.State.OOMKilled}}", this.id]).catch(() => undefined);
-    return !!got && got !== "missing" && got.code === 0 && got.out.trim() === "true";
-  }
-
-  // The box's count of kills by its memory limit; null when the box has no such file (cgroup v1), in cat's words, so it
-  // is not read again before each command; undefined when it could not be read.
-  async #oomKillCount(): Promise<number | null | undefined> {
-    const got = await this.run(["exec", this.id, "cat", EVENTS]).catch(() => undefined);
-    if (!got || got === "missing") return undefined;
-    if (got.code !== 0) return got.err.includes("No such file or directory") ? null : undefined;
-    const count = /^oom_kill (\d+)$/m.exec(got.out)?.[1];
-    return count === undefined ? undefined : Number(count);
   }
 }
 

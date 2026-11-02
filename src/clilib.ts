@@ -1,11 +1,24 @@
-import { constants } from "node:os";
+import { realpathSync } from "node:fs";
+import os, { constants } from "node:os";
 import path from "node:path";
+import { dataDir, settingsDir } from "./core/datadir.js";
 import type { Instructions, Reached } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
+import { subagentPrompt, systemPrompt } from "./core/prompt.js";
+import { errorText } from "./core/types.js";
+import type { Executor } from "./exec/executor.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
-import type { GitSettings } from "./safety/gitconfig.js";
+import { type GitSettings, gitSettings, within } from "./safety/gitconfig.js";
 import { NO_RULES, type UserRules } from "./safety/rules.js";
-import type { Settings } from "./settings.js";
+import { type Shell, shellOf } from "./safety/split.js";
+import { BoxWorkspace } from "./sandbox/boxWorkspace.js";
+import { docker } from "./sandbox/docker.js";
+import { BOX_HOME, boxLimits, boxUser, DockerExecutor, dockerRoom, memoryText, type Room, sweepBoxes, unlimitedLine } from "./sandbox/executor.js";
+import { type ImageIo, prepareImage } from "./sandbox/image.js";
+import { liveMounts, type Mount } from "./sandbox/mounts.js";
+import type { SandboxLimits, Settings } from "./settings.js";
+import { shellToolOf } from "./tools/shell.js";
+import type { Tool } from "./tools/tool.js";
 import { screen } from "./tui/describe.js";
 import { k, type Segment, SEGMENTS } from "./tui/StatusLine.js";
 
@@ -236,6 +249,152 @@ export function protectionOf(git: GitSettings | undefined): Protection {
 // null when there is nothing to say.
 export function networkLine(flags: Flags, sandbox: Sandbox): string | null {
   return flags.network !== undefined && sandbox === "off" ? "--network acts only with the sandbox on; it was ignored" : null;
+}
+
+// Live link's launch (release 7 plan, Task 16), in the plan's order: choice 13's refusal; Docker's state and the image
+// (image.ts, prepareImage); git's settings; the mounts (mounts.ts); then cli.tsx reads the instruction files on the host;
+// then sandboxStart removes leftover boxes, starts the box and checks its node (choice 17). Each refusal is printed by
+// `io.err` and ends the launch with the code given. Docker is reached through `io.run` (choice 69); `gitSettings` and
+// `ignoresCase` are given by tests, which run git with their own settings and take the letter-case check as passed on
+// this PC's folders (choice 104). No flag or variable turns that check off.
+export interface SandboxIo extends ImageIo {
+  gitSettings?: (root: string) => Promise<GitSettings | undefined>;
+  ignoresCase?: (folder: string) => boolean;
+}
+export type Ready = { tag: string; git: GitSettings | undefined; mounts: Mount[]; env: Record<string, string> };
+
+export async function sandboxReady(root: string, io: SandboxIo): Promise<Ready | { exit: number }> {
+  const refuse = (line: string) => (io.err(visible(line)), { exit: 1 });
+  const held = sandboxHeld(root);
+  if (held) return refuse(`The sandbox cannot run on ${root}: it holds ${held}, which must never be in the box. Start Tachikoma in a project folder.`);
+  const image = await prepareImage(root, io);
+  if ("exit" in image) return image;
+  let git: GitSettings | undefined;
+  try {
+    git = await (io.gitSettings ?? gitSettings)(root);
+  } catch (err) {
+    // Without them the mounts cannot be worked out, so live link is refused, as for Task 5's problems.
+    return refuse(`Live link is refused: git's settings could not be read (${errorText(err)}). Launch with --sandbox copy instead.`);
+  }
+  const live = liveMounts(root, git, io.ignoresCase ? { ignoresCase: io.ignoresCase } : {});
+  if ("refused" in live) return refuse(live.refused);
+  return { tag: image.tag, git, ...live };
+}
+
+// Choice 13: what must never be in the box, the first of these the project folder holds, by real place where it exists:
+// the logins in the data folder, the settings and keys in the settings folder, or the whole home folder.
+export function sandboxHeld(root: string, home = os.homedir(), data = dataDir()): string | undefined {
+  const real = (p: string) => {
+    try {
+      return realpathSync.native(p);
+    } catch {
+      return path.resolve(p); // not made yet: where it would be
+    }
+  };
+  const at = real(root);
+  const kept: [string, string][] = [["Tachikoma's data folder", data], ["Tachikoma's settings folder", settingsDir(home)], ["the home folder", home]];
+  return kept.find(([, p]) => within(at, real(p)))?.[0];
+}
+
+// The box's folder for the project, where the model works (choice 19), and its home (executor.ts, choice 77).
+const BOX_ROOT = "/work";
+
+// What the session runs on once the box has started: the box's executor and workspace, sharing one stopped state
+// (executor.ts, BoxState), and what the session tells the model and the gate, all in the box's terms.
+export interface Started {
+  box: DockerExecutor;
+  root: string;
+  executor: Executor;
+  workspace: BoxWorkspace;
+  system: string;
+  subagentSystem: string;
+  gate: { root: string; home: string; shell: Shell };
+  shellTool: Tool;
+  protection: Protection;
+  lines: string[];
+}
+
+export async function sandboxStart(
+  root: string,
+  ready: Ready,
+  opts: { network: Network; limits: SandboxLimits | undefined; session: string; labels?: Record<string, string> },
+  io: Pick<SandboxIo, "err" | "run">,
+): Promise<Started | { exit: number }> {
+  const run = io.run ?? docker;
+  const refuse = (line: string) => (io.err(visible(line)), { exit: 1 });
+  await sweepBoxes(run);
+  let box: DockerExecutor;
+  let room: Room;
+  try {
+    room = await dockerRoom(run);
+    const got = boxLimits(opts.limits, room);
+    if ("problem" in got) return refuse(got.problem);
+    const { mounts, env } = ready;
+    const { network, session } = opts;
+    const labels = opts.labels ? { labels: opts.labels } : {};
+    const user = boxUser(room);
+    box = await DockerExecutor.start({ image: ready.tag, folder: root, network, limits: got.limits, mounts, env, session, user, ...labels }, run);
+  } catch (err) {
+    return refuse(errorText(err));
+  }
+  // Choices 17 and 97: the file tools' helper needs node in the box, with path.matchesGlob (Node 22.5 or newer, Node's own
+  // docs). A failed check removes the box before the launch ends.
+  const asked = `node -e 'process.stdout.write(process.version + " " + typeof require("node:path").matchesGlob)'`;
+  const check = await box.exec(asked, BOX_ROOT).catch((err: Error) => err);
+  const problem =
+    check instanceof Error
+      ? errorText(check)
+      : check.code !== 0
+        ? "The sandbox's image has no node, which Tachikoma's file tools need in the box."
+        : check.stdout.split(" ")[1] !== "function"
+          ? `The sandbox's image has node ${check.stdout.split(" ")[0]}, but Tachikoma's file tools need Node 22.5 or newer in the box.`
+          : undefined;
+  if (problem) {
+    await box.stop();
+    return refuse(problem);
+  }
+  const { limits } = box;
+  const line = `Sandbox: live link on ${root}, network ${opts.network}, limits ${memoryText(limits.memory)}, ${limits.cpus} CPUs, ${limits.pids} processes.`;
+  return {
+    box,
+    root: BOX_ROOT,
+    executor: opts.network === "off" ? networkNoted(box) : box,
+    workspace: new BoxWorkspace(box.id, run, BOX_ROOT, box.state),
+    system: systemPrompt(BOX_ROOT, "linux", "bash"),
+    subagentSystem: subagentPrompt(BOX_ROOT),
+    gate: { root: BOX_ROOT, home: BOX_HOME, shell: shellOf("box") },
+    shellTool: shellToolOf("bash"),
+    protection: boxProtection(root, protectionOf(ready.git)),
+    lines: [visible(line), ...room.unlimited.map(unlimitedLine)],
+  };
+}
+
+// Choice 21: with the box's network off, a failed command's result gets one more line. Which failures were the network's
+// cannot be told, so every failure gets it.
+export function networkNoted(executor: Executor): Executor {
+  const line = "(The box's network is off, so nothing in it can reach the internet. To allow it, launch with --network on.)";
+  return {
+    exec: async (command, cwd, signal) => {
+      const r = await executor.exec(command, cwd, signal);
+      return r.code === 0 ? r : { ...r, stderr: `${r.stderr}${r.stderr && !r.stderr.endsWith("\n") ? "\n" : ""}${line}` };
+    },
+  };
+}
+
+// The hooks folders and settings files the gate protects (Task 8), as the box sees them: the write tools look at /work
+// paths there (files.ts, protectedOf; Task 14's review). Task 5 lists each as written and at its real place, so either
+// may be in the project. Those outside it the box cannot reach.
+export function boxProtection(root: string, protection: Protection): Protection {
+  const real = realpathSync.native(root);
+  const inBox = (paths: string[]) => [
+    ...new Set(
+      paths.flatMap((p) => {
+        const base = within(real, p) ? real : within(root, p) ? root : undefined;
+        return base === undefined ? [] : [path.posix.join(BOX_ROOT, ...path.relative(base, p).split(path.sep))];
+      }),
+    ),
+  ];
+  return { hooks: inBox(protection.hooks), files: inBox(protection.files) };
 }
 
 // The grey line at the start of a session (release 4 design, "Instruction files"): the files read,

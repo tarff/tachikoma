@@ -267,13 +267,14 @@ export function resolveIn(
 // hooks folders, git folders and settings files git's settings name, which the gate holds (safety/protected.ts); or else
 // an existing file with more than one name, read as inData reads one, since a hard link to a protected file is another
 // name for it that its path cannot show (choice 61). pnpm's node_modules files are hard links, so writes there ask too.
-function protectedOf(ctx: ToolContext, real: string | undefined): string | undefined {
+// In the box `real` is a /work path, so the box says (`linked`, Task 16) and the host's disk is not asked.
+function protectedOf(ctx: ToolContext, real: string | undefined, linked: boolean | undefined): string | undefined {
   if (real === undefined) return undefined;
   const { hooks, files } = ctx.gate.protection;
   const part = protectedPart(ctx.root, real, hooks, files);
   if (part !== undefined) return part;
-  const file = statSync(real, { bigint: true, throwIfNoEntry: false });
-  return file?.isFile() && file.nlink >= 2n ? "a file with another name" : undefined;
+  const file = linked === undefined ? statSync(real, { bigint: true, throwIfNoEntry: false }) : undefined;
+  return (linked ?? (file?.isFile() && file.nlink >= 2n)) ? "a file with another name" : undefined;
 }
 
 // Read the way Claude Code's own Read tool does (its tool description, 2026-10-22): up to 2,000 lines
@@ -318,8 +319,8 @@ export const writeFileTool = defineTool(
   "Create or overwrite a text file. Paths are relative to the project root.",
   z.object({ path: z.string(), content: z.string() }),
   async ({ path: p, content }, ctx) => {
-    const { abs, outside, shown, real } = await ctx.workspace.resolve(p);
-    const part = protectedOf(ctx, real);
+    const { abs, outside, shown, real, linked } = await ctx.workspace.resolve(p);
+    const part = protectedOf(ctx, real, linked);
     await ctx.gate.require({ kind: "write", outside, summary: `write ${shown}`, detail: content, ...(part ? { protectedPart: part, path: shown } : {}) }, ctx.signal);
     await ctx.workspace.writeText(abs, content);
     return `Wrote ${content.length} characters to ${p}`;
@@ -331,8 +332,8 @@ export const editFileTool = defineTool(
   "Replace one exact, unique piece of text in a file. Read the file first; old_text leaves out the line numbers read_file shows.",
   z.object({ path: z.string(), old_text: z.string().min(1), new_text: z.string() }),
   async ({ path: p, old_text, new_text }, ctx) => {
-    const { abs, outside, shown, real } = await ctx.workspace.resolve(p);
-    const part = protectedOf(ctx, real);
+    const { abs, outside, shown, real, linked } = await ctx.workspace.resolve(p);
+    const part = protectedOf(ctx, real, linked);
     const marked = (sign: string, s: string) => s.split("\n").map((l) => `${sign} ${l}`);
     const detail = [...marked("-", old_text), ...(new_text ? marked("+", new_text) : [])].join("\n");
     // Inside the project a read needs no approval, so an edit that cannot work fails before the user is

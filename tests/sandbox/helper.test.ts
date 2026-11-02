@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { linkSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,7 @@ import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalWorkspace } from "../../src/exec/local.js";
 import { BoxWorkspace, helperCode, LOADER } from "../../src/sandbox/boxWorkspace.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
+import { BoxState, DockerExecutor } from "../../src/sandbox/executor.js";
 import { removeTree, TREE } from "../helpers.js";
 
 // Runs `node -e <loader>` with its input on the host, as the call would in the box: what node writes, and how it ends.
@@ -136,9 +138,17 @@ describe("the helper, run by the host's Node, against LocalWorkspace on the same
     const { local, box } = await both();
     for (const p of ["src/a.ts", "src", ".", "new/folder/file.txt"]) {
       const want = await local.resolve(p);
-      expect(await box.resolve(p)).toEqual(want);
+      expect(await box.resolve(p)).toEqual({ ...want, linked: false }); // the box's says whether a file has another name
       expect(want.outside).toBe(false);
     }
+  });
+
+  // Task 16: the write tools' check for a file with another name (files.ts, protectedOf) takes it from the box.
+  it("says when a file has another name, a hard link", async () => {
+    const { root, box } = await both({ "a.txt": "a\n" });
+    linkSync(path.join(root, "a.txt"), path.join(root, "b.txt"));
+    expect(await box.resolve("b.txt")).toMatchObject({ linked: true });
+    expect(await box.resolve("new.txt")).toMatchObject({ linked: false });
   });
 
   it("reads the same branch, and HEAD for a commit with no branch", async () => {
@@ -225,14 +235,95 @@ describe("a call to the helper", () => {
     expect(fake.calls).toEqual([]);
   });
 
-  it("says when Docker fails, in its words", async () => {
+  // The box's one stopped state (Task 16), in the executor's words, as both now share it.
+  it("says when Docker fails, in its words, as the shell does", async () => {
     const run: DockerRun = async () => ({ code: 1, out: "", err: "Error response from daemon: container box1 is not running\n" });
     await expect(new BoxWorkspace("box1", run).branch()).rejects.toThrow(
-      "The sandbox's file tools could not reach the box: Error response from daemon: container box1 is not running",
+      "The sandbox stopped working: Error response from daemon: container box1 is not running. Shell and file tools are off until Tachikoma is launched again.",
     );
     await expect(new BoxWorkspace("box1", async () => "missing").branch()).rejects.toThrow(
-      "The sandbox's file tools could not reach the box: no docker program is on PATH any more",
+      "The sandbox stopped working: no docker program is on PATH any more. Shell and file tools are off until Tachikoma is launched again.",
     );
+  });
+});
+
+// Choice 106: an answer that is not JSON asks Docker whether the box still runs; while it runs only that call fails, and
+// only a box or Docker gone turns the shell and file tools off. Docker is a stand-in that records its calls.
+describe("a helper answer that is not JSON (choice 106)", () => {
+  const LIMITS = { memory: 512 * 2 ** 20, cpus: 1, pids: 64 };
+  const ok = (out = "") => ({ code: 0, out, err: "" });
+  // `call` answers each helper call in turn; the box runs while `running` says so, with `kills` memory kills counted.
+  function stand(call: () => { code: number; out: string; err: string }, box: { running?: boolean; kills?: number } = {}) {
+    const calls: string[][] = [];
+    const run: DockerRun = async (args) => {
+      calls.push(args);
+      if (args[0] === "run") return ok("box1\n");
+      if (args.includes("{{.State.Running}}")) return ok(`${box.running ?? true}\n`);
+      if (args.includes("/sys/fs/cgroup/memory.events")) return ok(`oom_kill ${box.kills ?? 0}\n`);
+      if (args[1] === "-i") return call();
+      return ok();
+    };
+    return { run, calls, box };
+  }
+  const answer = (ok: unknown) => ({ code: 0, out: JSON.stringify({ ok }), err: "" });
+  const stopped = (words: string) => `The sandbox stopped working: ${words}. Shell and file tools are off until Tachikoma is launched again.`;
+
+  it("fails only that call while the box runs, in the helper's words, and the tools stay on", async () => {
+    const answers = [{ code: 1, out: "", err: "Segmentation fault\n" }, answer("main")];
+    const fake = stand(() => answers.shift()!);
+    const state = new BoxState("box1", fake.run, LIMITS);
+    state.oomKills = 0;
+    const ws = new BoxWorkspace("box1", fake.run, "/work", state);
+    await expect(ws.branch()).rejects.toThrow(/^The file tool stopped in the box before it answered: Segmentation fault\.$/);
+    expect(state.broken).toBeUndefined();
+    expect(await ws.branch()).toBe("main");
+  });
+
+  it("names the memory limit when the box's memory-kill count rose, as the shell's out-of-memory line does", async () => {
+    const fake = stand(() => ({ code: 137, out: "", err: "" }), { kills: 1 });
+    const state = new BoxState("box1", fake.run, LIMITS);
+    state.oomKills = 0;
+    await expect(new BoxWorkspace("box1", fake.run, "/work", state).find(".", "**")).rejects.toThrow(
+      'The file tool stopped in the box before it answered: it used more than the box\'s memory limit of 512m. "sandboxLimits" in settings.json changes it.',
+    );
+    expect(state.broken).toBeUndefined();
+  });
+
+  it("gives the exit code when the helper says nothing", async () => {
+    const fake = stand(() => ({ code: 3, out: "", err: "" }));
+    await expect(new BoxWorkspace("box1", fake.run, "/work", new BoxState("box1", fake.run, LIMITS)).branch()).rejects.toThrow(
+      "The file tool stopped in the box before it answered: exit code 3.",
+    );
+  });
+
+  it("turns the shell and file tools off when the box is gone, and the shell then refuses without Docker", async () => {
+    const fake = stand(() => ({ code: 137, out: "", err: "" }), { running: true });
+    const box = await DockerExecutor.start(
+      { image: "tachikoma-sandbox:0123456789ab", folder: os.tmpdir(), network: "off", limits: LIMITS, mounts: [], session: "s1", user: "1000:1000" },
+      fake.run,
+    );
+    const ws = new BoxWorkspace(box.id, fake.run, "/work", box.state);
+    fake.box.running = false;
+    await expect(ws.readText("/work/a.txt")).rejects.toThrow(stopped("the box stopped"));
+    const made = fake.calls.length;
+    await expect(box.exec("echo hi", "/work")).rejects.toThrow(stopped("the box stopped"));
+    await expect(ws.readText("/work/a.txt")).rejects.toThrow(stopped("the box stopped"));
+    expect(fake.calls.length).toBe(made);
+    await box.stop();
+  });
+
+  // Task 14's review: the branch is read after every turn, so under the stopped state it is not read, and stays as shown.
+  it("gives the branch last read while the tools are off, without Docker", async () => {
+    const answers = [answer("main"), { code: 1, out: "", err: "" }];
+    const fake = stand(() => answers.shift()!);
+    const state = new BoxState("box1", fake.run, LIMITS);
+    const ws = new BoxWorkspace("box1", fake.run, "/work", state);
+    expect(await ws.branch()).toBe("main");
+    fake.box.running = false;
+    await expect(ws.readText("/work/a.txt")).rejects.toThrow(stopped("the box stopped"));
+    const made = fake.calls.length;
+    expect(await ws.branch()).toBe("main");
+    expect(fake.calls.length).toBe(made);
   });
 });
 

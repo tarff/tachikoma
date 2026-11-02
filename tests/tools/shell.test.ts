@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { type GateOptions, type Mode, PermissionGate } from "../../src/core/permissions.js";
-import { shellTool } from "../../src/tools/shell.js";
+import { shellTool, shellToolOf } from "../../src/tools/shell.js";
 import { tempContext } from "../helpers.js";
 
 // `echo` and `exit` behave the same in sh and PowerShell.
 describe("shell tool", () => {
+  // In the box commands run in bash, whatever the host (Task 16), and the model is told so.
+  it("names the shell it is made for", () => {
+    expect(shellToolOf("bash").spec.description).toBe("Run a command with bash in the project root and return its output.");
+  });
+
   it("returns the output of a command", async () => {
     const ctx = await tempContext();
     const out = await shellTool.run({ command: "echo hi" }, ctx);

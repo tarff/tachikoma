@@ -24,8 +24,12 @@ import {
   networkLine,
   prose,
   protectionOf,
+  type Ready,
   resolve,
+  sandboxReady,
+  sandboxStart,
   screenMode,
+  type Started,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { projectFile } from "./core/datadir.js";
@@ -48,6 +52,7 @@ import { NO_RULES } from "./safety/rules.js";
 import { loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { delegateTool } from "./tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
+import { shellTool } from "./tools/shell.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
@@ -217,15 +222,16 @@ if (mode === "never" && sandbox !== "copy") {
   const source = parsed.mode === undefined ? `${SETTINGS}: "mode": ` : "--mode ";
   fail(`${source}never needs --sandbox copy, so nothing reaches your folder before you have reviewed it; launch with --sandbox copy --mode never.`);
 }
-// Until Task 21 builds the sandbox, asking for it stops the launch, so `never` cannot start yet (release 7 plan, choice 1).
-if (sandbox !== "off") fail(`${parsed.sandbox === undefined ? `${SETTINGS}: "sandbox": ` : "--sandbox "}${sandbox} is not built yet`);
+// Until Task 21 builds copy mode, asking for it stops the launch, so `never` cannot start yet (release 7 plan, choice 1).
+if (sandbox === "copy") fail(`${parsed.sandbox === undefined ? `${SETTINGS}: "sandbox": ` : "--sandbox "}${sandbox} is not built yet`);
 const netLine = networkLine(parsed, sandbox);
 if (netLine) console.error(netLine);
 
 const root = process.cwd();
 const errorFile = projectFile("errors", root);
 const bus = new Bus();
-attachErrorLog(bus, errorFile, randomUUID());
+const sessionId = randomUUID(); // the error log's, and the box's label (sandbox/executor.ts)
+attachErrorLog(bus, errorFile, sessionId);
 const stats = new Stats(bus);
 
 const makeProvider = (spec: string): Provider => createProvider(spec, { effort });
@@ -269,13 +275,31 @@ if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal
 // Git's settings files, hooks folders and git folders are read once at launch and protected for the whole session
 // (release 7 plan, Task 8; choices 57 and 59). Without git, only the fixed list applies (choice 11). If git's run fails,
 // only the fixed list applies, and the launch says so here and again in full screen (App.tsx).
+// In live link its launch's first steps read them (clilib.ts, sandboxReady; release 7 plan, Task 16), and refuse when they
+// cannot be read. Ctrl-C while the image builds, with raw mode off, stops the launch.
 let protection: Protection = protectionOf(undefined);
 let gitLine: string | undefined;
-try {
-  protection = protectionOf(await gitSettings(root));
-} catch (err) {
-  gitLine = visible(`git's settings could not be read (${errorText(err)}); only the fixed list of protected paths applies`);
-  console.error(gitLine);
+let ready: Ready | undefined;
+if (sandbox === "live") {
+  const stop = new AbortController();
+  const onInt = () => stop.abort();
+  process.once("SIGINT", onInt);
+  const got = await sandboxReady(root, {
+    ...(interactive ? { ask: askAtStart } : {}),
+    out: (line) => console.log(line),
+    err: (line) => console.error(line),
+    signal: stop.signal,
+  });
+  process.off("SIGINT", onInt);
+  if ("exit" in got) process.exit(got.exit);
+  ready = got;
+} else {
+  try {
+    protection = protectionOf(await gitSettings(root));
+  } catch (err) {
+    gitLine = visible(`git's settings could not be read (${errorText(err)}); only the fixed list of protected paths applies`);
+    console.error(gitLine);
+  }
 }
 // The user's own rules (release 7 plan, Task 4). A kind switched off is said at each launch (checkOffLine), and again in
 // full screen (App.tsx).
@@ -294,7 +318,19 @@ const instructions = await readInstructions({ root, codexHome: process.env.CODEX
   }
   return askAtStart(approvalQuestion(reached));
 });
-const system = [systemPrompt(root), instructions.text].filter(Boolean).join("\n\n");
+// Then the box: leftover boxes removed, the box started and its node checked (sandboxStart). From here the model works in
+// it, on /work (choice 19). Its launch lines are grey in the interface, and on stderr with -p.
+let box: Started | undefined;
+if (ready) {
+  const started = await sandboxStart(root, ready, { network: options.network, limits: loaded.settings.sandboxLimits, session: sessionId }, {
+    err: (line) => console.error(line),
+  });
+  if ("exit" in started) process.exit(started.exit);
+  box = started;
+  if (!interactive) for (const line of box.lines) console.error(line);
+}
+const where = box ?? { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root) };
+const system = [box?.system ?? systemPrompt(root), instructions.text].filter(Boolean).join("\n\n");
 
 let declined = false;
 let ask: Ask = async (summary, _detail, owner, _plain, warnings) => {
@@ -304,31 +340,36 @@ let ask: Ask = async (summary, _detail, owner, _plain, warnings) => {
 };
 // The judge reads the session's prompts and calls at each action, and the instruction files' text as read above (Task 10).
 const gate = new PermissionGate(mode, (...a) => ask(...a), interactive ? undefined : "Not allowed in -p mode, where nobody can approve it", {
-  root,
+  ...(box?.gate ?? { root }),
   headless: !interactive,
   judge: judgeOf(judgeProvider, () => session, instructions.text, bus),
 });
 gate.rules = rules;
-gate.protection = protection;
-const executor = new LocalExecutor();
-const workspace = new LocalWorkspace(root);
+gate.protection = box?.protection ?? protection;
+// ctx.root and the workspace's root are one place: /work in the box (Task 14's review).
+const { executor, workspace } = where;
 const tasks = new Tasks({
   bus,
   max: maxTasks,
   worker: () => worker ?? session.lead,
   ...(fallback ? { fallback } : {}),
-  system: [subagentPrompt(root), instructions.text].filter(Boolean).join("\n\n"), // the same instructions as the lead
+  system: [box?.subagentSystem ?? subagentPrompt(root), instructions.text].filter(Boolean).join("\n\n"), // the same instructions as the lead
   tools: SUBAGENT_TOOLS,
-  ctx: { root, executor, workspace, gate },
+  ctx: { root: where.root, executor, workspace, gate },
 });
-// The to-do list and delegate are the lead's alone; the screen shows the list from the bus.
-const tools = [...TOOLS, todoTool((items) => bus.emit("todo", items)), delegateTool(tasks, { headless: !interactive })];
+// The to-do list and delegate are the lead's alone; the screen shows the list from the bus. In the box the shell tool says
+// bash, whatever the host.
+const tools = [
+  ...TOOLS.map((t) => (box && t === shellTool ? box.shellTool : t)),
+  todoTool((items) => bus.emit("todo", items)),
+  delegateTool(tasks, { headless: !interactive }),
+];
 const session: Session = new Session({
   lead,
   fallback,
   tools,
   system,
-  ctx: { root, executor, workspace, gate },
+  ctx: { root: where.root, executor, workspace, gate },
   bus,
   inbox: () => tasks.take(),
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
@@ -403,9 +444,11 @@ if (parsed.print !== undefined) {
       project={path.basename(root) || root}
       root={root}
       workspace={workspace}
-      branch={await workspace.branch()} // before the first frame, which shows it
+      // Before the first frame, which shows it. In the box a read that fails (Docker unreachable) is no branch, so it cannot
+      // end the launch; the tools say what failed when used (Task 14's review).
+      branch={await workspace.branch().catch(() => null)}
       historyFile={historyFile(root)}
-      intro={[instructionsLine(instructions, os.homedir())].flatMap((text) => (text === null ? [] : [{ text, color: "gray" }]))}
+      intro={[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" }]))}
       errorFile={errorFile}
       segments={segments}
       makeProvider={makeProvider}

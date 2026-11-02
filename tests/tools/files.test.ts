@@ -539,6 +539,23 @@ describe("the file tools through the Workspace", () => {
     await expect(writeFileTool.run({ path: "b.txt", content: "new" }, ctx)).rejects.toThrow("The user declined");
     expect(calls).toEqual(["resolve b.txt"]);
   });
+
+  // Task 16, from Task 14's review: in the box the real place is a /work path, which means nothing on the host, so the
+  // box's helper says whether the file has another name, and the host's disk is not asked.
+  it("take a file with another name from the Workspace's answer, when it gives one, not from the host's disk", async () => {
+    const ctx = await tempContext("never");
+    const notes = path.join(ctx.root, "notes.txt");
+    await writeFile(path.join(ctx.root, "hook"), "old");
+    linkSync(path.join(ctx.root, "hook"), notes); // two names on the host, which the Workspace's answer overrides
+    const said = (linked: boolean): typeof ctx.workspace => ({
+      ...fakeWorkspace(ctx.root, { [notes]: "old" }).workspace,
+      resolve: async () => ({ abs: notes, outside: false, shown: notes, real: notes, linked }),
+    });
+    await expect(writeFileTool.run({ path: "notes.txt", content: "new" }, { ...ctx, workspace: said(true) })).rejects.toThrow(
+      `Not allowed: ${notes} is a protected path (a file with another name), which other programs run or read as settings.`,
+    );
+    expect(await writeFileTool.run({ path: "notes.txt", content: "new" }, { ...ctx, workspace: said(false) })).toBe("Wrote 3 characters to notes.txt");
+  });
 });
 
 // Release 7 plan, Task 8: a write to a protected path asks in ask and project, and is refused in never; so is a write to

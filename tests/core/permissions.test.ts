@@ -185,6 +185,17 @@ describe("the gate's dangerous commands and protected writes", () => {
     expect(asked).toEqual([{ summary: `run: ${push}; git reset --hard HEAD~3`, warnings }]);
   });
 
+  // Choice 3: in the box the check reads bash, with the box's home (HOME=/tmp, choice 77) and its root, /work (Task 16).
+  it("reads a command in the box's shell, home and root when given them", async () => {
+    const box = gateIn("project", true, undefined, { root: "/work", home: "/tmp", shell: "bash" });
+    await box.gate.require(run("rm -rf /tmp"));
+    await box.gate.require(run("rm -rf /work"));
+    expect(box.asked.map((a) => a.warnings!.length)).toEqual([1, 1]);
+    const host = gateIn("project");
+    await host.gate.require(run("rm -rf /tmp"));
+    expect(host.asked[0]!.warnings).toEqual([]);
+  });
+
   it("asks with no red lines for a command the check passes", async () => {
     const { gate, asked } = gateIn("project");
     await gate.require(run("echo hi"));

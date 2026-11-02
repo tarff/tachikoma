@@ -1,12 +1,15 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { boxProtection, type Network, sandboxHeld, sandboxReady, sandboxStart } from "../src/clilib.js";
 import { onPath } from "../src/exec/env.js";
+import type { DockerRun } from "../src/sandbox/docker.js";
+import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
 
 // Runs the real command through tsx, in a fresh project folder with a pretend home folder, and with
 // the walk for instruction files starting at a fresh folder of its own, so no case reads the user's
@@ -268,18 +271,16 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(tachi("--lead", "ollama:none", "--mode", "auto").stderr).toBe('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.\n');
   });
 
-  // Release 7 plan, Task 7: until Task 21 builds the sandbox, asking for it stops the launch, never with copy mode too, so
-  // never cannot start yet (choice 1). Eight starts.
-  it("stops on --sandbox live or copy, from the flag or the settings file, as neither is built yet", { timeout: 60_000 }, () => {
-    for (const how of ["live", "copy"]) {
-      let r = tachi("--lead", "ollama:none", "--sandbox", how, "-p", "hi");
-      expect(r.code).toBe(1);
-      expect(r.stderr).toBe(`--sandbox ${how} is not built yet\n`);
-      r = tachi("--lead", "ollama:none", "-p", "hi", homeWith(`{"sandbox": "${how}"}`));
-      expect(r.code).toBe(1);
-      expect(r.stderr).toBe(`settings.json: "sandbox": ${how} is not built yet\n`);
-    }
-    let r = tachi("--lead", "ollama:none", "--sandbox", "copy", "--mode", "never", "-p", "hi");
+  // Release 7 plan, Task 7: until Task 21 builds copy mode, asking for it stops the launch, never with copy mode too, so
+  // never cannot start yet (choice 1). Six starts.
+  it("stops on --sandbox copy, from the flag or the settings file, as it is not built yet", { timeout: 60_000 }, () => {
+    let r = tachi("--lead", "ollama:none", "--sandbox", "copy", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe("--sandbox copy is not built yet\n");
+    r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"sandbox": "copy"}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe('settings.json: "sandbox": copy is not built yet\n');
+    r = tachi("--lead", "ollama:none", "--sandbox", "copy", "--mode", "never", "-p", "hi");
     expect(r.code).toBe(1);
     expect(r.stderr).toBe("--sandbox copy is not built yet\n");
     r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"sandbox": "copy", "mode": "never"}'));
@@ -290,6 +291,23 @@ describe("tachi", { timeout: 15_000 }, () => {
     r = tachi("--lead", "ollama:none", "--sandbox", "x", "-p", "hi");
     expect(r.code).toBe(1);
     expect(r.stderr).toBe('--sandbox must be one of: off, live, copy (got "x")\n');
+  });
+
+  // Task 16: live link's first step is choice 13's refusal, before Docker is asked anything. Here the project folder holds
+  // the pretend home folder, so the real command stops there, and no case here reaches Docker. Two starts.
+  it("refuses live link on a folder that holds the home folder, from the flag or the settings file, before Docker", { timeout: 60_000 }, () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+    const home = path.join(top, "home");
+    mkdirSync(path.join(home, ".tachikoma"), { recursive: true });
+    writeFileSync(path.join(home, ".tachikoma", "settings.json"), '{"sandbox": "live"}');
+    const where = { cwd: top, HOME: home, USERPROFILE: home, TACHI_DATA_DIR: path.join(tmpdir(), "tachi-cli-no-data") };
+    const refusal =
+      `The sandbox cannot run on ${top}: it holds Tachikoma's settings folder, which must never be in the box. ` +
+      "Start Tachikoma in a project folder.\n";
+    for (const r of [tachi("--lead", "ollama:none", "--sandbox", "live", "-p", "hi", where), tachi("--lead", "ollama:none", "-p", "hi", where)]) {
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(refusal);
+    }
   });
 
   // Release 7 plan, choice 22: the network setting acts only in the sandbox, so --network without it is said once at
@@ -471,5 +489,176 @@ describe("tachi", { timeout: 15_000 }, () => {
   it("with -p, runs on the settings file's lead", () => {
     const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });
     expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
+  });
+});
+
+// Release 7 plan, Task 16: live link's launch, in-process, with Docker a stand-in that records its calls and answers by
+// them (choice 69), git's settings given, and the letter-case check given (choice 104), so no case here runs Docker or git.
+describe("live link's launch, with a stand-in Docker", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  type Answer = { code: number; out: string; err: string } | "missing";
+  const ok = (out = ""): Answer => ({ code: 0, out, err: "" });
+  const STEPS = ["home", "missing", "stopped", "image", "git-throws", "case", "git-missing", "room", "limits", "start", "node-missing", "node-old"] as const;
+  type Step = (typeof STEPS)[number];
+  // This PC's `docker info`, the parts read (executor.test.ts), with the limit flags given.
+  const INFO = (more: Record<string, unknown> = {}) =>
+    JSON.stringify({ NCPU: 24, MemTotal: 33518923776, SecurityOptions: [], MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true, ...more });
+
+  function stand(broken: Set<Step>, info = INFO()) {
+    const calls: string[][] = [];
+    const run: DockerRun = async (args) => {
+      calls.push(args);
+      if (broken.has("missing")) return "missing";
+      const [verb] = args;
+      if (verb === "version") return broken.has("stopped") ? { code: 1, out: "", err: "error during connect: the pipe is gone\n" } : ok("linux\n");
+      if (verb === "image") return broken.has("image") ? { code: 1, out: "", err: "No such image\n" } : ok("sha256:0\n");
+      if (verb === "info") return broken.has("room") ? { code: 1, out: "", err: "error during connect: busy\n" } : ok(`${info}\n`);
+      if (verb === "run") return broken.has("start") ? { code: 125, out: "", err: "docker: Error response from daemon: invalid mount config.\n" } : ok("b0x\n");
+      if (verb === "exec" && args.includes("/sys/fs/cgroup/memory.events")) return ok("oom_kill 0\n");
+      if (verb === "exec" && args[1] === "-w") {
+        if (args.at(-1)!.startsWith("curl")) return { code: 6, out: "", err: "" };
+        if (broken.has("node-missing")) return { code: 127, out: "", err: "bash: line 1: node: command not found\n" };
+        return ok(broken.has("node-old") ? "v20.1.0 undefined" : "v24.22.2 function");
+      }
+      if (verb === "inspect") return ok("true\n");
+      return ok();
+    };
+    return { run, calls };
+  }
+
+  // A project folder of the test's own, and the data folder beside it, or inside it for choice 13's step.
+  async function launch(broken: Set<Step>, info?: string, network: Network = "off") {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-box-"));
+    const root = path.join(top, "project");
+    mkdirSync(root);
+    vi.stubEnv("TACHI_DATA_DIR", broken.has("home") ? path.join(root, "data") : path.join(top, "data"));
+    const fake = stand(broken, info);
+    const lines: string[] = [];
+    const io = {
+      out: (line: string) => lines.push(line),
+      err: (line: string) => lines.push(line),
+      signal: new AbortController().signal,
+      run: fake.run,
+      gitSettings: async () => {
+        if (broken.has("git-throws")) throw new Error("git was ended by SIGKILL");
+        return broken.has("git-missing") ? undefined : { files: [], hooksPaths: [], gitDirs: [], problems: [], lineEndings: {} };
+      },
+      ignoresCase: () => broken.has("case"),
+    };
+    const ready = await sandboxReady(root, io);
+    if ("exit" in ready) return { root, exit: ready.exit, lines, calls: fake.calls, started: undefined };
+    const limits = broken.has("limits") ? { cpus: 999 } : undefined;
+    const started = await sandboxStart(root, ready, { network, limits, session: "s1" }, io);
+    return { root, lines, calls: fake.calls, ...("exit" in started ? { exit: started.exit, started: undefined } : { exit: undefined, started }) };
+  }
+
+  const said = (step: Step, root: string): string =>
+    ({
+      home: `The sandbox cannot run on ${root}: it holds Tachikoma's data folder, which must never be in the box. Start Tachikoma in a project folder.`,
+      missing: NOT_INSTALLED,
+      stopped: NOT_RUNNING,
+      image: NOT_BUILT,
+      "git-throws": "Live link is refused: git's settings could not be read (git was ended by SIGKILL). Launch with --sandbox copy instead.",
+      case:
+        "Live link is refused: this folder ignores letter case, as Windows and macOS do by default, so the box could reach git's files by " +
+        "another spelling. Launch with --sandbox copy instead.",
+      "git-missing": "Live link needs git on this PC to read git's settings; use --sandbox copy, or install git.",
+      room: "The sandbox could not read Docker's CPUs and memory: error during connect: busy",
+      limits: 'settings.json: "sandboxLimits": "cpus" is 999, but Docker has 24 CPUs. Lower it, or give Docker more memory or CPUs.',
+      start: "The sandbox could not start: docker: Error response from daemon: invalid mount config.",
+      "node-missing": "The sandbox's image has no node, which Tachikoma's file tools need in the box.",
+      "node-old": "The sandbox's image has node v20.1.0, but Tachikoma's file tools need Node 22.5 or newer in the box.",
+    })[step];
+
+  // Each step's refusal with that step and every later one broken, so each is said before all that follow.
+  it("refuses in the launch order, each step before every later one, with exit 1", async () => {
+    for (const [i, step] of STEPS.entries()) {
+      const r = await launch(new Set(STEPS.slice(i)));
+      expect(r.lines, step).toEqual([said(step, r.root)]);
+      expect(r.exit, step).toBe(1);
+    }
+  });
+
+  it("removes the box when the node check stops the launch", async () => {
+    for (const step of ["node-missing", "node-old"] as const) {
+      const r = await launch(new Set([step]));
+      expect(r.calls.at(-1), step).toEqual(["rm", "-f", "b0x"]);
+    }
+  });
+
+  it("asks Docker nothing before choice 13's refusal, and builds nothing headless", async () => {
+    expect((await launch(new Set(["home"]))).calls).toEqual([]);
+    expect((await launch(new Set(["image"]))).calls.some((c) => c[0] === "build")).toBe(false);
+  });
+
+  it("starts the box after the leftover boxes are removed, with live link's mounts and git settings, and says how", async () => {
+    const r = await launch(new Set());
+    expect(r.exit).toBeUndefined();
+    const verbs = r.calls.map((c) => c[0]);
+    expect(verbs.indexOf("ps")).toBeLessThan(verbs.indexOf("run"));
+    const run = r.calls.find((c) => c[0] === "run")!;
+    expect(run.slice(run.indexOf("--network"), run.indexOf("--network") + 2)).toEqual(["--network", "none"]);
+    expect(run).toContain("GIT_CONFIG_KEY_0=safe.directory");
+    expect(run.slice(run.indexOf("--tmpfs"), run.indexOf("--tmpfs") + 2)).toEqual(["--tmpfs", "/work/.tachikoma"]);
+    expect(run[run.indexOf("-v") + 1]).toBe(`${r.root}:/work`);
+    expect(r.lines).toEqual([]);
+    const started = r.started!;
+    expect(started.lines).toEqual([`Sandbox: live link on ${r.root}, network off, limits 4g, 4 CPUs, 1024 processes.`]);
+    expect([started.root, started.workspace.root]).toEqual(["/work", "/work"]);
+    expect(started.system).toContain("The project root is /work.");
+    expect(started.system).toContain("Shell commands run with bash on linux.");
+    expect(started.subagentSystem).toContain("The project root is /work.");
+    expect(started.gate).toEqual({ root: "/work", home: "/tmp", shell: "bash" });
+    expect(started.shellTool.spec.description).toContain("with bash");
+  });
+
+  it("starts with the network on as bridge, saying so", async () => {
+    const r = await launch(new Set(), undefined, "on");
+    const run = r.calls.find((c) => c[0] === "run")!;
+    expect(run.slice(run.indexOf("--network"), run.indexOf("--network") + 2)).toEqual(["--network", "bridge"]);
+    expect(r.started!.lines[0]).toContain(", network on, ");
+  });
+
+  it("says each limit Docker cannot apply, after the launch line (choice 83)", async () => {
+    const r = await launch(new Set(), INFO({ MemoryLimit: false, PidsLimit: false }));
+    expect(r.started!.lines.slice(1)).toEqual([
+      "Docker cannot limit the box's memory on this machine, so the box runs without that limit.",
+      "Docker cannot limit the box's processes on this machine, so the box runs without that limit.",
+    ]);
+  });
+
+  // Choice 21: with the network off, every failed command gets the line, as which failures were the network's cannot be told.
+  it("adds the network line to a failed command's result with the network off, and not with it on", async () => {
+    const line = "(The box's network is off, so nothing in it can reach the internet. To allow it, launch with --network on.)";
+    const failing = async (network: Network) => {
+      const r = await launch(new Set<Step>(), undefined, network);
+      return r.started!.executor.exec("curl -sS http://example.invalid/", "/work");
+    };
+    expect((await failing("off")).stderr).toBe(line);
+    expect((await failing("on")).stderr).toBe("");
+  });
+});
+
+// Choice 13: what must never be in the box, by its real place.
+describe("sandboxHeld", () => {
+  it("names Tachikoma's data folder, its settings folder or the home folder inside the project, and nothing beside them", () => {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-held-")));
+    const home = path.join(top, "home");
+    mkdirSync(home);
+    const data = path.join(top, "data");
+    expect(sandboxHeld(top, home, data)).toBe("Tachikoma's data folder");
+    expect(sandboxHeld(home, home, path.join(tmpdir(), "elsewhere-data"))).toBe("Tachikoma's settings folder");
+    mkdirSync(path.join(home, "project"));
+    expect(sandboxHeld(path.join(home, "project"), home, data)).toBeUndefined();
+  });
+});
+
+// From Task 14's review: the write tools look at /work paths in the box, so the hooks folders and settings files git's
+// settings name inside the project are given as the box sees them; those outside it the box cannot reach.
+describe("boxProtection", () => {
+  it("gives the project's protected paths as /work paths, leaving out those outside it", () => {
+    const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-prot-")));
+    const p = { hooks: [path.join(root, ".husky", "_"), path.join(tmpdir(), "elsewhere-hooks")], files: [path.join(root, "team.gitconfig")] };
+    expect(boxProtection(root, p)).toEqual({ hooks: ["/work/.husky/_"], files: ["/work/team.gitconfig"] });
   });
 });

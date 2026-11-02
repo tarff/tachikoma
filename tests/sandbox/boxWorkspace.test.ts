@@ -63,8 +63,9 @@ describe("BoxWorkspace in real Docker", { timeout: 0 }, () => {
     expect(await ws.branch()).toBe("feature/x");
     expect(await ws.readText("/work/src/b.ts")).toBe("line one\r\nmatch here\r\n");
     expect(await ws.readText("/work/notes/caf\u00e9.txt")).toBe("caf\u00e9 match\n");
-    expect(await ws.resolve("src/a.ts")).toEqual({ abs: "/work/src/a.ts", outside: false, shown: "/work/src/a.ts", real: "/work/src/a.ts" });
-    expect(await ws.resolve("new/file.txt")).toEqual({ abs: "/work/new/file.txt", outside: false, shown: "/work/new/file.txt", real: "/work/new/file.txt" });
+    expect(await ws.resolve("src/a.ts")).toEqual({ abs: "/work/src/a.ts", outside: false, shown: "/work/src/a.ts", real: "/work/src/a.ts", linked: false });
+    const made = "/work/new/file.txt";
+    expect(await ws.resolve("new/file.txt")).toEqual({ abs: made, outside: false, shown: made, real: made, linked: false });
   });
 
   it("refuses a link made in the box to /etc", async (ctx) => {
