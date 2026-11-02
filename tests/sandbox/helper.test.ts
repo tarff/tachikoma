@@ -63,7 +63,6 @@ async function folderLink(ctx: TestContext, target: string, link: string): Promi
   if (!made) ctx.skip("this system cannot make a link here without more rights");
 }
 
-
 // The same folder through LocalWorkspace and through the helper, run by the host's Node.
 async function both(tree: Record<string, string | Buffer> = TREE) {
   const root = await folderWith(tree);
