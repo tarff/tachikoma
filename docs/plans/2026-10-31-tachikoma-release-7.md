@@ -596,6 +596,12 @@ the plan's review.
     An allowed call's own result follows as before. The model is still told its full message;
     only the screen stops repeating it. A refusal nobody was asked about (a mode's, the
     judge's) keeps its own message.
+67. **A named answer keeps a short result row** (the user's choice, from choice 66's spec
+    review). Where the answer cannot sit under its tool line and names what it answers
+    instead (two calls in one reply, a question that waited, a write's preview between), the
+    declined call keeps its result row, as `⎿ You declined this.`, so each result keeps its
+    place in call order and an allowed call's `⎿ ok` is not read as the declined one's. Under
+    its tool line the declined row stays hidden, as in choice 66.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
