@@ -1067,6 +1067,11 @@ export function downloads(dockerfile: string): string[];                        
 export function buildImage(info: ImageInfo, out: (line: string) => void, signal: AbortSignal): Promise<void>;  // empty context for a project's (choice 16)
 ```
 
+As built (choices 68, 69): every Docker call takes an optional `run: DockerRun` last;
+`ImageInfo` gains `text: Buffer`, the file read once with `\r\n` as `\n`, which gives the tag, the
+question and the build's input; `downloads` takes that text, not a path. Task 16 calls
+`prepareImage(root, io)`, which returns `{ tag }` or `{ exit }`.
+
 **The launch lines, in order** (each exits 1):
 - `The sandbox needs Docker, which is not installed. Install Docker Desktop, or launch with
   --sandbox off.`
