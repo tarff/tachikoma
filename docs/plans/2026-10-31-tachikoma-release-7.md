@@ -723,6 +723,34 @@ the plan's review.
     6,291,456 bytes (6 MiB): `--memory 6291455b` gives `Minimum memory limit allowed is 6MB` and
     `6291456b` runs (read on this PC 2026-11-02). A default below it stops the launch with
     choice 76's line. Choice 84 holds from 6 MiB up.
+87. **An Esc that cannot reach the box stops the sandbox** (the user's choice, Task 12's quality
+    review). Esc's kill is itself a `docker exec`, which cannot start in a box whose processes
+    fill its limit. When that kill fails, the session does not show `Cancelled`; it is Docker
+    failing during a session: `The sandbox stopped working: Esc could not reach the box (<docker's
+    words>). Shell and file tools are off until Tachikoma is launched again.`
+88. **On Linux Docker Engine the defaults are left as they are, and the docs say so** (the user's
+    choice, Task 12's quality review). There `MemTotal` is the whole machine's, not a Docker VM's,
+    so a 4 GiB laptop's box may use up to 3 GiB. A limit is a ceiling, never memory set aside, so
+    a command can never use more than it could without the sandbox.
+89. **The out-of-memory count is read again after every command that fails** (the user's choice,
+    Task 12's quality review), not only after code 137, so a memory kill inside a build that
+    exits 2 is never blamed on a later plain kill. It costs one `docker exec` per failed command.
+90. **Removing the box at exit has no time limit** (the user's choice, Task 12's quality review,
+    as choices 70 and 81). A hung Docker shows as a quit that does not finish; a second Ctrl-C
+    ends it, and the next launch's sweep removes the box.
+91. **`"sandboxLimits"` refuses `cpus` with more than 9 decimal places** (the user's choice, Task
+    12's quality review), Docker's own limit (choice 82), with settings.json's other messages'
+    form: `"cpus" can have at most 9 decimal places`. `cpus` and `pids` must also be finite.
+92. **A command can stop its own box, and that is a known limit** (the user's choice, Task 12's
+    quality review). `kill -9 -1` ends every process of the box's user, its `sleep` too, and the
+    box stops. The session then shows `The sandbox stopped working: the box stopped. Shell and
+    file tools are off until Tachikoma is launched again.` (`the box stopped` whenever Docker
+    gives no words). The docs say so.
+93. **The box's host label names the process space its pid belongs to** (Task 12's quality
+    review). WSL distros get the Windows computer's name, and Docker Desktop shares one Docker
+    between Windows and WSL, each numbering processes on its own. So `tachikoma.host` is
+    `<hostname>/<platform>`, and on Linux also `/proc/self/ns/pid`'s link, and the sweep removes
+    a box only when all of it matches.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
