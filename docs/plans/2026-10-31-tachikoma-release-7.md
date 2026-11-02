@@ -763,6 +763,15 @@ the plan's review.
     16's node check (choice 17) asks the box's node whether `path.matchesGlob` is a function,
     and stops with `The sandbox's image has node <version>, but Tachikoma's file tools need Node
     22.5 or newer in the box.` The shipped image has Node 24, so only a project's image can hit it.
+98. **The `@` menu keeps listing the host folder** (the user's choice, Task 14). The menu is worked
+    out while the screen is drawn, and a `list` in the box took a median 360 ms and at most 721 ms
+    over 20 calls (Task 14's measurement, a 25-entry folder), against about 33 ms on the host. In
+    live link the box sees the same files. In copy mode the menu does not show files the agent
+    made in the copy: a known limit (choice 94).
+99. **Pasted paths are always read on the host** (the user's choice, Task 14). They are files the
+    user sees on their own machine, often outside the project (a Desktop screenshot), which the
+    box cannot see. The paste's file check (`isFile`) and `pictureFile` stay on the host, in or out
+    of the sandbox.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -781,6 +790,7 @@ the plan's review.
     - a project image's `NODE_OPTIONS` that prints to stdout corrupts the helper's answers;
     - in the box, `list` leaves out links that lead nowhere or outside, which the host shows;
     - a read of a FIFO in the project waits, in the box as on the host;
+    - in copy mode, the `@` menu lists the host folder, not the copy (choice 98);
     - choices 88 and 92.
 ---
 
@@ -1384,6 +1394,13 @@ tests in the files of each.
 records calls, each caller reaching the Workspace and never the disk.
 
 Commit: `refactor: the file tools, the @ menu, the branch and pasted pictures go through the Workspace`.
+
+**As built (1eb4611 and its follow-up):** the file tools, search and the branch go through the
+Workspace; `Executor.readFile`/`writeFile` are dropped (nothing called them). The `@` menu and
+pasted paths stay on the host (choices 98, 99), so the commit message names only the file tools
+and the branch. The grep test's allowed list gives `menus.ts` and `constants.ts` those choices as
+reasons. Notes for Task 16: the write tools' hard-link check (`protectedOf`) looks at the host
+path; `ctx.root` and `workspace.root` are separate values that must match.
 
 ## Task 15: Live link's mounts
 
