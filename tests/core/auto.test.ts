@@ -244,8 +244,14 @@ describe("auto mode, the turn's signal from each tool", () => {
     const executor: Executor = {
       exec: async (command) => (ran.push(`exec ${command}`), { code: 0, signal: null, stdout: "", stderr: "" }),
     };
+    // The project's files as the host has them, but that reads, writes and searches are recorded and never made.
+    const workspace = Object.assign(new LocalWorkspace(root), {
+      readText: async (abs: string) => (ran.push(`read ${abs}`), "old"),
+      writeText: async (abs: string) => void ran.push(`write ${abs}`),
+      search: async (start: string) => (ran.push(`search ${start}`), { matches: [], beyond: 0 }),
+    });
     const stop = new AbortController();
-    const running = tool.run(input(elsewhere), { root, executor, workspace: new LocalWorkspace(root), gate, signal: stop.signal });
+    const running = tool.run(input(elsewhere), { root, executor, workspace, gate, signal: stop.signal });
     for (let i = 0; i < 40 && !answer; i++) await settle();
     stop.abort();
     answer!({ allow: true });
