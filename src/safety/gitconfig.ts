@@ -2,8 +2,8 @@
 // design, "Live link"; plan, Task 5 and choices 11, 12 and 57). A line added to any of these files, or a program put in
 // a hooks folder, can make the user's next git command on the host run a program. So protected paths (Task 6) ask
 // before a write to any file or folder listed here (choice 57), and live link makes those inside the project read-only
-// in the box. The same lookup gives the line-ending settings live link passes into the box's git (choice 100). What is
-// guaranteed: the only git command run is `git config`, which reads settings and runs nothing; it
+// in the box. A second `git config` per file gives the line-ending settings live link passes into the box's git (choice
+// 100). What is guaranteed: the only git command run is `git config`, which reads settings and runs nothing; it
 // is started by its full path, from the system's temporary folder, with none of the user's git variables but the two
 // naming the settings files. Git still looks for a `.git` in the temporary folder itself; GIT_CEILING_DIRECTORIES
 // only stops it climbing above that folder, so a project that holds the temporary folder (the home folder, say) is
@@ -33,11 +33,12 @@ export interface GitSettings {
   lineEndings: Record<string, string>;
 }
 
-// Every include, whatever its condition, every hooks folder and the two line-ending settings, in one lookup: git gives
-// each key in lower case, but for an includeIf's condition, in the file's order (checked with git 2.41.0 by the code
-// review, 2026-10-31; for the line endings, 2026-11-02).
-const SETTINGS = "^(include\\.path|includeif\\..*\\.path|core\\.hookspath|core\\.autocrlf|core\\.eol)$";
-const LINE_ENDINGS = ["core.autocrlf", "core.eol"];
+// Every include, whatever its condition, and every hooks folder, in one lookup: git gives each key in lower case, but
+// for an includeIf's condition, in the file's order (checked with git 2.41.0 by the code review, 2026-10-31).
+const SETTINGS = "^(include\\.path|includeif\\..*\\.path|core\\.hookspath)$";
+// The line endings, and the includes again to place them by, in a lookup of their own without `--type=path`, which fails
+// on an autocrlf with no value (measured with git 2.41.0, 2026-11-02), so the lookup above stays as it was.
+const ENDINGS = "^(include\\.path|includeif\\..*\\.path|core\\.autocrlf|core\\.eol)$";
 type Step = { set: [string, string] } | { include: string };
 // Of git's own variables, only these two pass to it. Any other could change what it reads or prints: GIT_TRACE and its
 // kin write to stderr, which `values` reads as a failure; GIT_CONFIG_NOSYSTEM would hide the system's file, which a git
@@ -92,32 +93,45 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
     const read = await Promise.all(
       round.map(([file, included]) => {
         const why = included ? refusal(file) : undefined;
-        return why ? { why } : values(run, file);
+        return why ? { why } : Promise.all([values(run, file), endings(run, file)]);
       }),
     );
     round.forEach(([file, , key], i) => {
       const got = read[i]!;
-      if (!Array.isArray(got)) {
-        found.problems.push({ file, why: got.why });
+      const [paths, lines] = Array.isArray(got) ? got : [got, []];
+      if (!Array.isArray(paths)) {
+        found.problems.push({ file, why: paths.why });
         return;
       }
-      const own: Step[] = [];
-      steps.set(key, own);
-      // Each entry is "<key>\n<value>". A line-ending setting counts even when empty, as git reads an empty autocrlf as
-      // false; one with no value at all fails the lookup (`--type=path`; measured with git 2.41.0, 2026-11-02). Any other
-      // key with no value names nothing. Git has expanded the value already; an include still relative is relative to the
-      // file it is in, and a hooks folder to the repository's top.
-      for (const entry of got) {
+      const includes: string[] = [];
+      // Each entry is "<key>\n<value>"; a key with no value names nothing. Git has expanded the value already; an include
+      // still relative is relative to the file it is in, and a hooks folder to the repository's top.
+      for (const entry of paths) {
         const cut = entry.indexOf("\n");
-        const name = cut < 0 ? entry : entry.slice(0, cut);
         const value = cut < 0 ? "" : entry.slice(cut + 1);
-        if (LINE_ENDINGS.includes(name)) own.push({ set: [name, value] });
-        else if (!value) continue;
-        else if (name === "core.hookspath") {
+        if (!value) continue;
+        if (entry.slice(0, cut) === "core.hookspath") {
           const folder = path.resolve(top, value);
           list(found.hooksPaths, folder, realPath(folder));
-        } else own.push({ include: add(path.resolve(path.dirname(file), value), true) });
+        } else includes.push(add(path.resolve(path.dirname(file), value), true));
       }
+      // The line endings, with each include in its place: the n-th include with a value in this lookup is the n-th
+      // above, as both list the file's includes in its order. An autocrlf with no value is true, as git reads it, and an
+      // empty one stays empty, which git reads as false; an eol with no value is left out, as git refuses it. Should this
+      // lookup fail, the includes are still walked.
+      const own: Step[] = [];
+      let next = 0;
+      for (const entry of lines) {
+        const cut = entry.indexOf("\n");
+        const name = cut < 0 ? entry : entry.slice(0, cut);
+        const value = cut < 0 ? undefined : entry.slice(cut + 1);
+        if (name === "core.autocrlf") own.push({ set: [name, value ?? "true"] });
+        else if (name === "core.eol") {
+          if (value !== undefined) own.push({ set: [name, value] });
+        } else if (value && next < includes.length) own.push({ include: includes[next++]! });
+      }
+      for (const include of includes.slice(next)) own.push({ include });
+      steps.set(key, own);
     });
   }
   // The line endings: each file's settings in order, an include's where it stands, the last one set winning. A file is not
@@ -241,6 +255,13 @@ async function values(run: Run, file: string): Promise<string[] | { why: string 
   if (code === 0) return out.split("\0").filter(Boolean);
   if (code === 1 && !why) return [];
   return { why: `it cannot be read: ${why || `exit code ${code}`}` };
+}
+
+// A file's line-ending settings and includes as written, in its order; none when the lookup fails, as `values` gives
+// that file's problem.
+async function endings(run: Run, file: string): Promise<string[]> {
+  const { code, out } = await run(["config", "--file", file, "-z", "--get-regexp", ENDINGS]);
+  return code === 0 ? out.split("\0").filter(Boolean) : [];
 }
 
 // Why an included file is refused, before git reads it: a link could be changed to lead anywhere.

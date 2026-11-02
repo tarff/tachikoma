@@ -213,7 +213,9 @@ describe("gitSettings", () => {
     const got = await gitSettings(w.root, w.env);
     const runs = vi.mocked(execFile).mock.calls.map(([, args]) => args as string[]);
     const reads = runs.filter((args) => args.includes("--file") && /extra\.cfg$/i.test(args[args.indexOf("--file") + 1]!));
-    expect(reads).toHaveLength(1);
+    // Once for its paths and once for its line endings.
+    expect(reads.filter((args) => args.includes("--type=path"))).toHaveLength(1);
+    expect(reads).toHaveLength(2);
     expect(got!.files).toEqual([w.system, w.global, w.at("project/.git/config"), w.at("project/joined/extra.cfg"), real]);
   });
 
@@ -411,6 +413,20 @@ describe("gitSettings", () => {
     expect(got!.lineEndings).toEqual({ "core.autocrlf": "", "core.eol": "crlf" });
   });
 
+  it("reads a file whose autocrlf has no value whole, its includes and hooks folder too, and the autocrlf as true, as git does", async () => {
+    const w = world();
+    w.write("project/.git/config", "[core]\n\tautocrlf\n\thooksPath = .husky\n[include]\n\tpath = ../extra.cfg\n");
+    const extra = w.write("project/extra.cfg", "");
+    const got = await gitSettings(w.root, w.env);
+    expect(got).toEqual({
+      files: [w.system, w.global, w.at("project/.git/config"), extra],
+      hooksPaths: [path.join(w.root, ".husky")],
+      gitDirs: [],
+      problems: [],
+      lineEndings: { "core.autocrlf": "true" },
+    });
+  });
+
   it("(the test file's own guard) refuses a git run whose home folder no test made, before git starts", async () => {
     const w = world();
     const before = started.runs;
@@ -440,8 +456,9 @@ describe("gitSettings", () => {
     vi.mocked(execFile).mockClear();
     await gitSettings(w.root, { ...w.env, ANTHROPIC_API_KEY: "sample-key", GIT_DIR: w.at("project/.git"), Git_Trace: "1" });
     const runs = vi.mocked(execFile).mock.calls as unknown as [string, string[], { cwd: string; env: NodeJS.ProcessEnv }][];
-    // The two scopes, then one run for each file: the system's, the user's, the repository's and the include.
-    expect(runs).toHaveLength(6);
+    // The two scopes, then two runs for each file, its paths and its line endings: the system's, the user's, the
+    // repository's and the include.
+    expect(runs).toHaveLength(10);
     for (const [file, , options] of runs) {
       // Git's search for a repository stops before it would climb out of the temporary folder.
       expect(options.env.GIT_CEILING_DIRECTORIES).toBe(path.dirname(tmpdir()));
