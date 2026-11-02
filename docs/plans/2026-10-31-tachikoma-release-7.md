@@ -751,6 +751,15 @@ the plan's review.
     between Windows and WSL, each numbering processes on its own. So `tachikoma.host` is
     `<hostname>/<platform>`, and on Linux also `/proc/self/ns/pid`'s link, and the sweep removes
     a box only when all of it matches.
+94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
+    engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
+    on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
+    Rarer cases become known limits in the docs (Task 23), with no code. Each task gets one
+    quality review, then a re-check of its fixes only. Known limits so far:
+    - a folder whose name contains `:` cannot be mounted with `-v` (Docker's `invalid volume
+      specification`); Task 15 builds the mounts and may use `--mount`;
+    - a box Docker made but could not start stays until the next launch's sweep;
+    - choices 88 and 92.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
