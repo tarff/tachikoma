@@ -649,7 +649,8 @@ the plan's review.
 
     So this PC keeps 4 GB and 4 CPUs; a 128 GB, 64-CPU Docker gets about 16 GB and 10.7 CPUs; a
     small Docker is capped as choice 76 says. Docker takes `--memory` in bytes and `--cpus` with
-    decimals, so the values are not rounded; the launch line shows the limits used. A `"sandboxLimits"` value the user set that
+    decimals, so the CPUs are not rounded and the memory is rounded down only to a whole MiB
+    (choice 80); the launch line shows the limits used. A `"sandboxLimits"` value the user set that
     is above Docker's own `MemTotal` or `NCPU` stops the launch: `settings.json: "sandboxLimits":
     "<name>" is <value>, but Docker has <what Docker has>. Lower it, or give Docker more memory or
     CPUs.` (choice 78). A value the user set may use what choice 76 keeps free. Tests that need
@@ -692,6 +693,13 @@ the plan's review.
     this-PC check's other findings each come to the user at their task: Ubuntu's Docker snap and
     the build's temporary folder (Task 11's code), git's line-ending setting in live link (Task
     15), a Mac without Apple's developer tools, and SELinux and the box's mounts.
+80. **The default memory is rounded down to a whole MiB** (the user's choice, after Task 12 was
+    built). This PC's `MemTotal` read 33,518,931,968 and 33,518,923,776 bytes on the same day; an
+    upward drift would make the scaled default 4 GiB and about 1 KiB, shown as `4096m`. Rounded
+    down to whole MiB (Docker's `m`), this PC always gets exactly 4 GiB.
+81. **The real-Docker tests have no time limit** (the user's choice, after Task 12 was built, as
+    choice 70 for Docker's check). They took 3 to 9.5 s here; a hung Docker shows as a run that
+    does not finish.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
