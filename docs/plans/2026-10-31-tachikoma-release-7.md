@@ -835,7 +835,11 @@ the plan's review.
     - lefthook's and pre-commit's files are writable from the box in live link (choice 102);
     - live link's letter-case check looks at the project folder only, so a subfolder made to
       mind case differently (Windows' per-folder setting, a case-sensitive Mac volume) is not
-      seen (choice 104); Docker Desktop on a case-sensitive Mac volume is untested;
+      seen (choice 104); Docker Desktop on a case-sensitive Mac volume is untested; on a Windows
+      folder set to mind case, short names (`GIT~1`) may still reach `.git` (measured on an
+      ordinary folder; folders made from WSL under `/mnt/c` mind case by default); a first
+      lettered name that is another drive's mount point can fool the check; an include inside
+      `.tachikoma` gives a duplicate mount point and Docker refuses to start;
     - from Task 15's quality review: when the project is a subfolder of a repository, or not a
       repository, the box can make its own `.git` there, which git on the host then uses
       (`safe.bareRepository = explicit` stops only bare repositories, so the README must not
@@ -1526,6 +1530,14 @@ export function liveMounts(root: string, git: GitSettings | undefined): { mounts
 - no new folder made in the project by Docker, checked by listing the project before and after.
 
 Commit: `feat: live link: all of .git, git's included files and the hooks folders read-only, .tachikoma hidden`.
+
+**As built (958ffad, cbf9697, cc3fd72, 3a4ee0c):** `liveMounts(root, git, { ignoresCase }?)`
+returns `{ mounts, env }` or `{ refused }`. `env` is the box's session-only git settings:
+`safe.directory=/work` first (git in the box refused `/work` as "dubious ownership" on Docker
+Desktop without it), then the line endings (choice 100); Task 16 passes it as `BoxOptions.env`.
+`Mount` lives in mounts.ts and gained a writable kind for choice 105's pins. The refusal order:
+letter case (choice 104), git missing, Task 5's problems, a missing hooks folder. The real-Docker
+tests run on Windows with the case check injected.
 
 ## Task 16: Live link in a session
 
