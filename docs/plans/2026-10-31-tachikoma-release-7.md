@@ -1585,6 +1585,10 @@ Every key, command and setting named is checked against the source before it is 
 6. `auto`: a harmless command the judge allows, and one it refuses.
 7. A write to `.husky/x` in `project` asks.
 8. Shift+Enter in Windows Terminal.
+9. Ctrl-C a real `tachi sandbox build` while it downloads (only after the user agrees to that
+   download): it exits at once, no `docker-buildx.exe` is left in Task Manager, and no new
+   `tachikoma-sandbox` image is listed. If buildx is left running, the build is stopped with the
+   tree kill `killTree` in `src/exec/local.ts` (Task 11's code-quality review).
 
 Commit: `docs: release 7 in the README and the design, and the terminal checklist`.
 
