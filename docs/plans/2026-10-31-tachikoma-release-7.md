@@ -177,6 +177,7 @@ if the file passes run alone.
 | 3 in a row, 20 in a session | judge refusals before the user is asked | Claude Code's auto mode docs (design, Sources); not measured for Tachikoma |
 | 30,000 characters | each stream of a command's output, in the box as on the host | `MAX_TOOL_OUTPUT`, release 1 |
 | 4 GB memory, 4 CPUs, 1024 processes | the box's default limits | **Task 1's measurement (`scripts/measure-sandbox.mjs`), the user's choice on 2026-10-31**: the test suite peaked at 2.0 GB, 4.5 CPUs and 348 processes |
+| 1 GiB memory, 1 CPU | kept free of a small Docker by the defaults (choice 76) | memory: Docker's own idle use read in three boxes on 2026-11-02 (at most 972,532 kB), rounded up; the CPU: the user's choice |
 | 1000:1000 | the box's user on Windows and macOS | the image's own user (choice 14) |
 
 No other number is set. Anywhere a builder feels a number is needed (a time-out, a retry), they
@@ -248,8 +249,9 @@ the plan's review.
     settings in the box. The launch stops with `The sandbox cannot run on <folder>: it holds
     <what>, which must never be in the box. Start Tachikoma in a project folder.`
 14. **The box's user** is `1000:1000` on Windows and macOS (the image's `tachi` user). On Linux it
-    is the host user's own ids, so files written in live link belong to the user. `--user` is
-    always passed, so a project's Dockerfile cannot make the box root.
+    is the host user's own ids, so files written in live link belong to the user, or `0:0` when
+    Docker is rootless (choice 77). `--user` is always passed, so a project's Dockerfile cannot
+    choose the box's user.
 15. **The image** is `sandbox/Dockerfile`, shipped with Tachikoma. It contains:
     - the `node:24-bookworm-slim` base, pinned by digest (Node 24, as the host runs);
     - `git`, `python3`, `python3-venv`, `bash` and `ca-certificates` from Debian;
@@ -645,13 +647,51 @@ the plan's review.
     - processes: 1024 everywhere (the user's choice: processes cost little, about 3 times the
       measured peak of 348).
 
-    So this PC keeps 4 GB and 4 CPUs; a 2 GB, 2-CPU Docker gets 2 GB and 2 CPUs; a 128 GB, 64-CPU
-    Docker gets about 16 GB and 10.7 CPUs. Docker takes `--memory` in bytes and `--cpus` with
+    So this PC keeps 4 GB and 4 CPUs; a 128 GB, 64-CPU Docker gets about 16 GB and 10.7 CPUs; a
+    small Docker is capped as choice 76 says. Docker takes `--memory` in bytes and `--cpus` with
     decimals, so the values are not rounded; the launch line shows the limits used. A `"sandboxLimits"` value the user set that
-    is above them stops the launch: `settings.json: "sandboxLimits": "<name>" is <value>, but
-    Docker has <what Docker has>. Lower it, or give Docker more in Docker Desktop's settings.`
-    No new number: Docker's own figures are the cap. Tests that need a box use limits that fit
-    the Docker they run on, and skip with a message when Docker has less than they need.
+    is above Docker's own `MemTotal` or `NCPU` stops the launch: `settings.json: "sandboxLimits":
+    "<name>" is <value>, but Docker has <what Docker has>. Lower it, or give Docker more memory or
+    CPUs.` (choice 78). A value the user set may use what choice 76 keeps free. Tests that need
+    a box use limits that fit the Docker they run on, and skip with a message when Docker has
+    less than they need.
+76. **The defaults keep some of a small Docker free for Docker itself** (the user's choice,
+    2026-11-02, after the this-PC check). The default memory is never more than `MemTotal` less
+    1 GiB (1,073,741,824 bytes). The default CPUs are never more than `NCPU` less 1 when `NCPU`
+    is more than 1. **Source:** three boxes from `tachikoma-sandbox:5879e9863c31` (network off,
+    each removed, no other box running) read `/proc/meminfo` on 2026-11-02. Docker's own system
+    used `MemTotal − MemAvailable` = 964,404, 968,520 and 972,532 kB while idle (about
+    0.93 GiB), rounded up to 1 GiB. The 1 CPU is the user's choice. When `MemTotal` is 1 GiB or
+    less, the launch stops: `The sandbox needs more than 1 GiB of Docker's memory, and Docker has
+    <memory>. Give Docker more memory, or launch with --sandbox off.` Examples: this PC keeps
+    4 GB and 4 CPUs; a 2 GiB, 2-CPU Docker gets 1 GiB and 1 CPU; a 128 GB, 64-CPU Docker
+    still gets about 16 GB and 10.7 CPUs.
+77. **Rootless Docker runs the box as `0:0`, and the box always has a writable home** (the
+    user's choice, 2026-11-02). Rootless Docker and rootless Podman map the box's root to the
+    host user, so a box run as the host's own ids cannot write to `/work`. When `docker info`'s
+    `SecurityOptions` includes `name=rootless`, `--user 0:0` is passed; that root is the host
+    user, with every capability dropped and `no-new-privileges` as before. A Linux uid the image
+    does not know has no home, so Docker sets `HOME=/`, and npm, uv, pip and `git config
+    --global` fail. So the box always gets `-e HOME=/tmp`, which every user can write. Task 12's
+    test checks that `id -u` is the user Tachikoma chose, not a fixed 1000. Docker Desktop for
+    Linux and Podman's answers to `docker info` have not been tried.
+78. **Docker's messages fit every Docker** (the user's choice, 2026-11-02). The lines say "Docker",
+    not "Docker Desktop": `Install Docker, or launch with --sandbox off.`, `Start Docker, then
+    launch again.`, and the same in `tachi sandbox build`'s lines. Two new cases, each exit 1,
+    with a `tachi sandbox build` form ending `then run tachi sandbox build again`:
+    - Docker's answer says `permission denied` (Linux, a user not allowed to use Docker): `The
+      sandbox needs Docker, but this user is not allowed to use it. Docker's install guide for
+      Linux says how to allow it, or launch with --sandbox off.`
+    - Docker's server is not Linux (Docker Desktop set to Windows containers): `The sandbox
+      needs Docker's Linux containers, but Docker is set to Windows containers. Switch it to
+      Linux containers, then launch again.`
+79. **Testing on Linux and macOS waits for CI** (the user's choice, 2026-11-02). Task 1's run
+    in the box failed 29 of 1,723 tests, and it is not yet known which come from Linux and
+    which from the copy's Windows line endings. Release 13's CI runs the suite on Linux and
+    macOS. Until then the README says Tachikoma has been tested on Windows 11 only. The
+    this-PC check's other findings each come to the user at their task: Ubuntu's Docker snap and
+    the build's temporary folder (Task 11's code), git's line-ending setting in live link (Task
+    15), a Mac without Apple's developer tools, and SELinux and the box's mounts.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
@@ -1162,7 +1202,7 @@ export class DockerExecutor implements Executor {
   any box labelled with a session whose process is gone.
 
 **Tests** (real Docker):
-- `id -u` is 1000;
+- `id -u` is the user Tachikoma chose (1000 here; choice 77), and `HOME` is `/tmp`;
 - `capsh --print` or `/proc/self/status` shows no capabilities;
 - `NoNewPrivs: 1`;
 - no network (`getent hosts example.com` fails);
