@@ -717,6 +717,12 @@ the plan's review.
 85. **`"sandboxLimits"` memory is `"<n>g"` or `"<n>m"`** (the user's choice, Task 12's spec
     review), whole numbers, read as Docker reads them (1g = 1,073,741,824 bytes). Messages
     answer in the user's own unit.
+86. **A default memory below Docker's own minimum stops the launch** (the user's choice, Task
+    12's fix round). Rounded down to a whole MiB, a Docker just over 1 GiB can give 0 bytes,
+    which Docker reads as no limit, or 1 to 5 MiB, which Docker refuses. Docker's minimum is
+    6,291,456 bytes (6 MiB): `--memory 6291455b` gives `Minimum memory limit allowed is 6MB` and
+    `6291456b` runs (read on this PC 2026-11-02). A default below it stops the launch with
+    choice 76's line. Choice 84 holds from 6 MiB up.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
