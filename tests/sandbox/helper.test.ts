@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,6 +8,7 @@ import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalWorkspace } from "../../src/exec/local.js";
 import { BoxWorkspace, helperCode, LOADER } from "../../src/sandbox/boxWorkspace.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
+import { removeTree, TREE, ZERO } from "../helpers.js";
 
 // Runs `node -e <loader>` with its input on the host, as the call would in the box: what node writes, and how it ends.
 function node(args: string[], input: Buffer | undefined, signal?: AbortSignal): Promise<{ code: number; out: string; err: string }> {
@@ -38,16 +39,6 @@ function hostNode(started?: () => void) {
   return { run, calls };
 }
 
-// Removes a folder the test made: a link or junction is removed itself, never followed.
-async function removeTree(folder: string): Promise<void> {
-  for (const e of await readdir(folder, { withFileTypes: true })) {
-    const p = path.join(folder, e.name);
-    if (e.isDirectory() && !e.isSymbolicLink()) await removeTree(p);
-    else await unlink(p);
-  }
-  await rmdir(folder);
-}
-
 // A test folder holding `tree`, each file's folders made, removed when the test ends.
 async function folderWith(tree: Record<string, string | Buffer>, prefix = "tachi-helper-"): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), prefix));
@@ -72,24 +63,6 @@ async function folderLink(ctx: TestContext, target: string, link: string): Promi
   if (!made) ctx.skip("this system cannot make a link here without more rights");
 }
 
-const ZERO = String.fromCharCode(0);
-// A project with .gitignore files at two levels (one bringing back with "!"), CRLF and non-ASCII text, a binary file and a
-// repository's HEAD.
-const TREE: Record<string, string> = {
-  ".gitignore": "build/\n*.log\n!keep.log\n",
-  "src/a.ts": "const a = 1;\nexport { a };\n",
-  "src/b.ts": "line one\r\nmatch here\r\n",
-  "src/core/c.ts": "match again\n",
-  "src/.gitignore": "secret.ts\n",
-  "src/secret.ts": "match hidden\n",
-  "build/out.js": "match built\n",
-  "x.log": "match log\n",
-  "keep.log": "match kept\n",
-  "notes/caf\u00e9.txt": "caf\u00e9 match\n",
-  "bin.dat": `match${ZERO}binary\n`,
-  ".git/HEAD": "ref: refs/heads/feature/x\n",
-  ".git/config": "match in git\n",
-};
 
 // The same folder through LocalWorkspace and through the helper, run by the host's Node.
 async function both(tree: Record<string, string | Buffer> = TREE) {
@@ -247,7 +220,7 @@ describe("a call to the helper", () => {
     expect(call!.slice(6)).toEqual(["_", LOADER]);
   });
 
-  it("is stopped by an abort, which kills its process group in the box", async () => {
+  it("sends the group kill on an abort, and rejects with Cancelled", async () => {
     let start!: () => void;
     const started = new Promise<void>((resolve) => (start = resolve));
     const root = await folderWith({ "slow.txt": `${"a".repeat(40)}b\n` });

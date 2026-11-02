@@ -2,13 +2,13 @@
 // Task 13): each operation is one `docker exec -i <box> node -e <loader>`, with the helper's code and the request on
 // stdin, so the image need not change with each Tachikoma version. Docker is reached only through a DockerRun (choice
 // 69).
-import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { type Entry, entryOrder, type Match, type Workspace } from "../exec/workspace.js";
 import { BINARY_TEST_BYTES, LINE_CUT } from "../tools/search.js";
 import { docker, type DockerRun } from "./docker.js";
+import { inGroup } from "./executor.js";
 import { helper, type Request } from "./helper.js";
 
 // What `node -e` runs in the box: it reads the call's JSON from stdin, {code, request}, runs the code with the request
@@ -32,7 +32,6 @@ export function helperCode(source = String(helper)): string {
 }
 
 let code: string | undefined;
-const NO_DOCKER = "no docker program is on PATH any more";
 
 export class BoxWorkspace implements Workspace {
   // `root` is the box's folder for the project; a test gives a host folder, with the host's Node standing in for Docker.
@@ -76,36 +75,14 @@ export class BoxWorkspace implements Workspace {
     return (await this.#call({ op: "branch" })) as string | null;
   }
 
-  // One call, in a process group of its own, as DockerExecutor.exec runs a command (executor.ts, choice 20), so an abort
-  // kills the whole group in the box: killing the docker exec client alone leaves what it ran running there.
+  // One call, in a process group of its own, as DockerExecutor.exec runs a command (executor.ts, inGroup), so an abort
+  // kills the whole group in the box.
   async #call(request: DistributiveOmit<Request, "root">, signal?: AbortSignal): Promise<unknown> {
     if (signal?.aborted) throw new Error("Cancelled");
-    const group = `/tmp/tachikoma-${randomUUID()}`;
-    const wrapper =
-      `exec 3>&2 2>/dev/null; setsid -w bash -c 'echo $$ > ${group}; [ -e ${group}.stop ] && exit; exec node -e "$1"' _ "$1" 2>&3 3>&-; ` +
-      `s=$?; rm -f ${group} ${group}.stop; exit $s`;
-    let kill: Promise<string | undefined> | undefined;
-    const onAbort = () => {
-      const line = `touch ${group}.stop; kill -KILL -- -"$(cat ${group} 2>/dev/null)" 2>/dev/null; exit 0`;
-      kill = this.run(["exec", this.id, "bash", "-c", line]).then(
-        (r) => (r === "missing" ? NO_DOCKER : r.code !== 0 ? r.err.trim() || "the box stopped" : undefined),
-        (err: Error) => err.message,
-      );
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
     const input = Buffer.from(JSON.stringify({ code: (code ??= helperCode()), request: { ...request, root: this.root } }), "utf8");
-    let got: Awaited<ReturnType<DockerRun>>;
-    try {
-      got = await this.run(["exec", "-i", this.id, "bash", "-c", wrapper, "_", LOADER], { input, signal });
-    } catch (err) {
-      if (!signal?.aborted) throw unreached((err as Error).message);
-      const words = await kill;
-      if (words !== undefined) throw unreached(`Esc could not reach the box (${words})`);
-      throw new Error("Cancelled");
-    } finally {
-      signal?.removeEventListener("abort", onAbort);
-    }
-    if (got === "missing") throw unreached(NO_DOCKER);
+    const got = await inGroup(this.run, this.id, ["-i"], "node -e", LOADER, { input, signal });
+    if ("cancelled" in got) throw new Error("Cancelled");
+    if ("unreached" in got) throw unreached(got.unreached);
     let answer: { ok?: unknown; error?: string; code?: string };
     try {
       answer = JSON.parse(got.out);

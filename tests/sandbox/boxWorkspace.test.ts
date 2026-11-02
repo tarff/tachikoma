@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rmdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
@@ -8,34 +8,7 @@ import { BoxWorkspace } from "../../src/sandbox/boxWorkspace.js";
 import { dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, boxUser, DockerExecutor, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
-
-// Removes a folder the test made: a link is removed itself, never followed.
-async function removeTree(folder: string): Promise<void> {
-  for (const e of await readdir(folder, { withFileTypes: true })) {
-    const p = path.join(folder, e.name);
-    if (e.isDirectory() && !e.isSymbolicLink()) await removeTree(p);
-    else await unlink(p);
-  }
-  await rmdir(folder);
-}
-
-const ZERO = String.fromCharCode(0);
-// helper.test.ts's project: .gitignore files at two levels, CRLF and non-ASCII text, a binary file and a HEAD.
-const TREE: Record<string, string> = {
-  ".gitignore": "build/\n*.log\n!keep.log\n",
-  "src/a.ts": "const a = 1;\nexport { a };\n",
-  "src/b.ts": "line one\r\nmatch here\r\n",
-  "src/core/c.ts": "match again\n",
-  "src/.gitignore": "secret.ts\n",
-  "src/secret.ts": "match hidden\n",
-  "build/out.js": "match built\n",
-  "x.log": "match log\n",
-  "keep.log": "match kept\n",
-  "notes/caf\u00e9.txt": "caf\u00e9 match\n",
-  "bin.dat": `match${ZERO}binary\n`,
-  ".git/HEAD": "ref: refs/heads/feature/x\n",
-  ".git/config": "match in git\n",
-};
+import { removeTree, TREE } from "../helpers.js";
 
 const TEST_LABEL = { "tachikoma.test": "1" }; // the plan's rule for every container a test starts
 

@@ -112,7 +112,7 @@ export function memoryText(bytes: number, unit: "g" | "m" = bytes % UNIT.g === 0
   return n === 0 && unit === "g" ? memoryText(bytes, "m") : `${n}${unit}`;
 }
 
-const NO_DOCKER = "no docker program is on PATH any more";
+export const NO_DOCKER = "no docker program is on PATH any more";
 // The process space this Tachikoma's pid belongs to, for the box's label (choice 93): the computer's name, which WSL's
 // distros share with Windows, its system, and on Linux its pid namespace, which tells two distros or containers apart.
 const HOST = [os.hostname(), process.platform, ...(process.platform === "linux" ? [readlinkSync("/proc/self/ns/pid")] : [])].join("/");
@@ -172,48 +172,15 @@ export class DockerExecutor implements Executor {
     return box;
   }
 
-  // Each command runs in a process group of its own, by setsid, whose id the wrapper writes to a file in the box's /tmp
-  // first, so Esc can kill the whole group in the box (choice 20). Measured on 2026-11-02 (Docker 29.9.2): killing the
-  // `docker exec` client of `sleep 600` left the sleep running in the box, so killing the client alone is not enough.
-  // The outer shell's own reports go to /dev/null (its 2 is moved to 3 for the command), as a killed command made it
-  // print a "Killed" line quoting the wrapper. An Esc before the id is written leaves a `.stop` file, which the wrapper
-  // looks for after writing it: Esc writes its file before reading the id, so either it reads the id or the wrapper
-  // sees its file.
   async exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult> {
     if (this.#broken) throw this.#broken;
     if (signal?.aborted) throw new Error("Cancelled");
     if (this.#oomKills === undefined) this.#oomKills = await this.#oomKillCount(); // again, until it can be read
     if (signal?.aborted) throw new Error("Cancelled"); // an Esc during that read: nothing has started
     const before = this.#oomKills;
-    const group = `/tmp/tachikoma-${randomUUID()}`;
-    const wrapper =
-      `exec 3>&2 2>/dev/null; setsid -w bash -c 'echo $$ > ${group}; [ -e ${group}.stop ] && exit; exec bash -c "$1"' _ "$1" 2>&3 3>&-; ` +
-      `s=$?; rm -f ${group} ${group}.stop; exit $s`;
-    // Esc's kill ends with exit 0 once it runs in the box, the group gone or not yet made, so a failure is Docker's: its
-    // words, or undefined when it reached the box. A kill that cannot reach the box stops the sandbox (choice 87).
-    let kill: Promise<string | undefined> | undefined;
-    const onAbort = () => {
-      const line = `touch ${group}.stop; kill -KILL -- -"$(cat ${group} 2>/dev/null)" 2>/dev/null; exit 0`;
-      kill = this.run(["exec", this.id, "bash", "-c", line]).then(
-        (r) => (r === "missing" ? NO_DOCKER : r.code !== 0 ? r.err.trim() || "the box stopped" : undefined),
-        (err: Error) => err.message,
-      );
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
-    let got: Awaited<ReturnType<DockerRun>>;
-    try {
-      got = await this.run(["exec", "-w", cwd, this.id, "bash", "-c", wrapper, "_", command], { signal, cut: true });
-    } catch (err) {
-      if (signal?.aborted) {
-        const unreached = await kill;
-        if (unreached !== undefined) throw this.#fail(`Esc could not reach the box (${unreached})`);
-        throw new Error("Cancelled");
-      }
-      throw this.#fail((err as Error).message);
-    } finally {
-      signal?.removeEventListener("abort", onAbort);
-    }
-    if (got === "missing") throw this.#fail(NO_DOCKER);
+    const got = await inGroup(this.run, this.id, ["-w", cwd], "bash -c", command, { signal, cut: true });
+    if ("cancelled" in got) throw new Error("Cancelled");
+    if ("unreached" in got) throw this.#fail(got.unreached);
     // A failure may be Docker's own: the box is asked whether it still runs, and if not, Docker's words are given.
     if (got.code !== 0) {
       const state = await this.run(["inspect", "--format", "{{.State.Running}}", this.id]);
@@ -285,6 +252,53 @@ export class DockerExecutor implements Executor {
     const count = /^oom_kill (\d+)$/m.exec(got.out)?.[1];
     return count === undefined ? undefined : Number(count);
   }
+}
+
+// One docker exec in the box, in a process group of its own, by setsid, whose id the wrapper writes to a file in the box's
+// /tmp first, so Esc can kill the whole group in the box (choice 20): `inner` (bash -c, or node -e) runs `arg`. Measured
+// on 2026-11-02 (Docker 29.9.2): killing the `docker exec` client of `sleep 600` left the sleep running in the box, so
+// killing the client alone is not enough. The outer shell's own reports go to /dev/null (its 2 is moved to 3 for the
+// command), as a killed command made it print a "Killed" line quoting the wrapper. An Esc before the id is written leaves
+// a `.stop` file, which the wrapper looks for after writing it: Esc writes its file before reading the id, so either it
+// reads the id or the wrapper sees its file. `unreached` is Docker's words when the box could not be reached, which
+// each caller gives in its own error. DockerExecutor.exec and BoxWorkspace's calls (boxWorkspace.ts) run through it.
+export async function inGroup(
+  run: DockerRun,
+  id: string,
+  flags: string[],
+  inner: "bash -c" | "node -e",
+  arg: string,
+  opts: { signal?: AbortSignal; cut?: boolean; input?: Buffer },
+): Promise<{ code: number; out: string; err: string } | { cancelled: true } | { unreached: string }> {
+  const { signal } = opts;
+  const group = `/tmp/tachikoma-${randomUUID()}`;
+  const wrapper =
+    `exec 3>&2 2>/dev/null; setsid -w bash -c 'echo $$ > ${group}; [ -e ${group}.stop ] && exit; exec ${inner} "$1"' _ "$1" 2>&3 3>&-; ` +
+    `s=$?; rm -f ${group} ${group}.stop; exit $s`;
+  // Esc's kill ends with exit 0 once it runs in the box, the group gone or not yet made, so a failure is Docker's: its
+  // words, or undefined when it reached the box. A kill that cannot reach the box stops the sandbox (choice 87).
+  let kill: Promise<string | undefined> | undefined;
+  const onAbort = () => {
+    const line = `touch ${group}.stop; kill -KILL -- -"$(cat ${group} 2>/dev/null)" 2>/dev/null; exit 0`;
+    kill = run(["exec", id, "bash", "-c", line]).then(
+      (r) => (r === "missing" ? NO_DOCKER : r.code !== 0 ? r.err.trim() || "the box stopped" : undefined),
+      (err: Error) => err.message,
+    );
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  let got: Awaited<ReturnType<DockerRun>>;
+  try {
+    got = await run(["exec", ...flags, id, "bash", "-c", wrapper, "_", arg], opts);
+  } catch (err) {
+    if (signal?.aborted) {
+      const unreached = await kill;
+      return unreached !== undefined ? { unreached: `Esc could not reach the box (${unreached})` } : { cancelled: true };
+    }
+    return { unreached: (err as Error).message };
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+  return got === "missing" ? { unreached: NO_DOCKER } : got;
 }
 
 // At the launch, before a box starts: removes the boxes of this process space whose Tachikoma process is gone, as one that

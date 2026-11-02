@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readdir, rmdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { onTestFinished } from "vitest";
@@ -132,3 +132,32 @@ if (mode === "line") {
   }
 }
 `;
+
+// Removes a folder the test made: a link or junction is removed itself, never followed.
+export async function removeTree(folder: string): Promise<void> {
+  for (const e of await readdir(folder, { withFileTypes: true })) {
+    const p = path.join(folder, e.name);
+    if (e.isDirectory() && !e.isSymbolicLink()) await removeTree(p);
+    else await unlink(p);
+  }
+  await rmdir(folder);
+}
+
+export const ZERO = String.fromCharCode(0);
+// The sandbox's test project (tests/sandbox): .gitignore files at two levels (one bringing back with "!"), CRLF and
+// non-ASCII text, a binary file and a repository's HEAD.
+export const TREE: Record<string, string> = {
+  ".gitignore": "build/\n*.log\n!keep.log\n",
+  "src/a.ts": "const a = 1;\nexport { a };\n",
+  "src/b.ts": "line one\r\nmatch here\r\n",
+  "src/core/c.ts": "match again\n",
+  "src/.gitignore": "secret.ts\n",
+  "src/secret.ts": "match hidden\n",
+  "build/out.js": "match built\n",
+  "x.log": "match log\n",
+  "keep.log": "match kept\n",
+  "notes/caf\u00e9.txt": "caf\u00e9 match\n",
+  "bin.dat": `match${ZERO}binary\n`,
+  ".git/HEAD": "ref: refs/heads/feature/x\n",
+  ".git/config": "match in git\n",
+};
