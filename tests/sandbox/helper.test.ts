@@ -1,0 +1,318 @@
+import { spawn } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, rmdir, symlink, unlink, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
+import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
+import { LocalWorkspace } from "../../src/exec/local.js";
+import { BoxWorkspace, helperCode, LOADER } from "../../src/sandbox/boxWorkspace.js";
+import type { DockerRun } from "../../src/sandbox/docker.js";
+
+// Runs `node -e <loader>` with its input on the host, as the call would in the box: what node writes, and how it ends.
+function node(args: string[], input: Buffer | undefined, signal?: AbortSignal): Promise<{ code: number; out: string; err: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { signal, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
+    child.stderr.setEncoding("utf8").on("data", (d: string) => (err += d));
+    child.stdin.on("error", () => {}).end(input);
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code: code ?? 1, out, err }));
+  });
+}
+
+// The host's Node in place of Docker (choice 69): a call (`exec -i`) runs its loader, the last argument, with the call's
+// input; any other docker command (Esc's kill) is recorded and answered with exit 0. No file is written or run, and PATH
+// is not changed. `started` is told when a call's node starts.
+function hostNode(started?: () => void) {
+  const calls: string[][] = [];
+  const run: DockerRun = async (args, opts = {}) => {
+    calls.push(args);
+    if (args[1] !== "-i") return { code: 0, out: "", err: "" };
+    const ran = node(["-e", args.at(-1)!], opts.input, opts.signal);
+    started?.();
+    return ran;
+  };
+  return { run, calls };
+}
+
+// Removes a folder the test made: a link or junction is removed itself, never followed.
+async function removeTree(folder: string): Promise<void> {
+  for (const e of await readdir(folder, { withFileTypes: true })) {
+    const p = path.join(folder, e.name);
+    if (e.isDirectory() && !e.isSymbolicLink()) await removeTree(p);
+    else await unlink(p);
+  }
+  await rmdir(folder);
+}
+
+// A test folder holding `tree`, each file's folders made, removed when the test ends.
+async function folderWith(tree: Record<string, string | Buffer>, prefix = "tachi-helper-"): Promise<string> {
+  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
+  onTestFinished(() => removeTree(root));
+  for (const [p, text] of Object.entries(tree)) {
+    await mkdir(path.dirname(path.join(root, p)), { recursive: true });
+    await writeFile(path.join(root, p), text);
+  }
+  return root;
+}
+
+// A link at `link` to the folder `target`: a junction on Windows, which needs no special rights, and a symbolic link
+// elsewhere. Skips the test where none can be made.
+async function folderLink(ctx: TestContext, target: string, link: string): Promise<void> {
+  const made = await symlink(target, link, "junction").then(
+    () => true,
+    (err: NodeJS.ErrnoException) => {
+      if (err.code !== "EPERM" && err.code !== "EACCES") throw err;
+      return false;
+    },
+  );
+  if (!made) ctx.skip("this system cannot make a link here without more rights");
+}
+
+const ZERO = String.fromCharCode(0);
+// A project with .gitignore files at two levels (one bringing back with "!"), CRLF and non-ASCII text, a binary file and a
+// repository's HEAD.
+const TREE: Record<string, string> = {
+  ".gitignore": "build/\n*.log\n!keep.log\n",
+  "src/a.ts": "const a = 1;\nexport { a };\n",
+  "src/b.ts": "line one\r\nmatch here\r\n",
+  "src/core/c.ts": "match again\n",
+  "src/.gitignore": "secret.ts\n",
+  "src/secret.ts": "match hidden\n",
+  "build/out.js": "match built\n",
+  "x.log": "match log\n",
+  "keep.log": "match kept\n",
+  "notes/caf\u00e9.txt": "caf\u00e9 match\n",
+  "bin.dat": `match${ZERO}binary\n`,
+  ".git/HEAD": "ref: refs/heads/feature/x\n",
+  ".git/config": "match in git\n",
+};
+
+// The same folder through LocalWorkspace and through the helper, run by the host's Node.
+async function both(tree: Record<string, string | Buffer> = TREE) {
+  const root = await folderWith(tree);
+  return { root, local: new LocalWorkspace(root), box: new BoxWorkspace("box1", hostNode().run, root) };
+}
+
+describe("the helper, run by the host's Node, against LocalWorkspace on the same folder", () => {
+  it("finds the same files, .gitignore files included", async () => {
+    const { local, box } = await both();
+    const asked = [[".", "**"], [".", "**/.gitignore"], [".", "src/**/*.ts"], ["src", "**/*.ts"], [".", "**/*.log"], [".", "notes\\*"]] as const;
+    for (const [start, pattern] of asked) {
+      const want = await local.find(start, pattern);
+      expect(await box.find(start, pattern)).toEqual(want);
+    }
+    // As in a shell, ** leaves out names starting with a dot.
+    expect(await box.find(".", "**")).toEqual(["bin.dat", "keep.log", "notes/caf\u00e9.txt", "src/a.ts", "src/b.ts", "src/core/c.ts"]);
+    expect(await box.find(".", "**/.gitignore")).toEqual([".gitignore", "src/.gitignore"]);
+  });
+
+  it("finds one file given as the start, and none the .gitignore leaves out", async () => {
+    const { local, box } = await both();
+    expect(await box.find("src/a.ts", "**")).toEqual(await local.find("src/a.ts", "**"));
+    expect(await box.find("src/secret.ts", "**")).toEqual([]);
+    expect(await local.find("src/secret.ts", "**")).toEqual([]);
+  });
+
+  it("searches the same lines: binary files, .git and what .gitignore leaves out skipped", async () => {
+    const { local, box } = await both();
+    for (const [start, glob] of [[".", undefined], [".", "*.ts"], ["src", "src/**"], ["notes", undefined]] as const) {
+      expect(await box.search(start, "match", glob)).toEqual(await local.search(start, "match", glob));
+    }
+    expect(await box.search(".", "match", undefined)).toEqual({
+      matches: [
+        { file: "keep.log", line: 1, text: "match kept" },
+        { file: "notes/caf\u00e9.txt", line: 1, text: "caf\u00e9 match" },
+        { file: "src/b.ts", line: 2, text: "match here" },
+        { file: "src/core/c.ts", line: 1, text: "match again" },
+      ],
+      beyond: 0,
+    });
+  });
+
+  it("keeps the same output cap and line cut", async () => {
+    const many = Array.from({ length: 3000 }, (_, i) => `match number ${i}`).join("\n");
+    const { local, box } = await both({ "many.txt": many, "long.txt": `match ${"x".repeat(1500)}` });
+    const got = await box.search(".", "match", undefined);
+    expect(got).toEqual(await local.search(".", "match", undefined));
+    expect(got.beyond).toBeGreaterThan(0);
+    expect(got.matches[0]!.text).toBe(`match ${"x".repeat(994)} [cut: 506 more characters]`);
+    const size = got.matches.reduce((n, m) => n + `${m.file}:${m.line}: ${m.text}`.length + 1, 0);
+    expect(size).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+  });
+
+  it("lists the same entries: folders first, then files, by name", async () => {
+    const { local, box } = await both();
+    for (const folder of ["", "src", "src/", "notes"]) expect(await box.list(folder)).toEqual(await local.list(folder));
+    expect(await box.list("src")).toEqual([
+      { name: "core", type: "folder" },
+      { name: ".gitignore", type: "file" },
+      { name: "a.ts", type: "file" },
+      { name: "b.ts", type: "file" },
+      { name: "secret.ts", type: "file" },
+    ]);
+  });
+
+  it("reads the same text and bytes, CRLF and non-ASCII kept", async () => {
+    const { root, local, box } = await both();
+    for (const p of ["src/b.ts", "notes/caf\u00e9.txt"]) {
+      const abs = path.join(root, p);
+      expect(await box.readText(abs)).toBe(await local.readText(abs));
+      expect(await box.readBytes(abs)).toEqual(await local.readBytes(abs));
+    }
+    expect(await box.readText(path.join(root, "src/b.ts"))).toBe("line one\r\nmatch here\r\n");
+    expect(await box.readBytes(path.join(root, "bin.dat"))).toEqual(Buffer.from(`match${ZERO}binary\n`));
+  });
+
+  it("fails a read of a missing file with Node's own words and code", async () => {
+    const { root, local, box } = await both();
+    const abs = path.join(root, "missing.txt");
+    const want = await local.readText(abs).catch((err: NodeJS.ErrnoException) => err);
+    await expect(box.readText(abs)).rejects.toMatchObject({ message: (want as Error).message, code: "ENOENT" });
+  });
+
+  it("resolves a path to the same place, one not made yet included", async () => {
+    const { local, box } = await both();
+    for (const p of ["src/a.ts", "src", ".", "new/folder/file.txt"]) {
+      const want = await local.resolve(p);
+      expect(await box.resolve(p)).toEqual(want);
+      expect(want.outside).toBe(false);
+    }
+  });
+
+  it("reads the same branch, and HEAD for a commit with no branch", async () => {
+    const { local, box } = await both();
+    expect(await box.branch()).toBe("feature/x");
+    expect(await local.branch()).toBe("feature/x");
+    const detached = await both({ ".git/HEAD": "0123456789abcdef0123456789abcdef01234567\n" });
+    expect(await detached.box.branch()).toBe("HEAD");
+    expect(await detached.local.branch()).toBe("HEAD");
+  });
+
+  it("reads a worktree's branch from the repository its .git file names", async () => {
+    const { local, box } = await both({ ".git": "gitdir: repo/worktrees/w\n", "repo/worktrees/w/HEAD": "ref: refs/heads/side\n" });
+    expect(await box.branch()).toBe("side");
+    expect(await local.branch()).toBe("side");
+  });
+
+  it("writes text, making the parent folders, as LocalExecutor.writeFile does", async () => {
+    const { root, box } = await both({});
+    await box.writeText(path.join(root, "made/here/new.txt"), "caf\u00e9\r\nnext\n");
+    expect(await readFile(path.join(root, "made/here/new.txt"), "utf8")).toBe("caf\u00e9\r\nnext\n");
+  });
+});
+
+describe("the helper's refusals", () => {
+  it("refuses a path that a link leads outside the folder, which LocalWorkspace only marks as outside", async (ctx) => {
+    const elsewhere = await folderWith({ "secret.txt": "far away\n" }, "tachi-outside-");
+    const { root, local, box } = await both({ "near.txt": "here\n" });
+    await folderLink(ctx, elsewhere, path.join(root, "out"));
+    const abs = path.join(root, "out", "secret.txt");
+    const refused = `${abs} is outside the project, which the sandbox never opens`;
+    await expect(box.resolve("out/secret.txt")).rejects.toThrow(refused);
+    await expect(box.readText(abs)).rejects.toThrow(refused);
+    await expect(box.writeText(abs, "x")).rejects.toThrow(refused);
+    await expect(box.find("out", "**")).rejects.toThrow(`${path.join(root, "out")} is outside the project, which the sandbox never opens`);
+    expect(await box.list("")).toEqual([{ name: "near.txt", type: "file" }]);
+    expect((await local.resolve("out/secret.txt")).outside).toBe(true);
+    expect(await readFile(path.join(elsewhere, "secret.txt"), "utf8")).toBe("far away\n");
+  });
+
+  it("refuses a path given outside the folder", async () => {
+    const { root, box } = await both({});
+    const abs = path.resolve(root, "..", "other.txt");
+    await expect(box.resolve("../other.txt")).rejects.toThrow(`${abs} is outside the project, which the sandbox never opens`);
+  });
+
+  it("refuses a path through a link that leads nowhere", async (ctx) => {
+    const { root, box } = await both({});
+    await folderLink(ctx, path.join(root, "gone"), path.join(root, "dangling"));
+    const abs = path.join(root, "dangling", "x.txt");
+    await expect(box.writeText(abs, "x")).rejects.toThrow(`${abs} goes through a link that leads nowhere, which the sandbox never opens`);
+  });
+});
+
+describe("a call to the helper", () => {
+  it("is docker exec -i of node -e, by bash and setsid, with the code and request on stdin", async () => {
+    const root = await folderWith({ "a.txt": "a\n" });
+    const fake = hostNode();
+    await new BoxWorkspace("box1", fake.run, root).list("");
+    expect(fake.calls).toHaveLength(1);
+    const [call] = fake.calls;
+    expect(call!.slice(0, 5)).toEqual(["exec", "-i", "box1", "bash", "-c"]);
+    expect(call![5]).toMatch(/^exec 3>&2 2>\/dev\/null; setsid -w bash -c 'echo \$\$ > \/tmp\/tachikoma-[0-9a-f-]+; .*exec node -e "\$1"'/);
+    expect(call!.slice(6)).toEqual(["_", LOADER]);
+  });
+
+  it("is stopped by an abort, which kills its process group in the box", async () => {
+    let start!: () => void;
+    const started = new Promise<void>((resolve) => (start = resolve));
+    const root = await folderWith({ "slow.txt": `${"a".repeat(40)}b\n` });
+    const fake = hostNode(() => start());
+    const stop = new AbortController();
+    // A pattern that takes practically forever on that line.
+    const searching = new BoxWorkspace("box1", fake.run, root).search(".", "^(a+)+$", undefined, stop.signal);
+    await started;
+    stop.abort();
+    await expect(searching).rejects.toThrow("Cancelled");
+    const group = /> (\/tmp\/tachikoma-[0-9a-f-]+);/.exec(fake.calls[0]![5]!)![1];
+    expect(fake.calls[1]).toEqual(["exec", "box1", "bash", "-c", `touch ${group}.stop; kill -KILL -- -"$(cat ${group} 2>/dev/null)" 2>/dev/null; exit 0`]);
+  });
+
+  it("does not start once aborted", async () => {
+    const fake = hostNode();
+    await expect(new BoxWorkspace("box1", fake.run, "/work").search(".", "a", undefined, AbortSignal.abort())).rejects.toThrow("Cancelled");
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("says when Docker fails, in its words", async () => {
+    const run: DockerRun = async () => ({ code: 1, out: "", err: "Error response from daemon: container box1 is not running\n" });
+    await expect(new BoxWorkspace("box1", run).list("")).rejects.toThrow(
+      "The sandbox's file tools could not reach the box: Error response from daemon: container box1 is not running",
+    );
+    await expect(new BoxWorkspace("box1", async () => "missing").list("")).rejects.toThrow(
+      "The sandbox's file tools could not reach the box: no docker program is on PATH any more",
+    );
+  });
+});
+
+// The helper is sent as its function's own source. These run that source as tsx (dev) and tsc (the built package) give
+// it, beside Vitest's, which every test above runs: tsx names each inner function with a `__name` call of its own.
+describe("the helper's text", () => {
+  const ROOT = path.resolve(import.meta.dirname, "../..");
+  const ask = async (code: string, root: string) => {
+    const got = await node(["-e", LOADER], Buffer.from(JSON.stringify({ code, request: { op: "find", root, path: ".", pattern: "**" } })));
+    return JSON.parse(got.out);
+  };
+
+  it("runs as tsx gives it", { timeout: 0 }, async () => {
+    const root = await folderWith({ "a.txt": "a\n", "sub/b.txt": "b\n" });
+    const tsx = path.join(ROOT, "node_modules/tsx/dist/cli.mjs");
+    const script = 'import { helperCode } from "./src/sandbox/boxWorkspace.ts"; process.stdout.write(helperCode());';
+    const printed = await new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [tsx, "-e", script], { cwd: ROOT, windowsHide: true, stdio: ["ignore", "pipe", "inherit"] });
+      let out = "";
+      child.stdout.setEncoding("utf8").on("data", (d: string) => (out += d));
+      child.on("error", reject);
+      child.on("close", () => resolve(out));
+    });
+    expect(printed).toContain("__name(");
+    expect(await ask(printed, root)).toEqual({ ok: ["a.txt", "sub/b.txt"] });
+  });
+
+  it("runs as tsc builds it", { timeout: 0 }, async () => {
+    const root = await folderWith({ "a.txt": "a\n", "sub/b.txt": "b\n" });
+    const out = await folderWith({ "package.json": '{ "type": "module" }' }, "tachi-built-");
+    const tsc = path.join(ROOT, "node_modules/typescript/bin/tsc");
+    // tsconfig.json's options, as the build (tsconfig.build.json) takes them; a file given by name needs --ignoreConfig.
+    const flags = ["--ignoreConfig", "--outDir", out, "--target", "es2023", "--module", "nodenext", "--moduleResolution", "nodenext", "--strict"];
+    flags.push("--noUncheckedIndexedAccess", "--verbatimModuleSyntax", "--skipLibCheck", "--types", "node");
+    const built = await node([tsc, path.join(ROOT, "src/sandbox/helper.ts"), ...flags], undefined);
+    expect(built).toMatchObject({ code: 0 });
+    const { helper } = await import(pathToFileURL(path.join(out, "helper.js")).href);
+    expect(await ask(helperCode(String(helper)), root)).toEqual({ ok: ["a.txt", "sub/b.txt"] });
+  });
+});

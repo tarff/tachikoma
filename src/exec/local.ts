@@ -2,8 +2,13 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Readable } from "node:stream";
+import { resolveIn } from "../tools/files.js";
+import { filesIn, findIn, searchIn } from "../tools/search.js";
+import { gitBranch } from "../tui/git.js";
+import { listEntries } from "../tui/menus.js";
 import { commandEnv, system32 } from "./env.js";
 import { type ExecResult, type Executor, MAX_TOOL_OUTPUT } from "./executor.js";
+import type { Entry, Match, Workspace } from "./workspace.js";
 
 export function shellFor(platform: NodeJS.Platform = process.platform): { name: string; argv: (command: string) => string[] } {
   if (platform === "win32") {
@@ -96,5 +101,47 @@ export class LocalExecutor implements Executor {
   async writeFile(abs: string, content: string): Promise<void> {
     await mkdir(path.dirname(abs), { recursive: true });
     await writeFile(abs, content, "utf8");
+  }
+}
+
+// The project's files on the host (workspace.ts): today's code for each, unchanged (plan, Task 13). The checks a path
+// needs before it is read (the gate's question) are the caller's; find and search take `start` as resolve does.
+export class LocalWorkspace implements Workspace {
+  constructor(readonly root: string) {}
+
+  async resolve(p: string, opts?: { trusted?: boolean }) {
+    return resolveIn(this.root, p, opts);
+  }
+
+  readText(abs: string): Promise<string> {
+    return readFile(abs, "utf8");
+  }
+
+  readBytes(abs: string): Promise<Buffer> {
+    return readFile(abs);
+  }
+
+  // As LocalExecutor.writeFile.
+  async writeText(abs: string, content: string): Promise<void> {
+    await mkdir(path.dirname(abs), { recursive: true });
+    await writeFile(abs, content, "utf8");
+  }
+
+  async list(folder: string): Promise<Entry[]> {
+    return listEntries(this.root, folder);
+  }
+
+  find(start: string, pattern: string, signal?: AbortSignal): Promise<string[]> {
+    const { abs, outside } = resolveIn(this.root, start);
+    return findIn(this.root, filesIn(this.root, abs, outside, signal), pattern);
+  }
+
+  search(start: string, pattern: string, glob: string | undefined, signal?: AbortSignal): Promise<{ matches: Match[]; beyond: number }> {
+    const { abs, outside } = resolveIn(this.root, start);
+    return searchIn(this.root, filesIn(this.root, abs, outside, signal), pattern, glob, signal);
+  }
+
+  async branch(): Promise<string | null> {
+    return gitBranch(this.root);
   }
 }
