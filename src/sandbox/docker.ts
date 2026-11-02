@@ -17,7 +17,12 @@ export const docker: DockerRun = (args, opts = {}) => {
   const exe = onPath("docker");
   if (!exe) return Promise.resolve("missing");
   return new Promise((resolve, reject) => {
-    const child = spawn(exe, args, { env: commandEnv(), windowsHide: true, signal: opts.signal, stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    const child = spawn(exe, args, {
+      env: commandEnv(),
+      windowsHide: true,
+      signal: opts.signal,
+      stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    });
     let out = "";
     let err = "";
     const outLines = opts.line && lineSplitter(opts.line);
@@ -44,8 +49,8 @@ export const docker: DockerRun = (args, opts = {}) => {
 
 // Whether Docker can be used (Task 16's launch order: Docker's state comes before the image). The client asks the server for
 // its version, and fails when the server is not running.
-export async function dockerState(run: DockerRun = docker): Promise<"ready" | "missing" | "stopped"> {
-  const got = await run(["version", "--format", "{{.Server.Version}}"]);
+export async function dockerState(run: DockerRun = docker, signal?: AbortSignal): Promise<"ready" | "missing" | "stopped"> {
+  const got = await run(["version", "--format", "{{.Server.Version}}"], { signal });
   if (got === "missing") return "missing";
   return got.code === 0 ? "ready" : "stopped";
 }

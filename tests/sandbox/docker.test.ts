@@ -24,7 +24,8 @@ describe("dockerState", () => {
   });
 
   it("is stopped when the client cannot reach the server", async () => {
-    const docker = fakeDocker({ code: 1, out: "\n", err: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n" });
+    const err = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?\n";
+    const docker = fakeDocker({ code: 1, out: "\n", err });
     expect(await dockerState(docker.run)).toBe("stopped");
   });
 });

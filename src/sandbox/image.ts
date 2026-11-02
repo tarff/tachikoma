@@ -24,6 +24,11 @@ export const BUILD_FAILED = "The image could not be built.";
 // `tachi sandbox build` with no terminal: nothing is built without the user's answer (design: no switch approves the
 // download in advance).
 export const NO_TERMINAL = "tachi sandbox build needs a terminal, to ask before it downloads anything.";
+// `tachi sandbox build`'s own lines for Docker, each with exit 1 (choice 71).
+export const BUILD_NOT_INSTALLED = "The sandbox needs Docker, which is not installed. Install Docker Desktop, then run tachi sandbox build again.";
+export const BUILD_NOT_RUNNING = "The sandbox needs Docker, which is not running. Start Docker Desktop, then run tachi sandbox build again.";
+// Ctrl-C's exit, 128 + SIGINT's number, as the launch's other Ctrl-C exits are. A stop prints nothing more.
+const STOP = 128 + os.constants.signals.SIGINT;
 const USAGE = "Usage: tachi sandbox build";
 
 export interface ImageInfo { tag: string; dockerfile: string; built: boolean; project: boolean }
@@ -89,8 +94,20 @@ export function downloads(dockerfile: string): string[] {
   return images;
 }
 
-export function buildQuestion(images: string[]): string {
-  return `The sandbox needs its image, built here once. It downloads: ${images.join(", ")}, and Debian's packages. Build it now? [y/n]`;
+// The shipped image's question names its images and Debian's packages; a project's says it is the project's own, from
+// its own file, which may download more than the images read here (choice 72). With no image names read, the list is
+// left out of either.
+export function buildQuestion(images: string[], project: boolean): string {
+  const list = images.join(", ");
+  if (project) {
+    const named = images.length > 0 ? `, starting with: ${list}` : "";
+    return (
+      "The sandbox needs this project's image, from .tachikoma/sandbox.Dockerfile, built here once. " +
+      `It downloads what that file asks for${named}. Build it now? [y/n]`
+    );
+  }
+  const named = images.length > 0 ? `: ${list}, and` : "";
+  return `The sandbox needs its image, built here once. It downloads${named} Debian's packages. Build it now? [y/n]`;
 }
 
 // Builds from an empty folder of its own as the context, so the build cannot copy any of the project's files into the
@@ -102,7 +119,9 @@ export async function buildImage(info: ImageInfo, out: (line: string) => void, s
     const got = await run(["build", "--tag", info.tag, "--file", "-", context], { line: out, input: dockerText(info.dockerfile), signal });
     if (got === "missing" || got.code !== 0) throw new Error(BUILD_FAILED);
   } finally {
-    await rmdir(context); // empty, so nothing else is ever removed
+    // Never recursive, so nothing but the empty folder is ever removed. A folder that cannot be removed is left, and
+    // the build's own result stands.
+    await rmdir(context).catch(() => {});
   }
 }
 
@@ -110,7 +129,8 @@ export async function buildImage(info: ImageInfo, out: (line: string) => void, s
 // or the exit code once the reason is printed. Headless (no `ask`), an image not built stops at once, and nothing waits.
 export async function prepareImage(root: string, io: ImageIo): Promise<{ tag: string } | { exit: number }> {
   const run = io.run ?? docker;
-  if (!(await dockerReady(run, io))) return { exit: 1 };
+  const stopped = await dockerReady(run, io, NOT_INSTALLED, NOT_RUNNING);
+  if (stopped !== undefined) return { exit: stopped };
   const info = await imageFor(root, run);
   if (info.built) return { tag: info.tag };
   if (!io.ask) {
@@ -120,14 +140,16 @@ export async function prepareImage(root: string, io: ImageIo): Promise<{ tag: st
   return askAndBuild(info, io.ask, io);
 }
 
-// `tachi sandbox build`: the launch's steps, saying so when the image is up to date.
+// `tachi sandbox build`: the launch's steps, with its own lines for Docker (choice 71), saying so when the image is up
+// to date.
 export async function sandboxCommand(args: string[], root: string, io: ImageIo): Promise<number> {
   if (args.length !== 1 || args[0] !== "build") {
     io.err(USAGE);
     return 1;
   }
   const run = io.run ?? docker;
-  if (!(await dockerReady(run, io))) return 1;
+  const stopped = await dockerReady(run, io, BUILD_NOT_INSTALLED, BUILD_NOT_RUNNING);
+  if (stopped !== undefined) return stopped;
   const info = await imageFor(root, run);
   if (info.built) {
     io.out(`The sandbox's image is up to date (${info.tag}).`);
@@ -141,23 +163,34 @@ export async function sandboxCommand(args: string[], root: string, io: ImageIo):
   return "exit" in done ? done.exit : 0;
 }
 
-// Docker's state, saying what to do when it cannot be used.
-async function dockerReady(run: DockerRun, io: ImageIo): Promise<boolean> {
-  const state = await dockerState(run);
-  if (state !== "ready") io.err(state === "missing" ? NOT_INSTALLED : NOT_RUNNING);
-  return state === "ready";
+// Docker's state: undefined when it can be used, or the exit code once the line saying what to do is printed. No time
+// limit: `docker version` is waited for, and Ctrl-C stops it (choice 70); a client ended by that Ctrl-C reads as Docker
+// not running, so a stop is known by the signal, not by the answer.
+async function dockerReady(run: DockerRun, io: ImageIo, missing: string, notRunning: string): Promise<number | undefined> {
+  let state;
+  try {
+    state = await dockerState(run, io.signal);
+  } catch (err) {
+    if (io.signal.aborted) return STOP;
+    throw err;
+  }
+  if (io.signal.aborted) return STOP;
+  if (state === "ready") return undefined;
+  io.err(state === "missing" ? missing : notRunning);
+  return 1;
 }
 
 // The question, then the build on a yes. What a project's Dockerfile names, and what its build prints, are escaped, so
 // neither can act on the terminal.
 async function askAndBuild(info: ImageInfo, ask: (question: string) => Promise<boolean>, io: ImageIo): Promise<{ tag: string } | { exit: number }> {
-  if (!(await ask(visible(buildQuestion(downloads(info.dockerfile)))))) {
+  if (!(await ask(visible(buildQuestion(downloads(info.dockerfile), info.project))))) {
     io.out(UNBUILT);
     return { exit: 0 };
   }
   try {
     await buildImage(info, (line) => io.out(visible(line, { tabs: true })), io.signal, io.run);
   } catch {
+    if (io.signal.aborted) return { exit: STOP }; // a stop is not a failure
     io.err(BUILD_FAILED);
     return { exit: 1 };
   }
