@@ -6,11 +6,14 @@ import { describe, expect, it, onTestFinished } from "vitest";
 import { docker as realDocker, type DockerRun, dockerState } from "../../src/sandbox/docker.js";
 import {
   BUILD_FAILED,
+  BUILD_NOT_ALLOWED,
   BUILD_NOT_INSTALLED,
   BUILD_NOT_RUNNING,
+  BUILD_WINDOWS_CONTAINERS,
   buildQuestion,
   downloads,
   imageFor,
+  NOT_ALLOWED,
   NOT_BUILT,
   NOT_INSTALLED,
   NOT_RUNNING,
@@ -19,6 +22,7 @@ import {
   sandboxCommand,
   SHIPPED,
   UNBUILT,
+  WINDOWS_CONTAINERS,
 } from "../../src/sandbox/image.js";
 
 // A project folder of the test's own, removed when the test ends; `dockerfile` puts .tachikoma/sandbox.Dockerfile in it.
@@ -37,12 +41,12 @@ const hex = (text: string) => createHash("sha256").update(text).digest("hex").sl
 const shipped = () => Buffer.from(readFileSync(SHIPPED, "utf8").replaceAll("\r\n", "\n"));
 
 // A stand-in for Docker (choice 69): it records each call and its stdin, and answers by the call's first words. Docker
-// is running unless told otherwise; an image is built when it is in `built`; a build gives `lines`, then runs `during`
+// is running, with Linux containers, unless told otherwise; an image is built when it is in `built`; a build gives `lines`, then runs `during`
 // with its context folder, as if Docker were still building, and exits `buildCode`. `version` and `inspect` run during
 // those calls.
 function fakeDocker(
   opts: {
-    state?: "missing" | "stopped";
+    state?: "missing" | "stopped" | "denied" | "windows";
     built?: string[];
     lines?: string[];
     buildCode?: number;
@@ -62,7 +66,11 @@ function fakeDocker(
     if (opts.state === "missing") return "missing";
     if (args[0] === "version") {
       opts.version?.();
-      return { code: opts.state === "stopped" ? 1 : 0, out: "", err: "" };
+      if (opts.state === "stopped") return { code: 1, out: "", err: "" };
+      if (opts.state === "denied") {
+        return { code: 1, out: "", err: "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock\n" };
+      }
+      return { code: 0, out: opts.state === "windows" ? "windows\n" : "linux\n", err: "" };
     }
     if (args[0] === "image" && args[1] === "inspect") {
       opts.inspect?.();
@@ -129,6 +137,7 @@ describe("imageFor", () => {
     const state = await dockerState();
     if (state === "missing") return ctx.skip("no docker program on PATH");
     if (state === "stopped") return ctx.skip("Docker is not running");
+    if (state !== "ready") return ctx.skip(state === "denied" ? "this user is not allowed to use Docker" : "Docker is set to Windows containers");
     const got = await realDocker(["image", "inspect", "--format", "{{.Id}}", TASK_1]);
     if (got === "missing" || got.code !== 0) return ctx.skip(`the image of Task 1 (${TASK_1}) is not built`);
     expect(await imageFor(project())).toEqual({ tag: TASK_1, dockerfile: SHIPPED, text: shipped(), built: true, project: false });
@@ -213,7 +222,7 @@ describe("prepareImage (the launch)", () => {
     const docker = fakeDocker({ state: "missing" });
     const t = terminal();
     expect(await prepareImage(project(), { ...t, signal: new AbortController().signal, run: docker.run })).toEqual({ exit: 1 });
-    expect(NOT_INSTALLED).toBe("The sandbox needs Docker, which is not installed. Install Docker Desktop, or launch with --sandbox off.");
+    expect(NOT_INSTALLED).toBe("The sandbox needs Docker, which is not installed. Install Docker, or launch with --sandbox off.");
     expect(t.printed).toEqual([`err: ${NOT_INSTALLED}`]);
     expect(docker.calls).toHaveLength(1);
   });
@@ -222,8 +231,30 @@ describe("prepareImage (the launch)", () => {
     const docker = fakeDocker({ state: "stopped" });
     const t = terminal();
     expect(await prepareImage(project(), { ...t, signal: new AbortController().signal, run: docker.run })).toEqual({ exit: 1 });
-    expect(NOT_RUNNING).toBe("The sandbox needs Docker, which is not running. Start Docker Desktop, then launch again.");
+    expect(NOT_RUNNING).toBe("The sandbox needs Docker, which is not running. Start Docker, then launch again.");
     expect(t.printed).toEqual([`err: ${NOT_RUNNING}`]);
+    expect(docker.calls.map((c) => c.args[0])).toEqual(["version"]);
+  });
+
+  it("stops when this user is not allowed to use Docker, before looking for the image (choice 78)", async () => {
+    const docker = fakeDocker({ state: "denied" });
+    const t = terminal();
+    expect(await prepareImage(project(), { ...t, signal: new AbortController().signal, run: docker.run })).toEqual({ exit: 1 });
+    expect(NOT_ALLOWED).toBe(
+      "The sandbox needs Docker, but this user is not allowed to use it. Docker's install guide for Linux says how to allow it, or launch with --sandbox off.",
+    );
+    expect(t.printed).toEqual([`err: ${NOT_ALLOWED}`]);
+    expect(docker.calls.map((c) => c.args[0])).toEqual(["version"]);
+  });
+
+  it("stops when Docker is set to Windows containers, before looking for the image (choice 78)", async () => {
+    const docker = fakeDocker({ state: "windows" });
+    const t = terminal();
+    expect(await prepareImage(project(), { ...t, signal: new AbortController().signal, run: docker.run })).toEqual({ exit: 1 });
+    expect(WINDOWS_CONTAINERS).toBe(
+      "The sandbox needs Docker's Linux containers, but Docker is set to Windows containers. Switch it to Linux containers, then launch again.",
+    );
+    expect(t.printed).toEqual([`err: ${WINDOWS_CONTAINERS}`]);
     expect(docker.calls.map((c) => c.args[0])).toEqual(["version"]);
   });
 
@@ -365,12 +396,22 @@ describe("tachi sandbox build", () => {
     expect(t.printed).toEqual(["out: #1 DONE"]);
   });
 
-  it("has its own lines when Docker is not installed or not running (choice 71)", async () => {
-    expect(BUILD_NOT_INSTALLED).toBe("The sandbox needs Docker, which is not installed. Install Docker Desktop, then run tachi sandbox build again.");
-    expect(BUILD_NOT_RUNNING).toBe("The sandbox needs Docker, which is not running. Start Docker Desktop, then run tachi sandbox build again.");
+  it("has its own lines when Docker is not installed, not running, not allowed or set to Windows containers (choices 71 and 78)", async () => {
+    expect(BUILD_NOT_INSTALLED).toBe("The sandbox needs Docker, which is not installed. Install Docker, then run tachi sandbox build again.");
+    expect(BUILD_NOT_RUNNING).toBe("The sandbox needs Docker, which is not running. Start Docker, then run tachi sandbox build again.");
+    expect(BUILD_NOT_ALLOWED).toBe(
+      "The sandbox needs Docker, but this user is not allowed to use it. " +
+        "Docker's install guide for Linux says how to allow it, then run tachi sandbox build again.",
+    );
+    expect(BUILD_WINDOWS_CONTAINERS).toBe(
+      "The sandbox needs Docker's Linux containers, but Docker is set to Windows containers. " +
+        "Switch it to Linux containers, then run tachi sandbox build again.",
+    );
     for (const [state, line] of [
       ["missing", BUILD_NOT_INSTALLED],
       ["stopped", BUILD_NOT_RUNNING],
+      ["denied", BUILD_NOT_ALLOWED],
+      ["windows", BUILD_WINDOWS_CONTAINERS],
     ] as const) {
       const t = terminal();
       expect(await sandboxCommand(["build"], project(), { ...t, signal: new AbortController().signal, run: fakeDocker({ state }).run })).toBe(1);

@@ -51,12 +51,16 @@ export const docker: DockerRun = (args, opts = {}) => {
   });
 };
 
+export type DockerState = "ready" | "missing" | "stopped" | "denied" | "windows";
+
 // Whether Docker can be used (Task 16's launch order: Docker's state comes before the image). The client asks the server for
-// its version, and fails when the server is not running.
-export async function dockerState(run: DockerRun = docker, signal?: AbortSignal): Promise<"ready" | "missing" | "stopped"> {
-  const got = await run(["version", "--format", "{{.Server.Version}}"], { signal });
+// its OS, and fails when the server is not running, or says `permission denied` when this user may not reach it (Linux).
+// Only a Linux server runs the box; Docker Desktop set to Windows containers answers `windows` (choice 78).
+export async function dockerState(run: DockerRun = docker, signal?: AbortSignal): Promise<DockerState> {
+  const got = await run(["version", "--format", "{{.Server.Os}}"], { signal });
   if (got === "missing") return "missing";
-  return got.code === 0 ? "ready" : "stopped";
+  if (got.code !== 0) return /permission denied/i.test(got.err) ? "denied" : "stopped";
+  return got.out.trim() === "linux" ? "ready" : "windows";
 }
 
 // Output cut into lines as it comes: each whole line is given without its line ending, and `end` gives what is left

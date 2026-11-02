@@ -13,10 +13,19 @@ function fakeDocker(answer: Awaited<ReturnType<DockerRun>>) {
 }
 
 describe("dockerState", () => {
-  it("asks for the server's version", async () => {
-    const docker = fakeDocker({ code: 0, out: "29.9.2\n", err: "" });
+  it("asks for the server's OS, and is ready when it is Linux", async () => {
+    const docker = fakeDocker({ code: 0, out: "linux\n", err: "" });
     expect(await dockerState(docker.run)).toBe("ready");
-    expect(docker.calls).toEqual([["version", "--format", "{{.Server.Version}}"]]);
+    expect(docker.calls).toEqual([["version", "--format", "{{.Server.Os}}"]]);
+  });
+
+  it("is windows when Docker is set to Windows containers (choice 78)", async () => {
+    expect(await dockerState(fakeDocker({ code: 0, out: "windows\n", err: "" }).run)).toBe("windows");
+  });
+
+  it("is denied when this user is not allowed to use Docker (choice 78)", async () => {
+    const err = "permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock: connect: Permission Denied\n";
+    expect(await dockerState(fakeDocker({ code: 1, out: "\n", err }).run)).toBe("denied");
   });
 
   it("is missing when no docker program is found", async () => {

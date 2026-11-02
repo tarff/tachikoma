@@ -45,7 +45,7 @@ operating system's own sandbox:
 - A container sees only what is mounted into it: the firmest boundary, which `never` now relies on.
 - **The cost, said plainly:** on Windows the container runs Linux, so inside the sandbox only Linux
   commands run. Windows-only tools (Windows PowerShell 5.1, `.exe` programs, Windows builds) need
-  the sandbox off and the asking modes. Docker Desktop must be running, and live link reads large
+  the sandbox off and the asking modes. Docker must be running, and live link reads large
   Windows folders slowly.
 
 The built-in sandboxes for macOS and Linux stay a possible later addition, as a second executor;

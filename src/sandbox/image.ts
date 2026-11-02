@@ -10,23 +10,37 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { SETTINGS_DIR } from "../core/datadir.js";
 import { visible } from "../core/permissions.js";
-import { docker, type DockerRun, dockerState } from "./docker.js";
+import { docker, type DockerRun, dockerState, type DockerState } from "./docker.js";
 
 // Shipped with Tachikoma (package.json's `files`), beside src and dist alike.
 export const SHIPPED = fileURLToPath(new URL("../../sandbox/Dockerfile", import.meta.url));
 
 // The launch's lines (Task 11), each ending the launch with exit 1, but UNBUILT, the no to the question, with 0.
-export const NOT_INSTALLED = "The sandbox needs Docker, which is not installed. Install Docker Desktop, or launch with --sandbox off.";
-export const NOT_RUNNING = "The sandbox needs Docker, which is not running. Start Docker Desktop, then launch again.";
+export const NOT_INSTALLED = "The sandbox needs Docker, which is not installed. Install Docker, or launch with --sandbox off.";
+export const NOT_RUNNING = "The sandbox needs Docker, which is not running. Start Docker, then launch again.";
+// Choice 78's two cases: a Linux user not allowed to use Docker, and Docker Desktop set to Windows containers.
+export const NOT_ALLOWED =
+  "The sandbox needs Docker, but this user is not allowed to use it. Docker's install guide for Linux says how to allow it, or launch with --sandbox off.";
+export const WINDOWS_CONTAINERS =
+  "The sandbox needs Docker's Linux containers, but Docker is set to Windows containers. Switch it to Linux containers, then launch again.";
 export const NOT_BUILT = "The sandbox's image is not built. Run tachi sandbox build first.";
 export const UNBUILT = "Not built; the sandbox needs it.";
 export const BUILD_FAILED = "The image could not be built.";
 // `tachi sandbox build` with no terminal: nothing is built without the user's answer (design: no switch approves the
 // download in advance).
 export const NO_TERMINAL = "tachi sandbox build needs a terminal, to ask before it downloads anything.";
-// `tachi sandbox build`'s own lines for Docker, each with exit 1 (choice 71).
-export const BUILD_NOT_INSTALLED = "The sandbox needs Docker, which is not installed. Install Docker Desktop, then run tachi sandbox build again.";
-export const BUILD_NOT_RUNNING = "The sandbox needs Docker, which is not running. Start Docker Desktop, then run tachi sandbox build again.";
+// `tachi sandbox build`'s own lines for Docker, each with exit 1 (choices 71 and 78).
+export const BUILD_NOT_INSTALLED = "The sandbox needs Docker, which is not installed. Install Docker, then run tachi sandbox build again.";
+export const BUILD_NOT_RUNNING = "The sandbox needs Docker, which is not running. Start Docker, then run tachi sandbox build again.";
+export const BUILD_NOT_ALLOWED =
+  "The sandbox needs Docker, but this user is not allowed to use it. " +
+  "Docker's install guide for Linux says how to allow it, then run tachi sandbox build again.";
+export const BUILD_WINDOWS_CONTAINERS =
+  "The sandbox needs Docker's Linux containers, but Docker is set to Windows containers. Switch it to Linux containers, then run tachi sandbox build again.";
+// Each flow's line for each state of Docker it cannot use.
+type DockerLines = Record<Exclude<DockerState, "ready">, string>;
+const LAUNCH_LINES: DockerLines = { missing: NOT_INSTALLED, stopped: NOT_RUNNING, denied: NOT_ALLOWED, windows: WINDOWS_CONTAINERS };
+const BUILD_LINES: DockerLines = { missing: BUILD_NOT_INSTALLED, stopped: BUILD_NOT_RUNNING, denied: BUILD_NOT_ALLOWED, windows: BUILD_WINDOWS_CONTAINERS };
 // Ctrl-C's exit, 128 + SIGINT's number, as the launch's other Ctrl-C exits are. A stop prints nothing more.
 const STOP = 128 + os.constants.signals.SIGINT;
 const USAGE = "Usage: tachi sandbox build";
@@ -134,7 +148,7 @@ export async function buildImage(info: ImageInfo, out: (line: string) => void, s
 // or the exit code once the reason is printed. Headless (no `ask`), an image not built stops at once, and nothing waits.
 export async function prepareImage(root: string, io: ImageIo): Promise<{ tag: string } | { exit: number }> {
   const run = io.run ?? docker;
-  const stopped = await dockerReady(run, io, NOT_INSTALLED, NOT_RUNNING);
+  const stopped = await dockerReady(run, io, LAUNCH_LINES);
   if (stopped !== undefined) return { exit: stopped };
   const info = await imageFor(root, run);
   if (io.signal.aborted) return { exit: STOP };
@@ -154,7 +168,7 @@ export async function sandboxCommand(args: string[], root: string, io: ImageIo):
     return 1;
   }
   const run = io.run ?? docker;
-  const stopped = await dockerReady(run, io, BUILD_NOT_INSTALLED, BUILD_NOT_RUNNING);
+  const stopped = await dockerReady(run, io, BUILD_LINES);
   if (stopped !== undefined) return stopped;
   const info = await imageFor(root, run);
   if (io.signal.aborted) return STOP;
@@ -173,7 +187,7 @@ export async function sandboxCommand(args: string[], root: string, io: ImageIo):
 // Docker's state: undefined when it can be used, or the exit code once the line saying what to do is printed. No time
 // limit: `docker version` is waited for, and Ctrl-C stops it (choice 70); a client ended by that Ctrl-C reads as Docker
 // not running, so a stop is known by the signal, not by the answer.
-async function dockerReady(run: DockerRun, io: ImageIo, missing: string, notRunning: string): Promise<number | undefined> {
+async function dockerReady(run: DockerRun, io: ImageIo, lines: DockerLines): Promise<number | undefined> {
   let state;
   try {
     state = await dockerState(run, io.signal);
@@ -183,7 +197,7 @@ async function dockerReady(run: DockerRun, io: ImageIo, missing: string, notRunn
   }
   if (io.signal.aborted) return STOP;
   if (state === "ready") return undefined;
-  io.err(state === "missing" ? missing : notRunning);
+  io.err(lines[state]);
   return 1;
 }
 
