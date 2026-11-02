@@ -302,10 +302,14 @@ describe("prepareImage (the launch)", () => {
     const docker = fakeDocker({ inspect: () => stop.abort() });
     const t = terminal([true]);
     expect(await prepareImage(project(PROJECT), { ...t, signal: stop.signal, run: docker.run })).toEqual({ exit: 130 });
-    expect(await sandboxCommand(["build"], project(PROJECT), { ...t, signal: stop.signal, run: docker.run })).toBe(130);
+    // Its own stop and Docker, so the stop comes during its own inspect, not before its Docker check.
+    const stop2 = new AbortController();
+    const docker2 = fakeDocker({ inspect: () => stop2.abort() });
+    expect(await sandboxCommand(["build"], project(PROJECT), { ...t, signal: stop2.signal, run: docker2.run })).toBe(130);
     expect(t.asked).toEqual([]);
     expect(t.printed).toEqual([]);
     expect(docker.builds()).toEqual([]);
+    expect(docker2.builds()).toEqual([]);
   });
 
   it("Ctrl-C while Docker's state is read claims nothing, and exits 130 (choice 70)", async () => {
