@@ -759,6 +759,8 @@ the plan's review.
     - a folder whose name contains `:` cannot be mounted with `-v` (Docker's `invalid volume
       specification`); Task 15 builds the mounts and may use `--mount`;
     - a box Docker made but could not start stays until the next launch's sweep;
+    - a fork bomb that fills the box's processes after Esc's kill has got in can stop the kill
+      itself (its `touch` and `cat` need new processes), and `Cancelled` is shown;
     - choices 88 and 92.
 ---
 
