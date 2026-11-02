@@ -244,13 +244,15 @@ export function App(props: AppProps) {
         void latest.current.comeBack();
       });
     });
-    // A message ending in a tool call leaves that call's tool line the last said, for its question's answer to go under
-    // (release 7 plan, choice 66). An answered call's id is let go with its result, as a provider may use an id again.
+    // A message ending in its one tool call leaves that call's tool line the last said, for its question's answer to go
+    // under (release 7 plan, choice 66). With more calls than one, none does: an earlier call that asks nothing prints
+    // nothing before the last one's question, and its result comes first, so each answer names its call and each result
+    // keeps its place (choice 67). An answered call's id is let go with its result, as a provider may use an id again.
     const onMessage = (m: Message) => {
       latest.current.say(...describe(m, ui.answered.current));
       for (const p of m.parts) if (p.type === "tool_result") ui.answered.current.delete(p.callId);
       const last = m.parts.at(-1);
-      if (last?.type === "tool_call") ui.toolLine.current = last.id;
+      if (last?.type === "tool_call" && m.parts.filter((p) => p.type === "tool_call").length === 1) ui.toolLine.current = last.id;
     };
     const onError = (e: ErrorEvent) => {
       if (e.kind === "tool") ui.rerender((n) => n + 1);

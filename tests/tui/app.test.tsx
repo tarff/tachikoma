@@ -1782,7 +1782,9 @@ describe("App's answers", () => {
     await until(app, "Allow run: git status?");
     await press(app, "\u0003");
     await gone(app, "Esc to stop");
-    expect(from(app, full, "● shell git status").slice(0, 2)).toEqual(["● shell git status", "  ⎿ You cancelled this."]);
+    const r = from(app, full, "● shell git status");
+    expect(r.slice(0, 2)).toEqual(["● shell git status", "  ⎿ You cancelled this."]);
+    expect(r[2]).not.toContain("⎿"); // no result row of its own, short or whole
     expect(app.lastFrame()).not.toContain("The user declined");
     expect(session.messages.at(-1)!.parts[0]).toMatchObject({ output: "The user declined: run: git status" });
     expect(ran).toEqual([]);
@@ -1837,6 +1839,29 @@ describe("App's answers", () => {
       "  ⎿ You declined this.", // in call order, so the ok above is not read as git log's (choice 67)
     ]);
     expect(ran).toEqual(["git status"]);
+  });
+
+  // A call that asks nothing prints nothing, so a reply's last tool line is not under its question's answer when an
+  // earlier call of the reply came first: the answer names its call, and each result keeps its place (choice 67).
+  it("names a reply's last call in its answer when an earlier call asked nothing", async () => {
+    const { ran, executor } = noShell();
+    const reads = { ...executor, readFile: async (abs: string) => readFileSync(abs, "utf8") };
+    const parts = [...callTool("c1", "read_file", { path: "a.txt" }).parts, ...callTool("c2", "shell", { command: "git push --force" }).parts];
+    const { app, ctx } = await mount([{ parts, usage }, reply("done")], { executor: reads });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a line\n");
+    await type(app, "look and push");
+    await until(app, "Allow run: git push --force?");
+    await press(app, "n");
+    await until(app, "done");
+    expect(from(app, false, "● read_file a.txt").slice(0, 6)).toEqual([
+      "● read_file a.txt",
+      "● shell git push --force",
+      "run: git push --force: You declined this. Danger: rewriting or deleting git history: git push", // wrapped
+      "--force",
+      "  ⎿ ok",
+      "  ⎿ You declined this.",
+    ]);
+    expect(ran).toEqual([]);
   });
 
   it("names the lead's question in its answer when another's answer came first, as it waited in the line", async () => {
