@@ -612,6 +612,8 @@ the plan's review.
     Docker code takes the command runner as a parameter, and the tests hand it a stand-in that
     records its calls and returns set answers. No file is written or run for it, and no test
     changes `PATH`.
+70. **Docker's check has no time limit** (the user's choice, after Task 11 was built). `docker
+    version` is waited for, and Ctrl-C stops it. No number is set without measuring one.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
