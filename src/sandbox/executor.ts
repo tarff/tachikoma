@@ -157,7 +157,7 @@ export class DockerExecutor implements Executor {
   // this process.
   static async start(opts: BoxOptions, run: DockerRun = docker): Promise<DockerExecutor> {
     const { memory, cpus, pids } = opts.limits;
-    const mounts = opts.mounts.flatMap((m) => ("hidden" in m ? ["--tmpfs", m.box] : ["-v", `${m.host}:${m.box}:ro`]));
+    const mounts = opts.mounts.flatMap((m) => ("hidden" in m ? ["--tmpfs", m.box] : ["-v", `${m.host}:${m.box}${m.readOnly ? ":ro" : ""}`]));
     const got = await run([
       "run", "-d", "--pull", "never", "--init", "--user", opts.user, "-e", "HOME=/tmp",
       ...Object.entries(opts.env ?? {}).flatMap(([name, value]) => ["-e", `${name}=${value}`]), "--cap-drop", "ALL",

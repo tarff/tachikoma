@@ -159,8 +159,8 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
 
 // The user's or the system's file, where it exists, as git would find it, since git names no file that lists nothing.
 // The user's is GIT_CONFIG_GLOBAL, or else the XDG one ($XDG_CONFIG_HOME/git/config, or ~/.config/git/config) and
-// ~/.gitconfig, in the order git reads them; the system's is GIT_CONFIG_SYSTEM, whose default git alone knows, as it depends on where git is
-// installed (git-config, FILES). A relative one is relative to the folder git runs in.
+// ~/.gitconfig, in the order git reads them; the system's is GIT_CONFIG_SYSTEM, whose default git alone knows, as it
+// depends on where git is installed (git-config, FILES). A relative one is relative to the folder git runs in.
 function scopeNames(env: NodeJS.ProcessEnv, scope: "system" | "global"): string[] {
   const home = homeFolder(env);
   const given = scope === "system" ? env.GIT_CONFIG_SYSTEM : env.GIT_CONFIG_GLOBAL;

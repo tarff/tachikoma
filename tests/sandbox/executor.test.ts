@@ -194,14 +194,16 @@ describe("DockerExecutor with a stand-in Docker", () => {
   it("starts the box as choice 18 says, with labels to find it by, live link's mounts after the project's", async () => {
     const fake = answering(() => ok());
     const mounts = [
-      { host: path.join(OPTS.folder, ".git"), box: "/work/.git", readOnly: true as const },
+      { host: path.join(OPTS.folder, "web"), box: "/work/web", readOnly: false },
+      { host: path.join(OPTS.folder, ".git"), box: "/work/.git", readOnly: true },
       { box: "/work/.tachikoma", hidden: true as const },
     ];
     const box = await DockerExecutor.start({ ...OPTS, mounts }, fake.run);
     expect(fake.calls[0]).toEqual([
       "run", "-d", "--pull", "never", "--init", "--user", "1000:1000", "-e", "HOME=/tmp", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
       "--network", "none", "--memory", String(4 * GB), "--memory-swap", String(4 * GB), "--cpus", "4", "--pids-limit", "1024",
-      "-v", `${OPTS.folder}:/work`, "-v", `${path.join(OPTS.folder, ".git")}:/work/.git:ro`, "--tmpfs", "/work/.tachikoma", "-w", "/work",
+      "-v", `${OPTS.folder}:/work`, "-v", `${path.join(OPTS.folder, "web")}:/work/web`, "-v", `${path.join(OPTS.folder, ".git")}:/work/.git:ro`,
+      "--tmpfs", "/work/.tachikoma", "-w", "/work",
       "--label", "tachikoma.session=s1", "--label", `tachikoma.host=${HOST}`, "--label", `tachikoma.pid=${process.pid}`,
       OPTS.image, "sleep", "infinity",
     ]);

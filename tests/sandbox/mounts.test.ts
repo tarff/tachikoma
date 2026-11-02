@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
 import type { GitSettings } from "../../src/safety/gitconfig.js";
-import { liveMounts } from "../../src/sandbox/mounts.js";
+import { ignoresCase, liveMounts } from "../../src/sandbox/mounts.js";
 import { removeTree } from "../helpers.js";
 
 // A test's own folder, holding a project with `tree` in it (a name ending in / is a folder), and what gitSettings would
@@ -23,15 +23,49 @@ function world(tree: string[] = []) {
   return { dir, root, at, git };
 }
 
+// Live link on a folder taken as minding letter case, as a Linux one does: the check itself has its own tests below.
+const live = (root: string, git: GitSettings | undefined) => liveMounts(root, git, { ignoresCase: () => false });
 const readOnly = (host: string, box: string) => ({ host, box, readOnly: true });
+const pinned = (host: string, box: string) => ({ host, box, readOnly: false });
 const HIDDEN = { box: "/work/.tachikoma", hidden: true };
 // Git in the box takes /work as safe, whoever owns it there.
 const SAFE = { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "safe.directory", GIT_CONFIG_VALUE_0: "/work" };
 
 describe("liveMounts", () => {
+  it("refuses a folder that ignores letter case before anything else, making nothing (choice 104)", () => {
+    const w = world();
+    const refused =
+      "Live link is refused: this folder ignores letter case, as Windows and macOS do by default, so the box could reach " +
+      "git's files by another spelling. Launch with --sandbox copy instead.";
+    const asked: string[] = [];
+    const ignores = (folder: string) => (asked.push(folder), true);
+    expect(liveMounts(w.root, undefined, { ignoresCase: ignores })).toEqual({ refused });
+    expect(liveMounts(w.root, w.git, { ignoresCase: ignores })).toEqual({ refused });
+    expect(asked).toEqual([w.root, w.root]);
+    expect(readdirSync(w.root)).toEqual([]);
+  });
+
+  it("pins each folder between /work and a read-only mount onto itself, writable, once (choice 105)", () => {
+    const w = world(["web/app/.husky/_/h", "web/app/settings/extra.cfg", "web/other.cfg"]);
+    w.git.hooksPaths.push(w.at("web/app/.husky/_"));
+    w.git.files.push(w.at("web/app/settings/extra.cfg"), w.at("web/other.cfg"));
+    expect(live(w.root, w.git)).toEqual({
+      mounts: [
+        pinned(w.at("web"), "/work/web"),
+        pinned(w.at("web/app"), "/work/web/app"),
+        pinned(w.at("web/app/settings"), "/work/web/app/settings"),
+        readOnly(w.at("web/app/settings/extra.cfg"), "/work/web/app/settings/extra.cfg"),
+        readOnly(w.at("web/other.cfg"), "/work/web/other.cfg"),
+        readOnly(w.at("web/app/.husky"), "/work/web/app/.husky"),
+        HIDDEN,
+      ],
+      env: SAFE,
+    });
+  });
+
   it("refuses without git, in choice 11's line", () => {
     const w = world();
-    expect(liveMounts(w.root, undefined)).toEqual({ refused: "Live link needs git on this PC to read git's settings; use --sandbox copy, or install git." });
+    expect(live(w.root, undefined)).toEqual({ refused: "Live link needs git on this PC to read git's settings; use --sandbox copy, or install git." });
     expect(existsSync(w.at(".tachikoma"))).toBe(false);
   });
 
@@ -39,11 +73,11 @@ describe("liveMounts", () => {
     const w = world();
     const file = w.at("linked.cfg");
     w.git.problems.push({ file, why: "it is a link" }, { file: w.at("other.cfg"), why: "it cannot be read: no such file" });
-    expect(liveMounts(w.root, w.git)).toEqual({
+    expect(live(w.root, w.git)).toEqual({
       refused: `Live link is refused: git's settings include ${file}, which is a link. Launch with --sandbox copy instead.`,
     });
     w.git.problems.shift();
-    expect(liveMounts(w.root, w.git)).toEqual({
+    expect(live(w.root, w.git)).toEqual({
       refused: `Live link is refused: git's settings include ${w.at("other.cfg")}, which cannot be read: no such file. Launch with --sandbox copy instead.`,
     });
     expect(existsSync(w.at(".tachikoma"))).toBe(false);
@@ -52,7 +86,7 @@ describe("liveMounts", () => {
   it("refuses a hooks folder in the project that does not exist yet, making nothing", () => {
     const w = world([".git/"]);
     w.git.hooksPaths.push(w.at(".githooks"));
-    expect(liveMounts(w.root, w.git)).toEqual({
+    expect(live(w.root, w.git)).toEqual({
       refused:
         `Live link is refused: git's hooks folder ${w.at(".githooks")} does not exist yet, so the box could make it. ` +
         "Create the folder, or launch with --sandbox copy instead.",
@@ -65,8 +99,9 @@ describe("liveMounts", () => {
     w.git.files.push(path.join(w.dir, "system.cfg"), w.at(".git/config"), w.at("settings/extra.cfg"));
     w.git.hooksPaths.push(w.at(".husky"), path.join(w.dir, "elsewhere-hooks"));
     w.git.gitDirs.push(w.at(".bare"));
-    expect(liveMounts(w.root, w.git)).toEqual({
+    expect(live(w.root, w.git)).toEqual({
       mounts: [
+        pinned(w.at("settings"), "/work/settings"),
         readOnly(w.at(".git"), "/work/.git"),
         readOnly(w.at(".bare"), "/work/.bare"),
         readOnly(w.at("settings/extra.cfg"), "/work/settings/extra.cfg"),
@@ -84,33 +119,33 @@ describe("liveMounts", () => {
   it("mounts the folder around a hooks folder named _, husky 9's, as its hooks run the scripts there (choice 102)", () => {
     const w = world([".husky/_/h", ".husky/pre-commit", "_/pre-commit"]);
     w.git.hooksPaths.push(w.at(".husky/_"));
-    expect(liveMounts(w.root, w.git)).toEqual({ mounts: [readOnly(w.at(".husky"), "/work/.husky"), HIDDEN], env: SAFE });
+    expect(live(w.root, w.git)).toEqual({ mounts: [readOnly(w.at(".husky"), "/work/.husky"), HIDDEN], env: SAFE });
     // A `_` at the project's top: the folder around it is the project, which stays writable.
     w.git.hooksPaths.splice(0, 1, w.at("_"));
-    expect(liveMounts(w.root, w.git)).toEqual({ mounts: [readOnly(w.at("_"), "/work/_"), HIDDEN], env: SAFE });
+    expect(live(w.root, w.git)).toEqual({ mounts: [readOnly(w.at("_"), "/work/_"), HIDDEN], env: SAFE });
   });
 
   it("mounts a top-level config only when it is a file, leaving a config folder writable (choice 103)", () => {
     const folder = world(["config/app.yml"]);
-    expect(liveMounts(folder.root, folder.git)).toEqual({ mounts: [HIDDEN], env: SAFE });
+    expect(live(folder.root, folder.git)).toEqual({ mounts: [HIDDEN], env: SAFE });
     const file = world(["config"]);
-    expect(liveMounts(file.root, file.git)).toEqual({ mounts: [readOnly(file.at("config"), "/work/config"), HIDDEN], env: SAFE });
+    expect(live(file.root, file.git)).toEqual({ mounts: [readOnly(file.at("config"), "/work/config"), HIDDEN], env: SAFE });
   });
 
   it("mounts a .git file read-only, as it is", () => {
     const w = world([".git"]);
-    expect(liveMounts(w.root, w.git)).toEqual({ mounts: [readOnly(w.at(".git"), "/work/.git"), HIDDEN], env: SAFE });
+    expect(live(w.root, w.git)).toEqual({ mounts: [readOnly(w.at(".git"), "/work/.git"), HIDDEN], env: SAFE });
   });
 
   it("mounts nothing over a path that does not exist, nor a hooks folder outside the project", () => {
     const w = world();
     w.git.hooksPaths.push(path.join(w.dir, "missing-hooks"));
-    expect(liveMounts(w.root, w.git)).toEqual({ mounts: [HIDDEN], env: SAFE });
+    expect(live(w.root, w.git)).toEqual({ mounts: [HIDDEN], env: SAFE });
   });
 
   it("keeps an existing .tachikoma as it is, hidden", () => {
     const w = world([".tachikoma/sessions/one.jsonl"]);
-    expect(liveMounts(w.root, w.git)).toEqual({ mounts: [HIDDEN], env: SAFE });
+    expect(live(w.root, w.git)).toEqual({ mounts: [HIDDEN], env: SAFE });
     expect(readdirSync(w.at(".tachikoma/sessions"))).toEqual(["one.jsonl"]);
   });
 
@@ -120,7 +155,7 @@ describe("liveMounts", () => {
     const joined = path.join(w.dir, "joined");
     symlinkSync(w.root, joined, "junction");
     w.git.hooksPaths.push(path.join(joined, ".husky"), w.at(".husky"));
-    expect(liveMounts(joined, w.git)).toEqual({ mounts: [readOnly(w.at(".husky"), "/work/.husky"), HIDDEN], env: SAFE });
+    expect(live(joined, w.git)).toEqual({ mounts: [readOnly(w.at(".husky"), "/work/.husky"), HIDDEN], env: SAFE });
   });
 
   it("refuses a missing hooks folder named by either spelling of the project's folder", () => {
@@ -128,7 +163,7 @@ describe("liveMounts", () => {
     const joined = path.join(w.dir, "joined");
     symlinkSync(w.root, joined, "junction");
     w.git.hooksPaths.push(w.at(".githooks"));
-    expect(liveMounts(joined, w.git)).toHaveProperty("refused", expect.stringContaining(`git's hooks folder ${w.at(".githooks")} does not exist yet`));
+    expect(live(joined, w.git)).toHaveProperty("refused", expect.stringContaining(`git's hooks folder ${w.at(".githooks")} does not exist yet`));
   });
 
   it("leaves a file or folder inside a read-only folder to that folder's mount", () => {
@@ -138,8 +173,9 @@ describe("liveMounts", () => {
     w.git.gitDirs.push(w.at("tools"));
     // A name that only starts like a mounted folder's is not inside it.
     w.git.files.push(w.at(".github/git.cfg"));
-    expect(liveMounts(w.root, w.git)).toEqual({
+    expect(live(w.root, w.git)).toEqual({
       mounts: [
+        pinned(w.at(".github"), "/work/.github"),
         readOnly(w.at(".git"), "/work/.git"),
         readOnly(w.at("tools"), "/work/tools"),
         readOnly(w.at(".github/git.cfg"), "/work/.github/git.cfg"),
@@ -152,7 +188,7 @@ describe("liveMounts", () => {
   it("gives the line-ending settings as git's session-only variables, after safe.directory (choice 100)", () => {
     const w = world();
     w.git.lineEndings = { "core.autocrlf": "true", "core.eol": "" };
-    expect(liveMounts(w.root, w.git)).toEqual({
+    expect(live(w.root, w.git)).toEqual({
       mounts: [HIDDEN],
       env: {
         GIT_CONFIG_COUNT: "3",
@@ -164,5 +200,43 @@ describe("liveMounts", () => {
         GIT_CONFIG_VALUE_2: "",
       },
     });
+  });
+});
+
+// A test-made folder, and whether it ignores letter case, told by two names in a folder of its own that differ only in
+// case: whether they reach one file.
+async function caseOf(): Promise<{ dir: string; ignores: boolean }> {
+  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-case-")));
+  onTestFinished(() => removeTree(dir));
+  const probe = path.join(dir, "probe");
+  mkdirSync(probe);
+  writeFileSync(path.join(probe, "a"), "");
+  const ignores = existsSync(path.join(probe, "A"));
+  await removeTree(probe);
+  return { dir, ignores };
+}
+
+describe("ignoresCase (choice 104)", () => {
+  it("is true for a folder that ignores letter case, told by a name in it", async (ctx) => {
+    const { dir, ignores } = await caseOf();
+    if (!ignores) ctx.skip("this machine's temporary folder minds letter case, so it cannot show one that ignores it");
+    mkdirSync(path.join(dir, ".git"));
+    expect(ignoresCase(dir)).toBe(true);
+  });
+
+  it("is true for an empty folder that ignores letter case, told by its own name", async (ctx) => {
+    const { dir, ignores } = await caseOf();
+    if (!ignores) ctx.skip("this machine's temporary folder minds letter case, so it cannot show one that ignores it");
+    expect(readdirSync(dir)).toEqual([]);
+    expect(ignoresCase(dir)).toBe(true);
+  });
+
+  it("is false for a folder that minds letter case, even with a name in it spelled both ways", async (ctx) => {
+    const { dir, ignores } = await caseOf();
+    if (ignores) ctx.skip("this machine's temporary folder ignores letter case, so it cannot show one that minds it");
+    mkdirSync(path.join(dir, ".git"));
+    mkdirSync(path.join(dir, ".GIT"));
+    expect(ignoresCase(dir)).toBe(false);
+    expect(ignoresCase(path.join(dir, ".git"))).toBe(false);
   });
 });

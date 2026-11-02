@@ -75,7 +75,7 @@ async function liveBox(ctx: TestContext, w: World, opts: { env?: Record<string, 
   const space = await dockerRoom();
   const got = boxLimits(undefined, space);
   if (!("limits" in got)) ctx.skip(got.problem);
-  const live = liveMounts(w.root, await settings(ctx, w));
+  const live = liveMounts(w.root, await settings(ctx, w), MINDS_CASE);
   if ("refused" in live) throw new Error(live.refused);
   const box = await DockerExecutor.start({
     image: info.tag, folder: w.root, network: "off", limits: got.limits, user: boxUser(space),
@@ -88,6 +88,10 @@ async function liveBox(ctx: TestContext, w: World, opts: { env?: Record<string, 
 // Every path in a folder, its folders' contents too, relative and sorted.
 const listing = (folder: string): string[] =>
   (readdirSync(folder, { recursive: true }) as string[]).map((p) => p.split(path.sep).join("/")).sort();
+
+// The test folders here may ignore letter case (Windows, macOS), where live link is refused (choice 104), so the check
+// is taken as passed and the mounts themselves are tested; mounts.test.ts tests the check.
+const MINDS_CASE = { ignoresCase: () => false };
 
 // What a write to a read-only mount gives in the box: bash's own message for the file.
 const READ_ONLY = /Read-only file system/;
@@ -145,12 +149,32 @@ describe("live link in real Docker", { timeout: 0 }, () => {
       expect(got.stderr, file).toMatch(READ_ONLY);
     }
     for (const made of [".husky/post-checkout", ".git/hooks/pre-commit"]) expect((await box.exec(`touch ${made}`, "/work")).stderr, made).toMatch(READ_ONLY);
+    // The folders above them cannot be renamed away from their mounts (choice 105).
+    for (const folder of ["settings", ".husky"]) expect((await box.exec(`mv ${folder} moved`, "/work")).code, folder).not.toBe(0);
     // The folders around them are the project's own, written as usual.
     expect((await box.exec("echo free > settings/free.txt", "/work")).code).toBe(0);
     expect(readFileSync(extra, "utf8")).toBe("[user]\n\tname = Sample User\n");
     expect(readFileSync(cond, "utf8")).toBe("");
     expect(readFileSync(hook, "utf8")).toBe("echo sample\n");
     expect(readFileSync(path.join(w.root, "settings/free.txt"), "utf8")).toBe("free\n");
+  });
+
+  it("pins the folders above a nested hooks folder, which stay editable (choice 105)", async (ctx) => {
+    const w = world();
+    w.git(["init", "-q"]);
+    const hook = w.write(w.at("web/.husky/pre-commit"), "echo sample\n");
+    w.write(w.at("web/.husky/_/h"), "");
+    w.write(w.at("web/notes.txt"), "");
+    const config = w.at(".git/config");
+    w.write(config, `${readFileSync(config, "utf8")}[core]\n\thooksPath = web/.husky/_\n`);
+    const before = listing(w.root);
+    const box = await liveBox(ctx, w);
+    expect(listing(w.root)).toEqual([...before, ".tachikoma"].sort());
+    for (const line of ["mv web web2", "mv web/.husky web/hooks"]) expect((await box.exec(line, "/work")).code, line).not.toBe(0);
+    expect((await box.exec("echo changed >> web/.husky/pre-commit", "/work")).stderr).toMatch(READ_ONLY);
+    expect(await box.exec("echo edited > web/notes.txt && mv web/notes.txt web/renamed.txt", "/work")).toMatchObject({ code: 0 });
+    expect(readFileSync(hook, "utf8")).toBe("echo sample\n");
+    expect(readFileSync(w.at("web/renamed.txt"), "utf8")).toBe("edited\n");
   });
 
   it("makes a top-level HEAD and config read-only, and makes no objects or refs", async (ctx) => {
@@ -212,7 +236,7 @@ describe("live link in real Docker", { timeout: 0 }, () => {
     // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink.
     symlinkSync(w.at("real"), w.at("joined"), "junction");
     w.write(w.at(".git/config"), `${readFileSync(w.at(".git/config"), "utf8")}[include]\n\tpath = ../joined\n`);
-    expect(liveMounts(w.root, await settings(ctx, w))).toEqual({
+    expect(liveMounts(w.root, await settings(ctx, w), MINDS_CASE)).toEqual({
       refused: `Live link is refused: git's settings include ${w.at("joined")}, which is a link. Launch with --sandbox copy instead.`,
     });
   });
@@ -221,7 +245,7 @@ describe("live link in real Docker", { timeout: 0 }, () => {
     const w = world();
     w.git(["init", "-q"]);
     w.write(w.at(".git/config"), `${readFileSync(w.at(".git/config"), "utf8")}[include]\n\tpath = ../missing.cfg\n`);
-    expect(liveMounts(w.root, await settings(ctx, w))).toEqual({
+    expect(liveMounts(w.root, await settings(ctx, w), MINDS_CASE)).toEqual({
       refused: `Live link is refused: git's settings include ${w.at("missing.cfg")}, which cannot be read: no such file. Launch with --sandbox copy instead.`,
     });
   });
@@ -231,7 +255,7 @@ describe("live link in real Docker", { timeout: 0 }, () => {
     w.git(["init", "-q"]);
     w.write(w.at(".git/config"), `${readFileSync(w.at(".git/config"), "utf8")}[core]\n\thooksPath = .githooks\n`);
     const before = listing(w.root);
-    expect(liveMounts(w.root, await settings(ctx, w))).toEqual({
+    expect(liveMounts(w.root, await settings(ctx, w), MINDS_CASE)).toEqual({
       refused:
         `Live link is refused: git's hooks folder ${w.at(".githooks")} does not exist yet, so the box could make it. ` +
         "Create the folder, or launch with --sandbox copy instead.",
