@@ -790,6 +790,11 @@ the plan's review.
     - a project image's `NODE_OPTIONS` that prints to stdout corrupts the helper's answers;
     - a read of a FIFO in the project waits, in the box as on the host;
     - in copy mode, the `@` menu lists the host folder, not the copy (choice 98);
+    - find and search resolve their start twice (once for the question, once in the
+      Workspace): one extra Docker call per search in the box, and a link swapped in between
+      can change whether the start counts as outside, as before Task 14;
+    - with slow Docker, two branch reads can land out of order, showing a stale branch;
+    - the `node:fs` guard test covers only `src/tools/`, `src/tui/menus.ts` and `src/tui/app/`;
     - choices 88 and 92.
 ---
 
@@ -1398,8 +1403,7 @@ Commit: `refactor: the file tools, the @ menu, the branch and pasted pictures go
 Workspace; `Executor.readFile`/`writeFile` are dropped (nothing called them). The `@` menu and
 pasted paths stay on the host (choices 98, 99), so the commit message names only the file tools
 and the branch. The grep test's allowed list gives `menus.ts` and `constants.ts` those choices as
-reasons. Notes for Task 16: the write tools' hard-link check (`protectedOf`) looks at the host
-path; `ctx.root` and `workspace.root` are separate values that must match. With the `@` menu
+reasons. Notes for Task 16 are in that task. With the `@` menu
 and pasted paths on the host, `list` and `readBytes` had no callers, so the Workspace (local,
 box and helper) drops them; the interface above is Task 13's, before that.
 
@@ -1480,6 +1484,16 @@ Commit: `feat: live link: all of .git, git's included files and the hooks folder
   box`, so a helper killed by the memory limit during a big read would turn the tools off;
   `DockerExecutor` asks `docker inspect` whether the box still runs before blaming Docker.
   The system prompt names `/work` (choice 19).
+- **From Task 14's reviews:**
+  - `ctx.root` and `workspace.root` are separate values; set them to match.
+  - The write tools' hard-link check (`protectedOf`) looks at the host path; in the box the
+    path is a `/work` one.
+  - The first branch is read with `await workspace.branch()` after the screen is entered
+    (cli.tsx). `gitBranch` catches its own errors, but `BoxWorkspace` throws when Docker cannot
+    be reached, which would end the launch; treat a failed first read as no branch.
+  - The branch is read again after every turn and slash command (queue.ts); in the box that is
+    one Docker call each, and a broken box would print a red line after every turn. Under the
+    shared stopped state, stop reading it.
 - **The launch line, in grey:** `Sandbox: live link on <folder>, network <off|on>, limits <memory>,
   <cpus> CPUs, <pids> processes.`, then a grey line for each limit Docker cannot apply (choice 83).
 - **The network** follows `--network` (choice 18's `--network none` or `bridge`).
