@@ -633,6 +633,15 @@ the plan's review.
     is a node script filling memory.
 74. **The memory test's box has a 512 MB limit** (the user's choice, before Task 12), so the test
     does not take the 4 GB default from the PC. The other tests use Task 1's defaults.
+75. **The defaults fit a smaller Docker** (the user's choice, before Task 12: "we need to allow
+    for other people's machines"). Task 1 measured the user's PC (24 CPUs, about 31 GB); Docker
+    on a small laptop may have far less, and refuses `--cpus` above its own count. So before the
+    box starts, `docker info` gives Docker's CPUs and memory. A default above them is lowered to
+    them, and the launch line shows the limits used. A `"sandboxLimits"` value the user set that
+    is above them stops the launch: `settings.json: "sandboxLimits": "<name>" is <value>, but
+    Docker has <what Docker has>. Lower it, or give Docker more in Docker Desktop's settings.`
+    No new number: Docker's own figures are the cap. Tests that need a box use limits that fit
+    the Docker they run on, and skip with a message when Docker has less than they need.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
