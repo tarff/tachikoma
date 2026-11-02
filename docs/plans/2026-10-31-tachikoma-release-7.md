@@ -626,6 +626,13 @@ the plan's review.
     project's image, from .tachikoma/sandbox.Dockerfile, built here once. It downloads what that
     file asks for, starting with: <images>. Build it now? [y/n]`; with no image names read,
     `, starting with: <images>` is left out.
+73. **The box's tests run gentle forms** (the user's choice, before Task 12). They run only in
+    `tachikoma-sandbox` boxes started with `--pull never` and the network off, and each box is
+    removed after its test. The process limit is shown with plain `sleep` processes started in a
+    counted loop, one more than the box's limit, never a self-copying fork loop. The memory test
+    is a node script filling memory.
+74. **The memory test's box has a 512 MB limit** (the user's choice, before Task 12), so the test
+    does not take the 4 GB default from the PC. The other tests use Task 1's defaults.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
@@ -1140,8 +1147,9 @@ export class DockerExecutor implements Executor {
 - `capsh --print` or `/proc/self/status` shows no capabilities;
 - `NoNewPrivs: 1`;
 - no network (`getent hosts example.com` fails);
-- the memory limit stops `node -e "a=[];for(;;)a.push(Buffer.alloc(1e6))"`, with the message;
-- `pids` stops a fork loop;
+- the memory limit (512 MB, choice 74) stops `node -e "a=[];for(;;)a.push(Buffer.alloc(1e6))"`,
+  with the message;
+- `pids` stops a counted loop of `sleep` processes one past the limit (choice 73);
 - Esc stops `sleep 600` and its process is gone in the box;
 - `stop()` removes the box;
 - a fake failing `docker` giving the message.
