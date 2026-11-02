@@ -636,8 +636,18 @@ the plan's review.
 75. **The defaults fit a smaller Docker** (the user's choice, before Task 12: "we need to allow
     for other people's machines"). Task 1 measured the user's PC (24 CPUs, about 31 GB); Docker
     on a small laptop may have far less, and refuses `--cpus` above its own count. So before the
-    box starts, `docker info` gives Docker's CPUs and memory. A default above them is lowered to
-    them, and the launch line shows the limits used. A `"sandboxLimits"` value the user set that
+    box starts, `docker info` gives Docker's CPUs (`NCPU`) and memory (`MemTotal`). The defaults
+    scale both ways (the user's "option A", 2026-11-02: "if a machine had more room, power etc it
+    should scale but we should allow for smaller ones too"):
+    - memory: the larger of 4 GB and the user's share, 4 GB of this PC's 33,518,923,776 bytes
+      (`docker info`, 2026-11-02), never more than `MemTotal`;
+    - CPUs: the larger of 4 and the user's share, 4 of this PC's 24, never more than `NCPU`;
+    - processes: 1024 everywhere (the user's choice: processes cost little, about 3 times the
+      measured peak of 348).
+
+    So this PC keeps 4 GB and 4 CPUs; a 2 GB, 2-CPU Docker gets 2 GB and 2 CPUs; a 128 GB, 64-CPU
+    Docker gets about 16 GB and 10.7 CPUs. Docker takes `--memory` in bytes and `--cpus` with
+    decimals, so the values are not rounded; the launch line shows the limits used. A `"sandboxLimits"` value the user set that
     is above them stops the launch: `settings.json: "sandboxLimits": "<name>" is <value>, but
     Docker has <what Docker has>. Lower it, or give Docker more in Docker Desktop's settings.`
     No new number: Docker's own figures are the cap. Tests that need a box use limits that fit
