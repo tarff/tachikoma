@@ -772,6 +772,18 @@ the plan's review.
     user sees on their own machine, often outside the project (a Desktop screenshot), which the
     box cannot see. The paste's file check (`isFile`) and `pictureFile` stay on the host, in or out
     of the sandbox.
+100. **The host's line-ending settings pass into the box's git** (the user's choice, Task 15; the
+    this-PC audit). Git for Windows puts `core.autocrlf=true` in the system settings, which git in
+    the box cannot see, so there `git status` and `git diff` would show every text file changed.
+    Task 15 reads the project's effective `core.autocrlf` and `core.eol` from the same files Task 5
+    reads (system, global, the repository's own, and their includes; the last one set wins), and
+    gives them to the box as session-only settings through git's `GIT_CONFIG_COUNT`,
+    `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` variables. Nothing on disk changes. A value
+    set only inside an `includeIf` whose condition does not hold is a known limit.
+101. **SELinux is a known limit** (the user's choice, Task 15; the this-PC audit). With SELinux on
+    in Docker (Fedora, RHEL and the like), the box is denied the linked folder. Docker's `:z` flag
+    fixes it but relabels the user's folder on the host for good, so Tachikoma does not add it;
+    the README names the symptom (permission denied inside the box) and the flag (Task 23).
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -790,6 +802,7 @@ the plan's review.
     - a project image's `NODE_OPTIONS` that prints to stdout corrupts the helper's answers;
     - a read of a FIFO in the project waits, in the box as on the host;
     - in copy mode, the `@` menu lists the host folder, not the copy (choice 98);
+    - SELinux on in Docker denies the box the linked folder (choice 101);
     - find and search resolve their start twice (once for the question, once in the
       Workspace): one extra Docker call per search in the box, and a link swapped in between
       can change whether the start counts as outside, as before Task 14;
@@ -1439,6 +1452,10 @@ export function liveMounts(root: string, git: GitSettings | undefined): { mounts
     Task 5 ("it cannot be read"), so it refuses too;
   - top-level `HEAD`, `objects`, `refs` and `config` are mounted only when they exist. The
     design accepts the missing case and says so plainly (design, "What stays open").
+- **Line endings (choice 100):** the host's effective `core.autocrlf` and `core.eol` for the
+  project, given to the box as `GIT_CONFIG_COUNT`/`KEY`/`VALUE` variables, read without running
+  anything beyond Task 5's `git config`. A test: on a repository whose system file (a test-made
+  `GIT_CONFIG_SYSTEM`) sets `core.autocrlf=true`, a CRLF checkout shows clean in the box.
 - **Refused:**
   - git missing: choice 11's line;
   - a problem from Task 5: `Live link is refused: git's settings include <file>, which <why>.
