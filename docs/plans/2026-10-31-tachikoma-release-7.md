@@ -788,7 +788,6 @@ the plan's review.
     - a process in the box swapping a link between the helper's check and its open can make it
       reach outside `/work`, only where the box's user can already go;
     - a project image's `NODE_OPTIONS` that prints to stdout corrupts the helper's answers;
-    - in the box, `list` leaves out links that lead nowhere or outside, which the host shows;
     - a read of a FIFO in the project waits, in the box as on the host;
     - in copy mode, the `@` menu lists the host folder, not the copy (choice 98);
     - choices 88 and 92.
@@ -1400,7 +1399,9 @@ Workspace; `Executor.readFile`/`writeFile` are dropped (nothing called them). Th
 pasted paths stay on the host (choices 98, 99), so the commit message names only the file tools
 and the branch. The grep test's allowed list gives `menus.ts` and `constants.ts` those choices as
 reasons. Notes for Task 16: the write tools' hard-link check (`protectedOf`) looks at the host
-path; `ctx.root` and `workspace.root` are separate values that must match.
+path; `ctx.root` and `workspace.root` are separate values that must match. With the `@` menu
+and pasted paths on the host, `list` and `readBytes` had no callers, so the Workspace (local,
+box and helper) drops them; the interface above is Task 13's, before that.
 
 ## Task 15: Live link's mounts
 
