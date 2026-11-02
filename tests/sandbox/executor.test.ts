@@ -7,7 +7,17 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { docker, type DockerRun, dockerState } from "../../src/sandbox/docker.js";
-import { type BoxOptions, boxLimits, boxUser, DockerExecutor, dockerRoom, type Limits, sweepBoxes } from "../../src/sandbox/executor.js";
+import {
+  type BoxOptions,
+  boxLimits,
+  boxUser,
+  DockerExecutor,
+  dockerRoom,
+  type Limits,
+  sweepBoxes,
+  type Unlimited,
+  unlimitedLine,
+} from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
 
 type Answer = Awaited<ReturnType<DockerRun>>;
@@ -28,10 +38,11 @@ function fakeDocker(answer: (args: string[]) => Answer) {
 
 const GB = 2 ** 30;
 const MB = 2 ** 20;
-// What `docker info` gives (NCPU, MemTotal and SecurityOptions as JSON, tab-separated), for the worked examples of
-// choices 75 and 76.
-const DESKTOP = JSON.stringify(["name=seccomp,profile=builtin", "name=cgroupns"]); // this PC's, 2026-11-02
-const info = (cpus: number, memory: number, options = DESKTOP) => `${cpus}\t${memory}\t${options}`;
+// What `docker info --format {{json .}}` gives, the parts read, for the worked examples of choices 75 and 76. The
+// security options and the three limits' flags are this PC's, 2026-11-02.
+const DESKTOP = ["name=seccomp,profile=builtin", "name=cgroupns"];
+const info = (cpus: number, memory: number, more: Record<string, unknown> = {}) =>
+  JSON.stringify({ NCPU: cpus, MemTotal: memory, SecurityOptions: DESKTOP, MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true, ...more });
 const THIS_PC = info(24, 33518923776);
 const room = async (answer: string) => dockerRoom(fakeDocker(() => ok(`${answer}\n`)).run);
 const OPTS: BoxOptions = {
@@ -44,11 +55,24 @@ const OPTS: BoxOptions = {
   user: "1000:1000",
 };
 
-describe("the box's limits (choices 75 and 76)", () => {
-  it("reads Docker's CPUs, memory and security options from one docker info", async () => {
+describe("the box's limits (choices 75, 76, 80, 82 and 83)", () => {
+  it("reads Docker's CPUs, memory, security options and the limits it can apply from one docker info", async () => {
     const fake = fakeDocker(() => ok(`${THIS_PC}\n`));
-    expect(await dockerRoom(fake.run)).toEqual({ cpus: 24, memory: 33518923776, rootless: false });
-    expect(fake.calls).toEqual([["info", "--format", "{{.NCPU}}\t{{.MemTotal}}\t{{json .SecurityOptions}}"]]);
+    expect(await dockerRoom(fake.run)).toEqual({ cpus: 24, memory: 33518923776, rootless: false, unlimited: [] });
+    expect(fake.calls).toEqual([["info", "--format", "{{json .}}"]]);
+  });
+
+  it("says which limits Docker cannot apply, each in its own line (choice 83)", async () => {
+    expect((await room(info(4, 8 * GB, { MemoryLimit: false, PidsLimit: false }))).unlimited).toEqual(["memory", "processes"]);
+    expect((await room(info(4, 8 * GB, { CpuCfsQuota: false }))).unlimited).toEqual(["CPUs"]);
+    expect(unlimitedLine("memory")).toBe("Docker cannot limit the box's memory on this machine, so the box runs without that limit.");
+    expect(unlimitedLine("CPUs")).toBe("Docker cannot limit the box's CPUs on this machine, so the box runs without that limit.");
+    expect(unlimitedLine("processes")).toBe("Docker cannot limit the box's processes on this machine, so the box runs without that limit.");
+  });
+
+  it("still passes a limit Docker cannot apply (choice 83)", async () => {
+    const space = await room(info(24, 33518923776, { MemoryLimit: false, CpuCfsQuota: false, PidsLimit: false }));
+    expect(boxLimits(undefined, space)).toEqual({ limits: { memory: 4 * GB, cpus: 4, pids: 1024 } });
   });
 
   it("says so when docker info fails", async () => {
@@ -75,12 +99,26 @@ describe("the box's limits (choices 75 and 76)", () => {
     expect(boxLimits(undefined, await room(info(2, 900 * MB)))).toEqual({ problem: stop("900m") });
   });
 
-  it("scales up on a 128 GB, 64-CPU Docker, unrounded", async () => {
+  it("scales up on a 128 GB, 64-CPU Docker: memory down to a whole MiB, CPUs down to 9 decimal places", async () => {
     const got = boxLimits(undefined, await room(info(64, 128 * GB)));
-    expect(got).toEqual({ limits: { memory: Math.floor((128 * GB * 4 * GB) / 33518923776), cpus: (64 * 4) / 24, pids: 1024 } });
+    expect(got).toEqual({ limits: { memory: Math.floor((128 * GB * 4 * GB) / 33518923776 / MB) * MB, cpus: 10.666666666, pids: 1024 } });
     if (!("limits" in got)) return;
     expect(got.limits.memory / GB).toBeCloseTo(16.4, 1);
-    expect(got.limits.cpus).toBeCloseTo(10.67, 2);
+  });
+
+  it("gives this PC exactly 4 GiB when its MemTotal drifts up a few KB (choice 80)", async () => {
+    expect(boxLimits(undefined, await room(info(24, 33518931968)))).toEqual({ limits: { memory: 4 * GB, cpus: 4, pids: 1024 } });
+  });
+
+  it("never gives docker run a --cpus with more than 9 decimal places, which Docker refuses (choice 82)", async () => {
+    for (const cpus of [28, 32, 64, 100, 128]) {
+      const got = boxLimits(undefined, await room(info(cpus, 256 * GB)));
+      if (!("limits" in got)) throw new Error(got.problem);
+      const fake = fakeDocker((args) => ok(args[0] === "run" ? "b0x\n" : "oom_kill 0\n"));
+      await (await DockerExecutor.start({ ...OPTS, limits: got.limits }, fake.run)).stop();
+      const run = fake.calls[0]!;
+      expect(run[run.indexOf("--cpus") + 1]).toMatch(/^\d+(\.\d{1,9})?$/);
+    }
   });
 
   it("uses the user's values as given when they fit, defaults for the rest", async () => {
@@ -112,7 +150,7 @@ describe("the box's limits (choices 75 and 76)", () => {
 
 describe("boxUser (choices 14 and 77)", () => {
   it("is 0:0 for rootless Docker, which maps the box's root to the host user", async () => {
-    const rootless = await room(info(4, 8 * GB, JSON.stringify(["name=seccomp,profile=builtin", "name=rootless", "name=cgroupns"])));
+    const rootless = await room(info(4, 8 * GB, { SecurityOptions: ["name=seccomp,profile=builtin", "name=rootless", "name=cgroupns"] }));
     expect(rootless.rootless).toBe(true);
     for (const platform of ["linux", "darwin", "win32"] as const) expect(boxUser(rootless, platform)).toBe("0:0");
   });
@@ -153,6 +191,13 @@ describe("DockerExecutor with a stand-in Docker", () => {
     expect(fake.calls[1]).toEqual(["exec", "b0x", "cat", "/sys/fs/cgroup/memory.events"]);
     await box.stop();
     expect(fake.calls.at(-1)).toEqual(["rm", "-f", "b0x"]);
+  });
+
+  it("adds the labels it is given after its own", async () => {
+    const fake = answering(() => ok());
+    await (await DockerExecutor.start({ ...OPTS, labels: { "tachikoma.test": "1" } }, fake.run)).stop();
+    const run = fake.calls[0]!;
+    expect(run.slice(run.indexOf(OPTS.image) - 2, run.indexOf(OPTS.image))).toEqual(["--label", "tachikoma.test=1"]);
   });
 
   it("starts with the network on as bridge", async () => {
@@ -196,6 +241,18 @@ describe("DockerExecutor with a stand-in Docker", () => {
     expect(fake.calls.length).toBe(made);
   });
 
+  it("adds no second full stop when Docker's words end in one", async () => {
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) return ok("oom_kill 0\n");
+      return { code: 1, out: "", err: "Error response from daemon: container b0x is not running.\n" };
+    });
+    const box = await DockerExecutor.start(OPTS, fake.run);
+    await expect(box.exec("echo hi", "/work")).rejects.toThrow(
+      "The sandbox stopped working: Error response from daemon: container b0x is not running. Shell and file tools are off until Tachikoma is launched again.",
+    );
+  });
+
   it("when docker leaves PATH during the session, says so in the same message", async () => {
     let gone = false;
     const fake = fakeDocker((args) => {
@@ -233,8 +290,29 @@ describe("DockerExecutor with a stand-in Docker", () => {
       const got = await box.exec("node fill.js", "/work");
       const line = `(Stopped: the command used more than the box's memory limit of 512m. "sandboxLimits" in settings.json changes it.)`;
       expect(got).toEqual({ code: 137, signal: null, stdout: "", stderr: said ? line : "" });
+      // A missing file is looked for once, at the start, not before each command.
+      expect(fake.calls.filter((c) => c.includes("/sys/fs/cgroup/memory.events"))).toHaveLength(1);
       await box.stop();
     }
+  });
+
+  it("when the count could not be read at the start, reads it again before the next command, and uses it, not OOMKilled", async () => {
+    let reads = 0;
+    const fake = fakeDocker((args) => {
+      if (args[0] === "run") return ok("b0x\n");
+      if (args.includes("/sys/fs/cgroup/memory.events")) {
+        reads++;
+        return reads === 1 ? { code: 1, out: "", err: "Error response from daemon: busy\n" } : ok(`oom_kill ${reads === 2 ? 0 : 1}\n`);
+      }
+      if (args[0] === "exec") return { code: 137, out: "", err: "" };
+      return ok("true\n");
+    });
+    const box = await DockerExecutor.start({ ...OPTS, limits: { memory: 512 * MB, cpus: 1, pids: 64 } }, fake.run);
+    const got = await box.exec("node fill.js", "/work");
+    expect(got.stderr).toBe(`(Stopped: the command used more than the box's memory limit of 512m. "sandboxLimits" in settings.json changes it.)`);
+    expect(reads).toBe(3);
+    expect(fake.calls.some((c) => c.includes("{{.State.OOMKilled}}"))).toBe(false);
+    await box.stop();
   });
 
   it("takes Docker's warnings on stderr as no failure when the box starts", async () => {
@@ -272,9 +350,11 @@ describe("sweepBoxes (the boxes of sessions whose process is gone)", () => {
 });
 
 // Real Docker (the plan's "Docker tests run on real Docker and skip themselves"). Each test starts its own box from the
-// shipped image, never pulling it (--pull never), with the network off, labelled by a `test-` session, and removes it
-// when it ends (choice 73). The limits are what Docker here gives (choice 75); the memory test's are 512 MB (choice 74).
-async function ready(ctx: TestContext, memory?: number): Promise<{ image: string; folder: string; limits: Limits; user: string }> {
+// shipped image, never pulling it (--pull never), with the network off, labelled tachikoma.test=1 and by a `test-`
+// session, and removes it when it ends (choice 73). The limits are what Docker here gives (choice 75); the memory test's
+// are 512 MB (choice 74). A test of a limit Docker cannot apply here skips, saying so (choice 83).
+interface Needs { memory?: number; limit?: Unlimited }
+async function ready(ctx: TestContext, needs: Needs = {}): Promise<{ image: string; folder: string; limits: Limits; user: string }> {
   const state = await dockerState();
   if (state === "missing") ctx.skip("no docker program on PATH");
   if (state === "stopped") ctx.skip("Docker is not running");
@@ -283,24 +363,27 @@ async function ready(ctx: TestContext, memory?: number): Promise<{ image: string
   const info = await imageFor(folder);
   if (!info.built) ctx.skip(`the sandbox's image (${info.tag}) is not built`);
   const space = await dockerRoom();
-  if (memory && memory > space.memory) ctx.skip(`Docker has less memory than the test's ${memory} bytes`);
+  if (needs.limit && space.unlimited.includes(needs.limit)) ctx.skip(unlimitedLine(needs.limit));
+  if (needs.memory && needs.memory > space.memory) ctx.skip(`Docker has less memory than the test's ${needs.memory} bytes`);
   const got = boxLimits(undefined, space);
-  if (!("limits" in got)) throw new Error(got.problem);
-  return { image: info.tag, folder, limits: { ...got.limits, ...(memory ? { memory } : {}) }, user: boxUser(space) };
+  if (!("limits" in got)) ctx.skip(got.problem);
+  return { image: info.tag, folder, limits: { ...got.limits, ...(needs.memory ? { memory: needs.memory } : {}) }, user: boxUser(space) };
 }
 
-async function realBox(ctx: TestContext, memory?: number): Promise<DockerExecutor> {
-  return (await realBoxAs(ctx, memory)).box;
+async function realBox(ctx: TestContext, needs?: Needs): Promise<DockerExecutor> {
+  return (await realBoxAs(ctx, needs)).box;
 }
 
-async function realBoxAs(ctx: TestContext, memory?: number): Promise<{ box: DockerExecutor; user: string }> {
-  const opts = await ready(ctx, memory);
-  const box = await DockerExecutor.start({ ...opts, network: "off", mounts: [], session: `test-${randomUUID()}` });
+async function realBoxAs(ctx: TestContext, needs?: Needs): Promise<{ box: DockerExecutor; user: string }> {
+  const opts = await ready(ctx, needs);
+  const box = await DockerExecutor.start({ ...opts, network: "off", mounts: [], session: `test-${randomUUID()}`, labels: TEST_LABEL });
   onTestFinished(() => box.stop());
   return { box, user: opts.user };
 }
 
 // The box's processes, as `<pid> <command line>` lines, read from /proc: the image has no ps.
+const TEST_LABEL = { "tachikoma.test": "1" }; // the plan's rule for every container a test starts
+
 const processes = async (box: DockerExecutor) =>
   (await box.exec('for p in /proc/[0-9]*; do echo "${p#/proc/} $(tr "\\0" " " < $p/cmdline)"; done', "/")).stdout;
 
@@ -310,7 +393,7 @@ describe("DockerExecutor in real Docker", { timeout: 0 }, () => {
   it("runs as the user Tachikoma chose, with HOME at /tmp (choices 14 and 77)", async (ctx) => {
     const { box, user } = await realBoxAs(ctx);
     expect(await box.exec('id -u; echo "$HOME"', "/work")).toEqual({ code: 0, signal: null, stdout: `${user.split(":")[0]}\n/tmp\n`, stderr: "" });
-    if (process.platform !== "linux") expect(user).toBe("1000:1000"); // Docker Desktop is not rootless
+    expect(user).toBe(boxUser(await dockerRoom(), process.platform));
   });
 
   it("runs in the cwd it is given", async (ctx) => {
@@ -348,14 +431,22 @@ describe("DockerExecutor in real Docker", { timeout: 0 }, () => {
   });
 
   it("stops a command over the memory limit, saying so (a 512 MB box, choice 74)", async (ctx) => {
-    const box = await realBox(ctx, 512 * MB);
+    const box = await realBox(ctx, { memory: 512 * MB, limit: "memory" });
     const got = await box.exec('node -e "a=[];for(;;)a.push(Buffer.alloc(1e6))"', "/work");
     expect(got.code).toBe(137);
     expect(got.stderr).toBe(`(Stopped: the command used more than the box's memory limit of 512m. "sandboxLimits" in settings.json changes it.)`);
   });
 
+  it("limits the box's CPUs to its limit", async (ctx) => {
+    const box = await realBox(ctx, { limit: "CPUs" });
+    const got = await box.exec("cat /sys/fs/cgroup/cpu.max", "/work");
+    if (got.code !== 0) ctx.skip("the box has no cgroup v2 cpu.max to read its CPU limit from");
+    const [quota, period] = got.stdout.trim().split(" ").map(Number);
+    expect(quota! / period!).toBeCloseTo(box.limits.cpus, 3);
+  });
+
   it("stops a counted loop of sleep processes one past the process limit (choice 73)", async (ctx) => {
-    const box = await realBox(ctx);
+    const box = await realBox(ctx, { limit: "processes" });
     const loop = `python3 -c "import subprocess
 for i in range(${box.limits.pids + 1}): subprocess.Popen(['sleep', '600'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"`;
     const got = await box.exec(loop, "/work");
@@ -392,7 +483,7 @@ for i in range(${box.limits.pids + 1}): subprocess.Popen(['sleep', '600'], stdou
   });
 
   it("removes the box when Tachikoma ends, and when it exits as a signal makes it", async (ctx) => {
-    const opts = { ...(await ready(ctx)), network: "off", mounts: [] };
+    const opts = { ...(await ready(ctx)), network: "off", mounts: [], labels: TEST_LABEL };
     const start = `const { DockerExecutor } = await import(${JSON.stringify(pathToFileURL(path.resolve("src/sandbox/executor.ts")).href)});
 const box = await DockerExecutor.start({ ...${JSON.stringify(opts)}, session: "test-" + crypto.randomUUID() });`;
     // Ending by itself, and by process.exit as cli.tsx's signal handlers do (clilib.ts, exitOn), once the id is written.

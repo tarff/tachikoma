@@ -9,15 +9,30 @@ import type { ExecResult, Executor } from "../exec/executor.js";
 import type { SandboxLimits } from "../settings.js";
 import { docker, type DockerRun } from "./docker.js";
 
-// Memory in bytes, as Docker takes --memory, and CPUs with decimals, as it takes --cpus (choice 75), so neither is rounded.
+// Memory in bytes, as Docker takes --memory, and CPUs with decimals, as it takes --cpus (choice 75): a default is rounded
+// down only to a whole MiB (choice 80) and to 9 decimal places (choice 82).
 export interface Limits { memory: number; cpus: number; pids: number }
 // Live link's mounts (Task 15 makes them): a host path read-only in the box, or a box path hidden under an empty tmpfs.
 export type Mount = { host: string; box: string; readOnly: true } | { box: string; hidden: true };
-// `user` is boxUser's.
-export interface BoxOptions { image: string; folder: string; network: "off" | "on"; limits: Limits; mounts: Mount[]; session: string; user: string }
-// What Docker has: its CPUs and its memory in bytes, and whether it is rootless (`docker info`'s NCPU, MemTotal and
-// SecurityOptions).
-export interface Room { cpus: number; memory: number; rootless: boolean }
+// `user` is boxUser's; `labels` are added to the box's own.
+export interface BoxOptions {
+  image: string;
+  folder: string;
+  network: "off" | "on";
+  limits: Limits;
+  mounts: Mount[];
+  session: string;
+  user: string;
+  labels?: Record<string, string>;
+}
+// The limits Docker can be asked for but may not apply (choice 83), as its line names them.
+export type Unlimited = "memory" | "CPUs" | "processes";
+// What Docker has: its CPUs and its memory in bytes, whether it is rootless, and the limits it cannot apply (`docker
+// info`'s NCPU, MemTotal, SecurityOptions, and MemoryLimit, CpuCfsQuota and PidsLimit).
+export interface Room { cpus: number; memory: number; rootless: boolean; unlimited: Unlimited[] }
+
+// The launch's line for each limit Docker cannot apply (choice 83). Its flag is still passed.
+export const unlimitedLine = (what: Unlimited) => `Docker cannot limit the box's ${what} on this machine, so the box runs without that limit.`;
 
 // Docker reads g and m as 2^30 and 2^20 bytes (measured on 2026-11-02: --memory 1g and 512m gave HostConfig.Memory
 // 1073741824 and 536870912).
@@ -34,14 +49,24 @@ const MEASURED = { memory: 33_518_923_776, cpus: 24 };
 const FREE = { memory: UNIT.g, cpus: 1 };
 
 export async function dockerRoom(run: DockerRun = docker): Promise<Room> {
-  const got = await run(["info", "--format", "{{.NCPU}}\t{{.MemTotal}}\t{{json .SecurityOptions}}"]);
+  const got = await run(["info", "--format", "{{json .}}"]);
   if (got === "missing" || got.code !== 0) {
     throw new Error(`The sandbox could not read Docker's CPUs and memory: ${got === "missing" ? NO_DOCKER : got.err.trim()}`);
   }
-  const [cpus, memory, options] = got.out.trim().split("\t");
+  const info = JSON.parse(got.out) as {
+    NCPU: number;
+    MemTotal: number;
+    SecurityOptions?: string[] | null;
+    MemoryLimit?: boolean;
+    CpuCfsQuota?: boolean;
+    PidsLimit?: boolean;
+  };
   // Each option is "name=<name>" and its settings, comma-separated: "name=seccomp,profile=builtin".
-  const rootless = (JSON.parse(options ?? "null") as string[] | null)?.some((o) => o.split(",")[0] === "name=rootless") ?? false;
-  return { cpus: Number(cpus), memory: Number(memory), rootless };
+  const rootless = info.SecurityOptions?.some((o) => o.split(",")[0] === "name=rootless") ?? false;
+  // Only a flag that says false is a limit Docker cannot apply; one it does not give is taken as applied.
+  const flags = { memory: info.MemoryLimit, CPUs: info.CpuCfsQuota, processes: info.PidsLimit };
+  const unlimited = (Object.keys(flags) as Unlimited[]).filter((what) => flags[what] === false);
+  return { cpus: info.NCPU, memory: info.MemTotal, rootless, unlimited };
 }
 
 // The limits in force: the user's values as given, the defaults for the rest. A value of the user's above what Docker has
@@ -64,8 +89,10 @@ export function boxLimits(set: SandboxLimits | undefined, room: Room): { limits:
   const share = (of: "memory" | "cpus") => Math.max(BASE[of], (room[of] * BASE[of]) / MEASURED[of]);
   return {
     limits: {
-      memory: memory ?? Math.floor(Math.min(room.memory - FREE.memory, share("memory"))), // whole bytes
-      cpus: set?.cpus ?? Math.min(room.cpus > 1 ? room.cpus - FREE.cpus : room.cpus, share("cpus")),
+      // Down to a whole MiB, so a MemTotal that drifts up by a few KB still gives this PC exactly 4 GiB (choice 80).
+      memory: memory ?? Math.floor(Math.min(room.memory - FREE.memory, share("memory")) / UNIT.m) * UNIT.m,
+      // Down to 9 decimal places: Docker refuses more ("value is too precise", read 2026-11-02; choice 82).
+      cpus: set?.cpus ?? Math.floor(Math.min(room.cpus > 1 ? room.cpus - FREE.cpus : room.cpus, share("cpus")) * 1e9) / 1e9,
       pids: set?.pids ?? BASE.pids,
     },
   };
@@ -102,7 +129,9 @@ export function boxUser(room: Room, platform: NodeJS.Platform = process.platform
 
 export class DockerExecutor implements Executor {
   #broken: Error | undefined;
-  #oomKills: number | undefined;
+  // The box's last count of kills by its memory limit: null when the box has no memory.events (cgroup v1), undefined
+  // while it could not be read.
+  #oomKills: number | null | undefined;
 
   private constructor(
     readonly id: string,
@@ -120,8 +149,10 @@ export class DockerExecutor implements Executor {
     const got = await run([
       "run", "-d", "--pull", "never", "--init", "--user", opts.user, "-e", "HOME=/tmp", "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges", "--network", opts.network === "on" ? "bridge" : "none",
-      "--memory", String(memory), "--memory-swap", String(memory), "--cpus", String(cpus), "--pids-limit", String(pids), "-v", `${opts.folder}:/work`, ...mounts, "-w", "/work",
+      "--memory", String(memory), "--memory-swap", String(memory), "--cpus", String(cpus), "--pids-limit", String(pids),
+      "-v", `${opts.folder}:/work`, ...mounts, "-w", "/work",
       "--label", `tachikoma.session=${opts.session}`, "--label", `tachikoma.host=${os.hostname()}`, "--label", `tachikoma.pid=${process.pid}`,
+      ...Object.entries(opts.labels ?? {}).flatMap(([name, value]) => ["--label", `${name}=${value}`]),
       opts.image, "sleep", "infinity",
     ]);
     if (got === "missing" || got.code !== 0) throw new Error(`The sandbox could not start: ${got === "missing" ? NO_DOCKER : got.err.trim()}`);
@@ -141,6 +172,8 @@ export class DockerExecutor implements Executor {
   async exec(command: string, cwd: string, signal?: AbortSignal): Promise<ExecResult> {
     if (this.#broken) throw this.#broken;
     if (signal?.aborted) throw new Error("Cancelled");
+    if (this.#oomKills === undefined) this.#oomKills = await this.#oomKillCount(); // again, until it can be read
+    const before = this.#oomKills;
     const group = `/tmp/tachikoma-${randomUUID()}`;
     const wrapper =
       `exec 3>&2 2>/dev/null; setsid -w bash -c 'echo $$ > ${group}; [ -e ${group}.stop ] && exit; exec bash -c "$1"' _ "$1" 2>&3 3>&-; ` +
@@ -175,8 +208,8 @@ export class DockerExecutor implements Executor {
     // a plain `kill -9`, while OOMKilled stayed true for the box's life after its first one, so it would blame a later
     // kill -9. So the count is used, read after a 137 only, against the last read: a kill by the limit in a process left
     // running by an earlier command, found after a later 137, is laid on that later one. Without the file (cgroup v1),
-    // OOMKilled is the only sign, with that flaw.
-    if (got.code === 137 && (await this.#outOfMemory())) {
+    // or for a command whose count before it could not be read, OOMKilled is the only sign, with that flaw.
+    if (got.code === 137 && (await this.#outOfMemory(before))) {
       const limit = memoryText(this.limits.memory);
       const line = `(Stopped: the command used more than the box's memory limit of ${limit}. "sandboxLimits" in settings.json changes it.)`;
       stderr += `${stderr && !stderr.endsWith("\n") ? "\n" : ""}${line}`;
@@ -204,26 +237,30 @@ export class DockerExecutor implements Executor {
 
   // From now on every call throws the same, and nothing runs, in the box or on the host.
   #fail(words: string): Error {
-    this.#broken = new Error(`The sandbox stopped working: ${words}. Shell and file tools are off until Tachikoma is launched again.`);
+    const stop = words.endsWith(".") ? "" : ".";
+    this.#broken = new Error(`The sandbox stopped working: ${words}${stop} Shell and file tools are off until Tachikoma is launched again.`);
     return this.#broken;
   }
 
-  // Whether the box's memory limit killed something since the last look. Nothing read is no.
-  async #outOfMemory(): Promise<boolean> {
-    const now = await this.#oomKillCount();
-    if (now !== undefined && this.#oomKills !== undefined) {
-      const more = now > this.#oomKills;
+  // Whether the box's memory limit killed something since `before`, the count before the command. Nothing read is no.
+  async #outOfMemory(before: number | null | undefined): Promise<boolean> {
+    if (typeof before === "number") {
+      const now = await this.#oomKillCount();
+      if (typeof now !== "number") return false;
       this.#oomKills = now;
-      return more;
+      return now > before;
     }
     const got = await this.run(["inspect", "--format", "{{.State.OOMKilled}}", this.id]).catch(() => undefined);
     return !!got && got !== "missing" && got.code === 0 && got.out.trim() === "true";
   }
 
-  // The box's count of kills by its memory limit, or undefined when it cannot be read (a cgroup v1 host has no such file).
-  async #oomKillCount(): Promise<number | undefined> {
+  // The box's count of kills by its memory limit; null when the box has no such file (cgroup v1), in cat's words, so it
+  // is not read again before each command; undefined when it could not be read.
+  async #oomKillCount(): Promise<number | null | undefined> {
     const got = await this.run(["exec", this.id, "cat", EVENTS]).catch(() => undefined);
-    const count = got && got !== "missing" && got.code === 0 ? /^oom_kill (\d+)$/m.exec(got.out)?.[1] : undefined;
+    if (!got || got === "missing") return undefined;
+    if (got.code !== 0) return got.err.includes("No such file or directory") ? null : undefined;
+    const count = /^oom_kill (\d+)$/m.exec(got.out)?.[1];
     return count === undefined ? undefined : Number(count);
   }
 }
