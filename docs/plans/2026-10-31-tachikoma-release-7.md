@@ -776,6 +776,11 @@ the plan's review.
     - on Windows, a user outside the `docker-users` group gets Docker's `Access is denied`, which
       reads as not running (choice 78's not-allowed line is for Linux);
     - the box helper's answers have no size cap (choice 95);
+    - a process in the box swapping a link between the helper's check and its open can make it
+      reach outside `/work`, only where the box's user can already go;
+    - a project image's `NODE_OPTIONS` that prints to stdout corrupts the helper's answers;
+    - in the box, `list` leaves out links that lead nowhere or outside, which the host shows;
+    - a read of a FIFO in the project waits, in the box as on the host;
     - choices 88 and 92.
 ---
 
@@ -1365,6 +1370,9 @@ tests in the files of each.
   `ctx.workspace` / `ui.workspace` instead of `node:fs`, `resolveIn` or `gitBranch` directly.
   With the sandbox off, `LocalWorkspace` keeps today's behaviour exactly.
 - **`resolveIn` stays,** as `LocalWorkspace.resolve`, and for instruction files at launch.
+- **The cost of a box call.** Each Workspace call in the box is one `docker exec` and a node
+  start, sending about 60 KB. Measure it before the `@` menu lists a folder through it on every
+  keystroke, and tell the user the figure.
 - **`Executor.readFile`/`writeFile`.** Once the file tools use the Workspace, these are either
   still used (then `DockerExecutor`'s go through `BoxWorkspace`) or dropped from the interface,
   whichever leaves no dead code. `DockerExecutor`'s throw `not yet` until then (Task 13's report).
@@ -1449,7 +1457,10 @@ Commit: `feat: live link: all of .git, git's included files and the hooks folder
   10. the session.
 - **Where the model works.** The executor is `DockerExecutor` and the workspace is the box's
   (`BoxWorkspace`). They share one "stopped working" state: once either finds Docker failing,
-  shell and file tools are both off, as Task 12 says.
+  shell and file tools are both off, as Task 12 says. Ask the user first (Task 13's quality
+  review): today any answer from the helper that is not JSON counts as `could not reach the
+  box`, so a helper killed by the memory limit during a big read would turn the tools off;
+  `DockerExecutor` asks `docker inspect` whether the box still runs before blaming Docker.
   The system prompt names `/work` (choice 19).
 - **The launch line, in grey:** `Sandbox: live link on <folder>, network <off|on>, limits <memory>,
   <cpus> CPUs, <pids> processes.`, then a grey line for each limit Docker cannot apply (choice 83).
