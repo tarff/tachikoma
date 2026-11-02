@@ -662,7 +662,7 @@ the plan's review.
     is more than 1. **Source:** three boxes from `tachikoma-sandbox:5879e9863c31` (network off,
     each removed, no other box running) read `/proc/meminfo` on 2026-11-02. Docker's own system
     used `MemTotal − MemAvailable` = 964,404, 968,520 and 972,532 kB while idle (about
-    0.93 GiB), rounded up to 1 GiB. The 1 CPU is the user's choice. When `MemTotal` is 1 GiB or
+    0.93 GiB), rounded up to 1 GiB. The 1 CPU is the user's choice. When the default memory is used and `MemTotal` is 1 GiB or
     less, the launch stops: `The sandbox needs more than 1 GiB of Docker's memory, and Docker has
     <memory>. Give Docker more memory, or launch with --sandbox off.` Examples: this PC keeps
     4 GB and 4 CPUs; a 2 GiB, 2-CPU Docker gets 1 GiB and 1 CPU; a 128 GB, 64-CPU Docker
@@ -700,6 +700,23 @@ the plan's review.
 81. **The real-Docker tests have no time limit** (the user's choice, after Task 12 was built, as
     choice 70 for Docker's check). They took 3 to 9.5 s here; a hung Docker shows as a run that
     does not finish.
+82. **The scaled CPUs are rounded down to 9 decimal places** (the user's choice, Task 12's spec
+    review). Docker refuses `--cpus` with more (`--cpus 10.666666666666666`: `value is too
+    precise`; `10.666666666` runs; read on this PC 2026-11-02), so without it the box could not
+    start on a Docker with 28, 32, 64 or 128 CPUs. A 64-CPU Docker gets 10.666666666 CPUs.
+83. **A limit Docker cannot apply is said, and the launch goes on** (the user's choice, Task
+    12's spec review). Some Linux setups (rootless Docker without cgroup delegation, older
+    kernels) start the box but drop a limit (`Limitation discarded`). The same `docker info`
+    call reads `MemoryLimit`, `CpuCfsQuota` and `PidsLimit`; for each that is false the launch
+    shows, in grey: `Docker cannot limit the box's <memory|CPUs|processes> on this machine, so
+    the box runs without that limit.` That limit's flag is still passed, and its test skips
+    with the same reason.
+84. **A box on a Docker just over 1 GiB gets what choice 76 leaves** (the user's choice, Task
+    12's spec review), even a few MiB. Its commands then fail with the out-of-memory line, which
+    names `"sandboxLimits"`.
+85. **`"sandboxLimits"` memory is `"<n>g"` or `"<n>m"`** (the user's choice, Task 12's spec
+    review), whole numbers, read as Docker reads them (1g = 1,073,741,824 bytes). Messages
+    answer in the user's own unit.
 ---
 
 ## Task 1: The sandbox image and the measurement (controller and user)
@@ -1358,13 +1375,14 @@ Commit: `feat: live link: all of .git, git's included files and the hooks folder
   4. git's settings;
   5. the mounts;
   6. instructions read on the host;
-  7. the box started;
-  8. the `node` check (choice 17);
-  9. the session.
+  7. leftover boxes removed (Task 12's `sweepBoxes`: this machine's boxes whose process is gone);
+  8. the box started;
+  9. the `node` check (choice 17);
+  10. the session.
 - **Where the model works.** The executor is `DockerExecutor` and the workspace is the box's.
   The system prompt names `/work` (choice 19).
 - **The launch line, in grey:** `Sandbox: live link on <folder>, network <off|on>, limits <memory>,
-  <cpus> CPUs, <pids> processes.`
+  <cpus> CPUs, <pids> processes.`, then a grey line for each limit Docker cannot apply (choice 83).
 - **The network** follows `--network` (choice 18's `--network none` or `bridge`).
 - **With the network off,** a failed command's result gets choice 21's line.
 
