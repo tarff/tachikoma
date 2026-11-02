@@ -111,10 +111,13 @@ export const keyRouting = (ui: UI, fns: Fns) => {
       else if (!got && !key.ctrl && !key.meta && ch) to?.({ text: ch }); // typed text read together, or a paste (usePaste, App.tsx)
     } else if (kind === "question") {
       // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent. A plain question's
-      // answer is logged as yes or no, a permission's as allowed or declined (Task 18's code review).
-      const [yes, no] = ui.question!.plain ? ["yes", "no"] : ["allowed", "declined"];
+      // answer is logged as yes or no (Task 18's code review), a permission's as what the user did (release 7 plan,
+      // choice 66).
+      const [yes, no, cancelled] = ui.question!.plain
+        ? ["yes", "no", "no (cancelled)"]
+        : ["You allowed this.", "You declined this.", "You cancelled this."];
       if (action === "app:interrupt") {
-        ui.question!.answer(false, `${no} (cancelled)`);
+        ui.question!.answer(false, cancelled);
         if (ui.question!.owner) ui.question!.owner.stop();
         else {
           ui.abort.current?.abort();

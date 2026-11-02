@@ -15,9 +15,10 @@ import { privateDir } from "../../src/auth/private.js";
 import type { Given } from "../../src/clilib.js";
 import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { system32 } from "../../src/exec/env.js";
+import type { Executor } from "../../src/exec/executor.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
-import type { Provider } from "../../src/core/types.js";
+import type { Provider, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { delegateTool } from "../../src/tools/delegate.js";
@@ -129,11 +130,13 @@ async function mount(
     pictures?: Pictures; // the session's pictures, whose reads the test ends
     readPicture?: AppProps["readPicture"]; // Alt+V's read; one that never answers when not given, null for no reader
     judge?: Provider; // auto mode's judge, given to the gate as cli.tsx gives it (release 7 plan, Task 10)
+    executor?: Executor; // what the tools run through; a real one in a temp folder when not given
   } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
+  if (opts.executor) ctx.executor = opts.executor;
   let ask: Ask = async () => false;
   const lead = opts.lead ?? new FakeProvider("a", turns);
   const judge = judgeOf(opts.judge, () => session, "", bus); // as cli.tsx gives it: unset, the lead leading judges
@@ -288,7 +291,7 @@ describe("App", () => {
     const target = path.join(ctx.root, "a.txt");
     await until(app, `Allow write ${target}? [y/n]`);
     app.stdin.write("\u0003");
-    await until(app, `write ${target}: declined (cancelled)`);
+    await until(app, `write ${target}: You cancelled this.`);
     await gone(app, "Esc to stop");
     expect(app.lastFrame()).not.toContain("[y/n]");
     expect(app.lastFrame()).not.toContain("written");
@@ -315,7 +318,7 @@ describe("App", () => {
     app.stdin.write("y");
     app.stdin.write("n");
     await until(app, "written");
-    expect(app.lastFrame()).toContain(`write ${target}: allowed`);
+    expect(app.lastFrame()).toContain(`write ${target}: You allowed this.`);
     expect(app.lastFrame()).not.toContain("declined");
   });
 
@@ -793,7 +796,12 @@ describe("App", () => {
       for (const raw of ["\u202e", "\u001b[8m"]) expect(frame).not.toContain(raw);
       await press(app, "n");
       expect(await asking).toMatch(/^The user declined: run: git push --force/);
-      expect(app.lastFrame()).not.toContain("Danger:");
+      // The red lines go with the question, and its answer's line keeps the dangers, red (release 7 plan, choice 66).
+      const after = app.lastFrame()!;
+      expect(after).not.toContain("Allow run:");
+      expect(after).toContain("\u001b[31mrun: git push --force origin a\\u202eb\\u001b[8m; git reset --hard HEAD~3: You declined this.");
+      expect(stripVTControlCharacters(after).split("Danger:")).toHaveLength(3);
+      for (const raw of ["‮", "\u001b[8m"]) expect(after).not.toContain(raw);
     });
   });
 
@@ -828,6 +836,7 @@ describe("App", () => {
       await until(app, "carried on");
       expect(existsSync(path.join(folder, "d.txt"))).toBe(true);
       expect(existsSync(path.join(folder, "e.txt"))).toBe(true);
+      expect(app.lastFrame()).toContain(`write ${path.join(folder, "d.txt")}: You allowed this.`); // after its preview (choice 66)
       expect(judge.seen).toHaveLength(4);
     });
   });
@@ -1053,7 +1062,7 @@ describe("App's keys for stopping and exiting", () => {
     await until(app, `Allow write ${target}? [y/n] · Esc to decline`);
     await press(app, "\u001b");
     await until(app, "carried on");
-    expect(app.lastFrame()).toContain(`write ${target}: declined`);
+    expect(app.lastFrame()).toContain(`write ${target}: You declined this.`);
     expect(existsSync(target)).toBe(false);
   });
 
@@ -1626,7 +1635,7 @@ describe("App's questions", () => {
     await until(app, "Allow t3 (read␍the tests) to read /c? [y/n]");
     await press(app, "\u001b");
     expect(await Promise.all(answers)).toEqual([true, false, false]);
-    expect(app.lastFrame()).toContain("t2 (find the login code) to read /b: declined");
+    expect(app.lastFrame()).toContain("t2 (find the login code) to read /b: You declined this.");
   });
 
   it("on Ctrl-C at a subagent's question, stops that subagent, not the lead's turn", async () => {
@@ -1651,7 +1660,7 @@ describe("App's questions", () => {
     t2.owner.stop();
     await until(app, "Allow t3 (y) to read /c?");
     expect(await Promise.all(answers.slice(0, 2))).toEqual([false, false]);
-    expect(app.lastFrame()).toContain("t2 (x) to read /b: cancelled");
+    expect(app.lastFrame()).toContain("t2 (x) to read /b: This was cancelled.");
   });
 
   it("on Ctrl-C at the lead's question, stops the turn and takes away its questions only", async () => {
@@ -1665,6 +1674,208 @@ describe("App's questions", () => {
     await press(app, "y");
     expect(await answer).toBe(true);
     expect(t3.stopped).toBe(false);
+  });
+});
+
+// A shell that runs nothing: it keeps each command it is given, as text, and says it succeeded, so a dangerous-looking
+// command's answer can be shown without anything running it (release 7 plan, choice 66).
+function noShell() {
+  const ran: string[] = [];
+  const executor: Executor = {
+    exec: async (command) => {
+      ran.push(command);
+      return { code: 0, signal: null, stdout: "", stderr: "" };
+    },
+    readFile: async () => {
+      throw new Error("not read in this test");
+    },
+    writeFile: async () => {
+      throw new Error("not written in this test");
+    },
+  };
+  return { ran, executor };
+}
+
+// Release 7 plan, choice 66: an answered question is one line under its tool line, "You allowed this." or "You declined
+// this." with each danger after it, red when it has one; a declined call's own result row is left out, as that line says
+// it, while the model is told its full message. A line not under its tool line names what it answers.
+describe("App's answers", () => {
+  // The frame's rows without colour, in full screen without the scroll bar's column (shown, below).
+  const rows = (app: ReturnType<typeof render>, full: boolean) =>
+    stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
+  // The rows from the one that starts with `tool` on.
+  const from = (app: ReturnType<typeof render>, full: boolean, tool: string) => {
+    const r = rows(app, full);
+    const at = r.findIndex((x) => x.startsWith(tool));
+    expect(at).toBeGreaterThanOrEqual(0);
+    return r.slice(at);
+  };
+  // The user's own example, from the auto-mode terminal check after Part 2, where the folder deleted was the project's,
+  // so the check finds it whole: here the test's own project folder, which nothing runs against.
+  it.each([true, false])("says a declined dangerous command once, its danger kept, red, under its tool line (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const { ran, executor } = noShell();
+      const turns: Turn[] = [];
+      const lead = new FakeProvider("a", turns);
+      const { app, ctx } = await mount([], { lead, mode: "auto", full, executor });
+      const line = `Set-Location ${path.dirname(ctx.root)}; Remove-Item -LiteralPath ${ctx.root} -Recurse -Force; Test-Path ${ctx.root}`;
+      turns.push(callTool("c1", "shell", { command: line }), reply("left it"));
+      await type(app, "delete the folder");
+      await until(app, "Allow run:");
+      await press(app, "n");
+      await until(app, "left it");
+      const r = from(app, full, "● shell Set-Location");
+      const answer = r.slice(1, r.findIndex((x) => x.startsWith("left it")));
+      expect(answer[0]).toMatch(/^ {2}⎿ You declined this\. Danger: deleting whole folders: Remove-Item/);
+      // One line, wrapped: nothing else between the tool line and the reply, and no result row of its own.
+      const red = `Danger: deleting whole folders: Remove-Item -LiteralPath ${ctx.root} -Recurse -Force`;
+      expect(answer.join("").replace(/\s+/g, "")).toBe(`⎿ You declined this. ${red}`.replace(/\s+/g, ""));
+      expect(app.lastFrame()).toContain("\u001b[31m  ⎿ You declined this.");
+      expect(app.lastFrame()).not.toContain("The user declined");
+      expect(app.lastFrame()).not.toContain("run: Set-Location");
+      // The model is told as before.
+      expect(lead.seen[1]!.at(-1)!.parts[0]).toMatchObject({ type: "tool_result", output: `The user declined: run: ${line}`, isError: true });
+      expect(ran).toEqual([]);
+    });
+  });
+
+  it.each([true, false])("says an allowed command without a danger in grey under its tool line, its result after (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const { ran, executor } = noShell();
+      const { app } = await mount([callTool("c1", "shell", { command: "git status" }), reply("looked")], { full, executor });
+      await type(app, "look");
+      await until(app, "Allow run: git status?");
+      await press(app, "y");
+      await until(app, "looked");
+      expect(from(app, full, "● shell git status").slice(0, 3)).toEqual(["● shell git status", "  ⎿ You allowed this.", "  ⎿ ok"]);
+      expect(app.lastFrame()).toContain("\u001b[90m  ⎿ You allowed this.");
+      expect(app.lastFrame()).not.toContain("run: git status");
+      expect(ran).toEqual(["git status"]);
+    });
+  });
+
+  it("says an allowed command's danger, red, under its tool line, its result after", async () => {
+    await inColour(async () => {
+      const { ran, executor } = noShell();
+      const { app } = await mount([callTool("c1", "shell", { command: "git push --force" }), reply("pushed")], { executor });
+      await type(app, "push");
+      await until(app, "Allow run: git push --force?");
+      await press(app, "y");
+      await until(app, "pushed");
+      expect(from(app, false, "● shell git push --force").slice(0, 3)).toEqual([
+        "● shell git push --force",
+        "  ⎿ You allowed this. Danger: rewriting or deleting git history: git push --force",
+        "  ⎿ ok",
+      ]);
+      expect(app.lastFrame()).toContain("\u001b[31m  ⎿ You allowed this. Danger:");
+      expect(ran).toEqual(["git push --force"]);
+    });
+  });
+
+  it.each([true, false])("says a question cancelled with Ctrl-C under its tool line, without its result row (full screen: %s)", async (full) => {
+    const { ran, executor } = noShell();
+    const lead = new FakeProvider("a", [callTool("c1", "shell", { command: "git status" }), reply("never sent")]);
+    const { app, session } = await mount([], { lead, full, executor });
+    await type(app, "look");
+    await until(app, "Allow run: git status?");
+    await press(app, "\u0003");
+    await gone(app, "Esc to stop");
+    expect(from(app, full, "● shell git status").slice(0, 2)).toEqual(["● shell git status", "  ⎿ You cancelled this."]);
+    expect(app.lastFrame()).not.toContain("The user declined");
+    expect(session.messages.at(-1)!.parts[0]).toMatchObject({ output: "The user declined: run: git status" });
+    expect(ran).toEqual([]);
+  });
+
+  it("names a subagent's question in its answer, as the subagent's tool line is not in the conversation", async () => {
+    await inColour(async () => {
+      const { app, ask } = await mount([]);
+      const t2 = asker("t2 (tidy up)");
+      const red = "Danger: rewriting or deleting git history: git push --force";
+      const answer = ask("run: git push --force", undefined, t2.owner, undefined, [red]);
+      await until(app, "Allow t2 (tidy up) to run: git push --force?");
+      await press(app, "n");
+      expect(await answer).toBe(false);
+      const said = `t2 (tidy up) to run: git push --force: You declined this. ${red}`;
+      expect(from(app, false, "t2 (tidy up) to run:").slice(0, 2).join(" ").replace(/\s+/g, " ")).toBe(said); // wrapped at a space
+      expect(app.lastFrame()).toContain("\u001b[31mt2 (tidy up) to run: git push --force: You declined this.");
+    });
+  });
+
+  it.each([true, false])("names a write in its answer, as its preview comes between, and leaves out its result row (full screen: %s)", async (full) => {
+    const lead = new FakeProvider("a", [callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("carried on")]);
+    const { app, ctx } = await mount([], { lead, full });
+    await type(app, "make a file");
+    const target = path.join(ctx.root, "a.txt");
+    await until(app, `Allow write ${target}?`);
+    await press(app, "n");
+    await until(app, "carried on");
+    const r = from(app, full, "● write_file a.txt");
+    expect(r.slice(0, 4)).toEqual(["● write_file a.txt", `┌ write ${target} (1 line)`, "x", `write ${target}: You declined this.`]);
+    expect(app.lastFrame()).not.toContain("The user declined");
+    expect(lead.seen[1]!.at(-1)!.parts[0]).toMatchObject({ output: `The user declined: write ${target}` });
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("names each of a reply's calls in its answer when another's line comes between", async () => {
+    const { ran, executor } = noShell();
+    const parts = [...callTool("c1", "shell", { command: "git status" }).parts, ...callTool("c2", "shell", { command: "git log" }).parts];
+    const { app } = await mount([{ parts, usage }, reply("done")], { executor });
+    await type(app, "look");
+    await until(app, "Allow run: git status?");
+    await press(app, "y");
+    await until(app, "Allow run: git log?");
+    await press(app, "n");
+    await until(app, "done");
+    expect(from(app, false, "● shell git status").slice(0, 5)).toEqual([
+      "● shell git status",
+      "● shell git log",
+      "run: git status: You allowed this.",
+      "run: git log: You declined this.",
+      "  ⎿ ok",
+    ]);
+    expect(ran).toEqual(["git status"]);
+  });
+
+  it("names the lead's question in its answer when another's answer came first, as it waited in the line", async () => {
+    const { executor } = noShell();
+    const lead = new Held();
+    const { app, ask } = await mount([], { lead, executor });
+    await type(app, "look");
+    await until(app, "> look");
+    const t2 = asker("t2 (x)");
+    const first = ask("read /made/up/b.txt", undefined, t2.owner);
+    await until(app, "Allow t2 (x) to read /made/up/b.txt?");
+    lead.answer(callTool("c1", "shell", { command: "git status" })); // its question waits behind t2's
+    await until(app, "● shell git status");
+    await press(app, "y");
+    expect(await first).toBe(true);
+    await until(app, "Allow run: git status?");
+    await press(app, "n");
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("done");
+    await until(app, "done");
+    expect(from(app, false, "● shell git status").slice(0, 3)).toEqual([
+      "● shell git status",
+      "t2 (x) to read /made/up/b.txt: You allowed this.",
+      "run: git status: You declined this.",
+    ]);
+  });
+
+  it("keeps the result row of a refusal nobody was asked about: the judge's, and a mode's", async () => {
+    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const judge = new FakeProvider("judge", [reply('{"allow": false, "reason": "Not this one."}')]);
+    const judged = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("carried on")], { mode: "auto", judge });
+    await type(judged.app, "write it");
+    await until(judged.app, "carried on");
+    expect(judged.app.lastFrame()).toContain("  ⎿ The judge refused: Not this one.");
+    expect(judged.app.lastFrame()).not.toContain("You declined");
+    const { ran, executor } = noShell();
+    const never = await mount([callTool("c1", "shell", { command: "git push --force" }), reply("carried on")], { mode: "never", executor });
+    await type(never.app, "push");
+    await until(never.app, "carried on");
+    expect(never.app.lastFrame()).toContain("  ⎿ Not allowed: this command matches the dangerous-command check");
+    expect(never.app.lastFrame()).not.toContain("You declined");
+    expect(ran).toEqual([]);
   });
 });
 
@@ -3149,7 +3360,7 @@ describe("App's questions in full screen", () => {
     await press(app, "y");
     expect(await second).toBe(true);
     await gone(app, "[y/n]");
-    expect(shown(app).slice(16, 20)).toEqual(["b 4.", "a reply", "t2 (a) to write a.txt: allowed", "t3 (b) to write b.txt: allowed"]);
+    expect(shown(app).slice(16, 20)).toEqual(["b 4.", "a reply", "t2 (a) to write a.txt: You allowed this.", "t3 (b) to write b.txt: You allowed this."]);
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -3194,8 +3405,8 @@ describe("App's questions in full screen", () => {
     expect(app.lastFrame()).not.toContain("line 4.");
     await press(app, "y");
     expect(await answer).toBe(true);
-    await until(app, "write a.txt: allowed");
-    expect(shown(app)[19]).toBe("write a.txt: allowed");
+    await until(app, "write a.txt: You allowed this.");
+    expect(shown(app)[19]).toBe("write a.txt: You allowed this.");
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -3224,9 +3435,9 @@ describe("App's questions in full screen", () => {
   };
 
   it.each([
-    { key: "y", ok: true, how: "allowed" },
-    { key: "n", ok: false, how: "declined" },
-    { key: "\u001b", ok: false, how: "declined" },
+    { key: "y", ok: true, how: "You allowed this." },
+    { key: "n", ok: false, how: "You declined this." },
+    { key: "\u001b", ok: false, how: "You declined this." },
   ])("puts all of a question too long to fit in the conversation, and answers it with $key", async ({ key, ok, how }) => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
     const long = command(300); // 3,005 characters
@@ -3285,7 +3496,7 @@ describe("App's questions in full screen", () => {
     await press(app, PG_DOWN, PG_DOWN); // past the heading's rows, to its preview's lines
     expect(shown(app)).toEqual(expect.arrayContaining(detail(5, "b").split("\n")));
     await press(app, CTRL_END);
-    expect(shown(app).slice(19, 21)).toEqual(["c 29.", "t2 (a) to run: ls: allowed"]); // the newest lines: no copy of the path
+    expect(shown(app).slice(19, 21)).toEqual(["c 29.", "t2 (a) to run: ls: You allowed this."]); // the newest lines: no copy of the path
     await press(app, "y");
     expect(await second).toBe(true);
     await until(app, "Allow t4 (c) to write c.txt? [y/n]");
@@ -3315,13 +3526,13 @@ describe("App's questions in full screen", () => {
     expect(await answer).toBe(true);
     await tick();
     expect(shown(app)[0]).toBe(top);
-    expect(app.lastFrame()).not.toContain("run: ls: allowed");
+    expect(app.lastFrame()).not.toContain("run: ls: You allowed this.");
   });
 
   // Whether the view was following is kept from the question's first draw, not from when a resize moves it into the
   // conversation.
   it.each([
-    { name: "following", before: false, after: "run (shown above): allowed" },
+    { name: "following", before: false, after: "run (shown above): You allowed this." },
     { name: "scrolled up", before: true, after: "↓ 1 new line · Ctrl+End" },
   ])("after a question moved into the conversation by a resize, follows again only if it was $name when it came", async ({ before, after }) => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
@@ -3593,7 +3804,7 @@ describe("App's detail view in full screen", () => {
     expect(shown(app).slice(14, 21)).toEqual(["┌ write a.txt (5 lines)", "line 0.", "line 1.", "line 2.", "line 3.", "line 4.", ""]);
     await press(app, "n");
     expect(await answer).toBe(false);
-    await until(app, "write a.txt: declined");
+    await until(app, "write a.txt: You declined this.");
   });
 
   it("selects and copies in the view, saying so in the key row's place until a key, and clears the selection when it closes", async () => {
@@ -5046,7 +5257,7 @@ describe("App's keys from the table of actions", () => {
     await until(app, "Allow write a.txt? [y/n] · Esc to decline");
     await press(app, ESC_ESC);
     expect(await answer).toBe(false);
-    await until(app, "write a.txt: declined");
+    await until(app, "write a.txt: You declined this.");
   });
 
   it("warns at the first Ctrl-D in the detail view and in Ctrl+R's search", async () => {

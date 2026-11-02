@@ -183,7 +183,10 @@ export function App(props: AppProps) {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
         // When its owner stops (Esc or Ctrl-C for the lead's turn, /tasks stop, a failure), the
         // question goes from the line, on screen or not, answered as cancelled.
-        const cancel = () => q.answer(false, "cancelled");
+        const cancel = () => q.answer(false, plain ? "cancelled" : "This was cancelled.");
+        // The lead's own question comes from its call running now, the last to start: delegate's calls, which ask only
+        // through their subagents, start before the rest (session.ts; release 7 plan, choice 66).
+        const running = owner || plain ? undefined : ui.calls.current.at(-1);
         const q: Question = {
           text: owner ? `${visible(owner.name)} to ${text}` : text,
           // A subagent's name is its id, then its description in brackets (tasks.ts); a summary starts with its action:
@@ -194,6 +197,7 @@ export function App(props: AppProps) {
           ...(plain ? { plain } : {}),
           warnings: warnings ?? [],
           ...(note !== undefined ? { note } : {}), // auto mode's pause, a row of the question's own (release 7 plan, Task 10)
+          ...(running && !running.outcome ? { call: running.id } : {}),
           answer: (ok, how) => {
             if (!open) return;
             open = false;
@@ -208,7 +212,18 @@ export function App(props: AppProps) {
             // list, a chord typed in the list to the list's keys (the code re-checks).
             if (typedAt) latest.current.dropChord();
             if (q.detail && q.following) ui.view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
-            latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
+            // A permission's answer is one line (release 7 plan, choice 66): under its call's tool line while that is still
+            // the conversation's last line, and otherwise naming what it answers, as a subagent's does, a write's after its
+            // preview and one that waited in the line. Each danger follows it, the whole line red then. A declined call's
+            // result row is left out, as this line says it; the model is still told its full message. A plain question
+            // keeps its own record.
+            if (q.plain) latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
+            else {
+              const said = [how, ...q.warnings].join(" ");
+              const under = q.call !== undefined && ui.toolLine.current === q.call;
+              if (!ok && q.call !== undefined) ui.answered.current.add(q.call);
+              latest.current.say({ text: under ? `  ⎿ ${said}` : `${q.short ?? q.text}: ${said}`, color: q.warnings.length ? "red" : "gray" });
+            }
             resolve(ok);
             ui.rerender((n) => n + 1);
             latest.current.next(); // an answer may have waited for this question to close
@@ -228,7 +243,14 @@ export function App(props: AppProps) {
         void latest.current.comeBack();
       });
     });
-    const onMessage = (m: Message) => latest.current.say(...describe(m));
+    // A message ending in a tool call leaves that call's tool line the last said, for its question's answer to go under
+    // (release 7 plan, choice 66). An answered call's id is let go with its result, as a provider may use an id again.
+    const onMessage = (m: Message) => {
+      latest.current.say(...describe(m, ui.answered.current));
+      for (const p of m.parts) if (p.type === "tool_result") ui.answered.current.delete(p.callId);
+      const last = m.parts.at(-1);
+      if (last?.type === "tool_call") ui.toolLine.current = last.id;
+    };
     const onError = (e: ErrorEvent) => {
       if (e.kind === "tool") ui.rerender((n) => n + 1);
       else if (e.kind === "fallback") latest.current.say({ text: `↪ ${e.message}`, color: "magenta" });

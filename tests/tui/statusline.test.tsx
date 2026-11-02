@@ -266,6 +266,14 @@ describe("describe", () => {
     expect(shown("shell", { command: 5 })).toBe('● shell {"command":5}'); // nothing it can summarise
   });
 
+  // Release 7 plan, choice 66: a declined question's answer line, under the tool line, stands for its call's result row.
+  it("leaves out the result rows of the calls given as answered, and only theirs", () => {
+    const result = (callId: string) => ({ type: "tool_result", callId, output: `The user declined: run: ${callId}`, isError: true }) as const;
+    expect(describeMessage({ role: "user", parts: [result("c1"), result("c2")] }, new Set(["c1"]))).toEqual([
+      { text: "  ⎿ The user declined: run: c2", color: "red", oneLine: true },
+    ]);
+  });
+
   it("does not show text a background task added for the lead", () => {
     expect(describeMessage({ role: "user", parts: [{ type: "text", text: "go" }, { type: "text", text: "t3 finished: x", from: "tasks" }] })).toEqual([{ text: "> go", color: "cyan" }]);
   });
