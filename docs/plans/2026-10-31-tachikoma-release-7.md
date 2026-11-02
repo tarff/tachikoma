@@ -820,6 +820,25 @@ the plan's review.
     box's memory-kill count rose, the memory limit, worded as the executor's out-of-memory line
     is; the tools stay on. Only when the box or Docker is gone does the shared stopped state
     switch the shell and file tools off.
+107. **Task 16's lines** (the user's approval, Task 16):
+    - choice 106's: `The file tool stopped in the box before it answered: <node's stderr, or
+      "exit code N">.`, and over the memory limit `The file tool stopped in the box before it
+      answered: it used more than the box's memory limit of <memory>. "sandboxLimits" in
+      settings.json changes it.`;
+    - `Live link is refused: git's settings could not be read (<error>). Launch with --sandbox
+      copy instead.`;
+    - choice 13 names `the home folder` when the project is exactly the home folder, checked
+      first, then `Tachikoma's data folder` and `Tachikoma's settings folder`;
+    - with `-p`, the launch line and choice 83's lines go to stderr;
+    - when `.git` is a file whose git folder is outside the project (design, "Live link"), a
+      grey launch line: `Git does not work in the box here: .git points to a git folder outside
+      the project. Commit on this computer.`;
+    - choice 96's second line is retired: a file tool finding Docker gone shows Task 12's
+      stopped line, as the shell does.
+108. **Live link's letter-case check runs right after choice 13's refusal** (Task 16's spec
+    review), as choice 104 says ("before anything else"), so Windows and macOS users are never
+    asked to build the image only to be refused. The launch order's step 5 keeps the rest of
+    the mounts.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
