@@ -813,6 +813,13 @@ the plan's review.
     mounted onto itself, writable, once each; a mount point cannot be renamed or removed, and the
     folder's other files stay editable. A test: `mv settings s2` fails in the box and the host
     file is unchanged.
+106. **A garbled helper answer checks the box first** (the user's choice, Task 16; the question
+    from Task 13's quality review). When the box helper's answer is not JSON, `BoxWorkspace`
+    asks `docker inspect` whether the box still runs, as `DockerExecutor` does. If it runs, only
+    that call fails, with a line naming the helper stopping before it answered and, when the
+    box's memory-kill count rose, the memory limit, worded as the executor's out-of-memory line
+    is; the tools stay on. Only when the box or Docker is gone does the shared stopped state
+    switch the shell and file tools off.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -1557,10 +1564,8 @@ tests run on Windows with the case check injected.
   10. the session.
 - **Where the model works.** The executor is `DockerExecutor` and the workspace is the box's
   (`BoxWorkspace`). They share one "stopped working" state: once either finds Docker failing,
-  shell and file tools are both off, as Task 12 says. Ask the user first (Task 13's quality
-  review): today any answer from the helper that is not JSON counts as `could not reach the
-  box`, so a helper killed by the memory limit during a big read would turn the tools off;
-  `DockerExecutor` asks `docker inspect` whether the box still runs before blaming Docker.
+  shell and file tools are both off, as Task 12 says. A helper answer that is not JSON checks
+  the box first (choice 106).
   The system prompt names `/work` (choice 19).
 - **Live link refuses on folders that ignore letter case (choice 104),** so on Windows and macOS
   its session test runs only with the check injected, and the user's terminal check of the
