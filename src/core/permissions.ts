@@ -123,7 +123,8 @@ export class PermissionGate {
   #version = 0;
   // Where the check reads a command (release 7 plan, Task 8): the project's root (cli.tsx gives its own, the folder it
   // started in), the home folder, and the shell the executor really runs, PowerShell on Windows and /bin/sh elsewhere
-  // (exec/local.ts, shellFor; split.ts, shellOf). Whether a file exists is the check's own default, on the host.
+  // (exec/local.ts, shellFor; split.ts, shellOf); in live link the box's /work, /tmp and bash (GateOptions, Task 16).
+  // Whether a file exists is the check's own default, on the host.
   readonly #context: Context;
 
   constructor(

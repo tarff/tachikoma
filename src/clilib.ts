@@ -273,12 +273,16 @@ export async function sandboxReady(root: string, io: SandboxIo): Promise<Ready |
   const image = await prepareImage(root, io);
   if ("exit" in image) return image;
   let git: GitSettings | undefined;
+  let failed: unknown;
   try {
     git = await (io.gitSettings ?? gitSettings)(root);
   } catch (err) {
-    // Without them the mounts cannot be worked out, so live link is refused, as for Task 5's problems.
-    return refuse(`Live link is refused: git's settings could not be read (${errorText(err)}). Launch with --sandbox copy instead.`);
+    failed = err;
   }
+  // A Ctrl-C meanwhile stops the launch as one during the image's steps does (image.ts), whether or not it ended git.
+  if (io.signal.aborted) return { exit: 128 + constants.signals.SIGINT };
+  // Without them the mounts cannot be worked out, so live link is refused, as for Task 5's problems.
+  if (failed) return refuse(`Live link is refused: git's settings could not be read (${errorText(failed)}). Launch with --sandbox copy instead.`);
   const live = liveMounts(root, git, { ignoresCase: () => false });
   if ("refused" in live) return refuse(live.refused);
   return { tag: image.tag, git, ...live, gitOutside: gitFolderOutside(root) };
@@ -329,14 +333,21 @@ export async function sandboxStart(
   // docs). A failed check removes the box before the launch ends.
   const asked = `node -e 'process.stdout.write(process.version + " " + typeof require("node:path").matchesGlob)'`;
   const check = await box.exec(asked, BOX_ROOT).catch((err: Error) => err);
-  const problem =
-    check instanceof Error
-      ? errorText(check)
-      : check.code !== 0
-        ? "The sandbox's image has no node, which Tachikoma's file tools need in the box."
-        : check.stdout.split(" ")[1] !== "function"
-          ? `The sandbox's image has node ${check.stdout.split(" ")[0]}, but Tachikoma's file tools need Node 22.5 or newer in the box.`
-          : undefined;
+  // The check runs as every command does, through bash and util-linux's setsid (executor.ts, inGroup), so only bash's own
+  // words say node is missing; an image without bash, or with busybox's setsid, fails before node is looked for.
+  const problem = (() => {
+    if (check instanceof Error) return errorText(check);
+    if (check.code === 127 && /\bnode: (command )?not found/.test(check.stderr)) {
+      return "The sandbox's image has no node, which Tachikoma's file tools need in the box.";
+    }
+    if (check.code !== 0) {
+      const words = check.stderr.trim() || `exit code ${check.code}`;
+      return `The sandbox's image could not run Tachikoma's check in the box (${words}). The box needs bash, util-linux's setsid and Node 22.5 or newer.`;
+    }
+    const [version, matchesGlob] = check.stdout.split(" ");
+    if (matchesGlob !== "function") return `The sandbox's image has node ${version}, but Tachikoma's file tools need Node 22.5 or newer in the box.`;
+    return undefined;
+  })();
   if (problem) {
     await box.stop();
     return refuse(problem);

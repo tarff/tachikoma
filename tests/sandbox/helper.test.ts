@@ -302,6 +302,8 @@ describe("a helper answer that is not JSON (choice 106)", () => {
       { image: "tachikoma-sandbox:0123456789ab", folder: os.tmpdir(), network: "off", limits: LIMITS, mounts: [], session: "s1", user: "1000:1000" },
       fake.run,
     );
+    // Removed through the stand-in at once, so a failed assertion cannot leave the exit handler a real `docker rm -f`.
+    onTestFinished(() => box.stop());
     const ws = new BoxWorkspace(box.id, fake.run, "/work", box.state);
     fake.box.running = false;
     await expect(ws.readText("/work/a.txt")).rejects.toThrow(stopped("the box stopped"));
@@ -309,7 +311,6 @@ describe("a helper answer that is not JSON (choice 106)", () => {
     await expect(box.exec("echo hi", "/work")).rejects.toThrow(stopped("the box stopped"));
     await expect(ws.readText("/work/a.txt")).rejects.toThrow(stopped("the box stopped"));
     expect(fake.calls.length).toBe(made);
-    await box.stop();
   });
 
   // Task 14's review: the branch is read after every turn, so under the stopped state it is not read, and stays as shown.

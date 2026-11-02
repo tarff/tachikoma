@@ -10,6 +10,10 @@ import { boxProtection, type Network, sandboxReady, sandboxStart } from "../src/
 import { onPath } from "../src/exec/env.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
+import { removeTree } from "./helpers.js";
+
+// Docker's answer for an image with no bash (node:22-alpine, as the quality review gave it).
+const NO_BASH = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "bash": executable file not found in $PATH: unknown';
 
 // Runs the real command through tsx, in a fresh project folder with a pretend home folder, and with
 // the walk for instruction files starting at a fresh folder of its own, so no case reads the user's
@@ -498,7 +502,10 @@ describe("live link's launch, with a stand-in Docker", () => {
   afterEach(() => vi.unstubAllEnvs());
   type Answer = { code: number; out: string; err: string } | "missing";
   const ok = (out = ""): Answer => ({ code: 0, out, err: "" });
-  const STEPS = ["home", "case", "missing", "stopped", "image", "git-throws", "git-missing", "room", "limits", "start", "node-missing", "node-old"] as const;
+  const STEPS = [
+    "home", "case", "missing", "stopped", "image", "git-throws", "git-missing",
+    "room", "limits", "start", "no-bash", "node-missing", "node-old",
+  ] as const;
   type Step = (typeof STEPS)[number];
   // This PC's `docker info`, the parts read (executor.test.ts), with the limit flags given.
   const INFO = (more: Record<string, unknown> = {}) =>
@@ -517,6 +524,9 @@ describe("live link's launch, with a stand-in Docker", () => {
       if (verb === "exec" && args.includes("/sys/fs/cgroup/memory.events")) return ok("oom_kill 0\n");
       if (verb === "exec" && args[1] === "-w") {
         if (args.at(-1)!.startsWith("curl")) return { code: 6, out: "", err: "" };
+        // An image without bash (node:22-alpine): Docker's own words for the wrapper's bash.
+        if (broken.has("no-bash")) return { code: 127, out: "", err: `${NO_BASH}
+` };
         if (broken.has("node-missing")) return { code: 127, out: "", err: "bash: line 1: node: command not found\n" };
         return ok(broken.has("node-old") ? "v20.1.0 undefined" : "v24.22.2 function");
       }
@@ -530,6 +540,7 @@ describe("live link's launch, with a stand-in Docker", () => {
   // `made` adds to the project and the folder around it before the launch.
   async function launch(broken: Set<Step>, info?: string, network: Network = "off", made?: (top: string, root: string) => void) {
     const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-box-"));
+    onTestFinished(() => removeTree(top));
     const root = path.join(top, "project");
     mkdirSync(root);
     made?.(top, root);
@@ -568,9 +579,37 @@ describe("live link's launch, with a stand-in Docker", () => {
       room: "The sandbox could not read Docker's CPUs and memory: error during connect: busy",
       limits: 'settings.json: "sandboxLimits": "cpus" is 999, but Docker has 24 CPUs. Lower it, or give Docker more memory or CPUs.',
       start: "The sandbox could not start: docker: Error response from daemon: invalid mount config.",
+      "no-bash": `The sandbox's image could not run Tachikoma's check in the box (${NO_BASH}). The box needs bash, util-linux's setsid and Node 22.5 or newer.`,
       "node-missing": "The sandbox's image has no node, which Tachikoma's file tools need in the box.",
       "node-old": "The sandbox's image has node v20.1.0, but Tachikoma's file tools need Node 22.5 or newer in the box.",
     })[step];
+
+  // A Ctrl-C during the git step stops the launch as one during the image's does (image.ts, 128 + SIGINT's number), with
+  // nothing more said, whether git was ended by it or had already answered.
+  it("stops on a Ctrl-C during git's settings, saying nothing more", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "tachi-cli-box-"));
+    onTestFinished(() => removeTree(root));
+    vi.stubEnv("TACHI_DATA_DIR", path.join(tmpdir(), "tachi-cli-no-data"));
+    for (const answered of [false, true]) {
+      const stop = new AbortController();
+      const lines: string[] = [];
+      const fake = stand(new Set());
+      const got = await sandboxReady(root, {
+        out: (line) => lines.push(line),
+        err: (line) => lines.push(line),
+        signal: stop.signal,
+        run: fake.run,
+        ignoresCase: () => false,
+        gitSettings: async () => {
+          stop.abort();
+          if (!answered) throw new Error("git was ended by SIGINT");
+          return { files: [], hooksPaths: [], gitDirs: [], problems: [], lineEndings: {} };
+        },
+      });
+      expect(got).toEqual({ exit: 130 });
+      expect(lines).toEqual([]);
+    }
+  });
 
   // Each step's refusal with that step and every later one broken, so each is said before all that follow.
   it("refuses in the launch order, each step before every later one, with exit 1", async () => {
@@ -582,7 +621,7 @@ describe("live link's launch, with a stand-in Docker", () => {
   });
 
   it("removes the box when the node check stops the launch", async () => {
-    for (const step of ["node-missing", "node-old"] as const) {
+    for (const step of ["no-bash", "node-missing", "node-old"] as const) {
       const r = await launch(new Set([step]));
       expect(r.calls.at(-1), step).toEqual(["rm", "-f", "b0x"]);
     }

@@ -833,6 +833,10 @@ the plan's review.
     - when `.git` is a file whose git folder is outside the project (design, "Live link"), a
       grey launch line: `Git does not work in the box here: .git points to a git folder outside
       the project. Commit on this computer.`;
+    - when the node check cannot run at all (no bash, or busybox's setsid without `-w`), not
+      `has no node` but `The sandbox's image could not run Tachikoma's check in the box (<its
+      words, or "exit code N">). The box needs bash, util-linux's setsid and Node 22.5 or
+      newer.`; `has no node` only when bash says node is not found (Task 16's quality review);
     - choice 96's second line is retired: a file tool finding Docker gone shows Task 12's
       stopped line, as the shell does.
 108. **Live link's letter-case check runs right after choice 13's refusal** (Task 16's spec
@@ -887,6 +891,12 @@ the plan's review.
       can change whether the start counts as outside, as before Task 14;
     - with slow Docker, two branch reads can land out of order, showing a stale branch;
     - the `node:fs` guard test covers only `src/tools/`, `src/tui/menus.ts` and `src/tui/app/`;
+    - from Task 16's quality review: a Ctrl-C during `docker image inspect` (imageFor) on macOS
+      and Linux ends with a stack trace; `sweepBoxes`, outside `sandboxStart`'s error handling,
+      gives a stack trace if docker cannot be started then; `protectedPart` resolves `/work` on
+      the host, so a host `/work` link or a `C:\work` junction stops protected names matching in
+      the box; a helper that exits 0 with an answer that is not JSON reads `exit code 0`; the
+      shared memory-kill count can blame the wrong one of two calls running at once;
     - choices 88 and 92.
 ---
 
