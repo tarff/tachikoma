@@ -107,7 +107,8 @@ describe("gitSettings", () => {
     const { GIT_CONFIG_GLOBAL: _, ...env } = w.env;
     const homes = { HOMEDRIVE: share.slice(0, 2), HOMEPATH: share.slice(2), USERPROFILE: w.home };
     const got = await gitSettings(w.root, { ...env, ...homes });
-    expect(got!.files).toEqual([w.system, gitconfig, xdg]);
+    // In the order git reads them (git-config, FILES).
+    expect(got!.files).toEqual([w.system, xdg, gitconfig]);
   });
 
   it("keeps the files and problems in the order they were met, though files are read side by side", async () => {
@@ -401,6 +402,27 @@ describe("gitSettings", () => {
     w.write("project/extra.cfg", "[core]\n\tautocrlf = Input\n\teol = native\n");
     const got = await gitSettings(w.root, w.env);
     expect(got!.lineEndings).toEqual({ "core.autocrlf": "Input", "core.eol": "lf" });
+  });
+
+  it("takes the user's line endings from ~/.gitconfig over the XDG file, as git reads them in that order", async () => {
+    const w = world();
+    w.write("home/.config/git/config", "[core]\n\tautocrlf = input\n");
+    w.write("home/.gitconfig", "[core]\n\tautocrlf = true\n");
+    // As in the test of ~/.gitconfig above: every home variable names a folder the test made, so git reads the test's
+    // home and no other.
+    const share = w.at("share");
+    mkdirSync(share);
+    const { GIT_CONFIG_GLOBAL: _, ...env } = w.env;
+    const homes = { HOMEDRIVE: share.slice(0, 2), HOMEPATH: share.slice(2), USERPROFILE: w.home };
+    const got = await gitSettings(w.root, { ...env, ...homes });
+    expect(got!.lineEndings).toEqual({ "core.autocrlf": "true" });
+    // Git's own answer, through the guarded execFile, as every git run here is.
+    const given = await new Promise<string>((resolve, reject) =>
+      execFile(onPath("git", env)!, ["config", "--get", "core.autocrlf"], { cwd: w.dir, env: { ...env, ...homes }, encoding: "utf8" }, (err, out) =>
+        err ? reject(err) : resolve(out),
+      ),
+    );
+    expect(given).toBe("true\n");
   });
 
   it("takes a line-ending setting from an includeIf whatever its condition, and an empty value as git gives it", async () => {

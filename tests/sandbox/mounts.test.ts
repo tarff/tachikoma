@@ -81,6 +81,22 @@ describe("liveMounts", () => {
     expect(readdirSync(w.at(".tachikoma"))).toEqual([]);
   });
 
+  it("mounts the folder around a hooks folder named _, husky 9's, as its hooks run the scripts there (choice 102)", () => {
+    const w = world([".husky/_/h", ".husky/pre-commit", "_/pre-commit"]);
+    w.git.hooksPaths.push(w.at(".husky/_"));
+    expect(liveMounts(w.root, w.git)).toEqual({ mounts: [readOnly(w.at(".husky"), "/work/.husky"), HIDDEN], env: SAFE });
+    // A `_` at the project's top: the folder around it is the project, which stays writable.
+    w.git.hooksPaths.splice(0, 1, w.at("_"));
+    expect(liveMounts(w.root, w.git)).toEqual({ mounts: [readOnly(w.at("_"), "/work/_"), HIDDEN], env: SAFE });
+  });
+
+  it("mounts a top-level config only when it is a file, leaving a config folder writable (choice 103)", () => {
+    const folder = world(["config/app.yml"]);
+    expect(liveMounts(folder.root, folder.git)).toEqual({ mounts: [HIDDEN], env: SAFE });
+    const file = world(["config"]);
+    expect(liveMounts(file.root, file.git)).toEqual({ mounts: [readOnly(file.at("config"), "/work/config"), HIDDEN], env: SAFE });
+  });
+
   it("mounts a .git file read-only, as it is", () => {
     const w = world([".git"]);
     expect(liveMounts(w.root, w.git)).toEqual({ mounts: [readOnly(w.at(".git"), "/work/.git"), HIDDEN], env: SAFE });

@@ -130,14 +130,16 @@ describe("live link in real Docker", { timeout: 0 }, () => {
     const config = w.at(".git/config");
     const extra = w.write(w.at("settings/extra.cfg"), "[user]\n\tname = Sample User\n");
     const cond = w.write(w.at("settings/cond.cfg"), "");
+    // Husky 9's shape (choice 102): git runs `.husky/_/<hook>`, which runs the script `.husky/<hook>`.
     const hook = w.write(w.at(".husky/pre-commit"), "echo sample\n");
+    w.write(w.at(".husky/_/h"), "");
     const more = '[include]\n\tpath = ../settings/extra.cfg\n[includeIf "onbranch:sample-no-such-branch"]\n\tpath = ../settings/cond.cfg\n';
-    w.write(config, `${readFileSync(config, "utf8")}${more}[core]\n\thooksPath = .husky\n`);
+    w.write(config, `${readFileSync(config, "utf8")}${more}[core]\n\thooksPath = .husky/_\n`);
     const before = listing(w.root);
     const box = await liveBox(ctx, w);
     // Tachikoma made .tachikoma (choice 31); Docker made nothing.
     expect(listing(w.root)).toEqual([...before, ".tachikoma"].sort());
-    for (const file of ["settings/extra.cfg", "settings/cond.cfg", ".husky/pre-commit", ".git/config"]) {
+    for (const file of ["settings/extra.cfg", "settings/cond.cfg", ".husky/pre-commit", ".husky/_/h", ".git/config"]) {
       const got = await box.exec(`echo changed >> ${file}`, "/work");
       expect(got.code, file).not.toBe(0);
       expect(got.stderr, file).toMatch(READ_ONLY);
@@ -160,6 +162,14 @@ describe("live link in real Docker", { timeout: 0 }, () => {
     expect(listing(w.root)).toEqual([...before, ".tachikoma"].sort());
     for (const file of ["HEAD", "config"]) expect((await box.exec(`echo changed >> ${file}`, "/work")).stderr, file).toMatch(READ_ONLY);
     expect(readFileSync(w.at("HEAD"), "utf8")).toBe("ref: refs/heads/main\n");
+  });
+
+  it("leaves a top-level config folder writable (choice 103)", async (ctx) => {
+    const w = world();
+    w.write(w.at("config/app.yml"), "");
+    const box = await liveBox(ctx, w);
+    expect((await box.exec("echo changed >> config/app.yml && touch config/new.yml", "/work")).code).toBe(0);
+    expect(readFileSync(w.at("config/app.yml"), "utf8")).toBe("changed\n");
   });
 
   it("makes a .git file read-only", async (ctx) => {

@@ -1,11 +1,11 @@
 // Live link's mounts (release 7 design, "Live link"; plan, Task 15 and choices 11, 31, 57, 59, 62 and 100). The box writes
 // straight into the project, so what could make the user's next git command on the host run a program is mounted
 // read-only over it: all of `.git` (a folder or a file), the git folders a `.git` file names inside the project, every
-// settings file git's settings include from inside it, every hooks folder they name inside it, and Claude Code's top-level
-// block (`HEAD`, `objects`, `refs`, `config`). `.tachikoma`, Tachikoma's own folder, is hidden under an empty tmpfs.
+// settings file git's settings include from inside it, every hooks folder they name inside it (and husky's scripts), and
+// Claude Code's top-level block (`HEAD`, `objects`, `refs`, a `config` file). `.tachikoma`, Tachikoma's own folder, is hidden under an empty tmpfs.
 // Nothing is mounted over a path that does not exist, as Docker would make it in the real folder (Docker's bind-mount
 // docs). Each mount follows the project's own (DockerExecutor.start).
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { type GitSettings, within } from "../safety/gitconfig.js";
 
@@ -13,8 +13,9 @@ import { type GitSettings, within } from "../safety/gitconfig.js";
 export type Mount = { host: string; box: string; readOnly: true } | { box: string; hidden: true };
 
 const BOX = "/work";
-// Claude Code's top-level block, mounted only where it exists (design, "What stays open").
-const TOP = ["HEAD", "objects", "refs", "config"];
+// Claude Code's top-level block, mounted only where it exists (design, "What stays open"); `config` only as a file, as a
+// `config/` folder is the project's own, which the box must be able to edit (choice 103).
+const TOP = ["HEAD", "objects", "refs"];
 
 // The mounts, and the variables the box's git needs, or why live link is refused. Only once nothing refuses is a missing
 // `.tachikoma` made, an empty folder of Tachikoma's own (choice 31): left unmounted, the box could make one.
@@ -36,8 +37,13 @@ export function liveMounts(root: string, git: GitSettings | undefined): { mounts
   }
   // Each place once, by its real path, so the two spellings of one place give one mount (choice 62). One that does not
   // exist is left out: an included file that does not exist is already a problem, and the top-level block may be missing.
+  // Husky 9's hooks folder is `<dir>/_`, whose hooks run the scripts in `<dir>` (choice 102), so that folder is read-only
+  // too, unless it is the project itself.
+  const husky = git.hooksPaths.filter((p) => path.basename(p) === "_").map((p) => path.dirname(p)).filter((p) => realPath(p) !== real);
+  const config = path.join(root, "config");
+  const top = [...TOP.map((name) => path.join(root, name)), ...(statSync(config, { throwIfNoEntry: false })?.isFile() ? [config] : [])];
   const found = new Map<string, string>();
-  for (const p of [path.join(root, ".git"), ...git.gitDirs, ...git.files, ...git.hooksPaths, ...TOP.map((name) => path.join(root, name))]) {
+  for (const p of [path.join(root, ".git"), ...git.gitDirs, ...git.files, ...git.hooksPaths, ...husky, ...top]) {
     const host = realPath(p);
     if (host === undefined || !within(real, host)) continue;
     const box = path.posix.join(BOX, ...path.relative(real, host).split(path.sep));

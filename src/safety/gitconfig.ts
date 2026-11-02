@@ -83,9 +83,16 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
     queue.push([file, included, key]);
     return key;
   };
-  for (const file of [...system, ...scopeNames(env, "system"), ...global, ...scopeNames(env, "global")]) tops.push(add(file, false));
+  // Each once, in the order git reads them. `git config --global` names only ~/.gitconfig when both it and the XDG file
+  // exist, though git reads the XDG file first (measured with git 2.41.0, 2026-11-02, on files the check made), so
+  // scopeNames, in git's order, comes before it.
+  const start = (file: string) => {
+    const key = add(file, false);
+    if (!tops.includes(key)) tops.push(key);
+  };
+  for (const file of [...system, ...scopeNames(env, "system"), ...scopeNames(env, "global"), ...global]) start(file);
   // A missing one is left out: live link would mount over it, and Docker makes a missing mount's path (choice 57).
-  for (const file of repo?.files ?? []) if (existsSync(file)) tops.push(add(file, false));
+  for (const file of repo?.files ?? []) if (existsSync(file)) start(file);
   // The files waiting are read side by side, then their results taken in the order the files were met, so `files`,
   // `hooksPaths` and `problems` keep that order; the includes they name are the next round.
   while (queue.length > 0) {
@@ -151,14 +158,14 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
 }
 
 // The user's or the system's file, where it exists, as git would find it, since git names no file that lists nothing.
-// The user's is GIT_CONFIG_GLOBAL, or else ~/.gitconfig and the XDG one ($XDG_CONFIG_HOME/git/config, or
-// ~/.config/git/config); the system's is GIT_CONFIG_SYSTEM, whose default git alone knows, as it depends on where git is
+// The user's is GIT_CONFIG_GLOBAL, or else the XDG one ($XDG_CONFIG_HOME/git/config, or ~/.config/git/config) and
+// ~/.gitconfig, in the order git reads them; the system's is GIT_CONFIG_SYSTEM, whose default git alone knows, as it depends on where git is
 // installed (git-config, FILES). A relative one is relative to the folder git runs in.
 function scopeNames(env: NodeJS.ProcessEnv, scope: "system" | "global"): string[] {
   const home = homeFolder(env);
   const given = scope === "system" ? env.GIT_CONFIG_SYSTEM : env.GIT_CONFIG_GLOBAL;
   const xdg = env.XDG_CONFIG_HOME || path.join(home, ".config");
-  const names = given ? [given] : scope === "global" ? [path.join(home, ".gitconfig"), path.join(xdg, "git", "config")] : [];
+  const names = given ? [given] : scope === "global" ? [path.join(xdg, "git", "config"), path.join(home, ".gitconfig")] : [];
   return names.map((name) => path.resolve(os.tmpdir(), name)).filter((name) => existsSync(name));
 }
 
