@@ -47,6 +47,9 @@ const MEASURED = { memory: 33_518_923_776, cpus: 24 };
 // boxes on 2026-11-02 (MemTotal less MemAvailable, at most 972,532 kB) rounded up, and 1 CPU when it has more than one,
 // the user's choice.
 const FREE = { memory: UNIT.g, cpus: 1 };
+// Docker's least --memory (choice 86): on this PC, 2026-11-02, `docker run --memory 6291455b` gave "Minimum memory limit
+// allowed is 6MB", and 6291456b ran.
+const DOCKER_MIN_MEMORY = 6 * UNIT.m;
 
 export async function dockerRoom(run: DockerRun = docker): Promise<Room> {
   const got = await run(["info", "--format", "{{json .}}"]);
@@ -71,7 +74,8 @@ export async function dockerRoom(run: DockerRun = docker): Promise<Room> {
 
 // The limits in force: the user's values as given, the defaults for the rest. A value of the user's above what Docker has
 // stops the launch (choice 75), named as written, with Docker's figure in the user's own unit; it may take what a default
-// leaves free (choice 76). A default memory with no more than that free to take from stops it too.
+// leaves free (choice 76). A default memory under Docker's minimum, with no more than that free to take from or too little
+// beyond it, stops it too (choices 76 and 86); a user's value under the minimum is left to Docker's own error.
 export function boxLimits(set: SandboxLimits | undefined, room: Room): { limits: Limits } | { problem: string } {
   const above = (name: string, value: unknown, has: string) => ({
     problem:
@@ -82,15 +86,16 @@ export function boxLimits(set: SandboxLimits | undefined, room: Room): { limits:
   const memory = set?.memory && unit ? Number(set.memory.slice(0, -1)) * UNIT[unit] : undefined;
   if (memory !== undefined && memory > room.memory) return above("memory", set!.memory, `${memoryText(room.memory, unit)} of memory`);
   if (set?.cpus !== undefined && set.cpus > room.cpus) return above("cpus", set.cpus, `${room.cpus} CPUs`);
-  if (memory === undefined && room.memory <= FREE.memory) {
+  const share = (of: "memory" | "cpus") => Math.max(BASE[of], (room[of] * BASE[of]) / MEASURED[of]);
+  // Down to a whole MiB, so a MemTotal that drifts up by a few KB still gives this PC exactly 4 GiB (choice 80).
+  const scaled = Math.floor(Math.min(room.memory - FREE.memory, share("memory")) / UNIT.m) * UNIT.m;
+  if (memory === undefined && scaled < DOCKER_MIN_MEMORY) {
     const has = memoryText(room.memory);
     return { problem: `The sandbox needs more than 1 GiB of Docker's memory, and Docker has ${has}. Give Docker more memory, or launch with --sandbox off.` };
   }
-  const share = (of: "memory" | "cpus") => Math.max(BASE[of], (room[of] * BASE[of]) / MEASURED[of]);
   return {
     limits: {
-      // Down to a whole MiB, so a MemTotal that drifts up by a few KB still gives this PC exactly 4 GiB (choice 80).
-      memory: memory ?? Math.floor(Math.min(room.memory - FREE.memory, share("memory")) / UNIT.m) * UNIT.m,
+      memory: memory ?? scaled,
       // Down to 9 decimal places: Docker refuses more ("value is too precise", read 2026-11-02; choice 82).
       cpus: set?.cpus ?? Math.floor(Math.min(room.cpus > 1 ? room.cpus - FREE.cpus : room.cpus, share("cpus")) * 1e9) / 1e9,
       pids: set?.pids ?? BASE.pids,

@@ -99,6 +99,14 @@ describe("the box's limits (choices 75, 76, 80, 82 and 83)", () => {
     expect(boxLimits(undefined, await room(info(2, 900 * MB)))).toEqual({ problem: stop("900m") });
   });
 
+  it("stops when what is left is under Docker's 6 MiB minimum, and gives exactly 6 MiB at it (choice 86)", async () => {
+    const stop = (has: string) =>
+      `The sandbox needs more than 1 GiB of Docker's memory, and Docker has ${has}. Give Docker more memory, or launch with --sandbox off.`;
+    expect(boxLimits(undefined, await room(info(2, 1 * GB + 1)))).toEqual({ problem: stop("1024m") });
+    expect(boxLimits(undefined, await room(info(2, 1 * GB + 5 * MB)))).toEqual({ problem: stop("1029m") });
+    expect(boxLimits(undefined, await room(info(2, 1 * GB + 6 * MB)))).toEqual({ limits: { memory: 6 * MB, cpus: 1, pids: 1024 } });
+  });
+
   it("scales up on a 128 GB, 64-CPU Docker: memory down to a whole MiB, CPUs down to 9 decimal places", async () => {
     const got = boxLimits(undefined, await room(info(64, 128 * GB)));
     expect(got).toEqual({ limits: { memory: Math.floor((128 * GB * 4 * GB) / 33518923776 / MB) * MB, cpus: 10.666666666, pids: 1024 } });
