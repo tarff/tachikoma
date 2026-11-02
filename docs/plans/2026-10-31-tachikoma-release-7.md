@@ -784,6 +784,16 @@ the plan's review.
     in Docker (Fedora, RHEL and the like), the box is denied the linked folder. Docker's `:z` flag
     fixes it but relabels the user's folder on the host for good, so Tachikoma does not add it;
     the README names the symptom (permission denied inside the box) and the flag (Task 23).
+102. **Husky's hook scripts are read-only in live link** (the user's choice, Task 15's spec
+    review). Husky 9 sets `core.hooksPath` to `<dir>/_`, whose hooks run the scripts in `<dir>`
+    (husky's `index.js`, read 2026-11-02), so the design's "a `.husky` folder is covered" did not
+    hold. When a hooks folder inside the project is named `_`, the folder around it is read-only
+    too. lefthook's and pre-commit's files stay writable in the box, a known limit like a
+    `package.json` script (design, "What stays open").
+103. **A top-level `config` is read-only only when it is a file** (the user's choice, Task 15's
+    spec review). Rails and many Node projects have a `config/` folder the agent must edit. In a
+    normal project the box can already make the other parts of a repository (design, "What stays
+    open"), so a folder's mount protected nothing more.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -803,6 +813,15 @@ the plan's review.
     - a read of a FIFO in the project waits, in the box as on the host;
     - in copy mode, the `@` menu lists the host folder, not the copy (choice 98);
     - SELinux on in Docker denies the box the linked folder (choice 101);
+    - lefthook's and pre-commit's files are writable from the box in live link (choice 102);
+    - from Task 15: a hooks folder or top-level entry that is a link inside the project;
+      `safe.directory` covering only `/work`, not nested repositories; a `.tachikoma` that is a
+      file, or a git or hooks folder that is the project or `.tachikoma` (both fail at start);
+      `core.eol=native` is LF in the box; the line endings read the system file even under
+      `GIT_CONFIG_NOSYSTEM`; a `config.worktree` used without checking
+      `extensions.worktreeConfig`; an included file outside `.git` replaced on the host shows
+      its old version in the box; a missing optional include outside the project refuses live
+      link (Task 5's rule);
     - find and search resolve their start twice (once for the question, once in the
       Workspace): one extra Docker call per search in the box, and a link swapped in between
       can change whether the start counts as outside, as before Task 14;
