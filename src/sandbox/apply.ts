@@ -107,7 +107,7 @@ export async function applyChange(c: Change, ctx: ApplyContext, merge = false, o
     if (ran.code > 127) return failed;
     // A merge with conflicts always rewrites the first file, with its markers. One left as it was is a git that failed
     // with a code that reads as a count: macOS's /usr/bin/git without Apple's developer tools prints an error and exits
-    // non-zero (Task 19's quality review), and its file has no markers to show.
+    // non-zero (Task 19's spec review), and its file has no markers to show.
     if ((await hashFile(yours)) === before) return failed;
     // Written only when nothing is there yet, so whatever the user keeps under that name, a link included, is never
     // written over or through. The markers have the real file's permission bits, as they hold its text.
@@ -119,8 +119,10 @@ export async function applyChange(c: Change, ctx: ApplyContext, merge = false, o
     if (!(await copyTo(yours, place.file, windows ? undefined : now.mode).catch(taken))) return conflict(markersTaken(markers));
     return { path: c.path, result: "conflict", mergedTo: markers };
   } finally {
-    for (const file of [yours, snap, box]) await unlink(file).catch(missing);
-    await rmdir(folder);
+    // A failure to remove these, such as another program briefly holding one on Windows, must not hide the outcome; a
+    // folder left behind is in the copy's folder, and goes when the copy does.
+    for (const file of [yours, snap, box]) await unlink(file).catch(() => undefined);
+    await rmdir(folder).catch(() => undefined);
   }
 }
 
@@ -128,32 +130,39 @@ export async function applyChange(c: Change, ctx: ApplyContext, merge = false, o
 // hashes; the new content written to a temporary file in the same folder's real place; the real file checked once more;
 // the temporary file renamed into place; the done row logged. A delete is the same, with `after` empty and the file
 // deleted instead; an added file has nothing to back up, and `before` empty. If the backup or the pending row cannot be
-// written, nothing is replaced.
+// written, nothing is replaced. A change that stops short of the swap removes the backup it made itself, never one an
+// earlier apply made, so a merge of the file later is not refused over it.
 async function replace(job: Job, now: Now, source: { file: string; mode: number | undefined } | undefined): Promise<Outcome> {
   const { root, rel, log, opts } = job;
   const before = hashOf(now)!;
   await opts.step?.("checked");
+  let made: string | undefined;
   if (now.kind === "file") {
     const backedUp = await backUp(job, before, now.mode);
-    if (backedUp) return { path: rel, ...backedUp };
+    if ("why" in backedUp) return { path: rel, ...backedUp };
+    made = backedUp.made;
   }
+  const stopped = async (result: "refused" | "conflict", why: string): Promise<Outcome> => {
+    if (made) await unlink(made).catch(() => undefined);
+    return { path: rel, result, why };
+  };
   const after = source ? await hashFile(source.file) : "";
   await logRow(log, { path: rel, state: "pending", before, after });
   // An added file's folders are made now, each checked as it is.
   const at = await placeOf(root, rel, source !== undefined);
-  if ("why" in at) return { path: rel, result: "refused", why: at.why };
-  if (!at.file) return { path: rel, result: "conflict", why: CHANGED_SINCE };
+  if ("why" in at) return stopped("refused", at.why);
+  if (!at.file) return stopped("conflict", CHANGED_SINCE);
   let temp: string | undefined;
   try {
     if (source) {
-      // Named as writePrivate names its own (auth/private.ts).
+      // Named as writePrivate names its own (auth/private.ts). What is written must be what the log says.
       temp = path.join(path.dirname(at.file), `${path.basename(at.file)}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
-      await copyTo(source.file, temp, source.mode);
+      if ((await copyTo(source.file, temp, source.mode)) !== after) return await stopped("conflict", CHANGED_SINCE);
     }
     await opts.step?.("written");
     const again = await placeOf(root, rel, false);
-    if ("why" in again) return { path: rel, result: "refused", why: again.why };
-    if (again.blocked || hashOf(await stateOf(again.file)) !== before) return { path: rel, result: "conflict", why: CHANGED_SINCE };
+    if ("why" in again) return await stopped("refused", again.why);
+    if (again.blocked || hashOf(await stateOf(again.file)) !== before) return await stopped("conflict", CHANGED_SINCE);
     await opts.step?.("rename");
     if (temp) {
       await rename(temp, at.file);
@@ -171,18 +180,19 @@ async function replace(job: Job, now: Now, source: { file: string; mode: number 
 // Copies the real file to `.tachikoma/backups/<session>/<path>`, checked as any path written is. A backup already
 // there from an apply a crash stopped is kept when it holds this file as it is now; anything else there is refused. The
 // copy is hashed as it is made: if the file changed meanwhile, the copy is removed and the change is a conflict.
-async function backUp(job: Job, before: string, mode: number): Promise<{ result: "refused" | "conflict"; why: string } | undefined> {
+// `made`: the backup, when this call made it.
+async function backUp(job: Job, before: string, mode: number): Promise<{ result: "refused" | "conflict"; why: string } | { made?: string }> {
   const rel = `.tachikoma/backups/${job.session}/${job.rel}`;
   const at = await placeOf(job.root, rel, true, true);
   if ("why" in at) return { result: "refused", why: at.why };
   const real = path.join(job.root, ...job.rel.split("/"));
   const file = at.file!; // with `make`, every folder on the way is there
-  const made = await copyTo(real, file, windows ? undefined : mode).catch(taken);
-  if (made === undefined) {
+  const copied = await copyTo(real, file, windows ? undefined : mode).catch(taken);
+  if (copied === undefined) {
     const there = await lstat(file);
-    return there.isFile() && (await hashFile(file)) === before ? undefined : { result: "refused", why: backupTaken(rel) };
+    return there.isFile() && (await hashFile(file)) === before ? {} : { result: "refused", why: backupTaken(rel) };
   }
-  if (made === before) return undefined;
+  if (copied === before) return { made: file };
   await unlink(file);
   return { result: "conflict", why: CHANGED_SINCE };
 }
@@ -191,30 +201,39 @@ async function backUp(job: Job, before: string, mode: number): Promise<{ result:
 // without following it, and the path is refused if one is a link, or if the last folder's real place is outside the
 // project, or, for a change's own path (not `ours`, Tachikoma's backups), is in `.git` or `.tachikoma` under another
 // name (a short name such as GIT~1 on Windows). An existing file there must be a plain file with one name. With `make`,
-// missing folders are made, one at a time, each read again once made. `blocked`: a folder on the way is a file, so
-// nothing can be there; no `file`: a folder on the way is missing.
+// missing folders are made, one at a time, each read again once made. Where a folder is missing, the deepest one there
+// is checked first, so a missing folder is never made in the wrong place, nor reported as simply missing. `blocked`: a
+// folder on the way is a file, so nothing can be there; no `file`: a folder on the way is missing.
 async function placeOf(root: string, rel: string, make: boolean, ours = false): Promise<{ why: string } | { file?: string; blocked?: boolean }> {
   const parts = rel.split("/");
   if (parts.some((p) => p === "" || p === "." || p === ".." || p.includes(path.sep))) return { why: leadsOutside(rel) };
+  // The real place of a folder on the way, or why it is refused.
+  const placed = async (folder: string): Promise<{ why: string } | { real: string }> => {
+    const real = await realpath(folder);
+    const fromRoot = path.relative(root, real);
+    if (leaves(fromRoot)) return { why: leadsOutside(rel) };
+    if (!ours && fromRoot.split(path.sep).some(reserved)) return { why: NEVER_APPLIED };
+    return { real };
+  };
   let folder = root;
   for (let i = 0; i < parts.length - 1; i++) {
     const p = path.join(folder, parts[i]!);
     let st = await lstat(p).catch(missing);
-    if (!st && make) {
+    if (!st) {
+      const there = await placed(folder);
+      if ("why" in there) return there;
+      if (!make) return {};
       await mkdir(p).catch(taken);
       st = await lstat(p);
     }
-    if (!st) return {};
     const part = parts.slice(0, i + 1).join("/");
     if (st.isSymbolicLink()) return { why: throughLink(part) };
     if (!st.isDirectory()) return make ? { why: notAFolder(part) } : { blocked: true };
     folder = p;
   }
-  const real = await realpath(folder);
-  const fromRoot = path.relative(root, real);
-  if (leaves(fromRoot)) return { why: leadsOutside(rel) };
-  if (!ours && fromRoot.split(path.sep).some(reserved)) return { why: NEVER_APPLIED };
-  const file = path.join(real, parts.at(-1)!);
+  const there = await placed(folder);
+  if ("why" in there) return there;
+  const file = path.join(there.real, parts.at(-1)!);
   const st = await lstat(file).catch(missing);
   if (st?.isSymbolicLink()) return { why: throughLink(rel) };
   if (st?.isFile() && st.nlink > 1) return { why: hardLinked(rel) };

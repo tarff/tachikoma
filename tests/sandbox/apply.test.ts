@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -107,9 +108,24 @@ function world(tree: Record<string, string | Buffer>) {
 }
 type World = ReturnType<typeof world>;
 
-// A merge needs git on PATH; a test is skipped, with the reason, where there is none.
+// A merge needs a git that runs; a test is skipped, with the reason, where there is none. On macOS, /usr/bin/git is
+// there even without Apple's developer tools, and only fails when run, so git is run once (`git --version`), from the
+// test's own folder with its own home and settings files, and the answer kept for the other tests.
+let gitRuns: string | undefined;
 function needGit(t: TestContext, w: World) {
-  if (!onPath("git", w.env)) t.skip("no git on PATH");
+  if (gitRuns === undefined) {
+    const exe = onPath("git", w.env);
+    gitRuns = "";
+    if (!exe) gitRuns = "no git on PATH";
+    else {
+      try {
+        execFileSync(exe, ["--version"], { cwd: w.dir, env: w.env, stdio: "pipe", windowsHide: true });
+      } catch {
+        gitRuns = `git on PATH (${exe}) does not run`;
+      }
+    }
+  }
+  if (gitRuns) t.skip(gitRuns);
 }
 
 // Everything in a folder, at any depth, without following links, so a test can tell nothing was written there.
@@ -224,6 +240,22 @@ describe("applyChange", () => {
     expect(out).toEqual({ path: "edit.txt", result: "conflict", why: CHANGED_SINCE });
     expect(w.read("edit.txt")).toBe("typed meanwhile\n");
     expect(readdirSync(w.root).sort()).toEqual([".tachikoma", "edit.txt"]);
+    // The backup this apply made is removed, so a merge of the file later is not refused over it.
+    expect(existsSync(w.backup("edit.txt"))).toBe(false);
+  });
+
+  it("keeps a backup an earlier apply made when a later one gives a conflict at the last check", async () => {
+    const w = world({ "edit.txt": "old\n" });
+    w.box("edit.txt", "new\n");
+    const c = await w.change("edit.txt");
+    await expect(applyChange(c, w.ctx, false, { step: crashAt("rename") })).rejects.toThrow("crash");
+    const out = await applyChange(c, w.ctx, false, {
+      step: (at) => {
+        if (at === "written") w.user("edit.txt", "typed meanwhile\n");
+      },
+    });
+    expect(out).toEqual({ path: "edit.txt", result: "conflict", why: CHANGED_SINCE });
+    expect(readFileSync(w.backup("edit.txt"), "utf8")).toBe("old\n");
   });
 
   it("gives a conflict, keeping no backup, when the real file changes as it is backed up", async () => {
@@ -245,10 +277,14 @@ describe("applyChange", () => {
     mkdirSync(w.at(".git"));
     const short = shortName(w.root, ".git");
     if (!short) t.skip("no short (8.3) names here: only Windows makes them, and not on every volume");
-    const c: Change = { kind: "added", path: `${short}/config`, binary: false, execAfter: false, ignored: false };
-    w.box(c.path, "made-up\n");
-    expect(await applyChange(c, w.ctx)).toEqual({ path: c.path, result: "refused", why: NEVER_APPLIED });
+    // A file in it, and one under folders it does not have yet, which are never made there.
+    for (const rel of [`${short}/config`, `${short}/hooks/new/x`]) {
+      const c: Change = { kind: "added", path: rel, binary: false, execAfter: false, ignored: false };
+      w.box(c.path, "made-up\n");
+      expect(await applyChange(c, w.ctx)).toEqual({ path: c.path, result: "refused", why: NEVER_APPLIED });
+    }
     expect(listing(w.at(".git"))).toEqual([]);
+    expect(w.log()).toEqual([]);
   });
 
   it("refuses a .tachikoma path and a nested .git path, whatever their spelling reaches", async () => {
@@ -256,8 +292,8 @@ describe("applyChange", () => {
     const handed: Change[] = [
       { kind: "added", path: ".tachikoma/settings.json", binary: false, execAfter: false, ignored: false },
       { kind: "changed", path: "vendor/lib/.git/config", binary: false, execBefore: false, execAfter: false, ignored: false },
-      // Another spelling, which reaches `.git` on Windows and macOS (choice 104); refused on Linux too, where it is
-      // only a name.
+      // Another spelling, which reaches `.git` on Windows and macOS (choice 104), where it is refused. On Linux it is
+      // only a name, which `fold` keeps as it is, so it is left out there.
       ...(windows || process.platform === "darwin"
         ? [{ kind: "added" as const, path: "sub/.GIT/hooks/pre-commit", binary: false, execAfter: false, ignored: false }]
         : []),
@@ -399,6 +435,22 @@ describe("applyChange's merge", () => {
     ]);
     // The merge's own folder, in the copy's folder, is gone.
     expect(readdirSync(w.copies).sort()).toEqual(["applied.jsonl", "base", "manifest.json", "work"]);
+  });
+
+  it("stays applied when the merge's own folder cannot be removed after", async (t) => {
+    const w = world({ "x.txt": "one\ntwo\nthree\n" });
+    needGit(t, w);
+    w.box("x.txt", "ONE\ntwo\nthree\n");
+    w.user("x.txt", "one\ntwo\nTHREE\n");
+    // A file the merge did not make, put in its folder once the file is swapped in, so the folder cannot be removed,
+    // as when another program briefly holds a file there on Windows.
+    const step = (at: string) => {
+      if (at !== "done") return;
+      const folder = readdirSync(w.copies).find((name) => name.startsWith("merge-"))!;
+      writeFileSync(path.join(w.copies, folder, "held"), "");
+    };
+    expect(await applyChange(await w.change("x.txt"), w.ctx, true, { env: w.env, step })).toEqual({ path: "x.txt", result: "applied" });
+    expect(w.read("x.txt")).toBe("ONE\ntwo\nTHREE\n");
   });
 
   it("merges an added file the user also made, from an empty start", async (t) => {
