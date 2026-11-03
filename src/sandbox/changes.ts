@@ -25,7 +25,7 @@ const windows = process.platform === "win32";
 // Why every `.git` and `.tachikoma` in work/, at any depth and compared as the snapshot compares them, is left out: Task
 // 19's why for the same paths. The box's own repository, made in work/ at launch (choice 24), is one of them, and is
 // listed too.
-const NEVER_APPLIED = "Tachikoma's own and git's folders are never applied";
+export const NEVER_APPLIED = "Tachikoma's own and git's folders are never applied";
 
 type Kind = "file" | "folder" | "link";
 
