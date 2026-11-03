@@ -43,7 +43,8 @@ const unread = (why: string) => `The copy's changes could not be read: ${why}.`;
 const leftOut = (rel: string, why: string) => `Left out, never applied: ${rel} (${why})`;
 const ignoredCount = (n: number) => `${n} change${n === 1 ? "" : "s"} in paths git ignores: counted, never applied`;
 const APPLYING = "Applying...";
-const ANY_KEY = "Any key closes.";
+// The finished screen's keys (the user's choice): Up and Down scroll what came of each change, any other key closes.
+const closing = (scroll: string | undefined) => (scroll ? `${scroll} scroll · any other key closes` : "Any key closes.");
 const kept = (session: string) => `The copy is kept; tachi review ${session} opens it again.`;
 const REMOVED = "The copy was removed.";
 const DISCARDED = "The copy was discarded.";
@@ -410,11 +411,14 @@ export function Review({
                 [k("review:discard", "Review", "d"), "discard"],
               ),
             );
+  // The keys bound to review:previous and review:next, the arrows by name, as "Up/Down" with the default keys.
+  const arrow = (key: string | undefined) => key?.replace("↑", "Up").replace("↓", "Down");
+  const scrollKeys = [arrow(k("review:previous", "Review", "up")), arrow(k("review:next", "Review", "down"))].filter(Boolean).join("/") || undefined;
   const asking = s.items.find((i): i is Extract<Item, { change: Change }> => isChange(i) && i.asking === true);
   const footer = s.discard
     ? discardAsked([k("confirm:yes", "Confirmation", "y"), k("confirm:no", "Confirmation", "n")].filter(Boolean).join("/"))
     : s.stage === "done"
-      ? `${s.end!.lines.at(-1)} ${ANY_KEY}`
+      ? `${s.end!.lines.at(-1)} ${closing(scrollKeys)}`
       : asking
         ? conflictAsked(asking.change.path, said([[k("review:merge", "Review", "m"), "to merge"], [k("review:skip", "Review", "s"), "to skip"]]).join(", "))
         : s.stage === "unread" || s.stage === "reading"

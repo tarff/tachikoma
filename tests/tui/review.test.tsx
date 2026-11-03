@@ -160,6 +160,11 @@ async function press(app: ReturnType<typeof render>, ...keys: string[]) {
 const rowsOf = (app: ReturnType<typeof render>) => (app.lastFrame() ?? "").split("\n").map((r) => r.trimEnd());
 // The frame's text without its blanks, for a line wrapped across rows.
 const squash = (text: string) => text.replace(/\s+/g, "");
+// Wait until the screen says `text`, perhaps wrapped across rows.
+async function untilSaid(app: ReturnType<typeof render>, text: string) {
+  for (let i = 0; i < 100 && !squash(app.lastFrame() ?? "").includes(squash(text)); i++) await tick();
+  expect(squash(app.lastFrame() ?? "")).toContain(squash(text));
+}
 // The row that holds `text`.
 const rowWith = (app: ReturnType<typeof render>, text: string) => rowsOf(app).find((r) => r.includes(text)) ?? "";
 
@@ -343,7 +348,7 @@ describe("Review's apply", SLOW, () => {
     const { app, ended } = open(w, { step });
     await until(app, TOP);
     await press(app, DOWN, DOWN, DOWN, " ", "a");
-    await until(app, "Any key closes.");
+    await until(app, "Up/Down scroll · any other key closes");
     expect(rowsOf(app)[0]).toBe("2 applied, 1 skipped, 3 left in the copy");
     expect(rowWith(app, "apply.txt")).toMatch(/^changed +apply\.txt +applied$/);
     expect(rowWith(app, "bin.dat")).toMatch(/^changed +bin\.dat +conflict: a binary file; resolve it by hand$/);
@@ -351,7 +356,7 @@ describe("Review's apply", SLOW, () => {
     expect(rowWith(app, "skip.txt")).toMatch(/^changed +skip\.txt +skipped$/);
     expect(rowWith(app, "sub/x.txt")).toMatch(/^changed +sub\/x\.txt +not applied: sub is a link, and apply never writes through one$/);
     expect(rowWith(app, "zlast.txt")).toMatch(/^changed +zlast\.txt +applied$/);
-    expect(rowWith(app, "The copy is kept")).toBe("The copy is kept; tachi review s1 opens it again. Any key closes.");
+    expect(rowWith(app, "The copy is kept")).toBe("The copy is kept; tachi review s1 opens it again. Up/Down scroll · any other key closes");
     expect([w.read("apply.txt"), w.read("fail.txt"), w.read("skip.txt"), w.read("zlast.txt")]).toEqual(["from the box\n", "f\n", "s\n", "from the box\n"]);
     expect(readFileSync(path.join(w.outside, "kept.txt"), "utf8")).toBe("made-up outside text\n");
     expect(readdirSync(w.outside)).toEqual(["kept.txt"]);
@@ -398,12 +403,12 @@ describe("Review's apply", SLOW, () => {
     await press(app, "m");
     await until(app, "s.txt changed in your folder since the copy was made. m to merge, s to skip");
     await press(app, "s");
-    await until(app, "Any key closes.");
+    await until(app, "Up/Down scroll · any other key closes");
     expect(rowsOf(app)[0]).toBe("1 applied, 1 skipped, 1 merged with conflicts in c.txt.tachikoma-merge");
     expect(rowWith(app, "c.txt ")).toMatch(/merged with conflicts in c\.txt\.tachikoma-merge$/);
     expect(rowWith(app, "m.txt")).toMatch(/applied$/);
     expect(rowWith(app, "s.txt")).toMatch(/skipped$/);
-    expect(rowWith(app, "The copy was removed.")).toBe("The copy was removed. Any key closes.");
+    expect(rowWith(app, "The copy was removed.")).toBe("The copy was removed. Up/Down scroll · any other key closes");
     expect(w.read("m.txt")).toBe("ONE\ntwo\nTHREE\n");
     expect(w.read("s.txt")).toBe("s user\n");
     expect(w.read("c.txt")).toBe("the user's\n");
@@ -421,7 +426,7 @@ describe("Review's apply", SLOW, () => {
     await until(app, TOP);
     expect(rowsOf(app)[0]).toBe(`${TOP}2 files. ${KEYS}`);
     await press(app, "a");
-    await until(app, "Any key closes.");
+    await until(app, "Up/Down scroll · any other key closes");
     expect(rowsOf(app)[0]).toBe("2 applied, 0 skipped");
     expect(readdirSync(w.root).filter((n) => n !== ".tachikoma")).toEqual(["README.md"]);
     expect(w.read("README.md")).toBe("new\n");
@@ -440,11 +445,11 @@ describe("Review's apply", SLOW, () => {
     await press(app, "a");
     await until(app, "b.txt changed in your folder since the copy was made. m to merge, s to skip");
     await press(app, CTRL_C);
-    await until(app, "Any key closes.");
+    await until(app, "Up/Down scroll · any other key closes");
     expect(rowsOf(app)[0]).toBe("1 applied, 0 skipped, 2 left in the copy");
     expect(rowWith(app, "b.txt")).toMatch(/conflict: changed in your folder since the copy was made$/);
     expect(rowWith(app, "c.txt")).toMatch(/keep$/);
-    expect(rowWith(app, "The copy is kept")).toBe("The copy is kept; tachi review s1 opens it again. Any key closes.");
+    expect(rowWith(app, "The copy is kept")).toBe("The copy is kept; tachi review s1 opens it again. Up/Down scroll · any other key closes");
     expect([w.read("a.txt"), w.read("b.txt"), w.read("c.txt")]).toEqual(["a box\n", "b user\n", "c\n"]);
     expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
     await press(app, "x");
@@ -462,7 +467,7 @@ describe("Review's apply", SLOW, () => {
     const { app } = open(w);
     await until(app, TOP);
     await press(app, "a");
-    await until(app, "Any key closes.");
+    await until(app, "Up/Down scroll · any other key closes");
     expect(app.lastFrame()).not.toContain("to merge");
     expect(rowWith(app, "d.txt")).toMatch(/^deleted +d\.txt +conflict: deleted on one side, or no longer a file; resolve it by hand$/);
     expect(rowsOf(app)[0]).toBe("0 applied, 0 skipped, 1 left in the copy");
@@ -476,7 +481,7 @@ describe("Review's apply", SLOW, () => {
     const { app } = open(w, { step: (at) => void steps.push(at) });
     await until(app, TOP);
     app.stdin.write("aa");
-    await until(app, "Any key closes.");
+    await until(app, "Up/Down scroll · any other key closes");
     expect(rowsOf(app)[0]).toBe("1 applied, 0 skipped");
     expect(steps).toEqual(["checked", "written", "rename", "done"]);
   });
@@ -496,7 +501,7 @@ describe("Review's apply", SLOW, () => {
     expect(app.lastFrame()).not.toContain("Discard");
     expect(ended).toEqual([]);
     let_go();
-    await until(app, "Any key closes.");
+    await until(app, "Up/Down scroll · any other key closes");
     expect(rowsOf(app)[0]).toBe("2 applied, 0 skipped");
     // Three rows: the summary, one of the list, and the copy's line.
     expect(rowWith(app, "b.txt")).toMatch(/applied$/);
@@ -518,7 +523,7 @@ describe("Review's apply", SLOW, () => {
     });
     await until(app, TOP);
     await press(app, "a");
-    await until(app, "Any key closes.");
+    await untilSaid(app, "Up/Down scroll · any other key closes");
     await press(app, "x");
     expect(ended).toEqual([
       {
@@ -546,7 +551,7 @@ describe("Review's protected files", SLOW, () => {
     await press(app, DOWN, " ");
     expect(rowWith(app, ".npmrc")).toMatch(/keep \(protected\)$/);
     await press(app, "a");
-    await until(app, "Any key closes.");
+    await until(app, "Up/Down scroll · any other key closes");
     expect(rowsOf(app)[0]).toBe("2 applied, 2 skipped");
     expect([w.read(".npmrc"), w.read("plain.txt"), w.read("web/.husky/pre-commit"), w.read(".githooks/pre-push")]).toEqual([
       "from the box\n",
@@ -600,8 +605,8 @@ describe("Review's later and discard", SLOW, () => {
     await until(app, TOP);
     await press(app, "d", "y");
     const line = `The copy could not be removed (made-up removal failure); delete ${w.folder} by hand.`;
-    await until(app, "Any key closes.");
-    expect(squash(app.lastFrame()!)).toContain(squash(`${line} Any key closes.`));
+    await untilSaid(app, "Up/Down scroll · any other key closes");
+    expect(squash(app.lastFrame()!)).toContain(squash(`${line} Up/Down scroll · any other key closes`));
     await press(app, "q");
     expect(ended).toEqual([{ how: "discarded", outcomes: [], removed: false, lines: [line] }]);
   });
@@ -636,7 +641,7 @@ describe("Review's later and discard", SLOW, () => {
 
 describe("Review's keys", SLOW, () => {
   it("are read from the keys file's Review context, and the top line names them", async () => {
-    const read = readKeybindings(JSON.stringify({ bindings: [{ context: "Review", bindings: { x: "review:apply", a: null, j: "review:next" } }] }));
+    const read = readKeybindings(JSON.stringify({ bindings: [{ context: "Review", bindings: { x: "review:apply", a: null, j: "review:next", down: null } }] }));
     if (!("table" in read)) throw new Error(read.problem);
     expect(read.problems).toEqual([]);
     const w = world({ "a.txt": "a\n", "b.txt": "b\n" });
@@ -649,7 +654,7 @@ describe("Review's keys", SLOW, () => {
     expect(rowWith(app, "b.txt")).toMatch(/skip$/);
     expect(app.lastFrame()).not.toContain("applied");
     await press(app, "x");
-    await until(app, "Any key closes.");
+    await until(app, "Up/j scroll · any other key closes");
     expect(w.read("a.txt")).toBe("a2\n");
     expect(w.read("b.txt")).toBe("b\n");
   });
