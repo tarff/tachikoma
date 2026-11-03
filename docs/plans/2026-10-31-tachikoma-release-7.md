@@ -843,6 +843,19 @@ the plan's review.
     review), as choice 104 says ("before anything else"), so Windows and macOS users are never
     asked to build the image only to be refused. The launch order's step 5 keeps the rest of
     the mounts.
+109. **Changes inside git-ignored paths are counted, never applied** (the user's choice, Task 17).
+    Task 17's snapshot of this repo took 32.9 s (88.6 s on the first, cold run): 14,681 files and
+    174 MB, of which `node_modules` is 14,394 files and 169 MB. On Windows and macOS, where copy
+    mode is the only sandbox (choice 104), packages' native parts do not run in the Linux box, and
+    applying a reinstall made in the box would overwrite the host's packages with Linux ones. So
+    the copy stays whole (choice 24), but Task 18 marks every change whose path git's ignore
+    rules cover, using the `.gitignore` files of `base/` (the snapshot, so the box cannot widen
+    what is applied by editing a `.gitignore` in `work/`), the way search reads them. Task 20's
+    review shows those only as one count (its wording goes to the user at Task 20), and
+    Task 19 never applies them. A project without `.gitignore` files has none.
+110. **Task 17's lines** (the user's approval): why something was left out of the copy: `a link
+    that leads outside the project`, `a link that leads nowhere`, `not a file, folder or link`;
+    and `The copy was refused: the link <path> in it leads outside the copy.`
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
