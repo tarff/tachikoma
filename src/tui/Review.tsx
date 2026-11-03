@@ -47,6 +47,7 @@ const ANY_KEY = "Any key closes.";
 const kept = (session: string) => `The copy is kept; tachi review ${session} opens it again.`;
 const REMOVED = "The copy was removed.";
 const DISCARDED = "The copy was discarded.";
+const removing = (n: number) => `Removing the copy (${n} file${n === 1 ? "" : "s"})...`;
 const notRemoved = (why: string, folder: string) => `The copy could not be removed (${why}); delete ${folder} by hand.`;
 const LINKS_BY_HAND = "links are applied by hand"; // Task 19's why for a link (apply.ts)
 const TYPES_BY_HAND = "a path whose type changed is applied by hand";
@@ -68,13 +69,28 @@ const shown = (text: string) => screen({ text, oneLine: true }).text;
 // shown only), whether its path is protected, what came of it, and whether its conflict's question is being asked.
 type Item = { note: string } | { change: Change; keep: boolean | null; marked: boolean; done?: Done; asking?: boolean };
 const isChange = (i: Item): i is Extract<Item, { change: Change }> => "change" in i;
+// What a change's row says after its path: its choice before the apply, or what came of it.
+function cell(r: Extract<Item, { change: Change }>): string {
+  const d = r.done;
+  if (r.asking) return "conflict";
+  if (!d) return `${r.keep === null ? "shown only" : r.keep ? "keep" : "skip"}${r.marked ? ` ${PROTECTED}` : ""}`;
+  if (d.result === "conflict") return d.mergedTo ? `merged with conflicts in ${d.mergedTo}` : `conflict: ${d.why}`;
+  if (d.result === "refused") return `not applied: ${d.why}`;
+  if (d.result === "failed") return `failed: ${d.why}`;
+  return d.result;
+}
 
 // The diff of one change, for the detail view (Task 18's fileDiff), read from the copy's base/ and work/. Each file's
 // size is checked against Node's longest string before it is read (`most`, a test's smaller), since a larger file cannot
 // be held as one string. Links and paths whose type changed are shown as what they were and are (choice 26).
 export async function diffOf(c: Change, folder: string, most: number = constants.MAX_STRING_LENGTH): Promise<Line[]> {
   if (!("binary" in c)) {
-    return [{ text: `before: ${c.before ?? NONE}` }, { text: `after: ${c.after ?? NONE}` }, { text: c.kind === "link" ? LINKS_BY_HAND : TYPES_BY_HAND }];
+    // One line each, a line break in a link's target escaped as any other control character (describe.ts, screen).
+    return [
+      { text: `before: ${c.before ?? NONE}`, oneLine: true },
+      { text: `after: ${c.after ?? NONE}`, oneLine: true },
+      { text: c.kind === "link" ? LINKS_BY_HAND : TYPES_BY_HAND },
+    ];
   }
   // Each side's file, or none for the side an added or deleted file does not have; read without following a link.
   const sizeOf = async (copy: string, has: boolean) => {
@@ -100,7 +116,7 @@ export function Review({
   height,
   options,
   remove = removeCopy,
-  protection = { hooks: [], files: [] },
+  protection,
 }: {
   copy: ReviewCopy;
   bindings: Bindings; // the table of keys, for the Review context's keys and the names the lines give them
@@ -108,9 +124,10 @@ export function Review({
   height?: number; // the rows it may draw; the terminal's less the one Ink ends on when not given
   options?: ApplyOptions; // a test's (apply.ts)
   remove?: (folder: string) => Promise<void>; // a test's stand-in for removeCopy
-  // The hooks folders, git folders and settings files git's settings name, as the session's gate holds them
-  // (clilib.ts, protectionOf), for which changes are protected; with none, only protected.ts's own lists.
-  protection?: Protection;
+  // The hooks folders, git folders and settings files git's settings name, for which changes are protected beside
+  // protected.ts's own lists: host paths, protectionOf(await gitSettings(manifest.root)) (clilib.ts), never the box's
+  // view of them (boxProtection), whose /work paths match no host path. Required, so none is left out unseen.
+  protection: Protection;
 }) {
   const { session, folder, manifest } = copy;
   const { columns, rows } = useWindowSize();
@@ -187,8 +204,11 @@ export function Review({
     s.doing = undefined;
     again();
   };
-  // The copy removed, or why not, in a line. Nothing is left that could be applied half removed (removeCopy).
+  // The copy removed, or why not, in a line. Nothing is left that could be applied half removed (removeCopy). It usually
+  // holds node_modules, and can take a while, so a line says so first, counting the manifest's files, not the disk's.
   const removed = async (): Promise<string | null> => {
+    s.doing = removing(Object.values(manifest.entries).filter((e) => e.type === "file").length);
+    again();
     try {
       await remove(folder);
       return null;
@@ -249,11 +269,14 @@ export function Review({
       ...(left ? [`${left} left in the copy`] : []),
     ].join(", ");
     const why = left ? undefined : await removed();
+    // Each outcome neither applied nor skipped as its row says it, for the caller to say again once the screen, where
+    // a long list scrolls them out of sight, is gone.
+    const notable = listed.filter((r) => r.done && r.done.result !== "applied" && r.done.result !== "skipped");
     finish({
       how: "applied",
       outcomes: listed.flatMap((r) => (r.done ? [r.done] : [])),
       removed: why === null,
-      lines: [summary, why === undefined ? kept(session) : (why ?? REMOVED)],
+      lines: [summary, ...notable.map((r) => `${r.change.kind} ${r.change.path} ${cell(r)}`), why === undefined ? kept(session) : (why ?? REMOVED)],
     });
   };
 
@@ -267,7 +290,7 @@ export function Review({
       lines = [{ text: diffUnread(errorText(err)) }];
     }
     if (s.stage !== "list" || s.at !== at || s.discard || s.diff) return;
-    s.diff = opened([{ text: `${r.change.kind} ${r.change.path}`, color: "gray" }, ...lines], columns - 1);
+    s.diff = opened([{ text: `${r.change.kind} ${r.change.path}`, color: "gray", oneLine: true }, ...lines], columns - 1);
     again();
   };
 
@@ -296,7 +319,13 @@ export function Review({
   // conflict's question it stops applying, keeping that change and the rest in the copy.
   const act = (a: string | null) => {
     if (s.ended) return;
-    if (s.stage === "done") return end(s.end!);
+    if (s.stage === "done") {
+      // Up and Down scroll the outcomes; any other key closes.
+      if (a === "review:previous") s.at = Math.max(0, s.at - 1);
+      else if (a === "review:next") s.at = Math.max(0, Math.min(s.items.length - 1, s.at + 1));
+      else return end(s.end!);
+      return again();
+    }
     if (s.diff) diffKey(a);
     else if (s.discard) {
       if (a === "confirm:yes") return void discard();
@@ -327,8 +356,12 @@ export function Review({
     const each = single ? [single] : key.ctrl || key.meta ? [] : pieces(input).map(piece);
     for (const stroke of each) {
       if (!stroke) continue;
+      const before = { discard: s.discard, stage: s.stage };
       const got = bindings.press(stroke, contexts(), Date.now());
       if (!got || !("pending" in got)) act(got?.action ?? null);
+      // A stroke that asks the discard question, or begins the apply (whose conflict questions it may ask), ends the
+      // read: the rest of a paste such as "dy" must not answer it (Task 20's quality review).
+      if ((s.discard && !before.discard) || s.stage !== before.stage) break;
     }
   });
 
@@ -365,7 +398,9 @@ export function Review({
         ? unread(s.why!)
         : s.end?.how === "applied"
           ? s.end.lines[0]!
-          : top(
+          : s.stage !== "list"
+            ? top(listed, "") // the keys act only at the list
+            : top(
               listed,
               parts(
                 [k("review:toggle", "Review", "space"), "keep/skip"],
@@ -394,15 +429,6 @@ export function Review({
   if (s.at < s.first) s.first = s.at;
   if (s.at >= s.first + room) s.first = s.at - room + 1;
   s.first = Math.max(0, Math.min(s.first, s.items.length - room));
-  const cell = (r: Extract<Item, { change: Change }>) => {
-    const d = r.done;
-    if (r.asking) return "conflict";
-    if (!d) return `${r.keep === null ? "shown only" : r.keep ? "keep" : "skip"}${r.marked ? ` ${PROTECTED}` : ""}`;
-    if (d.result === "conflict") return d.mergedTo ? `merged with conflicts in ${d.mergedTo}` : `conflict: ${d.why}`;
-    if (d.result === "refused") return `not applied: ${d.why}`;
-    if (d.result === "failed") return `failed: ${d.why}`;
-    return d.result;
-  };
 
   return (
     <>
@@ -412,7 +438,7 @@ export function Review({
         </Text>
       ))}
       {s.items.slice(s.first, s.first + room).map((item, i) => {
-        const chosen = s.first + i === s.at && (s.stage === "list" || s.stage === "busy");
+        const chosen = s.first + i === s.at && s.stage !== "reading" && s.stage !== "unread";
         // A long path gives up its middle first; the choice or outcome after it is cut only where it alone does not fit
         // beside the kind and one column of the path.
         return isChange(item) ? (

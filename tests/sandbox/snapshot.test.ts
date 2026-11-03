@@ -277,4 +277,17 @@ describe("removeCopy", () => {
     expect(readFileSync(w.at("src/a.ts"), "utf8")).toBe("const a = 1;\n");
     expect(readFileSync(w.at("joined/a.ts"), "utf8")).toBe("const a = 1;\n");
   });
+
+  it("removes a read-only file, as git leaves its objects in the box's own repository", async (ctx) => {
+    const w = world({ "a.txt": "a\n" });
+    await snapshot(w.root, "s1", w.data);
+    // Read-only from its making (a mode without the write bit, which Windows makes the read-only attribute); no file's
+    // permissions are changed after.
+    const object = path.join(w.work, ".git", "objects", "ab", "cdef");
+    mkdirSync(path.dirname(object), { recursive: true });
+    writeFileSync(object, "made-up object\n", { mode: 0o444 });
+    if (statSync(object).mode & 0o200) return ctx.skip("this system made the file writable despite its mode");
+    await removeCopy(w.copies);
+    expect(existsSync(w.copies)).toBe(false);
+  });
 });

@@ -29,6 +29,8 @@ import { removeTree, ZERO } from "../helpers.js";
 
 const sha = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
 const tick = () => new Promise((r) => setTimeout(r, 50));
+// Each test's time: up to 2.7 s here alone, so room for a loaded machine, as tests/tui/terminal.test.tsx gives its own.
+const SLOW = { timeout: 15_000 };
 
 const DOWN = "\u001b[B";
 const UP = "\u001b[A";
@@ -135,7 +137,7 @@ function open(w: World, opts: Opts = {}) {
       onEnd={(end) => ended.push(end)}
       options={{ env: w.env, ...(opts.step ? { step: opts.step } : {}) }}
       {...(opts.remove ? { remove: opts.remove } : {})}
-      {...(opts.protection ? { protection: opts.protection } : {})}
+      protection={opts.protection ?? { hooks: [], files: [] }}
     />,
   );
   onTestFinished(() => app.unmount());
@@ -161,7 +163,7 @@ const squash = (text: string) => text.replace(/\s+/g, "");
 // The row that holds `text`.
 const rowWith = (app: ReturnType<typeof render>, text: string) => rowsOf(app).find((r) => r.includes(text)) ?? "";
 
-describe("Review's list", () => {
+describe("Review's list", SLOW, () => {
   it("lists each change with its choice, what was left out, and git-ignored changes as one count", async () => {
     const w = world({ "a.txt": "a\n", "c.txt": "c\n", ".gitignore": "build/\n", "build/out.js": "x\n", t: "file\n" });
     w.box("a.txt", "a changed\n");
@@ -270,7 +272,7 @@ describe("Review's list", () => {
   });
 });
 
-describe("Review's diff", () => {
+describe("Review's diff", SLOW, () => {
   it("opens a file's diff in the detail view, and Esc comes back", async () => {
     const w = world({ "a.txt": "one\ntwo\n" });
     w.box("a.txt", "one\nTWO\n");
@@ -297,6 +299,18 @@ describe("Review's diff", () => {
     expect(rowsOf(app).slice(0, 4)).toEqual(["type t", "before: file", "after: folder", "a path whose type changed is applied by hand"]);
   });
 
+  it("shows a link's target on one line, a line break in it escaped", async () => {
+    const w = world({ "a.txt": "a\n" });
+    // A link the snapshot kept, which the box removed: its target as the project stored it (made up here).
+    w.manifest.entries["made\nup"] = { type: "link", target: "some\nwhere", inCopy: "some\nwhere" };
+    const { app } = open(w);
+    await until(app, TOP);
+    expect(rowWith(app, "made⏎up")).toMatch(/^link +made⏎up +shown only$/);
+    await press(app, "\r");
+    await until(app, "before: some⏎where");
+    expect(rowsOf(app).slice(0, 4)).toEqual(["link made⏎up", "before: some⏎where", "after: (none)", "links are applied by hand"]);
+  });
+
   it("checks each file's size against Node's longest string before reading it", async () => {
     const w = world({ "a.txt": "one\n" });
     w.box("a.txt", "one\ntwo\n");
@@ -311,7 +325,7 @@ describe("Review's diff", () => {
   });
 });
 
-describe("Review's apply", () => {
+describe("Review's apply", SLOW, () => {
   it("applies what is kept, and shows an outcome of each kind, one file's failure not stopping the rest", async () => {
     const w = world({ "apply.txt": "1\n", "bin.dat": `b${ZERO}`, "fail.txt": "f\n", "skip.txt": "s\n", "sub/x.txt": "x\n", "zlast.txt": "z\n" });
     for (const rel of ["apply.txt", "fail.txt", "skip.txt", "sub/x.txt", "zlast.txt"]) w.box(rel, "from the box\n");
@@ -346,7 +360,14 @@ describe("Review's apply", () => {
     expect(ended).toHaveLength(1);
     expect(ended[0]!.how).toBe("applied");
     expect(ended[0]!.removed).toBe(false);
-    expect(ended[0]!.lines).toEqual(["2 applied, 1 skipped, 3 left in the copy", "The copy is kept; tachi review s1 opens it again."]);
+    // Each outcome neither applied nor skipped as its row says it, for the caller to say again.
+    expect(ended[0]!.lines).toEqual([
+      "2 applied, 1 skipped, 3 left in the copy",
+      "changed bin.dat conflict: a binary file; resolve it by hand",
+      "changed fail.txt failed: made-up disk failure",
+      "changed sub/x.txt not applied: sub is a link, and apply never writes through one",
+      "The copy is kept; tachi review s1 opens it again.",
+    ]);
     expect(ended[0]!.outcomes.map((o) => [o.path, o.result])).toEqual([
       ["apply.txt", "applied"],
       ["bin.dat", "conflict"],
@@ -448,6 +469,44 @@ describe("Review's apply", () => {
     expect(w.read("d.txt")).toBe("the user's own\n");
   });
 
+  it("applies once for two presses of its key read together", async () => {
+    const w = world({ "a.txt": "a\n" });
+    w.box("a.txt", "a2\n");
+    const steps: string[] = [];
+    const { app } = open(w, { step: (at) => void steps.push(at) });
+    await until(app, TOP);
+    app.stdin.write("aa");
+    await until(app, "Any key closes.");
+    expect(rowsOf(app)[0]).toBe("1 applied, 0 skipped");
+    expect(steps).toEqual(["checked", "written", "rename", "done"]);
+  });
+
+  it("takes no key but a conflict's answer while it applies, and lets Up and Down scroll what came of it", async () => {
+    const w = world({ "a.txt": "a\n", "b.txt": "b\n" });
+    w.box("a.txt", "a2\n");
+    w.box("b.txt", "b2\n");
+    let let_go = () => {};
+    const held = new Promise<void>((resolve) => (let_go = resolve));
+    const { app, ended } = open(w, { height: 3, step: (at) => (at === "checked" ? held : undefined) });
+    await until(app, TOP);
+    await press(app, "a");
+    await until(app, "Applying...");
+    expect(rowsOf(app)[0]).toBe(`${TOP}2 files.`);
+    await press(app, "\u001b[B", " ", "d", "l", CTRL_C, "\r");
+    expect(app.lastFrame()).not.toContain("Discard");
+    expect(ended).toEqual([]);
+    let_go();
+    await until(app, "Any key closes.");
+    expect(rowsOf(app)[0]).toBe("2 applied, 0 skipped");
+    // Three rows: the summary, one of the list, and the copy's line.
+    expect(rowWith(app, "b.txt")).toMatch(/applied$/);
+    await press(app, UP);
+    expect(rowWith(app, "a.txt")).toMatch(/applied$/);
+    expect(ended).toEqual([]);
+    await press(app, "x");
+    expect(ended).toHaveLength(1);
+  });
+
   it("gives back its lines and outcomes escaped, for the caller to print as they are", async () => {
     const odd = "made‮up.txt"; // a direction override, which every system allows in a name
     const w = world({ [odd]: "a\n" });
@@ -472,11 +531,11 @@ describe("Review's apply", () => {
   });
 });
 
-describe("Review's protected files", () => {
+describe("Review's protected files", SLOW, () => {
   it("starts a change to a protected file as skip, marked, and applies it once switched to keep", async () => {
     const w = world({ ".npmrc": "a\n", "web/.husky/pre-commit": "h\n", ".githooks/pre-push": "p\n", "plain.txt": "x\n" });
     for (const rel of [".npmrc", "web/.husky/pre-commit", ".githooks/pre-push", "plain.txt"]) w.box(rel, "from the box\n");
-    // A hooks folder git's settings name, as the session's gate holds it (clilib.ts, protectionOf).
+    // A hooks folder git's settings name (core.hooksPath=.githooks), a host path as protectionOf gives it (clilib.ts).
     const { app } = open(w, { protection: { hooks: [w.at(".githooks")], files: [] } });
     await until(app, TOP);
     expect(rowWith(app, ".npmrc")).toMatch(/^changed +\.npmrc +skip \(protected\)$/);
@@ -498,7 +557,7 @@ describe("Review's protected files", () => {
   });
 });
 
-describe("Review's later and discard", () => {
+describe("Review's later and discard", SLOW, () => {
   it("leaves the copy for later on l, and on Ctrl-C", async () => {
     for (const key of ["l", CTRL_C]) {
       const w = world({ "a.txt": "a\n" });
@@ -523,7 +582,7 @@ describe("Review's later and discard", () => {
     await until(app, TOP);
     expect(app.lastFrame()).not.toContain("Discard");
     await press(app, "d", "y");
-    for (let i = 0; i < 40 && !ended.length; i++) await tick();
+    for (let i = 0; i < 100 && !ended.length; i++) await tick();
     expect(ended).toEqual([{ how: "discarded", outcomes: [], removed: true, lines: ["The copy was discarded."] }]);
     expect(existsSync(w.folder)).toBe(false);
     expect(readdirSync(w.outside)).toEqual(["kept.txt"]);
@@ -546,9 +605,36 @@ describe("Review's later and discard", () => {
     await press(app, "q");
     expect(ended).toEqual([{ how: "discarded", outcomes: [], removed: false, lines: [line] }]);
   });
+
+  it("asks the discard question opened in one read without the rest of that read answering it", async () => {
+    const w = world({ "a.txt": "a\n" });
+    w.box("a.txt", "a2\n");
+    const { app, ended } = open(w);
+    await until(app, TOP);
+    app.stdin.write("dy"); // as a paste of "dy" comes
+    await until(app, "Discard the copy and every change in it? [y/n]");
+    await tick();
+    expect(ended).toEqual([]);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+  });
+
+  it("says it is removing the copy, with the manifest's count of files, while it does", async () => {
+    const w = world({ "a.txt": "a\n", "b.txt": "b\n" });
+    w.box("a.txt", "a2\n");
+    let let_go = () => {};
+    const { app, ended } = open(w, { remove: () => new Promise<void>((resolve) => (let_go = resolve)) });
+    await until(app, TOP);
+    await press(app, "d", "y");
+    await until(app, "Removing the copy (2 files)...");
+    // Only the count; the keys act at the list alone.
+    expect(rowsOf(app)[0]).toBe(`${TOP}1 file.`);
+    let_go();
+    for (let i = 0; i < 100 && !ended.length; i++) await tick();
+    expect(ended.map((e) => e.how)).toEqual(["discarded"]);
+  });
 });
 
-describe("Review's keys", () => {
+describe("Review's keys", SLOW, () => {
   it("are read from the keys file's Review context, and the top line names them", async () => {
     const read = readKeybindings(JSON.stringify({ bindings: [{ context: "Review", bindings: { x: "review:apply", a: null, j: "review:next" } }] }));
     if (!("table" in read)) throw new Error(read.problem);
