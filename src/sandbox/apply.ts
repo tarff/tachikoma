@@ -18,9 +18,14 @@ import { hashFile, type Manifest, reserved } from "./snapshot.js";
 // `mergedTo`: for a merge with conflicts, the file of conflict markers beside the real one, relative to the project.
 export type Outcome = { path: string; result: "applied" | "conflict" | "skipped" | "refused"; why?: string; mergedTo?: string };
 export interface ApplyContext { root: string; base: string; work: string; manifest: Manifest; session: string }
-// `env` is where git is looked for and what it is run with, a test's own; `step` is a test's, called at each step of a
-// replacement, so a test can change the real folder there, or stop as a crash would.
-export interface ApplyOptions { env?: NodeJS.ProcessEnv; step?: (at: "checked" | "written" | "rename" | "done") => void | Promise<void> }
+// `env` is where git is looked for and what it is run with, a test's own; `git` is a test's stand-in for the git run,
+// so no fake program is planted; `step` is a test's, called at each step of a replacement, so a test can change the
+// real folder there, or stop as a crash would.
+export interface ApplyOptions {
+  env?: NodeJS.ProcessEnv;
+  git?: (args: string[], cwd: string) => Promise<{ code: number; err: string }>;
+  step?: (at: "checked" | "written" | "rename" | "done") => void | Promise<void>;
+}
 
 const windows = process.platform === "win32";
 
@@ -74,8 +79,9 @@ export async function applyChange(c: Change, ctx: ApplyContext, merge = false, o
   if (c.binary) return conflict(BINARY);
   if (!merge) return conflict(CHANGED_SINCE);
   if (c.kind === "deleted" || now.kind !== "file" || !at.file) return conflict(CANNOT_MERGE);
-  const exe = onPath("git", opts.env);
-  if (!exe) return conflict(NO_GIT);
+  const exe = opts.git ? undefined : onPath("git", opts.env);
+  if (!opts.git && !exe) return conflict(NO_GIT);
+  const run = opts.git ?? ((args: string[], cwd: string) => git(exe!, args, cwd, opts.env ?? process.env));
 
   // Three copies, in a fresh folder of the copy's own in the data folder, which is outside every project the sandbox
   // accepts (choice 13): the real file as it is now, the snapshot's (empty for an added file) and the box's. Git
@@ -89,7 +95,8 @@ export async function applyChange(c: Change, ctx: ApplyContext, merge = false, o
     else await (await open(snap, "wx")).close();
     await copyTo(await boxFile(from), box, undefined);
     const labels = ["-L", "your folder", "-L", "the snapshot", "-L", "the box's copy"];
-    const ran = await git(exe, ["merge-file", ...labels, ...names], folder, opts.env ?? process.env);
+    const ran = await run(["merge-file", ...labels, ...names], folder);
+    const failed = conflict(`git merge-file failed: ${ran.err.trim().split("\n")[0] || `exit code ${ran.code}`}`);
     if (ran.code === 0) {
       // The box's executable flag when the box changed it, otherwise the real file's.
       const exec = c.execBefore !== c.execAfter ? (c.execAfter ?? false) : now.exec;
@@ -97,7 +104,11 @@ export async function applyChange(c: Change, ctx: ApplyContext, merge = false, o
       return await replace(job, { ...now, sha256: before }, { file: yours, mode: modeFor(now, exec) });
     }
     // Git's exit code is the number of conflicts, up to 127, and negative on an error (git-merge-file(1)).
-    if (ran.code > 127) return conflict(`git merge-file failed: ${ran.err.trim().split("\n")[0] || `exit code ${ran.code}`}`);
+    if (ran.code > 127) return failed;
+    // A merge with conflicts always rewrites the first file, with its markers. One left as it was is a git that failed
+    // with a code that reads as a count: macOS's /usr/bin/git without Apple's developer tools prints an error and exits
+    // non-zero (Task 19's quality review), and its file has no markers to show.
+    if ((await hashFile(yours)) === before) return failed;
     // Written only when nothing is there yet, so whatever the user keeps under that name, a link included, is never
     // written over or through. The markers have the real file's permission bits, as they hold its text.
     const markers = `${c.path}.tachikoma-merge`;

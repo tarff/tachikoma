@@ -474,6 +474,22 @@ describe("applyChange's merge", () => {
     expect(w.read("x.txt")).toBe("user\n");
   });
 
+  it("reads a git that fails without merging as failed, not as a conflict, and writes no markers", async () => {
+    const w = world({ "x.txt": "one\n" });
+    w.box("x.txt", "box\n");
+    w.user("x.txt", "user\n");
+    // As macOS's /usr/bin/git does without Apple's developer tools: it prints an error and exits 1, leaving the files.
+    // A stand-in for the git run, as no fake program is planted.
+    const run = async () => ({ code: 1, err: "xcrun: error: made-up missing developer tools\n" });
+    expect(await applyChange(await w.change("x.txt"), w.ctx, true, { env: w.env, git: run })).toEqual({
+      path: "x.txt",
+      result: "conflict",
+      why: "git merge-file failed: xcrun: error: made-up missing developer tools",
+    });
+    expect(existsSync(w.at("x.txt.tachikoma-merge"))).toBe(false);
+    expect(w.read("x.txt")).toBe("user\n");
+  });
+
   it("says so plainly when git is not installed", async () => {
     const w = world({ "x.txt": "one\n" });
     w.box("x.txt", "box\n");
@@ -509,7 +525,7 @@ describe("appliedSoFar", () => {
     expect(await appliedSoFar("s1", w.data)).toEqual([{ path: "edit.txt", result: "applied" }]);
   });
 
-  it("reports a crash between two files: the first applied, the second never started", async () => {
+  it("reports a crash between two files: the first two applied, the third never started", async () => {
     const w = world({ "a.txt": "a\n", "b.txt": "b\n", "gone.txt": "g\n" });
     w.box("a.txt", "A\n");
     w.box("b.txt", "B\n");
