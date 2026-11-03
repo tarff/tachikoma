@@ -28,11 +28,11 @@ const windows = process.platform === "win32";
 // dropped), so another spelling of `.git` that reaches it is left out too (choice 104's measurement), as Task 19 refuses
 // it.
 const RESERVED = [".git", ".tachikoma"];
-const reserved = (name: string) => RESERVED.includes(fold(name, process.platform));
+export const reserved = (name: string) => RESERVED.includes(fold(name, process.platform));
 
 const LEADS_OUTSIDE = "a link that leads outside the project";
 const LEADS_NOWHERE = "a link that leads nowhere";
-const NOT_COPIED = "not a file, folder or link";
+export const NOT_COPIED = "not a file, folder or link";
 
 // Copies `root` into `<data>/copies/<session>/`, and writes manifest.json there last. `copied` is a test's, called after
 // each file is copied and before it is hashed again.
