@@ -867,6 +867,15 @@ the plan's review.
     applied are still read in full; ignored ones are compared by size and modified time only. A
     box can set file times, so it could hide an ignored change from the count, never from what is
     applied. The new time is measured before committing.
+113. **Task 19's lines** (the user's approval): `git ignores this path; its changes are counted,
+    never applied`; `changed in your folder since the copy was made`; `deleted on one side, or no
+    longer a file; resolve it by hand`; `<path> has other names (hard links), so it was not
+    replaced`; `git was not found, so it cannot be merged; resolve it by hand`; `git merge-file
+    failed: <git's first error line>` (or `exit code <n>`); `<part> is a link, and apply never
+    writes through one`; `<path> leads outside your folder`; `<part> is not a folder, so nothing
+    can be written in it`; `.tachikoma/backups/<session>/<path> is already there and is not this
+    file's backup; move it, then apply again`; `<path> is no longer a file in the copy`; and the
+    merge markers' labels `your folder`, `the snapshot`, `the box's copy`.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
