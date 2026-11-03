@@ -890,6 +890,11 @@ the plan's review.
     `.git` in `work/`, which Tachikoma makes at launch, is not listed as left out (it would show
     in every review); a deeper one is. The README (Task 23) says the box's commits stay in the
     copy and are never applied.
+115. **Changes to protected files start as "skip", marked** (the user's choice, Task 20's spec
+    review). A file on `protected.ts`'s list (git hooks, `.husky/`, `.vscode/tasks.json`,
+    `.npmrc` and the rest) can run code on the host later, so its row carries a marker (wording
+    to the user) and the user must switch it to keep. The list is protected.ts's own check, not a
+    copy.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -1951,9 +1956,19 @@ Commit: `feat: the review of a copy's changes, file by file, with each diff`.
 ## Task 21: Copy mode in a session, `tachi review`, and `never`
 
 **Files:** modify `src/cli.tsx`, `src/tui/app/queue.ts`, `src/tui/app/keyRouting.ts` (the three
-`ui.exit()` calls go through one `leave()`), `src/sandbox/executor.ts`; create
+`ui.exit()` calls go through one `leave()`), `src/sandbox/executor.ts`, and, moved from Task 20,
+`src/tui/phase.ts`, `src/tui/app/constants.ts` (`PHASE_CONTEXTS`) and `App.tsx`; create
 `src/sandbox/copies.ts`; tests in `tests/cli.test.ts`, `tests/tui/app.test.tsx`,
 `tests/sandbox/copy.test.ts` (real Docker, skipping).
+
+- **The review inside the App** (moved from Task 20, whose `Review` reads its own keys so
+  `tachi review` can draw it alone): the App draws `<Review>` in place of everything else with the
+  live bindings table, and its own keys, paste and mouse are off while it shows, since Ink gives
+  every key to every `useInput`. Test: keys pressed in the review do not reach the prompt, and
+  Ctrl-C does only the review's action. `ReviewEnd.lines` come back escaped, and are printed
+  after Ink ends.
+- **`withLock`'s lock sits beside the copy's folder,** not inside it, since `removeCopy`
+  deletes the folder (Task 20's spec review).
 
 - **The launch** follows Task 16's order, but takes the snapshot (Task 17) instead of the mounts.
   - The box mounts `work/` as `/work`, then makes it a git repository with one commit (choice 24).
