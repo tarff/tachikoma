@@ -1652,7 +1652,7 @@ this PC, where live link is refused (choice 104); it waits for Linux CI (choice 
 
 ```ts
 export interface Manifest { session: string; root: string; at: string; entries: Record<string, ManifestEntry>; leftOut: { path: string; why: string }[] }
-export type ManifestEntry = { type: "file"; sha256: string; exec: boolean } | { type: "folder" } | { type: "link"; target: string };
+export type ManifestEntry = { type: "file"; sha256: string; exec: boolean } | { type: "folder" } | { type: "link"; target: string; inCopy: string };
 export function snapshot(root: string, session: string, data?: string): Promise<{ manifest: Manifest; base: string; work: string }>;
 ```
 
@@ -1695,6 +1695,10 @@ export type Change =
 export function changes(manifest: Manifest, work: string): Promise<Change[]>;   // walks work/ without following links
 export function lineDiff(before: string, after: string): Line[];                  // Myers, choice 25; Line is describe.ts's
 ```
+
+A link is compared against the manifest's `inCopy`, the target text work/ held after the snapshot (Task 17's
+quality review), not its `target`, the project's original, which is for showing: a junction or absolute link is
+rewritten in the copy, and must not show as changed when untouched.
 
 - **`changes`** compares `work/` with the manifest. It skips every `.git` and `.tachikoma`
   folder or file at any depth, the box's own repository and Tachikoma's own records included,

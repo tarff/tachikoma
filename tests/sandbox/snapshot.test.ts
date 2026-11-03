@@ -112,7 +112,8 @@ describe("snapshot", () => {
     symlinkSync(w.outside, w.at("out"), "junction");
     symlinkSync(w.at("missing"), w.at("gone"), "junction");
     const { manifest, base, work } = await snapshot(w.root, "s1", w.data);
-    expect(manifest.entries.joined).toEqual({ type: "link", target: readlinkSync(w.at("joined")) });
+    // The project's own target, to show, and the one work/ holds, which the changes compare against (Task 18).
+    expect(manifest.entries.joined).toEqual({ type: "link", target: readlinkSync(w.at("joined")), inCopy: readlinkSync(path.join(work, "joined")) });
     for (const copy of [base, work]) {
       // Windows: the copy's absolute path; elsewhere the same place written relative, so it also holds in the box.
       expect(readlinkSync(path.join(copy, "joined"))).toBe(windows ? path.join(copy, "src") : "src");
@@ -130,6 +131,19 @@ describe("snapshot", () => {
     ]);
   });
 
+  it("rewrites an absolute link in a subfolder to the copy's same place", async () => {
+    const w = world({ "src/a.ts": "const a = 1;\n", "sub/b.txt": "b\n" });
+    // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink, stored absolute.
+    symlinkSync(w.at("src"), w.at("sub/j"), "junction");
+    const { manifest, base, work } = await snapshot(w.root, "s1", w.data);
+    for (const copy of [base, work]) {
+      // Windows: a junction to the copy's absolute path; elsewhere relative to the link's own folder.
+      expect(readlinkSync(path.join(copy, "sub/j"))).toBe(windows ? path.join(copy, "src") : path.join("..", "src"));
+      expect(readFileSync(path.join(copy, "sub/j/a.ts"), "utf8")).toBe("const a = 1;\n");
+    }
+    expect(manifest.entries["sub/j"]).toEqual({ type: "link", target: w.at("src"), inCopy: windows ? path.join(work, "src") : path.join("..", "src") });
+  });
+
   it("keeps a relative link's text, and leaves out one that climbs out of the project", async (ctx) => {
     const w = world({ "src/a.ts": "const a = 1;\n" });
     try {
@@ -139,7 +153,7 @@ describe("snapshot", () => {
     }
     symlinkSync(path.join("..", "elsewhere", "secret.txt"), w.at("up"), "file");
     const { manifest, base, work } = await snapshot(w.root, "s1", w.data);
-    expect(manifest.entries.rel).toEqual({ type: "link", target: readlinkSync(w.at("rel")) });
+    expect(manifest.entries.rel).toEqual({ type: "link", target: readlinkSync(w.at("rel")), inCopy: readlinkSync(w.at("rel")) });
     for (const copy of [base, work]) {
       expect(readlinkSync(path.join(copy, "rel"))).toBe(readlinkSync(w.at("rel")));
       expect(readFileSync(path.join(copy, "rel"), "utf8")).toBe("const a = 1;\n");

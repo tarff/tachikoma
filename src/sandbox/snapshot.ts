@@ -13,10 +13,12 @@ import { dataDir } from "../core/datadir.js";
 import { fold } from "../safety/protected.js";
 import { leaves } from "../tools/files.js";
 
-// Each path is the project's own, its parts joined by `/` on every system. A link's target is the one stored in the
-// project, as written there.
+// Each path is the project's own, its parts joined by `/` on every system. A link's `target` is the one stored in the
+// project, as written there, to show; `inCopy` is the one work/ holds, read back after it was made, which the changes
+// compare work/ against (Task 18), so a rewritten target never shows as a change (main design, "Links"). For a link kept
+// as written the two are the same.
 export interface Manifest { session: string; root: string; at: string; entries: Record<string, ManifestEntry>; leftOut: { path: string; why: string }[] }
-export type ManifestEntry = { type: "file"; sha256: string; exec: boolean } | { type: "folder" } | { type: "link"; target: string };
+export type ManifestEntry = { type: "file"; sha256: string; exec: boolean } | { type: "folder" } | { type: "link"; target: string; inCopy: string };
 
 export class SnapshotRefused extends Error {}
 
@@ -65,7 +67,7 @@ export async function snapshot(
         const why = await remake(src, from, target, (place, folder) => Promise.all([base, work].map((copy) => linkIn(copy, to(copy), target, place, folder))));
         if (why) manifest.leftOut.push({ path: r, why });
         else {
-          manifest.entries[r] = { type: "link", target };
+          manifest.entries[r] = { type: "link", target, inCopy: await readlink(to(work)) };
           links.push(r);
         }
         continue;
@@ -83,8 +85,10 @@ export async function snapshot(
 
   // Where a link stored as `target` really leads, after every link on the way. Inside the project, `make` is given that
   // place, relative to the project, and whether it is a folder; otherwise the why it is left out. A relative target is
-  // also read as written, so one that climbs out of the project and back in is left out, as it would lead outside the
-  // copy.
+  // also read as text, its `..` steps taken from the link's folder: one that climbs above the project that way is left
+  // out, even when its real place is inside (through a link outside that leads back in), as the same text in the copy
+  // would climb out of the copy. One that climbs back in by the project folder's own name (`../proj/src`) reads as
+  // inside and is kept as written, so in the copy it leads nowhere.
   const remake = async (src: string, from: string, target: string, make: (place: string, folder: boolean) => Promise<unknown>) => {
     let place: string;
     try {
