@@ -12,7 +12,7 @@ const windows = process.platform === "win32";
 // A test's own folder, holding a project with `tree` in it, and what `more` makes there, and a data folder for its copy,
 // which is taken at once. The test then changes work/ as the box would.
 async function copied(tree: Record<string, string>, more: (at: (rel: string) => string) => void = () => {}) {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-changes-")));
+  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-chg-")));
   onTestFinished(() => removeTree(dir));
   const root = path.join(dir, "project");
   const at = (rel: string) => path.join(root, rel);
@@ -22,7 +22,7 @@ async function copied(tree: Record<string, string>, more: (at: (rel: string) => 
     writeFileSync(at(rel), text);
   }
   more(at);
-  const { manifest, work } = await snapshot(root, "s1", path.join(dir, "data"));
+  const { manifest, work } = await snapshot(root, "s1", path.join(dir, "d"));
   const inWork = (rel: string) => path.join(work, rel);
   const write = (rel: string, text: string) => {
     mkdirSync(path.dirname(inWork(rel)), { recursive: true });
@@ -177,14 +177,16 @@ describe("changes", () => {
 
   it("lists an entry that is not a file, folder or link, and counts a file replaced by one as deleted", async (ctx) => {
     if (windows) return ctx.skip("Windows keeps no sockets or pipes among a folder's entries");
-    const w = await copied({ "a.txt": "a\n" });
-    unlinkSync(w.inWork("a.txt"));
+    // A socket's path must fit in 104 bytes on macOS (sun_path, <sys/un.h>), whose temporary folder alone is about 57,
+    // so the copy's folders above it (see copied) and the socket's own name are short: about 93 in all.
+    const w = await copied({ s: "a\n" });
+    unlinkSync(w.inWork("s"));
     const server = createServer();
-    await new Promise<void>((resolve) => server.listen(w.inWork("a.txt"), resolve));
+    await new Promise<void>((resolve) => server.listen(w.inWork("s"), resolve));
     onTestFinished(() => new Promise<void>((resolve) => server.close(() => resolve())));
     expect(await changes(w.manifest, w.work)).toEqual({
-      changes: [{ kind: "deleted", path: "a.txt", binary: false, execBefore: false, ignored: false }],
-      leftOut: [{ path: "a.txt", why: "not a file, folder or link" }],
+      changes: [{ kind: "deleted", path: "s", binary: false, execBefore: false, ignored: false }],
+      leftOut: [{ path: "s", why: "not a file, folder or link" }],
     });
   });
 });
