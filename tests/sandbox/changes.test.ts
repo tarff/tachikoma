@@ -230,6 +230,18 @@ describe("changes in git-ignored paths", () => {
     });
   });
 
+  it("never reads an ignored file to tell whether it is binary, as it is only counted", async () => {
+    const w = await copied({ ".gitignore": "*.bin\n", "old.bin": `o${ZERO}`, "gone.bin": `g${ZERO}` });
+    w.write("old.bin", `older${ZERO}`);
+    w.write("new.bin", `n${ZERO}`);
+    unlinkSync(w.inWork("gone.bin"));
+    expect((await changes(w.manifest, w.work)).changes.map((c) => [c.kind, c.path, "binary" in c && c.binary, c.ignored])).toEqual([
+      ["deleted", "gone.bin", false, true],
+      ["added", "new.bin", false, true],
+      ["changed", "old.bin", false, true],
+    ]);
+  });
+
   it("matches a folder-only rule against folders, not files of that name", async () => {
     const w = await copied({ ".gitignore": "out/\n" });
     w.write("out", "a file named out\n");

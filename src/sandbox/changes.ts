@@ -11,7 +11,8 @@ import { hashFile, type Manifest, NOT_COPIED, reserved, unreadable } from "./sna
 // A file added, changed or deleted, which the review can apply, with its executable flag on each side it has; or a link
 // added, retargeted or deleted, or a path whose type changed, which are shown only (choice 26), with the project's own
 // link target or the type ("file", "folder", "link") on each side it has. `ignored`: git's ignore rules in the snapshot
-// cover the path, so the review only counts it and apply never applies it (choice 109).
+// cover the path, so the review only counts it and apply never applies it (choice 109); such a file is never read, and
+// its `binary` is false.
 export type Change =
   | { kind: "added" | "changed" | "deleted"; path: string; binary: boolean; execBefore?: boolean; execAfter?: boolean; ignored: boolean }
   | { kind: "link" | "type"; path: string; before?: string; after?: string; ignored: boolean };
@@ -74,12 +75,12 @@ export async function changes(manifest: Manifest, work: string): Promise<Changes
         const st = await lstat(abs);
         const exec = !windows && (st.mode & 0o100) !== 0;
         const ignored = await isIgnored(r, false);
-        if (was?.type !== "file") found.push({ kind: "added", path: r, binary: await binaryAt(abs), execAfter: exec, ignored });
+        if (was?.type !== "file") found.push({ kind: "added", path: r, binary: !ignored && (await binaryAt(abs)), execAfter: exec, ignored });
         // An ignored file is only counted, never applied, so its size and modified time stand for its content, as the
         // copy had them after the snapshot (choice 112); a box that sets both back hides a change from the count only.
         // One that can be applied is read in full.
         else if (was.exec !== exec || (ignored ? st.size !== was.size || st.mtimeMs !== was.mtimeMs : was.sha256 !== (await hashFile(abs)))) {
-          const binary = (await binaryAt(at(base, r))) || (await binaryAt(abs));
+          const binary = !ignored && ((await binaryAt(at(base, r))) || (await binaryAt(abs)));
           found.push({ kind: "changed", path: r, binary, execBefore: was.exec, execAfter: exec, ignored });
         }
       }
@@ -96,7 +97,10 @@ export async function changes(manifest: Manifest, work: string): Promise<Changes
   for (const [r, was] of Object.entries(manifest.entries)) {
     if (seen.has(r) || was.type === "folder" || underRetyped(r)) continue;
     if (was.type === "link") found.push({ kind: "link", path: r, before: was.target, ignored: await isIgnored(r, false) });
-    else found.push({ kind: "deleted", path: r, binary: await binaryAt(at(base, r)), execBefore: was.exec, ignored: await isIgnored(r, false) });
+    else {
+      const ignored = await isIgnored(r, false);
+      found.push({ kind: "deleted", path: r, binary: !ignored && (await binaryAt(at(base, r))), execBefore: was.exec, ignored });
+    }
   }
 
   const byPath = (a: { path: string }, b: { path: string }) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
@@ -130,7 +134,8 @@ function ignoredIn(base: string, manifest: Manifest): (rel: string, folder: bool
   };
 }
 
-// Whether a file reads as binary, by its first bytes (diff.ts).
+// Whether a file reads as binary, by its first bytes (diff.ts). Never read for an ignored file, which the review only
+// counts and never shows (choice 109), so `binary` is false there.
 async function binaryAt(file: string): Promise<boolean> {
   const handle = await open(file, "r");
   try {
