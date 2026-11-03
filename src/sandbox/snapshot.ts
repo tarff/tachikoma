@@ -16,9 +16,13 @@ import { leaves } from "../tools/files.js";
 // Each path is the project's own, its parts joined by `/` on every system. A link's `target` is the one stored in the
 // project, as written there, to show; `inCopy` is the one work/ holds, read back after it was made, which the changes
 // compare work/ against (Task 18), so a rewritten target never shows as a change (main design, "Links"). For a link kept
-// as written the two are the same.
+// as written the two are the same. A file's `size` and `mtimeMs` are work/'s copy's, read just after it was made: the
+// changes compare a git-ignored file by them instead of its hash (choice 112).
 export interface Manifest { session: string; root: string; at: string; entries: Record<string, ManifestEntry>; leftOut: { path: string; why: string }[] }
-export type ManifestEntry = { type: "file"; sha256: string; exec: boolean } | { type: "folder" } | { type: "link"; target: string; inCopy: string };
+export type ManifestEntry =
+  | { type: "file"; sha256: string; exec: boolean; size: number; mtimeMs: number }
+  | { type: "folder" }
+  | { type: "link"; target: string; inCopy: string };
 
 export class SnapshotRefused extends Error {}
 
@@ -140,10 +144,12 @@ async function copyFile(src: string, rel: string, to: string[], copied?: (path: 
   for (let tries = 1; ; tries++) {
     const st = await lstat(src, { bigint: true }).catch(gone);
     const sha256 = st?.isFile() ? await copyOnce(src, st, to, tries === 1 ? "wx" : "w") : undefined;
+    // work/'s copy, the last of `to`, as it was just made.
+    const copy = sha256 === undefined ? undefined : await lstat(to.at(-1)!);
     await copied?.(rel);
-    if (st && sha256 !== undefined && sha256 === (await hashFile(src).catch(gone))) {
+    if (st && sha256 !== undefined && copy && sha256 === (await hashFile(src).catch(gone))) {
       // The owner's executable bit, as git reads it (git's read-cache.c, ce_permissions). Windows has none.
-      return { type: "file", sha256, exec: !windows && (st.mode & 0o100n) !== 0n };
+      return { type: "file", sha256, exec: !windows && (st.mode & 0o100n) !== 0n, size: copy.size, mtimeMs: copy.mtimeMs };
     }
     if (tries === 2) {
       throw new SnapshotRefused(`The project would not hold still while it was copied (${rel} kept changing); try again when nothing is writing to it.`);

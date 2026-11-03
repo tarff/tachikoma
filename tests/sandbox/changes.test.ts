@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -266,5 +266,49 @@ describe("changes in git-ignored paths", () => {
     if (w.manifest.entries[".gitignore"]?.type !== "link") return ctx.skip("Windows makes file symlinks only with Developer Mode or as an administrator");
     w.write("a.log", "a\n");
     expect(await ignoredOf(w)).toEqual({ "a.log": false });
+  });
+});
+
+// Choice 112: an ignored file is compared by the size and modified time work/'s copy had after the snapshot, never
+// hashed; a file that can be applied is still hashed in full.
+describe("comparing git-ignored files by size and time", () => {
+  // Sets a work/ file's modified time to whole second `s`, which the file system holds exactly, and records it as the
+  // time the copy had after the snapshot, so it can be set back exactly after an edit.
+  const pinned = (w: Awaited<ReturnType<typeof copied>>, rel: string, s: number) => {
+    utimesSync(w.inWork(rel), s, s);
+    const entry = w.manifest.entries[rel];
+    if (entry?.type !== "file") throw new Error(`${rel} is not a file in the manifest`);
+    entry.mtimeMs = statSync(w.inWork(rel)).mtimeMs;
+  };
+  const T = 1_700_000_000; // a made-up whole second
+  const found = async (w: Awaited<ReturnType<typeof copied>>) => (await changes(w.manifest, w.work)).changes.map((c) => [c.kind, c.path, c.ignored]);
+
+  it("counts an ignored file changed with the same size and a new time", async () => {
+    const w = await copied({ ".gitignore": "*.log\n", "a.log": "aaaa\n" });
+    pinned(w, "a.log", T);
+    w.write("a.log", "bbbb\n");
+    utimesSync(w.inWork("a.log"), T + 60, T + 60);
+    expect(await found(w)).toEqual([["changed", "a.log", true]]);
+  });
+
+  it("does not count an ignored file left as it was", async () => {
+    const w = await copied({ ".gitignore": "*.log\n", "a.log": "aaaa\n", "b.txt": "b\n" });
+    expect(await found(w)).toEqual([]);
+  });
+
+  it("misses an ignored file whose content changed with its size and time kept, as it is not hashed", async () => {
+    const w = await copied({ ".gitignore": "*.log\n", "a.log": "aaaa\n" });
+    pinned(w, "a.log", T);
+    w.write("a.log", "bbbb\n");
+    utimesSync(w.inWork("a.log"), T, T);
+    expect(await found(w)).toEqual([]);
+  });
+
+  it("still finds a file that can be applied whose time was set back, by its hash", async () => {
+    const w = await copied({ ".gitignore": "*.log\n", "a.txt": "aaaa\n" });
+    pinned(w, "a.txt", T);
+    w.write("a.txt", "bbbb\n");
+    utimesSync(w.inWork("a.txt"), T, T);
+    expect(await found(w)).toEqual([["changed", "a.txt", false]]);
   });
 });

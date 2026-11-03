@@ -1,5 +1,17 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,6 +21,11 @@ import { removeTree, TREE } from "../helpers.js";
 
 const windows = process.platform === "win32";
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+// The size and modified time of work/'s copy of a file, which its entry records (choice 112).
+const copyOf = (work: string, rel: string) => {
+  const st = statSync(path.join(work, rel));
+  return { size: st.size, mtimeMs: st.mtimeMs };
+};
 
 // A test's own folder, holding a project with `tree` in it, a data folder for the copies and a folder outside the
 // project for links to reach. No git runs: the snapshot never asks git, so TREE's ignored files and its .git are
@@ -43,7 +60,7 @@ describe("snapshot", () => {
     expect(manifest.leftOut).toEqual([]);
     const files = Object.entries(TREE).filter(([rel]) => !rel.startsWith(".git/"));
     for (const [rel, text] of files) {
-      expect(manifest.entries[rel]).toEqual({ type: "file", sha256: sha(text), exec: false });
+      expect(manifest.entries[rel]).toEqual({ type: "file", sha256: sha(text), exec: false, ...copyOf(work, rel) });
       expect(readFileSync(path.join(base, rel), "utf8")).toBe(text);
       expect(readFileSync(path.join(work, rel), "utf8")).toBe(text);
     }
@@ -79,6 +96,16 @@ describe("snapshot", () => {
     }
   });
 
+  it("records the size and modified time of work/'s copy, not the project's file", async () => {
+    const w = world({ "a.txt": "five\n" });
+    // A day before the snapshot, so the copy's own time, taken as it is made, differs.
+    const old = new Date(Date.now() - 86_400_000);
+    utimesSync(w.at("a.txt"), old, old);
+    const { manifest, work } = await snapshot(w.root, "s1", w.data);
+    expect(manifest.entries["a.txt"]).toMatchObject({ size: 5, mtimeMs: statSync(path.join(work, "a.txt")).mtimeMs });
+    expect(statSync(path.join(work, "a.txt")).mtimeMs).not.toBe(statSync(w.at("a.txt")).mtimeMs);
+  });
+
   it("records a file named __proto__ as an entry like any other", async () => {
     // A computed key, as a plain `__proto__:` in an object literal sets its prototype instead.
     const w = world({ ["__proto__"]: "made-up\n", "sub/__proto__": "made-up too\n" });
@@ -111,8 +138,8 @@ describe("snapshot", () => {
     // Made with its mode at creation, never changed afterwards (the plan's rule: no permission changes).
     writeFileSync(w.at("run.sh"), "echo made-up\n", { mode: 0o755 });
     const { manifest, work } = await snapshot(w.root, "s1", w.data);
-    expect(manifest.entries["run.sh"]).toEqual({ type: "file", sha256: sha("echo made-up\n"), exec: true });
-    expect(manifest.entries["plain.sh"]).toEqual({ type: "file", sha256: sha("echo made-up\n"), exec: false });
+    expect(manifest.entries["run.sh"]).toEqual({ type: "file", sha256: sha("echo made-up\n"), exec: true, ...copyOf(work, "run.sh") });
+    expect(manifest.entries["plain.sh"]).toEqual({ type: "file", sha256: sha("echo made-up\n"), exec: false, ...copyOf(work, "plain.sh") });
     expect(statSync(path.join(work, "run.sh")).mode & 0o100).toBe(0o100);
     expect(statSync(path.join(work, "plain.sh")).mode & 0o100).toBe(0);
   });
@@ -210,7 +237,7 @@ describe("snapshot", () => {
     };
     const { manifest, base, work } = await snapshot(w.root, "s1", w.data, { copied });
     expect(changes).toBe(2);
-    expect(manifest.entries["a.txt"]).toEqual({ type: "file", sha256: sha("second, longer\n"), exec: false });
+    expect(manifest.entries["a.txt"]).toEqual({ type: "file", sha256: sha("second, longer\n"), exec: false, ...copyOf(work, "a.txt") });
     expect(readFileSync(path.join(base, "a.txt"), "utf8")).toBe("second, longer\n");
     expect(readFileSync(path.join(work, "a.txt"), "utf8")).toBe("second, longer\n");
   });

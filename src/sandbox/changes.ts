@@ -70,11 +70,16 @@ export async function changes(manifest: Manifest, work: string): Promise<Changes
       } else {
         // A file by its entry, so hashFile, which follows links, reads the file itself. The executable flag is the
         // owner's bit, as the snapshot records it (git's ce_permissions); Windows has none.
-        const exec = !windows && ((await lstat(abs)).mode & 0o100) !== 0;
-        if (was?.type !== "file") found.push({ kind: "added", path: r, binary: await binaryAt(abs), execAfter: exec, ignored: await isIgnored(r, false) });
-        else if (was.exec !== exec || was.sha256 !== (await hashFile(abs))) {
+        const st = await lstat(abs);
+        const exec = !windows && (st.mode & 0o100) !== 0;
+        const ignored = await isIgnored(r, false);
+        if (was?.type !== "file") found.push({ kind: "added", path: r, binary: await binaryAt(abs), execAfter: exec, ignored });
+        // An ignored file is only counted, never applied, so its size and modified time stand for its content, as the
+        // copy had them after the snapshot (choice 112); a box that sets both back hides a change from the count only.
+        // One that can be applied is read in full.
+        else if (was.exec !== exec || (ignored ? st.size !== was.size || st.mtimeMs !== was.mtimeMs : was.sha256 !== (await hashFile(abs)))) {
           const binary = (await binaryAt(at(base, r))) || (await binaryAt(abs));
-          found.push({ kind: "changed", path: r, binary, execBefore: was.exec, execAfter: exec, ignored: await isIgnored(r, false) });
+          found.push({ kind: "changed", path: r, binary, execBefore: was.exec, execAfter: exec, ignored });
         }
       }
     }
