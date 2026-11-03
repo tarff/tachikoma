@@ -937,6 +937,17 @@ the plan's review.
       the host, so a host `/work` link or a `C:\work` junction stops protected names matching in
       the box; a helper that exits 0 with an answer that is not JSON reads `exit code 0`; the
       shared memory-kill count can blame the wrong one of two calls running at once;
+    - from Task 18 (the changes): a tracked file a `.gitignore` pattern covers (a committed
+      `dist/`, a force-added file) is marked ignored and never applied (choice 109 reads no git);
+      only `.gitignore` files are read, not `.git/info/exclude` or the global excludes file, and
+      the `ignore` library matches letter case loosely, so on Linux `build/` also covers
+      `Build/`; a path the snapshot left out can come back as added (Task 19's checks make it a
+      conflict); empty folders made or deleted are not shown; a case-only rename on Windows or
+      macOS shows as an add and a delete; a box can hide an ignored change from the count by
+      keeping its size and time (choice 112); a file the box made unreadable (Linux, macOS) stops
+      the list with a raw error, so nothing is applied (Task 20 shows one line); the real-Docker
+      pipe test is unproven on macOS, where `mkfifo` in a shared folder may fail (if release 13's
+      CI shows it, skip the test when `mkfifo` fails);
     - choices 88 and 92.
 ---
 
@@ -1745,6 +1756,22 @@ line.
 
 Commit: `feat: copy mode's changes, and a line diff to show them`.
 
+**As built (9348f20 and its follow-ups):** `changes(manifest, work)` returns `{ changes: Change[];
+leftOut: { path: string; why: string }[] }`, since `Change[]` has no place for what is left out;
+work/'s own `.git`, made at launch, is always listed there. Every `Change` has `ignored: boolean`
+(choice 109), read from base/'s `.gitignore` files with search.ts's `rulesIn` and `ignored`; an
+ignored change is never read for its binary flag (`binary: false`). The manifest's file entries
+also record `size` and `mtimeMs`, taken from the work/ copy right after it is written, for choice
+112; its entries object has no prototype, so a file named `__proto__` is an ordinary entry. An
+entry Docker Desktop on Windows keeps for a box's socket or pipe (listed as a link, unreadable:
+measured `EINVAL`, `EACCES`) is left out as `not a file, folder or link` by both the snapshot and
+`changes` (`unreadable`, snapshot.ts). `fileDiff(before: Buffer, after: Buffer)` gives the binary
+row, choice 111's row `too large to show: <n> lines before, <m> after` (the user's approval) over
+`MAX_DIFF_LINES`, and `lineDiff` otherwise. Headers follow git (`@@ -1 +1 @@`, `-0,0` for an
+empty side), a missing final new line gets git's `\ No newline at end of file`, and a carriage
+return is kept and drawn as `␍`. Measured on this repo's untouched copy: `changes()` 2.2 s the
+first time, 1.3 s after (38.2 s before choice 112).
+
 ## Task 19: Copy mode: applying
 
 **Files:** create `src/sandbox/apply.ts`, `tests/sandbox/apply.test.ts`.
@@ -1838,6 +1865,15 @@ choice 27), `src/tui/app/keyRouting.ts`, `src/keybindings.ts` (the context's nam
   unskipped; otherwise it is kept.
 - **`l` (later)** keeps the copy. **`d` (discard)** asks `Discard the copy and every change in
   it? [y/n]`.
+- **From Task 18's reviews** (wording for each goes to the user):
+  - what was left out: `changes()`'s `leftOut` (what the box made under `.git`, `.tachikoma`, or
+    not a file, folder or link) and the manifest's own `leftOut` (links left out of the copy);
+  - ignored changes as one count (choice 109);
+  - a failed `changes()` (a file the box made unreadable) as one line, not a stack trace;
+  - every path and diff row is the box's own text, so it is drawn through `describe.ts`'s
+    `screen()`;
+  - a file's size is checked against Node's longest string (`buffer.constants.MAX_STRING_LENGTH`)
+    before it is read for the diff, since a larger text file cannot be held as one string.
 
 **Tests:**
 - the list, moving and switching;
