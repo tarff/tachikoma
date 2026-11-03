@@ -876,6 +876,20 @@ the plan's review.
     can be written in it`; `.tachikoma/backups/<session>/<path> is already there and is not this
     file's backup; move it, then apply again`; `<path> is no longer a file in the copy`; and the
     merge markers' labels `your folder`, `the snapshot`, `the box's copy`.
+114. **Task 20's lines, and the box's own `.git` hidden** (the user's approval and choice):
+    `Reading the copy's changes...`; `Applying...`; `Any key closes.` after the summary; the
+    summary's `, <n> left in the copy`; `The copy is kept; tachi review <session> opens it again.`;
+    `The copy was removed.`; `The copy was discarded.`; `The copy could not be removed (<error>);
+    delete <folder> by hand.`; `Left out, never applied: <path> (<why>)`; `1 change in a path git
+    ignores: counted, never applied` (`<n> changes in paths ...` for more); `The copy's changes
+    could not be read: <error>.`; the rows' `applied`, `skipped`, `merged with conflicts in
+    <file>`, `conflict: <why>`, `not applied: <why>`, `failed: <error>`; the diff view's `<kind>
+    <path>`, `before: <x>` / `after: <x>` / `(none)`, `a path whose type changed is applied by
+    hand`, `too large to show: <n> bytes before, <m> after`, `executable: yes before, no after`,
+    `no lines to show`, `The diff could not be read: <error>`, and its key row. The top-level
+    `.git` in `work/`, which Tachikoma makes at launch, is not listed as left out (it would show
+    in every review); a deeper one is. The README (Task 23) says the box's commits stay in the
+    copy and are never applied.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
