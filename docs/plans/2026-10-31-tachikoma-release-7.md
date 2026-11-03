@@ -892,9 +892,14 @@ the plan's review.
     copy and are never applied.
 115. **Changes to protected files start as "skip", marked** (the user's choice, Task 20's spec
     review). A file on `protected.ts`'s list (git hooks, `.husky/`, `.vscode/tasks.json`,
-    `.npmrc` and the rest) can run code on the host later, so its row carries a marker (wording
-    to the user) and the user must switch it to keep. The list is protected.ts's own check, not a
-    copy.
+    `.npmrc` and the rest) can run code on the host later, so its row carries the marker
+    `(protected)` (the user's approval), as `skip (protected)`, and the user must switch it to
+    keep. The list is protected.ts's own check (`protectedPart`), not a copy; Task 21 passes the
+    session's git-named protection (`protectionOf(await gitSettings(root))`), so hooks folders set
+    in git's settings are marked too. A protected change left as skip is skipped like any other:
+    once nothing else is left, the copy is removed (the user's choice, Task 20's quality review;
+    `l` keeps it). While the copy is removed the screen shows `Removing the copy (<n> files)...`
+    (the user's approval), `<n>` from the manifest.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -988,6 +993,15 @@ the plan's review.
       failed`; owner and group become the user running Tachikoma on Linux and macOS; a case-only
       rename of a folder keeps the old spelling (Task 20 applies deletes first); no folder sync
       after the log row or the rename, so a power cut can lose the last of either;
+    - from Task 20 (the review): a binary file up to about 512 MB is read whole to show its
+      sizes; a copy the host cannot remove (a folder the box made unreadable on Linux or macOS)
+      is kept with one line, maybe without its manifest, for deleting by hand; a waiting
+      keys-file chord is not shown; Ctrl-C cannot stop an apply between files; note rows can be
+      selected; on tiny terminals wrapped top and bottom lines draw past the height; skip
+      choices are not remembered, so a reopened copy lists skipped changes as keep again; a
+      delete the user also made shows as a conflict and keeps the copy; removal takes as long
+      as the copy's file count; `m` is offered where git is missing, and then says so; a copy
+      holding a link change is removed only by discard;
     - choices 88 and 92.
 ---
 
@@ -1953,6 +1967,23 @@ choice 27), `src/tui/app/keyRouting.ts`, `src/keybindings.ts` (the context's nam
 
 Commit: `feat: the review of a copy's changes, file by file, with each diff`.
 
+**As built (070a9a2 and its follow-ups):** `Review` (src/tui/Review.tsx) is self-contained: it
+reads its own keys with `useInput` from the `Review` context, so `tachi review` can draw it
+alone; the App wiring is Task 21's. Props: `copy` (`{ session, folder, manifest }`), `bindings`,
+`protection` (required, host paths), `onEnd`, `height?`. `ReviewEnd` is `{ how: "applied" |
+"later" | "discarded"; outcomes; removed; lines }`, all escaped with `screen()`; `lines` is the
+summary, one line per outcome neither applied nor skipped, and the copy line. The diff is
+`DetailView` inside the review (line, top/bottom, page and back keys; no search, print or
+wheel). The finished screen waits for a key, Up/Down scrolling it (choice 114's line changed to
+`Up/Down scroll · any other key closes`, the user's choice). Deletes are applied first; each
+file's error is its own row; a delete conflict offers no merge; Ctrl-C at the list means later,
+and at a merge question stops applying and keeps the copy; a key that opens a question or
+starts the apply ends that read, so a paste cannot answer it. Shown-only, refused, failed and
+unanswered conflicts keep the copy; a merge with markers counts as done. `removeCopy`
+(snapshot.ts) deletes `manifest.json` first, then walks by readdir's types, links removed never
+entered. Measured on Docker Desktop for Windows: a pipe or socket the box made can be deleted
+from the host, though it cannot be read, so removal needs no box.
+
 ## Task 21: Copy mode in a session, `tachi review`, and `never`
 
 **Files:** modify `src/cli.tsx`, `src/tui/app/queue.ts`, `src/tui/app/keyRouting.ts` (the three
@@ -1966,7 +1997,9 @@ Commit: `feat: the review of a copy's changes, file by file, with each diff`.
   live bindings table, and its own keys, paste and mouse are off while it shows, since Ink gives
   every key to every `useInput`. Test: keys pressed in the review do not reach the prompt, and
   Ctrl-C does only the review's action. `ReviewEnd.lines` come back escaped, and are printed
-  after Ink ends.
+  after Ink ends. `Review`'s required `protection` is worked out on the host at review time,
+  `protectionOf(await gitSettings(manifest.root))`, for both the session's end and
+  `tachi review`; never the gate's `boxProtection` view, whose `/work` paths match nothing.
 - **`withLock`'s lock sits beside the copy's folder,** not inside it, since `removeCopy`
   deletes the folder (Task 20's spec review).
 
