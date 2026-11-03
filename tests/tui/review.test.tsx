@@ -44,7 +44,7 @@ const OWN = /^(path|home|homedrive|homepath|userprofile|xdg_config_home|git_.*)$
 // is made private; a folder outside the project for links to reach; and a home with empty git settings files for every
 // git run. The test then changes work/ as the box would, and the project as the user would.
 function world(tree: Record<string, string | Buffer>) {
-  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-review-")));
+  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-rvw-")));
   onTestFinished(() => removeTree(dir));
   const root = path.join(dir, "project");
   const data = path.join(dir, "data");
