@@ -11,10 +11,23 @@ const CONTEXT = 3;
 // git's test for a binary file: a zero byte in the first 8,000 (search.ts).
 export const isBinary = (buf: Buffer) => buf.subarray(0, BINARY_TEST_BYTES).includes(0);
 
-// A file's diff: one row of sizes for a binary file, its lines otherwise. Either side may be empty, for an added or a
-// deleted file.
+// The most lines either side may have for its diff to be shown (choice 111). The diff's time grows with the square of
+// the lines changed: Task 18 measured a 10,000-line file fully rewritten at 638 ms, and a 30,000-line one at 5.7 s.
+export const MAX_DIFF_LINES = 10_000;
+
+// A file's lines as split below: one per new line, and one more for a last line without one.
+function lineCount(buf: Buffer): number {
+  let n = 0;
+  for (let at = buf.indexOf(10); at !== -1; at = buf.indexOf(10, at + 1)) n++;
+  return buf.length > 0 && buf.at(-1) !== 10 ? n + 1 : n;
+}
+
+// A file's diff: one row of sizes for a binary file, one of line counts for a file too large to diff, and its lines
+// otherwise. Either side may be empty, for an added or a deleted file.
 export function fileDiff(before: Buffer, after: Buffer): Line[] {
   if (isBinary(before) || isBinary(after)) return [{ text: `binary file: ${before.length} bytes before, ${after.length} after` }];
+  const [b, a] = [lineCount(before), lineCount(after)];
+  if (b > MAX_DIFF_LINES || a > MAX_DIFF_LINES) return [{ text: `too large to show: ${b} lines before, ${a} after` }];
   return lineDiff(before.toString("utf8"), after.toString("utf8"));
 }
 

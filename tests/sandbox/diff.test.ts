@@ -153,4 +153,27 @@ describe("fileDiff", () => {
     expect(fileDiff(Buffer.from("a\n"), Buffer.from(late))).toEqual([head("@@ -1 +1 @@"), del("a"), add(late.slice(0, -1))]);
     expect(fileDiff(Buffer.from("café\n"), Buffer.from(""))).toEqual([head("@@ -1 +0,0 @@"), del("café")]);
   });
+
+  // Choice 111: no diff when either side has more than 10,000 lines.
+  it.each([
+    ["before", 9_999, false],
+    ["before", 10_000, false],
+    ["before", 10_001, true],
+    ["after", 9_999, false],
+    ["after", 10_000, false],
+    ["after", 10_001, true],
+  ])("with %s at %i lines, gives one row instead of a diff: %s", (side, n, tooLarge) => {
+    const long = Buffer.from(numbered(n, { 5: "five" }));
+    const short = Buffer.from(numbered(9));
+    const [before, after] = side === "before" ? [long, short] : [short, long];
+    const [b, a] = side === "before" ? [n, 9] : [9, n];
+    const rows = fileDiff(before, after);
+    if (tooLarge) expect(rows).toEqual([{ text: `too large to show: ${b} lines before, ${a} after` }]);
+    else expect(rows[0]?.color).toBe("cyan");
+  });
+
+  it("counts a last line with no new line, so the limit holds however a file ends", () => {
+    const over = Buffer.from(`${numbered(10_000)}last`);
+    expect(fileDiff(over, Buffer.from(""))).toEqual([{ text: "too large to show: 10001 lines before, 0 after" }]);
+  });
 });
