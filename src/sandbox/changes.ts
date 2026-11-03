@@ -6,7 +6,7 @@ import { lstat, open, readdir, readlink } from "node:fs/promises";
 import path from "node:path";
 import { BINARY_TEST_BYTES, ignored, type Rules, rulesIn } from "../tools/search.js";
 import { isBinary } from "./diff.js";
-import { hashFile, type Manifest, NOT_COPIED, reserved } from "./snapshot.js";
+import { hashFile, type Manifest, NOT_COPIED, reserved, unreadable } from "./snapshot.js";
 
 // A file added, changed or deleted, which the review can apply, with its executable flag on each side it has; or a link
 // added, retargeted or deleted, or a path whose type changed, which are shown only (choice 26), with the project's own
@@ -46,10 +46,11 @@ export async function changes(manifest: Manifest, work: string): Promise<Changes
         continue;
       }
       const abs = at(work, r);
-      // As the snapshot reads an entry: Windows lists every reparse point as a link, and only one with a target is.
+      // As the snapshot reads an entry: Windows lists every reparse point as a link, and only one with a target is. One
+      // that lstat cannot read either is a box's socket or pipe (snapshot.ts, unreadable).
       const target = d.isSymbolicLink() ? await readlink(abs).catch(() => undefined) : undefined;
-      const kind = d.isSymbolicLink() && target === undefined ? await lstat(abs) : d;
-      const now: Kind | undefined = target !== undefined ? "link" : kind.isDirectory() ? "folder" : kind.isFile() ? "file" : undefined;
+      const kind = d.isSymbolicLink() && target === undefined ? await lstat(abs).catch(unreadable) : d;
+      const now: Kind | undefined = target !== undefined ? "link" : kind?.isDirectory() ? "folder" : kind?.isFile() ? "file" : undefined;
       if (now === undefined) {
         // Not copied, so never applied; whatever the snapshot had here counts as deleted.
         leftOut.push({ path: r, why: NOT_COPIED });

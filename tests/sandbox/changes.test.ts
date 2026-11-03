@@ -1,9 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { changes } from "../../src/sandbox/changes.js";
+import { dockerState } from "../../src/sandbox/docker.js";
+import { boxLimits, boxUser, DockerExecutor, dockerRoom } from "../../src/sandbox/executor.js";
+import { imageFor } from "../../src/sandbox/image.js";
 import { snapshot } from "../../src/sandbox/snapshot.js";
 import { removeTree, ZERO } from "../helpers.js";
 
@@ -176,7 +180,7 @@ describe("changes", () => {
   });
 
   it("lists an entry that is not a file, folder or link, and counts a file replaced by one as deleted", async (ctx) => {
-    if (windows) return ctx.skip("Windows keeps no sockets or pipes among a folder's entries");
+    if (windows) return ctx.skip("Node on Windows makes no socket in a folder; a box's own pipe is tested in real Docker below");
     // A socket's path must fit in 104 bytes on macOS (sun_path, <sys/un.h>), whose temporary folder alone is about 57,
     // so the copy's folders above it (see copied) and the socket's own name are short: about 93 in all.
     const w = await copied({ s: "a\n" });
@@ -312,5 +316,51 @@ describe("comparing git-ignored files by size and time", () => {
     w.write("a.txt", "bbbb\n");
     utimesSync(w.inWork("a.txt"), T, T);
     expect(await found(w)).toEqual([["changed", "a.txt", false]]);
+  });
+});
+
+// A pipe made by a box in its folder (release 7 plan's rules for a test's box, choice 73: the sandbox's own image, never
+// pulled, network off, labelled, removed), or a skip with the reason on any Docker the box cannot use. Docker Desktop on
+// Windows keeps it as an entry the host lists as a link but can read neither as a link nor otherwise (the Task 18
+// quality review's measurement on this PC); elsewhere it is a pipe.
+describe("a pipe a box made, in real Docker", { timeout: 0 }, () => {
+  it("is left out of the changes and of a snapshot, never failing either", async (ctx) => {
+    const state = await dockerState();
+    if (state === "missing") return ctx.skip("no docker program on PATH");
+    if (state === "stopped") return ctx.skip("Docker is not running");
+    if (state !== "ready") return ctx.skip(state === "denied" ? "this user is not allowed to use Docker" : "Docker is set to Windows containers");
+    // An ordinary test folder for the box, not the private copy, so Docker Desktop is sure to share it. changes() reads
+    // it as work/, with no base/ beside it: nothing here is changed or deleted, and no .gitignore is read.
+    const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-chg-")));
+    const work = path.join(dir, "work");
+    mkdirSync(work);
+    writeFileSync(path.join(work, "a.txt"), "a\n");
+    let box: DockerExecutor | undefined;
+    onTestFinished(async () => {
+      // The host may not remove what it cannot read, so the box removes its pipe first.
+      await box?.exec("rm -f /work/pipe", "/").catch(() => {});
+      await box?.stop();
+      await removeTree(dir);
+    });
+    const info = await imageFor(work);
+    if (!info.built) return ctx.skip(`the sandbox's image (${info.tag}) is not built`);
+    const space = await dockerRoom();
+    const got = boxLimits(undefined, space);
+    if (!("limits" in got)) return ctx.skip(got.problem);
+    const { manifest } = await snapshot(work, "s1", path.join(dir, "d"));
+    box = await DockerExecutor.start({
+      image: info.tag,
+      folder: work,
+      limits: got.limits,
+      user: boxUser(space),
+      network: "off",
+      mounts: [],
+      session: `test-${randomUUID()}`,
+      labels: { "tachikoma.test": "1" },
+    });
+    expect((await box.exec("mkfifo /work/pipe", "/")).code).toBe(0);
+    const leftOut = [{ path: "pipe", why: "not a file, folder or link" }];
+    expect(await changes(manifest, work)).toEqual({ changes: [], leftOut });
+    expect((await snapshot(work, "s2", path.join(dir, "d"))).manifest.leftOut).toEqual(leftOut);
   });
 });

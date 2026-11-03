@@ -77,13 +77,13 @@ export async function snapshot(
         }
         continue;
       }
-      const kind = d.isSymbolicLink() ? await lstat(src) : d;
-      if (kind.isDirectory()) {
+      const kind = d.isSymbolicLink() ? await lstat(src).catch(unreadable) : d;
+      if (kind?.isDirectory()) {
         await mkdir(to(base));
         await mkdir(to(work));
         manifest.entries[r] = { type: "folder" };
         await walk(r);
-      } else if (kind.isFile()) manifest.entries[r] = await copyFile(src, r, [to(base), to(work)], opts.copied);
+      } else if (kind?.isFile()) manifest.entries[r] = await copyFile(src, r, [to(base), to(work)], opts.copied);
       else manifest.leftOut.push({ path: r, why: NOT_COPIED });
     }
   };
@@ -155,6 +155,14 @@ async function copyFile(src: string, rel: string, to: string[], copied?: (path: 
       throw new SnapshotRefused(`The project would not hold still while it was copied (${rel} kept changing); try again when nothing is writing to it.`);
     }
   }
+}
+
+// An entry listed as a link that is none, and that lstat cannot read either: Docker Desktop on Windows keeps a socket
+// or pipe a box made that way (measured on Windows at Task 18's quality review: readlink fails with EINVAL, lstat with
+// EACCES). It is not a file, folder or link, and is left out as one, rather than failing the copy or the changes.
+export function unreadable(err: NodeJS.ErrnoException): undefined {
+  if (err.code === "EACCES") return undefined;
+  throw err;
 }
 
 // A file that is gone counts as one that changed.
