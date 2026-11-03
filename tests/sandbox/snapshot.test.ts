@@ -79,6 +79,18 @@ describe("snapshot", () => {
     }
   });
 
+  it("records a file named __proto__ as an entry like any other", async () => {
+    // A computed key, as a plain `__proto__:` in an object literal sets its prototype instead.
+    const w = world({ ["__proto__"]: "made-up\n", "sub/__proto__": "made-up too\n" });
+    expect(existsSync(w.at("__proto__"))).toBe(true);
+    const { manifest } = await snapshot(w.root, "s1", w.data);
+    expect(Object.keys(manifest.entries).sort()).toEqual(["__proto__", "sub", "sub/__proto__"]);
+    expect(Object.hasOwn(manifest.entries, "__proto__")).toBe(true);
+    // A path never recorded is not found, whatever the object holds.
+    expect(manifest.entries["other.txt"]).toBeUndefined();
+    expect(JSON.parse(readFileSync(path.join(w.copies, "manifest.json"), "utf8")).entries.__proto__.type).toBe("file");
+  });
+
   it("copies files as new files, never hard links (nlink 1)", async () => {
     const w = world({ "a.txt": "one\n", "sub/b.txt": "two\n" });
     const { base, work } = await snapshot(w.root, "s1", w.data);

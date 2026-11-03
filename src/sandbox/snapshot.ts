@@ -50,7 +50,8 @@ export async function snapshot(
   // Not recursive: a copy is never made into one already there.
   await mkdir(base);
   await mkdir(work);
-  const manifest: Manifest = { session, root: real, at: new Date().toISOString(), entries: {}, leftOut: [] };
+  // No prototype, so a file named `__proto__` is an entry like any other, not the object's prototype.
+  const manifest: Manifest = { session, root: real, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
   const links: string[] = [];
 
   const walk = async (rel: string): Promise<void> => {
