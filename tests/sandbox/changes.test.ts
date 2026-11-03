@@ -208,7 +208,9 @@ describe("changes in git-ignored paths", () => {
       "src/a.ts": "a\n",
       "node_modules/pkg/index.js": "old\n",
     });
-    w.write("node_modules/pkg/index.js", "new\n");
+    // Another size: an ignored file is compared by size and time (choice 112), and Linux before 6.13 stamps times from a
+    // coarse clock, so a same-size edit could share the copy's time.
+    w.write("node_modules/pkg/index.js", "newer\n");
     w.write("node_modules/fresh/x.js", "x\n");
     w.write("run.log", "log\n");
     w.write("keep.log", "kept\n");
