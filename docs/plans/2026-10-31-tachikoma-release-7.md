@@ -856,6 +856,17 @@ the plan's review.
 110. **Task 17's lines** (the user's approval): why something was left out of the copy: `a link
     that leads outside the project`, `a link that leads nowhere`, `not a file, folder or link`;
     and `The copy was refused: the link <path> in it leads outside the copy.`
+111. **The line diff stops at 10,000 lines** (the user's choice, Task 18). Measured by Task 18's
+    builder: a 10,000-line file with scattered edits took 8-14 ms, fully rewritten 638 ms; a
+    30,000-line file fully rewritten took 5.7 s, the cost growing with the square of the size.
+    A file over 10,000 lines on either side shows one row instead of a diff, with both line counts;
+    its wording goes to the user.
+112. **Git-ignored files are compared by size and modified time** (the user's choice, Task 18).
+    `changes()` on an untouched snapshot of this repo took 38.2 s the first time and 3.6 s after,
+    and 98% of its files are in `node_modules`, which choice 109 only counts. Files that can be
+    applied are still read in full; ignored ones are compared by size and modified time only. A
+    box can set file times, so it could hide an ignored change from the count, never from what is
+    applied. The new time is measured before committing.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
