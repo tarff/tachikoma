@@ -91,7 +91,8 @@ function isFile(part: string, name: string, platform: NodeJS.Platform): boolean 
 // A path part as the file system reads it (choice 60). Windows drops the dots and spaces at a name's end and a
 // ":stream" after it, so `.npmrc.` and `.npmrc:x` write `.npmrc`, and ignores case; macOS ignores case too (as
 // settingsName and sameIgnoringCase in tools/files.ts do; a copy, since that file will import this one in Task 8).
-function fold(part: string, platform: NodeJS.Platform): string {
+// Copy mode reads `.git` and `.tachikoma` with it too (sandbox/snapshot.ts), so what it leaves out is what apply refuses.
+export function fold(part: string, platform: NodeJS.Platform): string {
   if (platform === "win32") return part.replace(/:.*/s, "").replace(/[. ]+$/, "").toLowerCase();
   return platform === "darwin" ? part.toLowerCase() : part;
 }
