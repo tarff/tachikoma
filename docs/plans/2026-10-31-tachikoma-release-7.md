@@ -875,6 +875,22 @@ the plan's review.
     - a read of a FIFO in the project waits, in the box as on the host;
     - in copy mode, the `@` menu lists the host folder, not the copy (choice 98);
     - SELinux on in Docker denies the box the linked folder (choice 101);
+    - from Task 17 (the snapshot): a Windows junction in `work/` does not resolve in the box
+      (measured on Docker Desktop: it shows as a link to `/mnt/host/c/...`, which is not there),
+      so pnpm's and npm workspaces' `node_modules` links are broken in the box, whose packages'
+      native parts do not run there anyway; the agent reinstalls with the network on, and choice
+      109 keeps that from being applied; a file or folder deleted mid-snapshot refuses it or
+      shows a raw error, so a running dev server can trip it; a folder swapped for a link during
+      the walk is followed (only something writing to the project at that moment, such as a
+      live-link box on Linux, could do it; Node has no `openat`); relative links whose `..`
+      steps climb above the project are left out, and one climbing back in by the project's own
+      name is kept and leads nowhere in the copy; differently-cased relative links on macOS;
+      admin-made symlinks without Developer Mode, locked or unreadable files, and a read-only
+      file changing mid-copy give raw errors; Windows names ending in a dot or space; very long
+      paths under the data folder; a file swapped for a pipe could hang; a case-sensitive Mac
+      project volume with names differing only by case; links in `base/` are not re-checked
+      (never mounted, and apply reads only manifest paths); `hashFile` follows links, so callers
+      `lstat` first;
     - lefthook's and pre-commit's files are writable from the box in live link (choice 102);
     - live link's letter-case check looks at the project folder only, so a subfolder made to
       mind case differently (Windows' per-folder setting, a case-sensitive Mac volume) is not
