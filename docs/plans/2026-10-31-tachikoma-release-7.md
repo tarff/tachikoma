@@ -957,6 +957,18 @@ the plan's review.
       the list with a raw error, so nothing is applied (Task 20 shows one line); the real-Docker
       pipe test is unproven on macOS, where `mkfifo` in a shared folder may fail (if release 13's
       CI shows it, skip the test when `mkfifo` fails);
+    - from Task 19 (apply): a replaced file keeps its old permission bits less the user's umask
+      (664 becomes 644 under 022, as git's checkout does), and on Windows takes its folder's ACL,
+      losing its own and a hidden attribute; a read-only file, or one another program holds,
+      fails the rename with a raw error after the pending row; a file the box adds named exactly
+      `GIT~1` when `.git` is a file on a volume with short names is a conflict, never a write;
+      a refusal after the pending row leaves it, so `appliedSoFar` lists that file as not applied
+      or changed since; a crash during an exec-only change reads as applied; the gap between the
+      last check and the rename; empty folders left after deletes; long Windows paths give raw
+      errors; a user's binary file merged against the box's text file fails as `git merge-file
+      failed`; owner and group become the user running Tachikoma on Linux and macOS; a case-only
+      rename of a folder keeps the old spelling (Task 20 applies deletes first); no folder sync
+      after the log row or the rename, so a power cut can lose the last of either;
     - choices 88 and 92.
 ---
 
@@ -1851,6 +1863,21 @@ The main design's apply rules, one by one:
 
 Commit: `feat: copy mode's apply: checked file by file, backed up, logged, conflicts merged or skipped`.
 
+**As built (c804e78 and its follow-ups):** `applyChange(c, ctx, merge?, opts?)` takes
+`{ env?, git?, step? }` for tests (git's environment, a stand-in git run, a hook at each step);
+`appliedSoFar(session, data?)` is async, to reuse the streaming `hashFile`, and reports "not
+applied" as `skipped` and "changed since" as `conflict`. The log and the merge's fresh folder
+(`merge-*`) are beside `ctx.work`, in the copy's own folder. The merge writes into its first file
+rather than using `-p` (Node's default output cap for a child is 1 MB); a git exit of 1-127 that
+left that file unchanged is a failed git (macOS's `/usr/bin/git` stub without Apple's developer
+tools), shown as `git merge-file failed: ...`. A binary conflict always says `a binary file;
+resolve it by hand`. A backup that already holds this exact file is reused, so a retry after a
+crash works; a call that stops short of the swap removes the backup it made. The walk checks the
+deepest existing folder's real place before reporting a folder missing or making it, so
+`GIT~1/hooks/new/x` writes nothing into `.git`. The executable flag is set only through the new
+file's creation mode (git's 777 or 666 less the umask for an added file); nothing on Windows.
+Unexpected disk errors throw (Task 20 catches each file's). The approved lines are choice 113.
+
 ## Task 20: The review
 
 **Files:** create `src/tui/Review.tsx`, `tests/tui/review.test.tsx`; modify `src/tui/phase.ts`,
@@ -1883,6 +1910,19 @@ choice 27), `src/tui/app/keyRouting.ts`, `src/keybindings.ts` (the context's nam
     `screen()`;
   - a file's size is checked against Node's longest string (`buffer.constants.MAX_STRING_LENGTH`)
     before it is read for the diff, since a larger text file cannot be held as one string.
+- **From Task 19's reviews:**
+  - **deletes are applied before adds and changes.** On Windows and macOS a case-only rename in
+    the box (`Readme.md` to `README.md`) lists as an add and a delete; added first, the add is a
+    false conflict and the delete then removes the user's only copy (measured on this PC, with
+    either skip or merge). Deleting first gives the right result. Test: a case-only rename.
+  - each file's apply is caught on its own: `applyChange` throws on an unexpected disk error
+    (a full disk, a rename Windows refuses), and one file's error must not stop the rest (main
+    design: not all-or-nothing); it shows as one line;
+  - a copy reopened (`tachi review`, Task 21) leaves out the paths `appliedSoFar` reports as
+    applied, since `changes()` lists them again; `appliedSoFar` is async;
+  - `ctx` is built from the copy's own folder (`snapshot()`'s result, or `copies/<session>/`
+    when reopened), since `applyChange` finds the log beside `ctx.work`;
+  - a binary conflict's why is `a binary file; resolve it by hand`, so `m` is not offered.
 
 **Tests:**
 - the list, moving and switching;
