@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { render } from "ink-testing-library";
 import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
+import type { Protection } from "../../src/core/permissions.js";
 import { onPath } from "../../src/exec/env.js";
 import { readKeybindings } from "../../src/keybindings.js";
 import { type ApplyOptions, applyChange } from "../../src/sandbox/apply.js";
@@ -122,7 +123,8 @@ function needGit(t: TestContext, w: World) {
 }
 
 // The review of the world's copy, drawn in `height` rows, and how it ended once it has.
-function open(w: World, opts: { height?: number; bindings?: Bindings; step?: ApplyOptions["step"]; remove?: (folder: string) => Promise<void> } = {}) {
+type Opts = { height?: number; bindings?: Bindings; step?: ApplyOptions["step"]; remove?: (folder: string) => Promise<void>; protection?: Protection };
+function open(w: World, opts: Opts = {}) {
   w.save();
   const ended: ReviewEnd[] = [];
   const app = render(
@@ -133,6 +135,7 @@ function open(w: World, opts: { height?: number; bindings?: Bindings; step?: App
       onEnd={(end) => ended.push(end)}
       options={{ env: w.env, ...(opts.step ? { step: opts.step } : {}) }}
       {...(opts.remove ? { remove: opts.remove } : {})}
+      {...(opts.protection ? { protection: opts.protection } : {})}
     />,
   );
   onTestFinished(() => app.unmount());
@@ -167,15 +170,21 @@ describe("Review's list", () => {
     w.box("build/out.js", "rebuilt, longer\n");
     unlinkSync(path.join(w.work, "t"));
     mkdirSync(path.join(w.work, "t"));
-    // The box's own repository, made at launch (choice 24), and a link the snapshot left out.
+    // The box's own repository, made at launch (choice 24), which is not listed (choice 114); a nested one and a
+    // .tachikoma the box made, which are; and a link the snapshot left out.
     w.box(".git/HEAD", "ref: refs/heads/main\n");
+    w.box("sub/.git/HEAD", "ref: refs/heads/main\n");
+    w.box(".tachikoma/made-up.txt", "x\n");
     w.manifest.leftOut.push({ path: "out", why: "a link that leads outside the project" });
     const { app } = open(w);
     await until(app, TOP);
     const rows = rowsOf(app);
     expect(rows[0]).toBe(`${TOP}4 files. ${KEYS}`);
-    expect(rows).toContain("Left out, never applied: .git (Tachikoma's own and git's folders are never applied)");
-    expect(rows).toContain("Left out, never applied: out (a link that leads outside the project)");
+    expect(rows.filter((r) => r.startsWith("Left out"))).toEqual([
+      "Left out, never applied: out (a link that leads outside the project)",
+      "Left out, never applied: .tachikoma (Tachikoma's own and git's folders are never applied)",
+      "Left out, never applied: sub/.git (Tachikoma's own and git's folders are never applied)",
+    ]);
     expect(rows).toContain("1 change in paths git ignores: counted, never applied");
     expect(rowWith(app, "a.txt")).toMatch(/^changed +a\.txt +keep$/);
     expect(rowWith(app, "c.txt")).toMatch(/^deleted +c\.txt +keep$/);
@@ -397,6 +406,95 @@ describe("Review's apply", () => {
     expect(w.read("README.md")).toBe("new\n");
     // The old file is in its backup.
     expect(readFileSync(path.join(w.root, ".tachikoma", "backups", "s1", "Readme.md"), "utf8")).toBe("old\n");
+  });
+
+  it("stops asking on Ctrl-C at a conflict, keeping that change and every one not yet applied in the copy", async () => {
+    const w = world({ "a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n" });
+    w.box("a.txt", "a box\n");
+    w.box("b.txt", "b box\n");
+    w.user("b.txt", "b user\n");
+    w.box("c.txt", "c box\n");
+    const { app, ended } = open(w);
+    await until(app, TOP);
+    await press(app, "a");
+    await until(app, "b.txt changed in your folder since the copy was made. m to merge, s to skip");
+    await press(app, CTRL_C);
+    await until(app, "Any key closes.");
+    expect(rowsOf(app)[0]).toBe("1 applied, 0 skipped, 2 left in the copy");
+    expect(rowWith(app, "b.txt")).toMatch(/conflict: changed in your folder since the copy was made$/);
+    expect(rowWith(app, "c.txt")).toMatch(/keep$/);
+    expect(rowWith(app, "The copy is kept")).toBe("The copy is kept; tachi review s1 opens it again. Any key closes.");
+    expect([w.read("a.txt"), w.read("b.txt"), w.read("c.txt")]).toEqual(["a box\n", "b user\n", "c\n"]);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+    await press(app, "x");
+    expect(ended[0]!.removed).toBe(false);
+    expect(ended[0]!.outcomes.map((o) => [o.path, o.result])).toEqual([
+      ["a.txt", "applied"],
+      ["b.txt", "conflict"],
+    ]);
+  });
+
+  it("never offers to merge a delete the user's file conflicts with", async () => {
+    const w = world({ "d.txt": "d\n" });
+    unlinkSync(path.join(w.work, "d.txt"));
+    w.user("d.txt", "the user's own\n");
+    const { app } = open(w);
+    await until(app, TOP);
+    await press(app, "a");
+    await until(app, "Any key closes.");
+    expect(app.lastFrame()).not.toContain("to merge");
+    expect(rowWith(app, "d.txt")).toMatch(/^deleted +d\.txt +conflict: deleted on one side, or no longer a file; resolve it by hand$/);
+    expect(rowsOf(app)[0]).toBe("0 applied, 0 skipped, 1 left in the copy");
+    expect(w.read("d.txt")).toBe("the user's own\n");
+  });
+
+  it("gives back its lines and outcomes escaped, for the caller to print as they are", async () => {
+    const odd = "made‮up.txt"; // a direction override, which every system allows in a name
+    const w = world({ [odd]: "a\n" });
+    w.box(odd, "a box\n");
+    const { app, ended } = open(w, {
+      remove: async () => {
+        throw new Error("made-up\u001b[2Jfailure");
+      },
+    });
+    await until(app, TOP);
+    await press(app, "a");
+    await until(app, "Any key closes.");
+    await press(app, "x");
+    expect(ended).toEqual([
+      {
+        how: "applied",
+        outcomes: [{ path: "made\\u202eup.txt", result: "applied" }],
+        removed: false,
+        lines: ["1 applied, 0 skipped", `The copy could not be removed (made-up\\u001b[2Jfailure); delete ${w.folder} by hand.`],
+      },
+    ]);
+  });
+});
+
+describe("Review's protected files", () => {
+  it("starts a change to a protected file as skip, marked, and applies it once switched to keep", async () => {
+    const w = world({ ".npmrc": "a\n", "web/.husky/pre-commit": "h\n", ".githooks/pre-push": "p\n", "plain.txt": "x\n" });
+    for (const rel of [".npmrc", "web/.husky/pre-commit", ".githooks/pre-push", "plain.txt"]) w.box(rel, "from the box\n");
+    // A hooks folder git's settings name, as the session's gate holds it (clilib.ts, protectionOf).
+    const { app } = open(w, { protection: { hooks: [w.at(".githooks")], files: [] } });
+    await until(app, TOP);
+    expect(rowWith(app, ".npmrc")).toMatch(/^changed +\.npmrc +skip \(protected\)$/);
+    expect(rowWith(app, "pre-commit")).toMatch(/^changed +web\/\.husky\/pre-commit +skip \(protected\)$/);
+    expect(rowWith(app, "pre-push")).toMatch(/^changed +\.githooks\/pre-push +skip \(protected\)$/);
+    expect(rowWith(app, "plain.txt")).toMatch(/^changed +plain\.txt +keep$/);
+    // .githooks/pre-push, then .npmrc: switched to keep.
+    await press(app, DOWN, " ");
+    expect(rowWith(app, ".npmrc")).toMatch(/keep \(protected\)$/);
+    await press(app, "a");
+    await until(app, "Any key closes.");
+    expect(rowsOf(app)[0]).toBe("2 applied, 2 skipped");
+    expect([w.read(".npmrc"), w.read("plain.txt"), w.read("web/.husky/pre-commit"), w.read(".githooks/pre-push")]).toEqual([
+      "from the box\n",
+      "from the box\n",
+      "h\n",
+      "p\n",
+    ]);
   });
 });
 

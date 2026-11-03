@@ -3,8 +3,10 @@ import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Box, Text, useInput, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
+import type { Protection } from "../core/permissions.js";
 import { errorText } from "../core/types.js";
-import { type ApplyOptions, appliedSoFar, applyChange, type Outcome } from "../sandbox/apply.js";
+import { protectedPart } from "../safety/protected.js";
+import { type ApplyOptions, appliedSoFar, applyChange, CANNOT_MERGE, type Outcome } from "../sandbox/apply.js";
 import { type Change, changes } from "../sandbox/changes.js";
 import { fileDiff } from "../sandbox/diff.js";
 import { type Manifest, removeCopy } from "../sandbox/snapshot.js";
@@ -26,7 +28,9 @@ export interface ReviewCopy { session: string; folder: string; manifest: Manifes
 // What came of one change: Task 19's outcome, or a failure applyChange rejected with, such as a full disk.
 export type Done = Outcome | { path: string; result: "failed"; why: string };
 // How the review ended, for the caller: how the user left it, what came of each change applied or skipped, whether the
-// copy was removed, and the screen's last lines, to say again once the screen is gone.
+// copy was removed, and the screen's last lines, to say again once the screen is gone. The lines and the outcomes' paths
+// and whys hold the box's text, so they come escaped, as the screen drew them (describe.ts, screen), and can be printed
+// as they are.
 export interface ReviewEnd { how: "applied" | "later" | "discarded"; outcomes: Done[]; removed: boolean; lines: string[] }
 
 // The plan's words (Task 20).
@@ -52,6 +56,7 @@ const noLongerAFile = (rel: string) => `${rel} is no longer a file in the copy`;
 const executable = (before: boolean, after: boolean) => `executable: ${before ? "yes" : "no"} before, ${after ? "yes" : "no"} after`;
 const NO_LINES = "no lines to show";
 const diffUnread = (why: string) => `The diff could not be read: ${why}`;
+const PROTECTED = "(protected)"; // after the choice of a change to a protected file (choice 115)
 
 // The kinds' names, which the rows line up after.
 const WIDEST = Math.max(...["added", "changed", "deleted", "link", "type"].map((k) => k.length));
@@ -60,8 +65,8 @@ const WIDEST = Math.max(...["added", "changed", "deleted", "link", "type"].map((
 const shown = (text: string) => screen({ text, oneLine: true }).text;
 
 // A row of the list: a note (what was left out, the ignored count), or a change with its choice (keep, skip, or null for
-// shown only), what came of it, and whether its conflict's question is being asked.
-type Item = { note: string } | { change: Change; keep: boolean | null; done?: Done; asking?: boolean };
+// shown only), whether its path is protected, what came of it, and whether its conflict's question is being asked.
+type Item = { note: string } | { change: Change; keep: boolean | null; marked: boolean; done?: Done; asking?: boolean };
 const isChange = (i: Item): i is Extract<Item, { change: Change }> => "change" in i;
 
 // The diff of one change, for the detail view (Task 18's fileDiff), read from the copy's base/ and work/. Each file's
@@ -95,6 +100,7 @@ export function Review({
   height,
   options,
   remove = removeCopy,
+  protection = { hooks: [], files: [] },
 }: {
   copy: ReviewCopy;
   bindings: Bindings; // the table of keys, for the Review context's keys and the names the lines give them
@@ -102,6 +108,9 @@ export function Review({
   height?: number; // the rows it may draw; the terminal's less the one Ink ends on when not given
   options?: ApplyOptions; // a test's (apply.ts)
   remove?: (folder: string) => Promise<void>; // a test's stand-in for removeCopy
+  // The hooks folders, git folders and settings files git's settings name, as the session's gate holds them
+  // (clilib.ts, protectionOf), for which changes are protected; with none, only protected.ts's own lists.
+  protection?: Protection;
 }) {
   const { session, folder, manifest } = copy;
   const { columns, rows } = useWindowSize();
@@ -115,7 +124,7 @@ export function Review({
     why?: string; // why the changes could not be read
     diff: Detail | null;
     discard: boolean; // the question before discarding is asked
-    answer: ((merge: boolean) => void) | null; // a conflict's question, waiting for m or s
+    answer: ((to: "merge" | "skip" | "stop") => void) | null; // a conflict's question, waiting for m, s or Ctrl-C
     doing?: string; // the row under the list while busy
     end?: ReviewEnd; // once done, waiting for a key
     ended: boolean;
@@ -136,10 +145,17 @@ export function Review({
         if (s.stage !== "reading") return;
         const applied = new Set(before.filter((o) => o.result === "applied").map((o) => o.path));
         const ignored = found.changes.filter((c) => c.ignored).length;
-        const notes = [...manifest.leftOut, ...found.leftOut].map((l) => leftOut(l.path, l.why));
+        // The box's own repository at the top, which Tachikoma made at launch (choice 24), is not listed: it would be in
+        // every review (choice 114). One deeper is, and so is a .tachikoma.
+        const notes = [...manifest.leftOut, ...found.leftOut.filter((l) => l.path !== ".git")].map((l) => leftOut(l.path, l.why));
         s.items = [
           ...[...notes, ...(ignored ? [ignoredCount(ignored)] : [])].map((note): Item => ({ note })),
-          ...found.changes.filter((c) => !c.ignored && !applied.has(c.path)).map((change): Item => ({ change, keep: "binary" in change ? true : null })),
+          ...found.changes.filter((c) => !c.ignored && !applied.has(c.path)).map((change): Item => {
+            // A change to a path the file tools protect, read as protected.ts reads a path in the project, starts as
+            // skip, marked (choice 115); the user can still keep it.
+            const marked = protectedPart(manifest.root, path.join(manifest.root, ...change.path.split("/")), protection.hooks, protection.files) !== undefined;
+            return { change, keep: "binary" in change ? !marked : null, marked };
+          }),
         ];
         s.at = Math.max(0, s.items.findIndex(isChange));
         s.stage = "list";
@@ -154,7 +170,15 @@ export function Review({
 
   const end = (e: ReviewEnd) => {
     s.ended = true;
-    onEnd(e);
+    const outcomes = e.outcomes.map(
+      (o): Done => ({
+        ...o,
+        path: shown(o.path),
+        ...(o.why === undefined ? {} : { why: shown(o.why) }),
+        ...("mergedTo" in o && o.mergedTo !== undefined ? { mergedTo: shown(o.mergedTo) } : {}),
+      }),
+    );
+    onEnd({ ...e, outcomes, lines: e.lines.map(shown) });
   };
   // Shown until a key, then ended.
   const finish = (e: ReviewEnd) => {
@@ -187,9 +211,10 @@ export function Review({
     applyChange(c, ctx, merge, options).catch((err): Done => ({ path: c.path, result: "failed", why: errorText(err) }));
   // The kept changes, deletes first: on Windows and macOS a case-only rename in the box (Readme.md to README.md) lists as
   // an add and a delete, and added first, the add is a false conflict and the delete then removes the user's only copy
-  // (Task 19's review, measured). A conflict asks whether to merge; a binary one cannot be merged, and is not asked. The
-  // copy is removed once nothing is left unapplied or unskipped: a change shown only, refused, failed, or a conflict
-  // neither merged nor skipped keeps it.
+  // (Task 19's review, measured). A conflict asks whether to merge; a binary one or a delete cannot be merged, and is not
+  // asked. Ctrl-C at the question stops there, leaving that change and the rest unapplied. The copy is removed once
+  // nothing is left unapplied or unskipped: a change shown only, refused, failed, not reached, or a conflict neither
+  // merged nor skipped keeps it.
   const apply = async () => {
     s.stage = "busy";
     s.doing = APPLYING;
@@ -200,18 +225,23 @@ export function Review({
       s.at = s.items.indexOf(r);
       again();
       r.done = await applyOne(r.change, false);
-      if (r.done.result === "conflict" && r.done.mergedTo === undefined && "binary" in r.change && !r.change.binary) {
-        r.asking = true;
-        again();
-        const merge = await new Promise<boolean>((resolve) => (s.answer = resolve));
-        r.asking = false;
-        r.done = merge ? await applyOne(r.change, true) : { path: r.change.path, result: "skipped" };
+      if (r.done.result !== "conflict" || r.done.mergedTo !== undefined || !("binary" in r.change) || r.change.binary) continue;
+      // A delete's merge can only say this (apply.ts), so it is said at once.
+      if (r.change.kind === "deleted") {
+        r.done = { ...r.done, why: CANNOT_MERGE };
+        continue;
       }
+      r.asking = true;
+      again();
+      const to = await new Promise<"merge" | "skip" | "stop">((resolve) => (s.answer = resolve));
+      r.asking = false;
+      if (to === "stop") break;
+      r.done = to === "merge" ? await applyOne(r.change, true) : { path: r.change.path, result: "skipped" };
     }
     const count = (result: Done["result"]) => listed.filter((r) => r.done?.result === result).length;
     const merged = listed.flatMap((r) => (r.done?.result === "conflict" && r.done.mergedTo ? [r.done.mergedTo] : []));
     const isLeft = (r: (typeof listed)[number]) =>
-      r.keep === null || r.done!.result === "refused" || r.done!.result === "failed" || (r.done!.result === "conflict" && !r.done!.mergedTo);
+      r.keep === null || !r.done || r.done.result === "refused" || r.done.result === "failed" || (r.done.result === "conflict" && !r.done.mergedTo);
     const left = listed.filter(isLeft).length;
     const summary = [
       `${count("applied")} applied, ${count("skipped")} skipped`,
@@ -262,7 +292,8 @@ export function Review({
   };
 
   // What one key does, by the action it has in the contexts in force, or null for one no binding takes. Ctrl-C, which
-  // is reserved, does what Esc or n does in each place, and at the list leaves the copy for later, as `l` does.
+  // is reserved, does what Esc or n does in each place; at the list it leaves the copy for later, as `l` does, and at a
+  // conflict's question it stops applying, keeping that change and the rest in the copy.
   const act = (a: string | null) => {
     if (s.ended) return;
     if (s.stage === "done") return end(s.end!);
@@ -274,7 +305,7 @@ export function Review({
       const answer = s.answer;
       if (!answer || (a !== "review:merge" && a !== "review:skip" && a !== "app:interrupt")) return;
       s.answer = null;
-      answer(a === "review:merge");
+      answer(a === "review:merge" ? "merge" : a === "review:skip" ? "skip" : "stop");
     } else if (a === "review:later" || a === "app:interrupt") return later();
     else if (a === "review:discard") s.discard = true;
     else if (s.stage === "list") {
@@ -366,7 +397,7 @@ export function Review({
   const cell = (r: Extract<Item, { change: Change }>) => {
     const d = r.done;
     if (r.asking) return "conflict";
-    if (!d) return r.keep === null ? "shown only" : r.keep ? "keep" : "skip";
+    if (!d) return `${r.keep === null ? "shown only" : r.keep ? "keep" : "skip"}${r.marked ? ` ${PROTECTED}` : ""}`;
     if (d.result === "conflict") return d.mergedTo ? `merged with conflicts in ${d.mergedTo}` : `conflict: ${d.why}`;
     if (d.result === "refused") return `not applied: ${d.why}`;
     if (d.result === "failed") return `failed: ${d.why}`;

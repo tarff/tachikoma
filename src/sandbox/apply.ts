@@ -33,7 +33,8 @@ const BY_HAND = "links are applied by hand";
 const IGNORED = "git ignores this path; its changes are counted, never applied";
 const CHANGED_SINCE = "changed in your folder since the copy was made";
 const BINARY = "a binary file; resolve it by hand";
-const CANNOT_MERGE = "deleted on one side, or no longer a file; resolve it by hand";
+// Exported for the review, which shows it for a delete it does not offer to merge (Task 20).
+export const CANNOT_MERGE = "deleted on one side, or no longer a file; resolve it by hand";
 const NO_GIT = "git was not found, so it cannot be merged; resolve it by hand";
 const throughLink = (part: string) => `${part} is a link, and apply never writes through one`;
 const leadsOutside = (rel: string) => `${rel} leads outside your folder`;
