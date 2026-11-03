@@ -6,7 +6,7 @@
 // place there; any other is left out, with its why.
 import { createHash } from "node:crypto";
 import { type BigIntStats, createReadStream, realpathSync } from "node:fs";
-import { type FileHandle, lstat, mkdir, open, readdir, readlink, stat, symlink } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open, readdir, readlink, rmdir, stat, symlink, unlink } from "node:fs/promises";
 import path from "node:path";
 import { privateDir, writePrivate } from "../auth/private.js";
 import { dataDir } from "../core/datadir.js";
@@ -201,6 +201,24 @@ async function copyOnce(src: string, st: BigIntStats, to: string[], flags: strin
 
 async function writeAll(out: FileHandle, chunk: Buffer): Promise<void> {
   for (let done = 0; done < chunk.length; ) done += (await out.write(chunk, done)).bytesWritten;
+}
+
+// Removes a copy's folder (`copies/<session>/`) and all it holds, for the review (Task 20). manifest.json goes first, so
+// a copy that cannot be removed whole is never listed or applied half removed. No link is followed: each folder is read
+// by its entries' types as readdir gives them, and a link, a Windows junction, or a box's socket or pipe (which Windows
+// lists as a link, unreadable; the host can remove one, measured with Docker Desktop at Task 20) is removed as the entry
+// it is, never entered. lstat is not asked, as on Windows it can follow a junction to a volume named by its ID.
+export async function removeCopy(folder: string): Promise<void> {
+  await unlink(path.join(folder, "manifest.json")).catch(gone);
+  const remove = async (dir: string): Promise<void> => {
+    for (const d of await readdir(dir, { withFileTypes: true })) {
+      const p = path.join(dir, d.name);
+      if (d.isDirectory()) await remove(p);
+      else await unlink(p);
+    }
+    await rmdir(dir);
+  };
+  await remove(folder);
 }
 
 // A file's SHA-256, streamed. Copy mode's later steps hash the real files with it too.

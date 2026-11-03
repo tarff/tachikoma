@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
@@ -16,7 +17,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
-import { snapshot } from "../../src/sandbox/snapshot.js";
+import { removeCopy, snapshot } from "../../src/sandbox/snapshot.js";
 import { removeTree, TREE } from "../helpers.js";
 
 const windows = process.platform === "win32";
@@ -253,5 +254,27 @@ describe("snapshot", () => {
     );
     expect(changes).toBe(2);
     expect(existsSync(path.join(w.copies, "manifest.json"))).toBe(false);
+  });
+});
+
+describe("removeCopy", () => {
+  it("removes a copy whole, a link the box made in it removed without being followed", async () => {
+    const w = world({ "src/a.ts": "const a = 1;\n" });
+    symlinkSync(w.at("src"), w.at("joined"), "junction");
+    await snapshot(w.root, "s1", w.data);
+    // As a box could leave them: a junction to a folder outside, and a file in a new folder, beside the merge's folder
+    // and the log apply leaves in the copy's folder.
+    symlinkSync(w.outside, path.join(w.work, "out"), "junction");
+    mkdirSync(path.join(w.work, "new", "deeper"), { recursive: true });
+    writeFileSync(path.join(w.work, "new", "deeper", "b.txt"), "b\n");
+    mkdirSync(path.join(w.copies, "merge-x"));
+    writeFileSync(path.join(w.copies, "applied.jsonl"), "");
+    await removeCopy(w.copies);
+    expect(existsSync(w.copies)).toBe(false);
+    expect(readdirSync(path.join(w.data, "copies"))).toEqual([]);
+    // Nothing outside the copy was touched: the project, its own junction's folder, and the folder outside.
+    expect(readFileSync(path.join(w.outside, "secret.txt"), "utf8")).toBe("made-up outside text\n");
+    expect(readFileSync(w.at("src/a.ts"), "utf8")).toBe("const a = 1;\n");
+    expect(readFileSync(w.at("joined/a.ts"), "utf8")).toBe("const a = 1;\n");
   });
 });

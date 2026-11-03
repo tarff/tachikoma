@@ -460,6 +460,16 @@ describe("DEFAULTS", () => {
     ["Scroll", "scroll:bottom", ["ctrl+end"]],
     ["Scroll", "scroll:lineUp", ["shift+up", "wheelup"]],
     ["Scroll", "scroll:lineDown", ["shift+down", "wheeldown"]],
+    // The review of a copy's changes (release 7 plan, choice 27).
+    ["Review", "review:previous", ["up"]],
+    ["Review", "review:next", ["down"]],
+    ["Review", "review:toggle", ["space"]],
+    ["Review", "review:diff", ["enter"]],
+    ["Review", "review:apply", ["a"]],
+    ["Review", "review:later", ["l"]],
+    ["Review", "review:discard", ["d"]],
+    ["Review", "review:merge", ["m"]],
+    ["Review", "review:skip", ["s"]],
   ];
 
   it("binds every action App handles today, on today's keys, and nothing else but picture pasting", () => {
