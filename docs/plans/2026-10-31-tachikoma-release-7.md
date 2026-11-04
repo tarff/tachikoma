@@ -2166,6 +2166,29 @@ Ctrl+C, Esc and a paste, each translated as expected; a split record across two 
 Commit: `feat: Shift+Enter makes a new line in Windows Terminal` (or `docs:` if the probe shows
 nothing is needed).
 
+**The probe (2026-11-05, the user's Windows Terminal):** no answer to kitty's query; Enter and
+Shift+Enter both send `0d`. In win32 input mode Shift+Enter is `CSI 13;28;13;1;48;1_` (Shift
+0x10 + NumLock 0x20) against Enter's `…;32;1_`; a held key comes as a fresh record each repeat
+(Rc always 1); with bracketed paste on, a paste's text comes plain, but each pasted line break
+comes as an Enter key-down and key-up record pair with Cs 0 (found in the user's hand check).
+
+**As built (62c85ba, b7cc98d, 3abc678, a8d73be, and the long-paste speed fix):** win32 input mode follows raw mode: the
+filter's one raw-mode switch (`#raw`) calls a hook that `cli.tsx` passes only when `WT_SESSION`
+is set and stdin and stdout are terminals, in the interactive UI only. So it stays on through
+`[` and `/screen`, where raw mode is held and the filter keeps translating (not "wherever
+kitty's mode is undone", as above), and goes off for the editor's hand-over and on every way
+out; `Screen.restore()` writes the off code again synchronously, and `setWin32` ignores a
+turn-on once restored. Each record becomes the bytes Windows Terminal sends outside the mode
+(`terminalInput.cpp`), except Shift+Enter, `\n`; key-ups and lone modifiers type nothing; Rc is
+not followed (the probe only ever saw 1). Inside a paste, records are translated too (a line
+break becomes CR, as Windows Terminal's `FilterStringForPaste` makes it), a translation holding
+ESC is dropped, as are plain ESCs just before a record, so no early end marker can form; a read
+ending inside a record or the end marker is held for the next. Known limits (for Task 23): a
+hard kill leaves the tab in the mode (closing the tab fixes it); Alt+numpad codes; Ctrl or Alt
+with a key Windows reports no character for (except Ctrl+Space); AltGr told by its character
+only; F13–F20; a record whose halves come more than 20 ms apart; tmux inside Windows Terminal
+gets no Shift+Enter.
+
 ## Task 23: Documents and the terminal checklist
 
 **Files:** modify `README.md`, `docs/plans/2026-10-22-tachikoma-design.md` (Decisions and
