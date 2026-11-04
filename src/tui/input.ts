@@ -112,6 +112,8 @@ function translate(record: string, lead: string | undefined): { keys: string; le
 
 // What could still become a record inside a paste: ESC[ and up to six numbers, any left out, and the semicolons between.
 const RECORD_PART = /^\u001b\[(\d*;){0,5}\d*$/;
+// RECORD read where it stands (sticky), so a long paste is not copied again for each of its line breaks.
+const RECORD_AT = new RegExp(RECORD.source.slice(1), "y");
 
 // A paste's text between its markers, with its records translated. In win32 input mode Windows Terminal sends a paste's
 // text plain but each line break as Enter's records, down and up, with no modifier (the user's check, 2026-11-05): so it
@@ -128,10 +130,15 @@ function pasted(text: string, lead: string | undefined): { keys: string; lead?: 
     const esc = text.indexOf("\u001b", i);
     if (esc === -1) return { keys: keys + text.slice(i), lead };
     keys += text.slice(i, esc);
-    const record = RECORD.exec(text.slice(esc));
+    RECORD_AT.lastIndex = esc;
+    const record = RECORD_AT.exec(text);
     if (record) {
       const key = translate(record[1]!, lead);
-      keys = keys.replace(/\u001b+$/, "");
+      // The plain ESCs kept just before it, counted in `text`, not `keys`: reading the end of a string built by joining
+      // makes V8 copy it whole, once per line break of a long paste.
+      let n = 0;
+      while (esc - n > 0 && text[esc - n - 1] === "\u001b") n++;
+      if (n) keys = keys.slice(0, -n);
       if (!key.keys.includes("\u001b")) keys += key.keys;
       lead = key.lead;
       i = esc + record[0].length;
