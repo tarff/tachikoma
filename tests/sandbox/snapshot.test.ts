@@ -50,6 +50,20 @@ function world(tree: Record<string, string> = {}) {
 }
 
 describe("snapshot", () => {
+  // Task 21's quality review: the launch's signal is checked at each entry, so a Ctrl-C during a long copy stops it.
+  it("stops at its next entry once its signal is aborted", async () => {
+    const w = world(TREE);
+    const stop = new AbortController();
+    const seen: string[] = [];
+    const copied = (rel: string) => {
+      seen.push(rel);
+      stop.abort();
+    };
+    await expect(snapshot(w.root, "s1", w.data, { copied, signal: stop.signal })).rejects.toThrow(/aborted/i);
+    expect(seen).toHaveLength(1);
+    expect(existsSync(path.join(w.copies, "manifest.json"))).toBe(false);
+  });
+
   it("copies untracked and ignored files into base and work, with each file's hash, and the manifest last", async () => {
     const w = world(TREE);
     const { manifest, base, work } = await snapshot(w.root, "s1", w.data);

@@ -48,7 +48,7 @@ const closing = (scroll: string | undefined) => (scroll ? `${scroll} scroll · a
 export const kept = (session: string) => `The copy is kept; tachi review ${session} opens it again.`;
 const REMOVED = "The copy was removed.";
 const DISCARDED = "The copy was discarded.";
-const removing = (n: number) => `Removing the copy (${n} file${n === 1 ? "" : "s"})...`;
+export const removing = (n: number) => `Removing the copy (${n} file${n === 1 ? "" : "s"})...`;
 const notRemoved = (why: string, folder: string) => `The copy could not be removed (${why}); delete ${folder} by hand.`;
 const LINKS_BY_HAND = "links are applied by hand"; // Task 19's why for a link (apply.ts)
 const TYPES_BY_HAND = "a path whose type changed is applied by hand";

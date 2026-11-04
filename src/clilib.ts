@@ -1,5 +1,5 @@
 import type { EventEmitter } from "node:events";
-import { realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
 import type { Instructions, Reached } from "./core/instructions.js";
@@ -22,8 +22,9 @@ import { shellToolOf } from "./tools/shell.js";
 import type { Tool } from "./tools/tool.js";
 import { screen } from "./tui/describe.js";
 import { gitBranch } from "./tui/git.js";
-import { leftOut } from "./tui/Review.js";
+import { leftOut, removing } from "./tui/Review.js";
 import { k, type Segment, SEGMENTS } from "./tui/StatusLine.js";
+import { writeBestEffort } from "./tui/terminal.js";
 
 // Headless output reaches the terminal too, so model and provider text gets the scrollback's escaping.
 export const prose = (text: string) => screen({ text }).text;
@@ -320,13 +321,15 @@ export async function sandboxReady(root: string, io: SandboxIo, copy?: { session
     const from = performance.now();
     let got: Awaited<ReturnType<typeof snapshot>>;
     try {
-      got = await snapshot(root, copy.session);
+      got = await snapshot(root, copy.session, undefined, { signal: io.signal });
     } catch (err) {
+      // A Ctrl-C during the copy ends the launch as one during the image's steps does, saying nothing more.
+      if (io.signal.aborted) return { exit: 128 + constants.signals.SIGINT };
       return refuse(errorText(err));
     }
     const branch = boxBranch(gitBranch(root));
     const copied = { folder: path.dirname(got.work), manifest: got.manifest, ms: performance.now() - from, ...(branch ? { branch } : {}) };
-    // A Ctrl-C during the copy, which cannot be stopped midway, is read once it is done.
+    // A Ctrl-C after the copy's last entry.
     if (io.signal.aborted) return { exit: 128 + constants.signals.SIGINT };
     // safe.directory, as live link's mounts give it (mounts.ts): the copy's folder is not the box's user's either.
     const env = sessionSettings({ "safe.directory": BOX_ROOT });
@@ -368,18 +371,35 @@ const commitArgs = (branch: string | undefined) => [
 
 // The host's branch (tui/git.ts, gitBranch, as the status line reads it) when the box's git can take it as it is: only
 // letters, digits, `.`, `_`, `-` and `/`, not starting with `-`, `.` or `/`, with no `..`, `//` or `/.`, not ending in
-// `/`, `.` or `.lock` (git-check-ref-format's rules, within that narrower set), so it can never act as an option nor be
-// refused by git. Any other name, a detached HEAD ("HEAD") or no repository gives undefined, and git's own default.
+// `/` or `.`, and no part ending in `.lock` (git-check-ref-format's rules, within that narrower set), so it can never act
+// as an option nor be refused by git. Any other name, a detached HEAD ("HEAD") or no repository gives undefined, and
+// git's own default.
 export function boxBranch(name: string | null): string | undefined {
   const plain = /^(?![-./])(?!.*(\.\.|\/\/|\/\.))[A-Za-z0-9._/-]+(?<![/.])$/;
-  return name !== null && name !== "HEAD" && plain.test(name) && !name.endsWith(".lock") ? name : undefined;
+  return name !== null && name !== "HEAD" && plain.test(name) && !/\.lock(\/|$)/.test(name) ? name : undefined;
 }
 
 // Until copy mode's session starts, its copy, with nothing run in it, is removed when the process ends, however it ends:
-// a refusal, Ctrl-C at a question or while the box starts, a crash (Task 21's review). "exit" handlers cannot wait, so
-// removeCopySync. The function returned keeps the copy from then on. `proc` is a test's.
-export function dropOnExit(folder: string, proc: Pick<EventEmitter, "on" | "off"> = process): () => void {
+// a refusal, Ctrl-C at a question, during the copy or while the box starts, a crash (Task 21's review). "exit" handlers
+// cannot wait, so removeCopySync, which can take a while (10-30 s for a copy holding node_modules on Windows), so a line
+// on stderr says so first (the user's words): with the manifest's count of files, as the review counts them, or without
+// one for a copy stopped before its manifest. Nothing is said for a folder that is not there. The function returned
+// keeps the copy from then on. `proc` and `say` are a test's.
+export function dropOnExit(
+  folder: string,
+  proc: Pick<EventEmitter, "on" | "off"> = process,
+  say: (line: string) => void = (line) => writeBestEffort(2, `${line}\n`),
+): () => void {
   const drop = () => {
+    if (!existsSync(folder)) return;
+    let files: number | undefined;
+    try {
+      const manifest = JSON.parse(readFileSync(path.join(folder, "manifest.json"), "utf8")) as Pick<Manifest, "entries">;
+      files = Object.values(manifest.entries).filter((e) => e.type === "file").length;
+    } catch {
+      // no manifest yet, or one that cannot be read: a copy stopped midway
+    }
+    say(files === undefined ? "Removing the copy..." : removing(files));
     try {
       removeCopySync(folder);
     } catch {

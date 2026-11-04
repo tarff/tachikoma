@@ -723,7 +723,7 @@ describe("copy mode's launch, with a stand-in Docker", () => {
 
   // `broken`: "git" for git's settings that cannot be read on the host, "commit" for the box's git missing. `head`: the
   // text of a .git/HEAD made by hand in the project, which the snapshot leaves out; no .git when not given.
-  async function launch(broken: "git" | "commit" | null = null, head?: string) {
+  async function launch(broken: "git" | "commit" | null = null, head?: string, abortAtCopy = false) {
     const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-copy-")));
     onTestFinished(() => removeTree(top));
     const root = path.join(top, "project");
@@ -755,11 +755,13 @@ describe("copy mode's launch, with a stand-in Docker", () => {
     };
     const lines: string[] = [];
     const notes: string[] = [];
+    const stop = new AbortController();
     const io = {
       out: (line: string) => lines.push(line),
       err: (line: string) => lines.push(line),
-      note: (line: string) => notes.push(line),
-      signal: new AbortController().signal,
+      // With `abortAtCopy`, a Ctrl-C as the copy starts, as cli.tsx's SIGINT listener aborts the launch's signal.
+      note: (line: string) => (notes.push(line), abortAtCopy && stop.abort()),
+      signal: stop.signal,
       run,
       gitSettings: async (r: string) => {
         if (broken === "git") throw new Error("git was ended by SIGKILL");
@@ -770,7 +772,8 @@ describe("copy mode's launch, with a stand-in Docker", () => {
       },
     };
     const ready = await sandboxReady(root, io, { session: "s1" });
-    if ("exit" in ready) throw new Error(lines.join("\n"));
+    if ("exit" in ready && !abortAtCopy) throw new Error(lines.join("\n"));
+    if ("exit" in ready) return { top, root, data, lines, notes, calls, started: ready };
     const started = await sandboxStart(root, ready, { network: "off", limits: undefined, session: "s1" }, io);
     return { top, root, data, lines, notes, calls, started };
   }
@@ -819,10 +822,27 @@ describe("copy mode's launch, with a stand-in Docker", () => {
       "ref: refs/heads/a b\n",
       "ref: refs/heads/x;y\n",
       "ref: refs/heads/topic.lock\n",
+      "ref: refs/heads/a.lock/b\n", // git refuses .lock at the end of any part
       "ref: refs/heads/.hidden\n",
     ]) {
       expect(await init(head), head).toEqual(git("init", "-q"));
     }
+  });
+
+  // The quality review: Ctrl-C during the copy stops the snapshot at its next entry, and the launch ends as a Ctrl-C does,
+  // saying nothing; the exit handler then removes the half-made copy.
+  it("stops the copy on Ctrl-C, ending with 130, and the exit handler removes what was made", async () => {
+    const r = await launch(null, undefined, true);
+    expect(r.started).toEqual({ exit: 130 });
+    expect(r.lines).toEqual([]);
+    const folder = path.join(r.data, "copies", "s1");
+    expect(existsSync(folder)).toBe(true);
+    const proc = new EventEmitter();
+    const said: string[] = [];
+    dropOnExit(folder, proc, (line) => said.push(line));
+    proc.emit("exit");
+    expect(existsSync(folder)).toBe(false);
+    expect(said).toEqual(["Removing the copy..."]); // half made, so no manifest to count
   });
 
   it("goes on with the fixed list when git's settings cannot be read, and says so", async () => {
@@ -841,9 +861,10 @@ describe("copy mode's launch, with a stand-in Docker", () => {
 });
 
 // Task 21's review: a copy made at launch goes when the process ends before the session starts, however it ends (a
-// refusal, Ctrl-C at a question or while the box starts), from one "exit" handler; once kept, it stays.
+// refusal, Ctrl-C at a question or while the box starts), from one "exit" handler; once kept, it stays. Removing it can
+// take a while, so a line says so first, counting the manifest's files as the review does (the user's words).
 describe("dropOnExit", () => {
-  it("removes the copy at exit, never following a link out of it, until it is kept", () => {
+  it("removes the copy at exit, saying so first, never following a link out of it, until it is kept", () => {
     const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-drop-")));
     onTestFinished(() => removeTree(top));
     const outside = path.join(top, "outside");
@@ -852,18 +873,21 @@ describe("dropOnExit", () => {
     const made = (name: string) => {
       const folder = path.join(top, "copies", name);
       mkdirSync(path.join(folder, "work", "sub"), { recursive: true });
-      writeFileSync(path.join(folder, "manifest.json"), "{}");
+      writeFileSync(path.join(folder, "manifest.json"), JSON.stringify({ entries: { sub: { type: "folder" }, "sub/a.txt": { type: "file" } } }));
       writeFileSync(path.join(folder, "work", "sub", "a.txt"), "made-up\n");
       symlinkSync(outside, path.join(folder, "work", "link"), "junction");
       return folder;
     };
     const proc = new EventEmitter();
+    const said: string[] = [];
+    const say = (line: string) => said.push(line);
     const dropped = made("s1");
-    dropOnExit(dropped, proc);
+    dropOnExit(dropped, proc, say);
     const kept = made("s2");
-    dropOnExit(kept, proc)();
-    dropOnExit(path.join(top, "copies", "never-made"), proc); // a snapshot that failed before making its folder
+    dropOnExit(kept, proc, say)();
+    dropOnExit(path.join(top, "copies", "never-made"), proc, say); // a snapshot that failed before making its folder
     proc.emit("exit");
+    expect(said).toEqual(["Removing the copy (1 file)..."]);
     expect(existsSync(dropped)).toBe(false);
     expect(existsSync(path.join(kept, "manifest.json"))).toBe(true);
     expect(readFileSync(path.join(outside, "kept.txt"), "utf8")).toBe("made-up\n");

@@ -1,7 +1,6 @@
 import { withLock } from "../../auth/lock.js";
-import { gitUnread } from "../../clilib.js";
 import { summarize } from "../../core/errorlog.js";
-import type { Protection } from "../../core/permissions.js";
+import { type Protection, visible } from "../../core/permissions.js";
 import type { Task } from "../../core/tasks.js";
 import { errorText } from "../../core/types.js";
 import { KEYBINDINGS } from "../../keybindings.js";
@@ -13,7 +12,7 @@ import { type Draft, joined, trimmed } from "../pictures.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
-import { COMMANDS, FROM, gray, isCommand, names, NOT_GONE } from "./constants.js";
+import { COMMANDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened } from "./constants.js";
 import type { UI } from "./state.js";
 
 export const queue = (ui: UI, fns: Fns) => {
@@ -231,13 +230,13 @@ export const queue = (ui: UI, fns: Fns) => {
         try {
           protection = await c.protection();
         } catch (err) {
-          return c.ended([gitUnread(err), kept(c.copy.session)]);
+          return c.ended([visible(reviewUnopened(errorText(err))), kept(c.copy.session)]);
         }
         const end = await new Promise<ReviewEnd>((onEnd) => ui.setReviewing({ protection, onEnd }));
         c.ended(end.lines);
       });
     })()
-      .catch((err) => c.ended([errorText(err)]))
+      .catch((err) => c.ended([visible(errorText(err)), kept(c.copy.session)]))
       .finally(() => ui.exit());
   };
   return { submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave };

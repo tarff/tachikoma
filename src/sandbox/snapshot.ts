@@ -40,12 +40,13 @@ const LEADS_NOWHERE = "a link that leads nowhere";
 export const NOT_COPIED = "not a file, folder or link";
 
 // Copies `root` into `<data>/copies/<session>/`, and writes manifest.json there last. `copied` is a test's, called after
-// each file is copied and before it is hashed again.
+// each file is copied and before it is hashed again. `signal` is checked at each entry, so a Ctrl-C during a long copy
+// stops it with the signal's error, leaving what was made for the launch to remove (clilib.ts, dropOnExit).
 export async function snapshot(
   root: string,
   session: string,
   data = dataDir(),
-  opts: { copied?: (path: string) => void | Promise<void> } = {},
+  opts: { copied?: (path: string) => void | Promise<void>; signal?: AbortSignal } = {},
 ): Promise<{ manifest: Manifest; base: string; work: string }> {
   const real = realpathSync.native(root);
   const copies = path.join(data, "copies", session);
@@ -62,6 +63,7 @@ export async function snapshot(
   const walk = async (rel: string): Promise<void> => {
     const from = path.join(real, ...rel.split("/"));
     for (const d of await readdir(from, { withFileTypes: true })) {
+      opts.signal?.throwIfAborted();
       if (reserved(d.name)) continue;
       const r = rel ? `${rel}/${d.name}` : d.name;
       const src = path.join(from, d.name);

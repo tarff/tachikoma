@@ -142,6 +142,9 @@ export const ERASE_LINE = "\r\u001b[K";
 // Copy mode's leaving (queue.ts, leave): the line while the box stops, and the one when Docker still lists it after.
 export const STOPPING = "Stopping the box...";
 export const NOT_GONE = "The box could not be removed, so the copy was not reviewed.";
+// When git's settings cannot be read on the host as the review would open (the user's words; Task 21's review).
+export const reviewUnopened = (why: string) =>
+  `The review did not open: git's settings could not be read (${why}), so the hooks folders they name could not be protected.`;
 // The wheel's reports carry no key, so no flag of one is set.
 export const NO_KEY = {} as Key;
 // VISUAL's selection, as vim.ts's visual() takes it, to draw (release 6 plan, choice 28): from the anchor to the

@@ -283,6 +283,10 @@ if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal
 let protection: Protection = protectionOf(undefined);
 let gitLine: string | undefined;
 let ready: Ready | undefined;
+// The executor stops running commands, and the sandbox's box is removed (src/sandbox/executor.ts), from "exit" handlers,
+// which dying by a signal skips. SIGQUIT is ignored while the editor has the terminal (clilib.ts, exitOn). Set before the
+// sandbox's launch, so a SIGTERM or SIGHUP during it, the copy among them, runs them too (Task 21's quality review).
+for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));
 // Copy mode's copy is removed when the launch ends before the session starts, however it ends (clilib.ts, dropOnExit).
 // From the image's steps until the box has started, Ctrl-C, with raw mode off, ends the launch through process.exit, so
 // the exit handlers remove the copy and any box already started (executor.ts); at the instruction files' question, it
@@ -291,8 +295,10 @@ const keepCopy = sandbox === "copy" ? dropOnExit(path.join(dataDir(), "copies", 
 const quit = () => process.exit(128 + constants.signals.SIGINT);
 if (sandbox !== "off") {
   const stop = new AbortController();
+  // `on`, not `once`: a second Ctrl-C during a long step, the copy among them, must not get Node's default exit, which
+  // skips the exit handlers and would leave a half-made copy.
   const onInt = () => stop.abort();
-  process.once("SIGINT", onInt);
+  process.on("SIGINT", onInt);
   const io = {
     ...(interactive ? { ask: askAtStart } : {}),
     out: (line: string) => console.log(line),
@@ -389,10 +395,6 @@ const session: Session = new Session({
   inbox: () => tasks.take(),
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
 });
-
-// The executor stops running commands, and the sandbox's box is removed (src/sandbox/executor.ts), from "exit" handlers,
-// which dying by a signal skips. SIGQUIT is ignored while the editor has the terminal (clilib.ts, exitOn).
-for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));
 
 if (parsed.print !== undefined) {
   let failed = false;

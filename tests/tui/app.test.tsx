@@ -8024,14 +8024,14 @@ describe("App's leave() in copy mode", () => {
     const w = copyWorld();
     w.copy.protection = async () => {
       w.said.push("protection");
-      throw new Error("git was ended by SIGKILL");
+      throw new Error("git was ended by SIGKILL\u001b[8m");
     };
     const { app } = await mount([], { copy: w.copy });
     await type(app, "/exit");
     w.gone(true);
     await waitFor(() => w.ended.length === 1);
     expect(w.ended[0]).toEqual([
-      "git's settings could not be read (git was ended by SIGKILL); only the fixed list of protected paths applies",
+      "The review did not open: git's settings could not be read (git was ended by SIGKILL\\u001b[8m), so the hooks folders they name could not be protected.",
       "The copy is kept; tachi review s1 opens it again.",
     ]);
     expect(app.lastFrame()).not.toContain("Review the copy's changes");
@@ -8039,6 +8039,38 @@ describe("App's leave() in copy mode", () => {
     await expectExited(app);
     expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
     expect(existsSync(`${w.folder}.lock`)).toBe(false);
+  });
+
+  // The quality review: a failure while leaving is said escaped, with where the copy is.
+  it("says what failed while leaving, escaped, and that the copy is kept", async () => {
+    const w = copyWorld();
+    w.copy.stop = async () => {
+      throw new Error("docker went away\u001b[8m");
+    };
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual(["docker went away\\u001b[8m", "The copy is kept; tachi review s1 opens it again."]);
+    await expectExited(app);
+  });
+
+  // The App and the review read one table of keys (Bindings), which holds a chord's first strokes: were the App's own
+  // keys or mouse on during the review, its lookups would take or drop the review's chord. Here a keys-file chord of the
+  // Review context, Ctrl+X then z, leaves the copy for later, a wheel notch coming between in full screen.
+  it("leaves the review's chords to it, the App's keys and mouse taking no part", async () => {
+    for (const full of [false, true]) {
+      const w = copyWorld();
+      const bindings = new Bindings(tableOf({ ...DEFAULTS, Review: { ...DEFAULTS.Review, "ctrl+x z": "review:later" } }));
+      const { app, mouse } = await mount([], { copy: w.copy, bindings, full });
+      await type(app, "/exit");
+      w.gone(true);
+      await until(app, "Review the copy's changes: 1 file.");
+      await press(app, "\u0018"); // Ctrl+X
+      if (full) await wheel(mouse, "down");
+      await press(app, "z");
+      await waitFor(() => w.ended.length === 1);
+      expect(w.ended[0], full ? "full screen" : "classic").toEqual(["The copy is kept; tachi review s1 opens it again."]);
+    }
   });
 
   // A signal exit or a crash ends Ink without leave() (cli.tsx, restoreOnExit, unmounts it): the box is removed by the
