@@ -915,6 +915,17 @@ the plan's review.
     status line shows the user's branch, not git's default. A detached HEAD, no repository, or a
     name outside a plain set (letters, digits, `.`, `_`, `-`, `/`, no part ending `.lock`) falls
     back to git's default.
+119. **`tachi review`'s lines** (the user's approval, Task 21 part B): `Copies waiting for review
+    (tachi review <name> opens one):`; each row `  <name>  <folder>  <YYYY-MM-DD HH:MM>  <n>
+    changes`, or `changes unreadable (<why>)` for the count; `Usage: tachi review [<name>
+    [--discard]]`; the help line `tachi review [<name> [--discard]]   list the copies kept for
+    review, open one, or discard one`; `No copy named <name> is waiting; tachi review lists
+    them.`; `tachi review <name> needs a terminal; with none, nothing is applied or discarded.`;
+    `Another review of this copy is open; waiting for it to end...`; `An earlier apply of this
+    copy applied: <paths>`; `Changed in your folder since an earlier apply began on it, so left as
+    it is: <paths>`; and, for a discard whose box cannot be removed, `The box could not be
+    removed, so the copy was not discarded.` The list keeps the change count (the user's choice),
+    measured at 1.2-1.8 s a copy of this repo, each row printed when counted.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -1029,6 +1040,20 @@ the plan's review.
       `TACHI_DATA_DIR` outside Docker Desktop's shared folders fails at box start; the box's
       `git add -A` time over Docker Desktop's mount is unmeasured and not in the launch line's
       seconds; git-ignored files are in `/work` but not in the box's commit;
+    - from Task 21 part B (`tachi review`): Docker unreachable (paused, or another `DOCKER_HOST`
+      or context in the other terminal) reads as no box, so a live session's copy could be
+      opened or discarded; a crash's box still running while its process id has been reused by
+      another program refuses the review until that program ends or the box is removed with
+      `docker rm -f`; no machine check, so a data folder shared across process spaces (WSL beside
+      Windows, a network home folder) can read a live session as gone; a launch killed outright
+      between the snapshot and the box starting leaves a copy under `manifest.pending.json` that
+      `tachi review` never lists, for deleting by hand; a failed rename to `manifest.json` ends
+      the launch with a stack trace (the copy and box are still removed); copies whose session
+      still runs are listed as waiting, and opening one gives the busy line; `tachi review`
+      draws in full screen wherever it can, ignoring classic mode; the earlier-apply report and
+      keys-file problems print just before full screen covers them; the list counts one copy
+      after another; SIGTERM or closing the terminal during a discard's removal leaves a
+      half-removed copy;
     - choices 88 and 92.
 ---
 
@@ -2093,6 +2118,21 @@ App's keys, mouse, paste and queue are off in that phase. Without git's settings
 not open (choice 116's line). `-p` prints choice 29's line. `OFFERED` gains `never`; in `never`,
 every write outside the project is refused, a link leading nowhere included. The end-to-end `-p`
 test swaps `docker.ts` for a stand-in through a test-only `--import` hook (`tests/standin/`).
+
+**As built, part B (eee3a8a, dcac9cf, 250e32c, 45f49a0, 21838e1):** `reviewCommand`
+(`src/sandbox/copies.ts`), dispatched as `sandbox` is, lists, opens (`drawReview` in cli.tsx, full screen where
+possible, mouse off) and discards copies (choice 119). A folder in `copies/` without a readable
+`manifest.json` is not a copy; a name must match a listed folder exactly, so it is never read
+as a path. The snapshot writes `manifest.pending.json`, renamed to `manifest.json` by
+`keepCopy()` once the box runs, so a copy still launching is never listed, opened or discarded
+(the spec review). Open and discard take `withLock(copyLock(folder))`, saying so while another
+holds it, and read the copy again under it; then `boxCheck`: a running box (`docker ps -q` by
+the session label) whose manifest `pid` is alive and not this process is busy (the plan's
+line); otherwise every box of the session is removed (`rm -f`) and checked gone; Docker
+unreachable is free. `leave()` uses `boxCheck` too. `earlierApply()` reports an earlier apply
+before opening and before discard's question. The count and Review share `toReview()`
+(apply.ts). A discard's removal sets Ctrl-C aside (`uninterrupted`), since the manifest goes
+first.
 
 **End of Part 3:** run the whole suite once.
 
