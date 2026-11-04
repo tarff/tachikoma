@@ -73,9 +73,11 @@ export class Screen {
     this.#write(on ? SECOND_SCREEN : FIRST_SCREEN);
   }
 
-  // With raw mode, from the keyboard's filter (cli.tsx; input.ts, InputFilter's win32).
+  // With raw mode, from the keyboard's filter (cli.tsx; input.ts, InputFilter's win32). Never on again once the terminal
+  // is put back, as nothing would turn it off: Ink's resume takes raw mode back even while it unmounts (ink.js,
+  // endSuspend), which a /screen to classic can meet (app/handover.tsx, switchScreen).
   setWin32(on: boolean): void {
-    if (on === this.#win32) return;
+    if (on === this.#win32 || (on && this.#restored)) return;
     this.#win32 = on;
     this.#used ||= on;
     this.#win32Used ||= on;

@@ -157,6 +157,16 @@ describe("split, with win32 records", () => {
     expect(keysOf(`x${ESC}[65;30;97;1;32;1_${ESC}[65;30;97;0;32;1_y`)).toBe("xay");
   });
 
+  // Holding what could still be a record holds any CSI with only numbers and semicolons so far, in every terminal.
+  it("gives an ordinary sequence split in its numbers whole and unchanged", () => {
+    expect(run(`${ESC}[1;5`, "A").pieces).toEqual([{ keys: `${ESC}[1;5A` }]);
+  });
+
+  it("leaves record-shaped text inside a paste as text", () => {
+    const paste = `${ESC}[200~${ESC}[65;30;97;1;32;1_${ESC}[201~`;
+    expect(run(paste).pieces).toEqual([{ keys: paste }]);
+  });
+
   // Not recorded: the records are built as the spec gives them (microsoft/terminal, doc/specs/#4999), and the bytes are
   // terminalInput.cpp's for each key outside the mode (input.ts says which parts). Cs 32 is NumLock on, as in the probe.
   it("gives the cursor and function keys their usual sequences, with xterm's modifier number", () => {
@@ -185,8 +195,9 @@ describe("split, with win32 records", () => {
     expect(keysOf(`${ESC}[32;57;0;1;40;1_`)).toBe("\u0000"); // Ctrl+Space with no character
   });
 
-  it("types a key Rc times, takes left-out numbers as their defaults, and drops a key with no character", () => {
-    expect(keysOf(`${ESC}[65;30;97;1;32;3_`)).toBe("aaa");
+  it("types a key once whatever its Rc, takes left-out numbers as their defaults, and drops a key with no character", () => {
+    expect(keysOf(`${ESC}[65;30;97;1;32;3_`)).toBe("a");
+    expect(keysOf(`${ESC}[65;30;97;1;32;99999999999_`)).toBe("a"); // a count that would throw in String.repeat
     expect(keysOf(`${ESC}[65;30;97;1_`)).toBe("a"); // the spec's own shortened example
     expect(keysOf(`${ESC}[20;58;0;1;32;1_`)).toBe(""); // CapsLock
   });
@@ -272,6 +283,16 @@ describe("InputFilter", () => {
     expect(reads).toEqual(["\n"]);
     vi.advanceTimersByTime(1);
     expect(reads).toEqual(["\n", ESC]);
+  });
+
+  it("passes an ordinary sequence's start with nothing after to Ink, as it was, after 20 ms", () => {
+    vi.useFakeTimers();
+    const { reads, feed } = filtered();
+    feed(`${ESC}[1;5`);
+    vi.advanceTimersByTime(19);
+    expect(reads).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(reads).toEqual([`${ESC}[1;5`]);
   });
 
   // Win32 input mode goes with raw mode on the source (cli.tsx; release 7 plan, Task 22), so wherever raw mode goes off,

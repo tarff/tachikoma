@@ -58,12 +58,14 @@ const ALT = 0x1 | 0x2;
 const CTRL = 0x4 | 0x8;
 const SHIFT = 0x10;
 // By virtual key, the keys terminalInput.cpp's _encodeRegular gives a sequence of their own: PgUp, PgDn, End, Home, the
-// arrows, Insert, Delete, F1 to F12. A final letter comes as CSI and the letter (SS3 for F1 to F4), or CSI 1;m and the
-// letter with modifiers; a number and ~ as CSI n~, or CSI n;m~.
-const KEYS: Record<number, string> = {
-  33: "5~", 34: "6~", 35: "F", 36: "H", 37: "D", 38: "A", 39: "C", 40: "B", 45: "2~", 46: "3~",
-  112: "P", 113: "Q", 114: "R", 115: "S",
-  116: "15~", 117: "17~", 118: "18~", 119: "19~", 120: "20~", 121: "21~", 122: "23~", 123: "24~",
+// arrows, Insert, Delete, F1 to F12, each as its number and final. A final letter comes as CSI and the letter (SS3 for F1
+// to F4), or CSI 1;m and the letter with modifiers; a number and ~ as CSI n~, or CSI n;m~.
+const KEYS: Record<number, [string, string]> = {
+  33: ["5", "~"], 34: ["6", "~"], 35: ["", "F"], 36: ["", "H"], 37: ["", "D"], 38: ["", "A"], 39: ["", "C"], 40: ["", "B"],
+  45: ["2", "~"], 46: ["3", "~"],
+  112: ["", "P"], 113: ["", "Q"], 114: ["", "R"], 115: ["", "S"],
+  116: ["15", "~"], 117: ["17", "~"], 118: ["18", "~"], 119: ["19", "~"], 120: ["20", "~"], 121: ["21", "~"],
+  122: ["23", "~"], 123: ["24", "~"],
 };
 
 // terminalInput.cpp's _makeCtrlChar: what Ctrl makes of a character.
@@ -81,8 +83,10 @@ function ctrlChar(c: number): number {
 // Alt held with a printable character are AltGr (`@` on a German keyboard), and type the character alone, unless both
 // Ctrls or both Alts are down (HandleKey's altGrPressed). Alt puts ESC first, as its _formatFallback does; Ctrl+Space is
 // NUL whatever its character. A character in two halves (UTF-16's surrogate pair) waits for its second, over key-ups.
+// The repeat count Rc is not followed: each key types once. The probe only ever got Rc 1, a held key coming as a record
+// for each repeat, and a record with a huge Rc, which pasted or printed text could carry, would build a huge string.
 function translate(record: string, lead: string | undefined): { keys: string; lead?: string } {
-  const [vk = 0, , uc = 0, down = 0, cs = 0, repeat = 1] = record.split(";").map((p) => (p === "" ? undefined : Number(p)));
+  const [vk = 0, , uc = 0, down = 0, cs = 0] = record.split(";").map((p) => (p === "" ? undefined : Number(p)));
   if (down !== 1) return { keys: "", lead };
   if (uc >= 0xd800 && uc <= 0xdbff) return { keys: "", lead: String.fromCharCode(uc) };
   const altGr = (cs & ALT) !== 0 && (cs & CTRL) !== 0 && uc > 0x20 && uc !== 0x7f;
@@ -94,8 +98,8 @@ function translate(record: string, lead: string | undefined): { keys: string; le
   let keys = "";
   if (seq) {
     const m = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0); // xterm's: 1, plus Shift 1, Alt 2, Ctrl 4
-    const [, n, final] = /^(\d*)(.)$/.exec(seq)!;
-    keys = m > 1 ? `\u001b[${n || 1};${m}${final}` : vk >= 112 && vk <= 115 ? `\u001bO${final}` : `\u001b[${seq}`;
+    const [n, final] = seq;
+    keys = m > 1 ? `\u001b[${n || 1};${m}${final}` : vk >= 112 && vk <= 115 ? `\u001bO${final}` : `\u001b[${n}${final}`;
   } else if (vk === 13) keys = esc + (shift || ctrl ? "\n" : "\r"); // Enter: Ctrl+Enter is LF outside the mode too
   else if (vk === 8) keys = esc + (ctrl ? "\b" : "\u007f"); // Backspace
   else if (vk === 9) keys = esc + (shift ? "\u001b[Z" : "\t"); // Tab
@@ -103,7 +107,7 @@ function translate(record: string, lead: string | undefined): { keys: string; le
     const c = ctrl && vk === 0x20 ? 0x20 : uc;
     if (c !== 0) keys = esc + (uc >= 0xdc00 && uc <= 0xdfff ? (lead ?? "") : "") + String.fromCharCode(ctrl ? ctrlChar(c) : c);
   }
-  return keys ? { keys: keys.repeat(repeat) } : { keys, lead };
+  return keys ? { keys } : { keys, lead };
 }
 
 // One read's pieces, in order, and what is held back for the next read. `held` is the end of a read that could still be

@@ -140,6 +140,16 @@ describe("Screen", () => {
     expect(out.write).toBe(WIN32_ON + WIN32_OFF);
   });
 
+  // Ink's resume takes raw mode back even while it unmounts (ink.js, endSuspend), after the terminal may be put back.
+  it("never turns win32 input mode on again once the terminal is put back", () => {
+    const { out, screen } = recorded();
+    screen.setWin32(true);
+    screen.restore();
+    screen.setWin32(true);
+    expect(out.write).toBe(WIN32_ON);
+    expect(out.now).toBe(WIN32_OFF + SHOW_CURSOR);
+  });
+
   it("writes nothing when put back if it never turned anything on, so classic mode stays as release 4 left it", () => {
     const { out, screen } = recorded();
     screen.restore();
