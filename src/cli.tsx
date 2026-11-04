@@ -12,6 +12,7 @@ import {
   exitOn,
   exitSignals,
   fullPossible,
+  gitUnread,
   givenBy,
   headlessAnswer,
   headlessDeclined,
@@ -19,6 +20,7 @@ import {
   headlessLeftOut,
   instructionsLine,
   jsonLine,
+  keptForReview,
   leadOf,
   MAX_TASKS,
   networkLine,
@@ -45,6 +47,7 @@ import { LocalExecutor, LocalWorkspace } from "./exec/local.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
+import { sessionGone } from "./sandbox/executor.js";
 import { sandboxCommand } from "./sandbox/image.js";
 import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
@@ -222,8 +225,6 @@ if (mode === "never" && sandbox !== "copy") {
   const source = parsed.mode === undefined ? `${SETTINGS}: "mode": ` : "--mode ";
   fail(`${source}never needs --sandbox copy, so nothing reaches your folder before you have reviewed it; launch with --sandbox copy --mode never.`);
 }
-// Until Task 21 builds copy mode, asking for it stops the launch, so `never` cannot start yet (release 7 plan, choice 1).
-if (sandbox === "copy") fail(`${parsed.sandbox === undefined ? `${SETTINGS}: "sandbox": ` : "--sandbox "}${sandbox} is not built yet`);
 const netLine = networkLine(parsed, sandbox);
 if (netLine) console.error(netLine);
 
@@ -276,28 +277,31 @@ if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal
 // (release 7 plan, Task 8; choices 57 and 59). Without git, only the fixed list applies (choice 11). If git's run fails,
 // only the fixed list applies, and the launch says so here and again in full screen (App.tsx).
 // In live link its launch's first steps read them (clilib.ts, sandboxReady; release 7 plan, Task 16), and refuse when they
-// cannot be read. Ctrl-C while the image builds, with raw mode off, stops the launch.
+// cannot be read; in copy mode they read them too, then take the snapshot, going on without git's settings as here (Task
+// 21). Ctrl-C while the image builds, with raw mode off, stops the launch.
 let protection: Protection = protectionOf(undefined);
 let gitLine: string | undefined;
 let ready: Ready | undefined;
-if (sandbox === "live") {
+if (sandbox !== "off") {
   const stop = new AbortController();
   const onInt = () => stop.abort();
   process.once("SIGINT", onInt);
-  const got = await sandboxReady(root, {
+  const io = {
     ...(interactive ? { ask: askAtStart } : {}),
-    out: (line) => console.log(line),
-    err: (line) => console.error(line),
+    out: (line: string) => console.log(line),
+    err: (line: string) => console.error(line),
     signal: stop.signal,
-  });
+  };
+  const got = await sandboxReady(root, io, sandbox === "copy" ? { session: sessionId } : undefined);
   process.off("SIGINT", onInt);
   if ("exit" in got) process.exit(got.exit);
   ready = got;
+  gitLine = got.gitLine;
 } else {
   try {
     protection = protectionOf(await gitSettings(root));
   } catch (err) {
-    gitLine = visible(`git's settings could not be read (${errorText(err)}); only the fixed list of protected paths applies`);
+    gitLine = gitUnread(err);
     console.error(gitLine);
   }
 }
@@ -310,7 +314,7 @@ if (offLine) console.error(offLine);
 // Read once, at the start (release 4 design, "Instruction files"). TACHI_INSTRUCTIONS_TOP moves where
 // the walk down to the project starts, so tests never read the user's files.
 const instructions = await readInstructions({ root, codexHome: process.env.CODEX_HOME || undefined, top: process.env.TACHI_INSTRUCTIONS_TOP || undefined }, async (reached) => {
-  // As read_file reads outside the project then. Unreachable until copy mode, which `never` needs, is built (Task 21).
+  // As read_file reads outside the project then.
   if (mode === "never") return true;
   if (!interactive) {
     console.error(headlessLeftOut(reached));
@@ -409,6 +413,8 @@ if (parsed.print !== undefined) {
       if (note) console.error(note);
     }
   }
+  // Nobody can review here, so the copy is kept (choice 29).
+  if (box?.copy) console.error(keptForReview(sessionId));
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
   // Ctrl-C reaches the interface as a key, as raw mode is on, so a SIGINT here came from outside (`kill -INT`), or from
@@ -427,6 +433,26 @@ if (parsed.print !== undefined) {
   const tool = systemTool(process.platform, process.env);
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
+  // Copy mode's review at the end (App.tsx, copy; release 7 plan, Task 21): its lines, printed once Ink has ended, and the
+  // protection worked out on the host when it opens, never the gate's view of the box.
+  const reviewed: string[] = [];
+  const copied = box?.copy;
+  const copy = box && copied && {
+    copy: { session: sessionId, folder: copied.folder, manifest: copied.manifest },
+    stop: async () => {
+      await box.box.stop();
+      return sessionGone(sessionId);
+    },
+    protection: async () => {
+      try {
+        return protectionOf(await gitSettings(copied.manifest.root));
+      } catch (err) {
+        reviewed.push(gitUnread(err));
+        return protectionOf(undefined);
+      }
+    },
+    ended: (lines: string[]) => reviewed.push(...lines),
+  };
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();
   ink = render(
     <App
@@ -465,11 +491,21 @@ if (parsed.print !== undefined) {
       clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
       home={os.homedir()}
       live={{ loaded, given: givenBy(parsed, process.env), ...(netLine ? { networkLine: netLine } : {}), ...(gitLine ? { gitLine } : {}) }}
+      {...(copy ? { copy } : {})}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
     // only the lines that changed, Ink's incrementalRendering, made no difference felt).
     { stdin: keys as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" }, maxFps: 60 },
   );
-  restoreWhenInkEnds(screen, ink.waitUntilExit());
+  const exited = ink.waitUntilExit();
+  restoreWhenInkEnds(screen, exited);
+  // After the terminal is back, as restoreWhenInkEnds waits on the same promise first; an error is its to report. The
+  // lines come escaped (Review.tsx, ReviewEnd).
+  exited.then(
+    () => {
+      for (const line of reviewed) console.log(line);
+    },
+    () => {},
+  );
 }

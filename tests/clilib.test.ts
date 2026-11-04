@@ -368,8 +368,8 @@ describe("resolve", () => {
   });
 
   it("still checks a flag given over the file, in the flag's words", () => {
-    expect(() => resolve({ mode: "x" }, {}, { mode: "ask" })).toThrow('--mode must be one of: ask, project, auto (got "x")');
-    // `never` is not offered, but still read, so the launch can say it needs copy mode (release 7 plan, Task 7 and choice 1).
+    expect(() => resolve({ mode: "x" }, {}, { mode: "ask" })).toThrow('--mode must be one of: ask, project, auto, never (got "x")');
+    // `never` is offered and read, as copy mode is built (release 7 plan, Task 21); the launch says it needs copy mode.
     expect(resolve({ mode: "never" }, {}, {}).mode).toBe("never");
     expect(() => resolve({ sandbox: "x" }, {}, { sandbox: "off" })).toThrow('--sandbox must be one of: off, live, copy (got "x")');
     expect(() => resolve({ network: "x" }, {}, { network: "off" })).toThrow('--network must be one of: off, on (got "x")');

@@ -40,12 +40,12 @@ const discardAsked = (keys: string) => `Discard the copy and every change in it?
 // The rest are Task 20's drafts, for the user's approval.
 const READING = "Reading the copy's changes...";
 const unread = (why: string) => `The copy's changes could not be read: ${why}.`;
-const leftOut = (rel: string, why: string) => `Left out, never applied: ${rel} (${why})`;
+export const leftOut = (rel: string, why: string) => `Left out, never applied: ${rel} (${why})`; // the launch's too (clilib.ts)
 const ignoredCount = (n: number) => `${n} change${n === 1 ? "" : "s"} in paths git ignores: counted, never applied`;
 const APPLYING = "Applying...";
 // The finished screen's keys (the user's choice): Up and Down scroll what came of each change, any other key closes.
 const closing = (scroll: string | undefined) => (scroll ? `${scroll} scroll · any other key closes` : "Any key closes.");
-const kept = (session: string) => `The copy is kept; tachi review ${session} opens it again.`;
+export const kept = (session: string) => `The copy is kept; tachi review ${session} opens it again.`;
 const REMOVED = "The copy was removed.";
 const DISCARDED = "The copy was discarded.";
 const removing = (n: number) => `Removing the copy (${n} file${n === 1 ? "" : "s"})...`;

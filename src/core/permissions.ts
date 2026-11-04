@@ -12,9 +12,8 @@ import type { Bus } from "./bus.js";
 //          (release 7 design, "Launching")
 export type Mode = "ask" | "project" | "auto" | "never";
 export const MODES: Mode[] = ["ask", "project", "auto", "never"];
-// The modes a mistake's words offer: `never` is still read, so the launch can say it needs --sandbox copy, which is not
-// built until Task 21 (release 7 plan, Task 7 and choice 1).
-export const OFFERED: Mode[] = ["ask", "project", "auto"];
+// The modes a mistake's words offer: all four, now that copy mode, which `never` needs, is built (release 7 plan, Task 21).
+export const OFFERED: Mode[] = ["ask", "project", "auto", "never"];
 
 export interface Action {
   kind: "read" | "write" | "shell";
@@ -94,6 +93,8 @@ const IN_A_SESSION = 20;
 const dangerRefusal = (found: Danger[]) => `Not allowed: this command matches the dangerous-command check (${found.map((d) => visible(named(d))).join("; ")}).`;
 const protectedRefusal = (where: string, part: string) =>
   `Not allowed: ${visible(where)} is a protected path (${visible(part)}), which other programs run or read as settings.`;
+// WORDING: needs approval
+const outsideRefusal = (summary: string) => `Not allowed in never mode: ${visible(summary)}, which is outside the project.`;
 
 // `root`: the project's, for the dangerous-command check; `headless`: -p mode, where a danger is refused (Task 8);
 // `judge`: auto mode's (Task 10), which cli.tsx always gives. `home` and `shell` are the box's in the sandbox, its
@@ -183,6 +184,9 @@ export class PermissionGate {
     const part = action.protectedPart;
     if (mode === "never") {
       if (part !== undefined) throw new Declined(protectedRefusal(action.path ?? action.summary, part));
+      // A write outside the project, one whose real place cannot be told among them (a link that leads nowhere has no
+      // protected part to find), could reach the folder unreviewed (Task 21, from Task 8's spec review).
+      if (action.kind === "write" && action.outside) throw new Declined(outsideRefusal(action.summary));
       if (found.length) throw new Declined(dangerRefusal(found));
       return;
     }

@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -31,6 +32,7 @@ import type { ModelGroup } from "../../src/providers/models.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
 import { judgeOf } from "../../src/safety/judge.js";
 import { dangers, NO_RULES } from "../../src/safety/rules.js";
+import type { Manifest } from "../../src/sandbox/snapshot.js";
 import { readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
@@ -40,7 +42,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
-import { Bus, FakeProvider, Held, callTool, fakeWorkspace, reply, standInEditor, tempContext, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 
@@ -134,6 +136,7 @@ async function mount(
     judge?: Provider; // auto mode's judge, given to the gate as cli.tsx gives it (release 7 plan, Task 10)
     executor?: Executor; // what the tools run through; a real one in a temp folder when not given
     workspace?: Workspace; // the project's files, for the tools and the App; the temp folder's, with `branches`, when not given
+    copy?: AppProps["copy"]; // copy mode's copy, and what leave() does with it (release 7 plan, Task 21)
   } = {},
 ) {
   const bus = new Bus();
@@ -216,6 +219,7 @@ async function mount(
       // No test reads the user's clipboard: unless a test gives its own reader, Alt+V's read never answers, and the
       // test ends it through the session's Pictures.
       readPicture={opts.readPicture === undefined ? () => new Promise(() => {}) : opts.readPicture}
+      copy={opts.copy}
     />,
   );
   mounted.push(app);
@@ -7919,5 +7923,112 @@ describe("App's live settings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// Release 7 plan, Task 21: in copy mode, leaving stops the box, and once Docker reports it gone the review opens in the
+// App's place, with the App's own keys off; the review's end lines are handed back to print once Ink has ended. The copy
+// is made by hand, as tests/tui/review.test.tsx makes it, in a data folder of the test's own, with one change the box
+// made; the box is a stand-in.
+describe("App's leave() in copy mode", () => {
+  function copyWorld() {
+    const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-leave-")));
+    onTestFinished(() => removeTree(dir));
+    const root = path.join(dir, "project");
+    const folder = path.join(dir, "data", "copies", "s1");
+    for (const f of [root, path.join(folder, "base"), path.join(folder, "work")]) mkdirSync(f, { recursive: true });
+    for (const where of [root, path.join(folder, "base")]) writeFileSync(path.join(where, "a.txt"), "made-up text\n");
+    writeFileSync(path.join(folder, "work", "a.txt"), "the box's text\n");
+    const st = statSync(path.join(folder, "work", "a.txt"));
+    const sha256 = createHash("sha256").update("made-up text\n").digest("hex");
+    const manifest: Manifest = { session: "s1", pid: process.pid, root, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
+    manifest.entries["a.txt"] = { type: "file", sha256, exec: false, size: st.size, mtimeMs: st.mtimeMs };
+    writeFileSync(path.join(folder, "manifest.json"), JSON.stringify(manifest));
+    const said: string[] = [];
+    const ended: string[][] = [];
+    let release!: (gone: boolean) => void;
+    const copy: NonNullable<AppProps["copy"]> = {
+      copy: { session: "s1", folder, manifest },
+      stop: () => {
+        said.push("stop");
+        return new Promise((resolve) => (release = resolve));
+      },
+      protection: async () => {
+        said.push("protection");
+        return { hooks: [], files: [] };
+      },
+      ended: (lines) => ended.push(lines),
+    };
+    return { folder, copy, said, ended, gone: (yes: boolean) => release(yes) };
+  }
+
+  it("opens the review at /exit once the box is gone, where keys never reach the prompt and Ctrl-C does only the review's", async () => {
+    const w = copyWorld();
+    const lead = new FakeProvider("a", []);
+    const { app } = await mount([], { lead, copy: w.copy });
+    await type(app, "/exit");
+    expect(w.said).toEqual(["stop"]);
+    await until(app, "Stopping the box...");
+    await press(app, "x");
+    expect(app.lastFrame()).not.toContain("› x");
+    w.gone(true);
+    await until(app, "Review the copy's changes: 1 file.");
+    expect(w.said).toEqual(["stop", "protection"]);
+    // Typed text and Enter go to the review, whose Enter opens the diff; nothing is sent to the lead.
+    await press(app, "h", "i", "\r");
+    await until(app, "changed a.txt");
+    expect(lead.seen).toEqual([]);
+    // Ctrl-C closes the diff only, and then leaves the copy for later; the App's own Ctrl-C, which counts toward exiting,
+    // never acts.
+    await press(app, "\u0003");
+    await until(app, "Review the copy's changes: 1 file.");
+    expect(app.lastFrame()).not.toContain("Press Ctrl-C again to exit");
+    expect(w.ended).toEqual([]);
+    await press(app, "\u0003");
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended).toEqual([["The copy is kept; tachi review s1 opens it again."]]);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+    expect(existsSync(`${w.folder}.lock`)).toBe(false); // the lock beside the copy's folder is let go
+    expect(lead.seen).toEqual([]);
+  });
+
+  it("opens the review on Ctrl-D twice too, and exits once it ends", async () => {
+    const w = copyWorld();
+    const { app } = await mount([], { copy: w.copy });
+    await press(app, "\u0004", "\u0004");
+    w.gone(true);
+    await until(app, "Review the copy's changes: 1 file.");
+    await press(app, "l");
+    await waitFor(() => w.ended.length === 1);
+    await expectExited(app);
+  });
+
+  it("keeps the copy unreviewed when Docker still lists the box, and says so", async () => {
+    const w = copyWorld();
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(false);
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual([
+      "The box could not be removed, so the copy was not reviewed.",
+      "The copy is kept; tachi review s1 opens it again.",
+    ]);
+    expect(w.said).toEqual(["stop"]);
+    await expectExited(app);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+  });
+
+  // A signal exit or a crash ends Ink without leave() (cli.tsx, restoreOnExit, unmounts it): the box is removed by the
+  // executor's exit handler, and the copy stays, unreviewed, for `tachi review` (design: "Nothing is thrown away until the
+  // user has reviewed it").
+  it("keeps the copy, unreviewed, when Ink ends without leaving, as on a signal or a crash", async () => {
+    const w = copyWorld();
+    const { app } = await mount([], { copy: w.copy });
+    app.unmount();
+    await tick();
+    expect(w.said).toEqual([]);
+    expect(w.ended).toEqual([]);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+    expect(existsSync(path.join(w.folder, "work", "a.txt"))).toBe(true);
   });
 });

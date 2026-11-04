@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
+import { dataDir } from "./core/datadir.js";
 import type { Instructions, Reached } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
@@ -14,11 +15,13 @@ import { BoxWorkspace } from "./sandbox/boxWorkspace.js";
 import { docker } from "./sandbox/docker.js";
 import { BOX_HOME, boxLimits, boxUser, DockerExecutor, dockerRoom, memoryText, type Room, sweepBoxes, unlimitedLine } from "./sandbox/executor.js";
 import { heldLine, type ImageIo, prepareImage } from "./sandbox/image.js";
-import { CASE_REFUSED, ignoresCase, liveMounts, type Mount } from "./sandbox/mounts.js";
+import { CASE_REFUSED, ignoresCase, liveMounts, type Mount, sessionSettings } from "./sandbox/mounts.js";
+import { type Manifest, removeCopy, snapshot } from "./sandbox/snapshot.js";
 import type { SandboxLimits, Settings } from "./settings.js";
 import { shellToolOf } from "./tools/shell.js";
 import type { Tool } from "./tools/tool.js";
 import { screen } from "./tui/describe.js";
+import { leftOut } from "./tui/Review.js";
 import { k, type Segment, SEGMENTS } from "./tui/StatusLine.js";
 
 // Headless output reaches the terminal too, so model and provider text gets the scrollback's escaping.
@@ -66,7 +69,7 @@ export const MAX_TASKS = 8;
 
 // The flags' own checks take the name to put before their words: `--mode`, or the settings file's `settings.json: "mode"`
 // (release 6 plan, choice 8), so a flag and the file get the same rule and the same words. `shown` is the list the words
-// name, where a value is read but not offered, as `never` is until copy mode is built (release 7 plan, Task 7).
+// name, where a value is read but not offered.
 export function oneOf<T extends string>(name: string, value: string | undefined, allowed: readonly T[], shown: readonly T[] = allowed): T | undefined {
   if (value === undefined) return undefined;
   if (!(allowed as readonly string[]).includes(value)) throw new Error(`${name} must be one of: ${shown.join(", ")} (got "${value}")`);
@@ -243,6 +246,13 @@ export function protectionOf(git: GitSettings | undefined): Protection {
   return git ? { hooks: [...git.hooksPaths, ...git.gitDirs], files: git.files } : { hooks: [], files: [] };
 }
 
+// The line when git's settings cannot be read, so only the fixed list of protected paths applies (Task 8), escaped: with
+// the sandbox off and in copy mode, which goes on without them, as nothing reaches the folder before the review.
+export const gitUnread = (err: unknown) => visible(`git's settings could not be read (${errorText(err)}); only the fixed list of protected paths applies`);
+
+// Headless copy mode's line on stderr after the answer (choice 29): the copy is kept, for `tachi review`.
+export const keptForReview = (name: string) => `Changes kept for review: tachi review ${name}`;
+
 // The network setting acts only in the sandbox (release 7 design, "Launching"), so a --network typed for this launch
 // without it is said, and the session starts (release 7 plan, choice 22): at launch, and again in full screen (App.tsx).
 // null when there is nothing to say.
@@ -256,20 +266,38 @@ export function networkLine(flags: Flags, sandbox: Sandbox): string | null {
 // `io.err` and ends the launch with the code given. Docker is reached through `io.run` (choice 69); `gitSettings` and
 // `ignoresCase` are given by tests, which run git with their own settings and take the letter-case check as passed on
 // this PC's folders (choice 104). No flag or variable turns that check off.
+// The box's folder for the project, where the model works (choice 19), and its home (executor.ts, choice 77).
+const BOX_ROOT = "/work";
+
 export interface SandboxIo extends ImageIo {
   gitSettings?: (root: string) => Promise<GitSettings | undefined>;
   ignoresCase?: (folder: string) => boolean;
 }
-// `gitOutside`: the project's `.git` is a file naming a git folder outside it (choice 107).
-export type Ready = { tag: string; git: GitSettings | undefined; mounts: Mount[]; env: Record<string, string>; gitOutside: boolean };
+// `gitOutside`: the project's `.git` is a file naming a git folder outside it (choice 107). `copy`: copy mode's copy
+// (Task 21), and `gitLine` the line said when git's settings could not be read for it.
+export type Ready = {
+  tag: string;
+  git: GitSettings | undefined;
+  mounts: Mount[];
+  env: Record<string, string>;
+  gitOutside: boolean;
+  copy?: Copied;
+  gitLine?: string;
+};
+// The copy's folder (`copies/<session>/` in the data folder), its manifest, and how long the copy took.
+export interface Copied { folder: string; manifest: Manifest; ms: number }
 
-export async function sandboxReady(root: string, io: SandboxIo): Promise<Ready | { exit: number }> {
+// With `copy`, copy mode's launch (Task 21): Task 16's order, with the snapshot (Task 17) in the mounts' place. It is not
+// refused on a folder that ignores letter case, which is live link's alone (choice 104), and it goes on when git's
+// settings cannot be read, which only add to the gate's protected paths. A copy the launch stops after is removed, as
+// nothing has run in it.
+export async function sandboxReady(root: string, io: SandboxIo, copy?: { session: string }): Promise<Ready | { exit: number }> {
   const refuse = (line: string) => (io.err(visible(line)), { exit: 1 });
   const held = heldLine(root);
   if (held) return refuse(held);
   // The letter-case check right after, before Docker is asked anything, so Windows and macOS users are not asked to build
   // the image only to be refused (choice 108). The mounts below then take it as passed.
-  if ((io.ignoresCase ?? ignoresCase)(root)) return refuse(CASE_REFUSED);
+  if (!copy && (io.ignoresCase ?? ignoresCase)(root)) return refuse(CASE_REFUSED);
   const image = await prepareImage(root, io);
   if ("exit" in image) return image;
   let git: GitSettings | undefined;
@@ -281,6 +309,27 @@ export async function sandboxReady(root: string, io: SandboxIo): Promise<Ready |
   }
   // A Ctrl-C meanwhile stops the launch as one during the image's steps does (image.ts), whether or not it ended git.
   if (io.signal.aborted) return { exit: 128 + constants.signals.SIGINT };
+  if (copy) {
+    const gitLine = failed === undefined ? undefined : gitUnread(failed);
+    if (gitLine) io.err(gitLine);
+    const from = performance.now();
+    let got: Awaited<ReturnType<typeof snapshot>>;
+    try {
+      got = await snapshot(root, copy.session);
+    } catch (err) {
+      await removeCopy(path.join(dataDir(), "copies", copy.session)).catch(() => {});
+      return refuse(errorText(err));
+    }
+    const copied = { folder: path.dirname(got.work), manifest: got.manifest, ms: performance.now() - from };
+    // A Ctrl-C during the copy, which cannot be stopped midway, is read once it is done.
+    if (io.signal.aborted) {
+      await removeCopy(copied.folder).catch(() => {});
+      return { exit: 128 + constants.signals.SIGINT };
+    }
+    // safe.directory, as live link's mounts give it (mounts.ts): the copy's folder is not the box's user's either.
+    const env = sessionSettings({ "safe.directory": BOX_ROOT });
+    return { tag: image.tag, git, mounts: [], env, gitOutside: false, copy: copied, ...(gitLine ? { gitLine } : {}) };
+  }
   // Without them the mounts cannot be worked out, so live link is refused, as for Task 5's problems.
   if (failed) return refuse(`Live link is refused: git's settings could not be read (${errorText(failed)}). Launch with --sandbox copy instead.`);
   const live = liveMounts(root, git, { ignoresCase: () => false });
@@ -288,8 +337,6 @@ export async function sandboxReady(root: string, io: SandboxIo): Promise<Ready |
   return { tag: image.tag, git, ...live, gitOutside: gitFolderOutside(root) };
 }
 
-// The box's folder for the project, where the model works (choice 19), and its home (executor.ts, choice 77).
-const BOX_ROOT = "/work";
 
 // What the session runs on once the box has started: the box's executor and workspace, sharing one stopped state
 // (executor.ts, BoxState), and what the session tells the model and the gate, all in the box's terms.
@@ -304,7 +351,15 @@ export interface Started {
   shellTool: Tool;
   protection: Protection;
   lines: string[];
+  copy?: Copied;
 }
+
+// Choice 24: the box makes /work a new git repository and commits the snapshot as one commit, by Tachikoma. Files git's
+// ignore rules cover are left out of the commit, as `git add` leaves them, though they are in the copy.
+// WORDING: needs approval (the commit's message)
+const COMMIT =
+  "git init -q && git add -A && " +
+  "git -c user.name=Tachikoma -c user.email=tachikoma@localhost commit -q --allow-empty -m 'The project as Tachikoma copied it'";
 
 export async function sandboxStart(
   root: string,
@@ -313,7 +368,12 @@ export async function sandboxStart(
   io: Pick<SandboxIo, "err" | "run">,
 ): Promise<Started | { exit: number }> {
   const run = io.run ?? docker;
-  const refuse = (line: string) => (io.err(visible(line)), { exit: 1 });
+  const { copy } = ready;
+  const refuse = async (line: string) => {
+    io.err(visible(line));
+    if (copy) await removeCopy(copy.folder).catch(() => {});
+    return { exit: 1 };
+  };
   await sweepBoxes(run);
   let box: DockerExecutor;
   let room: Room;
@@ -325,7 +385,8 @@ export async function sandboxStart(
     const { network, session } = opts;
     const labels = opts.labels ? { labels: opts.labels } : {};
     const user = boxUser(room);
-    box = await DockerExecutor.start({ image: ready.tag, folder: root, network, limits: got.limits, mounts, env, session, user, ...labels }, run);
+    const folder = copy ? path.join(copy.folder, "work") : root; // in copy mode only the copy's work/ is mounted
+    box = await DockerExecutor.start({ image: ready.tag, folder, network, limits: got.limits, mounts, env, session, user, ...labels }, run);
   } catch (err) {
     return refuse(errorText(err));
   }
@@ -352,8 +413,21 @@ export async function sandboxStart(
     await box.stop();
     return refuse(problem);
   }
+  if (copy) {
+    const made = await box.exec(COMMIT, BOX_ROOT).catch((err: Error) => err);
+    if (made instanceof Error || made.code !== 0) {
+      await box.stop();
+      const words = made instanceof Error ? errorText(made) : made.stderr.trim() || `exit code ${made.code}`;
+      // WORDING: needs approval
+      return refuse(`The sandbox could not make the copy a git repository in the box (${words}).`);
+    }
+  }
   const { limits } = box;
-  const line = `Sandbox: live link on ${root}, network ${opts.network}, limits ${memoryText(limits.memory)}, ${limits.cpus} CPUs, ${limits.pids} processes.`;
+  const tail = `network ${opts.network}, limits ${memoryText(limits.memory)}, ${limits.cpus} CPUs, ${limits.pids} processes.`;
+  const line = copy
+    ? `Sandbox: copy of ${root} (${files(Object.values(copy.manifest.entries).filter((e) => e.type === "file").length)}, ` +
+      `${(copy.ms / 1000).toFixed(1)} s), ${tail} Your folder is not touched until you review the changes.`
+    : `Sandbox: live link on ${root}, ${tail}`;
   return {
     box,
     root: BOX_ROOT,
@@ -366,9 +440,11 @@ export async function sandboxStart(
     protection: boxProtection(root, protectionOf(ready.git)),
     lines: [
       visible(line),
+      ...(copy?.manifest.leftOut.map((l) => visible(leftOut(l.path, l.why))) ?? []),
       ...room.unlimited.map(unlimitedLine),
       ...(ready.gitOutside ? ["Git does not work in the box here: .git points to a git folder outside the project. Commit on this computer."] : []),
     ],
+    ...(copy ? { copy } : {}),
   };
 }
 

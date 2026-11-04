@@ -278,6 +278,22 @@ describe("the gate's dangerous commands and protected writes", () => {
     await gate.require(write()); // an ordinary write is not asked about in never
   });
 
+  // Release 7 plan, Task 21 (from Task 8's spec review): a write whose real place cannot be told, through a link that
+  // leads nowhere, has no protected part to find, and counts as outside; never refuses it, as it refuses any write
+  // outside the project. A read outside still passes.
+  it("refuses a write outside the project in never, one through a link that leads nowhere among them", async () => {
+    const { gate, asked } = gateIn("never");
+    const nowhere = "write /p/dangling/x.txt (through a link that leads nowhere)";
+    await expect(gate.require({ kind: "write", outside: true, summary: nowhere })).rejects.toThrow(
+      new Declined(`Not allowed in never mode: ${nowhere}, which is outside the project.`),
+    );
+    await expect(gate.require({ kind: "write", outside: true, summary: "write /q/a\u001b[8m.txt" })).rejects.toThrow(
+      "Not allowed in never mode: write /q/a\\u001b[8m.txt, which is outside the project.",
+    );
+    await gate.require({ kind: "read", outside: true, summary: "read /q/a.txt" });
+    expect(asked).toEqual([]);
+  });
+
   it("keeps the git settings' paths for the session, and a subagent's gate reads the lead's", () => {
     const { gate } = gateIn("ask");
     const child = gate.for({ name: "t2", signal: new AbortController().signal, stop: () => {} });

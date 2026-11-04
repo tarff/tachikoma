@@ -51,7 +51,7 @@ describe("readSettings", () => {
   });
 
   it("refuses a value its flag would refuse, in the flag's words after the file and the entry", () => {
-    expect(problem({ mode: "x" })).toBe('settings.json: "mode" must be one of: ask, project, auto (got "x")');
+    expect(problem({ mode: "x" })).toBe('settings.json: "mode" must be one of: ask, project, auto, never (got "x")');
     expect(problem({ sandbox: "on" })).toBe('settings.json: "sandbox" must be one of: off, live, copy (got "on")');
     expect(problem({ network: "yes" })).toBe('settings.json: "network" must be one of: off, on (got "yes")');
     expect(problem({ effort: "huge" })).toBe('settings.json: "effort" must be one of: low, medium, high, xhigh, max (got "huge")');

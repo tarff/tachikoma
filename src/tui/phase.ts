@@ -9,6 +9,7 @@
 // Who takes the keys: the order App's useInput decides in, first match winning.
 export type Phase =
   | { kind: "ended" }
+  | { kind: "review" }
   | { kind: "printed" }
   | { kind: "picker" }
   | { kind: "question" }
@@ -32,6 +33,9 @@ export interface Now {
 // is still on screen until the next drawing: "yy" answers once (App.tsx, bindAsk).
 export interface PhaseInputs {
   ended: boolean; // Ink has unmounted the App
+  // Copy mode's leaving (release 7 plan, Task 21): the box stopping, then the review drawn in the App's place, which reads
+  // its own keys (Review.tsx). Ink gives every key to every useInput, so the App's are off, and its pastes and mouse.
+  review: boolean;
   printed: boolean; // the detail view printed out (`[`)
   picker: boolean; // the model list drawn
   listOpen: boolean; // the model list open, drawn or waiting for the printed view to come back
@@ -50,6 +54,7 @@ export interface PhaseInputs {
 // as it is: the model list and the question as last drawn come from `drawn`, which App sets while drawing.
 export interface PhaseRefs {
   ended: { current: boolean };
+  leaving: { current: boolean };
   printed: { current: unknown };
   drawn: { current: { picker: boolean; question: boolean } };
   listOpen: { current: boolean };
@@ -65,6 +70,7 @@ export interface PhaseRefs {
 export function phaseInputs(r: PhaseRefs, findMenu: () => boolean = () => false): PhaseInputs {
   return {
     ended: r.ended.current,
+    review: r.leaving.current,
     printed: r.printed.current !== null,
     picker: r.drawn.current.picker,
     listOpen: r.listOpen.current,
@@ -84,6 +90,7 @@ export function now(s: PhaseInputs): Now {
 
 function phaseOf(s: PhaseInputs): Phase {
   if (s.ended) return { kind: "ended" };
+  if (s.review) return { kind: "review" };
   if (s.printed) return { kind: "printed" };
   if (s.picker) return { kind: "picker" };
   if (s.question) return { kind: "question" };
@@ -98,7 +105,7 @@ function phaseOf(s: PhaseInputs): Phase {
 // even while a question is drawn (release 6 plan, Task 2). The menu is never asked: a paste goes into the prompt either
 // way.
 export function pasteTo(s: PhaseInputs): "search" | "prompt" | null {
-  if (s.printed) return null;
+  if (s.printed || s.review) return null;
   if (s.detail?.search?.typing) return "search";
   if (s.question || s.search || s.detail) return null;
   return "prompt";

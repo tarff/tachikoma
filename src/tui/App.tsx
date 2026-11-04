@@ -3,7 +3,7 @@ import { Box, Static, Text, useInput, usePaste } from "ink";
 import { useEffect, useRef } from "react";
 import { checkOffLine, type Given } from "../clilib.js";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
-import { type Ask, type Mode, visible } from "../core/permissions.js";
+import { type Ask, type Mode, type Protection, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import type { Tasks } from "../core/tasks.js";
@@ -15,7 +15,7 @@ import type { UserRules } from "../safety/rules.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
-import { characters, FROM, gray, isFile, type Question, visualSelection } from "./app/constants.js";
+import { characters, FROM, gray, isFile, type Question, STOPPING, visualSelection } from "./app/constants.js";
 import { handover } from "./app/handover.js";
 import { keyRouting } from "./app/keyRouting.js";
 import { liveEdits } from "./app/liveEdits.js";
@@ -40,6 +40,7 @@ import type { Hand } from "./owner.js";
 import { pasteTo, phaseInputs } from "./phase.js";
 import type { Pictures, Read } from "./pictures.js";
 import { Prompt, promptWidth } from "./Prompt.js";
+import { Review, type ReviewCopy } from "./Review.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
 import { TaskPanel, taskRows } from "./TaskPanel.js";
 import type { Screen } from "./terminal.js";
@@ -104,6 +105,15 @@ export interface AppProps {
   // chat:imagePaste's read of the clipboard's picture, null where there is no reader; the system's reader when not
   // given (clipboard.ts, imageReader). Tests give a stand-in, so none reads the user's clipboard.
   readPicture?: (() => Promise<Read>) | null;
+  // Copy mode (release 7 plan, Task 21; queue.ts, leave): the copy the session works on; `stop` removes its box, true
+  // once Docker reports it gone; `protection` is worked out on the host when the review opens, never the gate's view of
+  // the box; `ended` takes the lines to print once Ink has ended. Without it, leaving only exits.
+  copy?: {
+    copy: ReviewCopy;
+    stop: () => Promise<boolean>;
+    protection: () => Promise<Protection>;
+    ended: (lines: string[]) => void;
+  };
 }
 
 type OutputArea = ReturnType<typeof output>;
@@ -120,7 +130,7 @@ type PromptKeysArea = ReturnType<typeof promptKeys>;
 export interface Fns {
   say: OutputArea["say"]; show: OutputArea["show"]; note: OutputArea["note"]; noteAlone: OutputArea["noteAlone"];
   make: OutputArea["make"]; lookUpWindow: OutputArea["lookUpWindow"];
-  submit: QueueArea["submit"]; next: QueueArea["next"]; recordToOpen: QueueArea["recordToOpen"];
+  submit: QueueArea["submit"]; next: QueueArea["next"]; recordToOpen: QueueArea["recordToOpen"]; leave: QueueArea["leave"];
   perform: QueueArea["perform"]; tasksCommand: QueueArea["tasksCommand"]; recordOf: QueueArea["recordOf"];
   pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"];
   readsEnded: PictureReadsArea["readsEnded"]; stopReads: PictureReadsArea["stopReads"];
@@ -415,6 +425,13 @@ export function App(props: AppProps) {
   const latest = useRef(handlers);
   latest.current = handlers;
   ui.late.latest = latest; // for newPicture's settle (pictureReads.ts)
+
+  // Copy mode's leaving (queue.ts, leave): its line while the box stops, then the review in place of everything else,
+  // with the live table of keys (release 7 plan, Task 21).
+  if (ui.reviewing && ui.copy) {
+    return <Review copy={ui.copy.copy} bindings={ui.table} protection={ui.reviewing.protection} onEnd={ui.reviewing.onEnd} />;
+  }
+  if (ui.leaving.current) return <Text color="gray">{STOPPING}</Text>;
 
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = ui.detail.current;

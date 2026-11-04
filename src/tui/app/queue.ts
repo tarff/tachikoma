@@ -1,14 +1,17 @@
+import { withLock } from "../../auth/lock.js";
 import { summarize } from "../../core/errorlog.js";
 import type { Task } from "../../core/tasks.js";
 import { errorText } from "../../core/types.js";
 import { KEYBINDINGS } from "../../keybindings.js";
+import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { callLines, type Line } from "../describe.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
+import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
-import { COMMANDS, FROM, gray, isCommand, names } from "./constants.js";
+import { COMMANDS, FROM, gray, isCommand, names, NOT_GONE } from "./constants.js";
 import type { UI } from "./state.js";
 
 export const queue = (ui: UI, fns: Fns) => {
@@ -34,7 +37,7 @@ export const queue = (ui: UI, fns: Fns) => {
   // while the terminal is handed over (release 6 design, "When a live change applies").
   const next = () => {
     const h = ui.happening();
-    if (h.phase.kind === "ended" || h.working || h.waiting) return;
+    if (h.phase.kind === "ended" || h.phase.kind === "review" || h.working || h.waiting) return;
     const w = ui.waiting.current;
     if (w.lead !== undefined) fns.fileLead(w.lead);
     w.lead = undefined;
@@ -82,7 +85,7 @@ export const queue = (ui: UI, fns: Fns) => {
     try {
       if (alone("/exit")) {
         ui.queue.current = [];
-        return ui.exit();
+        return fns.leave();
       }
       if (alone("/errors")) return fns.say(...summarize(ui.errorFile).map((row) => ({ text: row, oneLine: true })));
       // Not to full screen where it can't draw: classic, as at the start (clilib.ts, screenMode).
@@ -202,5 +205,31 @@ export const queue = (ui: UI, fns: Fns) => {
     ui.setPicker(null);
     fns.next();
   };
-  return { submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker };
+  // Leaving the session (/exit, and Ctrl-C or Ctrl-D twice): Ink ends, as ever. In copy mode the box is stopped first,
+  // with the turn and the subagents, and once Docker reports it gone the review (Review.tsx) opens in the App's place,
+  // Ink still mounted, under the lock beside the copy's folder, so two reviews of one copy take turns; its lines are
+  // handed back, to print once Ink has ended (release 7 plan, Task 21). From the first step the App's own keys, pastes
+  // and mouse are off (phase.ts, review), and nothing more starts. A view printed out comes back first, so the review
+  // can draw.
+  const leave = () => {
+    const c = ui.copy;
+    if (!c) return ui.exit();
+    if (ui.leaving.current) return;
+    ui.leaving.current = true;
+    ui.tasks.stop();
+    ui.abort.current?.abort();
+    ui.rerender((n) => n + 1);
+    void (async () => {
+      await fns.comeBack();
+      if (!(await c.stop())) return c.ended([NOT_GONE, kept(c.copy.session)]);
+      await withLock(copyLock(c.copy.folder), async () => {
+        const protection = await c.protection();
+        const end = await new Promise<ReviewEnd>((onEnd) => ui.setReviewing({ protection, onEnd }));
+        c.ended(end.lines);
+      });
+    })()
+      .catch((err) => c.ended([errorText(err)]))
+      .finally(() => ui.exit());
+  };
+  return { submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave };
 };

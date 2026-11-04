@@ -444,6 +444,20 @@ describe("file tools", () => {
     await expect(writeFileTool.run({ path: "dangling/x.txt", content: "x" }, ctx)).rejects.toThrow("The user declined");
   });
 
+  // Release 7 plan, Task 21: its real place cannot be told, so no protected part is found; never refuses it as outside,
+  // and nothing is made where the link leads.
+  it("refuses a write through a link that leads nowhere in never mode", async () => {
+    const ctx = await tempContext("never");
+    const missing = path.join(tmpdir(), `tachi-missing-${process.pid}-${Date.now()}`);
+    await symlink(missing, path.join(ctx.root, "dangling"), "junction");
+    const abs = path.join(ctx.root, "dangling", "x.txt");
+    await expect(writeFileTool.run({ path: "dangling/x.txt", content: "x" }, ctx)).rejects.toThrow(
+      `Not allowed in never mode: write ${abs} (through a link that leads nowhere), which is outside the project.`,
+    );
+    expect(existsSync(missing)).toBe(false);
+    expect(ctx.asked).toEqual([]);
+  });
+
   it("asks before reading or editing a file outside the project, given by absolute path", async () => {
     const ctx = await tempContext("project", [false, false]);
     const outside = path.join(await mkdtemp(path.join(tmpdir(), "tachi-outside-")), "a.txt");

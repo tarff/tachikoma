@@ -79,7 +79,8 @@ export const LIVE = [
 export const FROM = ` (from ${SETTINGS})`;
 
 // The contexts in force in each phase (phase.ts), innermost first (release 6 plan, Task 6's table). Printed out and
-// ended, keys go where they went before the table: to the reader of the printed view, or nowhere.
+// ended, keys go where they went before the table: to the reader of the printed view, or nowhere. In the review the
+// review reads its own keys, in these contexts at its list (Review.tsx; release 7 plan, Task 21), and the App none.
 export const PHASE_CONTEXTS: Record<Phase["kind"], Context[]> = {
   prompt: ["Chat", "Global"],
   menu: ["Autocomplete", "Chat", "Global"],
@@ -87,6 +88,7 @@ export const PHASE_CONTEXTS: Record<Phase["kind"], Context[]> = {
   search: ["HistorySearch", "Global"],
   detail: ["Transcript", "Global"],
   picker: ["Select", "Global"],
+  review: ["Review", "Global"],
   printed: [],
   ended: [],
 };
@@ -137,6 +139,11 @@ export const printable = (s: Stroke) => !s.ctrl && !s.alt && (s.key === "space" 
 // The line while the editor runs, and the codes that erase it (handover.tsx, away; release 6 plan, choice 33).
 export const WAITING = "Waiting for your editor to close the file... (Tachikoma ignores Ctrl-C until then) ";
 export const ERASE_LINE = "\r\u001b[K";
+// Copy mode's leaving (queue.ts, leave): the line while the box stops, and the one when Docker still lists it after.
+// WORDING: needs approval
+export const STOPPING = "Stopping the box...";
+// WORDING: needs approval
+export const NOT_GONE = "The box could not be removed, so the copy was not reviewed.";
 // The wheel's reports carry no key, so no flag of one is set.
 export const NO_KEY = {} as Key;
 // VISUAL's selection, as vim.ts's visual() takes it, to draw (release 6 plan, choice 28): from the anchor to the

@@ -1,6 +1,6 @@
 import { useApp, useWindowSize } from "ink";
 import { useRef, useState } from "react";
-import { type Mode, visible } from "../../core/permissions.js";
+import { type Mode, type Protection, visible } from "../../core/permissions.js";
 import type { Effort } from "../../providers/anthropic.js";
 import type { ModelGroup } from "../../providers/models.js";
 import { NO_RULES } from "../../safety/rules.js";
@@ -18,6 +18,7 @@ import type { PickerKey } from "../ModelPicker.js";
 import { TerminalOwner } from "../owner.js";
 import { now as nowOf, phaseInputs } from "../phase.js";
 import { type Draft, Pictures } from "../pictures.js";
+import type { ReviewEnd } from "../Review.js";
 import type { Call } from "../ToolLine.js";
 import { FOLLOWING, type Pos, Rows, type View } from "../view.js";
 import { type Vim, start as vimStart } from "../vim.js";
@@ -54,6 +55,7 @@ export function useAppState({
   live,
   pictures: picturesGiven,
   readPicture,
+  copy,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -113,6 +115,10 @@ export function useAppState({
   const dropping = useRef<Printed | null>(null);
   const waitingList = useRef<ModelGroup[] | null>(null);
   const ended = useRef(false); // Ink has unmounted the App (the cleanup in App.tsx)
+  // Copy mode's leaving (queue.ts, leave), from its first step; and the review once the box is gone, with the protection
+  // worked out for it and where its end goes (release 7 plan, Task 21).
+  const leaving = useRef(false);
+  const [reviewing, setReviewing] = useState<{ protection: Protection; onEnd: (end: ReviewEnd) => void } | null>(null);
   // Who has the terminal (owner.ts): how many hand-overs hold the keyboard, and whether Ink is suspended.
   const [owner] = useState(
     () =>
@@ -255,7 +261,7 @@ export function useAppState({
   // this drawing's values: Ink's root is non-concurrent (above), so React draws and commits in one go, and useInput's and
   // usePaste's handler is the committed drawing's (useEffectEvent). Only the keys and the wheel ask for the menu, where
   // it was found before: finding an `@` menu can list a folder (menuFor). A paste asks pasteTo() of the same inputs.
-  const phaseRefs = { ended, printed, drawn: frame, listOpen, questions, detail, search, working, queue };
+  const phaseRefs = { ended, leaving, printed, drawn: frame, listOpen, questions, detail, search, working, queue };
   const happening = (findMenu?: () => boolean) => nowOf(phaseInputs(phaseRefs, findMenu));
   // Filled in by this drawing once it has worked them out, after making the functions that read them (App.tsx): the
   // conversation's height, and `latest`, through which newPicture's settle calls the latest drawing's functions.
@@ -273,7 +279,7 @@ export function useAppState({
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
-    happening, late, toolLine, answered,
+    happening, late, toolLine, answered, copy, leaving, reviewing, setReviewing,
   } as const;
 }
 

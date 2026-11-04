@@ -58,7 +58,7 @@ function world(tree: Record<string, string | Buffer>) {
   const home = path.join(dir, "home");
   for (const f of [root, base, work, outside, home]) mkdirSync(f, { recursive: true });
   writeFileSync(path.join(outside, "kept.txt"), "made-up outside text\n");
-  const manifest: Manifest = { session: "s1", root, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
+  const manifest: Manifest = { session: "s1", pid: process.pid, root, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
   const write = (file: string, text: string | Buffer) => {
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, text);

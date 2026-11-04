@@ -92,7 +92,7 @@ export function liveMounts(
 
 // Git's settings for every git run in the box, with nothing on disk changed (choice 100): git reads GIT_CONFIG_COUNT
 // pairs of GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n> as settings given on its command line (git-config, ENVIRONMENT).
-function sessionSettings(settings: Record<string, string>): Record<string, string> {
+export function sessionSettings(settings: Record<string, string>): Record<string, string> {
   const pairs = Object.entries(settings);
   const env: Record<string, string> = { GIT_CONFIG_COUNT: String(pairs.length) };
   pairs.forEach(([key, value], i) => {

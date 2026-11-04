@@ -17,8 +17,9 @@ import { leaves } from "../tools/files.js";
 // project, as written there, to show; `inCopy` is the one work/ holds, read back after it was made, which the changes
 // compare work/ against (Task 18), so a rewritten target never shows as a change (main design, "Links"). For a link kept
 // as written the two are the same. A file's `size` and `mtimeMs` are work/'s copy's, read just after it was made: the
-// changes compare a git-ignored file by them instead of its hash (choice 112).
-export interface Manifest { session: string; root: string; at: string; entries: Record<string, ManifestEntry>; leftOut: { path: string; why: string }[] }
+// changes compare a git-ignored file by them instead of its hash (choice 112). `pid` is the session's process, so `tachi
+// review` can tell whether the session that runs the copy's box has ended (Task 21).
+export interface Manifest { session: string; pid: number; root: string; at: string; entries: Record<string, ManifestEntry>; leftOut: { path: string; why: string }[] }
 export type ManifestEntry =
   | { type: "file"; sha256: string; exec: boolean; size: number; mtimeMs: number }
   | { type: "folder" }
@@ -55,7 +56,7 @@ export async function snapshot(
   await mkdir(base);
   await mkdir(work);
   // No prototype, so a file named `__proto__` is an entry like any other, not the object's prototype.
-  const manifest: Manifest = { session, root: real, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
+  const manifest: Manifest = { session, pid: process.pid, root: real, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
   const links: string[] = [];
 
   const walk = async (rel: string): Promise<void> => {
@@ -220,6 +221,10 @@ export async function removeCopy(folder: string): Promise<void> {
   };
   await remove(folder);
 }
+
+// The lock two reviews of one copy take turns by (withLock, auth/lock.ts; release 7 plan, Task 21): beside the copy's
+// folder, not in it, as removeCopy deletes the folder.
+export const copyLock = (folder: string) => `${folder}.lock`;
 
 // A file's SHA-256, streamed. Copy mode's later steps hash the real files with it too.
 export async function hashFile(file: string): Promise<string> {

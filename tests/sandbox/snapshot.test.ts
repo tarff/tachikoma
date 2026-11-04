@@ -56,6 +56,7 @@ describe("snapshot", () => {
     expect(base).toBe(w.base);
     expect(work).toBe(w.work);
     expect(manifest.session).toBe("s1");
+    expect(manifest.pid).toBe(process.pid); // the session's process, for `tachi review`'s check that it has ended (Task 21)
     expect(manifest.root).toBe(w.root);
     expect(Number.isNaN(Date.parse(manifest.at))).toBe(false);
     expect(manifest.leftOut).toEqual([]);

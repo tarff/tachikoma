@@ -4,6 +4,7 @@ import { type PhaseInputs, type PhaseRefs, now, pasteTo, phaseInputs } from "../
 // Nothing happening: the prompt takes the keys, nothing runs and nothing waits.
 const idle: PhaseInputs = {
   ended: false,
+  review: false,
   printed: false,
   picker: false,
   listOpen: false,
@@ -21,6 +22,7 @@ const searching = { search: { typing: true } };
 describe("now", () => {
   it.each([
     { name: "ended", given: { ended: true }, kind: "ended" },
+    { name: "copy mode's review", given: { review: true }, kind: "review" },
     { name: "printed out", given: { printed: true }, kind: "printed" },
     { name: "the model list", given: { picker: true }, kind: "picker" },
     { name: "a question", given: { question: true }, kind: "question" },
@@ -40,7 +42,8 @@ describe("now", () => {
 
   // One test a pair, in useInput's order: the first named wins over the next.
   it.each([
-    { name: "ended beats printed out", given: { ended: true, printed: true }, kind: "ended" },
+    { name: "ended beats the review", given: { ended: true, review: true }, kind: "ended" },
+    { name: "the review beats printed out", given: { review: true, printed: true }, kind: "review" },
     { name: "printed out beats the model list", given: { printed: true, picker: true }, kind: "printed" },
     { name: "the model list beats a question", given: { picker: true, question: true }, kind: "picker" },
     { name: "a question beats the detail view", given: { question: true, detail: searching }, kind: "question" },
@@ -65,7 +68,7 @@ describe("now", () => {
       asked++;
       return true;
     };
-    const before: Partial<PhaseInputs>[] = [{ ended: true }, { printed: true }, { picker: true }, { question: true }, { detail: open }, { search: true }];
+    const before: Partial<PhaseInputs>[] = [{ ended: true }, { review: true }, { printed: true }, { picker: true }, { question: true }, { detail: open }, { search: true }];
     for (const given of before) now({ ...idle, ...given, menu });
     expect(asked).toBe(0);
     expect(now({ ...idle, menu }).phase.kind).toBe("menu");
@@ -107,6 +110,8 @@ describe("now", () => {
 // Release 5's paste rule (phase.ts, pasteTo).
 describe("pasteTo", () => {
   it.each([
+    { name: "copy mode's review", given: { review: true }, to: null },
+    { name: "copy mode's review, with a search typed in the detail view", given: { review: true, detail: searching }, to: null },
     { name: "printed out", given: { printed: true }, to: null },
     { name: "printed out, with a search typed in the detail view", given: { printed: true, detail: searching }, to: null },
     { name: "a search typed in the detail view", given: { detail: searching }, to: "search" },
@@ -144,6 +149,7 @@ describe("pasteTo", () => {
 function refs(): PhaseRefs {
   return {
     ended: { current: false },
+    leaving: { current: false },
     printed: { current: null },
     drawn: { current: { picker: false, question: false } },
     listOpen: { current: false },
@@ -176,8 +182,10 @@ describe("phaseInputs", () => {
     r.search.current = {};
     r.working.current = true;
     r.queue.current = ["a", "b", "c"];
+    r.leaving.current = true;
     expect(phaseInputs(r)).toEqual({
       ended: false,
+      review: true,
       printed: true,
       picker: false,
       listOpen: true,

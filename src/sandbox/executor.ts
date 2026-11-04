@@ -339,6 +339,13 @@ export async function sweepBoxes(run: DockerRun = docker): Promise<void> {
   }
 }
 
+// Whether Docker lists no box of this session any more, by its label (DockerExecutor.start): a copy is reviewed only once
+// its box has stopped (release 7 plan, Task 21). With Docker not reachable, no box can be running.
+export async function sessionGone(session: string, run: DockerRun = docker): Promise<boolean> {
+  const got = await run(["ps", "-a", "-q", "--filter", `label=tachikoma.session=${session}`]).catch(() => "missing" as const);
+  return got === "missing" || got.code !== 0 || got.out.trim() === "";
+}
+
 // process.kill with signal 0 only asks: ESRCH is no such process, EPERM one that is not ours, but alive.
 function alive(pid: number): boolean {
   try {
