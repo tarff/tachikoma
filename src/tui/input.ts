@@ -48,9 +48,9 @@ function decode(report: RegExpExecArray): Mouse | null {
 // count, any left out taking its default (0, but Rc 1): the format of Microsoft's spec, "Improved keyboard handling in
 // Conpty" (microsoft/terminal, doc/specs/#4999 - Improved keyboard handling in Conpty.md). Each becomes the bytes Windows
 // Terminal sends for the key outside the mode, which Ink reads today, as its src/terminal/input/terminalInput.cpp makes
-// them (read 2026-11-05), except Shift+Enter, which becomes Ctrl+J's LF, chat:newline's other key. A paste comes as plain
-// text all the same (the probe), and where the mode is not taken up (tmux inside Windows Terminal) every key does: plain
-// bytes pass as before.
+// them (read 2026-11-05), except Shift+Enter, which becomes Ctrl+J's LF, chat:newline's other key. A paste's text comes
+// plain (the probe), its line breaks as records (pasted, below), and where the mode is not taken up (tmux inside Windows
+// Terminal) every key does: plain bytes pass as before.
 const RECORD = /^\u001b\[(\d*(?:;\d*){0,5})_/;
 // Cs's bits, as wincon.h names them: RIGHT_ALT_PRESSED and LEFT_ALT_PRESSED, the two CTRL_PRESSED, SHIFT_PRESSED. The
 // rest (NumLock on, the probe's 0x20, CapsLock, ENHANCED_KEY) are no modifier.
@@ -110,10 +110,39 @@ function translate(record: string, lead: string | undefined): { keys: string; le
   return keys ? { keys } : { keys, lead };
 }
 
+// What could still become a record inside a paste: ESC[ and up to six numbers, any left out, and the semicolons between.
+const RECORD_PART = /^\u001b\[(\d*;){0,5}\d*$/;
+
+// A paste's text between its markers, with its records translated. In win32 input mode Windows Terminal sends a paste's
+// text plain but each line break as Enter's records, down and up, with no modifier (the user's check, 2026-11-05): so it
+// becomes CR, as outside the mode, where Windows Terminal turns a pasted CRLF or LF into CR (ControlCore::PasteText's
+// FilterStringForPaste, src/types/utils.cpp, read 2026-11-05). That filter also takes ESC out of every paste, so no
+// pasted key can make one: a record whose keys would hold ESC is dropped, and nothing translated can end the paste early.
+function pasted(text: string, lead: string | undefined): { keys: string; lead?: string } {
+  let keys = "";
+  let i = 0;
+  for (;;) {
+    const esc = text.indexOf("\u001b", i);
+    if (esc === -1) return { keys: keys + text.slice(i), lead };
+    keys += text.slice(i, esc);
+    const record = RECORD.exec(text.slice(esc));
+    if (record) {
+      const key = translate(record[1]!, lead);
+      if (!key.keys.includes("\u001b")) keys += key.keys;
+      lead = key.lead;
+      i = esc + record[0].length;
+    } else {
+      keys += "\u001b";
+      i = esc + 1;
+    }
+  }
+}
+
 // One read's pieces, in order, and what is held back for the next read. `held` is the end of a read that could still be
-// a report, a win32 record or a paste's start marker; `tail` is the last characters of a paste, so an end marker split
-// across reads is still found. Nothing is taken out of a paste, so pasted text shaped like a report or a record arrives as
-// text. Records are translated (above); `lead` carries half a character between them.
+// a report, a win32 record or a paste's start marker, or inside a paste a record; `tail` is the last characters of a
+// paste, so an end marker split across reads is still found. Nothing is taken out of a paste, so pasted text shaped like
+// a report arrives as text. Records are translated (translate, above), inside a paste too (pasted); `lead` carries half a
+// character between them.
 export function split(state: State, chunk: string): { pieces: Piece[]; state: State } {
   const pieces: Piece[] = [];
   const text = state.held + chunk;
@@ -127,13 +156,25 @@ export function split(state: State, chunk: string): { pieces: Piece[]; state: St
       const rest = text.slice(i);
       const at = (tail + rest).indexOf(PASTE_END);
       if (at === -1) {
-        keys += rest;
+        // What could still be a record or the end marker waits for its rest, a record's start and the marker's being
+        // alike (ESC[2). `tail` takes it too, so the marker is still found if the wait ends first; with it held, the
+        // next read starts with it, and a marker can only start there, never in `tail`, as ESC opens it.
+        const last = rest.lastIndexOf("\u001b");
+        const part = rest.slice(last);
+        const cut = last !== -1 && (RECORD_PART.test(part) || PASTE_END.startsWith(part)) ? last : rest.length;
+        const got = pasted(rest.slice(0, cut), lead);
+        keys += got.keys;
+        lead = got.lead;
+        held = rest.slice(cut);
         // One character short of the marker: a whole marker in it would already have been found.
         tail = (tail + rest).slice(-(PASTE_END.length - 1));
         break;
       }
       const end = at + PASTE_END.length - tail.length;
-      keys += rest.slice(0, end);
+      const marker = Math.max(0, at - tail.length); // where the marker starts in this read, if it does
+      const got = pasted(rest.slice(0, marker), lead);
+      keys += got.keys + rest.slice(marker, end);
+      lead = got.lead;
       i += end;
       pasting = false;
       tail = "";

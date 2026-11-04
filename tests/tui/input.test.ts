@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { render, useInput } from "ink";
+import { render, useInput, usePaste } from "ink";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Bindings, DEFAULTS, strokeOf, tableOf } from "../../src/tui/bindings.js";
@@ -97,10 +97,13 @@ describe("split", () => {
     expect(state).toEqual({ held: "", pasting: false, tail: "" });
   });
 
-  it("holds nothing back while pasting", () => {
+  // Windows Terminal's records come inside pastes too (release 7 plan, Task 22): what could still be one, or the end
+  // marker, is held while pasting as well.
+  it("holds back, while pasting, only what could still be a record or the end marker", () => {
     const { pieces, state } = run(`${ESC}[200~x${ESC}`);
-    expect(pieces).toEqual([{ keys: `${ESC}[200~x${ESC}` }]);
-    expect([state.held, state.pasting]).toEqual(["", true]);
+    expect(pieces).toEqual([{ keys: `${ESC}[200~x` }]);
+    expect([state.held, state.pasting]).toEqual([ESC, true]);
+    expect(run(`${ESC}[200~x${ESC}y`).pieces).toEqual([{ keys: `${ESC}[200~x${ESC}y` }]);
   });
 
   // Every whole report is taken out (design, "Reading it"); one the screen doesn't use is dropped, as Ink would type it.
@@ -162,9 +165,45 @@ describe("split, with win32 records", () => {
     expect(run(`${ESC}[1;5`, "A").pieces).toEqual([{ keys: `${ESC}[1;5A` }]);
   });
 
-  it("leaves record-shaped text inside a paste as text", () => {
-    const paste = `${ESC}[200~${ESC}[65;30;97;1;32;1_${ESC}[201~`;
-    expect(run(paste).pieces).toEqual([{ keys: paste }]);
+  // The user's check (2026-11-05): a pasted line break comes as Enter's records, down and up, Cs 0; a blank line as two
+  // pairs. Outside the mode Windows Terminal sends a pasted line break as CR.
+  const enter = `${ESC}[13;28;13;1;0;1_${ESC}[13;28;13;0;0;1_`;
+  const multi = `${ESC}[200~AGENTS.md (6.3k bytes)${enter}> yes${enter}${enter}I couldn't${ESC}[201~`;
+  const multiKeys = `${ESC}[200~AGENTS.md (6.3k bytes)\r> yes\r\rI couldn't${ESC}[201~`;
+
+  it("makes each line break of the user's multi-line paste a CR", () => {
+    expect(run(multi)).toEqual({ pieces: [{ keys: multiKeys }], state: { held: "", pasting: false, tail: "" } });
+  });
+
+  it("makes the same paste split across reads anywhere, in its records and its markers, the same keys", () => {
+    for (let a = 1; a < multi.length; a++) {
+      expect(keysOf(multi.slice(0, a), multi.slice(a))).toBe(multiKeys);
+      for (let b = a + 1; b < multi.length; b++) expect(keysOf(multi.slice(0, a), multi.slice(a, b), multi.slice(b))).toBe(multiKeys);
+    }
+  });
+
+  // A record's start and the end marker's are alike (ESC[2), so either is held; `tail` takes it too, so the marker is
+  // still found if the 20 ms wait gives the held part to Ink first.
+  it("holds a record split inside a paste, and the start of the end marker, with `tail` taking both", () => {
+    expect(run(`${ESC}[200~a${ESC}[13;28;1`)).toEqual({
+      pieces: [{ keys: `${ESC}[200~a` }],
+      state: { held: `${ESC}[13;28;1`, pasting: true, tail: ";28;1" },
+    });
+    const marker = run(`${ESC}[200~a${ESC}[20`);
+    expect(marker.state).toEqual({ held: `${ESC}[20`, pasting: true, tail: `a${ESC}[20` });
+    expect(split({ ...marker.state, held: "" }, "1~b")).toEqual({
+      pieces: [{ keys: "1~b" }],
+      state: { held: "", pasting: false, tail: "" },
+    });
+  });
+
+  // Windows Terminal takes ESC out of every paste (FilterStringForPaste), so no pasted key makes one: nothing a record
+  // inside a paste becomes can end it early.
+  it("drops a record inside a paste whose keys would hold ESC, so the paste goes on to its own end", () => {
+    const altBracket = `${ESC}[219;26;91;1;2;1_`; // Alt+[, which outside a paste is ESC [
+    const { pieces, state } = run(`${ESC}[200~x${altBracket}201~y${ESC}[38;72;0;1;288;1_z`);
+    expect(pieces).toEqual([{ keys: `${ESC}[200~x201~yz` }]);
+    expect(state.pasting).toBe(true);
   });
 
   // Not recorded: the records are built as the spec gives them (microsoft/terminal, doc/specs/#4999), and the bytes are
@@ -584,6 +623,36 @@ describe("InputFilter with Ink", () => {
         await tick();
       }
       expect(actions).toEqual(["chat:newline", "chat:submit"]);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  // Through Ink's usePaste, as App.tsx takes a paste: it gets the lines with CR between, which App.tsx makes new lines
+  // (`text.replace(/\r\n?/g, "\n")`; app.test.tsx has a pasted CR becoming a second line).
+  it("gives usePaste the user's multi-line paste with its line breaks, over several reads", async () => {
+    const source = new Source();
+    const filter = new InputFilter(source as never);
+    const pastes: string[] = [];
+    function Paste() {
+      usePaste((text) => void pastes.push(text));
+      return null;
+    }
+    const app = render(createElement(Paste), {
+      stdout: new Terminal() as never,
+      stdin: filter as never,
+      debug: false,
+      patchConsole: false,
+      exitOnCtrlC: false,
+      interactive: true,
+    });
+    try {
+      await tick();
+      const enter = `${ESC}[13;28;13;1;0;1_${ESC}[13;28;13;0;0;1_`;
+      const multi = `${ESC}[200~first line${enter}second${enter}${enter}fourth${ESC}[201~`;
+      for (const s of [multi.slice(0, 25), multi.slice(25, 60), multi.slice(60)]) source.emit("data", s);
+      await tick();
+      expect(pastes).toEqual(["first line\rsecond\r\rfourth"]);
     } finally {
       app.unmount();
     }
