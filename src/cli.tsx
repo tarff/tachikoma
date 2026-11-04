@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs, styleText } from "node:util";
@@ -35,7 +36,7 @@ import {
   type Started,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
-import { dataDir, projectFile } from "./core/datadir.js";
+import { dataDir, KEYBINDINGS, projectFile, settingsDir } from "./core/datadir.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
 import { type Ask, PermissionGate, type Protection, visible } from "./core/permissions.js";
@@ -45,10 +46,11 @@ import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
 import { errorText, type Provider } from "./core/types.js";
 import { LocalExecutor, LocalWorkspace } from "./exec/local.js";
+import { readKeybindings } from "./keybindings.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
-import { sessionGone } from "./sandbox/executor.js";
+import { boxCheck, reviewCommand } from "./sandbox/copies.js";
 import { sandboxCommand } from "./sandbox/image.js";
 import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
@@ -59,13 +61,16 @@ import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { shellTool } from "./tools/shell.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
+import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { programRunning } from "./tui/owner.js";
+import { Review, type ReviewCopy, type ReviewEnd } from "./tui/Review.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
 
+// WORDING: needs approval (the tachi review line).
 const HELP = `tachi: a coding agent for your terminal
 
 Usage:
@@ -75,6 +80,7 @@ Usage:
                       [--keychain]                   --keychain seals the tokens with a key in the keychain
   tachi logout chatgpt                               sign out of ChatGPT
   tachi sandbox build                                build the sandbox's image, after asking
+  tachi review [<name> [--discard]]                  list the copies kept for review, open one, or discard one
 
 Options:
   --lead <spec>     anthropic:<model> | chatgpt:<model> | openai:<model> | openrouter:<model>
@@ -135,6 +141,45 @@ function askAtStart(question: string): Promise<boolean> {
   });
 }
 
+// `tachi review <name>`'s screen: the review alone, in full screen where it can draw, with the keys file's bindings as it
+// reads at this moment (its problems said first, on the normal screen); the mouse stays off, as nothing reads its reports.
+// Resolves once Ink has ended and the terminal is back, so the review's lines print after.
+async function drawReview(copy: ReviewCopy, protection: Protection): Promise<ReviewEnd> {
+  const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
+  let ink: Instance | undefined;
+  restoreOnExit(screen, () => ink?.unmount());
+  const bindings = keysNow();
+  if (fullPossible(process.env, process.stdout.isTTY === true)) screen.setSecond(true);
+  let end: ReviewEnd | undefined;
+  const ended = (e: ReviewEnd) => {
+    end = e;
+    ink?.unmount();
+  };
+  ink = render(<Review copy={copy} bindings={bindings} protection={protection} onEnd={ended} />, { exitOnCtrlC: false });
+  const exited = ink.waitUntilExit();
+  restoreWhenInkEnds(screen, exited);
+  await exited;
+  return end!;
+}
+
+// The keys file laid over the defaults, as a session's start reads it (settingsWatch.ts); a file that cannot be read is
+// none, and one with a problem keeps the defaults, as a session keeps the keys before it.
+function keysNow(): Bindings {
+  let text: string;
+  try {
+    text = readFileSync(path.join(settingsDir(), KEYBINDINGS), "utf8");
+  } catch {
+    return new Bindings(tableOf(DEFAULTS));
+  }
+  const got = readKeybindings(text);
+  if ("problem" in got) {
+    console.error(visible(got.problem));
+    return new Bindings(tableOf(DEFAULTS));
+  }
+  for (const problem of got.problems) console.error(visible(problem));
+  return got.table;
+}
+
 process.stdout.on("error", endOnEpipe);
 process.stderr.on("error", endOnEpipe); // `tachi -p … 2>&1 | head -1`
 
@@ -168,6 +213,26 @@ if (verb === "sandbox") {
   } catch (err) {
     console.error(prose(errorText(err)));
     process.exit(stop.signal.aborted ? 128 + constants.signals.SIGINT : 1);
+  }
+}
+
+// `tachi review` lists the copies copy mode kept for review, opens one in full screen, or discards one after asking, then
+// exits (release 7 plan, Task 21; choice 28). Opening and discarding need a terminal; with none, nothing is done. Ctrl-C
+// while Docker is asked or another review is waited for, with raw mode off, ends it through process.exit, so the lock's
+// exit handler runs; in the review it is a key. The signals that end a session end it the same way, the terminal put back.
+if (verb === "review") {
+  process.on("SIGINT", () => process.exit(128 + constants.signals.SIGINT));
+  for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));
+  try {
+    const code = await reviewCommand(process.argv.slice(3), {
+      ...(process.stdin.isTTY ? { ask: askAtStart, open: drawReview } : {}),
+      out: (line) => console.log(line),
+      err: (line) => console.error(line),
+    });
+    process.exit(code);
+  } catch (err) {
+    console.error(prose(errorText(err)));
+    process.exit(1);
   }
 }
 
@@ -452,9 +517,10 @@ if (parsed.print !== undefined) {
   const copied = box?.copy;
   const copy = box && copied && {
     copy: { session: sessionId, folder: copied.folder, manifest: copied.manifest },
+    // The check `tachi review` makes (copies.ts): the session is this process, so its box is removed, never refused.
     stop: async () => {
       await box.box.stop();
-      return sessionGone(sessionId);
+      return (await boxCheck(copied.manifest)) === "free";
     },
     protection: async () => protectionOf(await gitSettings(copied.manifest.root)), // throws: no review (App.tsx)
     ended: (lines: string[]) => reviewed.push(...lines),

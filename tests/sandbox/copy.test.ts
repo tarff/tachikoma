@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +9,8 @@ import { PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { onPath } from "../../src/exec/env.js";
 import { gitSettings } from "../../src/safety/gitconfig.js";
-import { dockerState } from "../../src/sandbox/docker.js";
+import { type ReviewIo, reviewCommand } from "../../src/sandbox/copies.js";
+import { docker, dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
 import { TOOLS } from "../../src/tools/index.js";
@@ -126,5 +127,66 @@ describe("the box's branch in copy mode, in real Docker", { timeout: 0 }, () => 
     const [major, minor] = /(\d+)\.(\d+)/.exec(version!)!.slice(1).map(Number) as [number, number];
     expect(major > 2 || (major === 2 && minor >= 28), version).toBe(true);
     expect(branch).toBe("feature/made-up");
+  });
+});
+
+// Task 21: no review while the copy's box runs. The box is the sandbox's own image, labelled as a session's box is and as
+// a test's (choice 73: never pulled, removed at the end), with no network; the session's process is a stand-in, a
+// sleeping node the test starts and kills by its own pid. The copy is made by hand, as the snapshot leaves one, so no
+// folder is made private.
+describe("tachi review and the copy's box, in real Docker", { timeout: 0 }, () => {
+  async function busyCopy(ctx: TestContext) {
+    const w = world();
+    onTestFinished(() => removeTree(w.dir));
+    const state = await dockerState();
+    if (state !== "ready") ctx.skip(`Docker cannot run the box here (${state})`);
+    const info = await imageFor(w.root);
+    if (!info.built) ctx.skip(`the sandbox's image (${info.tag}) is not built`);
+    const session = `test-${randomUUID()}`;
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"], { stdio: "ignore" });
+    onTestFinished(() => void child.kill());
+    const folder = path.join(w.data, "copies", session);
+    for (const sub of ["base", "work"]) mkdirSync(path.join(folder, sub), { recursive: true });
+    const manifest = { session, pid: child.pid, root: w.root, at: new Date().toISOString(), entries: {}, leftOut: [] };
+    writeFileSync(path.join(folder, "manifest.json"), JSON.stringify(manifest));
+    const labels = [...Object.entries(TEST_LABEL), ["tachikoma.session", session]].flatMap(([k, v]) => ["--label", `${k}=${v}`]);
+    const got = await docker(["run", "-d", "--pull", "never", "--network", "none", ...labels, info.tag, "sleep", "infinity"]);
+    if (got === "missing" || got.code !== 0) throw new Error(got === "missing" ? "no docker" : got.err);
+    const id = got.out.trim();
+    onTestFinished(async () => void (await docker(["rm", "-f", id])));
+    const listed = async () => {
+      const ps = await docker(["ps", "-a", "-q", "--filter", `label=tachikoma.session=${session}`]);
+      return ps === "missing" ? "" : ps.out.trim();
+    };
+    const said: string[] = [];
+    const opened: string[] = [];
+    const io: ReviewIo = {
+      out: (line) => said.push(line),
+      err: (line) => said.push(line),
+      data: w.data,
+      gitSettings: (root) => gitSettings(root, w.env),
+      ask: async () => true,
+      open: async (copy) => (opened.push(copy.session), { how: "later", outcomes: [], removed: false, lines: [] }),
+    };
+    return { session, child, folder, listed, said, opened, io };
+  }
+
+  it("refuses while the box runs and its session is alive, listing and applying nothing", async (ctx) => {
+    const c = await busyCopy(ctx);
+    expect(await reviewCommand([c.session], c.io)).toBe(1);
+    expect(c.said).toEqual([`The copy ${c.session} is still in use by a running Tachikoma session; review it after that session ends.`]);
+    expect(c.opened).toEqual([]);
+    expect(await c.listed()).not.toBe("");
+    expect(await reviewCommand([c.session, "--discard"], c.io)).toBe(1);
+    expect(existsSync(path.join(c.folder, "manifest.json"))).toBe(true);
+  });
+
+  it("removes the box once its session's process is gone, then opens the copy", async (ctx) => {
+    const c = await busyCopy(ctx);
+    c.child.kill();
+    await new Promise((resolve) => c.child.once("exit", resolve));
+    expect(await reviewCommand([c.session], c.io)).toBe(0);
+    expect(c.opened).toEqual([c.session]);
+    expect(await c.listed()).toBe("");
   });
 });

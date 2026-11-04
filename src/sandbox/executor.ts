@@ -346,8 +346,9 @@ export async function sessionGone(session: string, run: DockerRun = docker): Pro
   return got === "missing" || got.code !== 0 || got.out.trim() === "";
 }
 
-// process.kill with signal 0 only asks: ESRCH is no such process, EPERM one that is not ours, but alive.
-function alive(pid: number): boolean {
+// process.kill with signal 0 only asks: ESRCH is no such process, EPERM one that is not ours, but alive. `tachi review`
+// asks it too (copies.ts).
+export function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

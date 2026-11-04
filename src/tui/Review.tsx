@@ -36,7 +36,7 @@ export interface ReviewEnd { how: "applied" | "later" | "discarded"; outcomes: D
 // The plan's words (Task 20).
 const top = (n: number, keys: string) => `Review the copy's changes: ${n} file${n === 1 ? "" : "s"}. ${keys}`.trimEnd();
 const conflictAsked = (rel: string, keys: string) => `${rel} changed in your folder since the copy was made. ${keys}`;
-const discardAsked = (keys: string) => `Discard the copy and every change in it? [${keys}]`;
+export const discardAsked = (keys: string) => `Discard the copy and every change in it? [${keys}]`;
 // The rest are Task 20's drafts, for the user's approval.
 const READING = "Reading the copy's changes...";
 const unread = (why: string) => `The copy's changes could not be read: ${why}.`;
@@ -47,9 +47,9 @@ const APPLYING = "Applying...";
 const closing = (scroll: string | undefined) => (scroll ? `${scroll} scroll · any other key closes` : "Any key closes.");
 export const kept = (session: string) => `The copy is kept; tachi review ${session} opens it again.`;
 const REMOVED = "The copy was removed.";
-const DISCARDED = "The copy was discarded.";
+export const DISCARDED = "The copy was discarded.";
 export const removing = (n: number) => `Removing the copy (${n} file${n === 1 ? "" : "s"})...`;
-const notRemoved = (why: string, folder: string) => `The copy could not be removed (${why}); delete ${folder} by hand.`;
+export const notRemoved = (why: string, folder: string) => `The copy could not be removed (${why}); delete ${folder} by hand.`;
 const LINKS_BY_HAND = "links are applied by hand"; // Task 19's why for a link (apply.ts)
 const TYPES_BY_HAND = "a path whose type changed is applied by hand";
 const NONE = "(none)";

@@ -163,6 +163,10 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(help).toMatch(/\/screen switches between full\s+screen\s+and\s+classic/);
   });
 
+  it("lists tachi review in the help", () => {
+    expect(tachi("--help").stdout).toMatch(/^ {2}tachi review \[<name> \[--discard\]\] +list the copies kept for review, open one, or discard one$/m);
+  });
+
   it("lists /settings, /keybindings and /vim in the help", () => {
     const help = tachi("--help").stdout;
     expect(help).toMatch(/\/settings opens the settings file in your editor,\s+\/keybindings opens the\s+keys file in your editor/);
@@ -956,6 +960,66 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     expect(r.code).toBe(1);
     expect(r.stderr).toContain("The sandbox could not start: docker: Error response from daemon: made-up failure.");
     expect(readdirSync(r.copies)).toEqual([]);
+  });
+});
+
+// Task 21: `tachi review` run as the real command, with no terminal, so the list and what refuses without one; opening and
+// discarding are tested in-process (tests/sandbox/copies.test.ts), and with real Docker (tests/sandbox/copy.test.ts).
+// Nothing here reaches Docker: the list never asks it, and the rest stop before.
+describe("tachi review", { timeout: 15_000 }, () => {
+  // A data folder holding one copy, s1, of a made-up project, made by hand as the snapshot leaves one, and none private.
+  function dataWithCopy() {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-review-")));
+    onTestFinished(() => removeTree(top));
+    const data = path.join(top, "data");
+    const folder = path.join(data, "copies", "s1");
+    for (const sub of ["base", "work"]) mkdirSync(path.join(folder, sub), { recursive: true });
+    const manifest = { session: "s1", pid: 0, root: path.join(top, "project"), at: "2026-11-05T03:04:00.000Z", entries: {}, leftOut: [] };
+    writeFileSync(path.join(folder, "manifest.json"), JSON.stringify(manifest));
+    writeFileSync(path.join(folder, "work", "new.txt"), "made-up text\n");
+    return { data, folder, root: manifest.root };
+  }
+
+  it("says when no copies are waiting", () => {
+    const data = path.join(mkdtempSync(path.join(tmpdir(), "tachi-cli-")), "data");
+    const r = tachi("review", { TACHI_DATA_DIR: data });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe("No copies are waiting.\n");
+  });
+
+  it("lists the copies waiting", () => {
+    const w = dataWithCopy();
+    const r = tachi("review", { TACHI_DATA_DIR: w.data });
+    expect(r.code).toBe(0);
+    const lines = r.stdout.trimEnd().split("\n");
+    expect(lines[0]).toBe("Copies waiting for review (tachi review <name> opens one):");
+    const d = new Date("2026-11-05T03:04:00.000Z"); // the manifest's, in this machine's time, as the child's
+    const two = (n: number) => String(n).padStart(2, "0");
+    const time = `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+    expect(lines[1]).toBe(`  s1  ${w.root}  ${time}  1 change`);
+  });
+
+  it("names a copy that is not waiting", () => {
+    const w = dataWithCopy();
+    const r = tachi("review", "s2", { TACHI_DATA_DIR: w.data });
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe("No copy named s2 is waiting; tachi review lists them.");
+  });
+
+  it("opens and discards nothing without a terminal, saying why", () => {
+    const w = dataWithCopy();
+    for (const args of [["s1"], ["s1", "--discard"]]) {
+      const r = tachi("review", ...args, { TACHI_DATA_DIR: w.data });
+      expect(r.code).toBe(1);
+      expect(r.stderr.trim()).toBe("tachi review s1 needs a terminal; with none, nothing is applied or discarded.");
+      expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+    }
+  });
+
+  it("explains its usage", () => {
+    const r = tachi("review", "s1", "--all");
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe("Usage: tachi review [<name> [--discard]]");
   });
 });
 
