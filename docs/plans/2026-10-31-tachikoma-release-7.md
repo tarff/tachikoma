@@ -900,6 +900,21 @@ the plan's review.
     once nothing else is left, the copy is removed (the user's choice, Task 20's quality review;
     `l` keeps it). While the copy is removed the screen shows `Removing the copy (<n> files)...`
     (the user's approval), `<n>` from the manifest.
+116. **Task 21's lines** (the user's approval): `Not allowed in never mode: <action>, which is
+    outside the project.`; `Stopping the box...`; `The box could not be removed, so the copy was
+    not reviewed.`; `The sandbox could not make the copy a git repository in the box (<why>).`;
+    the box's commit message `The project as Tachikoma copied it`; `The review did not open:
+    git's settings could not be read (<why>), so the hooks folders they name could not be
+    protected.` (each followed by choice 114's kept line); and, when a launch stops after the
+    copy, choice 115's `Removing the copy (<n> files)...`, or `Removing the copy...` with no
+    manifest yet.
+117. **A line while the folder is copied** (the user's choice, Task 21): `Copying <folder> for the
+    sandbox...`, grey, before the snapshot, in full screen and `-p` alike, since the copy can take
+    half a minute (choice 110's 32.9 s on this repo) and was silent.
+118. **The box's repository takes the host's branch name** (the user's choice, Task 21), so the
+    status line shows the user's branch, not git's default. A detached HEAD, no repository, or a
+    name outside a plain set (letters, digits, `.`, `_`, `-`, `/`, no part ending `.lock`) falls
+    back to git's default.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -1002,6 +1017,18 @@ the plan's review.
       delete the user also made shows as a conflict and keeps the copy; removal takes as long
       as the copy's file count; `m` is offered where git is missing, and then says so; a copy
       holding a link change is removed only by discard;
+    - from Task 21 part A (copy mode in a session): Docker hanging while the box stops at the end
+      leaves `Stopping the box...` up with every key off (the copy is kept, the box swept at the
+      next launch); a Ctrl-C while `docker run` creates the box can leave a box made after
+      Tachikoma exits, swept at the next launch; closing the terminal or a SIGTERM during the
+      exit-time removal can leave a half-removed copy without its manifest, for deleting by hand;
+      `never` refuses `write_file` outside `/work` in the box too (shell writes there still work);
+      leaving cuts a turn off without waiting, so a write stopped midway shows in the review; if
+      `-p`'s send itself throws, the copy is kept without the kept-for-review line; snap-installed
+      Docker on Ubuntu may not mount the data folder under a hidden home folder (unmeasured); a
+      `TACHI_DATA_DIR` outside Docker Desktop's shared folders fails at box start; the box's
+      `git add -A` time over Docker Desktop's mount is unmeasured and not in the launch line's
+      seconds; git-ignored files are in `/work` but not in the box's commit;
     - choices 88 and 92.
 ---
 
@@ -2046,6 +2073,26 @@ from the host, though it cannot be read, so removal needs no box.
 - two `tachi review` runs of one copy at once: the second waits for the first.
 
 Commit: `feat: copy mode in a session, the review at the end, tachi review, and never in copy mode`.
+
+**As built, part A (e2f15d9, 3e2967e, ce05e05):** built in two parts; part A is everything but
+`tachi review` and the checks it needs (the busy box, the half-done apply's report, two reviews
+at once), which are part B. `sandboxReady(root, io, copy?)` runs Task 16's order with the
+snapshot (choice 117's line first) in the mounts' place and no letter-case check; git's settings
+unread goes on with the fixed list there, since the review reads them again on the host.
+`sandboxStart` mounts only `work/`, then runs `git init --initial-branch=<host's>` (choice 118),
+`git add -A` and the commit as separate `docker exec` word lists, no shell. The manifest records
+`pid`; the box's `tachikoma.session` label was already there; `sessionGone` asks Docker for it.
+`dropOnExit` (clilib.ts) removes a copy whose launch stops after the snapshot, from an exit
+handler, link-safely (`removeCopySync`), with choice 116's removing line; `keepCopy()` turns it
+off once the box runs. The launch's SIGINT listener stays on until the box starts, `snapshot()`
+takes the abort signal, and the exit-signal handlers are registered before the sandbox launch.
+`leave()` (queue.ts) is the one way out for `/exit` and the double Ctrl-C and Ctrl-D: in copy mode
+it runs once, stops the box, waits for `sessionGone`, reads host protection, and draws `<Review>`
+in a new `review` phase under `withLock(copyLock(folder))` (`<folder>.lock`, beside it); the
+App's keys, mouse, paste and queue are off in that phase. Without git's settings the review does
+not open (choice 116's line). `-p` prints choice 29's line. `OFFERED` gains `never`; in `never`,
+every write outside the project is refused, a link leading nowhere included. The end-to-end `-p`
+test swaps `docker.ts` for a stand-in through a test-only `--import` hook (`tests/standin/`).
 
 **End of Part 3:** run the whole suite once.
 
