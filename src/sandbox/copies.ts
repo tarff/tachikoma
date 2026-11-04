@@ -226,12 +226,12 @@ async function discardCopy(copy: ReviewCopy, data: string, io: ReviewIo): Promis
 async function uninterrupted<T>(fn: () => Promise<T>): Promise<T> {
   const listeners = process.listeners("SIGINT");
   const ignore = () => {};
-  process.removeAllListeners("SIGINT");
-  process.on("SIGINT", ignore);
+  process.on("SIGINT", ignore); // first, so SIGINT never has no listener, which would bring back the default exit
+  for (const l of listeners) process.off("SIGINT", l);
   try {
     return await fn();
   } finally {
-    process.off("SIGINT", ignore);
     for (const l of listeners) process.on("SIGINT", l);
+    process.off("SIGINT", ignore);
   }
 }
