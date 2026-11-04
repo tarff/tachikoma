@@ -2,12 +2,13 @@
 import { randomUUID } from "node:crypto";
 import os, { constants } from "node:os";
 import path from "node:path";
-import { parseArgs } from "node:util";
+import { parseArgs, styleText } from "node:util";
 import { type Instance, render } from "ink";
 import { accountCommand } from "./auth/chatgpt.js";
 import {
   approvalQuestion,
   checkOffLine,
+  dropOnExit,
   endOnEpipe,
   exitOn,
   exitSignals,
@@ -34,7 +35,7 @@ import {
   type Started,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
-import { projectFile } from "./core/datadir.js";
+import { dataDir, projectFile } from "./core/datadir.js";
 import { attachErrorLog } from "./core/errorlog.js";
 import { readInstructions } from "./core/instructions.js";
 import { type Ask, PermissionGate, type Protection, visible } from "./core/permissions.js";
@@ -282,6 +283,12 @@ if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal
 let protection: Protection = protectionOf(undefined);
 let gitLine: string | undefined;
 let ready: Ready | undefined;
+// Copy mode's copy is removed when the launch ends before the session starts, however it ends (clilib.ts, dropOnExit).
+// From the image's steps until the box has started, Ctrl-C, with raw mode off, ends the launch through process.exit, so
+// the exit handlers remove the copy and any box already started (executor.ts); at the instruction files' question, it
+// is read as a key, and exits the same way (askAtStart).
+const keepCopy = sandbox === "copy" ? dropOnExit(path.join(dataDir(), "copies", sessionId)) : undefined;
+const quit = () => process.exit(128 + constants.signals.SIGINT);
 if (sandbox !== "off") {
   const stop = new AbortController();
   const onInt = () => stop.abort();
@@ -290,6 +297,7 @@ if (sandbox !== "off") {
     ...(interactive ? { ask: askAtStart } : {}),
     out: (line: string) => console.log(line),
     err: (line: string) => console.error(line),
+    note: (line: string) => console.error(styleText("gray", line, { stream: process.stderr })),
     signal: stop.signal,
   };
   const got = await sandboxReady(root, io, sandbox === "copy" ? { session: sessionId } : undefined);
@@ -297,6 +305,7 @@ if (sandbox !== "off") {
   if ("exit" in got) process.exit(got.exit);
   ready = got;
   gitLine = got.gitLine;
+  process.on("SIGINT", quit);
 } else {
   try {
     protection = protectionOf(await gitSettings(root));
@@ -329,8 +338,10 @@ if (ready) {
   const started = await sandboxStart(root, ready, { network: options.network, limits: loaded.settings.sandboxLimits, session: sessionId }, {
     err: (line) => console.error(line),
   });
+  process.off("SIGINT", quit);
   if ("exit" in started) process.exit(started.exit);
   box = started;
+  keepCopy?.(); // the session starts: from here the copy is kept, for the review or `tachi review`
   if (!interactive) for (const line of box.lines) console.error(line);
 }
 const where = box ?? { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root) };
@@ -434,7 +445,7 @@ if (parsed.print !== undefined) {
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
   // Copy mode's review at the end (App.tsx, copy; release 7 plan, Task 21): its lines, printed once Ink has ended, and the
-  // protection worked out on the host when it opens, never the gate's view of the box.
+  // protection worked out on the host when it opens, never the gate's view of the box; without it, no review.
   const reviewed: string[] = [];
   const copied = box?.copy;
   const copy = box && copied && {
@@ -443,14 +454,7 @@ if (parsed.print !== undefined) {
       await box.box.stop();
       return sessionGone(sessionId);
     },
-    protection: async () => {
-      try {
-        return protectionOf(await gitSettings(copied.manifest.root));
-      } catch (err) {
-        reviewed.push(gitUnread(err));
-        return protectionOf(undefined);
-      }
-    },
+    protection: async () => protectionOf(await gitSettings(copied.manifest.root)), // throws: no review (App.tsx)
     ended: (lines: string[]) => reviewed.push(...lines),
   };
   if (screenMode(parsed.classic, process.env, process.stdout.isTTY === true, loaded.settings.screen) === "full") screen.enter();

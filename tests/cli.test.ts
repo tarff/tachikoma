@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
@@ -6,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { boxProtection, keptForReview, type Network, sandboxReady, sandboxStart } from "../src/clilib.js";
+import { boxProtection, dropOnExit, keptForReview, type Network, sandboxReady, sandboxStart } from "../src/clilib.js";
 import { onPath } from "../src/exec/env.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
@@ -715,9 +716,14 @@ describe("copy mode's launch, with a stand-in Docker", () => {
   const ok = (out = "") => ({ code: 0, out, err: "" });
   const INFO = JSON.stringify({ NCPU: 24, MemTotal: 33518923776, SecurityOptions: [], MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true });
   const LINE = /^Sandbox: copy of (.+) \(2 files, \d+\.\d s\), network off, limits 4g, 4 CPUs, 1024 processes\. Your folder is not touched until you review the changes\.$/;
+  // Docker's words when the image has no git: the box's git runs as a docker exec of its own (DockerRun), with no shell.
+  const NO_GIT = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "git": executable file not found in $PATH: unknown';
+  const git = (...args: string[]) => ["exec", "-w", "/work", "b0x", "git", ...args];
+  const COMMIT = git("-c", "user.name=Tachikoma", "-c", "user.email=tachikoma@localhost", "commit", "-q", "--allow-empty", "-m", "The project as Tachikoma copied it");
 
-  // `broken`: "git" for git's settings that cannot be read on the host, "commit" for the box's commit failing.
-  async function launch(broken: "git" | "commit" | null = null) {
+  // `broken`: "git" for git's settings that cannot be read on the host, "commit" for the box's git missing. `head`: the
+  // text of a .git/HEAD made by hand in the project, which the snapshot leaves out; no .git when not given.
+  async function launch(broken: "git" | "commit" | null = null, head?: string) {
     const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-copy-")));
     onTestFinished(() => removeTree(top));
     const root = path.join(top, "project");
@@ -727,6 +733,10 @@ describe("copy mode's launch, with a stand-in Docker", () => {
     writeFileSync(path.join(root, "a.txt"), "made-up text\n");
     writeFileSync(path.join(root, ".husky", "pre-commit"), "made-up hook\n");
     symlinkSync(elsewhere, path.join(root, "out"), "junction"); // a link to outside the project, left out of the copy
+    if (head !== undefined) {
+      mkdirSync(path.join(root, ".git"));
+      writeFileSync(path.join(root, ".git", "HEAD"), head);
+    }
     const data = path.join(top, "data");
     vi.stubEnv("TACHI_DATA_DIR", data);
     const calls: string[][] = [];
@@ -738,17 +748,17 @@ describe("copy mode's launch, with a stand-in Docker", () => {
       if (verb === "info") return ok(`${INFO}\n`);
       if (verb === "run") return ok("b0x\n");
       if (verb === "exec" && args.includes("/sys/fs/cgroup/memory.events")) return ok("oom_kill 0\n");
-      if (verb === "exec" && args[1] === "-w") {
-        if (args.at(-1)!.startsWith("node")) return ok("v24.22.2 function");
-        return broken === "commit" ? { code: 127, out: "", err: "bash: line 1: git: command not found\n" } : ok();
-      }
+      if (verb === "exec" && args[4] === "git") return broken === "commit" ? { code: 127, out: "", err: `${NO_GIT}\n` } : ok();
+      if (verb === "exec" && args[1] === "-w") return ok("v24.22.2 function"); // the node check
       if (verb === "inspect") return ok("true\n"); // the box still runs
       return ok();
     };
     const lines: string[] = [];
+    const notes: string[] = [];
     const io = {
       out: (line: string) => lines.push(line),
       err: (line: string) => lines.push(line),
+      note: (line: string) => notes.push(line),
       signal: new AbortController().signal,
       run,
       gitSettings: async (r: string) => {
@@ -762,12 +772,14 @@ describe("copy mode's launch, with a stand-in Docker", () => {
     const ready = await sandboxReady(root, io, { session: "s1" });
     if ("exit" in ready) throw new Error(lines.join("\n"));
     const started = await sandboxStart(root, ready, { network: "off", limits: undefined, session: "s1" }, io);
-    return { top, root, data, lines, calls, started };
+    return { top, root, data, lines, notes, calls, started };
   }
 
   it("copies the project, mounts only the copy's work folder, makes it one commit, and says how", async () => {
     const r = await launch();
     expect(r.lines).toEqual([]);
+    // The user's choice: a grey line while the folder is copied, naming it as the launch line does.
+    expect(r.notes).toEqual([`Copying ${r.root} for the sandbox...`]);
     if ("exit" in r.started) throw new Error("the launch stopped");
     const folder = path.join(r.data, "copies", "s1");
     const work = path.join(folder, "work");
@@ -782,12 +794,11 @@ describe("copy mode's launch, with a stand-in Docker", () => {
     expect(runArgs).not.toContain("--tmpfs");
     expect(runArgs).toContain("tachikoma.session=s1");
     expect(runArgs).toContain("GIT_CONFIG_KEY_0=safe.directory");
-    // After the node check, the box makes /work a repository of one commit by Tachikoma (choice 24).
-    const execs = r.calls.filter((c) => c[0] === "exec" && c[1] === "-w").map((c) => c.at(-1)!);
-    expect(execs[0]).toMatch(/^node /);
-    expect(execs[1]).toContain("git init -q");
-    expect(execs[1]).toContain("user.name=Tachikoma");
-    expect(execs[1]).toContain("user.email=tachikoma@localhost");
+    // After the node check, the box makes /work a repository of one commit by Tachikoma (choice 24), each git run an
+    // argument list of its own; with no branch on the host, git's own default.
+    const execs = r.calls.filter((c) => c[0] === "exec" && c[1] === "-w");
+    expect(execs[0]!.at(-1)).toMatch(/^node /);
+    expect(execs.slice(1)).toEqual([git("init", "-q"), git("add", "-A"), COMMIT]);
     expect(r.started.lines[0]).toMatch(LINE);
     expect(LINE.exec(r.started.lines[0]!)![1]).toBe(r.root);
     expect(r.started.lines.slice(1)).toEqual(["Left out, never applied: out (a link that leads outside the project)"]);
@@ -796,18 +807,131 @@ describe("copy mode's launch, with a stand-in Docker", () => {
     expect([r.started.root, r.started.workspace.root]).toEqual(["/work", "/work"]);
   });
 
+  // The user's choice: the box's repository takes the host's branch, read as the status line reads it, given to git as
+  // one word that cannot be an option. A detached HEAD, or a name outside git's plain letters, leaves git's default.
+  it("names the box's branch after the host's, and leaves git's default where there is none to take", { timeout: 60_000 }, async () => {
+    const init = async (head: string) => (await launch(null, head)).calls.find((c) => c[4] === "git" && c[5] === "init");
+    expect(await init("ref: refs/heads/feature/made-up-1.2_x\n")).toEqual(git("init", "-q", "--initial-branch=feature/made-up-1.2_x"));
+    for (const head of [
+      "0123456789abcdef0123456789abcdef01234567\n", // detached
+      "ref: refs/heads/-q\n",
+      "ref: refs/heads/a..b\n",
+      "ref: refs/heads/a b\n",
+      "ref: refs/heads/x;y\n",
+      "ref: refs/heads/topic.lock\n",
+      "ref: refs/heads/.hidden\n",
+    ]) {
+      expect(await init(head), head).toEqual(git("init", "-q"));
+    }
+  });
+
   it("goes on with the fixed list when git's settings cannot be read, and says so", async () => {
     const r = await launch("git");
     expect(r.lines).toEqual(["git's settings could not be read (git was ended by SIGKILL); only the fixed list of protected paths applies"]);
     expect("exit" in r.started).toBe(false);
   });
 
-  it("stops when the box cannot make its commit, removing the box and the copy", async () => {
+  // The copy is removed by the launch's one cleanup at exit (dropOnExit, below), as cli.tsx ends the launch here.
+  it("stops when the box cannot make its commit, removing the box", async () => {
     const r = await launch("commit");
     expect(r.started).toEqual({ exit: 1 });
-    expect(r.lines).toEqual(["The sandbox could not make the copy a git repository in the box (bash: line 1: git: command not found)."]);
+    expect(r.lines).toEqual([`The sandbox could not make the copy a git repository in the box (${NO_GIT}).`]);
     expect(r.calls.at(-1)).toEqual(["rm", "-f", "b0x"]);
-    expect(existsSync(path.join(r.data, "copies", "s1"))).toBe(false);
+  });
+});
+
+// Task 21's review: a copy made at launch goes when the process ends before the session starts, however it ends (a
+// refusal, Ctrl-C at a question or while the box starts), from one "exit" handler; once kept, it stays.
+describe("dropOnExit", () => {
+  it("removes the copy at exit, never following a link out of it, until it is kept", () => {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-drop-")));
+    onTestFinished(() => removeTree(top));
+    const outside = path.join(top, "outside");
+    mkdirSync(outside);
+    writeFileSync(path.join(outside, "kept.txt"), "made-up\n");
+    const made = (name: string) => {
+      const folder = path.join(top, "copies", name);
+      mkdirSync(path.join(folder, "work", "sub"), { recursive: true });
+      writeFileSync(path.join(folder, "manifest.json"), "{}");
+      writeFileSync(path.join(folder, "work", "sub", "a.txt"), "made-up\n");
+      symlinkSync(outside, path.join(folder, "work", "link"), "junction");
+      return folder;
+    };
+    const proc = new EventEmitter();
+    const dropped = made("s1");
+    dropOnExit(dropped, proc);
+    const kept = made("s2");
+    dropOnExit(kept, proc)();
+    dropOnExit(path.join(top, "copies", "never-made"), proc); // a snapshot that failed before making its folder
+    proc.emit("exit");
+    expect(existsSync(dropped)).toBe(false);
+    expect(existsSync(path.join(kept, "manifest.json"))).toBe(true);
+    expect(readFileSync(path.join(outside, "kept.txt"), "utf8")).toBe("made-up\n");
+  });
+});
+
+// Task 21: the real command in copy mode with -p, end to end, with Docker a stand-in swapped in for src/sandbox/docker.ts
+// by a resolve hook of the test's own (tests/standin), so no Docker is reached, no box is started and no program is
+// planted. PATH is an empty folder, so nothing else is found either; the lead is a stand-in for OpenAI's chat completions
+// served on the loopback address, which answers at once with no tool call.
+describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000 }, () => {
+  async function copyRun(standin: "ok" | "start-fails") {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-e2e-")));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    const empty = path.join(top, "empty");
+    const data = path.join(top, "data");
+    mkdirSync(proj);
+    mkdirSync(empty);
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const server = http.createServer((req, res) => {
+      req.resume().on("end", () => {
+        const message = { role: "assistant", content: "done" };
+        const body = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [{ index: 0, finish_reason: "stop", message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, PATH: empty, Path: empty, TACHI_DATA_DIR: data, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, TACHI_TEST_STANDIN_DOCKER: standin };
+    const { argv, options } = launch(["--lead", "openai:lead", "--sandbox", "copy", "-p", "hi", env]);
+    argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/register.mjs")).href); // after tsx's loader
+    const child = spawn(process.execPath, argv, options);
+    onTestFinished(() => void child.kill());
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+    child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+    child.stdin.end();
+    const code = await new Promise<number | null>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+    return { code, stdout, stderr, proj, copies: path.join(data, "copies") };
+  }
+
+  it("answers, then names the copy kept for review on stderr, keeping it and leaving the folder untouched", async () => {
+    const r = await copyRun("ok");
+    expect(r.stdout).toBe("done\n");
+    expect(r.code).toBe(0);
+    const lines = r.stderr.trimEnd().split("\n");
+    expect(lines[0]).toBe(`Copying ${r.proj} for the sandbox...`); // not a terminal, so not grey
+    expect(lines[1]).toMatch(/^Sandbox: copy of .+ \(1 file, \d+\.\d s\), network off, /);
+    const [session] = readdirSync(r.copies);
+    expect(lines.at(-1)).toBe(`Changes kept for review: tachi review ${session}`);
+    expect(existsSync(path.join(r.copies, session!, "manifest.json"))).toBe(true);
+    expect(readdirSync(r.proj)).toEqual(["notes.txt"]);
+  });
+
+  it("removes the copy when the launch stops after it was made", async () => {
+    const r = await copyRun("start-fails");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("The sandbox could not start: docker: Error response from daemon: made-up failure.");
+    expect(readdirSync(r.copies)).toEqual([]);
   });
 });
 

@@ -140,9 +140,7 @@ export const printable = (s: Stroke) => !s.ctrl && !s.alt && (s.key === "space" 
 export const WAITING = "Waiting for your editor to close the file... (Tachikoma ignores Ctrl-C until then) ";
 export const ERASE_LINE = "\r\u001b[K";
 // Copy mode's leaving (queue.ts, leave): the line while the box stops, and the one when Docker still lists it after.
-// WORDING: needs approval
 export const STOPPING = "Stopping the box...";
-// WORDING: needs approval
 export const NOT_GONE = "The box could not be removed, so the copy was not reviewed.";
 // The wheel's reports carry no key, so no flag of one is set.
 export const NO_KEY = {} as Key;

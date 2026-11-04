@@ -1,7 +1,7 @@
+import type { EventEmitter } from "node:events";
 import { realpathSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
-import { dataDir } from "./core/datadir.js";
 import type { Instructions, Reached } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
@@ -13,14 +13,15 @@ import { NO_RULES, type UserRules } from "./safety/rules.js";
 import { type Shell, shellOf } from "./safety/split.js";
 import { BoxWorkspace } from "./sandbox/boxWorkspace.js";
 import { docker } from "./sandbox/docker.js";
-import { BOX_HOME, boxLimits, boxUser, DockerExecutor, dockerRoom, memoryText, type Room, sweepBoxes, unlimitedLine } from "./sandbox/executor.js";
+import { BOX_HOME, boxLimits, boxUser, DockerExecutor, dockerRoom, memoryText, NO_DOCKER, type Room, sweepBoxes, unlimitedLine } from "./sandbox/executor.js";
 import { heldLine, type ImageIo, prepareImage } from "./sandbox/image.js";
 import { CASE_REFUSED, ignoresCase, liveMounts, type Mount, sessionSettings } from "./sandbox/mounts.js";
-import { type Manifest, removeCopy, snapshot } from "./sandbox/snapshot.js";
+import { type Manifest, removeCopySync, snapshot } from "./sandbox/snapshot.js";
 import type { SandboxLimits, Settings } from "./settings.js";
 import { shellToolOf } from "./tools/shell.js";
 import type { Tool } from "./tools/tool.js";
 import { screen } from "./tui/describe.js";
+import { gitBranch } from "./tui/git.js";
 import { leftOut } from "./tui/Review.js";
 import { k, type Segment, SEGMENTS } from "./tui/StatusLine.js";
 
@@ -269,7 +270,9 @@ export function networkLine(flags: Flags, sandbox: Sandbox): string | null {
 // The box's folder for the project, where the model works (choice 19), and its home (executor.ts, choice 77).
 const BOX_ROOT = "/work";
 
+// `note`: a line said while the launch works, grey on a terminal (cli.tsx); `err` when not given.
 export interface SandboxIo extends ImageIo {
+  note?: (line: string) => void;
   gitSettings?: (root: string) => Promise<GitSettings | undefined>;
   ignoresCase?: (folder: string) => boolean;
 }
@@ -284,13 +287,14 @@ export type Ready = {
   copy?: Copied;
   gitLine?: string;
 };
-// The copy's folder (`copies/<session>/` in the data folder), its manifest, and how long the copy took.
-export interface Copied { folder: string; manifest: Manifest; ms: number }
+// The copy's folder (`copies/<session>/` in the data folder), its manifest, how long the copy took, and the host's branch
+// for the box's repository, if it has one the box can take (boxBranch).
+export interface Copied { folder: string; manifest: Manifest; ms: number; branch?: string }
 
 // With `copy`, copy mode's launch (Task 21): Task 16's order, with the snapshot (Task 17) in the mounts' place. It is not
 // refused on a folder that ignores letter case, which is live link's alone (choice 104), and it goes on when git's
-// settings cannot be read, which only add to the gate's protected paths. A copy the launch stops after is removed, as
-// nothing has run in it.
+// settings cannot be read, which only add to the gate's protected paths. A copy the launch stops after is removed at
+// exit (dropOnExit), as nothing has run in it.
 export async function sandboxReady(root: string, io: SandboxIo, copy?: { session: string }): Promise<Ready | { exit: number }> {
   const refuse = (line: string) => (io.err(visible(line)), { exit: 1 });
   const held = heldLine(root);
@@ -312,20 +316,18 @@ export async function sandboxReady(root: string, io: SandboxIo, copy?: { session
   if (copy) {
     const gitLine = failed === undefined ? undefined : gitUnread(failed);
     if (gitLine) io.err(gitLine);
+    (io.note ?? io.err)(visible(`Copying ${root} for the sandbox...`)); // the user's choice and words
     const from = performance.now();
     let got: Awaited<ReturnType<typeof snapshot>>;
     try {
       got = await snapshot(root, copy.session);
     } catch (err) {
-      await removeCopy(path.join(dataDir(), "copies", copy.session)).catch(() => {});
       return refuse(errorText(err));
     }
-    const copied = { folder: path.dirname(got.work), manifest: got.manifest, ms: performance.now() - from };
+    const branch = boxBranch(gitBranch(root));
+    const copied = { folder: path.dirname(got.work), manifest: got.manifest, ms: performance.now() - from, ...(branch ? { branch } : {}) };
     // A Ctrl-C during the copy, which cannot be stopped midway, is read once it is done.
-    if (io.signal.aborted) {
-      await removeCopy(copied.folder).catch(() => {});
-      return { exit: 128 + constants.signals.SIGINT };
-    }
+    if (io.signal.aborted) return { exit: 128 + constants.signals.SIGINT };
     // safe.directory, as live link's mounts give it (mounts.ts): the copy's folder is not the box's user's either.
     const env = sessionSettings({ "safe.directory": BOX_ROOT });
     return { tag: image.tag, git, mounts: [], env, gitOutside: false, copy: copied, ...(gitLine ? { gitLine } : {}) };
@@ -354,12 +356,39 @@ export interface Started {
   copy?: Copied;
 }
 
-// Choice 24: the box makes /work a new git repository and commits the snapshot as one commit, by Tachikoma. Files git's
-// ignore rules cover are left out of the commit, as `git add` leaves them, though they are in the copy.
-// WORDING: needs approval (the commit's message)
-const COMMIT =
-  "git init -q && git add -A && " +
-  "git -c user.name=Tachikoma -c user.email=tachikoma@localhost commit -q --allow-empty -m 'The project as Tachikoma copied it'";
+// Choice 24: the box makes /work a new git repository and commits the snapshot as one commit, by Tachikoma, each git run
+// a docker exec of its own, given as words, never as shell text. Files git's ignore rules cover are left out of the
+// commit, as `git add` leaves them, though they are in the copy. The repository takes the host's branch, if any (the
+// user's choice; boxBranch).
+const commitArgs = (branch: string | undefined) => [
+  ["init", "-q", ...(branch ? [`--initial-branch=${branch}`] : [])],
+  ["add", "-A"],
+  ["-c", "user.name=Tachikoma", "-c", "user.email=tachikoma@localhost", "commit", "-q", "--allow-empty", "-m", "The project as Tachikoma copied it"],
+];
+
+// The host's branch (tui/git.ts, gitBranch, as the status line reads it) when the box's git can take it as it is: only
+// letters, digits, `.`, `_`, `-` and `/`, not starting with `-`, `.` or `/`, with no `..`, `//` or `/.`, not ending in
+// `/`, `.` or `.lock` (git-check-ref-format's rules, within that narrower set), so it can never act as an option nor be
+// refused by git. Any other name, a detached HEAD ("HEAD") or no repository gives undefined, and git's own default.
+export function boxBranch(name: string | null): string | undefined {
+  const plain = /^(?![-./])(?!.*(\.\.|\/\/|\/\.))[A-Za-z0-9._/-]+(?<![/.])$/;
+  return name !== null && name !== "HEAD" && plain.test(name) && !name.endsWith(".lock") ? name : undefined;
+}
+
+// Until copy mode's session starts, its copy, with nothing run in it, is removed when the process ends, however it ends:
+// a refusal, Ctrl-C at a question or while the box starts, a crash (Task 21's review). "exit" handlers cannot wait, so
+// removeCopySync. The function returned keeps the copy from then on. `proc` is a test's.
+export function dropOnExit(folder: string, proc: Pick<EventEmitter, "on" | "off"> = process): () => void {
+  const drop = () => {
+    try {
+      removeCopySync(folder);
+    } catch {
+      // what cannot be removed stays, as a copy with no changes; `tachi review` can discard it
+    }
+  };
+  proc.on("exit", drop);
+  return () => void proc.off("exit", drop);
+}
 
 export async function sandboxStart(
   root: string,
@@ -369,11 +398,7 @@ export async function sandboxStart(
 ): Promise<Started | { exit: number }> {
   const run = io.run ?? docker;
   const { copy } = ready;
-  const refuse = async (line: string) => {
-    io.err(visible(line));
-    if (copy) await removeCopy(copy.folder).catch(() => {});
-    return { exit: 1 };
-  };
+  const refuse = (line: string) => (io.err(visible(line)), { exit: 1 });
   await sweepBoxes(run);
   let box: DockerExecutor;
   let room: Room;
@@ -414,11 +439,11 @@ export async function sandboxStart(
     return refuse(problem);
   }
   if (copy) {
-    const made = await box.exec(COMMIT, BOX_ROOT).catch((err: Error) => err);
-    if (made instanceof Error || made.code !== 0) {
+    for (const args of commitArgs(copy.branch)) {
+      const made = await run(["exec", "-w", BOX_ROOT, box.id, "git", ...args]).catch((err: Error) => err);
+      if (made !== "missing" && !(made instanceof Error) && made.code === 0) continue;
       await box.stop();
-      const words = made instanceof Error ? errorText(made) : made.stderr.trim() || `exit code ${made.code}`;
-      // WORDING: needs approval
+      const words = made === "missing" ? NO_DOCKER : made instanceof Error ? errorText(made) : made.err.trim() || `exit code ${made.code}`;
       return refuse(`The sandbox could not make the copy a git repository in the box (${words}).`);
     }
   }

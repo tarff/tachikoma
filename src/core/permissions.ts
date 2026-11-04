@@ -93,7 +93,6 @@ const IN_A_SESSION = 20;
 const dangerRefusal = (found: Danger[]) => `Not allowed: this command matches the dangerous-command check (${found.map((d) => visible(named(d))).join("; ")}).`;
 const protectedRefusal = (where: string, part: string) =>
   `Not allowed: ${visible(where)} is a protected path (${visible(part)}), which other programs run or read as settings.`;
-// WORDING: needs approval
 const outsideRefusal = (summary: string) => `Not allowed in never mode: ${visible(summary)}, which is outside the project.`;
 
 // `root`: the project's, for the dangerous-command check; `headless`: -p mode, where a danger is refused (Task 8);

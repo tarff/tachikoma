@@ -8018,6 +8018,29 @@ describe("App's leave() in copy mode", () => {
     expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
   });
 
+  // Task 21's review: without git's settings, a hooks folder they name would not be marked protected, so a file in it
+  // could be applied unseen. The review does not open; the copy is kept, and the lines say why.
+  it("keeps the copy unreviewed when git's settings cannot be read on the host, and says so", async () => {
+    const w = copyWorld();
+    w.copy.protection = async () => {
+      w.said.push("protection");
+      throw new Error("git was ended by SIGKILL");
+    };
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual([
+      "git's settings could not be read (git was ended by SIGKILL); only the fixed list of protected paths applies",
+      "The copy is kept; tachi review s1 opens it again.",
+    ]);
+    expect(app.lastFrame()).not.toContain("Review the copy's changes");
+    expect(w.said).toEqual(["stop", "protection"]);
+    await expectExited(app);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+    expect(existsSync(`${w.folder}.lock`)).toBe(false);
+  });
+
   // A signal exit or a crash ends Ink without leave() (cli.tsx, restoreOnExit, unmounts it): the box is removed by the
   // executor's exit handler, and the copy stays, unreviewed, for `tachi review` (design: "Nothing is thrown away until the
   // user has reviewed it").

@@ -107,7 +107,8 @@ export interface AppProps {
   readPicture?: (() => Promise<Read>) | null;
   // Copy mode (release 7 plan, Task 21; queue.ts, leave): the copy the session works on; `stop` removes its box, true
   // once Docker reports it gone; `protection` is worked out on the host when the review opens, never the gate's view of
-  // the box; `ended` takes the lines to print once Ink has ended. Without it, leaving only exits.
+  // the box, and when it throws the review does not open; `ended` takes the lines to print once Ink has ended. Without
+  // it, leaving only exits.
   copy?: {
     copy: ReviewCopy;
     stop: () => Promise<boolean>;

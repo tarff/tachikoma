@@ -1,5 +1,7 @@
 import { withLock } from "../../auth/lock.js";
+import { gitUnread } from "../../clilib.js";
 import { summarize } from "../../core/errorlog.js";
+import type { Protection } from "../../core/permissions.js";
 import type { Task } from "../../core/tasks.js";
 import { errorText } from "../../core/types.js";
 import { KEYBINDINGS } from "../../keybindings.js";
@@ -223,7 +225,14 @@ export const queue = (ui: UI, fns: Fns) => {
       await fns.comeBack();
       if (!(await c.stop())) return c.ended([NOT_GONE, kept(c.copy.session)]);
       await withLock(copyLock(c.copy.folder), async () => {
-        const protection = await c.protection();
+        // Without git's settings a hooks folder they name is not marked protected, so a file in it could be applied
+        // unseen: no review, and the copy is kept (Task 21's review).
+        let protection: Protection;
+        try {
+          protection = await c.protection();
+        } catch (err) {
+          return c.ended([gitUnread(err), kept(c.copy.session)]);
+        }
         const end = await new Promise<ReviewEnd>((onEnd) => ui.setReviewing({ protection, onEnd }));
         c.ended(end.lines);
       });

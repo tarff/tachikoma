@@ -5,7 +5,7 @@
 // applied back. No link is followed: one leading inside the project is made again in each copy, pointing at the same
 // place there; any other is left out, with its why.
 import { createHash } from "node:crypto";
-import { type BigIntStats, createReadStream, realpathSync } from "node:fs";
+import { type BigIntStats, createReadStream, existsSync, readdirSync, realpathSync, rmdirSync, unlinkSync } from "node:fs";
 import { type FileHandle, lstat, mkdir, open, readdir, readlink, rmdir, stat, symlink, unlink } from "node:fs/promises";
 import path from "node:path";
 import { privateDir, writePrivate } from "../auth/private.js";
@@ -220,6 +220,25 @@ export async function removeCopy(folder: string): Promise<void> {
     await rmdir(dir);
   };
   await remove(folder);
+}
+
+// removeCopy, synchronously, the same way, for an "exit" handler, which cannot wait (clilib.ts, dropOnExit). A folder
+// that is not there is no error.
+export function removeCopySync(folder: string): void {
+  try {
+    unlinkSync(path.join(folder, "manifest.json"));
+  } catch (err) {
+    gone(err as NodeJS.ErrnoException);
+  }
+  const remove = (dir: string): void => {
+    for (const d of readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, d.name);
+      if (d.isDirectory()) remove(p);
+      else unlinkSync(p);
+    }
+    rmdirSync(dir);
+  };
+  if (existsSync(folder)) remove(folder);
 }
 
 // The lock two reviews of one copy take turns by (withLock, auth/lock.ts; release 7 plan, Task 21): beside the copy's

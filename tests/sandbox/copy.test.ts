@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +7,7 @@ import { afterEach, describe, expect, it, onTestFinished, type TestContext, vi }
 import { sandboxReady, sandboxStart, type Started } from "../../src/clilib.js";
 import { PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
+import { onPath } from "../../src/exec/env.js";
 import { gitSettings } from "../../src/safety/gitconfig.js";
 import { dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, dockerRoom } from "../../src/sandbox/executor.js";
@@ -104,5 +106,25 @@ describe("a session in the box with copy mode, in real Docker", { timeout: 0 }, 
     await started.box.stop();
     expect(existsSync(path.join(folder, "manifest.json"))).toBe(true);
     expect(readFileSync(path.join(folder, "base", "notes.txt"), "utf8")).toBe("made-up notes\n");
+  });
+});
+
+// The user's choice (Task 21's review): the box's repository takes the host's branch, given to git as
+// --initial-branch, which git has had since 2.28 (its 2.28.0 release notes); the image's own git is read here.
+describe("the box's branch in copy mode, in real Docker", { timeout: 0 }, () => {
+  it("takes the host's branch, on an image whose git has --initial-branch", async (ctx) => {
+    const w = world();
+    onTestFinished(() => removeTree(w.dir));
+    const exe = onPath("git", w.env);
+    if (!exe) ctx.skip("no git on PATH");
+    for (const args of [["init", "-q"], ["symbolic-ref", "HEAD", "refs/heads/feature/made-up"]]) {
+      execFileSync(exe!, args, { cwd: w.root, env: w.env, windowsHide: true });
+    }
+    const started = await launch(ctx, w, `test-${randomUUID()}`);
+    const got = await started.box.exec("git --version && git branch --show-current", "/work");
+    const [version, branch] = got.stdout.trim().split("\n");
+    const [major, minor] = /(\d+)\.(\d+)/.exec(version!)!.slice(1).map(Number) as [number, number];
+    expect(major > 2 || (major === 2 && minor >= 28), version).toBe(true);
+    expect(branch).toBe("feature/made-up");
   });
 });
