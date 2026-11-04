@@ -14,7 +14,8 @@ export interface Mouse {
   ctrl: boolean;
 }
 export type Piece = { keys: string } | { mouse: Mouse };
-type State = { held: string; pasting: boolean; tail: string };
+// `lead`: the first half of a character typed as two win32 records (below), until the second comes.
+type State = { held: string; pasting: boolean; tail: string; lead?: string };
 type Source = Pick<NodeJS.ReadStream, "on" | "off" | "setRawMode" | "setEncoding" | "ref" | "unref" | "pause" | "resume">;
 
 // The markers Ink reads pastes by (`pasteStart` and `pasteEnd` in Ink's input-parser.js).
@@ -22,8 +23,9 @@ const PASTE_START = "\u001b[200~";
 const PASTE_END = "\u001b[201~";
 // A whole SGR report, as the probe got them: ESC [ <, then b, x and y, then M (press, drag, wheel) or m (release).
 const REPORT = /^\u001b\[<(\d+);(\d+);(\d+)([Mm])/;
-// What could still become a report if the rest came: ESC, ESC[, ESC[<, then up to three numbers and the semicolons between.
-const PARTIAL = /^\u001b(\[(<(\d+;){0,2}\d*)?)?$/;
+// What could still become a report or a win32 record if the rest came: ESC, ESC[, ESC[<, then up to three numbers and the
+// semicolons between; or ESC[ and up to six numbers, any left out, and the semicolons between.
+const PARTIAL = /^\u001b(\[(<(\d+;){0,2}\d*|(\d*;){0,5}\d*)?)?$/;
 // The bits of b the report format names: 64 the wheel, 32 a drag, 16 Ctrl, 8 Alt, 4 Shift, 3 the button.
 const NAMED = 64 | 32 | 16 | 8 | 4 | 3;
 const BUTTONS = ["left", "middle", "right", "none"] as const; // b & 3: 0 left, 1 middle, 2 right, 3 none
@@ -40,14 +42,80 @@ function decode(report: RegExpExecArray): Mouse | null {
   return { kind: report[4] === "m" ? "release" : (b & 32) !== 0 ? "drag" : "press", button: BUTTONS[b & 3]!, ...at };
 }
 
+// Windows Terminal's win32 input mode (release 7 plan, Task 22), where Shift+Enter comes apart from Enter: the probe found
+// Windows Terminal sends both as CR otherwise, and does not answer kitty's query. Each key comes as a record
+// `CSI Vk;Sc;Uc;Kd;Cs;Rc _`, a KEY_EVENT_RECORD's virtual key, scan code, character, key down, modifier keys and repeat
+// count, any left out taking its default (0, but Rc 1): the format of Microsoft's spec, "Improved keyboard handling in
+// Conpty" (microsoft/terminal, doc/specs/#4999 - Improved keyboard handling in Conpty.md). Each becomes the bytes Windows
+// Terminal sends for the key outside the mode, which Ink reads today, as its src/terminal/input/terminalInput.cpp makes
+// them (read 2026-11-05), except Shift+Enter, which becomes Ctrl+J's LF, chat:newline's other key. A paste comes as plain
+// text all the same (the probe), and where the mode is not taken up (tmux inside Windows Terminal) every key does: plain
+// bytes pass as before.
+const RECORD = /^\u001b\[(\d*(?:;\d*){0,5})_/;
+// Cs's bits, as wincon.h names them: RIGHT_ALT_PRESSED and LEFT_ALT_PRESSED, the two CTRL_PRESSED, SHIFT_PRESSED. The
+// rest (NumLock on, the probe's 0x20, CapsLock, ENHANCED_KEY) are no modifier.
+const ALT = 0x1 | 0x2;
+const CTRL = 0x4 | 0x8;
+const SHIFT = 0x10;
+// By virtual key, the keys terminalInput.cpp's _encodeRegular gives a sequence of their own: PgUp, PgDn, End, Home, the
+// arrows, Insert, Delete, F1 to F12. A final letter comes as CSI and the letter (SS3 for F1 to F4), or CSI 1;m and the
+// letter with modifiers; a number and ~ as CSI n~, or CSI n;m~.
+const KEYS: Record<number, string> = {
+  33: "5~", 34: "6~", 35: "F", 36: "H", 37: "D", 38: "A", 39: "C", 40: "B", 45: "2~", 46: "3~",
+  112: "P", 113: "Q", 114: "R", 115: "S",
+  116: "15~", 117: "17~", 118: "18~", 119: "19~", 120: "20~", 121: "21~", 122: "23~", 123: "24~",
+};
+
+// terminalInput.cpp's _makeCtrlChar: what Ctrl makes of a character.
+function ctrlChar(c: number): number {
+  if (c === 0x20) return 0; // Space
+  if (c === 0x2f) return 0x1f; // /
+  if (c === 0x3f) return 0x7f; // ?
+  if (c >= 0x40 && c <= 0x7e) return c & 0x1f;
+  if (c >= 0x32 && c <= 0x38) return [0, 27, 28, 29, 30, 31, 127][c - 0x32]!; // 2 to 8
+  return c;
+}
+
+// One record's keys, and the half character still waiting. Only a key going down types: key-ups, and a key held alone
+// with no character (Shift, Ctrl, Alt, CapsLock), give nothing, as terminalInput.cpp's HandleKey drops them. Ctrl and
+// Alt held with a printable character are AltGr (`@` on a German keyboard), and type the character alone, unless both
+// Ctrls or both Alts are down (HandleKey's altGrPressed). Alt puts ESC first, as its _formatFallback does; Ctrl+Space is
+// NUL whatever its character. A character in two halves (UTF-16's surrogate pair) waits for its second, over key-ups.
+function translate(record: string, lead: string | undefined): { keys: string; lead?: string } {
+  const [vk = 0, , uc = 0, down = 0, cs = 0, repeat = 1] = record.split(";").map((p) => (p === "" ? undefined : Number(p)));
+  if (down !== 1) return { keys: "", lead };
+  if (uc >= 0xd800 && uc <= 0xdbff) return { keys: "", lead: String.fromCharCode(uc) };
+  const altGr = (cs & ALT) !== 0 && (cs & CTRL) !== 0 && uc > 0x20 && uc !== 0x7f;
+  const alt = (cs & ALT) === ALT || ((cs & ALT) !== 0 && !altGr);
+  const ctrl = (cs & CTRL) === CTRL || ((cs & CTRL) !== 0 && !altGr);
+  const shift = (cs & SHIFT) !== 0;
+  const esc = alt ? "\u001b" : "";
+  const seq = KEYS[vk];
+  let keys = "";
+  if (seq) {
+    const m = 1 + (shift ? 1 : 0) + (alt ? 2 : 0) + (ctrl ? 4 : 0); // xterm's: 1, plus Shift 1, Alt 2, Ctrl 4
+    const [, n, final] = /^(\d*)(.)$/.exec(seq)!;
+    keys = m > 1 ? `\u001b[${n || 1};${m}${final}` : vk >= 112 && vk <= 115 ? `\u001bO${final}` : `\u001b[${seq}`;
+  } else if (vk === 13) keys = esc + (shift || ctrl ? "\n" : "\r"); // Enter: Ctrl+Enter is LF outside the mode too
+  else if (vk === 8) keys = esc + (ctrl ? "\b" : "\u007f"); // Backspace
+  else if (vk === 9) keys = esc + (shift ? "\u001b[Z" : "\t"); // Tab
+  else {
+    const c = ctrl && vk === 0x20 ? 0x20 : uc;
+    if (c !== 0) keys = esc + (uc >= 0xdc00 && uc <= 0xdfff ? (lead ?? "") : "") + String.fromCharCode(ctrl ? ctrlChar(c) : c);
+  }
+  return keys ? { keys: keys.repeat(repeat) } : { keys, lead };
+}
+
 // One read's pieces, in order, and what is held back for the next read. `held` is the end of a read that could still be
-// a report or a paste's start marker; `tail` is the last characters of a paste, so an end marker split across reads is
-// still found. Nothing is taken out of a paste, so pasted text shaped like a report arrives as text.
+// a report, a win32 record or a paste's start marker; `tail` is the last characters of a paste, so an end marker split
+// across reads is still found. Nothing is taken out of a paste, so pasted text shaped like a report or a record arrives as
+// text. Records are translated (above); `lead` carries half a character between them.
 export function split(state: State, chunk: string): { pieces: Piece[]; state: State } {
   const pieces: Piece[] = [];
   const text = state.held + chunk;
-  let { pasting, tail } = state;
+  let { pasting, tail, lead } = state;
   let held = "";
+  let record: RegExpExecArray | null;
   let keys = "";
   let i = 0;
   while (i < text.length) {
@@ -81,6 +149,11 @@ export function split(state: State, chunk: string): { pieces: Piece[]; state: St
       const mouse = decode(report);
       if (mouse) pieces.push({ mouse });
       i = esc + report[0].length;
+    } else if ((record = RECORD.exec(rest))) {
+      const key = translate(record[1]!, lead);
+      keys += key.keys;
+      lead = key.lead;
+      i = esc + record[0].length;
     } else if (rest.startsWith(PASTE_START)) {
       keys += PASTE_START;
       i = esc + PASTE_START.length;
@@ -94,7 +167,7 @@ export function split(state: State, chunk: string): { pieces: Piece[]; state: St
     }
   }
   if (keys) pieces.push({ keys });
-  return { pieces, state: { held, pasting, tail } };
+  return { pieces, state: { held, pasting, tail, lead } };
 }
 
 // One key: an Escape with a whole CSI or SS3 sequence after it (an arrow's ESC [ A), or with one other character (Alt
@@ -144,14 +217,19 @@ export class InputFilter extends EventEmitter {
   #rawOff = false;
   #unrefd = false;
   #divert: ((keys: string) => void) | null = null;
+  readonly #win32: ((on: boolean) => void) | undefined;
   readonly #onData = (chunk: string | Buffer) => this.#take(String(chunk));
 
   // wait: 20 ms by default, Ink's own wait for the rest of a key (`pendingInputFlushDelayMilliseconds` in Ink's
-  // components/App.js). Reading the source as utf8 makes a character split across reads arrive whole.
-  constructor(source: Source, wait = 20) {
+  // components/App.js). Reading the source as utf8 makes a character split across reads arrive whole. win32: told each
+  // time raw mode goes on or off on the source, to turn Windows Terminal's win32 input mode with it (cli.tsx; release 7
+  // plan, Task 22). Raw mode is on exactly while the filter reads keys, and goes off on every way out (unmounting, a
+  // program in the terminal, the end of a hold), so the mode's records never reach a shell or an editor.
+  constructor(source: Source, wait = 20, win32?: (on: boolean) => void) {
     super();
     this.#source = source;
     this.#wait = wait;
+    this.#win32 = win32;
     source.setEncoding("utf8");
     source.on("data", this.#onData);
     // A stream tells a readable listener added while data waits, on the next tick. Ink removes its listener in
@@ -171,7 +249,7 @@ export class InputFilter extends EventEmitter {
 
   setRawMode(on: boolean): this {
     this.#rawOff = !on;
-    if (on || !this.#holding) this.#source.setRawMode(on);
+    if (on || !this.#holding) this.#raw(on);
     return this;
   }
 
@@ -200,7 +278,7 @@ export class InputFilter extends EventEmitter {
   hold(on: boolean): void {
     this.#holding = on;
     if (on) return;
-    if (this.#rawOff) this.#source.setRawMode(false);
+    if (this.#rawOff) this.#raw(false);
     if (this.#unrefd) this.#source.unref();
   }
 
@@ -210,11 +288,11 @@ export class InputFilter extends EventEmitter {
   release(): void {
     this.#source.off("data", this.#onData);
     this.#source.pause();
-    this.#source.setRawMode(false);
+    this.#raw(false);
   }
 
   retake(): void {
-    this.#source.setRawMode(true);
+    this.#raw(true);
     this.#source.on("data", this.#onData);
     this.#source.resume();
   }
@@ -258,5 +336,10 @@ export class InputFilter extends EventEmitter {
     // "data" as a stream emits it, for Ink's kitty check, which listens for the terminal's answer that way.
     this.emit("data", keys);
     this.emit("readable");
+  }
+
+  #raw(on: boolean): void {
+    this.#source.setRawMode(on);
+    this.#win32?.(on);
   }
 }

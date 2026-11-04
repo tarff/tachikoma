@@ -505,7 +505,10 @@ if (parsed.print !== undefined) {
   // the two in step.
   const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
   // Ink reads the keys through the filter, which takes the mouse reports out for the App (release 5 design, "The mouse").
-  const keys = new InputFilter(process.stdin);
+  // In Windows Terminal, which sets WT_SESSION, it turns win32 input mode on and off with raw mode, and reads its records,
+  // so Shift+Enter comes apart from Enter (release 7 plan, Task 22; input.ts, RECORD); elsewhere nothing more is written.
+  const wt = Boolean(process.env.WT_SESSION) && process.stdin.isTTY && process.stdout.isTTY;
+  const keys = new InputFilter(process.stdin, undefined, wt ? (on) => screen.setWin32(on) : undefined);
   // Copies go to the terminal as OSC 52, in order with the screen's own codes, and to the system's tool where it has one
   // (release 5 design, "Copying").
   const tool = systemTool(process.platform, process.env);

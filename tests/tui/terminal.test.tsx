@@ -17,6 +17,8 @@ import {
   SECOND_SCREEN,
   SHOW_CURSOR,
   Screen,
+  WIN32_OFF,
+  WIN32_ON,
   writeBestEffort,
 } from "../../src/tui/terminal.js";
 
@@ -121,6 +123,21 @@ describe("Screen", () => {
     left.screen.leave();
     left.screen.restore();
     expect(left.out.now).toBe(SHOW_CURSOR);
+  });
+
+  // Windows Terminal's win32 input mode (release 7 plan, Task 22): put back off once more, through the synchronous writer,
+  // even when its last switch was off, which went the asynchronous way.
+  it("switches win32 input mode, and turns it off again when put back if it was ever on", () => {
+    const { out, screen } = recorded();
+    screen.setWin32(true);
+    screen.setWin32(true);
+    expect(out.write).toBe(WIN32_ON);
+    screen.setWin32(false);
+    expect(out.write).toBe(WIN32_ON + WIN32_OFF);
+    screen.restore();
+    expect(out.now).toBe(WIN32_OFF + SHOW_CURSOR);
+    screen.setWin32(false);
+    expect(out.write).toBe(WIN32_ON + WIN32_OFF);
   });
 
   it("writes nothing when put back if it never turned anything on, so classic mode stays as release 4 left it", () => {
