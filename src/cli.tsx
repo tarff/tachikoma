@@ -218,7 +218,8 @@ if (verb === "sandbox") {
 // `tachi review` lists the copies copy mode kept for review, opens one in full screen, or discards one after asking, then
 // exits (release 7 plan, Task 21; choice 28). Opening and discarding need a terminal; with none, nothing is done. Ctrl-C
 // while Docker is asked or another review is waited for, with raw mode off, ends it through process.exit, so the lock's
-// exit handler runs; in the review it is a key. The signals that end a session end it the same way, the terminal put back.
+// exit handler runs; in the review it is a key, and a discard's removal goes on through it (copies.ts, uninterrupted).
+// The signals that end a session end it the same way, the terminal put back.
 if (verb === "review") {
   process.on("SIGINT", () => process.exit(128 + constants.signals.SIGINT));
   for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));

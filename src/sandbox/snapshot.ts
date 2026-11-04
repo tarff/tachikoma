@@ -44,7 +44,7 @@ export const NOT_COPIED = "not a file, folder or link";
 export const MANIFEST = "manifest.json";
 export const PENDING = "manifest.pending.json";
 
-// Copies `root` into `<data>/copies/<session>/`, and writes its manifest there last, as PENDING. `copied` is a test's, called after
+// Copies `root` into `<data>/copies/<session>/`, and writes PENDING, its manifest, last. `copied` is a test's, called after
 // each file is copied and before it is hashed again. `signal` is checked at each entry, so a Ctrl-C during a long copy
 // stops it with the signal's error, leaving what was made for the launch to remove (clilib.ts, dropOnExit).
 export async function snapshot(
@@ -129,7 +129,7 @@ export async function snapshot(
     }
     if (leaves(path.relative(realWork, place))) throw new SnapshotRefused(`The copy was refused: the link ${r} in it leads outside the copy.`);
   }
-  writePrivate(path.join(copies, PENDING),`${JSON.stringify(manifest, null, 2)}\n`);
+  writePrivate(path.join(copies, PENDING), `${JSON.stringify(manifest, null, 2)}\n`);
   return { manifest, base, work };
 }
 

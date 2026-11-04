@@ -6,8 +6,8 @@ import { useEffect, useRef, useState } from "react";
 import type { Protection } from "../core/permissions.js";
 import { errorText } from "../core/types.js";
 import { protectedPart } from "../safety/protected.js";
-import { type ApplyOptions, appliedSoFar, applyChange, CANNOT_MERGE, type Outcome } from "../sandbox/apply.js";
-import { type Change, changes } from "../sandbox/changes.js";
+import { type ApplyOptions, applyChange, CANNOT_MERGE, type Outcome, toReview } from "../sandbox/apply.js";
+import type { Change } from "../sandbox/changes.js";
 import { fileDiff } from "../sandbox/diff.js";
 import { type Manifest, removeCopy } from "../sandbox/snapshot.js";
 import { type Bindings, type Context, strokeOf } from "./bindings.js";
@@ -159,16 +159,15 @@ export function Review({
   useEffect(() => {
     void (async () => {
       try {
-        const [found, before] = await Promise.all([changes(manifest, ctx.work), appliedSoFar(session, path.dirname(path.dirname(folder)))]);
+        const found = await toReview(manifest, folder, session);
         if (s.stage !== "reading") return;
-        const applied = new Set(before.filter((o) => o.result === "applied").map((o) => o.path));
-        const ignored = found.changes.filter((c) => c.ignored).length;
+        const { ignored } = found;
         // The box's own repository at the top, which Tachikoma made at launch (choice 24), is not listed: it would be in
         // every review (choice 114). One deeper is, and so is a .tachikoma.
         const notes = [...manifest.leftOut, ...found.leftOut.filter((l) => l.path !== ".git")].map((l) => leftOut(l.path, l.why));
         s.items = [
           ...[...notes, ...(ignored ? [ignoredCount(ignored)] : [])].map((note): Item => ({ note })),
-          ...found.changes.filter((c) => !c.ignored && !applied.has(c.path)).map((change): Item => {
+          ...found.changes.map((change): Item => {
             // A change to a path the file tools protect, read as protected.ts reads a path in the project, starts as
             // skip, marked (choice 115); the user can still keep it.
             const marked = protectedPart(manifest.root, path.join(manifest.root, ...change.path.split("/")), protection.hooks, protection.files) !== undefined;

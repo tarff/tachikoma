@@ -12,7 +12,7 @@ import path from "node:path";
 import { dataDir } from "../core/datadir.js";
 import { commandEnv, onPath } from "../exec/env.js";
 import { leaves } from "../tools/files.js";
-import { type Change, NEVER_APPLIED } from "./changes.js";
+import { type Change, type Changes, changes, NEVER_APPLIED } from "./changes.js";
 import { hashFile, type Manifest, reserved } from "./snapshot.js";
 
 // `mergedTo`: for a merge with conflicts, the file of conflict markers beside the real one, relative to the project.
@@ -345,6 +345,19 @@ export async function appliedSoFar(session: string, data = dataDir()): Promise<O
     else out.push({ path: rel, result: "conflict", why: CHANGED_AFTER });
   }
   return out;
+}
+
+// What a review of the copy in `folder` (`<data>/copies/<session>/`) lists, for the review (Review.tsx) and `tachi
+// review`'s count (copies.ts) alike: its changes less what git ignores, which are only counted (choice 109), and less what
+// an earlier apply applied (a copy reopened after a crash lists them again); and what work/ left out.
+export async function toReview(manifest: Manifest, folder: string, session: string): Promise<{ changes: Change[]; ignored: number; leftOut: Changes["leftOut"] }> {
+  const [found, before] = await Promise.all([changes(manifest, path.join(folder, "work")), appliedSoFar(session, path.dirname(path.dirname(folder)))]);
+  const applied = new Set(before.filter((o) => o.result === "applied").map((o) => o.path));
+  return {
+    changes: found.changes.filter((c) => !c.ignored && !applied.has(c.path)),
+    ignored: found.changes.filter((c) => c.ignored).length,
+    leftOut: found.leftOut,
+  };
 }
 
 type Row = { path: string; state: "pending"; before: string; after: string } | { path: string; state: "done" };

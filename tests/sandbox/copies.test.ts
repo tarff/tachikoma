@@ -6,6 +6,7 @@ import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { dropOnExit } from "../../src/clilib.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
+import { toReview } from "../../src/sandbox/apply.js";
 import { boxCheck, type ReviewIo, reviewCommand } from "../../src/sandbox/copies.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
 import type { ReviewEnd } from "../../src/tui/Review.js";
@@ -150,6 +151,28 @@ describe("tachi review's list", () => {
     expect(r.out[1]).toMatch(/ 1 change$/);
   });
 
+  it("says when a copy's changes cannot be read, and lists the next copy", async () => {
+    const w = world();
+    const broken = w.copy("s-a", { "a.txt": "made-up a\n" }, { at: "2026-11-04T01:02:00.000Z" });
+    const next = w.copy("s-b", { "a.txt": "made-up a\n" }, { at: "2026-11-05T01:02:00.000Z" });
+    await removeTree(path.join(broken.folder, "work"));
+    const r = io(w.data);
+    expect(await reviewCommand([], r.io)).toBe(0);
+    expect(r.out[1]).toMatch(new RegExp(`^  s-a  .+  changes unreadable \\(ENOENT: `));
+    expect(r.out[2]).toBe(`  s-b  ${next.root}  ${when(next.manifest.at)}  0 changes`);
+  });
+
+  // One helper reads what a review lists, for the review (Review.tsx) and the count here alike.
+  it("reads a copy's changes as the review lists them: less what git ignores and what an earlier apply applied", async () => {
+    const w = world();
+    const c = w.copy("s1", { "a.txt": "made-up a\n", ".gitignore": "*.log\n" }, { changed: { "a.txt": "edited\n", "b.txt": "new\n", "x.log": "log\n" } });
+    writeFileSync(path.join(c.folder, "applied.jsonl"), `${JSON.stringify({ path: "b.txt", state: "pending", before: "", after: sha("new\n") })}\n${JSON.stringify({ path: "b.txt", state: "done" })}\n`);
+    const got = await toReview(c.manifest, c.folder, "s1");
+    expect(got.changes.map((ch) => ch.path)).toEqual(["a.txt"]);
+    expect(got.ignored).toBe(1);
+    expect(got.leftOut).toEqual([]);
+  });
+
   it("says how to use it when given more than a name and --discard", async () => {
     const w = world();
     for (const args of [["a", "b"], ["a", "--discard", "x"], ["--discard"]]) {
@@ -288,6 +311,57 @@ describe("tachi review <name> --discard", () => {
     expect(r.err).toEqual([BUSY("s1")]);
     expect(r.asked).toEqual([]);
     expect(existsSync(path.join(c.folder, "manifest.json"))).toBe(true);
+  });
+
+  it("says, when the box cannot be removed, that the copy was not discarded, and that it is kept", async () => {
+    const w = world();
+    const c = w.copy("s1", { "a.txt": "made-up a\n" }, { pid: await deadPid() });
+    const r = io(w.data, { answer: true, run: dockerWith({ b0x: true }, true).run });
+    expect(await reviewCommand(["s1", "--discard"], r.io)).toBe(1);
+    expect(r.err).toEqual(["The box could not be removed, so the copy was not discarded.", "The copy is kept; tachi review s1 opens it again."]);
+    expect(r.asked).toEqual([]);
+    expect(existsSync(path.join(c.folder, "manifest.json"))).toBe(true);
+  });
+
+  // The quality review: the files an earlier apply applied stay in the project when the copy is discarded, so they are
+  // said before the question.
+  it("first says which files an earlier apply applied", async () => {
+    const w = world();
+    const c = w.copy("s1", { "a.txt": "made-up a\n" }, { changed: { "a.txt": "A\n" } });
+    writeFileSync(path.join(c.root, "a.txt"), "A\n");
+    writeFileSync(path.join(c.folder, "applied.jsonl"), `${JSON.stringify({ path: "a.txt", state: "pending", before: sha("made-up a\n"), after: sha("A\n") })}\n`);
+    const r = io(w.data, { answer: false });
+    let atAsk: string[] = [];
+    const ask = r.io.ask!;
+    r.io.ask = async (q) => ((atAsk = [...r.out]), ask(q));
+    await reviewCommand(["s1", "--discard"], r.io);
+    expect(atAsk).toEqual(["An earlier apply of this copy applied: a.txt"]);
+  });
+
+  // The quality review: Ctrl-C while the copy is removed would leave it half removed, its manifest gone first, so never
+  // listed again; the removal goes on, as the review's own does. Windows cannot send a process SIGINT, so the signal is
+  // emitted in this process, to its listeners, as Node gives it; the test's own listener stands for cli.tsx's, which
+  // exits.
+  it("goes on removing through Ctrl-C, twice, and listens for it again after", async () => {
+    const w = world();
+    w.copy("s1", { "a.txt": "made-up a\n" });
+    const exits: string[] = [];
+    const exit = () => exits.push("SIGINT");
+    process.on("SIGINT", exit);
+    onTestFinished(() => void process.off("SIGINT", exit));
+    const r = io(w.data, { answer: true });
+    let during = 0;
+    r.io.remove = async (folder) => {
+      process.emit("SIGINT");
+      process.emit("SIGINT");
+      during = process.listenerCount("SIGINT");
+      await removeTree(folder);
+    };
+    expect(await reviewCommand(["s1", "--discard"], r.io)).toBe(0);
+    expect(r.out.at(-1)).toBe("The copy was discarded.");
+    expect(exits).toEqual([]);
+    expect(during).toBeGreaterThan(0); // a listener is there, so Node does not end the process
+    expect(process.listeners("SIGINT")).toContain(exit);
   });
 });
 

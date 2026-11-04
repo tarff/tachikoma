@@ -13,8 +13,7 @@ import { errorText } from "../core/types.js";
 import { type GitSettings, gitSettings } from "../safety/gitconfig.js";
 import { NOT_GONE, reviewUnopened } from "../tui/app/constants.js";
 import { DISCARDED, discardAsked, kept, notRemoved, removing, type ReviewCopy, type ReviewEnd } from "../tui/Review.js";
-import { appliedSoFar } from "./apply.js";
-import { changes } from "./changes.js";
+import { appliedSoFar, toReview } from "./apply.js";
 import { docker, type DockerRun } from "./docker.js";
 import { alive, sessionGone } from "./executor.js";
 import { copyLock, MANIFEST, type Manifest, removeCopy } from "./snapshot.js";
@@ -32,6 +31,8 @@ const USAGE = "Usage: tachi review [<name> [--discard]]";
 const unknown = (name: string) => `No copy named ${name} is waiting; tachi review lists them.`;
 const noTerminal = (name: string) => `tachi review ${name} needs a terminal; with none, nothing is applied or discarded.`;
 const WAITING = "Another review of this copy is open; waiting for it to end...";
+// The user's (Task 21's quality review): discard's line when the box cannot be removed, before the kept line.
+const NOT_DISCARDED = "The box could not be removed, so the copy was not discarded.";
 const appliedBefore = (paths: string[]) => `An earlier apply of this copy applied: ${paths.join(", ")}`;
 const changedSince = (paths: string[]) => `Changed in your folder since an earlier apply began on it, so left as it is: ${paths.join(", ")}`;
 
@@ -45,6 +46,7 @@ export interface ReviewIo {
   run?: DockerRun;
   gitSettings?: (root: string) => Promise<GitSettings | undefined>;
   data?: string;
+  remove?: (folder: string) => Promise<void>; // a test's stand-in for removeCopy
 }
 
 // `tachi review` lists the copies waiting, `tachi review <name>` opens one, and `tachi review <name> --discard` discards
@@ -74,17 +76,19 @@ export async function reviewCommand(args: string[], io: ReviewIo): Promise<numbe
       return 1;
     }
     const box = await boxCheck(copy.manifest, io.run);
-    if (box !== "free") {
-      io.err(box === "busy" ? busy(name) : NOT_GONE);
-      return 1;
-    }
-    return discard ? discardCopy(copy, io) : openCopy(copy, data, io);
+    if (box === "busy") io.err(busy(name));
+    else if (box === "stuck" && discard) {
+      io.err(NOT_DISCARDED);
+      io.err(kept(name));
+    } else if (box === "stuck") io.err(NOT_GONE);
+    if (box !== "free") return 1;
+    return discard ? discardCopy(copy, data, io) : openCopy(copy, data, io);
   }, () => io.out(WAITING));
 }
 
-// Each copy with its project folder, when it was made, and how many changes the review would list (changes(), less what
-// git ignores and what an earlier apply applied), oldest first. Each row is said once counted, as a copy holding a large
-// project takes a second or two (measured at Task 21: 1.2-1.8 s on this repo's 15,336 entries).
+// Each copy with its project folder, when it was made, and how many changes the review would list (apply.ts, toReview),
+// oldest first. Each row is said once counted, as a copy holding a large project takes a second or two (measured at Task
+// 21: 1.2-1.8 s on this repo's 15,336 entries).
 async function list(data: string, io: ReviewIo): Promise<number> {
   const copies = await copiesWaiting(data);
   if (!copies.length) {
@@ -95,20 +99,13 @@ async function list(data: string, io: ReviewIo): Promise<number> {
   for (const c of copies.sort((a, b) => (a.manifest.at < b.manifest.at ? -1 : a.manifest.at > b.manifest.at ? 1 : 0))) {
     let n: string;
     try {
-      n = counted(await changeCount(c, data));
+      n = counted((await toReview(c.manifest, c.folder, c.session)).changes.length);
     } catch (err) {
       n = uncounted(errorText(err));
     }
     io.out(visible(`  ${c.session}  ${c.manifest.root}  ${when(c.manifest.at)}  ${n}`));
   }
   return 0;
-}
-
-// What the review would list: Review.tsx reads the changes the same way.
-async function changeCount(c: ReviewCopy, data: string): Promise<number> {
-  const [found, before] = await Promise.all([changes(c.manifest, path.join(c.folder, "work")), appliedSoFar(c.session, data)]);
-  const applied = new Set(before.filter((o) => o.result === "applied").map((o) => o.path));
-  return found.changes.filter((ch) => !ch.ignored && !applied.has(ch.path)).length;
 }
 
 // Local time, to the minute, the same on every system.
@@ -120,7 +117,8 @@ function when(iso: string): string {
 
 // The copies in the data folder: each folder in copies/ whose manifest.json can be read. One without, a copy whose launch
 // has not kept it yet (its manifest under its holding name, snapshot.ts, PENDING), a snapshot stopped midway, or a copy
-// half removed (removeCopy deletes the manifest first), is not a copy, and is never listed, opened or discarded here. The locks beside the copies are files, not folders.
+// half removed (removeCopy deletes the manifest first), is not a copy, and is never listed, opened or discarded here.
+// The locks beside the copies are files, not folders.
 async function copiesWaiting(data: string): Promise<ReviewCopy[]> {
   const copies = path.join(data, "copies");
   const entries = await readdir(copies, { withFileTypes: true }).catch((err: NodeJS.ErrnoException) => {
@@ -178,11 +176,7 @@ export async function boxCheck(manifest: Manifest, run: DockerRun = docker): Pro
 // The half-done apply's report first, then the review, with the protection git's settings name on the host (as leave()
 // works it out); without them, no review, as at the session's end. The review's lines are printed once its screen is gone.
 async function openCopy(copy: ReviewCopy, data: string, io: ReviewIo): Promise<number> {
-  const before = await appliedSoFar(copy.session, data);
-  const applied = before.filter((o) => o.result === "applied").map((o) => o.path);
-  const since = before.filter((o) => o.result === "conflict").map((o) => o.path);
-  if (applied.length) io.out(visible(appliedBefore(applied)));
-  if (since.length) io.out(visible(changedSince(since)));
+  await earlierApply(copy, data, io);
   let protection: Protection;
   try {
     protection = protectionOf(await (io.gitSettings ?? gitSettings)(copy.manifest.root));
@@ -196,19 +190,48 @@ async function openCopy(copy: ReviewCopy, data: string, io: ReviewIo): Promise<n
   return 0;
 }
 
-// Review's own question and lines (Task 20), asked and said here.
-async function discardCopy(copy: ReviewCopy, io: ReviewIo): Promise<number> {
+// What an earlier apply of the copy did, from its log read against the folder (main design, "After a crash"): the files
+// it applied, and those it began on that the user has changed since. Said before a review, and before a discard, as both
+// stay in the project.
+async function earlierApply(copy: ReviewCopy, data: string, io: ReviewIo): Promise<void> {
+  const before = await appliedSoFar(copy.session, data);
+  const applied = before.filter((o) => o.result === "applied").map((o) => o.path);
+  const since = before.filter((o) => o.result === "conflict").map((o) => o.path);
+  if (applied.length) io.out(visible(appliedBefore(applied)));
+  if (since.length) io.out(visible(changedSince(since)));
+}
+
+// Review's own question and lines (Task 20), asked and said here, after what an earlier apply did. Once begun, the
+// removal goes on through Ctrl-C, as the review's own does (uninterrupted).
+async function discardCopy(copy: ReviewCopy, data: string, io: ReviewIo): Promise<number> {
+  await earlierApply(copy, data, io);
   if (!(await io.ask!(discardAsked("y/n")))) {
     io.out(kept(copy.session));
     return 0;
   }
   io.out(removing(Object.values(copy.manifest.entries).filter((e) => e.type === "file").length));
   try {
-    await removeCopy(copy.folder);
+    await uninterrupted(() => (io.remove ?? removeCopy)(copy.folder));
   } catch (err) {
     io.err(visible(notRemoved(errorText(err), copy.folder)));
     return 1;
   }
   io.out(DISCARDED);
   return 0;
+}
+
+// Runs `fn` with Ctrl-C set aside: removeCopy deletes the manifest first, so a copy stopped midway is never listed again,
+// and is left for deleting by hand. Every SIGINT listener (cli.tsx's, which exits) is taken off and one that does
+// nothing put in their place, so neither the first Ctrl-C nor a second gets Node's default exit; they are put back after.
+async function uninterrupted<T>(fn: () => Promise<T>): Promise<T> {
+  const listeners = process.listeners("SIGINT");
+  const ignore = () => {};
+  process.removeAllListeners("SIGINT");
+  process.on("SIGINT", ignore);
+  try {
+    return await fn();
+  } finally {
+    process.off("SIGINT", ignore);
+    for (const l of listeners) process.on("SIGINT", l);
+  }
 }

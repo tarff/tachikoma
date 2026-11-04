@@ -900,6 +900,21 @@ describe("dropOnExit", () => {
     expect(existsSync(path.join(kept, "manifest.pending.json"))).toBe(false);
     expect(readFileSync(path.join(outside, "kept.txt"), "utf8")).toBe("made-up\n");
   });
+
+  // The quality review: a removal that fails is said, with the review's line, so the folder can be deleted by hand.
+  it("says when the copy could not be removed", () => {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-drop-")));
+    onTestFinished(() => removeTree(top));
+    const folder = path.join(top, "copies", "s1");
+    mkdirSync(folder, { recursive: true });
+    const proc = new EventEmitter();
+    const said: string[] = [];
+    dropOnExit(folder, proc, (line) => said.push(line), () => {
+      throw new Error("made-up failure");
+    });
+    proc.emit("exit");
+    expect(said).toEqual(["Removing the copy...", `The copy could not be removed (made-up failure); delete ${folder} by hand.`]);
+  });
 });
 
 // Task 21: the real command in copy mode with -p, end to end, with Docker a stand-in swapped in for src/sandbox/docker.ts

@@ -22,7 +22,7 @@ import { shellToolOf } from "./tools/shell.js";
 import type { Tool } from "./tools/tool.js";
 import { screen } from "./tui/describe.js";
 import { gitBranch } from "./tui/git.js";
-import { leftOut, removing } from "./tui/Review.js";
+import { leftOut, notRemoved, removing } from "./tui/Review.js";
 import { k, type Segment, SEGMENTS } from "./tui/StatusLine.js";
 import { writeBestEffort } from "./tui/terminal.js";
 
@@ -385,11 +385,12 @@ export function boxBranch(name: string | null): string | undefined {
 // on stderr says so first (the user's words): with the manifest's count of files, as the review counts them, or without
 // one for a copy stopped before its manifest. Nothing is said for a folder that is not there. The function returned
 // keeps the copy from then on, giving its manifest its final name (snapshot.ts, PENDING), so from then on `tachi review`
-// lists it, and finds its box running for a live session. `proc` and `say` are a test's.
+// lists it, and finds its box running for a live session. `proc`, `say` and `remove` are a test's.
 export function dropOnExit(
   folder: string,
   proc: Pick<EventEmitter, "on" | "off"> = process,
   say: (line: string) => void = (line) => writeBestEffort(2, `${line}\n`),
+  remove: (folder: string) => void = removeCopySync,
 ): () => void {
   const drop = () => {
     if (!existsSync(folder)) return;
@@ -401,10 +402,12 @@ export function dropOnExit(
       // no manifest yet, or one that cannot be read: a copy stopped midway
     }
     say(files === undefined ? "Removing the copy..." : removing(files));
+    // What cannot be removed stays, for deleting by hand, as the line says: its manifest keeps its holding name, so it is
+    // never reviewed.
     try {
-      removeCopySync(folder);
-    } catch {
-      // what cannot be removed stays, for deleting by hand: its manifest keeps its holding name, so it is never reviewed
+      remove(folder);
+    } catch (err) {
+      say(notRemoved(errorText(err), folder));
     }
   };
   proc.on("exit", drop);
