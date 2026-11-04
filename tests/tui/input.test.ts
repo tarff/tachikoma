@@ -199,6 +199,21 @@ describe("split, with win32 records", () => {
 
   // Windows Terminal takes ESC out of every paste (FilterStringForPaste), so no pasted key makes one: nothing a record
   // inside a paste becomes can end it early.
+  // Found at Task 22's review: a key-up types nothing, and would join the ESC before it to the text after it.
+  it("drops plain ESCs just before a record inside a paste, so no early end marker forms, in one read or several", () => {
+    for (const odd of [
+      `${ESC}[200~a${ESC}${ESC}[13;28;13;0;0;1_[201~\rafter`,
+      `${ESC}[200~a${ESC}${ESC}${ESC}[13;28;13;0;0;1_[201~\rafter`,
+    ]) {
+      expect(run(odd)).toEqual({ pieces: [{ keys: `${ESC}[200~a[201~\rafter` }], state: { held: "", pasting: true, tail: "after" } });
+      for (let a = 1; a < odd.length; a++) {
+        const { pieces, state } = run(odd.slice(0, a), odd.slice(a));
+        expect(pieces.flatMap((p) => ("keys" in p ? [p.keys] : [])).join("")).toBe(`${ESC}[200~a[201~\rafter`);
+        expect(state.pasting).toBe(true);
+      }
+    }
+  });
+
   it("drops a record inside a paste whose keys would hold ESC, so the paste goes on to its own end", () => {
     const altBracket = `${ESC}[219;26;91;1;2;1_`; // Alt+[, which outside a paste is ESC [
     const { pieces, state } = run(`${ESC}[200~x${altBracket}201~y${ESC}[38;72;0;1;288;1_z`);
@@ -653,6 +668,38 @@ describe("InputFilter with Ink", () => {
       for (const s of [multi.slice(0, 25), multi.slice(25, 60), multi.slice(60)]) source.emit("data", s);
       await tick();
       expect(pastes).toEqual(["first line\rsecond\r\rfourth"]);
+    } finally {
+      app.unmount();
+    }
+  });
+
+  // Found at Task 22's review: ESC, a key-up, then `[201~` once ended the paste for Ink, and the CR after it sent.
+  it("ends a paste for Ink only at its real end marker, after ESCs just before a key-up", async () => {
+    const source = new Source();
+    const filter = new InputFilter(source as never);
+    const pastes: string[] = [];
+    const keys: string[] = [];
+    function Paste() {
+      usePaste((text) => void pastes.push(text));
+      useInput((input) => void keys.push(input));
+      return null;
+    }
+    const app = render(createElement(Paste), {
+      stdout: new Terminal() as never,
+      stdin: filter as never,
+      debug: false,
+      patchConsole: false,
+      exitOnCtrlC: false,
+      interactive: true,
+    });
+    try {
+      await tick();
+      source.emit("data", `${ESC}[200~a${ESC}${ESC}[13;28;13;0;0;1_[201~\rafter`);
+      await tick();
+      expect([pastes, keys]).toEqual([[], []]);
+      source.emit("data", `${ESC}[201~`);
+      await tick();
+      expect([pastes, keys]).toEqual([["a[201~\rafter"], []]);
     } finally {
       app.unmount();
     }

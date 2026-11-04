@@ -118,6 +118,9 @@ const RECORD_PART = /^\u001b\[(\d*;){0,5}\d*$/;
 // becomes CR, as outside the mode, where Windows Terminal turns a pasted CRLF or LF into CR (ControlCore::PasteText's
 // FilterStringForPaste, src/types/utils.cpp, read 2026-11-05). That filter also takes ESC out of every paste, so no
 // pasted key can make one: a record whose keys would hold ESC is dropped, and nothing translated can end the paste early.
+// Plain ESCs just before a record are dropped too (found at Task 22's review): a record that types nothing (a key-up)
+// would otherwise join them to the text after it, so `ESC`, a key-up, `[201~` would end the paste for Ink while it goes
+// on here. Windows Terminal's pastes hold no ESC, and other terminals' no records, so no real paste loses one.
 function pasted(text: string, lead: string | undefined): { keys: string; lead?: string } {
   let keys = "";
   let i = 0;
@@ -128,6 +131,7 @@ function pasted(text: string, lead: string | undefined): { keys: string; lead?: 
     const record = RECORD.exec(text.slice(esc));
     if (record) {
       const key = translate(record[1]!, lead);
+      keys = keys.replace(/\u001b+$/, "");
       if (!key.keys.includes("\u001b")) keys += key.keys;
       lead = key.lead;
       i = esc + record[0].length;
@@ -161,7 +165,8 @@ export function split(state: State, chunk: string): { pieces: Piece[]; state: St
         // next read starts with it, and a marker can only start there, never in `tail`, as ESC opens it.
         const last = rest.lastIndexOf("\u001b");
         const part = rest.slice(last);
-        const cut = last !== -1 && (RECORD_PART.test(part) || PASTE_END.startsWith(part)) ? last : rest.length;
+        let cut = last !== -1 && (RECORD_PART.test(part) || PASTE_END.startsWith(part)) ? last : rest.length;
+        while (cut < rest.length && rest[cut - 1] === "\u001b") cut--; // with the plain ESCs before it (pasted, above)
         const got = pasted(rest.slice(0, cut), lead);
         keys += got.keys;
         lead = got.lead;
