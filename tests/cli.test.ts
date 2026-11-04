@@ -981,8 +981,9 @@ describe("tachi review", { timeout: 15_000 }, () => {
   }
 
   it("says when no copies are waiting", () => {
-    const data = path.join(mkdtempSync(path.join(tmpdir(), "tachi-cli-")), "data");
-    const r = tachi("review", { TACHI_DATA_DIR: data });
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-review-"));
+    onTestFinished(() => removeTree(top));
+    const r = tachi("review", { TACHI_DATA_DIR: path.join(top, "data") });
     expect(r.code).toBe(0);
     expect(r.stdout).toBe("No copies are waiting.\n");
   });
