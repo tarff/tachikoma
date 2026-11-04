@@ -105,7 +105,7 @@ describe("a session in the box with copy mode, in real Docker", { timeout: 0 }, 
     const log = await started.box.exec("git log --format='%an <%ae>' && git status --porcelain", "/work");
     expect(log.stdout).toBe("Tachikoma <tachikoma@localhost>\n?? a.txt\n");
     await started.box.stop();
-    expect(existsSync(path.join(folder, "manifest.json"))).toBe(true);
+    expect(existsSync(path.join(folder, "manifest.pending.json"))).toBe(true); // not kept: cli.tsx keeps it (dropOnExit)
     expect(readFileSync(path.join(folder, "base", "notes.txt"), "utf8")).toBe("made-up notes\n");
   });
 });

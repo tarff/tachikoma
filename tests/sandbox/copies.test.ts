@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
+import { dropOnExit } from "../../src/clilib.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
 import { boxCheck, type ReviewIo, reviewCommand } from "../../src/sandbox/copies.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
@@ -160,6 +161,28 @@ describe("tachi review's list", () => {
 });
 
 describe("tachi review <name>", () => {
+  // Task 21's spec review: until the launch keeps the copy, once its box runs, the manifest has its holding name, so a
+  // copy still launching is never listed, opened or discarded, and nothing of it is removed; then it is listed.
+  it("leaves a copy still launching alone until the launch keeps it", async () => {
+    const w = world();
+    const c = w.copy("s1", { "a.txt": "made-up a\n" });
+    renameSync(path.join(c.folder, "manifest.json"), path.join(c.folder, "manifest.pending.json"));
+    const r = io(w.data);
+    await reviewCommand([], r.io);
+    expect(r.out).toEqual(["No copies are waiting."]);
+    for (const args of [["s1"], ["s1", "--discard"]]) {
+      const t = io(w.data, { answer: true });
+      expect(await reviewCommand(args, t.io)).toBe(1);
+      expect(t.err).toEqual(["No copy named s1 is waiting; tachi review lists them."]);
+      expect(t.opened).toEqual([]);
+    }
+    expect(existsSync(path.join(c.folder, "manifest.pending.json"))).toBe(true);
+    dropOnExit(c.folder, { on: () => {}, off: () => {} } as never)();
+    const kept = io(w.data);
+    await reviewCommand([], kept.io);
+    expect(kept.out[1]).toMatch(/^  s1  /);
+  });
+
   it("names a copy that is not waiting, and opens nothing, a path among them", async () => {
     const w = world();
     w.copy("s1", { "a.txt": "made-up a\n" });

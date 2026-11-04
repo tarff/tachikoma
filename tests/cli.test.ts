@@ -791,7 +791,9 @@ describe("copy mode's launch, with a stand-in Docker", () => {
     const folder = path.join(r.data, "copies", "s1");
     const work = path.join(folder, "work");
     expect(readFileSync(path.join(work, "a.txt"), "utf8")).toBe("made-up text\n");
-    expect(JSON.parse(readFileSync(path.join(folder, "manifest.json"), "utf8"))).toMatchObject({ session: "s1", pid: process.pid, root: r.root });
+    // Under its holding name: cli.tsx keeps the copy, naming it manifest.json, only once the session starts (dropOnExit).
+    expect(JSON.parse(readFileSync(path.join(folder, "manifest.pending.json"), "utf8"))).toMatchObject({ session: "s1", pid: process.pid, root: r.root });
+    expect(existsSync(path.join(folder, "manifest.json"))).toBe(false);
     expect(r.started.copy).toMatchObject({ folder, manifest: { session: "s1" } });
     // Nothing is made in the project: live link's .tachikoma is not needed here.
     expect(readdirSync(r.root).sort()).toEqual([".husky", "a.txt", "out"]);
@@ -877,7 +879,7 @@ describe("dropOnExit", () => {
     const made = (name: string) => {
       const folder = path.join(top, "copies", name);
       mkdirSync(path.join(folder, "work", "sub"), { recursive: true });
-      writeFileSync(path.join(folder, "manifest.json"), JSON.stringify({ entries: { sub: { type: "folder" }, "sub/a.txt": { type: "file" } } }));
+      writeFileSync(path.join(folder, "manifest.pending.json"), JSON.stringify({ entries: { sub: { type: "folder" }, "sub/a.txt": { type: "file" } } }));
       writeFileSync(path.join(folder, "work", "sub", "a.txt"), "made-up\n");
       symlinkSync(outside, path.join(folder, "work", "link"), "junction");
       return folder;
@@ -893,7 +895,9 @@ describe("dropOnExit", () => {
     proc.emit("exit");
     expect(said).toEqual(["Removing the copy (1 file)..."]);
     expect(existsSync(dropped)).toBe(false);
+    // Kept, it takes its final name, so `tachi review` lists it from now on.
     expect(existsSync(path.join(kept, "manifest.json"))).toBe(true);
+    expect(existsSync(path.join(kept, "manifest.pending.json"))).toBe(false);
     expect(readFileSync(path.join(outside, "kept.txt"), "utf8")).toBe("made-up\n");
   });
 });
@@ -953,6 +957,8 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     expect(lines.at(-1)).toBe(`Changes kept for review: tachi review ${session}`);
     expect(existsSync(path.join(r.copies, session!, "manifest.json"))).toBe(true);
     expect(readdirSync(r.proj)).toEqual(["notes.txt"]);
+    // The plan's test: `tachi review` lists the copy kept.
+    expect(tachi("review", { TACHI_DATA_DIR: path.dirname(r.copies) }).stdout).toContain(`  ${session}  ${r.proj}  `);
   });
 
   it("removes the copy when the launch stops after it was made", async () => {

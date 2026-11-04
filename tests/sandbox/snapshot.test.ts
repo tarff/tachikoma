@@ -61,7 +61,7 @@ describe("snapshot", () => {
     };
     await expect(snapshot(w.root, "s1", w.data, { copied, signal: stop.signal })).rejects.toThrow(/aborted/i);
     expect(seen).toHaveLength(1);
-    expect(existsSync(path.join(w.copies, "manifest.json"))).toBe(false);
+    for (const name of ["manifest.json", "manifest.pending.json"]) expect(existsSync(path.join(w.copies, name))).toBe(false);
   });
 
   it("copies untracked and ignored files into base and work, with each file's hash, and the manifest last", async () => {
@@ -85,7 +85,10 @@ describe("snapshot", () => {
     expect(manifest.entries["x.log"]?.type).toBe("file");
     for (const folder of ["src", "src/core", "build", "notes"]) expect(manifest.entries[folder]).toEqual({ type: "folder" });
     expect(Object.keys(manifest.entries).sort()).toEqual([...files.map(([rel]) => rel), "src", "src/core", "build", "notes"].sort());
-    expect(JSON.parse(readFileSync(path.join(w.copies, "manifest.json"), "utf8"))).toEqual(manifest);
+    // Under its holding name until the launch keeps the copy (clilib.ts, dropOnExit), so `tachi review` cannot take a copy
+    // still launching (Task 21's spec review).
+    expect(JSON.parse(readFileSync(path.join(w.copies, "manifest.pending.json"), "utf8"))).toEqual(manifest);
+    expect(existsSync(path.join(w.copies, "manifest.json"))).toBe(false);
   });
 
   it("leaves out every .git and .tachikoma, folder or file, at any depth, compared as protected.ts compares names", async () => {
@@ -131,7 +134,7 @@ describe("snapshot", () => {
     expect(Object.hasOwn(manifest.entries, "__proto__")).toBe(true);
     // A path never recorded is not found, whatever the object holds.
     expect(manifest.entries["other.txt"]).toBeUndefined();
-    expect(JSON.parse(readFileSync(path.join(w.copies, "manifest.json"), "utf8")).entries.__proto__.type).toBe("file");
+    expect(JSON.parse(readFileSync(path.join(w.copies, "manifest.pending.json"), "utf8")).entries.__proto__.type).toBe("file");
   });
 
   it("copies files as new files, never hard links (nlink 1)", async () => {
@@ -242,7 +245,7 @@ describe("snapshot", () => {
     await expect(snapshot(w.root, "s1", w.data, { copied })).rejects.toThrow(
       "The copy was refused: the link j in it leads outside the copy.",
     );
-    expect(existsSync(path.join(w.copies, "manifest.json"))).toBe(false);
+    for (const name of ["manifest.json", "manifest.pending.json"]) expect(existsSync(path.join(w.copies, name))).toBe(false);
   });
 
   it("copies and hashes again a file that changed while it was copied", async () => {
@@ -268,7 +271,7 @@ describe("snapshot", () => {
       "The project would not hold still while it was copied (sub/a.txt kept changing); try again when nothing is writing to it.",
     );
     expect(changes).toBe(2);
-    expect(existsSync(path.join(w.copies, "manifest.json"))).toBe(false);
+    for (const name of ["manifest.json", "manifest.pending.json"]) expect(existsSync(path.join(w.copies, name))).toBe(false);
   });
 });
 

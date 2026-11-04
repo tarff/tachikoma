@@ -17,24 +17,21 @@ import { appliedSoFar } from "./apply.js";
 import { changes } from "./changes.js";
 import { docker, type DockerRun } from "./docker.js";
 import { alive, sessionGone } from "./executor.js";
-import { copyLock, type Manifest, removeCopy } from "./snapshot.js";
+import { copyLock, MANIFEST, type Manifest, removeCopy } from "./snapshot.js";
 
 // The plan's words (Task 21).
 const NONE = "No copies are waiting.";
 const busy = (name: string) => `The copy ${name} is still in use by a running Tachikoma session; review it after that session ends.`;
-// WORDING: needs approval (the list's head, its rows' change count, and its row when the changes cannot be read).
+// The rest are the user's (Task 21's spec review): the list's head, its rows' change count and its row when the changes
+// cannot be read; the usage; an unknown name; no terminal; the wait for another review; a half-done apply's report (main
+// design, "After a crash").
 const LISTED = "Copies waiting for review (tachi review <name> opens one):";
 const counted = (n: number) => `${n} change${n === 1 ? "" : "s"}`;
 const uncounted = (why: string) => `changes unreadable (${why})`;
-// WORDING: needs approval.
 const USAGE = "Usage: tachi review [<name> [--discard]]";
-// WORDING: needs approval.
 const unknown = (name: string) => `No copy named ${name} is waiting; tachi review lists them.`;
-// WORDING: needs approval.
 const noTerminal = (name: string) => `tachi review ${name} needs a terminal; with none, nothing is applied or discarded.`;
-// WORDING: needs approval (while another review of the copy holds its lock).
 const WAITING = "Another review of this copy is open; waiting for it to end...";
-// WORDING: needs approval (a half-done apply's report, main design "After a crash").
 const appliedBefore = (paths: string[]) => `An earlier apply of this copy applied: ${paths.join(", ")}`;
 const changedSince = (paths: string[]) => `Changed in your folder since an earlier apply began on it, so left as it is: ${paths.join(", ")}`;
 
@@ -121,9 +118,9 @@ function when(iso: string): string {
   return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
 }
 
-// The copies in the data folder: each folder in copies/ whose manifest.json can be read. One without, a snapshot still
-// being made or stopped midway, or a copy half removed (removeCopy deletes the manifest first), is not a copy, and is
-// never listed, opened or discarded here. The locks beside the copies are files, not folders.
+// The copies in the data folder: each folder in copies/ whose manifest.json can be read. One without, a copy whose launch
+// has not kept it yet (its manifest under its holding name, snapshot.ts, PENDING), a snapshot stopped midway, or a copy
+// half removed (removeCopy deletes the manifest first), is not a copy, and is never listed, opened or discarded here. The locks beside the copies are files, not folders.
 async function copiesWaiting(data: string): Promise<ReviewCopy[]> {
   const copies = path.join(data, "copies");
   const entries = await readdir(copies, { withFileTypes: true }).catch((err: NodeJS.ErrnoException) => {
@@ -146,7 +143,7 @@ async function copyNamed(name: string, data: string): Promise<ReviewCopy | undef
 
 async function manifestIn(folder: string): Promise<Manifest | undefined> {
   try {
-    const m = JSON.parse(await readFile(path.join(folder, "manifest.json"), "utf8")) as Manifest;
+    const m = JSON.parse(await readFile(path.join(folder, MANIFEST), "utf8")) as Manifest;
     const ok = typeof m?.root === "string" && typeof m.at === "string" && typeof m.entries === "object" && m.entries !== null && Array.isArray(m.leftOut);
     return ok ? m : undefined;
   } catch {

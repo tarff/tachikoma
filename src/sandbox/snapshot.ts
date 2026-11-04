@@ -39,7 +39,12 @@ const LEADS_OUTSIDE = "a link that leads outside the project";
 const LEADS_NOWHERE = "a link that leads nowhere";
 export const NOT_COPIED = "not a file, folder or link";
 
-// Copies `root` into `<data>/copies/<session>/`, and writes manifest.json there last. `copied` is a test's, called after
+// A copy's manifest, and the name it has until the launch keeps the copy, once its box runs (clilib.ts, dropOnExit): a
+// copy still launching has no manifest.json, so `tachi review` never takes it (copies.ts; Task 21's spec review).
+export const MANIFEST = "manifest.json";
+export const PENDING = "manifest.pending.json";
+
+// Copies `root` into `<data>/copies/<session>/`, and writes its manifest there last, as PENDING. `copied` is a test's, called after
 // each file is copied and before it is hashed again. `signal` is checked at each entry, so a Ctrl-C during a long copy
 // stops it with the signal's error, leaving what was made for the launch to remove (clilib.ts, dropOnExit).
 export async function snapshot(
@@ -124,7 +129,7 @@ export async function snapshot(
     }
     if (leaves(path.relative(realWork, place))) throw new SnapshotRefused(`The copy was refused: the link ${r} in it leads outside the copy.`);
   }
-  writePrivate(path.join(copies, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  writePrivate(path.join(copies, PENDING),`${JSON.stringify(manifest, null, 2)}\n`);
   return { manifest, base, work };
 }
 

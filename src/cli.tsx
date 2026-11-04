@@ -70,7 +70,6 @@ import { Review, type ReviewCopy, type ReviewEnd } from "./tui/Review.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
 
-// WORDING: needs approval (the tachi review line).
 const HELP = `tachi: a coding agent for your terminal
 
 Usage:

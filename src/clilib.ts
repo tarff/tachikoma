@@ -1,5 +1,5 @@
 import type { EventEmitter } from "node:events";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, renameSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
 import type { Instructions, Reached } from "./core/instructions.js";
@@ -16,7 +16,7 @@ import { docker } from "./sandbox/docker.js";
 import { BOX_HOME, boxLimits, boxUser, DockerExecutor, dockerRoom, memoryText, NO_DOCKER, type Room, sweepBoxes, unlimitedLine } from "./sandbox/executor.js";
 import { heldLine, type ImageIo, prepareImage } from "./sandbox/image.js";
 import { CASE_REFUSED, ignoresCase, liveMounts, type Mount, sessionSettings } from "./sandbox/mounts.js";
-import { type Manifest, removeCopySync, snapshot } from "./sandbox/snapshot.js";
+import { MANIFEST, type Manifest, PENDING, removeCopySync, snapshot } from "./sandbox/snapshot.js";
 import type { SandboxLimits, Settings } from "./settings.js";
 import { shellToolOf } from "./tools/shell.js";
 import type { Tool } from "./tools/tool.js";
@@ -384,7 +384,8 @@ export function boxBranch(name: string | null): string | undefined {
 // cannot wait, so removeCopySync, which can take a while (10-30 s for a copy holding node_modules on Windows), so a line
 // on stderr says so first (the user's words): with the manifest's count of files, as the review counts them, or without
 // one for a copy stopped before its manifest. Nothing is said for a folder that is not there. The function returned
-// keeps the copy from then on. `proc` and `say` are a test's.
+// keeps the copy from then on, giving its manifest its final name (snapshot.ts, PENDING), so from then on `tachi review`
+// lists it, and finds its box running for a live session. `proc` and `say` are a test's.
 export function dropOnExit(
   folder: string,
   proc: Pick<EventEmitter, "on" | "off"> = process,
@@ -394,7 +395,7 @@ export function dropOnExit(
     if (!existsSync(folder)) return;
     let files: number | undefined;
     try {
-      const manifest = JSON.parse(readFileSync(path.join(folder, "manifest.json"), "utf8")) as Pick<Manifest, "entries">;
+      const manifest = JSON.parse(readFileSync(path.join(folder, PENDING), "utf8")) as Pick<Manifest, "entries">;
       files = Object.values(manifest.entries).filter((e) => e.type === "file").length;
     } catch {
       // no manifest yet, or one that cannot be read: a copy stopped midway
@@ -403,11 +404,14 @@ export function dropOnExit(
     try {
       removeCopySync(folder);
     } catch {
-      // what cannot be removed stays, as a copy with no changes; `tachi review` can discard it
+      // what cannot be removed stays, for deleting by hand: its manifest keeps its holding name, so it is never reviewed
     }
   };
   proc.on("exit", drop);
-  return () => void proc.off("exit", drop);
+  return () => {
+    renameSync(path.join(folder, PENDING), path.join(folder, MANIFEST));
+    proc.off("exit", drop);
+  };
 }
 
 export async function sandboxStart(
