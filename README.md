@@ -158,8 +158,9 @@ tachi review [<name> [--discard]]                  list the copies kept for revi
 Options --lead to --scroll-speed can also be set in ~/.tachikoma/settings.json; a flag or variable wins.
 ```
 
-(The block leaves out the help's first line, its "Usage:" and "Options:" headings, its closing "In
-a session:" paragraph, and its indent; on Windows the settings line reads `~\.tachikoma\settings.json`.)
+(The block leaves out the help's first line, its "Usage:" and "Options:" headings, its closing
+"In a session:" paragraph, and its indent; on Windows the settings line reads
+`~\.tachikoma\settings.json`.)
 
 In a session, `/lead <provider:model>` switches the lead model, `/lead` or `/model` alone lists the
 models to pick from, `/login chatgpt` and `/logout chatgpt` sign in and out, `/tasks` lists the
