@@ -8,6 +8,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { boxProtection, dropOnExit, keptForReview, type Network, sandboxReady, sandboxStart } from "../src/clilib.js";
+import { projectFile } from "../src/core/datadir.js";
 import { onPath } from "../src/exec/env.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
@@ -59,11 +60,17 @@ function launch(args: (string | Record<string, string>)[]) {
     HOMEPATH: home.slice(2),
     XDG_CONFIG_HOME: path.join(home, ".config"),
   };
+  // Tachikoma's data folder, two levels inside the test's own, unless the case gives one: no case writes the user's error
+  // log, or from release 8a on their saved sessions (release 8a plan, Task 2).
+  const data = path.join(top, "data", "tachikoma");
   return {
     argv: ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, path.resolve("src/cli.tsx"), ...words],
     options: {
       cwd: env.cwd ?? top,
-      env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "", ...git, ...env },
+      env: {
+        ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "",
+        TACHI_DATA_DIR: data, ...git, ...env,
+      },
     },
   };
 }
@@ -211,6 +218,19 @@ describe("tachi", { timeout: 15_000 }, () => {
     const r = tachi("--lead", "openai:none", "-p", "hi", { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });
     expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
     expect(r.stdout + r.stderr).not.toContain("\u001b[?"); // how the second screen's, the mouse's and the cursor's codes begin
+  });
+
+  // Release 8a plan, Task 2: the data folder is checked in the env given to the child, before it starts, so a launch
+  // without one never writes the user's own error log; the user's folder is never listed. Port 9, as above.
+  it("with -p, logs a provider error in the test's own data folder", () => {
+    const { argv, options } = launch(["--lead", "openai:none", "-p", "hi", { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" }]);
+    const data = path.join(options.cwd, "data", "tachikoma");
+    expect(options.env.TACHI_DATA_DIR).toBe(data);
+    const r = spawnSync(process.execPath, argv, { ...options, input: "x\n", encoding: "utf8" });
+    expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
+    const rows = readFileSync(projectFile("errors", options.cwd, data), "utf8").trim().split("\n");
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!).message).toContain("Could not reach http://127.0.0.1:9/v1");
   });
 
   it("refuses interactive mode without a terminal, before starting the interface", () => {
@@ -431,8 +451,10 @@ describe("tachi", { timeout: 15_000 }, () => {
   });
 
   // Release 7 plan, Task 4: while any kind of the dangerous-command check is off, each launch says so in one line. Port 9,
-  // as below: the run gets as far as asking the model and fails there, with nothing sent anywhere.
-  it("says at launch which kinds of the dangerous-command check are off, and nothing while none is", () => {
+  // as below: the run gets as far as asking the model and fails there, with nothing sent anywhere. Each such launch makes
+  // its own data folder private for the error log, 6.8-7.4 s alone (2026-11-06; release 8a plan, Task 2), so the case
+  // has the describe's 15 s for each of its three launches.
+  it("says at launch which kinds of the dangerous-command check are off, and nothing while none is", { timeout: 45_000 }, () => {
     const unreachable = { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" };
     const run = (rules: string) => tachi("-p", "hi", { ...homeWith(`{"lead": "openai:none", "dangerousCommands": ${rules}}`), ...unreachable });
     const off = run('{"off": ["installing software", "sending files out"]}');
@@ -450,8 +472,8 @@ describe("tachi", { timeout: 15_000 }, () => {
   // Release 7 plan, Task 8: when git's settings cannot be read at launch, it says so in one line and starts, with only the
   // fixed list protecting. The user settings file here is the test's own, of 12,000 entries of 100 letters, so git's
   // listing of it passes Node's execFile maxBuffer (1 MiB) and the run fails as git killed by a signal would. Port 9, as
-  // below: the run then gets as far as asking the model and fails there.
-  it.skipIf(!onPath("git"))("says at launch when git's settings could not be read, and starts", () => {
+  // below: the run then gets as far as asking the model and fails there. 15 s for each of its two launches, as above.
+  it.skipIf(!onPath("git"))("says at launch when git's settings could not be read, and starts", { timeout: 30_000 }, () => {
     const dir = mkdtempSync(path.join(tmpdir(), "tachi-cli-git-"));
     const big = path.join(dir, "big.gitconfig");
     writeFileSync(big, `[sample]\n${Array.from({ length: 12_000 }, (_, i) => `\tkey${i} = ${"x".repeat(100)}\n`).join("")}`);

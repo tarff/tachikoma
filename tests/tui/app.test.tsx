@@ -137,8 +137,12 @@ async function mount(
     executor?: Executor; // what the tools run through; a real one in a temp folder when not given
     workspace?: Workspace; // the project's files, for the tools and the App; the temp folder's, with `branches`, when not given
     copy?: AppProps["copy"]; // copy mode's copy, and what leave() does with it (release 7 plan, Task 21)
+    sessions?: string; // the data folder sessions are saved in; a fresh one for this mount when not given
   } = {},
 ) {
+  // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
+  // give an earlier mount's to find what it saved (release 8a plan, Task 2). Nothing in the App reads it until Task 5.
+  const sessions = opts.sessions ?? path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "tachikoma");
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
@@ -227,7 +231,7 @@ async function mount(
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, gate, ask: (...a: Parameters<Ask>) => ask(...a) };
+  return { app, session, ctx, bus, tasks, historyFile, sessions, mouse, copies, gate, ask: (...a: Parameters<Ask>) => ask(...a) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
