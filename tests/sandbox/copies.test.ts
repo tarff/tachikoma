@@ -162,6 +162,24 @@ describe("tachi review's list", () => {
     expect(r.out[2]).toBe(`  s-b  ${next.root}  ${when(next.manifest.at)}  0 changes`);
   });
 
+  // Release 7 design: "Nothing on the host opens a path in the box's folder while the box runs". The busy copy's work/
+  // is gone, so reading it would say its changes are unreadable.
+  it("does not read the changes of a copy whose box runs, saying it is in use, nor of one whose box cannot be removed", async () => {
+    const w = world();
+    const busy = w.copy("s-busy", { "a.txt": "made-up a\n" }, { at: "2026-11-04T01:02:00.000Z", pid: liveSession() });
+    const stuck = w.copy("s-stuck", { "a.txt": "made-up a\n" }, { at: "2026-11-04T02:02:00.000Z", pid: await deadPid() });
+    const free = w.copy("s-free", { "a.txt": "made-up a\n" }, { at: "2026-11-05T01:02:00.000Z", changed: { "a.txt": "edited\n" } });
+    for (const c of [busy, stuck]) await removeTree(path.join(c.folder, "work"));
+    const run: DockerRun = async (args) => (args[0] === "ps" && !args.includes("label=tachikoma.session=s-free") ? ok("b0x\n") : ok());
+    const r = io(w.data, { run });
+    expect(await reviewCommand([], r.io)).toBe(0);
+    expect(r.out.slice(1)).toEqual([
+      `  s-busy  ${busy.root}  ${when(busy.manifest.at)}  ${BUSY("s-busy")}`,
+      `  s-stuck  ${stuck.root}  ${when(stuck.manifest.at)}  The box could not be removed, so the copy was not reviewed.`,
+      `  s-free  ${free.root}  ${when(free.manifest.at)}  1 change`,
+    ]);
+  });
+
   // One helper reads what a review lists, for the review (Review.tsx) and the count here alike.
   it("reads a copy's changes as the review lists them: less what git ignores and what an earlier apply applied", async () => {
     const w = world();

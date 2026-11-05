@@ -91,7 +91,8 @@ export async function reviewCommand(args: string[], io: ReviewIo): Promise<numbe
 
 // Each copy with its project folder, when it was made, and how many changes the review would list (apply.ts, toReview),
 // oldest first. Each row is said once counted, as a copy holding a large project takes a second or two (measured at Task
-// 21: 1.2-1.8 s on this repo's 15,336 entries).
+// 21: 1.2-1.8 s on this repo's 15,336 entries). A copy whose box may still run (boxCheck) is listed without its changes,
+// as nothing on the host opens a path in the box's folder while the box runs (release 7 design).
 async function list(data: string, io: ReviewIo): Promise<number> {
   const copies = await copiesWaiting(data);
   if (!copies.length) {
@@ -100,9 +101,12 @@ async function list(data: string, io: ReviewIo): Promise<number> {
   }
   io.out(LISTED);
   for (const c of copies.sort((a, b) => (a.manifest.at < b.manifest.at ? -1 : a.manifest.at > b.manifest.at ? 1 : 0))) {
+    const box = await boxCheck(c.manifest, io.run);
     let n: string;
     try {
-      n = counted((await toReview(c.manifest, c.folder, c.session)).changes.length);
+      if (box === "busy") n = busy(c.session);
+      else if (box === "stuck") n = NOT_GONE;
+      else n = counted((await toReview(c.manifest, c.folder, c.session)).changes.length);
     } catch (err) {
       n = uncounted(errorText(err));
     }
