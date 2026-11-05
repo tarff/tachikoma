@@ -329,7 +329,7 @@ describe("prepareImage (the launch)", () => {
     });
     const t = terminal([true]);
     expect(await prepareImage(project(PROJECT), { ...t, signal: stop.signal, run: docker.run })).toEqual({ exit: 130 });
-    expect(t.printed).toEqual(["out: #1 load", "out: Stopping the build..."]); // once, before the slow stop (choice 125)
+    expect(t.printed).toEqual(["out: #1 load", "out: Stopping the build..."]); // once (choice 125)
     expect(existsSync(context)).toBe(false);
   });
 

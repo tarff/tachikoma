@@ -997,7 +997,8 @@ the plan's review.
     itself, unmeasured, checked with release 13's Linux/macOS testing (choice 79). Known limits:
     Ctrl-Break, and closing the terminal window, during a build end Tachikoma without the stop
     (through `exitOn` at a launch, by Node's own exit in `tachi sandbox build`), so buildx can
-    still finish the build there, as before.
+    still finish the build there, as before. And a Docker that hangs while the image is looked
+    up (`docker image inspect`, run without the stop) cannot be left with Ctrl-C, as at a launch.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
