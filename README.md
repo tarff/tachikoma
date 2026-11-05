@@ -408,7 +408,8 @@ it.
 - **Live link is refused on a project with git submodules:** a submodule's `.git` is a file the box
   could point at git settings of its own, which git on your machine would then run.
 - **Live link is refused when a protected file has a hard link:** a file the box sees read-only,
-  `.git/config` say, that has another name in the project could be changed through that name.
+  `.git/config` say, that has another name could be changed through that name. A protected place
+  that cannot be read is refused too, as it cannot be checked.
 - **Copy mode, `--sandbox copy`:** the box works on a copy, and your folder is not touched until you
   review the changes, when the session ends.
 

@@ -199,8 +199,8 @@ describe("liveMounts", () => {
 
   // Choice 124 (PR #9 review): the box could write through another name of a read-only file.
   const linkRefused = (rel: string) =>
-    `Live link is refused: ${rel} has another name in the project (a hard link), through which the box could ` +
-    "change it. Launch with --sandbox copy instead.";
+    `Live link is refused: ${rel} has another name (a hard link), through which the box could change it. Launch with ` +
+    "--sandbox copy instead.";
 
   it("refuses a .git/config with a hard link elsewhere in the project, naming it, making nothing (choice 124)", () => {
     const w = world([".git/config", ".git/HEAD"]);

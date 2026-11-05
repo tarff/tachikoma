@@ -34,8 +34,12 @@ export const SUBMODULES_REFUSED =
 // Choice 124's refusal (PR #9 review): a read-only file's other name in the project is writable in the box. The box
 // cannot make a new one, as a link across mounts fails (EXDEV), so only those there at launch count.
 const linkRefused = (rel: string) =>
-  `Live link is refused: ${rel} has another name in the project (a hard link), through which the box could change ` +
-  "it. Launch with --sandbox copy instead.";
+  `Live link is refused: ${rel} has another name (a hard link), through which the box could change it. Launch with ` +
+  "--sandbox copy instead.";
+// And one of those places that cannot be read, so that cannot be checked.
+const unreadRefused = (rel: string) =>
+  `Live link is refused: ${rel} cannot be read, so whether a file in it has another name (a hard link) cannot be ` +
+  "checked. Launch with --sandbox copy instead.";
 
 // The mounts, and the variables the box's git needs, or why live link is refused. Only once nothing refuses is a missing
 // `.tachikoma` made, an empty folder of Tachikoma's own (choice 31): left unmounted, the box could make one. First of
@@ -101,8 +105,10 @@ export function liveMounts(
   // By its own path, not its real one: a top-level `objects` that is a link to `.git` must not leave `.git` out.
   const objects = path.join(real, "objects");
   for (const p of [...kept.map(([, host]) => host).filter((host) => host !== objects), path.join(real, ".tachikoma")]) {
-    const linked = hardLinked(p, gitFolders, false);
-    if (linked !== undefined) return { refused: linkRefused(path.relative(real, linked).split(path.sep).join("/")) };
+    const found = hardLinked(p, gitFolders, false);
+    if (found === undefined) continue;
+    const rel = path.relative(real, found.at).split(path.sep).join("/");
+    return { refused: found.unread ? unreadRefused(rel) : linkRefused(rel) };
   }
   const own = path.join(root, ".tachikoma");
   if (!lstatSync(own, { throwIfNoEntry: false })) mkdirSync(own);
@@ -143,11 +149,13 @@ export function ignoresCase(folder: string): boolean {
 
 // The first file at or under `p` with another name (a hard link), links and junctions not followed, skipping a git
 // folder's `objects` and `lfs/objects`: a folder of that name elsewhere (a branch folder, a worktree's) is checked. One
-// that cannot be read is named too, as nothing in it can be checked; one gone is skipped, as elsewhere here.
-function hardLinked(p: string, gitFolders: Set<string | undefined>, inGit: boolean): string | undefined {
+// that cannot be read is named too, marked unread, as nothing in it can be checked; one gone is skipped, as elsewhere
+// here.
+type Found = { at: string; unread?: true };
+function hardLinked(p: string, gitFolders: Set<string | undefined>, inGit: boolean): Found | undefined {
   try {
     const st = lstatSync(p, { throwIfNoEntry: false });
-    if (st?.isFile()) return st.nlink > 1 ? p : undefined;
+    if (st?.isFile()) return st.nlink > 1 ? { at: p } : undefined;
     if (!st?.isDirectory() || (inGit && objectStore(p))) return undefined;
     const inside = inGit || gitFolders.has(p);
     let names: string[];
@@ -163,7 +171,7 @@ function hardLinked(p: string, gitFolders: Set<string | undefined>, inGit: boole
     }
     return undefined;
   } catch {
-    return p;
+    return { at: p, unread: true };
   }
 }
 

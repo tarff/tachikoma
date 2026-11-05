@@ -969,13 +969,17 @@ the plan's review.
     cannot make a new hard link to a read-only file (a link across mounts fails), so only those
     there at launch count. At launch, last of live link's refusals and before `.tachikoma` is made,
     every read-only place (files, and folders walked without following links or junctions) and
-    `.tachikoma` are checked; the first file with another name refuses. A folder named `objects`
-    in a git folder (`.git/objects`, `.git/lfs/objects`, the top-level block's) is skipped, as a
-    clone from a local path hard-links objects and their contents cannot make git run anything;
-    the index, refs, `HEAD`, settings, hooks and `info` are checked. A place that cannot be read
-    refuses with the same line naming it. The approved line: `Live link is refused: <path> has
-    another name in the project (a hard link), through which the box could change it. Launch with
-    --sandbox copy instead.`, with the path from the project's folder, in `/` separators.
+    `.tachikoma` are checked; the first file with another name refuses. A git folder's object
+    store (`objects` beside a `HEAD` file, or `lfs/objects` below one) and the top-level block's
+    `objects` are skipped, as a clone from a local path hard-links objects and their contents
+    cannot make git run anything; the index, refs, `HEAD`, settings, hooks and `info` are checked,
+    and a folder of that name elsewhere. After the change's review (the user's choice, "Use both
+    lines (Recommended)"), the first line no longer says the other name is in the project, as it
+    may be outside it, and a place that cannot be read has a line of its own. The approved lines,
+    with the path from the project's folder, in `/` separators: `Live link is refused: <path> has
+    another name (a hard link), through which the box could change it. Launch with --sandbox copy
+    instead.` and `Live link is refused: <path> cannot be read, so whether a file in it has
+    another name (a hard link) cannot be checked. Launch with --sandbox copy instead.`
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
