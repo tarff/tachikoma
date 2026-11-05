@@ -366,12 +366,13 @@ Each is marked in its task. The user approves them with the plan.
       characters.
     - With no ratio yet, or over 5,000 tokens, the file is named without its content.
     - A file that cannot be read is named "could not be read".
-23. **Summaries in pieces.** The part to be summarised is split at whole exchanges into pieces,
-    each estimated to fit half the lead's window, and each piece is summarised. The summaries are
-    then summarised together with the same instructions.
-
-    > ⚠ The half is a number without a source. **Stop: the controller asks the user before Task
-    > 11** whether to split at "fits the window less the reply's room" instead.
+23. **Summaries in pieces, only when needed** (user, 2026-11-06, option chosen: "Split only when
+    needed"). The whole part is sent first. If the lead answers "too long" (`tooLong`), or its
+    summary is cut off at the window or its output limit, the part is split in two at the whole
+    exchange nearest its middle by characters, and each half is summarised the same way, splitting
+    again when needed. The summaries are then summarised together with the same instructions. No
+    size number is needed: it follows the model's own answer. A part of one exchange that is still
+    too long ends the shortening with its problem.
 24. **The "before shortening" step** is an `onShorten` list of functions on the session, run
     before the summary request. In 8a it is empty. 8b's hooks and 8d's memory save join it.
 
@@ -820,8 +821,6 @@ Commit: `feat: the size check estimates each request from this session's own rat
 
 ## Task 11: Shortening
 
-**The controller asks the user about choice 23's number first.**
-
 **Files:** create `src/core/shorten.ts`, `tests/core/shorten.test.ts`.
 
 ```ts
@@ -860,7 +859,9 @@ export async function shorten(s: {
   message.
 - Files: the most recent first, 5 at most; outside-project files skipped; over 5,000 tokens or
   no ratio named only; an unreadable one named.
-- Pieces: a history too big for one request is summarised in pieces, then combined.
+- Pieces: a lead that answers "too long" for the whole part is sent two halves split at an
+  exchange, then their summaries combined; a summary cut off at the window splits the same way;
+  one exchange still too long returns the problem.
 - A cancelled summary returns the problem and changes nothing.
 
 Commit: `feat: shortening summarises everything before what must stay, and keeps the request in progress whole`.
