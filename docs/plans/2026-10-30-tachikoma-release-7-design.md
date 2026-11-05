@@ -387,9 +387,12 @@ source. The name-lookup measurement moves to release 8 with the site list.
     while the box runs;
   - headless with no image: the one line, at once, and nothing built;
   - Esc stopping a command, and copy-then-review's apply, conflicts and `tachi review`.
-- **In the user's terminal,** a checklist run once: launching each sandbox mode, a command in the
-  box, network off, a dangerous command in each mode, auto mode's judge, the review at the end of a
-  copy session, and Shift+Enter.
+- **In the user's terminal,** a checklist run once, the plan's nine items (Task 23): live link's
+  launch line, a file written and a commit failing in the box; a copy session's review, applying
+  one file and skipping one; `tachi review` on a copy left with `l`; the network off, then on; a
+  dangerous command in `ask`, `auto` and `never` with copy; auto mode's judge allowing one command
+  and refusing one; a write to `.husky/x` asking in `project`; Shift+Enter in Windows Terminal; and
+  Ctrl-C on a real `tachi sandbox build` while it downloads, after the user agrees to that download.
 
 ## Not in this release
 
@@ -400,3 +403,92 @@ source. The name-lookup measurement moves to release 8 with the site list.
 - MCP servers inside the box: release 8.
 - Loops in the sandbox: release 12.
 - A settings file in each project.
+
+## As built
+
+Where the build differs from the design above, or settles what it left open, and the numbers
+measured on the way. The plan (`2026-10-31-tachikoma-release-7.md`) lists its 120 choices, each
+marked in its task, and each task's "As built" note; every number here is from them, from the code's
+comments, or from a commit, as cited. "The user's choice" marks the user's answers. The README's
+known limits gather every rarer case the build left as a limit (choice 94).
+
+- **Live link only where the project folder minds letter case (choice 104).** A read-only mount
+  covers one spelling. On the user's PC (Docker Desktop for Windows, 2026-11-02), from the box,
+  `touch .GIT/hooks/x1` made the file in the real `.git\hooks`, `>> CONFIG` and `>>
+  .HUSKY/pre-commit` changed read-only files, `ls .TACHIKOMA` listed the hidden folder, and `ls
+  GIT~1` listed `.git`; only the exact spellings were refused. So live link is refused on a folder
+  that ignores letter case, the default on Windows and macOS, before Docker is asked anything
+  (choice 108), and copy mode is the sandbox there. Linux lets a folder holding a mount be renamed
+  (measured with the same probe), so every folder between `/work` and a read-only mount is pinned by
+  a mount of its own (choice 105).
+- **Live link's read-only parts, as built:** husky 9's hooks folder is `<dir>/_`, whose hooks run
+  the scripts in `<dir>`, so the folder around a hooks folder named `_` is read-only too (choice
+  102); a top-level `config` is read-only only when it is a file, as Rails and many Node projects
+  have a `config/` folder to edit (choice 103); lefthook's and pre-commit's files stay writable, as
+  a `package.json` script does. Git in the box gets `safe.directory=/work` (it refused `/work` as
+  "dubious ownership" on Docker Desktop without it), and the host's `core.autocrlf` and `core.eol`
+  as session-only settings, so a Windows checkout does not show every file changed (choice 100).
+- **The box's limits scale with Docker (choices 75, 76, 80, 82, 86).** The defaults above (4 GB, 4
+  CPUs, 1,024 processes) are their share of Docker on the user's PC: 4 GB of 33,518,923,776 bytes
+  and 4 of 24 CPUs (`docker info`, 2026-11-02). A bigger Docker gets the same share (128 GB and 64
+  CPUs: about 16 GB and 10.666666666 CPUs). A smaller one keeps 1 GiB of memory free, from Docker's
+  own idle use read in three boxes on 2026-11-02 (`MemTotal` less `MemAvailable`: 964,404, 968,520
+  and 972,532 kB, about 0.93 GiB, rounded up), and 1 CPU when it has more than one (the user's
+  choice). Memory is rounded down to a whole MiB, as `MemTotal` read 33,518,931,968 and
+  33,518,923,776 bytes on the same day; CPUs to 9 decimal places, as Docker refuses more (`value is
+  too precise`). Docker's least memory is 6 MiB: `--memory 6291455b` was refused and `6291456b` ran
+  (2026-11-02). Processes are not scaled. Docker reads `g` and `m` as 2^30 and 2^20 bytes (measured
+  2026-11-02), and `"sandboxLimits"` takes those units (choice 85).
+- **The box's user:** `1000:1000` on Windows and macOS, the host user's ids on Linux, and `0:0` with
+  rootless Docker, which maps the box's root to the host user; the box's home is `/tmp`, which every
+  user can write (choice 77). Docker Desktop for Linux's and Podman's answers have not been tried.
+- **Esc in the box, measured:** killing the `docker exec` client of `sleep 600` left the sleep
+  running in the box (2026-11-02, Docker 29.9.2), so each command runs in a process group of its own
+  and Esc kills the group in the box (choice 20; `src/sandbox/executor.ts`).
+- **Out of memory, measured:** in a 512 MB box (2026-11-02, Docker 29.9.2, cgroup v2), the box's
+  `memory.events` `oom_kill` count rose by one at each kill by the limit and not at a plain `kill
+  -9`, while Docker's `OOMKilled` stayed true for the box's life after the first one. So the count
+  is used, read again after every failed command (choice 89).
+- **The file tools in the box:** a box helper, sent with each call (Task 13). Each call is a `docker
+  exec` and a Node start: listing a 25-entry folder took a median 360 ms and at most 721 ms over 20
+  calls, against about 33 ms on the host (Task 14's measurement). So the `@` menu keeps listing the
+  host folder, and pasted paths are always read on the host (choices 98, 99).
+- **The copy (Task 17; choice 109).** A snapshot of this repo took 32.9 s, and 88.6 s on the first,
+  cold run: 14,681 files and 174 MB, of which `node_modules` was 14,394 files and 169 MB. Packages'
+  native parts do not run in the Linux box, so a change inside a path git ignores is counted in the
+  review and never applied. A Windows junction in the copy shows in the box as a link to
+  `/mnt/host/c/...`, which is not there (measured on Docker Desktop).
+- **The changes (Task 18; choice 112).** `changes()` on an untouched copy of this repo took 38.2 s
+  the first time and 3.6 s after; with git-ignored files compared by size and modified time only, it
+  took 2.2 s the first time and 1.3 s after. The line diff stops at 10,000 lines on either side
+  (choice 111): a 10,000-line file with scattered edits took 8-14 ms and fully rewritten 638 ms, a
+  30,000-line file fully rewritten 5.7 s, the cost growing with the square of the size.
+- **The review and apply (Tasks 19-21).** Deletes are applied first: a case-only rename in the box
+  lists as an add and a delete on Windows and macOS, and added first, the add was a false conflict
+  and the delete then removed the user's only copy (measured on the user's PC). Changes to protected
+  files start as `skip (protected)` (choice 115). The box's repository takes the host's branch name
+  (choice 118). `tachi review`'s list counts each copy's changes, 1.2-1.8 s a copy of this repo
+  (choice 119).
+- **The dangerous-command check (Tasks 2-4).** The reader was hardened over several review rounds
+  (choices 32-54). A replay of 34,507 past shell calls, parsed only and nothing run, found 3.3% warn
+  and 0.5% (184) unreadable after the last round (choices 52, 54). The check is a list of known
+  patterns, not a wall, and the README says so.
+- **The judge (Tasks 9, 10).** An earlier write or edit shows the judge its path and the texts'
+  lengths, not their text, so its request grows by a line per call (choice 64). A judge that cannot
+  be reached refuses the action and fails no `-p` run (choice 65). Reading git's settings at launch
+  took 296-337 ms over 6 runs (choice 63).
+- **Shift+Enter in Windows Terminal: the probe (Task 22, the user's Windows Terminal, 2026-11-05).**
+  Kitty's query got no answer, and Enter and Shift+Enter both sent `0d`. In win32 input mode
+  Shift+Enter came as `CSI 13;28;13;1;48;1_` (Shift 0x10 plus NumLock 0x20) against Enter's
+  `…;32;1_`; a held key came as a fresh record at each repeat (the repeat count always 1); with
+  bracketed paste on, a paste's text came plain, but each pasted line break as an Enter key-down and
+  key-up record pair. So Tachikoma turns win32 input mode on with raw mode when `WT_SESSION` is set
+  and both ends are terminals, off for the editor's hand-over and on every way out, and translates
+  each record into the bytes Windows Terminal sends outside the mode, Shift+Enter into Ctrl+J's
+  `\n`, which `chat:newline` already takes. A long paste's line breaks are translated in linear
+  time: 1.3 MB in one read went from 3.9 s to 19 ms (74d93c2).
+- **The prompt in full screen takes at most half the rows** (choice 120, the user's hand check of
+  2026-11-05, where a long prompt left the conversation one row).
+- **Testing on Linux and macOS waits for release 13's CI** (choice 79): Task 1's run in the box
+  failed 29 of 1,723 tests, and which come from Linux and which from the copy's Windows line endings
+  is not yet known. The README says Tachikoma has been tested on Windows 11 only.
