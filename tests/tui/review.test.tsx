@@ -623,6 +623,19 @@ describe("Review's later and discard", SLOW, () => {
     expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
   });
 
+  // `tachi review` draws the review alone, with no prompt's paste hook beside it: a paste must not act as keys.
+  it("drops a paste, so a pasted \"ca\" applies nothing", async () => {
+    const w = world({ "a.txt": "a\n" });
+    w.box("a.txt", "a2\n");
+    const { app, ended } = open(w);
+    await until(app, TOP);
+    await press(app, "\u001b[200~ca\u001b[201~");
+    await tick();
+    expect(ended).toEqual([]);
+    expect(w.read("a.txt")).toBe("a\n");
+    expect(rowWith(app, "a.txt")).toMatch(/keep$/);
+  });
+
   it("says it is removing the copy, with the manifest's count of files, while it does", async () => {
     const w = world({ "a.txt": "a\n", "b.txt": "b\n" });
     w.box("a.txt", "a2\n");

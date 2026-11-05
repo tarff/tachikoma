@@ -1,7 +1,7 @@
 import { constants } from "node:buffer";
 import { lstat, readFile } from "node:fs/promises";
 import path from "node:path";
-import { Box, Text, useInput, useWindowSize } from "ink";
+import { Box, Text, useInput, usePaste, useWindowSize } from "ink";
 import { useEffect, useRef, useState } from "react";
 import type { Protection } from "../core/permissions.js";
 import { errorText } from "../core/types.js";
@@ -350,6 +350,9 @@ export function Review({
     again();
   };
   const contexts = (): Context[] => (s.diff ? ["Transcript", "Scroll", "Global"] : s.discard ? ["Confirmation", "Global"] : ["Review", "Global"]);
+  // A paste is dropped. Ink turns bracketed paste on only while a paste hook is in use, and gives a paste to useInput as
+  // keys when none is: `tachi review` draws this screen alone (cli.tsx), where a pasted "cat" would press a, apply.
+  usePaste(() => {});
   // A key a stroke; text read together, such as two quick presses of Space, a stroke a character, as the prompt takes
   // it in vim mode (app/keyRouting.ts, vimTakes).
   useInput((input, key) => {
