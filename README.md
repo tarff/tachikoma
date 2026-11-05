@@ -1202,7 +1202,7 @@ more code; none has a release set to change it, unless it says so.
 - **Typing a character with Alt and its code on the number pad** is not supported there
   (untried).
 - **Some keys do nothing while Tachikoma runs there:** Ctrl or Alt with another key Windows gives no
-  character for (such as Ctrl+2), except Ctrl+Space; and F13 to F20. The arrows, Home, End, PgUp,
+  character for, except Ctrl+Space; and F13 to F20. The arrows, Home, End, PgUp,
   PgDn, Insert, Delete, F1 to F12, Enter, Backspace and Tab do work with Ctrl and Alt.
 - **AltGr is told apart only by the character it makes,** so Ctrl+Alt with a key that makes a
   character types that character.
