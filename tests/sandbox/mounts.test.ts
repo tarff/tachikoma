@@ -1,10 +1,24 @@
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { GitSettings } from "../../src/safety/gitconfig.js";
 import { ignoresCase, liveMounts } from "../../src/sandbox/mounts.js";
 import { removeTree } from "../helpers.js";
+
+// A folder whose reading fails as a test says (choice 124), with no permission changed: every other read is the real one.
+let failAt: string | undefined;
+let failCode = "";
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return {
+    ...fs,
+    readdirSync: ((p: string, ...rest: unknown[]) => {
+      if (String(p) === failAt) throw Object.assign(new Error("failed"), { code: failCode });
+      return (fs.readdirSync as (...args: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.readdirSync,
+  };
+});
 
 // A test's own folder, holding a project with `tree` in it (a name ending in / is a folder), and what gitSettings would
 // give, filled in by the test. No git runs here: tests/sandbox/livelink.test.ts has the real ones.
@@ -230,6 +244,20 @@ describe("liveMounts", () => {
     const w = world([".git/HEAD", ".git/worktrees/objects/commondir"]);
     linkSync(w.at(".git/worktrees/objects/commondir"), w.at("copy-1"));
     expect(live(w.root, w.git)).toEqual({ refused: linkRefused(".git/worktrees/objects/commondir") });
+  });
+
+  it("refuses a place that cannot be read, and skips one gone while it is read (choice 124)", () => {
+    const w = world([".git/HEAD", ".git/hooks/pre-commit"]);
+    onTestFinished(() => (failAt = undefined));
+    failAt = w.at(".git/hooks");
+    failCode = "EACCES";
+    expect(live(w.root, w.git)).toEqual({
+      refused:
+        "Live link is refused: .git/hooks cannot be read, so whether a file in it has another name (a hard link) cannot be " +
+        "checked. Launch with --sandbox copy instead.",
+    });
+    failCode = "ENOENT";
+    expect(live(w.root, w.git)).toEqual({ mounts: [readOnly(w.at(".git"), "/work/.git"), HIDDEN], env: SAFE });
   });
 
   it("refuses a file in .tachikoma with a hard link (choice 124)", () => {
