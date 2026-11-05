@@ -935,7 +935,10 @@ the plan's review.
     conversation. Classic mode is unchanged.
 121. **A copy session with nothing to review skips the review and removes the copy** (the user's
     choice, their hand check of 2026-11-05 found an empty review of a copy with 0 changes).
-    "Nothing to review" is no change the review would list (`toReview`). At the session's end, still
+    "Nothing to review" is no change the review would list (`toReview`), and no note: when the box
+    made something the review lists as never applied (a nested `.git` or a `.tachikoma`, or an
+    entry that is not a file, folder or link; the copy's own top-level `.git` aside), the review
+    still opens, so only a copy with no changes and no notes is removed. At the session's end, still
     after the box stops and under the copy's lock, and with `-p` in place of the kept line, the copy
     is removed, choice 115's `Removing the copy (<n> files)...` first, then the user's approved
     line: `Nothing changed in the copy, so it was removed.`, or with only changes in paths git
@@ -944,6 +947,11 @@ the plan's review.
     settings that cannot be read, keep the copy as before; a removal that fails prints choice
     114's `The copy could not be removed (<error>); delete <folder> by hand.` `tachi review
     <name>` still opens an old copy with no changes.
+122. **The terminal checklist's live link item checks the refusal** (the user's choice, Task 23's
+    review). On Windows live link is refused on an ordinary folder (choice 104), so the user's
+    terminal cannot run a live link session. Item 1 becomes: `--sandbox live` in an ordinary
+    folder on Windows prints the letter-case refusal line and starts nothing; live link's full
+    session is checked on Linux and macOS with release 13's testing (choice 79).
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
@@ -2232,8 +2240,9 @@ Every key, command and setting named is checked against the source before it is 
 (release 6's lesson).
 
 **The terminal checklist, run once with the user** (design, "Testing"):
-1. `--sandbox live`: the launch line; `echo hi > x.txt` lands in the folder; a commit fails in
-   the box.
+1. `--sandbox live` in an ordinary folder on Windows prints the letter-case refusal line and
+   starts nothing (choice 104); live link's full session is checked on Linux and macOS with
+   release 13's testing (choice 79). Choice 122.
 2. `--sandbox copy`: work, `/exit`, the review, apply one file and skip one.
 3. `tachi review` on a copy left with `l`.
 4. `--network off`: `curl https://example.com` fails with the network line; `--network on`

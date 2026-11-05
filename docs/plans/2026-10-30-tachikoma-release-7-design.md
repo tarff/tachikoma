@@ -387,8 +387,10 @@ source. The name-lookup measurement moves to release 8 with the site list.
     while the box runs;
   - headless with no image: the one line, at once, and nothing built;
   - Esc stopping a command, and copy-then-review's apply, conflicts and `tachi review`.
-- **In the user's terminal,** a checklist run once, the plan's nine items (Task 23): live link's
-  launch line, a file written and a commit failing in the box; a copy session's review, applying
+- **In the user's terminal,** a checklist run once, the plan's nine items (Task 23): `--sandbox
+  live` in an ordinary folder on Windows printing the letter-case refusal line and starting nothing
+  (live link's full session is checked on Linux and macOS with release 13's testing; the plan's
+  choice 122); a copy session's review, applying
   one file and skipping one; `tachi review` on a copy left with `l`; the network off, then on; a
   dangerous command in `ask`, `auto` and `never` with copy; auto mode's judge allowing one command
   and refusing one; a write to `.husky/x` asking in `project`; Shift+Enter in Windows Terminal; and
@@ -407,7 +409,7 @@ source. The name-lookup measurement moves to release 8 with the site list.
 ## As built
 
 Where the build differs from the design above, or settles what it left open, and the numbers
-measured on the way. The plan (`2026-10-31-tachikoma-release-7.md`) lists its 120 choices, each
+measured on the way. The plan (`2026-10-31-tachikoma-release-7.md`) lists its 122 choices, each
 marked in its task, and each task's "As built" note; every number here is from them, from the code's
 comments, or from a commit, as cited. "The user's choice" marks the user's answers. The README's
 known limits gather every rarer case the build left as a limit (choice 94).
@@ -468,7 +470,8 @@ known limits gather every rarer case the build left as a limit (choice 94).
   and the delete then removed the user's only copy (measured on the user's PC). Changes to protected
   files start as `skip (protected)` (choice 115). The box's repository takes the host's branch name
   (choice 118). `tachi review`'s list counts each copy's changes, 1.2-1.8 s a copy of this repo
-  (choice 119).
+  (choice 119). A copy session with no change to review and nothing the review notes as never
+  applied skips the review and removes the copy (choice 121).
 - **The dangerous-command check (Tasks 2-4).** The reader was hardened over several review rounds
   (choices 32-54). A replay of 34,507 past shell calls, parsed only and nothing run, found 3.3% warn
   and 0.5% (184) unreadable after the last round (choices 52, 54). The check is a list of known

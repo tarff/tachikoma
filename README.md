@@ -158,8 +158,8 @@ tachi review [<name> [--discard]]                  list the copies kept for revi
 Options --lead to --scroll-speed can also be set in ~/.tachikoma/settings.json; a flag or variable wins.
 ```
 
-(The block leaves out the help's first lines and its indent; on Windows the last line reads
-`~\.tachikoma\settings.json`.)
+(The block leaves out the help's first and last lines, the closing "In a session:" paragraph among
+them, and its indent; on Windows the settings line reads `~\.tachikoma\settings.json`.)
 
 In a session, `/lead <provider:model>` switches the lead model, `/lead` or `/model` alone lists the
 models to pick from, `/login chatgpt` and `/logout chatgpt` sign in and out, `/tasks` lists the
@@ -289,7 +289,7 @@ list of rules, in nine kinds:
 | rewriting or deleting git history | `git push --force` or `--delete`, `git reset --hard`, `git clean -fd`, `git checkout -- .`, `git branch -D`, `git rebase`, `git filter-branch` |
 | sending files out | `curl -T`, `-F` or `-d @file`, `scp`, `rsync` to another machine, `Invoke-WebRequest -InFile`, `nc` |
 | installing software | `npm install <package>`, `pip install <package>`, `npx`, `uvx`, `cargo install`, `winget`, `choco`, `apt`, `brew` |
-| downloading and running code | `curl … \| sh`, `iex (iwr …)`, a script run straight from a web address (`deno run https://…`) |
+| downloading and running code | `curl … \| sh` and `iex (iwr …)`, which count as lines the check cannot read (below); a script run straight from a web address (`deno run https://…`) |
 | acting outside the machine | `gh pr merge`, `gh repo delete`, `terraform apply` and `destroy`, `kubectl delete`, `docker push`, `npm publish` |
 
 - **Installs from the project's own lock file pass,** as in Claude Code: `npm ci`, `npm install`
@@ -345,11 +345,12 @@ machine. It is off unless you ask for it.
   PowerShell, `.exe` programs, Windows builds) need the sandbox off.
 - **What the box can reach:** only the project folder, or its copy, which it sees as `/work`; the
   model is told that name. Not your home folder, your keys, Tachikoma's logins or its settings, and
-  none of your environment variables. It runs as an ordinary user, not root, with every special
-  power Linux can grant a process taken away and no way to gain more, and no access to Docker
-  itself. Tachikoma refuses to start it in a folder that holds your home folder, Tachikoma's data
-  folder or its settings folder: `The sandbox cannot run on <folder>: it holds <what>, which must
-  never be in the box. Start Tachikoma in a project folder.`
+  none of your environment variables. It runs as an ordinary user, not root (with rootless Docker,
+  as the box's root, which Docker maps to your own user), with every special power Linux can grant
+  a process taken away and no way to gain more, and no access to Docker itself. Tachikoma refuses
+  to start it in a folder that holds your home folder, Tachikoma's data folder or its settings
+  folder: `The sandbox cannot run on <folder>: it holds <what>, which must never be in the box.
+  Start Tachikoma in a project folder.`
 - **The launch line** says what is in force, in grey: `Sandbox: live link on <folder>, network off,
   limits 4g, 4 CPUs, 1024 processes.`
 - **Esc** stops the running command inside the box, as it does on your machine.
@@ -363,20 +364,21 @@ machine. It is off unless you ask for it.
 The box runs from an image built on your machine, once, from the Dockerfile shipped with Tachikoma
 (`sandbox/Dockerfile`):
 
-- Node 24 on Debian 12 (`node:24-bookworm-slim`, from Docker Hub) and uv (from
-  `ghcr.io/astral-sh/uv`), each pinned to one exact build;
+- Node 24 on Debian 12 (`node:24-bookworm-slim`, from Docker Hub) and uv, a Python package tool
+  (from `ghcr.io/astral-sh/uv`), each pinned to one exact build;
 - Debian's `git`, `python3`, `python3-venv`, `bash` and `ca-certificates`.
 
 The first launch with the sandbox asks before downloading anything: `The sandbox needs its image,
 built here once. It downloads: <images>, and Debian's packages. Build it now? [y/n]`. `tachi sandbox
-build` does the same on its own, or says `The sandbox's image is up to date (<tag>).` With `-p`,
+build` does the same on its own, or says `The sandbox's image is up to date
+(tachikoma-sandbox:<tag>).` With `-p`,
 nothing is built, and nothing waits: `The sandbox's image is not built. Run tachi sandbox build
 first.` The image's name, `tachikoma-sandbox:<tag>`, comes from the Dockerfile's contents, so a
 changed Dockerfile is a new image, built again after asking.
 
-A project can bring its own image: `.tachikoma/sandbox.Dockerfile`. It is built from an empty
-folder, so it cannot copy the project's files into the image, after a question that names it as the
-project's. It needs bash, util-linux's `setsid` and Node 22.5 or newer, which Tachikoma's file tools
+A project can bring its own image: `.tachikoma/sandbox.Dockerfile`. It is built after a question
+that names it as the project's, from an empty folder, so it cannot copy the project's files into the
+image. It needs bash, util-linux's `setsid` and Node 22.5 or newer, which Tachikoma's file tools
 use in the box. `.tachikoma` is a protected path, and hidden from the box, so the box cannot rewrite
 it.
 
@@ -421,12 +423,12 @@ This is why `never` is refused in live link.
 ### Copy mode and the review
 
 - **The copy:** at launch, `Copying <folder> for the sandbox...`, then everything in the project is
-  copied into Tachikoma's data folder, files git ignores included, except `.tachikoma` and every
-  `.git`. A large ignored folder such as `node_modules` makes this slow: Tachikoma's own folder,
-  14,681 files and 174 MB, took 33 seconds. Links inside the project are made again in the copy;
-  links leading outside it are left out and listed. The launch line then says `Sandbox: copy of
-  <folder> (<n> files, <s> s), network …, limits …. Your folder is not touched until you review the
-  changes.`
+  copied into Tachikoma's data folder, files git ignores included, except every `.git` and
+  `.tachikoma`, at any depth. A large ignored folder such as `node_modules` makes this slow:
+  Tachikoma's own folder, 14,681 files and 174 MB, took 33 seconds. Links inside the project are
+  made again in the copy; links leading outside it are left out and listed. The launch line then
+  says `Sandbox: copy of <folder> (<n> files, <s> s), network …, limits …. Your folder is not
+  touched until you review the changes.`
 - **Git in the box:** `/work` starts as a new git repository holding the copy as one commit, on your
   branch's name, so the model can use git freely there. **The box's own commits stay in the copy and
   are never applied to your folder;** only the files are.
@@ -446,7 +448,8 @@ This is why `never` is refused in live link.
 - **The end:** once every change is applied or skipped, the copy is removed. Otherwise, or after
   `l`, it is kept: `The copy is kept; tachi review <session> opens it again.` `d` discards it after
   `Discard the copy and every change in it? [y/n]`. A session that changed nothing, or only paths
-  git ignores, skips the review and removes the copy, with `-p` too.
+  git ignores, skips the review and removes the copy, with `-p` too. When the box made something the
+  review lists as never applied, such as a nested `.git` or a `.tachikoma`, the review still opens.
 - **Kept for later:** a copy is also kept when the session is ended by a signal or a crash, and with
   `-p`, which prints `Changes kept for review: tachi review <name>` on stderr.
 
@@ -489,9 +492,9 @@ Docker those numbers are on the PC they were measured on (4 GB of about 31 GB, a
 they scale with Docker's size:
 
 - a bigger Docker gets the same share: one with 128 GB and 64 CPUs gets about 16 GB and 10.7 CPUs;
-- a smaller one gets less, always leaving 1 GiB of memory and 1 CPU for Docker itself: one with 2
-  GiB and 2 CPUs gets 1 GiB and 1 CPU. A Docker with little more than 1 GiB of memory, or less,
-  stops the launch, unless you set the memory yourself.
+- a smaller one gets less, always leaving 1 GiB of memory for Docker itself, and 1 CPU when it has
+  more than one: one with 2 GiB and 2 CPUs gets 1 GiB and 1 CPU. A Docker with little more than
+  1 GiB of memory, or less, stops the launch, unless you set the memory yourself.
 
 On Linux's Docker Engine, Docker's memory is the whole machine's, so a 4 GiB laptop's box may use up
 to 3 GiB. A limit is a ceiling, never memory set aside. `"sandboxLimits"` in the settings file
@@ -972,7 +975,7 @@ Each is fixed in a later release, unless it says otherwise.
   Where only the terminal copies, a terminal that ignores the copy leaves the clipboard unchanged,
   and Tachikoma cannot tell (no release is set).
 - **Subagents only read.** Ones that edit or run commands come with the budget controller (release
-  11), each in a box of its own.
+  11), each with its own copy of the project.
 - **`find_files` patterns skip names that start with a dot** unless the pattern names the dot, as a
   shell's do: `**/*.yml` misses `.github/workflows/ci.yml`, and `.github/**/*.yml` finds it (not
   planned to change).
@@ -1013,7 +1016,9 @@ more code; none has a release set to change it, unless it says so.
 - **Code that is not on the line is not read:** a script (`python wipe.py`); code given inline to an
   interpreter (`python -c`, `node -e`), or fed to one in a here-document or a piped string in the
   line; and code sent to a container or another machine (`docker exec -i c sh`, `ssh host sh`). Nor
-  are PowerShell's `Set-Location`, yarn's `exec` and `dlx`, R, or a relative path after `cd /dev`.
+  are code piped to R, or the command `yarn exec` and `yarn dlx` run (`yarn dlx` itself still counts
+  as installing); and a relative path to the shell's input is not followed after `cd /dev`, or after
+  PowerShell's `Set-Location`.
 - **Values made while the line runs.** Bash runs a command hidden in a value it does arithmetic on
   (`a[$(cmd)]`). The check asks when it can see such code on the line, but not when the value comes
   from a command's output, a file, a pipe or a download (including `$(( $(cmd) ))`), nor from a file
@@ -1054,6 +1059,8 @@ more code; none has a release set to change it, unless it says so.
 
 - **A folder whose name holds `:`** cannot be mounted into the box, as Docker reads `:` as a
   separator.
+- **Docker's check at launch has no time limit,** so a Docker that has stopped answering hangs the
+  launch; Ctrl-C stops it.
 - **SELinux** (on in Fedora, RHEL and the like) denies the box the project folder: commands in it
   get "permission denied". Docker's `:z` mount option fixes it, but relabels your folder for good,
   so Tachikoma does not add it.
@@ -1100,8 +1107,10 @@ more code; none has a release set to change it, unless it says so.
   still reach `.git` (measured on an ordinary folder); folders made from WSL under `/mnt/c` mind
   case by default. A name that is another drive's mount point can fool the check. Docker Desktop on
   a case-sensitive Mac volume has not been tried.
-- **Links and odd shapes:** a hooks folder, or a top-level git part, that is a link inside the
-  project is not handled; a `.tachikoma` that is a file, or a git or hooks folder that is the
+- **A hooks folder, `.git`, or a top-level `HEAD`, `objects`, `refs` or `config` that is a link:**
+  what it leads to is read-only in the box, but the link itself is not, so the box can replace it
+  with its own, which git on your machine then uses.
+- **Odd shapes:** a `.tachikoma` that is a file, or a git or hooks folder that is the
   project itself or `.tachikoma`, fails at start; an include inside `.tachikoma` gives Docker two
   mounts at one place, and the box does not start; a `.tachikoma` that cannot be made, or a hooks
   folder that cannot be checked, shows the raw error; a missing optional include outside the project
@@ -1157,9 +1166,9 @@ more code; none has a release set to change it, unless it says so.
   file merged against the box's text file fails as `git merge-file failed`. A file the box adds
   named exactly `GIT~1`, where `.git` is a file, is a conflict, never written. A file another
   program changes in the instant between the last check and the replacement can be overwritten.
-  After a crash, a change cut off at the wrong moment can be reported as not applied or changed
-  since, or one that only flips the executable flag as applied; and a power cut can lose the log's
-  last line or the last replacement.
+  After a crash or a refusal partway through a file, that file can be reported later as not
+  applied or changed since, and after a crash during a change that only flips the executable flag,
+  as applied; and a power cut can lose the log's last line or the last replacement.
 - **Leaving:** `/exit` stops a running turn without waiting, so a write cut off midway shows in the
   review. In `never`, the file tools also refuse writes outside `/work` in the box, while shell
   commands can still write there. If `-p`'s request itself fails, the copy is kept without its
@@ -1190,9 +1199,11 @@ more code; none has a release set to change it, unless it says so.
 
 - **tmux inside Windows Terminal gets no Shift+Enter;** Ctrl+J, or a backslash then Enter, still
   make a new line.
-- **Some keys do nothing while Tachikoma runs there:** typing a character by holding Alt and its
-  number on the number pad; Ctrl or Alt with a key Windows gives no character for, except
-  Ctrl+Space; and F13 to F20.
+- **Typing a character with Alt and its code on the number pad** is not supported there
+  (untried).
+- **Some keys do nothing while Tachikoma runs there:** Ctrl or Alt with another key Windows gives no
+  character for (such as Ctrl+2), except Ctrl+Space; and F13 to F20. The arrows, Home, End, PgUp,
+  PgDn, Insert, Delete, F1 to F12, Enter, Backspace and Tab do work with Ctrl and Alt.
 - **AltGr is told apart only by the character it makes,** so Ctrl+Alt with a key that makes a
   character types that character.
 - **A key's report that arrives in two pieces more than 20 ms apart,** Ink's own wait, is not read
