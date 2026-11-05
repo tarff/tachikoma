@@ -926,6 +926,14 @@ the plan's review.
     it is: <paths>`; and, for a discard whose box cannot be removed, `The box could not be
     removed, so the copy was not discarded.` The list keeps the change count (the user's choice),
     measured at 1.2-1.8 s a copy of this repo, each row printed when counted.
+120. **In full screen the prompt takes at most half the rows** (the user's choice, their hand
+    check of 2026-11-05: with a long prompt the conversation had one row, "It scrolls but the
+    prompt stays in the way."). `frame()` draws the prompt in at most `Math.floor(rows / 2)` rows,
+    at least one, where the rules before gave more; a longer prompt scrolls in its box, following
+    the cursor, as it did at the old limit. A menu still cuts it to the cursor's row; the to-do
+    list and the queue still give way to the whole prompt, so the rows freed go to the
+    conversation. Classic mode is unchanged. Commit `fix: in full screen the prompt takes at most
+    half the rows, so the conversation stays readable (choice 120)`.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.

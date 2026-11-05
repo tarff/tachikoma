@@ -177,9 +177,14 @@ export function frame(i: FrameIn): FrameOut {
   const space = Math.max(1, room - (hinted ? 1 : 0));
   const menuRows = i.menu !== null ? Math.min(i.menu, Math.max(1, space - 1)) : 0;
   const panel = i.taskRows(Math.max(0, space - 1 - menuRows));
-  const promptSpace = i.menu !== null ? 1 : space - panel.length;
+  const promptRoom = i.menu !== null ? 1 : space - panel.length;
+  // In full screen the prompt draws at most half the terminal's rows, Math.floor(rows / 2), and at least one; a longer
+  // prompt scrolls in its box, so the conversation stays readable (release 7 plan, choice 120, the user's hand check).
+  // The rules above still apply when they give less: a menu cuts it to the cursor's row, the panel takes its rows first.
+  // The to-do list and the queue still give way to the whole prompt, as before, so the rows it frees go to the conversation.
+  const promptSpace = i.full ? Math.min(promptRoom, Math.max(1, Math.floor(i.rows / 2))) : promptRoom;
   const promptShown = Math.min(i.promptRows, Math.max(1, promptSpace));
-  const promptLeft = space - menuRows - panel.length - Math.min(i.promptRows, promptSpace);
+  const promptLeft = space - menuRows - panel.length - Math.min(i.promptRows, promptRoom);
   const todoShown = i.todoRows(promptLeft);
   const left = promptLeft - todoShown.length;
   const queuedShown = i.queued <= left ? i.queued : Math.max(0, left);

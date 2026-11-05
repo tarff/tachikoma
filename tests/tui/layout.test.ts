@@ -121,7 +121,7 @@ describe("frame", () => {
       hinted: true,
       menuRows: 0,
       panel: [],
-      promptSpace: 16,
+      promptSpace: 10, // half the rows, in full screen (choice 120)
       promptShown: 1,
       promptWindow: { top: 0, above: 0, below: 0 },
       todoShown: [],
@@ -138,10 +138,35 @@ describe("frame", () => {
   });
 
   it("windows a prompt taller than its space around the cursor, leaving the conversation its one row", () => {
-    // Of ten rows, the frame's row short, the conversation's, the hint and the status line leave six for twelve.
-    const f = frame({ ...base, rows: 10, promptRows: 12, cursorRow: 11 });
-    expect(f).toMatchObject({ promptSpace: 6, promptShown: 6, left: 0, viewHeight: 1, promptFirst: 1 });
-    expect(f.promptWindow).toEqual({ top: 6, above: 7, below: 0 });
+    // Of ten rows, the frame's row short, the hint and the status line leave seven for twelve, in classic mode, where the
+    // conversation is the terminal's own scrollback.
+    const f = frame({ ...base, rows: 10, full: false, promptRows: 12, cursorRow: 11 });
+    expect(f).toMatchObject({ promptSpace: 7, promptShown: 7, left: 0, viewHeight: 1, promptFirst: 0 });
+    expect(f.promptWindow).toEqual({ top: 5, above: 6, below: 0 });
+  });
+
+  // Release 7 plan, choice 120 (the user's hand check): in full screen a long prompt left the conversation one row.
+  it("gives a prompt at most half the rows in full screen, the conversation keeping the rest", () => {
+    // Ten rows: five for twelve, where six were left (the frame's row short, the hint and the status line), so the
+    // conversation has two.
+    const ten = frame({ ...base, rows: 10, promptRows: 12, cursorRow: 11 });
+    expect(ten).toMatchObject({ promptSpace: 5, promptShown: 5, left: 0, viewHeight: 2, promptFirst: 2 });
+    expect(ten.promptWindow).toEqual({ top: 7, above: 8, below: 0 });
+    // Twenty rows: ten for thirty, the conversation the other seven of the nineteen drawn; a prompt of ten keeps them all.
+    const twenty = frame({ ...base, rows: 20, promptRows: 30, cursorRow: 0 });
+    expect(twenty).toMatchObject({ promptSpace: 10, promptShown: 10, left: 0, viewHeight: 7, promptFirst: 7 });
+    expect(twenty.promptWindow).toEqual({ top: 0, above: 0, below: 21 });
+    expect(frame({ ...base, rows: 20, promptRows: 10 })).toMatchObject({ promptShown: 10, viewHeight: 7, promptWindow: { top: 0, above: 0, below: 0 } });
+    // A short prompt is drawn as before.
+    expect(frame({ ...base, rows: 20, promptRows: 3 })).toMatchObject({ promptShown: 3, viewHeight: 14, promptFirst: 14 });
+    // A to-do list still gives way to the whole prompt, so the rows the prompt frees are the conversation's.
+    const listed = frame({ ...base, rows: 20, promptRows: 30, todoRows: (rows) => todoRows(items, rows) });
+    expect(listed).toMatchObject({ todoShown: [], promptShown: 10, left: 0, viewHeight: 7, promptFirst: 7 });
+    // An open menu still cuts it to the cursor's row.
+    expect(frame({ ...base, rows: 20, promptRows: 30, cursorRow: 4, menu: 3 })).toMatchObject({ menuRows: 3, promptSpace: 1, promptShown: 1, viewHeight: 13 });
+    // A small terminal: below nine rows the rules above give no more than half; at three rows and less, still one row.
+    expect(frame({ ...base, rows: 8, promptRows: 12 })).toMatchObject({ promptSpace: 4, promptShown: 4, viewHeight: 1 });
+    for (const rows of [1, 2, 3]) expect(frame({ ...base, rows, promptRows: 12 })).toMatchObject({ promptSpace: 1, promptShown: 1, viewHeight: 1 });
   });
 
   it("cuts the prompt to the cursor's row under an open menu, which takes the rest", () => {
@@ -306,22 +331,26 @@ describe("frame", () => {
   });
 
   describe("one input changed, every other the same", () => {
-    // A twelve-row prompt, the cursor on its seventh row, in a frame of twelve rows.
+    // A twelve-row prompt, the cursor on its seventh row, in a frame of twelve rows: the prompt draws half of them (choice
+    // 120), and the conversation has the three its eight rows leave.
     const tall: FrameIn = { ...base, rows: 12, promptRows: 12, cursorRow: 6 };
-    const off = { tooled: false, hinted: true, promptSpace: 8, promptShown: 8, left: 0, viewHeight: 1, promptFirst: 1 };
+    const off = { tooled: false, hinted: true, promptSpace: 6, promptShown: 6, left: 0, viewHeight: 3, promptFirst: 3 };
 
     it("the working line takes a row above the prompt", () => {
       expect(frame(tall)).toMatchObject(off);
-      expect(frame(tall).promptWindow).toEqual({ top: 0, above: 0, below: 5 });
+      expect(frame(tall).promptWindow).toEqual({ top: 2, above: 3, below: 5 });
       const on = frame({ ...tall, working: true });
-      expect(on).toMatchObject({ ...off, promptSpace: 7, promptShown: 7, promptFirst: 2 });
-      expect(on.promptWindow).toEqual({ top: 1, above: 2, below: 5 });
+      expect(on).toMatchObject({ ...off, viewHeight: 2, promptFirst: 3 });
+      expect(on.promptWindow).toEqual({ top: 2, above: 3, below: 5 });
+      // In classic mode it takes one of the prompt's.
+      expect(frame({ ...tall, full: false })).toMatchObject({ promptSpace: 9, promptShown: 9, promptFirst: 0 });
+      expect(frame({ ...tall, full: false, working: true })).toMatchObject({ promptSpace: 8, promptShown: 8, promptFirst: 1 });
     });
 
     it("a tool line takes a row under the status line, where there is room for it, the hint and the cursor's row", () => {
       const on = frame({ ...tall, toolLine: true });
-      expect(on).toMatchObject({ ...off, tooled: true, promptSpace: 7, promptShown: 7 });
-      expect(on.promptWindow).toEqual({ top: 1, above: 2, below: 5 });
+      expect(on).toMatchObject({ ...off, tooled: true, viewHeight: 2, promptFirst: 2 });
+      expect(on.promptWindow).toEqual({ top: 2, above: 3, below: 5 });
       // Four rows leave one, which the cursor's row keeps; six leave three, one each.
       expect(frame({ ...tall, rows: 4, toolLine: true })).toMatchObject({ tooled: false, hinted: false });
       expect(frame({ ...tall, rows: 6, toolLine: true })).toMatchObject({ tooled: true, hinted: true });
@@ -338,7 +367,7 @@ describe("frame", () => {
     it("the prompt's window moves from where it was last drawn only as far as the cursor needs", () => {
       const moved = frame({ ...tall, promptTop: 4 });
       expect(moved).toMatchObject(off);
-      expect(moved.promptWindow).toEqual({ top: 4, above: 5, below: 0 });
+      expect(moved.promptWindow).toEqual({ top: 4, above: 5, below: 3 });
     });
   });
 });

@@ -2432,13 +2432,16 @@ describe("App in full screen", () => {
     expect(rows).toHaveLength(23);
   });
 
-  it("leaves the conversation a row however tall the prompt grows, and the frame a row short of the terminal", async () => {
+  // Release 7 plan, choice 120 (the user's hand check): a tall prompt draws at most half the rows, twelve of 24.
+  it("leaves the conversation the rows a tall prompt's half leaves, and the frame a row short of the terminal", async () => {
     const { app } = await mount([], { full: true, intro: said(60) });
     await press(app, Array.from({ length: 20 }, (_, i) => `p${i}`).join("\n")); // Ctrl+J between them
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[0]).toBe("said 59.");
-    expect(rows[1]).toBe("› p0");
+    expect(rows[0]).toBe("said 51.");
+    expect(rows[8]).toBe("said 59.");
+    expect(rows[9]).toBe("› ↑ 9 rows above");
+    expect(rows[20]).toBe("  p19");
   });
 
   it("scrolls with PgUp while a question waits, and still answers it with y", async () => {
@@ -3252,16 +3255,17 @@ describe("App's clicks in full screen", () => {
       frame = app.lastFrame();
       await pointer(mouse, ...click(4, 2));
       expect(app.lastFrame()).toBe(frame);
-      await press(app, "\u0015", "a", ..."bcdefghij".split("").flatMap((c) => ["\n", c])); // Ctrl+U empties it; ten lines
-      expect(shown(app).slice(1, 7)).toEqual(["› ↑ 5 rows above", "  f", "  g", "  h", "  i", "  j"]);
-      await pointer(mouse, ...click(4, 1));
+      // Ctrl+U empties it; ten lines, in five rows, half the terminal's (release 7 plan, choice 120).
+      await press(app, "\u0015", "a", ..."bcdefghij".split("").flatMap((c) => ["\n", c]));
+      expect(shown(app).slice(2, 7)).toEqual(["› ↑ 6 rows above", "  g", "  h", "  i", "  j"]);
+      await pointer(mouse, ...click(4, 2));
       await press(app, "X");
       expect(shown(app)[6]).toBe("  jX");
       await press(app, "\u007f", ...Array(9).fill("\u001b[A")); // Backspace, then up to the first row
-      expect(shown(app).slice(1, 7)).toEqual(["› a", "  b", "  c", "  d", "  e", "  ↓ 5 rows below"]);
+      expect(shown(app).slice(2, 7)).toEqual(["› a", "  b", "  c", "  d", "  ↓ 6 rows below"]);
       await pointer(mouse, ...click(4, 6));
       await press(app, "Y");
-      expect(shown(app)[1]).toBe("› aY");
+      expect(shown(app)[2]).toBe("› aY");
     } finally {
       await rm(ctx.root, { recursive: true, force: true });
     }
