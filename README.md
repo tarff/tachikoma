@@ -445,7 +445,8 @@ This is why `never` is refused in live link.
   `your folder`, `the snapshot` and `the box's copy`. A binary file is never merged.
 - **The end:** once every change is applied or skipped, the copy is removed. Otherwise, or after
   `l`, it is kept: `The copy is kept; tachi review <session> opens it again.` `d` discards it after
-  `Discard the copy and every change in it? [y/n]`.
+  `Discard the copy and every change in it? [y/n]`. A session that changed nothing, or only paths
+  git ignores, skips the review and removes the copy, with `-p` too.
 - **Kept for later:** a copy is also kept when the session is ended by a signal or a crash, and with
   `-p`, which prints `Changes kept for review: tachi review <name>` on stderr.
 

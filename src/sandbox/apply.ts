@@ -359,6 +359,8 @@ export async function toReview(manifest: Manifest, folder: string, session: stri
     leftOut: found.leftOut,
   };
 }
+// What toReview gives, which leave() reads once and hands to the review (copies.ts, dropIfNothing; choice 121).
+export type ToReview = Awaited<ReturnType<typeof toReview>>;
 
 type Row = { path: string; state: "pending"; before: string; after: string } | { path: string; state: "done" };
 

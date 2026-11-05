@@ -922,7 +922,8 @@ describe("dropOnExit", () => {
 // planted. PATH is an empty folder, so nothing else is found either; the lead is a stand-in for OpenAI's chat completions
 // served on the loopback address, which answers at once with no tool call.
 describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000 }, () => {
-  async function copyRun(standin: "ok" | "start-fails") {
+  // `change`: the lead's stand-in writes a file into the copy's work/ before it answers, as the box would.
+  async function copyRun(standin: "ok" | "start-fails", change = false) {
     const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-e2e-")));
     onTestFinished(() => removeTree(top));
     const proj = path.join(top, "proj");
@@ -933,6 +934,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
     const server = http.createServer((req, res) => {
       req.resume().on("end", () => {
+        if (change) for (const session of readdirSync(path.join(data, "copies"))) writeFileSync(path.join(data, "copies", session, "work", "new.txt"), "made-up\n");
         const message = { role: "assistant", content: "done" };
         const body = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [{ index: 0, finish_reason: "stop", message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
@@ -962,7 +964,7 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
   }
 
   it("answers, then names the copy kept for review on stderr, keeping it and leaving the folder untouched", async () => {
-    const r = await copyRun("ok");
+    const r = await copyRun("ok", true);
     expect(r.stdout).toBe("done\n");
     expect(r.code).toBe(0);
     const lines = r.stderr.trimEnd().split("\n");
@@ -974,6 +976,17 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     expect(readdirSync(r.proj)).toEqual(["notes.txt"]);
     // The plan's test: `tachi review` lists the copy kept.
     expect(tachi("review", { TACHI_DATA_DIR: path.dirname(r.copies) }).stdout).toContain(`  ${session}  ${r.proj}  `);
+  });
+
+  // Choice 121 (the user's): with nothing to review, the copy is removed, and said so in place of the kept line.
+  it("removes the copy when the session changed nothing, saying so on stderr", async () => {
+    const r = await copyRun("ok");
+    expect(r.stdout).toBe("done\n");
+    expect(r.code).toBe(0);
+    const lines = r.stderr.trimEnd().split("\n");
+    expect(lines.slice(-2)).toEqual(["Removing the copy (1 file)...", "Nothing changed in the copy, so it was removed."]);
+    expect(readdirSync(r.copies)).toEqual([]);
+    expect(readdirSync(r.proj)).toEqual(["notes.txt"]);
   });
 
   it("removes the copy when the launch stops after it was made", async () => {

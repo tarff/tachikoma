@@ -6,6 +6,7 @@ import path from "node:path";
 import { parseArgs, styleText } from "node:util";
 import { type Instance, render } from "ink";
 import { accountCommand } from "./auth/chatgpt.js";
+import { withLock } from "./auth/lock.js";
 import {
   approvalQuestion,
   checkOffLine,
@@ -50,8 +51,9 @@ import { readKeybindings } from "./keybindings.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
-import { boxCheck, reviewCommand } from "./sandbox/copies.js";
+import { boxCheck, dropIfNothing, reviewCommand } from "./sandbox/copies.js";
 import { sandboxCommand } from "./sandbox/image.js";
+import { copyLock } from "./sandbox/snapshot.js";
 import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
@@ -491,8 +493,22 @@ if (parsed.print !== undefined) {
       if (note) console.error(note);
     }
   }
-  // Nobody can review here, so the copy is kept (choice 29).
-  if (box?.copy) console.error(keptForReview(sessionId));
+  // Nobody can review here, so the copy is kept (choice 29), unless it has nothing to review: then, as at the session's
+  // end in the interface (queue.ts, leave), once the box is gone and under the copy's lock, it is removed (choice 121).
+  if (box?.copy) {
+    const { folder, manifest } = box.copy;
+    let line: string | undefined;
+    try {
+      await box.box.stop();
+      if ((await boxCheck(manifest)) === "free") {
+        const read = await withLock(copyLock(folder), () => dropIfNothing({ session: sessionId, folder, manifest }, (l) => console.error(l)));
+        if (typeof read === "string") line = read;
+      }
+    } catch (err) {
+      console.error(visible(errorText(err)));
+    }
+    console.error(line ?? keptForReview(sessionId));
+  }
   process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
 } else {
   // Ctrl-C reaches the interface as a key, as raw mode is on, so a SIGINT here came from outside (`kill -INT`), or from

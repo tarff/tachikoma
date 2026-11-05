@@ -4,6 +4,7 @@ import { type Protection, visible } from "../../core/permissions.js";
 import type { Task } from "../../core/tasks.js";
 import { errorText } from "../../core/types.js";
 import { KEYBINDINGS } from "../../keybindings.js";
+import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS } from "../../settings.js";
 import type { Fns } from "../App.js";
@@ -211,7 +212,7 @@ export const queue = (ui: UI, fns: Fns) => {
   // Ink still mounted, under the lock beside the copy's folder, so two reviews of one copy take turns; its lines are
   // handed back, to print once Ink has ended (release 7 plan, Task 21). From the first step the App's own keys, pastes
   // and mouse are off (phase.ts, review), and nothing more starts. A view printed out comes back first, so the review
-  // can draw.
+  // can draw. A copy with nothing to review is removed instead, its line printed (choice 121; copies.ts, dropIfNothing).
   const leave = () => {
     const c = ui.copy;
     if (!c) return ui.exit();
@@ -232,7 +233,13 @@ export const queue = (ui: UI, fns: Fns) => {
         } catch (err) {
           return c.ended([visible(reviewUnopened(errorText(err))), kept(c.copy.session)]);
         }
-        const end = await new Promise<ReviewEnd>((onEnd) => ui.setReviewing({ protection, onEnd }));
+        // Nothing to review: no review, and the copy is removed (choice 121).
+        const read = await dropIfNothing(c.copy, (line) => {
+          ui.leavingLine.current = line;
+          ui.rerender((n) => n + 1);
+        }, c.remove);
+        if (typeof read === "string") return c.ended([read]);
+        const end = await new Promise<ReviewEnd>((onEnd) => ui.setReviewing({ protection, onEnd, read }));
         c.ended(end.lines);
       });
     })()

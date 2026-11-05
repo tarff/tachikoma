@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8043,6 +8043,75 @@ describe("App's leave() in copy mode", () => {
     await expectExited(app);
     expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
     expect(existsSync(`${w.folder}.lock`)).toBe(false);
+  });
+
+  // Choice 121 (the user's): with nothing to review there is no review; the copy is removed, still under the lock and
+  // once the box is gone. The box's change is taken back here, so work/ is as the snapshot left it; with `ignored`, the
+  // snapshot holds a .gitignore and the box made a file in a path it ignores.
+  function unchanged(w: ReturnType<typeof copyWorld>, ignored = false) {
+    writeFileSync(path.join(w.folder, "work", "a.txt"), "made-up text\n");
+    if (!ignored) return;
+    for (const where of ["base", "work"]) writeFileSync(path.join(w.folder, where, ".gitignore"), "*.log\n");
+    const st = statSync(path.join(w.folder, "work", ".gitignore"));
+    const sha256 = createHash("sha256").update("*.log\n").digest("hex");
+    w.copy.copy.manifest.entries[".gitignore"] = { type: "file", sha256, exec: false, size: st.size, mtimeMs: st.mtimeMs };
+    writeFileSync(path.join(w.folder, "work", "made.log"), "made-up log\n");
+  }
+  const reviewDrawn = (app: ReturnType<typeof render>) => app.frames.some((f) => f.includes("Review the copy's changes"));
+
+  it("skips the review and removes the copy when nothing changed, saying so", async () => {
+    const w = copyWorld();
+    unchanged(w);
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual(["Nothing changed in the copy, so it was removed."]);
+    expect(w.said).toEqual(["stop", "protection"]);
+    expect(reviewDrawn(app)).toBe(false);
+    expect(app.frames.some((f) => f.includes("Removing the copy (1 file)..."))).toBe(true);
+    await expectExited(app);
+    expect(existsSync(w.folder)).toBe(false);
+    expect(existsSync(`${w.folder}.lock`)).toBe(false);
+  });
+
+  it("skips the review and removes the copy when its only changes are in paths git ignores, counting them", async () => {
+    const w = copyWorld();
+    unchanged(w, true);
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual(["Nothing to review (1 change only in paths git ignores, never applied), so the copy was removed."]);
+    expect(reviewDrawn(app)).toBe(false);
+    await expectExited(app);
+    expect(existsSync(w.folder)).toBe(false);
+  });
+
+  it("says when the copy with nothing to review could not be removed", async () => {
+    const w = copyWorld();
+    unchanged(w);
+    w.copy.remove = async () => {
+      throw new Error("made-up failure");
+    };
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual([`The copy could not be removed (made-up failure); delete ${w.folder} by hand.`]);
+    expect(reviewDrawn(app)).toBe(false);
+    await expectExited(app);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+  });
+
+  it("opens the review as before when the copy's changes cannot be read", async () => {
+    const w = copyWorld();
+    renameSync(path.join(w.folder, "work"), path.join(w.folder, "elsewhere"));
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await until(app, "The copy's changes could not be read:");
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
   });
 
   // The quality review: a failure while leaving is said escaped, with where the copy is.

@@ -4,6 +4,7 @@ import { type Mode, type Protection, visible } from "../../core/permissions.js";
 import type { Effort } from "../../providers/anthropic.js";
 import type { ModelGroup } from "../../providers/models.js";
 import { NO_RULES } from "../../safety/rules.js";
+import type { ToReview } from "../../sandbox/apply.js";
 import type { TodoItem } from "../../tools/todo.js";
 import type { AppProps, Fns } from "../App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../bindings.js";
@@ -118,7 +119,8 @@ export function useAppState({
   // Copy mode's leaving (queue.ts, leave), from its first step; and the review once the box is gone, with the protection
   // worked out for it and where its end goes (release 7 plan, Task 21).
   const leaving = useRef(false);
-  const [reviewing, setReviewing] = useState<{ protection: Protection; onEnd: (end: ReviewEnd) => void } | null>(null);
+  const leavingLine = useRef<string | null>(null); // the removing line in the box's line's place (choice 121)
+  const [reviewing, setReviewing] = useState<{ protection: Protection; onEnd: (end: ReviewEnd) => void; read?: ToReview } | null>(null);
   // Who has the terminal (owner.ts): how many hand-overs hold the keyboard, and whether Ink is suspended.
   const [owner] = useState(
     () =>
@@ -279,7 +281,7 @@ export function useAppState({
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
-    happening, late, toolLine, answered, copy, leaving, reviewing, setReviewing,
+    happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing,
   } as const;
 }
 

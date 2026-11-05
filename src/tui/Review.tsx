@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Protection } from "../core/permissions.js";
 import { errorText } from "../core/types.js";
 import { protectedPart } from "../safety/protected.js";
-import { type ApplyOptions, applyChange, CANNOT_MERGE, type Outcome, toReview } from "../sandbox/apply.js";
+import { type ApplyOptions, applyChange, CANNOT_MERGE, type Outcome, type ToReview, toReview } from "../sandbox/apply.js";
 import type { Change } from "../sandbox/changes.js";
 import { fileDiff } from "../sandbox/diff.js";
 import { type Manifest, removeCopy } from "../sandbox/snapshot.js";
@@ -118,6 +118,7 @@ export function Review({
   options,
   remove = removeCopy,
   protection,
+  read,
 }: {
   copy: ReviewCopy;
   bindings: Bindings; // the table of keys, for the Review context's keys and the names the lines give them
@@ -129,6 +130,7 @@ export function Review({
   // protected.ts's own lists: host paths, protectionOf(await gitSettings(manifest.root)) (clilib.ts), never the box's
   // view of them (boxProtection), whose /work paths match no host path. Required, so none is left out unseen.
   protection: Protection;
+  read?: ToReview; // the changes leave() has read already, so they are not read twice (copies.ts, dropIfNothing)
 }) {
   const { session, folder, manifest } = copy;
   const { columns, rows } = useWindowSize();
@@ -155,11 +157,11 @@ export function Review({
 
   // The changes, less what an earlier apply of this copy applied (a copy reopened by `tachi review` after a crash lists
   // them again), with what was left out and the ignored count as notes above them (choice 109). Read once, at the first
-  // drawing; a discard begun meanwhile goes on, the list never shown.
+  // drawing, unless given (`read`); a discard begun meanwhile goes on, the list never shown.
   useEffect(() => {
     void (async () => {
       try {
-        const found = await toReview(manifest, folder, session);
+        const found = read ?? (await toReview(manifest, folder, session));
         if (s.stage !== "reading") return;
         const { ignored } = found;
         // The box's own repository at the top, which Tachikoma made at launch (choice 24), is not listed: it would be in

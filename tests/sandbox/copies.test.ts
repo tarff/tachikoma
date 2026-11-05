@@ -7,7 +7,7 @@ import { describe, expect, it, onTestFinished } from "vitest";
 import { dropOnExit } from "../../src/clilib.js";
 import type { DockerRun } from "../../src/sandbox/docker.js";
 import { toReview } from "../../src/sandbox/apply.js";
-import { boxCheck, type ReviewIo, reviewCommand } from "../../src/sandbox/copies.js";
+import { boxCheck, dropIfNothing, type ReviewIo, reviewCommand } from "../../src/sandbox/copies.js";
 import type { Manifest } from "../../src/sandbox/snapshot.js";
 import type { ReviewEnd } from "../../src/tui/Review.js";
 import { removeTree } from "../helpers.js";
@@ -362,6 +362,70 @@ describe("tachi review <name> --discard", () => {
     expect(exits).toEqual([]);
     expect(during).toBeGreaterThan(0); // a listener is there, so Node does not end the process
     expect(process.listeners("SIGINT")).toContain(exit);
+  });
+});
+
+// Choice 121 (the user's): a copy session that ends with nothing to review removes the copy, with no review, at the
+// session's end and with -p (tests/tui/app.test.tsx and tests/cli.test.ts).
+describe("a copy with nothing to review", () => {
+  const said = () => {
+    const lines: string[] = [];
+    return { lines, say: (line: string) => lines.push(line) };
+  };
+
+  it("is removed when nothing changed, the box's own repository not counting, saying so", async () => {
+    const w = world();
+    const c = w.copy("s1", { "a.txt": "made-up a\n" });
+    mkdirSync(path.join(c.folder, "work", ".git")); // made in the box at launch (choice 24)
+    const s = said();
+    expect(await dropIfNothing({ session: "s1", ...c }, s.say)).toBe("Nothing changed in the copy, so it was removed.");
+    expect(s.lines).toEqual(["Removing the copy (1 file)..."]);
+    expect(existsSync(c.folder)).toBe(false);
+  });
+
+  it("is removed when its only changes are in paths git ignores, counting them", async () => {
+    const w = world();
+    const tree = { ".gitignore": "*.log\n", "a.txt": "made-up a\n" };
+    for (const [name, changed, count] of [["s1", { "one.log": "x\n" }, "1 change"], ["s2", { "one.log": "x\n", "two.log": "y\n" }, "2 changes"]] as const) {
+      const c = w.copy(name, tree, { changed });
+      const s = said();
+      expect(await dropIfNothing({ session: name, ...c }, s.say)).toBe(`Nothing to review (${count} only in paths git ignores, never applied), so the copy was removed.`);
+      expect(s.lines).toEqual(["Removing the copy (2 files)..."]);
+      expect(existsSync(c.folder)).toBe(false);
+    }
+  });
+
+  it("is kept with a change to review, giving what toReview gave, so the review does not read it again", async () => {
+    const w = world();
+    const c = w.copy("s1", { "a.txt": "made-up a\n", ".gitignore": "*.log\n" }, { changed: { "a.txt": "A\n", "one.log": "x\n" } });
+    const s = said();
+    const got = await dropIfNothing({ session: "s1", ...c }, s.say);
+    expect(got).toEqual(await toReview(c.manifest, c.folder, "s1"));
+    expect(typeof got === "object" && got.changes.map((ch) => ch.path)).toEqual(["a.txt"]);
+    expect(s.lines).toEqual([]);
+    expect(existsSync(path.join(c.folder, "manifest.json"))).toBe(true);
+  });
+
+  it("is kept when its changes cannot be read, for the review to say why", async () => {
+    const w = world();
+    const c = w.copy("s1", { "a.txt": "made-up a\n" });
+    renameSync(path.join(c.folder, "work"), path.join(c.folder, "elsewhere"));
+    const s = said();
+    expect(await dropIfNothing({ session: "s1", ...c }, s.say)).toBeUndefined();
+    expect(s.lines).toEqual([]);
+    expect(existsSync(path.join(c.folder, "manifest.json"))).toBe(true);
+  });
+
+  it("says, escaped, when it cannot be removed, as discard does", async () => {
+    const w = world();
+    const c = w.copy("s1", { "a.txt": "made-up a\n" });
+    const s = said();
+    const got = await dropIfNothing({ session: "s1", ...c }, s.say, async () => {
+      throw new Error("made-up failure\u001b[8m");
+    });
+    expect(got).toBe(`The copy could not be removed (made-up failure\\u001b[8m); delete ${c.folder} by hand.`);
+    expect(s.lines).toEqual(["Removing the copy (1 file)..."]);
+    expect(existsSync(path.join(c.folder, "manifest.json"))).toBe(true);
   });
 });
 

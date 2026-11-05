@@ -114,6 +114,7 @@ export interface AppProps {
     stop: () => Promise<boolean>;
     protection: () => Promise<Protection>;
     ended: (lines: string[]) => void;
+    remove?: (folder: string) => Promise<void>; // a test's stand-in for removeCopy (choice 121; copies.ts, dropIfNothing)
   };
 }
 
@@ -427,12 +428,13 @@ export function App(props: AppProps) {
   latest.current = handlers;
   ui.late.latest = latest; // for newPicture's settle (pictureReads.ts)
 
-  // Copy mode's leaving (queue.ts, leave): its line while the box stops, then the review in place of everything else,
-  // with the live table of keys (release 7 plan, Task 21).
+  // Copy mode's leaving (queue.ts, leave): its line while the box stops, or a copy with nothing to review is removed
+  // (choice 121), then the review in place of everything else, with the live table of keys (release 7 plan, Task 21).
   if (ui.reviewing && ui.copy) {
-    return <Review copy={ui.copy.copy} bindings={ui.table} protection={ui.reviewing.protection} onEnd={ui.reviewing.onEnd} />;
+    const { protection, onEnd, read } = ui.reviewing;
+    return <Review copy={ui.copy.copy} bindings={ui.table} protection={protection} onEnd={onEnd} read={read} />;
   }
-  if (ui.leaving.current) return <Text color="gray">{STOPPING}</Text>;
+  if (ui.leaving.current) return <Text color="gray">{ui.leavingLine.current ?? STOPPING}</Text>;
 
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = ui.detail.current;

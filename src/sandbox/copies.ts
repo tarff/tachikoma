@@ -13,7 +13,7 @@ import { errorText } from "../core/types.js";
 import { type GitSettings, gitSettings } from "../safety/gitconfig.js";
 import { NOT_GONE, reviewUnopened } from "../tui/app/constants.js";
 import { DISCARDED, discardAsked, kept, notRemoved, removing, type ReviewCopy, type ReviewEnd } from "../tui/Review.js";
-import { appliedSoFar, toReview } from "./apply.js";
+import { appliedSoFar, type ToReview, toReview } from "./apply.js";
 import { docker, type DockerRun } from "./docker.js";
 import { alive, sessionGone } from "./executor.js";
 import { copyLock, MANIFEST, type Manifest, removeCopy } from "./snapshot.js";
@@ -35,6 +35,9 @@ const WAITING = "Another review of this copy is open; waiting for it to end...";
 const NOT_DISCARDED = "The box could not be removed, so the copy was not discarded.";
 const appliedBefore = (paths: string[]) => `An earlier apply of this copy applied: ${paths.join(", ")}`;
 const changedSince = (paths: string[]) => `Changed in your folder since an earlier apply began on it, so left as it is: ${paths.join(", ")}`;
+// The user's (choice 121): a copy session's end with nothing to review.
+const NOTHING_CHANGED = "Nothing changed in the copy, so it was removed.";
+const onlyIgnored = (n: number) => `Nothing to review (${counted(n)} only in paths git ignores, never applied), so the copy was removed.`;
 
 // How the command reaches the user, Docker and git. `ask` and `open` only with a terminal: the discard's y/n question,
 // and the review drawn in full screen (cli.tsx), resolving once the screen is gone. `data` is a test's data folder.
@@ -218,6 +221,29 @@ async function discardCopy(copy: ReviewCopy, data: string, io: ReviewIo): Promis
   }
   io.out(DISCARDED);
   return 0;
+}
+
+// Choice 121 (the user's): a copy session that ends with nothing to review, no change the review would list (apply.ts,
+// toReview), skips the review and removes the copy, at the session's end (queue.ts, leave) and with -p (cli.tsx), each
+// once the box is gone and under the copy's lock. Gives the line to print, the copy removed or why not; or, with
+// something to review, what toReview gave, so the review does not read it again; or undefined when it cannot be read,
+// for the review to say why, or -p to keep the copy, as before. `say` gives the removing line first, as a copy holding
+// node_modules takes a while; once begun, the removal goes on through Ctrl-C, as discard's does.
+export async function dropIfNothing(copy: ReviewCopy, say: (line: string) => void, remove: (folder: string) => Promise<void> = removeCopy): Promise<string | ToReview | undefined> {
+  let found: ToReview;
+  try {
+    found = await toReview(copy.manifest, copy.folder, copy.session);
+  } catch {
+    return undefined;
+  }
+  if (found.changes.length) return found;
+  say(removing(Object.values(copy.manifest.entries).filter((e) => e.type === "file").length));
+  try {
+    await uninterrupted(() => remove(copy.folder));
+  } catch (err) {
+    return visible(notRemoved(errorText(err), copy.folder));
+  }
+  return found.ignored ? onlyIgnored(found.ignored) : NOTHING_CHANGED;
 }
 
 // Runs `fn` with Ctrl-C set aside: removeCopy deletes the manifest first, so a copy stopped midway is never listed again,
