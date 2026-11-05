@@ -356,7 +356,12 @@ Each is marked in its task. The user approves them with the plan.
 15. **Switching** clears the per-turn state:
     - the shown calls and the to-do list;
     - `answered` and the tool line;
-    - the gauge's context, which is 0 until the next request.
+    - the gauge's context, which is 0 until the next request;
+    - **the subagents' inbox,** emptied with `tasks.take()` (tasks.ts:134-136) and dropped. A
+      waiting answer that wakes the lead is delivered to the old conversation before any queued
+      command runs (queue.ts:59), so what is left is only a "stopped by the user" note
+      (tasks.ts:155), which does not wake the lead and belongs to the old conversation. Kept, it
+      would join the new conversation's next prompt.
 
     It then says one line. Earlier lines stay on screen, as `Rows` and `<Static>` cannot remove
     them.
@@ -547,7 +552,7 @@ export type Line =
   | { t: "subagent"; at: string; id: string; file: string };
 export class Transcript {
   constructor(file: string, pictures: string);      // <id>.jsonl, <id>/pictures
-  write(line: Omit<Line, "at">): void;              // appendFileSync, one line; pictures saved first (choice 5)
+  write(line: DistributiveOmit<Line, "at">): void;  // appendFileSync, one line; pictures saved first (choice 5)
   readonly failed: string | null;                   // the reason saving stopped, or null
   mend(): void;                                     // a file not ending in "\n" gets one (design, "When something goes wrong")
 }
@@ -557,6 +562,8 @@ export interface Read { start: Extract<Line, { t: "start" }>; messages: Message[
   nextPicture: number; nextTask: number }                         // choices 5 and 4
 export function readTranscript(file: string, pictures: string): Read | { problem: string };
 export function wholeLines(file: string): string;   // the text up to the last "\n", for copies (design)
+// Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 ```
 
 **Behaviour:**
@@ -805,6 +812,11 @@ Commit: `feat: tachi -c, -r, -n and --fork-session reopen, name and copy saved s
 - `/rename` changes the list's row.
 - Each of `/clear`, `/resume` and `/branch` is refused with a background subagent running, and
   queued while a turn runs.
+- **A stopped subagent's note stays behind:** stop a background subagent, wait for it to end,
+  then `/clear`; the next request holds no "stopped by the user" note.
+- A background subagent that finishes while `/clear` waits in the queue: its answer goes into
+  the old conversation's request first, and the new conversation's first request holds none of
+  it.
 - The `/` menu test lists the new labels.
 
 Commit: `feat: /clear, /resume, /branch and /rename switch and name sessions in the window`.
@@ -905,10 +917,12 @@ export async function shorten(s: {
   - The latest round is copied in as text.
   - If the prompt and the round do not fit, the round is summarised whole.
   - If the prompt alone does not fit, `shorten` returns the problem.
-- **Summaries are requests:** `signal` stops them. Every request `shorten` makes reports its usage
-  through `onUsage` as soon as it ends, as `#request` does (session.ts:147, :164-165): the
-  declined attempts first, then the reply's, with the provider that served it. This holds for a
-  piece that is then split again, a request that fails, and one cut off, since each is billed.
+- **Summaries are requests:** `signal` stops them. Every request `shorten` makes reports what
+  usage it has through `onUsage` as soon as it ends, as `#request` does (session.ts:147,
+  :164-165): the declined attempts first, then the reply's, with the provider that served it.
+  That covers a reply cut off and a summary then split again. A request that throws, a "too long"
+  error among them, has no usage in `Provider.complete`'s contract, so it reports none: no token
+  count or charge is made up for it.
 
 **Tests** (each with a scripted fake lead that records what it was sent):
 - **Between turns:**
@@ -929,8 +943,9 @@ export async function shorten(s: {
   exchange, then their summaries combined; a summary cut off at the window splits the same way;
   one exchange still too long returns the problem.
 - A cancelled summary returns the problem and changes nothing.
-- **Usage:** one summary reports one usage; a split reports one for the refused whole, each half
-  and the combining request; a cancel after the first half reports that half's.
+- **Usage:** one summary reports one usage. A split after a "too long" error reports nothing for
+  the refused whole, then one for each half and the combining request. A split after a summary cut
+  off reports the cut-off one too. A cancel after the first half reports that half's.
 
 Commit: `feat: shortening summarises everything before what must stay, and keeps the request in progress whole`.
 
@@ -952,6 +967,10 @@ Commit: `feat: shortening summarises everything before what must stay, and keeps
   - It rebuilds the system prompt with `systemNow()`.
   - It writes one `shortened` line: the new system prompt and the new history's message
     (choice 4).
+  - **It checks `failed` again.** `write` records a failure without throwing, so a failure in
+    that append would otherwise pass as a shortening. If it failed, the history is not replaced,
+    the old system prompt stays, no `shortened` event is emitted, and the turn ends as it does
+    when `failed` was already set.
   - It replaces the history in place.
   - It emits a new bus event, `shortened: [string]`, with the summary.
 - **`/lead` to a provider whose window is smaller** checks `fits`. If the conversation will not
@@ -969,6 +988,9 @@ Commit: `feat: shortening summarises everything before what must stay, and keeps
 - A `tooLong` 400 with pictures in the history shortens and does not ask about pictures.
 - A second "too long" ends with the line.
 - A failed transcript refuses to shorten and ends with the line.
+- **Saving first fails at the `shortened` line** (a fake `Transcript` whose write of that line
+  sets `failed`): the history and system prompt are unchanged, no `shortened` event comes, and
+  the turn ends with the line.
 - `/lead` to a smaller window shortens; a failed summary keeps the old lead.
 - A subagent shortens.
 - `prompts` survive a shortening.
