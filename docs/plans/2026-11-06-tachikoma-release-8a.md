@@ -281,8 +281,13 @@ Each is marked in its task. The user approves them with the plan.
    - `lead`: a new lead's id.
    - `name`: a name given.
    - `shortened`: the new system prompt and the new history's one message, in the same line.
-   - `subagent`: a subagent's id and its file's name, written before the subagent's first
-     message.
+   - `subagent`: a subagent's id, its description and its file's name, written before the
+     subagent's first message. The description is what the "had not finished" line names
+     (decided 2026-11-06 in Task 3: nothing else in the file holds it).
+   - `ended`, in a subagent's own file only: `failed` or `stopped`, written when it ends so
+     (user, 2026-11-06, option chosen: "Record how it ended"). A subagent is unfinished only when
+     its file has neither this line nor a final answer, so one the lead already heard failed or
+     was stopped is not reported as lost.
 
    Reading takes the last whole `shortened` line as the start of the history, as Claude Code
    does. A shortening is one line, so it is one append: a crash or a failed write during it leaves
@@ -447,7 +452,7 @@ are notes; red ones are failures.
 | `tachi -r`, nothing saved | `No saved sessions in this folder.` |
 | `tachi -r <x>`, not found | `No session named or numbered <x> in this folder; tachi --resume lists them.` |
 | `tachi -r` without a terminal | `tachi --resume needs a terminal to list sessions; give it a session's id or name.` |
-| A transcript that cannot be read | `<file> could not be read as a session (<reason>).` |
+| A transcript that cannot be read | `<file> could not be read as a session (<reason>).` With no readable first line, the reason is `its first line is missing or damaged` (user, 2026-11-06). |
 | Damaged lines skipped (grey) | `<n> damaged lines of this session were skipped.` |
 | The saved lead is gone (grey) | `The session's lead, <spec>, is not set up (<reason>); <spec> leads instead.` |
 | Open elsewhere (grey; approved in the design) | `Opened a copy: that session is open in another window.` |
@@ -598,7 +603,8 @@ export type Line =
   | { t: "lead"; at: string; lead: string }
   | { t: "name"; at: string; name: string }
   | { t: "shortened"; at: string; system: string; message: SavedMessage }   // one line: choice 4
-  | { t: "subagent"; at: string; id: string; file: string };
+  | { t: "subagent"; at: string; id: string; description: string; file: string }
+  | { t: "ended"; at: string; state: "failed" | "stopped" };                  // in a subagent's file
 export class Transcript {
   constructor(file: string, pictures: string);      // <id>.jsonl, <id>/pictures
   write(line: DistributiveOmit<Line, "at">): void;  // appendFileSync, one line; pictures saved first (choice 5)
@@ -743,7 +749,8 @@ class Session {
   - It empties `#shrunk` (`clear()`, as the field is `readonly`).
   - It calls `Pictures.from(nextPicture)` and `Tasks.from(nextTask)`.
 - **A subagent's session** writes `<id>/subagents/<tN>.jsonl`, and the lead's transcript gets a
-  `subagent` line naming it (tasks.ts:184-192; design, "Saving sessions").
+  `subagent` line naming it, with its description (tasks.ts:184-192; design, "Saving sessions").
+  A subagent that ends failed or stopped writes an `ended` line to its own file (choice 4).
 - **Pictures:** `Pictures` gains `from(n)`, which only raises the next number (choice 5).
 - **Subagent ids:** `Tasks` gains `from(n)`, which only raises the next number; `start` takes
   ids from it, not from `all.length` (choice 4).
@@ -767,6 +774,8 @@ class Session {
   own file, and `t1.jsonl` is unchanged.
 - `Pictures.from` and `Tasks.from` never lower the next number.
 - A subagent's turn writes its own file and a `subagent` line.
+- A subagent that fails, and one that is stopped, each end their file with an `ended` line; read
+  back, neither is listed as unfinished.
 - A failed write leaves the turn running and `failed` set.
 
 Commit: `feat: the session saves each message as it is added, and can load a saved conversation`.
