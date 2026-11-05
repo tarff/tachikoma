@@ -211,14 +211,19 @@ In `auto`, Tachikoma decides each action in this order, as Claude Code's auto mo
 
 - **What the judge sees:** your own prompts in this session, as you typed them; the tool calls made
   so far, each tool's name and what it was given, but never what it returned (a file write shows
-  only its path and how long its text is); the action to judge, in full; and your instruction files
+  only its path and how long its text is); the action to judge, in full; and the instruction files
   as read at launch. What tools returned is left out on purpose, as Claude Code leaves it out, so
-  text planted in a file or a web page cannot talk to the judge.
+  text planted in a file or a web page cannot talk to the judge. But the instruction files include
+  the project's own (`AGENTS.md`, `CLAUDE.md` and the like), read without asking, so a project you
+  do not trust can try to talk the judge into a yes. What holds whatever the judge says is the
+  dangerous-command check and your own `dangerousCommands` rules, which ask you instead.
 - **Which model:** `--judge <provider:model>`, or `"judge"` in the settings file. Unset, the lead's
   own model judges, through the same login. Its tokens and cost count in the session's totals, but
   not in the context bar, which is the lead's.
 - **An answer that cannot be read counts as a no,** and so does a judge that cannot be reached; its
   error shows (`✗ judge: …` on screen, `judge: …` on stderr with `-p`).
+- **The judge has no time limit of its own,** only its provider's request time limit and
+  retries. So a judge slow to answer holds auto mode up, with no line saying why; Esc stops it.
 - **After 3 refusals in a row, or 20 in a session, auto mode pauses.** The next action that would go
   to the judge asks you instead, with the grey line `Auto mode paused after <n> refusals; approving
   this resumes it.`, and a yes resumes it. Once a session has had 20, each later refusal pauses it
@@ -437,8 +442,9 @@ This is why `never` is refused in live link.
 - **Git in the box:** `/work` starts as a new git repository holding the copy as one commit, on your
   branch's name, so the model can use git freely there. **The box's own commits stay in the copy and
   are never applied to your folder;** only the files are.
-- **The review:** `/exit`, Ctrl-D, or Ctrl-C twice stops the box and opens the review in full
-  screen. Each row is one added, changed or deleted file, starting as `keep`. Changes to protected
+- **The review:** `/exit`, Ctrl-D, or Ctrl-C twice stops the box and opens the review (in full
+  screen, unless the session is in classic mode). Each row is one added, changed or deleted file,
+  starting as `keep`. Changes to protected
   paths start as `skip (protected)`, as they can run code on your machine later; switch one to keep
   only on purpose. Links, and paths that changed type, are `shown only` and never applied: you apply
   those by hand. Changes inside paths git ignores are shown only as a count, and never applied, so
@@ -738,6 +744,11 @@ becomes the prompt, with the cursor at the end; Ctrl+Z brings back the text befo
 - **Which editor:** `VISUAL`, then `EDITOR`, then the settings file's `"editor"`, then Notepad on
   Windows and `vi` elsewhere. It runs through the system's shell (`cmd.exe` on Windows, `/bin/sh`
   elsewhere), as Git runs its editor, so the entry can carry its own options: `"code --wait"`.
+- **On Windows the editor starts with `NoDefaultCurrentDirectoryInExePath=1`,** so `cmd.exe` looks
+  for a bare name such as `code` on PATH only, not in the project first, where a planted `code.cmd`
+  would run. A VS Code that `"code --wait"` starts passes it on to its own `cmd.exe` terminals: a
+  bare `gradlew` or `build.bat` in the current folder does not run there until VS Code restarts,
+  while `.\gradlew` still does. PowerShell terminals are not affected.
 - **The file** is `prompt.md` in a new folder in the system's temporary folder (your own on
   Windows; on macOS and Linux only you can read it), deleted afterwards. An editor that runs in the
   terminal, such as vim or nano, gets the whole terminal; full screen steps aside and comes back
@@ -1011,7 +1022,10 @@ Each is fixed in a later release, unless it says otherwise.
 - **Tested on Windows 11 only.** Release 13's automatic tests will run the suite on Linux and macOS;
   until then, those are untried. The sandbox was tried on Docker Desktop for Windows only: Docker
   Desktop on macOS and Linux, and Podman, have not been tried, and live link's full session, refused
-  on the test PC's folders, waits for those tests too.
+  on the test PC's folders, waits for those tests too. On Linux the box runs as your own user and
+  group ids unless Docker is rootless, while Docker's documentation describes Docker Desktop for
+  Linux as mapping your user to root (user 0) in containers, so there the box may be unable to
+  write the project or the copy.
 
 Release 7's limits follow, grouped by part. These are the rarer cases, left as limits rather than
 more code; none has a release set to change it, unless it says so.
@@ -1024,6 +1038,9 @@ more code; none has a release set to change it, unless it says so.
   is code piped to R, or the command that `yarn exec` or `yarn dlx` runs (`yarn dlx` itself still
   counts as installing). In PowerShell, a relative path to the shell's input is not followed after a
   change of folder (`Set-Location`, or its `cd` and `sl` names).
+- **Commands git runs for you are not read either,** for the same reason: `git submodule foreach
+  '<cmd>'`, `git bisect run <cmd>`, an alias such as `git -c alias.x='!<cmd>' x`, a `-c
+  core.pager=` or `-c core.sshCommand=`, and a `GIT_SSH_COMMAND=` before the command.
 - **Values made while the line runs.** Bash runs a command hidden in a value it does arithmetic on
   (`a[$(cmd)]`). The check asks when it can see such code on the line, but not when the value comes
   from a command's output, a file, a pipe or a download (including `$(( $(cmd) ))`), nor from a file
@@ -1037,6 +1054,14 @@ more code; none has a release set to change it, unless it says so.
   registry keys, `find -delete` and aws's `batch-delete-*`; for `C:.` targets; and through
   PowerShell's `switch` and per-item blocks (`Sort-Object { }`), which run like loops. A line of
   thousands of `cd`s and climbing paths takes seconds to check.
+- **A recursive delete that takes its list from a pipe** has no target on the line to check:
+  `Get-ChildItem | Remove-Item -Recurse -Force`, `ls | xargs rm -rf`. In auto mode the judge
+  decides.
+- **A delete made by mirroring an empty folder** is not seen: `robocopy <empty> <dir> /MIR` or
+  `/PURGE`, and `rsync -a --delete <empty>/ <dir>`.
+- **On macOS, a home or project path written in another letter case** (`/users/ME` for
+  `/Users/me`) is not seen as that folder by the delete check, though macOS's disks ignore case by
+  default.
 - **Some harmless lines ask:** `Start-Process notepad`, `$tool --version`, and `bash -c 'echo "hi"'`
   typed in PowerShell; rarer .NET calls such as `[System.Collections.Generic.List[string]]::new()`;
   two relative `cd`s on one line (`cd sub && make && cd .. && rm -rf dist`), `pushd` and `popd`, `cd
@@ -1054,6 +1079,9 @@ more code; none has a release set to change it, unless it says so.
   protects.
 - **Reading git's settings at launch has no time limit,** so an include naming a pipe or a network
   share that has stopped answering hangs the launch.
+- **Protected paths are worked out once, at launch.** A hooks folder or include named during the
+  session, for example by `git config core.hooksPath scripts` run without the sandbox, is not
+  protected until the next launch.
 - **A project inside a Claude Code worktree** (`<repo>/.claude/worktrees/<name>`) is inside a
   protected folder, so every write in it asks.
 - **On Linux and macOS, a `core.hooksPath` or include path with `..` after a link inside the
@@ -1066,6 +1094,10 @@ more code; none has a release set to change it, unless it says so.
   separator.
 - **Docker's check at launch has no time limit,** so a Docker that has stopped answering hangs the
   launch; Ctrl-C stops it.
+- **A Docker that stops answering during a session:** Esc may not stop a running command, as
+  stopping it is another Docker call. Leaving can hang too: in live link while the box is removed,
+  and in copy mode on `Stopping the box...`, with no key that works. Closing the terminal tab ends
+  it, and in copy mode the copy is kept.
 - **SELinux** (on in Fedora, RHEL and the like) denies the box the project folder: commands in it
   get "permission denied". Docker's `:z` mount option fixes it, but relabels your folder for good,
   so Tachikoma does not add it.
@@ -1073,7 +1105,8 @@ more code; none has a release set to change it, unless it says so.
   Tachikoma reports as Docker not running.
 - **A data folder Docker cannot share fails at box start:** a `TACHI_DATA_DIR` outside Docker
   Desktop's shared folders, and maybe Ubuntu's snap-installed Docker with a data folder under a
-  hidden home folder (not measured).
+  hidden home folder (not measured). So does a project outside those shared folders in live link, on
+  Docker Desktop for Linux or macOS (on Linux, by default, only your home folder is shared).
 - **A project on a mapped network drive** resolves to a `\\server\share` path that Docker Desktop
   cannot mount.
 - **A command can stop its own box:** `kill -9 -1` ends every process of the box's user, and the box
@@ -1204,6 +1237,9 @@ more code; none has a release set to change it, unless it says so.
 
 - **tmux inside Windows Terminal gets no Shift+Enter;** Ctrl+J, or a backslash then Enter, still
   make a new line.
+- **Over ssh from Windows Terminal, Shift+Enter sends the prompt:** ssh does not pass on
+  `WT_SESSION`, so Tachikoma never turns on Windows Terminal's win32 input mode. Ctrl+J, or a
+  backslash then Enter, make a new line.
 - **Typing a character with Alt and its code on the number pad** is not supported there
   (untried).
 - **Some keys do nothing while Tachikoma runs there:** Ctrl or Alt with a key Windows gives no
