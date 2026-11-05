@@ -38,6 +38,13 @@ describe("readSettings", () => {
     expect(read({ mode: "auto", sandbox: "live" })).toEqual({ settings: { mode: "auto", sandbox: "live" }, warnings: [] });
   });
 
+  // Release 8a plan, Task 4: read as maxTasks is, so a number in quotes gets maxTasks's wrong-type words too.
+  it("reads cleanupPeriodDays as a whole number from 1", () => {
+    expect(read({ cleanupPeriodDays: 30 })).toEqual({ settings: { cleanupPeriodDays: 30 }, warnings: [] });
+    expect(problem({ cleanupPeriodDays: 0 })).toBe('settings.json: "cleanupPeriodDays" must be a whole number from 1 (got "0")');
+    expect(problem({ cleanupPeriodDays: "30" })).toBe('settings.json: "cleanupPeriodDays" must be a number, without quotes (got "30")');
+  });
+
   it("has every entry optional", () => {
     expect(readSettings("{}")).toEqual({ settings: {}, warnings: [] });
   });

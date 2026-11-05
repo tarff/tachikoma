@@ -26,6 +26,9 @@ export interface Settings {
   fallback?: string;
   worker?: string;
   maxTasks?: number;
+  // Days a session may go unchanged before the launch's sweep deletes it (release 8a design, "Saving sessions"). It is
+  // read once, at the launch, so it is not LIVE (release 8a plan, Task 4).
+  cleanupPeriodDays?: number;
   status?: Segment[];
   screen?: "full" | "classic";
   scrollSpeed?: number;
@@ -70,6 +73,7 @@ export function readSettings(text: string): Loaded {
       else if (name === "editorMode") settings.editorMode = oneOf(entry, textOf(entry, value), ["normal", "vim"] as const);
       // As written in JSON, the number reads as the flag's text would: 8 as "8", 1.5 as "1.5".
       else if (name === "maxTasks") settings.maxTasks = taskCount(String(numberOf(entry, value)), entry);
+      else if (name === "cleanupPeriodDays") settings.cleanupPeriodDays = taskCount(String(numberOf(entry, value)), entry);
       else if (name === "scrollSpeed") settings.scrollSpeed = speedValue(String(numberOf(entry, value)), entry);
       else if (name === "status") {
         // A list of names, as --status takes them comma-separated (the plan's choice 7); an empty one, which --status
