@@ -168,8 +168,11 @@ before a `/lead` switch.
 2. **The "before shortening" step.** 8b's PreCompact hooks run here, and 8d's built-in memory save
    is started here, never waited on (user, 2026-11-06: "do a built in save but also we need hooks in
    general"). In 8a the step is empty, built as the place they join.
-3. **The summary request.** The current lead is sent the history up to the cut, then one message
-   with the summary instructions below. `/compact <words>` adds the words as what to focus on.
+3. **The summary request.** The current lead is sent the part to be summarised (step 4), then the
+   summary instructions below as the user's; when that part already ends with a user message, the
+   instructions join it, so the roles still take turns. That part always ends on a complete
+   exchange: every tool call in it has its result in it, so the request never holds a call without
+   its result. `/compact <words>` adds the words as what to focus on.
 4. **Nothing is left out:** every message either goes into the summary or is kept. A tool call and
    its result are never split. What is kept depends on when shortening runs:
    - **Between turns** (`/compact`, a `/lead` switch): the whole history goes into the summary,
@@ -177,12 +180,12 @@ before a `/lead` switch.
    - **At the start of a turn,** the check before its first request: everything before the prompt
      just typed goes into the summary, and that prompt is kept whole, its pictures included.
    - **During a turn,** the check before a request that follows a round of tool calls: everything
-     up to and including the reply that made the latest round goes into the summary, the turn's
-     earlier rounds among it, with what is done and what is left. The turn's prompt is kept whole,
-     and so are the latest round's calls and results, copied in as text, as the main design's cut
-     inside a turn does it. If the prompt and those results still do not fit, the results go into
-     the summary too; if the prompt alone does not fit, the turn ends with the error in "When to
-     shorten".
+     before the reply that made the latest round goes into the summary, the turn's earlier rounds
+     among it, with what is done and what is left. The turn's prompt is kept whole, and so is the
+     latest round: that reply's words and calls, and the calls' results, copied in as text, as the
+     main design's cut inside a turn does it. If the prompt and that round still do not fit, the
+     round goes into the summary too, the reply with its results after it, as a complete exchange;
+     if the prompt alone does not fit, the turn ends with the error in "When to shorten".
 
    If the part to be summarised is too big for the lead, it is summarised in pieces that fit, and
    the pieces combined (main design).
@@ -241,7 +244,10 @@ Each result is recorded in the plan.
    test the user runs with their own key. "Too long" is never guessed from loose wording.
 2. **Whether Anthropic accepts a resumed conversation's thinking blocks after the system prompt
    was built afresh,** by a live test. If it does not, a resumed Anthropic session sends its old
-   replies as plain text.
+   replies from Tachikoma's own record of them, without Anthropic's thinking blocks, as a session
+   that switched to Anthropic from another provider already does: the words, and each tool call
+   with its result, stay as calls and results, so none is left without the other. The same live
+   test checks that Anthropic accepts this form too.
 3. **Whether Anthropic's token count takes the full request:** tools, pictures, and the fallback
    setting.
 
