@@ -718,7 +718,9 @@ export function tryLock(file: string): (() => void) | null;
     second test folder, whose file survives.
   - It returns a line for a file it cannot delete. The case is made with a folder in the file's
     place, never with permissions.
-- Settings: `cleanupPeriodDays` 30 is read. `0` and `"30"` are refused with the line.
+- Settings: `cleanupPeriodDays` 30 is read. `0` is refused with the line; `"30"` is refused with
+  release 6's existing `must be a number, without quotes` line, as `maxTasks` is (decided
+  2026-11-06 in Task 4: `"30"` is a whole number from 1, just quoted).
 
 Commit: `feat: the sessions folder: the list, finding by id or name, the open lock, copies, and the 30-day sweep`.
 
