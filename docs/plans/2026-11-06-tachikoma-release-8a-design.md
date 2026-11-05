@@ -1,0 +1,242 @@
+# Tachikoma release 8a: saved sessions, resuming and shortening, design (2026-11-06)
+
+Release 8a is the first of release 8's four parts. The overall design, the Decisions table and the
+release order are in [2026-10-22-tachikoma-design.md](2026-10-22-tachikoma-design.md). Its section
+"Fitting the context window" already settles most of how shortening works; this design says what
+8a builds of it, and what it adds.
+
+Release 8 is built in four parts, each with its own design and pull request, keeping the release's
+number (user, 2026-11-06, option chosen: "Three parts"; hooks then made a part of their own, option
+chosen: "Own part, after 8a"):
+- **8a:** sessions saved to disk, resuming them, and shortening a conversation that fills the
+  model's window. It ends today's known limit, "The history is never shortened".
+- **8b:** hooks, in Claude Code's format.
+- **8c:** the MCP client, and the sandbox's list of allowed sites, which shares its address check.
+- **8d:** long-term memory (MemPalace) and lessons from the error log.
+
+Each part below was chosen by the user on 2026-11-06 from options offered, and each section was
+approved as presented, unless it says otherwise.
+
+Sources, read on 2026-11-06:
+- **Claude Code's sessions page** (code.claude.com/docs/en/sessions.md): `--continue` reopens
+  "the most recent session in the current directory"; `--resume` opens a picker, or a session by
+  ID or name; `/resume`, `/rename`, `/branch`, `--fork-session`, `/clear`, `/export`. Transcripts
+  are kept as JSONL per project, with "the 30-day retention" set by `cleanupPeriodDays`. A
+  compacted session resumes from "the last compaction's summary". "Interrupted tool calls: a tool
+  that was still running when the previous process ended ... doesn't get rerun when you resume."
+  Sessions made with `claude -p` are left out of the picker and of `--continue`, but
+  `claude -p --continue` includes them. "If you resume the same session in two terminals without
+  forking, messages from both interleave into one transcript."
+- **Claude Code's context-window page** (code.claude.com/docs/en/context-window.md): `/compact`
+  "replaces the conversation with a structured summary". After compaction, "Claude Code re-reads
+  up to five of the files Claude has read or edited in the session, choosing the ones modified
+  most recently. A file over 5,000 tokens comes back as a path reference without its content."
+  `/autocompact` sets "how full the context window gets before the automatic pass runs".
+- **Claude Code's CLI reference** (code.claude.com/docs/en/cli-reference.md): `-c`, `-r`, `-n`,
+  `--fork-session`.
+
+## Saving sessions
+
+- **Where.** Each session is written to `<data folder>/sessions/<project>/<id>.jsonl` as it goes,
+  `<project>` being the folder's real path hashed, as the error log's file is named, and `<id>` a
+  random one. The folder is made private as the error log's is. Transcripts hold everything the
+  model read, so they stay out of the project, where they could be committed (option chosen:
+  "Private data folder"; the main design had put them in the project's `.tachikoma/sessions`).
+- **What.** One line per message, saved whole, the provider's own content for a reply included
+  (Anthropic's thinking blocks), so a resumed session can carry on with the same provider. Other
+  lines record the session's start (project path, lead, Tachikoma's version, whether it is a `-p`
+  run), a lead switch, a name, and a shortening.
+- **Pictures** are saved once each, as a file in `<id>/pictures/`; the transcript's line holds the
+  picture's number and file name, not its data (option chosen: "Save them privately").
+- **Subagents** each have their own transcript, `<id>/subagents/t3.jsonl`.
+- **When.** Each line is appended as its message joins the history, one append per line, as the
+  error log and the prompt history write theirs, so two windows in one project never clash.
+- **A write that fails** says so in one line and turns saving off for the rest of the session. The
+  session carries on, but it cannot be resumed, and shortening is refused, since shortening must
+  never drop what is not on disk (main design); a request too long then ends with an error, as
+  today.
+- **Kept for 30 days.** At start-up, sessions not written to for 30 days are deleted, each with its
+  own folder; `"cleanupPeriodDays"` in `~/.tachikoma/settings.json` changes the number (option
+  chosen: "30 days, settable"; Claude Code's default and its setting's name, so release 14's import
+  can copy it). The sweep deletes only files Tachikoma named, never follows a link, and never
+  touches a session open in another window.
+- **`-p` runs** are saved and marked so. `--continue` and the `--resume` list leave them out;
+  `tachi -p --continue` carries on the newest one (option chosen: "Saved, hidden from lists").
+
+## Resuming
+
+Added on the user's choice (option chosen: "Add resume in 8a"; the ways in, option chosen: "Like
+Claude Code").
+
+- **`tachi --continue`** (`-c`) reopens this folder's newest session.
+- **`tachi --resume`** (`-r`) lists this folder's sessions, newest first. Each row shows the
+  session's name or its first prompt, how long ago it was last used, its lead, and the file's
+  size. Up and Down move, Enter opens, Esc quits.
+- **`tachi --resume <id or name>`** opens one directly. A name that more than one session has opens
+  the list filtered to it.
+- **`/resume`** inside a session shows the same list and switches this window to the session
+  chosen; the one left stays saved.
+- **`/clear`** starts a new, empty session in this window, with the same lead and mode; the old
+  one stays in the list (option chosen: "Add /clear").
+- `/resume` and `/clear` wait their turn in the queue, as `/lead` does, while a turn runs, and are
+  refused while a subagent is still running, with a line naming it.
+
+**What comes back:**
+- The conversation, from the last shortening on when it was shortened, as Claude Code does it.
+  Pictures are read back from their files.
+- Auto mode's judge's view: every prompt typed and every tool call, rebuilt from the transcript.
+- The lead it last used, unless `--lead` is given. If that provider is no longer set up, the
+  launch's own lead is used, with one line saying so (option chosen: "Lead only").
+- The mode, the sandbox and the network come from this launch's flags and settings, as for a new
+  session, so resuming never brings back `auto` or `never` unasked.
+- The system prompt is built afresh, so instruction files are read again.
+- Not brought back: the to-do list, and subagents that had not finished, each of which gets one
+  line in the conversation saying so.
+- A tool call the old session never answered (a crash during a turn) gets the result "Not run: the
+  session ended before this ran." It is never run again.
+
+**A session open in another window.** A small lock file marks a session open, the lock the saved
+ChatGPT login uses, which frees itself when its window ends. Resuming a session open elsewhere opens
+a copy: a new id and file, holding everything saved so far, and one line, "Opened a copy: that
+session is open in another window." Neither window's file is ever mixed (option chosen: "Open a
+copy").
+
+**In copy mode,** a resumed session gets a fresh copy of the project as it is now. The earlier
+copy's changes were reviewed then, or are kept for `tachi review`.
+
+## Names, branches and export
+
+Added after the user asked when the features first left out would come (option chosen: "Small ones
+in 8a"). Each follows Claude Code's name for it.
+
+- **`/rename <name>`**, or `tachi -n <name>` at launch, names the session. The name shows in the
+  `--resume` list and opens it with `tachi --resume <name>`.
+- **`/branch [name]`** copies the conversation so far under a new id and switches this window to
+  the copy; the original stays in the list unchanged. Without a name, the copy is named after the
+  first prompt.
+- **`--fork-session`** with `-c` or `-r` opens a copy instead of the session itself, the copy that
+  opening a session twice makes.
+- **`/autocompact <tokens>`** (such as `/autocompact 200k`) shortens once the conversation passes
+  that size, even when the window has room; `/autocompact off` goes back to shortening only when a
+  request would not fit. `"autoCompactWindow"` in the settings file sets it for every session.
+  It is off unless set, as a default number would need a source. Like the other `/` commands, it
+  changes this window only and saves nothing (release 6 plan, choice 26).
+- **`/export <file>`** writes the conversation as text to read: the prompts, the replies, and each
+  tool call with its result, pictures as their markers. A file that already exists is never
+  overwritten; one line says so. `/export` alone copies the text to the clipboard, through release
+  6's clipboard code.
+
+## When to shorten
+
+- **Before each request,** its size in tokens is estimated:
+  - **Same provider as the last request:** the size that provider reported for it, plus what has
+    been added since, turned into tokens with the ratio of tokens to characters that provider has
+    reported in this session (main design; no fixed number).
+  - **After a lead switch, a resume or `/clear`:** Anthropic counts the whole request exactly with
+    its token-counting call. Other providers have no ratio yet, so no advance check; the safety
+    net below covers them.
+- **If it will not fit** the lead's window, or passes the `/autocompact` size when one is set, the
+  history is shortened first. On Anthropic, an estimate that says it will not fit is confirmed
+  with an exact count before anything is shortened, so a rough estimate never costs a needless
+  summary. This changes the main design, which counted every Anthropic request exactly: that adds
+  a round trip to each request, and here the count runs only when it decides something.
+- **No room is set aside for the reply,** so no number is needed. An Anthropic reply that runs
+  into the window stops with `model_context_window_exceeded`, which Tachikoma already reads. That
+  half-written reply is now thrown away, never stored, as a refusal is; the history is shortened
+  and the request sent again, once. OpenAI and ChatGPT report a reply that ran out of room as one
+  that hit its output limit, so that turn ends as today, and the next request, now over the
+  window, shortens first.
+- **The safety net.** A request a provider rejects as too long shortens the history and is sent
+  once more. Rejected again, the turn ends with an error giving the request's size and the model's
+  window.
+- **`/lead` to a smaller window** checks whether the conversation fits the new lead, and if not,
+  shortens with the current lead first. If that summary fails, the switch is refused and the old
+  lead stays.
+
+## How shortening works
+
+It runs by itself, on `/compact` (option chosen: "Add /compact"), on the `/autocompact` size, or
+before a `/lead` switch.
+
+1. **The transcript must be on disk** up to this point. If it is not, shortening stops with an
+   error and nothing changes.
+2. **The "before shortening" step.** 8b's PreCompact hooks run here, and 8d's built-in memory save
+   is started here, never waited on (user, 2026-11-06: "do a built in save but also we need hooks in
+   general"). In 8a the step is empty, built as the place they join.
+3. **The summary request.** The current lead is sent the history up to the cut, then one message
+   with the summary instructions below. `/compact <words>` adds the words as what to focus on.
+4. **The cut** is just before the latest finished round of tool calls; a tool call and its result
+   are never split. If the part before it is too big for the lead, it is summarised in pieces that
+   fit, and the pieces combined (main design).
+5. **The new history** is one message: the summary; the user's request in progress, word for word,
+   when a turn is under way; the latest round's tool results, as text; and up to 5 of the files
+   read or edited in this session, most recently changed first, each only if under 5,000 tokens,
+   a larger one named without its content (Claude Code's figures; option chosen: "Like Claude
+   Code", over keeping recent exchanges word for word, which had no way to be measured). A file's
+   tokens are estimated with the lead's ratio, as above.
+6. **The transcript** gets a line marking the shortening, so a resume starts from it.
+
+**The summary instructions** (approved as worded):
+
+> Summarise this conversation so work can carry on from the summary alone. First, under "Your
+> instructions", copy word for word every instruction, limit or preference the user gave, such as
+> "don't push". Then cover: what the user asked for; what has been done, with file paths;
+> decisions made and why; errors met and how they were fixed; what is still to do; and what was
+> being worked on at the end.
+
+The user's limits are quoted word for word (option chosen: "Quote them word for word"). The README
+still says a rule that must hold belongs in `dangerousCommands`, since a model can miss one.
+
+**Carried over from the main design:** a failed or cancelled summary changes nothing; Ctrl-C stops
+it and its cost counts as any request's; the summary must fit the space the next request has, and
+is checked before it is used. Pictures are not carried into the new history: the summary mentions
+them, and the transcript keeps them.
+
+**On screen,** nothing leaves the scrollback. One line says "Conversation shortened (Ctrl+O shows
+the summary)", and the status line's context gauge drops.
+
+**`-p` runs and subagents** shorten the same way, each subagent from its own transcript (option
+chosen: "Shorten them too").
+
+**Auto mode's judge is untouched:** it keeps every prompt typed and every tool call, whole.
+
+## When something goes wrong
+
+- **Saving transcripts is a safeguard for shortening only.** A failure turns it off with one line,
+  and shortening and resuming that session are refused; nothing else stops.
+- **The start-up sweep** skips a file it cannot delete and names it in one line; start-up never
+  fails over it.
+- **A transcript that cannot be read whole,** such as a half-written last line after a crash: the
+  bad line is skipped, as the error log does. If no conversation can be rebuilt, resuming says so
+  and starts nothing.
+- Every failure says what broke and what to do, and goes into the error log.
+
+## Before the build
+
+Each result is recorded in the plan.
+
+1. **Each provider's exact "too long" error,** from its documentation, then confirmed by a live
+   test the user runs with their own key. "Too long" is never guessed from loose wording.
+2. **Whether Anthropic accepts a resumed conversation's thinking blocks after the system prompt
+   was built afresh,** by a live test. If it does not, a resumed Anthropic session sends its old
+   replies as plain text.
+3. **Whether Anthropic's token count takes the full request:** tools, pictures, and the fallback
+   setting.
+
+## Testing
+
+- Everything runs against the fake provider, with no network. Each test's data folder is two
+  levels inside a fresh temporary folder, as the test rules require.
+- **The main design's edge cases:** a finished tool round kept across a shortening and a lead
+  switch; one turn too big on its own; a failed transcript write; a failed or cancelled summary; a
+  reply cut off at the window never runs its tools.
+- **Added here:** resuming after a crash during a turn; a session open twice; pictures brought
+  back; the 30-day sweep against links and open sessions; `/clear`, `/resume` and `/branch` while a
+  subagent runs; a name more than one session has; `/export` to a file that exists.
+
+## Not in this release
+
+- Hooks: 8b. The memory save before shortening, and lessons: 8d.
+- Rewinding, with the files put back as they were: release 9 (user, 2026-11-06, option chosen:
+  "Right after release 8"; every later release moves down one, to 15).
+- The README's release list and its later release numbers are brought up to date in 8a's docs task.

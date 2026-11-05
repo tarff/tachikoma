@@ -28,7 +28,7 @@ learn from experience. The command is `tachi`.
 | Licence | MIT | User, 2026-10-22 ("portfolio only, go with MIT") |
 | Refusals | Keep Anthropic's fallback, show every rescue, and add an optional fallback to a model from another provider | User, 2026-10-22 ("keep it with the notice and maybe add an option for it to try another model from a different provider") |
 | Subscriptions | Claude plans only through the real `claude` CLI as a worker; ChatGPT plans through OpenAI's own sign-in flow for open-source tools, in release 2 | User, 2026-10-22 ("yes use the subscription for OpenAI", "Release 2"), after checking each company's terms |
-| More providers | More providers and bring-your-own keys, as release 14 | User, 2026-10-22 ("byo keys like openrouter etc", "at a later" date); placed last, user, 2026-10-25 (option chosen: `tachi setup` builds key entry first) |
+| More providers | More providers and bring-your-own keys, as release 15 | User, 2026-10-22 ("byo keys like openrouter etc", "at a later" date); placed last, user, 2026-10-25 (option chosen: `tachi setup` builds key entry first) |
 | ChatGPT sign-in, how it works | A `chatgpt:` lead name; `tachi login`/`logout` and `/login`/`/logout`; Tachikoma's own adapter calling OpenAI directly (not through Codex) | User, 2026-10-22 (chose each option; "Both" for the commands; asked "why no logout", so it was added) |
 | ChatGPT sign-in, the saved login | A private file, with an optional OS keychain; one account at a time. As built, the keychain keeps a key and the tokens stay in the file, sealed with it | User, 2026-10-22 (chose each option, and every hardening step offered); the key, user, 2026-10-23 (release 2 design, "As built") |
 | ChatGPT sign-in, after review | On Windows, an explicit permission that lets in only the user; if plan use is not granted, the account's record is kept but the plan is not used; records keyed by OpenAI's client ID and account, not email | User, 2026-10-22 (approved the design review's changes: "Yes"), after checking OpenAI's sign-in and accounts pages |
@@ -39,20 +39,23 @@ learn from experience. The command is `tachi`.
 | Release 3, choices | History in a private file per project in the data folder; Shift+Tab reaches `never` only when started with `--mode never`; Ctrl+O prints the last turn's tools in full; `@` lists one folder at a time and sends only the path; after Esc the queue goes on, after Ctrl-C it comes back into the prompt | User, 2026-10-25 (chose each option; [release 3 design](2026-10-25-tachikoma-release-3-design.md)) |
 | Release 3, status line | Adds claude-hud's context bar and colours, the project folder and git branch, the session's length and a tool line | User, 2026-10-25 (asked what claude-hud shows; chose all four parts offered) |
 | Release 3, as built | Undo on Ctrl+Z as well as Ctrl+_; the word before the cursor on Alt+Backspace, with Ctrl+Backspace acting as Backspace; the git branch read from `.git/HEAD`, without the `*` for changes; the spinner moving every 80 ms | User, 2026-10-25 (after the key probes in their terminal, and at the build; [release 3 design](2026-10-25-tachikoma-release-3-design.md), "As built") |
-| Instruction files, and importing from other tools | Release 4 reads a project's AGENTS.md or CLAUDE.md, and the user's own, into each session. `tachi setup` (release 13) offers on its first run to import settings, skills, MCP servers and key bindings from Claude Code, Codex and other tools | User, 2026-10-25 ("a first boot import setup to bring over existing Claude and agents Md files and other setting and skills from other programs"; chose both places from options offered) |
+| Instruction files, and importing from other tools | Release 4 reads a project's AGENTS.md or CLAUDE.md, and the user's own, into each session. `tachi setup` (release 14) offers on its first run to import settings, skills, MCP servers and key bindings from Claude Code, Codex and other tools | User, 2026-10-25 ("a first boot import setup to bring over existing Claude and agents Md files and other setting and skills from other programs"; chose both places from options offered) |
 | Release 4, as built | Node 22.20 or later, for its glob matching; `find_files` patterns skip names starting with a dot unless they name the dot; only `.gitignore` files are read, not git's other ignore lists; `TACHI_INSTRUCTIONS_TOP` moves where the walk for instruction files starts, for tests; the search tools read the disk directly, so the sandbox (release 7) must give them a way in | User, at the review of the [release 4 plan](2026-10-26-tachikoma-release-4.md) ([release 4 design](2026-10-25-tachikoma-release-4-design.md), "As built") |
 | Release 4, choices | Subagents use `--worker`'s model, else the lead's; they may run in the background, and one finishing while the lead is idle starts a turn; Esc stops only the subagents a turn waits for; a subagent's read outside the project asks, naming it; no subagent starts another; the lead and subagents get `find_files` and `search_files`, which follow `.gitignore`; the to-do list shows while any item is open; instruction files from `~/.claude`, `~/.codex` and every folder down to the project, CLAUDE.md and AGENTS.md both, with `@` imports; an import leaving the project, or a found file linked to another folder, asks first unless it is the user's own; with `-p`, background subagents run in the foreground | User, 2026-10-25 (chose each from options offered; [release 4 design](2026-10-25-tachikoma-release-4-design.md)) |
 | Releases 5 and 6 | Full screen with its own scrolling (5); vim mode, image paste, an external editor, stash and rebinding keys in a file (6); every later release moves down one, to 14 | User, 2026-10-26 (option chosen: "Split: full screen first"; [release 5 design](2026-10-27-tachikoma-release-5-design.md)) |
 | Release 5, as built | Classic mode also when the output is not a terminal or under CI; an error that ends the screen exits with 1; Ctrl+Break and SIGQUIT put the terminal back too; `-p` ignores `TACHI_SCROLL_SPEED`; no cap on kept lines; Shift+Up/Down only scroll; in the detail view Ctrl-C with nothing running only closes it, and a paste goes only into a search being typed; while `[` has the view printed out, pastes do nothing and a queued `/model` or `/tasks t3` waits; `/screen` to classic is classic from its start | User, 2026-10-27 and 2026-10-28, at the build and its reviews ([release 5 design](2026-10-27-tachikoma-release-5-design.md), "As built") |
 | Release 6 | A settings file, `~/.tachikoma/settings.json`, holding every launch option, vim mode and the editor, flags still winning; `/lead`, `/model`, `/screen` and `/vim` save to it (as built, nothing is saved: user, 2026-10-29, the plan's choice 26); edits apply live; `never` only at launch; no settings file in projects. Keys as named actions in Claude Code's format, rebound in `~/.tachikoma/keybindings.json`, live. Ctrl+G opens VISUAL, EDITOR, the settings' editor or Notepad; Ctrl+S stashes; Alt+V (Ctrl+V outside Windows) and pasted image paths add pictures, shrunk with sharp to each provider's documented limits; a request with pictures refused as invalid asks before sending again without them; all of Claude Code's vim mode. The screen code is tidied first | User, 2026-10-28 (chose each from options offered: "I don't want to be launching with args"; [release 6 design](2026-10-28-tachikoma-release-6-design.md)) |
 | Release 6, as built | Nothing is saved: `/lead`, a `/model` pick, `/screen` and `/vim` change this window only, and a missing settings or keys file is skipped; the file tools never touch either file, in any mode; a key set to `null` stops it in its own context only; Global's keys act everywhere; keys match their modifiers exactly; Alt+V and Ctrl+V both paste a picture under WSL; vim's VISUAL selection drawn in reverse; the editor run through the system's shell | User, 2026-10-28 and 2026-10-29, at the build and its reviews; the rest the plan's and the build's calls, for the final review ([release 6 design](2026-10-28-tachikoma-release-6-design.md), "As built") |
-| Lessons and skills from experience | The lessons (section 4) are built in release 8, with memory. Release 9 adds skills drafted from experience: Tachikoma offers to turn a lesson that keeps coming back, or a way of working that went well, into a draft skill, saved only on the user's yes | User, 2026-10-28 ("Yes add the self skills and add lesson builds to release 8"), after asking whether the plans had self-learning or self skill creation |
-| Auto mode | Claude Code's `auto` (a second model judging each action before it runs) goes into release 7, designed with the sandbox; release 12's loops decide which may use it | User, 2026-10-28 (option chosen: "Release 7, with the sandbox"; [release 6 design](2026-10-28-tachikoma-release-6-design.md), "Not in this release") |
+| Lessons and skills from experience | The lessons (section 4) are built in release 8, with memory. Release 10 adds skills drafted from experience: Tachikoma offers to turn a lesson that keeps coming back, or a way of working that went well, into a draft skill, saved only on the user's yes | User, 2026-10-28 ("Yes add the self skills and add lesson builds to release 8"), after asking whether the plans had self-learning or self skill creation |
+| Auto mode | Claude Code's `auto` (a second model judging each action before it runs) goes into release 7, designed with the sandbox; release 13's loops decide which may use it | User, 2026-10-28 (option chosen: "Release 7, with the sandbox"; [release 6 design](2026-10-28-tachikoma-release-6-design.md), "Not in this release") |
 | `never` mode switched off | From release 6 until release 7, `never` is refused however it is asked for (`--mode never` or `"mode": "never"` in the settings file), at launch with one line, in `tachi` and `tachi -p` alike. Release 7 brings, before `never` returns: (1) the Docker sandbox; (2) auto mode, a second model judging each action before it runs; (3) a check on dangerous commands of every kind, not only ones that delete files. Examples only, for release 7's design to settle: wiping or formatting disks, changing permissions or system settings, stopping processes, rewriting or force-pushing git history, sending files or secrets off the machine, installing software | User, 2026-10-29 ("we can't have never mode deleting a filesystem"; options chosen: "Switch never off (Recommended)", then "Off now, checks in 7"; then "not just file deletion, any other dangerous commands too"; release 6 plan, choice 30) |
 | Shift+Enter in Windows Terminal | Release 7: Windows Terminal sends Shift+Enter as Enter (README, Known limits; tested 2026-10-25), so a new line takes Ctrl+J or `\` then Enter. First re-test whether the user's current Windows Terminal answers the kitty keyboard protocol, which Tachikoma already asks for; if it still does not, read Windows Terminal's own win32 input mode, which sends each key with its Shift, Ctrl and Alt state, since Ink cannot read it. A Windows Terminal `sendInput` setting would act in every program there, PowerShell included, so it is not the fix | User, 2026-10-30, at release 6's terminal checklist ("why cant we get shift+enter to work?", then "yes" to adding it to release 7) |
-| Workflows | Release 12, after the loops: a saved route of steps, as LangGraph does, for a process that should run the same way every time (build, then a spec review, then a code review, fixing until both approve). Each step is a delegated task with its own worker; the arrows between steps are real checks, such as the tests passing or a reviewer approving, never the model saying it is done; a check that fails sends the work back to the step that needs fixing. The free loop stays the default; a workflow is for repeated processes only. Release 12's design settles the file format and the limits | User, 2026-10-30 ("like langgraph", then "Add it at the end of release 12"), after agreeing it is the next stage on from loops |
+| Workflows | Release 13, after the loops: a saved route of steps, as LangGraph does, for a process that should run the same way every time (build, then a spec review, then a code review, fixing until both approve). Each step is a delegated task with its own worker; the arrows between steps are real checks, such as the tests passing or a reviewer approving, never the model saying it is done; a check that fails sends the work back to the step that needs fixing. The free loop stays the default; a workflow is for repeated processes only. Release 13's design settles the file format and the limits | User, 2026-10-30 ("like langgraph", then "Add it at the end of release 12"), after agreeing it is the next stage on from loops |
 | Release 7 | Docker, not each system's own sandbox. The sandbox is off unless asked for (`--sandbox live` or `copy`); asked for without Docker, the launch stops. The box's network is off unless asked for; the list of allowed sites moves to release 8, with the MCP client. The image is built on the user's PC from a shipped Dockerfile, after asking. `never` only in copy mode (`--sandbox copy`), never in live link or on the host. In live link all of `.git` is read-only in the box, with every project file git's settings include, and nothing on the host opens a path in the box's folder while it runs; `tachi sandbox build` builds the image, and headless never builds. Protected paths (Claude Code's list, such as `.git`, `.vscode` and `.envrc`) are never written without a check, and now ask in `project` mode too. Auto mode as Claude Code's, a fourth mode on the host or in the sandbox, its judge the `judge` setting or the lead's model. The dangerous-command check warns, asks or refuses by mode, and the user's own settings file can add rules or switch a kind off, with a warning | User, 2026-10-30, options chosen ([release 7 design](2026-10-30-tachikoma-release-7-design.md)) |
-| Release 7, as built | Live link is refused where the project folder ignores letter case, Windows' and macOS's default, as the box reached `.git` as `.GIT` and `GIT~1` on Docker Desktop for Windows (measured), so copy mode is the sandbox there; the box's default limits (4 GB, 4 CPUs, 1,024 processes) scale with Docker's size, always leaving 1 GiB free, and 1 CPU when it has more than one; the `@` menu and pasted paths stay on the host, a box call taking a median 360 ms; changes in git-ignored paths are counted in the review, never applied; changes to protected paths start as skipped; deletes are applied first; the box's repository takes the host's branch; a hard link counts as a protected write; the judge sees earlier writes by their length, and a judge that cannot be reached fails no `-p` run; Shift+Enter in Windows Terminal through its win32 input mode, as kitty's query got no answer; in full screen the prompt takes at most half the rows; tested on Windows 11 only until release 13's CI | User, 2026-10-31 to 2026-11-05, at the build and its reviews ([release 7 plan](2026-10-31-tachikoma-release-7.md), its 122 choices; [release 7 design](2026-10-30-tachikoma-release-7-design.md), "As built") |
+| Release 7, as built | Live link is refused where the project folder ignores letter case, Windows' and macOS's default, as the box reached `.git` as `.GIT` and `GIT~1` on Docker Desktop for Windows (measured), so copy mode is the sandbox there; the box's default limits (4 GB, 4 CPUs, 1,024 processes) scale with Docker's size, always leaving 1 GiB free, and 1 CPU when it has more than one; the `@` menu and pasted paths stay on the host, a box call taking a median 360 ms; changes in git-ignored paths are counted in the review, never applied; changes to protected paths start as skipped; deletes are applied first; the box's repository takes the host's branch; a hard link counts as a protected write; the judge sees earlier writes by their length, and a judge that cannot be reached fails no `-p` run; Shift+Enter in Windows Terminal through its win32 input mode, as kitty's query got no answer; in full screen the prompt takes at most half the rows; tested on Windows 11 only until release 14's CI | User, 2026-10-31 to 2026-11-05, at the build and its reviews ([release 7 plan](2026-10-31-tachikoma-release-7.md), its 122 choices; [release 7 design](2026-10-30-tachikoma-release-7-design.md), "As built") |
+| Release 8, in four parts | 8a transcripts, resuming and shortening; 8b hooks; 8c the MCP client and the list of allowed sites; 8d memory and lessons. Each part has its own design and pull request; the release keeps its number | User, 2026-11-06 (options chosen: "Three parts", then "Own part, after 8a" for hooks) |
+| Hooks | Claude Code's hooks, in its format and with its event names, so scripts written for it work unchanged; read from `~/.tachikoma/settings.json` only, never a project's file. 8d's memory save before shortening is built in, not a hook | User, 2026-11-06 ("do a built in save but also we need hooks in general"; options chosen: "Claude Code's format", "Your settings file only") |
+| Rewinding | Release 9: going back to an earlier message, with the files put back as they were then; every later release moves down one, to 15 | User, 2026-11-06 (option chosen: "Right after release 8"), after asking when the features left out of 8a would come |
 
 ## 1. Overall shape
 
@@ -125,9 +128,13 @@ request retried once. If it is rejected again, the turn ends with an error that 
 size and the model's limit. A provider that silently cuts off over-long prompts instead of rejecting
 them would break this, which is why Ollama's behaviour is on the list to check.
 
-**Shortening the history:**
-1. **Full transcript on disk.** Every message is appended to `.tachikoma/sessions/<id>.jsonl` as the
-   session goes, so shortening never loses anything for good. Before the history is replaced, the
+**Shortening the history.** Release 8a keeps no exchanges word for word after the cut, as Claude
+Code does, and checks Anthropic requests exactly only when the estimate says they will not fit
+(release 8a design, "When to shorten" and "How shortening works"); the steps below are otherwise
+its base.
+1. **Full transcript on disk.** Every message is appended to a private file in Tachikoma's data
+   folder as the session goes (release 8a design, "Saving sessions"), so shortening never loses
+   anything for good. Before the history is replaced, the
    transcript up to the cut point must be safely written. If that fails, shortening and the waiting
    request stop with an error. The memory save is no substitute, as it may not hold everything.
 2. **Memory save.** It is started before any shortening.
@@ -304,7 +311,7 @@ Loops run in headless mode and come in two kinds:
 Every loop needs a limit set by the user. There is no default limit, because no data yet supports
 one.
 
-**Workflows** come at the end of release 12, built on the loops and on delegation. A workflow is
+**Workflows** come at the end of release 13, built on the loops and on delegation. A workflow is
 a saved route of steps, each a delegated task, joined by real checks: a check that fails sends
 the work back to the step that needs fixing. Like a loop, each workflow needs a limit set by the
 user (see Decisions, "Workflows").
@@ -651,7 +658,7 @@ Version 1 has no separate critic model. The failed check and any matching lesson
 correction.
 
 Lessons are built in release 8, with memory, since they live in the palace (user, 2026-10-28).
-Release 9 turns lessons that keep coming back into skills ("Skills from experience", section 5).
+Release 10 turns lessons that keep coming back into skills ("Skills from experience", section 5).
 
 ## 5. Skills, status line, codebase search, install
 
@@ -681,13 +688,13 @@ it.
   - the author's engineering rules: no assumptions without data, simplicity first, surgical
     changes
 - A user's skills from Claude Code and other tools are copied by `tachi setup`'s first-run import
-  (release 13), after checking each licence.
+  (release 14), after checking each licence.
 
-**Skills from experience (release 9; user, 2026-10-28: "add the self skills"):**
+**Skills from experience (release 10; user, 2026-10-28: "add the self skills"):**
 - **When it offers.** Tachikoma offers to write a skill when the same lesson keeps coming back
   across sessions, or when a task that needed several corrections ends well. The user can also
   ask for one at any time. How often a lesson must come back before the offer is measured from
-  release 8's lessons (see "Still to measure"); the command's name is settled in release 9's
+  release 8's lessons (see "Still to measure"); the command's name is settled in release 10's
   design.
 - **What it writes.** The model drafts a `SKILL.md` in Claude Code's format: a name, a
   description saying when it applies, and the steps, drawn from the lessons and the session that
@@ -748,7 +755,7 @@ tachi setup
   (`ANTHROPIC_API_KEY`, etc.)
 - on its first run, offers to import from the tools it finds (Claude Code, Codex and others):
   settings, skills (each licence checked first), MCP servers and key bindings. Nothing is imported
-  without asking. Which tools, and how each setting maps, are for release 13's design.
+  without asking. Which tools, and how each setting maps, are for release 14's design.
 
 Keys are stored in Tachikoma's config folder, readable only by the user. `tachi doctor` checks
 everything again and says what is broken and how to fix it.
@@ -840,7 +847,9 @@ whose results are recorded.
     cost limits.
 11. Whether MemPalace's hub mode (3.9 and later) gives one writer across separate processes, with
     crash recovery. If not, Tachikoma uses its own lock-file supervisor.
-12. How much recent history to keep after the cut point when shortening.
+12. How much recent history to keep after the cut point when shortening. Settled without a
+    measurement in release 8a (user, 2026-11-06): none, as Claude Code does it; see the release 8a
+    design, "How shortening works".
 13. Each OpenAI-format provider's ratio of tokens to characters, measured from its reported usage.
     It is needed for the advance size check after a lead switch.
 14. Whether Ollama rejects a prompt longer than its context setting, or silently cuts it short. If
@@ -878,7 +887,7 @@ whose results are recorded.
     nine items of the release 3 plan's checklist passed: Shift+Tab's modes, Alt+P's model list, a
     three-line paste left unsent, Alt+Backspace and Ctrl+Z, Ctrl+J and backslash-Enter, the spinner
     and Esc during a turn, resizing with a long prompt, the `/` and `@` menus, and Ctrl+O.
-19. When to offer a skill from experience (release 9): how many times a lesson must come back, and
+19. When to offer a skill from experience (release 10): how many times a lesson must come back, and
     across how many sessions. Needs release 8's lessons in real use first.
 
 ## Release order
@@ -908,15 +917,21 @@ Each release works on its own and can be shown.
    model judging each action; a check on dangerous commands of every kind, and protected paths.
    `never` mode, switched off in release 6, returns only with these three, in copy mode only;
    Shift+Enter in Windows Terminal ([release 7 design](2026-10-30-tachikoma-release-7-design.md))
-8. MCP client, and the sandbox's list of allowed sites, which shares its address check; MemPalace
-   in the uv environment behind the shared supervisor; transcripts on disk; shortening the history;
-   lessons from the error log, stored in the palace and recalled
-9. Skills: the loader, vendored superpowers, Tachikoma's own skills, and skills drafted from
-   experience, saved on the user's yes
-10. Codebase search with EmbeddingGemma 2
-11. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
+8. In four parts, each with its own design and pull request:
+   - 8a: transcripts on disk, resuming (`--continue`, `--resume`, `/resume`, `/clear`), names and
+     branches, shortening the history (automatic, `/compact`, `/autocompact`), and `/export`
+     ([release 8a design](2026-11-06-tachikoma-release-8a-design.md))
+   - 8b: hooks, in Claude Code's format, from the user's settings file only
+   - 8c: MCP client, and the sandbox's list of allowed sites, which shares its address check
+   - 8d: MemPalace in the uv environment behind the shared supervisor, with a save before each
+     shortening; lessons from the error log, stored in the palace and recalled
+9. Rewinding: going back to an earlier message, with the files put back as they were then
+10. Skills: the loader, vendored superpowers, Tachikoma's own skills, and skills drafted from
+    experience, saved on the user's yes
+11. Codebase search with EmbeddingGemma 2
+12. Budget controller, then CLI workers and delegation, with each CLI's permission mapping and the
     refusal rules. The controller comes first because workers have to be cancellable as a group.
-12. Loops: on a timer, and until done; then workflows, saved routes of steps joined by checks
-13. `tachi setup` / `tachi doctor`, with a first-run import from other tools, and the fresh-install
+13. Loops: on a timer, and until done; then workflows, saved routes of steps joined by checks
+14. `tachi setup` / `tachi doctor`, with a first-run import from other tools, and the fresh-install
     CI
-14. More providers and bring-your-own keys
+15. More providers and bring-your-own keys
