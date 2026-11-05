@@ -7,8 +7,9 @@
 // is started by its full path, from the system's temporary folder, with none of the user's git variables but the two
 // naming the settings files. Git still looks for a `.git` in the temporary folder itself; GIT_CEILING_DIRECTORIES
 // only stops it climbing above that folder, so a project that holds the temporary folder (the home folder, say) is
-// never taken as git's repository. A project that is the temporary folder itself would be.
-import { execFile } from "node:child_process";
+// never taken as git's repository. A project that is the temporary folder itself would be. Live link also lists the
+// project's index once with `git ls-files` (hasSubmodules, choice 123).
+import { execFile, spawn } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -50,10 +51,9 @@ const KEPT = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"];
 export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process.env): Promise<GitSettings | undefined> {
   const exe = onPath("git", env);
   if (!exe) return undefined;
-  const own = Object.entries(env).filter(([name]) => !name.toUpperCase().startsWith("GIT_") || KEPT.includes(name.toUpperCase()));
   // Git does not climb into a ceiling folder looking for a repository, though it looks in the one it starts in
   // (git's GIT_CEILING_DIRECTORIES; checked with git 2.41.0, 2026-10-31, on a repository the check made).
-  const gitEnv = { ...commandEnv(Object.fromEntries(own)), GIT_CEILING_DIRECTORIES: path.dirname(os.tmpdir()) };
+  const gitEnv = { ...ownEnv(env), GIT_CEILING_DIRECTORIES: path.dirname(os.tmpdir()) };
   const run = (args: string[]) => git(exe, args, gitEnv);
   const [system, global] = await Promise.all([scopeFiles(run, "--system"), scopeFiles(run, "--global")]);
   const repo = repository(root);
@@ -153,6 +153,39 @@ export async function gitSettings(root: string, env: NodeJS.ProcessEnv = process
   };
   for (const key of tops) walk(key);
   return found;
+}
+
+// The environment every git run here gets: none of the user's git variables but the two naming the settings files.
+const ownEnv = (env: NodeJS.ProcessEnv) =>
+  commandEnv(Object.fromEntries(Object.entries(env).filter(([name]) => !name.toUpperCase().startsWith("GIT_") || KEPT.includes(name.toUpperCase()))));
+
+// Whether the project holds a git submodule, which live link refuses (choice 123): a gitlink (mode 160000) in git's index
+// in the project's folder, checked out or not, as `git status` on the host goes into each. `.gitmodules` alone does not
+// make git go in. A project in no repository has none. Git runs in the project, as it reads the project's index, with
+// gitSettings's variables, but no ceiling, so it finds the repository repository() finds; `core.fsmonitor` is off, as
+// git runs that setting's program when it reads the index, and the list is read as it comes, so a large index is never
+// held whole. Rejects, in git's words, when git fails, as live link is then refused.
+export function hasSubmodules(root: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  if (!repository(root)) return Promise.resolve(false);
+  return new Promise((resolve, reject) => {
+    const args = ["--no-pager", "-c", "core.fsmonitor=false", "ls-files", "--stage", "-z"];
+    const child = spawn(onPath("git", env)!, args, { cwd: root, env: ownEnv(env), windowsHide: true });
+    let found = false;
+    let rest = "";
+    let err = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      // Each entry is "<mode> <object> <stage>\t<path>".
+      const entries = (rest + chunk).split("\0");
+      rest = entries.pop()!;
+      if (entries.some((entry) => entry.startsWith("160000 "))) found = true;
+    });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (err += chunk));
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      if (code === 0) resolve(found);
+      else reject(new Error(err.trim().split(/\r?\n/)[0]!.replace(/^(fatal|warning|error): /, "") || `exit code ${code ?? signal}`));
+    });
+  });
 }
 
 // The user's or the system's file, where it exists, as git would find it, since git names no file that lists nothing.

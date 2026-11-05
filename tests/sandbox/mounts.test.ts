@@ -23,8 +23,9 @@ function world(tree: string[] = []) {
   return { dir, root, at, git };
 }
 
-// Live link on a folder taken as minding letter case, as a Linux one does: the check itself has its own tests below.
-const live = (root: string, git: GitSettings | undefined) => liveMounts(root, git, { ignoresCase: () => false });
+// Live link on a folder taken as minding letter case, as a Linux one does: the check itself has its own tests below. The
+// project has no submodules (choice 123; livelink.test.ts finds them with git).
+const live = (root: string, git: GitSettings | undefined) => liveMounts(root, git, { ignoresCase: () => false, submodules: false });
 const readOnly = (host: string, box: string) => ({ host, box, readOnly: true });
 const pinned = (host: string, box: string) => ({ host, box, readOnly: false });
 const HIDDEN = { box: "/work/.tachikoma", hidden: true };
@@ -39,10 +40,21 @@ describe("liveMounts", () => {
       "git's files by another spelling. Launch with --sandbox copy instead.";
     const asked: string[] = [];
     const ignores = (folder: string) => (asked.push(folder), true);
-    expect(liveMounts(w.root, undefined, { ignoresCase: ignores })).toEqual({ refused });
-    expect(liveMounts(w.root, w.git, { ignoresCase: ignores })).toEqual({ refused });
+    expect(liveMounts(w.root, undefined, { ignoresCase: ignores, submodules: false })).toEqual({ refused });
+    expect(liveMounts(w.root, w.git, { ignoresCase: ignores, submodules: true })).toEqual({ refused });
     expect(asked).toEqual([w.root, w.root]);
     expect(readdirSync(w.root)).toEqual([]);
+  });
+
+  it("refuses a project with git submodules, making nothing (choice 123)", () => {
+    const w = world([".gitmodules"]);
+    const refused =
+      "Live link is refused: this project has git submodules, whose git settings the box could change for git on your " +
+      "machine to run. Launch with --sandbox copy instead.";
+    expect(liveMounts(w.root, w.git, { ignoresCase: () => false, submodules: true })).toEqual({ refused });
+    expect(readdirSync(w.root)).toEqual([".gitmodules"]);
+    // `.gitmodules` alone is not a submodule.
+    expect(live(w.root, w.git)).toEqual({ mounts: [HIDDEN], env: SAFE });
   });
 
   it("pins each folder between /work and a read-only mount onto itself, writable, once (choice 105)", () => {

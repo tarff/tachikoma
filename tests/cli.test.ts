@@ -513,14 +513,15 @@ describe("tachi", { timeout: 15_000 }, () => {
 });
 
 // Release 7 plan, Task 16: live link's launch, in-process, with Docker a stand-in that records its calls and answers by
-// them (choice 69), git's settings given, and the letter-case check given (choice 104), so no case here runs Docker or git.
+// them (choice 69), git's settings given, and the letter-case check (choice 104) and the submodules (choice 123) given, so
+// no case here runs Docker or git.
 describe("live link's launch, with a stand-in Docker", () => {
   afterEach(() => vi.unstubAllEnvs());
   type Answer = { code: number; out: string; err: string } | "missing";
   const ok = (out = ""): Answer => ({ code: 0, out, err: "" });
   const STEPS = [
-    "home", "case", "missing", "stopped", "image", "git-throws", "git-missing",
-    "room", "limits", "start", "no-bash", "node-missing", "node-old",
+    "home", "case", "missing", "stopped", "image", "git-throws", "git-missing", "submodules-throws",
+    "submodules", "room", "limits", "start", "no-bash", "node-missing", "node-old",
   ] as const;
   type Step = (typeof STEPS)[number];
   // This PC's `docker info`, the parts read (executor.test.ts), with the limit flags given.
@@ -573,6 +574,10 @@ describe("live link's launch, with a stand-in Docker", () => {
         return broken.has("git-missing") ? undefined : { files: [], hooksPaths: [], gitDirs: [], problems: [], lineEndings: {} };
       },
       ignoresCase: () => broken.has("case"),
+      submodules: async () => {
+        if (broken.has("submodules-throws")) throw new Error("git was ended by SIGKILL");
+        return broken.has("submodules");
+      },
     };
     const ready = await sandboxReady(root, io);
     if ("exit" in ready) return { root, exit: ready.exit, lines, calls: fake.calls, started: undefined };
@@ -592,6 +597,10 @@ describe("live link's launch, with a stand-in Docker", () => {
         "Live link is refused: this folder ignores letter case, as Windows and macOS do by default, so the box could reach git's files by " +
         "another spelling. Launch with --sandbox copy instead.",
       "git-missing": "Live link needs git on this PC to read git's settings; use --sandbox copy, or install git.",
+      "submodules-throws": "Live link is refused: git's settings could not be read (git was ended by SIGKILL). Launch with --sandbox copy instead.",
+      submodules:
+        "Live link is refused: this project has git submodules, whose git settings the box could change for git on your " +
+        "machine to run. Launch with --sandbox copy instead.",
       room: "The sandbox could not read Docker's CPUs and memory: error during connect: busy",
       limits: 'settings.json: "sandboxLimits": "cpus" is 999, but Docker has 24 CPUs. Lower it, or give Docker more memory or CPUs.',
       start: "The sandbox could not start: docker: Error response from daemon: invalid mount config.",
@@ -616,6 +625,7 @@ describe("live link's launch, with a stand-in Docker", () => {
         signal: stop.signal,
         run: fake.run,
         ignoresCase: () => false,
+        submodules: async () => false,
         gitSettings: async () => {
           stop.abort();
           if (!answered) throw new Error("git was ended by SIGINT");
@@ -773,6 +783,9 @@ describe("copy mode's launch, with a stand-in Docker", () => {
       },
       ignoresCase: () => {
         throw new Error("copy mode asks nothing about letter case (choice 104 is live link's)");
+      },
+      submodules: async () => {
+        throw new Error("copy mode asks nothing about submodules (choice 123 is live link's)");
       },
     };
     const ready = await sandboxReady(root, io, { session: "s1" });

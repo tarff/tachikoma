@@ -25,14 +25,21 @@ export const CASE_REFUSED =
   "Live link is refused: this folder ignores letter case, as Windows and macOS do by default, so the box could reach " +
   "git's files by another spelling. Launch with --sandbox copy instead.";
 
+// Choice 123's refusal: a submodule's `.git` is an ordinary project file, which the box could point at a git folder it
+// made, whose settings git on the host reads as it goes into the submodule.
+export const SUBMODULES_REFUSED =
+  "Live link is refused: this project has git submodules, whose git settings the box could change for git on your " +
+  "machine to run. Launch with --sandbox copy instead.";
+
 // The mounts, and the variables the box's git needs, or why live link is refused. Only once nothing refuses is a missing
 // `.tachikoma` made, an empty folder of Tachikoma's own (choice 31): left unmounted, the box could make one. First of
 // all, a folder that ignores letter case is refused (choice 104): a mount covers one spelling, and on Docker Desktop for
-// Windows the box reached `.git/hooks` as `.GIT/hooks`. `ignoresCase` is the check, which tests replace.
+// Windows the box reached `.git/hooks` as `.GIT/hooks`. `ignoresCase` is the check, which tests replace. `submodules`
+// is whether the project has any (gitconfig.ts, hasSubmodules), refused after git's settings' problems (choice 123).
 export function liveMounts(
   root: string,
   git: GitSettings | undefined,
-  opts: { ignoresCase?: (folder: string) => boolean } = {},
+  opts: { ignoresCase?: (folder: string) => boolean; submodules: boolean },
 ): { mounts: Mount[]; env: Record<string, string> } | { refused: string } {
   if ((opts.ignoresCase ?? ignoresCase)(root)) return { refused: CASE_REFUSED };
   if (!git) return { refused: "Live link needs git on this PC to read git's settings; use --sandbox copy, or install git." }; // choice 11
@@ -40,6 +47,7 @@ export function liveMounts(
   // Task 5's whys start "it is" or "it cannot", which the line's "which" stands for.
   const why = problem?.why.replace(/^it /, "");
   if (problem) return { refused: `Live link is refused: git's settings include ${problem.file}, which ${why}. Launch with --sandbox copy instead.` };
+  if (opts.submodules) return { refused: SUBMODULES_REFUSED };
   const real = realpathSync.native(root);
   // Task 5 lists each hooks folder as written and at its real place (choice 62), so either may be the project's.
   const missing = git.hooksPaths.find((p) => (within(root, p) || within(real, p)) && !lstatSync(p, { throwIfNoEntry: false }));

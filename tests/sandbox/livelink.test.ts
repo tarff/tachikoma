@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
 import { onPath } from "../../src/exec/env.js";
-import { gitSettings } from "../../src/safety/gitconfig.js";
+import { gitSettings, hasSubmodules } from "../../src/safety/gitconfig.js";
 import { dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, boxUser, DockerExecutor, dockerRoom } from "../../src/sandbox/executor.js";
 import { imageFor } from "../../src/sandbox/image.js";
@@ -90,8 +90,9 @@ const listing = (folder: string): string[] =>
   (readdirSync(folder, { recursive: true }) as string[]).map((p) => p.split(path.sep).join("/")).sort();
 
 // The test folders here may ignore letter case (Windows, macOS), where live link is refused (choice 104), so the check
-// is taken as passed and the mounts themselves are tested; mounts.test.ts tests the check.
-const MINDS_CASE = { ignoresCase: () => false };
+// is taken as passed and the mounts themselves are tested; mounts.test.ts tests the check. Their projects have no
+// submodules (choice 123), which the last tests here find with git.
+const MINDS_CASE = { ignoresCase: () => false, submodules: false };
 
 // What a write to a read-only mount gives in the box: bash's own message for the file.
 const READ_ONLY = /Read-only file system/;
@@ -264,5 +265,52 @@ describe("live link in real Docker", { timeout: 0 }, () => {
     mkdirSync(w.at(".githooks"));
     const box = await liveBox(ctx, w);
     expect((await box.exec("touch .githooks/pre-commit", "/work")).stderr).toMatch(READ_ONLY);
+  });
+});
+
+// Choice 123: a gitlink in git's index, populated or not, is a submodule, which `git status` on the host goes into. No
+// Docker here.
+describe("live link and git submodules", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567"; // a made-up commit, so no network is needed
+  const REFUSED =
+    "Live link is refused: this project has git submodules, whose git settings the box could change for git on your " +
+    "machine to run. Launch with --sandbox copy instead.";
+  const mounts = async (ctx: TestContext, w: World) =>
+    liveMounts(w.root, await settings(ctx, w), { ignoresCase: () => false, submodules: await hasSubmodules(w.root, w.env) });
+
+  it("refuses a project whose index holds a gitlink, even one not checked out", async (ctx) => {
+    const w = world();
+    if (!onPath("git", w.env)) ctx.skip("no git on PATH");
+    w.git(["init", "-q"]);
+    w.git(["update-index", "--add", "--cacheinfo", `160000,${SHA},vendor/lib`]);
+    expect(await hasSubmodules(w.root, w.env)).toBe(true);
+    expect(await mounts(ctx, w)).toEqual({ refused: REFUSED });
+    expect(listing(w.root)).not.toContain(".tachikoma");
+  });
+
+  it("does not refuse a repository with no gitlink, .gitmodules alone, one outside the project's folder, or no repository", async (ctx) => {
+    const plain = world();
+    if (!onPath("git", plain.env)) ctx.skip("no git on PATH");
+    expect(await hasSubmodules(plain.root, plain.env)).toBe(false);
+    plain.git(["init", "-q"]);
+    plain.write(plain.at(".gitmodules"), '[submodule "lib"]\n\tpath = vendor/lib\n\turl = https://example.invalid/lib.git\n');
+    plain.write(plain.at("a.txt"), "one\n");
+    plain.git(["add", ".gitmodules", "a.txt"]);
+    expect(await hasSubmodules(plain.root, plain.env)).toBe(false);
+    expect(await mounts(ctx, plain)).toHaveProperty("mounts");
+    // The project is a folder of a repository whose gitlink is elsewhere, which the box cannot reach.
+    const outer = world();
+    outer.git(["init", "-q"]);
+    outer.git(["update-index", "--add", "--cacheinfo", `160000,${SHA},vendor/lib`]);
+    mkdirSync(outer.at("app"));
+    expect(await hasSubmodules(outer.at("app"), outer.env)).toBe(false);
+  });
+
+  it("rejects with git's words when git cannot read the index", async (ctx) => {
+    const w = world();
+    if (!onPath("git", w.env)) ctx.skip("no git on PATH");
+    w.git(["init", "-q"]);
+    w.write(w.at(".git/index"), "not an index");
+    await expect(hasSubmodules(w.root, w.env)).rejects.toThrow(/index/);
   });
 });

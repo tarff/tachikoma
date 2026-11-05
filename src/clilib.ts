@@ -8,7 +8,7 @@ import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { errorText } from "./core/types.js";
 import type { Executor } from "./exec/executor.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
-import { gitFolderOutside, type GitSettings, gitSettings, within } from "./safety/gitconfig.js";
+import { gitFolderOutside, type GitSettings, gitSettings, hasSubmodules, within } from "./safety/gitconfig.js";
 import { NO_RULES, type UserRules } from "./safety/rules.js";
 import { type Shell, shellOf } from "./safety/split.js";
 import { BoxWorkspace } from "./sandbox/boxWorkspace.js";
@@ -263,11 +263,11 @@ export function networkLine(flags: Flags, sandbox: Sandbox): string | null {
 }
 
 // Live link's launch (release 7 plan, Task 16), in the plan's order: choice 13's refusal; Docker's state and the image
-// (image.ts, prepareImage); git's settings; the mounts (mounts.ts); then cli.tsx reads the instruction files on the host;
-// then sandboxStart removes leftover boxes, starts the box and checks its node (choice 17). Each refusal is printed by
-// `io.err` and ends the launch with the code given. Docker is reached through `io.run` (choice 69); `gitSettings` and
-// `ignoresCase` are given by tests, which run git with their own settings and take the letter-case check as passed on
-// this PC's folders (choice 104). No flag or variable turns that check off.
+// (image.ts, prepareImage); git's settings and the submodules (choice 123); the mounts (mounts.ts); then cli.tsx reads
+// the instruction files on the host; then sandboxStart removes leftover boxes, starts the box and checks its node (choice
+// 17). Each refusal is printed by `io.err` and ends the launch with the code given. Docker is reached through `io.run`
+// (choice 69); `gitSettings`, `submodules` and `ignoresCase` are given by tests, which run git with their own settings
+// and take the letter-case check as passed on this PC's folders (choice 104). No flag or variable turns that check off.
 // The box's folder for the project, where the model works (choice 19), and its home (executor.ts, choice 77).
 const BOX_ROOT = "/work";
 
@@ -275,6 +275,7 @@ const BOX_ROOT = "/work";
 export interface SandboxIo extends ImageIo {
   note?: (line: string) => void;
   gitSettings?: (root: string) => Promise<GitSettings | undefined>;
+  submodules?: (root: string) => Promise<boolean>;
   ignoresCase?: (folder: string) => boolean;
 }
 // `gitOutside`: the project's `.git` is a file naming a git folder outside it (choice 107). `copy`: copy mode's copy
@@ -306,9 +307,13 @@ export async function sandboxReady(root: string, io: SandboxIo, copy?: { session
   const image = await prepareImage(root, io);
   if ("exit" in image) return image;
   let git: GitSettings | undefined;
+  let submodules = false;
   let failed: unknown;
   try {
     git = await (io.gitSettings ?? gitSettings)(root);
+    // Live link's alone (choice 123), and only once git's settings have nothing wrong, which is refused first: git reads
+    // them as it lists the index. Its failure refuses live link as git's settings' does.
+    if (!copy && git?.problems.length === 0) submodules = await (io.submodules ?? hasSubmodules)(root);
   } catch (err) {
     failed = err;
   }
@@ -337,7 +342,7 @@ export async function sandboxReady(root: string, io: SandboxIo, copy?: { session
   }
   // Without them the mounts cannot be worked out, so live link is refused, as for Task 5's problems.
   if (failed) return refuse(`Live link is refused: git's settings could not be read (${errorText(failed)}). Launch with --sandbox copy instead.`);
-  const live = liveMounts(root, git, { ignoresCase: () => false });
+  const live = liveMounts(root, git, { ignoresCase: () => false, submodules });
   if ("refused" in live) return refuse(live.refused);
   return { tag: image.tag, git, ...live, gitOutside: gitFolderOutside(root) };
 }

@@ -952,6 +952,16 @@ the plan's review.
     terminal cannot run a live link session. Item 1 becomes: `--sandbox live` in an ordinary
     folder on Windows prints the letter-case refusal line and starts nothing; live link's full
     session is checked on Linux and macOS with release 13's testing (choice 79).
+123. **Live link is refused when the project has git submodules** (the user's choice, "Refuse live
+    link (Recommended)", the final review). A submodule's `.git`, a `gitdir:` file or an old-style
+    folder, is an ordinary project file in live link, so the box could point it at a git folder it
+    made, whose settings (a `core.fsmonitor` command, say) git on the host runs when `git status`
+    goes into the submodule. A submodule is a gitlink (mode 160000) in git's index in the project's
+    folder, checked out or not; `.gitmodules` alone is not one. The check runs after git's settings
+    are read, with `git ls-files --stage` run as their reads are, and is refused after their
+    problems; a git run that fails refuses live link as git's settings that cannot be read do. The
+    approved line: `Live link is refused: this project has git submodules, whose git settings the
+    box could change for git on your machine to run. Launch with --sandbox copy instead.`
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.

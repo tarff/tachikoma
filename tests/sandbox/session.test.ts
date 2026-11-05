@@ -9,7 +9,7 @@ import { PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import type { CompletionRequest, Turn } from "../../src/core/types.js";
 import { onPath } from "../../src/exec/env.js";
-import { gitSettings } from "../../src/safety/gitconfig.js";
+import { gitSettings, hasSubmodules } from "../../src/safety/gitconfig.js";
 import { judgeOf } from "../../src/safety/judge.js";
 import { dockerState } from "../../src/sandbox/docker.js";
 import { boxLimits, dockerRoom } from "../../src/sandbox/executor.js";
@@ -82,6 +82,7 @@ async function launch(ctx: TestContext, w: ReturnType<typeof world>): Promise<St
     signal: new AbortController().signal,
     gitSettings: (root: string) => gitSettings(root, w.env),
     ignoresCase: () => false,
+    submodules: (root: string) => hasSubmodules(root, w.env),
   };
   const ready = await sandboxReady(w.root, io);
   if ("exit" in ready) throw new Error(said.join("\n"));

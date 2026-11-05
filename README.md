@@ -399,6 +399,8 @@ it.
   and macOS do by default, so the box could reach git's files by another spelling. Launch with
   --sandbox copy instead.` So there copy mode is the sandbox. Live link works on Linux, and on a
   folder set to mind letter case.
+- **Live link is refused on a project with git submodules:** a submodule's `.git` is a file the box
+  could point at git settings of its own, which git on your machine would then run.
 - **Copy mode, `--sandbox copy`:** the box works on a copy, and your folder is not touched until you
   review the changes, when the session ends.
 
