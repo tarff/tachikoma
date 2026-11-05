@@ -8104,6 +8104,17 @@ describe("App's leave() in copy mode", () => {
     expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
   });
 
+  it("opens the review when the box left only something never applied, for the user to see it", async () => {
+    const w = copyWorld();
+    unchanged(w);
+    mkdirSync(path.join(w.folder, "work", ".tachikoma"));
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await until(app, "Left out, never applied: .tachikoma");
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+  });
+
   it("opens the review as before when the copy's changes cannot be read", async () => {
     const w = copyWorld();
     renameSync(path.join(w.folder, "work"), path.join(w.folder, "elsewhere"));

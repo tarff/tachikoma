@@ -224,7 +224,7 @@ async function discardCopy(copy: ReviewCopy, data: string, io: ReviewIo): Promis
 }
 
 // Choice 121 (the user's): a copy session that ends with nothing to review, no change the review would list (apply.ts,
-// toReview), skips the review and removes the copy, at the session's end (queue.ts, leave) and with -p (cli.tsx), each
+// toReview) and nothing the box left that it notes as never applied, skips the review and removes the copy, at the session's end (queue.ts, leave) and with -p (cli.tsx), each
 // once the box is gone and under the copy's lock. Gives the line to print, the copy removed or why not; or, with
 // something to review, what toReview gave, so the review does not read it again; or undefined when it cannot be read,
 // for the review to say why, or -p to keep the copy, as before. `say` gives the removing line first, as a copy holding
@@ -236,7 +236,10 @@ export async function dropIfNothing(copy: ReviewCopy, say: (line: string) => voi
   } catch {
     return undefined;
   }
-  if (found.changes.length) return found;
+  // What the box left in work/ that is never applied, a deeper .git or a .tachikoma, is listed in the review as a note,
+  // for the user to see before it is deleted, so it keeps the review; the box's own repository at the top does not, as
+  // the review does not list it (choice 114), nor does what the launch left out, said at launch.
+  if (found.changes.length || found.leftOut.some((l) => l.path !== ".git")) return found;
   say(removing(Object.values(copy.manifest.entries).filter((e) => e.type === "file").length));
   try {
     await uninterrupted(() => remove(copy.folder));

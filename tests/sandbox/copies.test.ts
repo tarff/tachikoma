@@ -406,6 +406,22 @@ describe("a copy with nothing to review", () => {
     expect(existsSync(path.join(c.folder, "manifest.json"))).toBe(true);
   });
 
+  // The coordinator's ruling on choice 121: what the box left that is never applied is listed in the review, for the
+  // user to see before it is deleted.
+  it("is kept for the review when the box left a deeper .git or a .tachikoma, never applied", async () => {
+    const w = world();
+    for (const [name, made] of [["s1", "sub/.git"], ["s2", ".tachikoma"]] as const) {
+      const c = w.copy(name, { "a.txt": "made-up a\n" });
+      mkdirSync(path.join(c.folder, "work", ...made.split("/")), { recursive: true });
+      const s = said();
+      const got = await dropIfNothing({ session: name, ...c }, s.say);
+      expect(typeof got === "object" && got.leftOut.map((l) => l.path)).toEqual([made]);
+      expect(typeof got === "object" && got.changes).toEqual([]);
+      expect(s.lines).toEqual([]);
+      expect(existsSync(path.join(c.folder, "manifest.json"))).toBe(true);
+    }
+  });
+
   it("is kept when its changes cannot be read, for the review to say why", async () => {
     const w = world();
     const c = w.copy("s1", { "a.txt": "made-up a\n" });
