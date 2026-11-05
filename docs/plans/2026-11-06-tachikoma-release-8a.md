@@ -377,15 +377,23 @@ Each is marked in its task. The user approves them with the plan.
     count, when it runs, includes them; elsewhere the "too long" safety net covers them. No
     per-picture number is set, as none has a source for every provider.
 19. **Anthropic's exact count** sends the same request to `beta.messages.countTokens`, without
-    `max_tokens` and streaming. Task 1's third live test checks that it takes the request.
+    `max_tokens`, streaming, `betas` and `fallbacks`: Task 1's third live test found the count
+    refuses `fallbacks` ("Extra inputs are not permitted") and takes a tool and a picture. The
+    count is Anthropic's estimate; Task 1 measured it 49 tokens short of the real request at 1M.
 
 **Recognising "too long"**
 20. **Each provider gets `tooLong(err): boolean`:**
-    - **Anthropic:** an `APIError` with status 400, type `invalid_request_error`, and the message
-      Task 1 records.
-    - **OpenAI:** the code Task 1 records (expected `context_length_exceeded`).
-    - **ChatGPT:** `code === "context_length_exceeded"`, from Codex's source. ChatGPT's
-      `planError` keeps the code in a new `ProviderError.code`.
+    - **Anthropic:** an `APIError` with status 400, type `invalid_request_error`, and a message
+      starting `prompt is too long` (Task 1: "prompt is too long: 1000050 tokens > 1000000
+      maximum").
+    - **OpenRouter** (`OpenAIProvider` with kind `openrouter`): an `APIError` with status 400
+      whose message starts `This endpoint's maximum context length is` (Task 1).
+    - **ChatGPT:** `code === "context_length_exceeded"`, from Codex's source (user, 2026-11-06:
+      "codex for chatgpt"). ChatGPT's `planError` keeps the code in a new `ProviderError.code`.
+    - **The OpenAI API, Kimi and Ollama** (`OpenAIProvider`'s other kinds): none. No page names
+      their "too long" answer and no live test has seen one, so it is not guessed. Their too-long
+      error ends the turn as it does today, and the README lists it as a known limit; the size
+      check still shortens before a request when its estimate says it will not fit.
 
     The session asks `tooLong` before the pictures question, so a too-long 400 never asks it.
 21. **A reply cut off at Anthropic's window** gets a new `cutOff.kind`, `"window"`. It is never
@@ -516,7 +524,48 @@ provider's pricing page, and the user may run tests 2 and 3 alone (`--only 2,3`)
 **Results:** the controller records them under this task and fills in choices 19-21. Tasks 9 and
 12 wait for them; Tasks 2-8 do not.
 
-_Results: not yet run._
+**Results** (run by the user 2026-11-06, `node scripts/live-8a.mjs anthropic:claude-opus-5-5`):
+
+```
+1 anthropic:claude-opus-5-5: window 1000000 tokens; sending 1000001 tokens (Anthropic's count).
+1 anthropic:claude-opus-5-5: refused: status 400, type invalid_request_error, code none (BadRequestError): prompt is too long: 1000050 tokens > 1000000 maximum
+2: two turns done, with 1 thinking block(s) in the replies.
+2 same system prompt: accepted: usage {"input":4,"output":67,"cacheRead":518,"cacheWrite":108}
+2 changed system prompt, thinking blocks kept: accepted: usage {"input":4,"output":67,"cacheRead":0,"cacheWrite":639}
+2 changed system prompt, Tachikoma's own record (no thinking blocks): accepted: usage {"input":4,"output":67,"cacheRead":0,"cacheWrite":613}
+3 with the fallback setting: refused: status 400, type invalid_request_error, code none (BadRequestError): fallbacks: Extra inputs are not permitted
+3 without it: 428 tokens
+```
+
+What they settle:
+- **Anthropic's "too long"** is a 400 `invalid_request_error` whose message starts `prompt is too
+  long`, as the context-windows page says (choice 20).
+- **Anthropic's count runs short of the real request.** The count said 1,000,001 tokens; the
+  request, which also carried the fallback setting, was 1,000,050. Anthropic's token-counting page
+  calls the count "an estimate" that "might differ by a small amount". So a request counted just
+  under the window can still be refused. No margin is added, as no number for one has a source:
+  the "too long" answer shortens and sends again (choice 21's rule, design "When to shorten").
+- **The count refuses the fallback setting** (`fallbacks: Extra inputs are not permitted`), and
+  takes a tool and a picture. So the count leaves out `betas` and `fallbacks` (choice 19).
+- **A changed system prompt with the thinking blocks kept was accepted** on this account. The
+  errors page's "Thinking block bound to a different conversation" did not happen here; the
+  claude-api skill says the check is enforced for accounts created on or after 2026-08-31, which
+  this one is not. Other people's accounts can be, so the design's choice stands: a resumed session
+  reuses its saved system prompt. Tachikoma's own record, with no thinking blocks, was accepted
+  too, so the fallback for a changed tool list works.
+- **OpenRouter** (run by the user 2026-11-06, `node scripts/live-8a.mjs --only 1
+  openrouter:openai/gpt-5.5`, the window and price from OpenRouter's model list):
+
+  ```
+  1 openrouter:openai/gpt-5.5: window 1050000 tokens; prompt price 0.000005 USD a token; sending 1050001 words.
+  1 openrouter:openai/gpt-5.5: refused: status 400, type none, code 400 (BadRequestError): This endpoint's maximum context length is 1050000 tokens. However, you requested about 1050018 tokens (1050018 of text input). Please reduce the length of either one, or use the context-compression pl
+  ```
+
+  OpenRouter answers a 400 whose `code` is the status itself, so its message is what tells "too
+  long" apart (choice 20).
+- **Not run, by the user's choice (2026-11-06, "codex for chatgpt and lets test the api"):** the
+  ChatGPT plan, which goes by Codex's source; and the OpenAI API itself, as the user's key is
+  OpenRouter's (choice 20).
 
 ## Task 2: Tests never save sessions into the user's data folder
 
@@ -855,6 +904,7 @@ interface Provider { tooLong?(err: unknown): boolean; countTokens?(req: Completi
 
 **Behaviour:**
 - `tooLong` as choice 20, with Task 1's recorded texts and codes, each cited in a comment.
+  `OpenAIProvider.tooLong` answers only for kind `openrouter`.
 - `model_context_window_exceeded` becomes `cutOff.kind = "window"` (choice 21).
 - Anthropic's `countTokens` as choice 19.
 - ChatGPT's `planError` keeps `code`.
