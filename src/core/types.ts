@@ -75,6 +75,9 @@ export interface CompletionRequest {
   // This provider's id, when it refused a request with pictures and the user said to send again without them: every
   // picture then goes as a note naming it, and none is shrunk (release 6 plan, Task 18).
   refusedBy?: string;
+  // False for the judge's request (release 7 plan, Task 9): its one message is different every time, so a cache of it
+  // would never be read, and Anthropic's prompt cache is not asked for, which would only add its write price.
+  cache?: boolean;
 }
 
 export interface Provider {

@@ -1,8 +1,10 @@
 import { useApp, useWindowSize } from "ink";
 import { useRef, useState } from "react";
-import { type Mode, visible } from "../../core/permissions.js";
+import { type Mode, type Protection, visible } from "../../core/permissions.js";
 import type { Effort } from "../../providers/anthropic.js";
 import type { ModelGroup } from "../../providers/models.js";
+import { NO_RULES } from "../../safety/rules.js";
+import type { ToReview } from "../../sandbox/apply.js";
 import type { TodoItem } from "../../tools/todo.js";
 import type { AppProps, Fns } from "../App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../bindings.js";
@@ -17,6 +19,7 @@ import type { PickerKey } from "../ModelPicker.js";
 import { TerminalOwner } from "../owner.js";
 import { now as nowOf, phaseInputs } from "../phase.js";
 import { type Draft, Pictures } from "../pictures.js";
+import type { ReviewEnd } from "../Review.js";
 import type { Call } from "../ToolLine.js";
 import { FOLLOWING, type Pos, Rows, type View } from "../view.js";
 import { type Vim, start as vimStart } from "../vim.js";
@@ -29,9 +32,11 @@ export function useAppState({
   stats,
   mode,
   onMode,
+  onRules,
   project,
   root,
-  gitBranch,
+  workspace,
+  branch: firstBranch,
   historyFile,
   intro,
   errorFile,
@@ -51,6 +56,7 @@ export function useAppState({
   live,
   pictures: picturesGiven,
   readPicture,
+  copy,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -110,6 +116,11 @@ export function useAppState({
   const dropping = useRef<Printed | null>(null);
   const waitingList = useRef<ModelGroup[] | null>(null);
   const ended = useRef(false); // Ink has unmounted the App (the cleanup in App.tsx)
+  // Copy mode's leaving (queue.ts, leave), from its first step; and the review once the box is gone, with the protection
+  // worked out for it and where its end goes (release 7 plan, Task 21).
+  const leaving = useRef(false);
+  const leavingLine = useRef<string | null>(null); // the removing line in the box's line's place (choice 121)
+  const [reviewing, setReviewing] = useState<{ protection: Protection; onEnd: (end: ReviewEnd) => void; read?: ToReview } | null>(null);
   // Who has the terminal (owner.ts): how many hand-overs hold the keyboard, and whether Ink is suspended.
   const [owner] = useState(
     () =>
@@ -171,12 +182,17 @@ export function useAppState({
   // kept after it until the next turn starts.
   const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
   const calls = useRef<Call[]>([]);
+  // The call whose tool line is the conversation's last line, so a question it asks is answered in a line under it; and
+  // the lead's calls a question was declined for, each with the short row in its result row's place, or null for none
+  // when its answer is under its tool line (release 7 plan, choices 66 and 67; describe.ts).
+  const toolLine = useRef<string | null>(null);
+  const answered = useRef(new Map<string, string | null>());
   // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
   const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a
-  // session started with.
+  // session started with (release 7 design, "The modes").
   const perm = useRef(mode);
-  const cycle: Mode[] = mode === "never" ? ["ask", "project", "never"] : ["ask", "project"];
+  const cycle: Mode[] = mode === "never" ? ["ask", "project", "auto", "never"] : ["ask", "project", "auto"];
   // The lead's and every subagent's questions, shown one at a time, so none replaces the one on screen.
   const questions = useRef<Question[]>([]);
   const question = questions.current[0] ?? null;
@@ -205,7 +221,7 @@ export function useAppState({
   };
   const started = useRef(Date.now());
   const [now, setNow] = useState(started.current);
-  const [branch, setBranch] = useState(gitBranch);
+  const [branch, setBranch] = useState(firstBranch);
   const abort = useRef<AbortController | null>(null);
   const nextId = useRef(0);
   const printUpTo = useRef<number | null>(null); // while an editor has the terminal in classic mode (away, handover.tsx)
@@ -221,6 +237,9 @@ export function useAppState({
   const effortNow = useRef<{ effort: Effort | undefined } | null>(null);
   const waiting = useRef<{ lead?: string; screen?: "full" | "classic" }>({});
   const leadFromFile = useRef(false);
+  // The user's own dangerous-command rules in force: the launch's, with each edit's tightening applied and its loosening
+  // left for the next launch (release 7 plan, Task 4; liveEdits.ts).
+  const rules = useRef(live?.loaded.settings.dangerousCommands ?? NO_RULES);
   // The keys file's problems as last said, and whether a good file has been read (onKeys).
   const keysWarned = useRef<string[]>([]);
   const keysRead = useRef(false);
@@ -244,7 +263,7 @@ export function useAppState({
   // this drawing's values: Ink's root is non-concurrent (above), so React draws and commits in one go, and useInput's and
   // usePaste's handler is the committed drawing's (useEffectEvent). Only the keys and the wheel ask for the menu, where
   // it was found before: finding an `@` menu can list a folder (menuFor). A paste asks pasteTo() of the same inputs.
-  const phaseRefs = { ended, printed, drawn: frame, listOpen, questions, detail, search, working, queue };
+  const phaseRefs = { ended, leaving, printed, drawn: frame, listOpen, questions, detail, search, working, queue };
   const happening = (findMenu?: () => boolean) => nowOf(phaseInputs(phaseRefs, findMenu));
   // Filled in by this drawing once it has worked them out, after making the functions that read them (App.tsx): the
   // conversation's height, and `latest`, through which newPicture's settle calls the latest drawing's functions.
@@ -252,7 +271,7 @@ export function useAppState({
   // Read-only, so TypeScript narrows `ui.question` through a check kept in a const (`movable`), as it narrowed App's
   // own `question`.
   return {
-    session, tasks, bus, stats, mode, onMode, project, root, gitBranch, historyFile, intro, errorFile, segments,
+    session, tasks, bus, stats, mode, onMode, onRules, project, root, workspace, historyFile, intro, errorFile, segments,
     makeProvider, bindAsk, login, listModels, screen, fullPossible, mouse, scrollSpeed, clipboard, input, bindings,
     home, live, picturesGiven, readPicture, exit, suspendTerminal, lines, setLines, editor, goal, vim, vimText, first,
     table, setTable, chordTimer, keyOf, pickerKey, step, search, stash, chosen, closed, listed, columns, height, full,
@@ -261,8 +280,8 @@ export function useAppState({
     pictures, reading, reads, doing, calls, todos, perm, cycle, questions, question, contextWindow, setContextWindow,
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
-    leadFromFile, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
-    happening, late,
+    leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
+    happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing,
   } as const;
 }
 

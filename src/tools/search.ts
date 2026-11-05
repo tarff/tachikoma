@@ -7,10 +7,11 @@ import { z } from "zod";
 import { dataDir, settingsDir } from "../core/datadir.js";
 import { errorText } from "../core/types.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
+import type { Match } from "../exec/workspace.js";
 import { programEnvironment, resolveIn, settingsName } from "./files.js";
 import { defineTool, type ToolContext } from "./tool.js";
 
-type Rules = { base: string; rules: ReturnType<typeof ignore> }[];
+export type Rules = { base: string; rules: ReturnType<typeof ignore> }[];
 
 const posix = (p: string) => p.split(path.sep).join("/");
 
@@ -18,7 +19,7 @@ const posix = (p: string) => p.split(path.sep).join("/");
 // as git does. No git is run: a repository's own settings can make git run programs. One that is a
 // link is not followed, as git does not (gitignore(5), git 2.41), and one with more than one name is
 // checked as read_file checks a path, since it may be a hard link to a file in the data folder.
-async function rulesIn(folder: string): Promise<Rules> {
+export async function rulesIn(folder: string): Promise<Rules> {
   const file = path.join(folder, ".gitignore");
   const kind = await lstat(file, { bigint: true }).catch(() => null);
   if (!kind?.isFile()) return [];
@@ -34,7 +35,7 @@ async function rulesIn(folder: string): Promise<Rules> {
 }
 
 // A folder's own rules come after its parents', so its "!" can bring back what theirs left out.
-function ignored(rules: Rules, abs: string, folder: boolean): boolean {
+export function ignored(rules: Rules, abs: string, folder: boolean): boolean {
   let out = false;
   for (const r of rules) {
     const t = r.rules.test(posix(path.relative(r.base, abs)) + (folder ? "/" : ""));
@@ -67,17 +68,21 @@ async function* walk(folder: string, rules: Rules, data: BigIntStats | null, set
   }
 }
 
-// The files under `start`, a folder or one file, with the project's .gitignore rules from the root
-// down when it is inside the project. The start is checked as read_file checks a path: refused in the
-// data folder, and outside the project only once the user allows it.
-async function* files(start: string, ctx: ToolContext, verb: string): AsyncGenerator<string> {
-  const { abs, outside, shown } = resolveIn(ctx.root, start);
-  await ctx.gate.require({ kind: "read", outside, summary: `${verb} ${shown}` });
+// The search tools' start, checked as read_file checks a path: refused in the data folder, and outside the project
+// only once the user allows it. The Workspace's find and search take it after this (release 7 plan, Task 14).
+async function allowed(start: string, ctx: ToolContext, verb: string): Promise<void> {
+  const { outside, shown } = await ctx.workspace.resolve(start);
+  await ctx.gate.require({ kind: "read", outside, summary: `${verb} ${shown}` }, ctx.signal);
+}
+
+// The files under `abs`, a folder or one file, once checked, with the project's .gitignore rules from the root down
+// when it is inside the project: LocalWorkspace's walk (exec/local.ts).
+export async function* filesIn(root: string, abs: string, outside: boolean, signal?: AbortSignal): AsyncGenerator<string> {
   const real = await realpath(abs);
   // The rules of each folder above the start, from the project root down; the walk reads the start's own.
   const rules: Rules = [];
   if (!outside) {
-    let folder = await realpath(ctx.root);
+    let folder = await realpath(root);
     for (const part of path.relative(folder, real).split(path.sep).filter(Boolean)) {
       rules.push(...(await rulesIn(folder)));
       folder = path.join(folder, part);
@@ -87,7 +92,7 @@ async function* files(start: string, ctx: ToolContext, verb: string): AsyncGener
     if (!ignored(rules, real, false)) yield real;
     return;
   }
-  yield* walk(real, rules, await id(dataDir()), await id(settingsDir()), ctx.signal);
+  yield* walk(real, rules, await id(dataDir()), await id(settingsDir()), signal);
 }
 
 // Lines up to the size every tool's output is cut at, leaving room for the note of how many more;
@@ -108,41 +113,48 @@ const shownPath = (base: string, real: string) => {
   return rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel) ? real : posix(rel);
 };
 
+// The files `walked` gives whose path matches `pattern`, as shown, sorted: LocalWorkspace's find.
+export async function findIn(root: string, walked: AsyncIterable<string>, pattern: string): Promise<string[]> {
+  const glob = pattern.replaceAll("\\", "/"); // the model may write Windows paths
+  const base = await realpath(root);
+  const found: string[] = [];
+  for await (const f of walked) {
+    const rel = shownPath(base, f);
+    if (path.posix.matchesGlob(rel, glob)) found.push(rel);
+  }
+  return found.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
 export const findFilesTool = defineTool(
   "find_files",
   "Find files by path, with a pattern such as src/**/*.ts (** for any depth of folders, * for any part of a name). Paths are relative to the project root. As in a shell, a name starting with a dot matches only a pattern that names the dot, such as .github/**. Skips .git and what the .gitignore files list. Sorted by path.",
   z.object({ pattern: z.string().min(1) }),
   async ({ pattern }, ctx) => {
-    const glob = pattern.replaceAll("\\", "/"); // the model may write Windows paths
-    const base = await realpath(ctx.root);
-    const found: string[] = [];
-    for await (const f of files(".", ctx, "list")) {
-      const rel = shownPath(base, f);
-      if (path.posix.matchesGlob(rel, glob)) found.push(rel);
-    }
+    await allowed(".", ctx, "list");
+    const found = await ctx.workspace.find(".", pattern, ctx.signal);
     if (!found.length) return `No files match ${pattern}`;
-    return capped(found.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)), "files");
+    return capped(found, "files");
   },
 );
 
 // git's test for a binary file: a zero byte in the first 8,000 (`buffer_is_binary`, xdiff-interface.c).
-const BINARY_TEST_BYTES = 8000;
+export const BINARY_TEST_BYTES = 8000;
 // A matching line is cut at 1,000 characters, so one minified line cannot fill the output. Measured
 // 2026-10-26: 0.13% of the lines in this project's installed packages and 0.015% of Python's library
 // are longer, most of them source maps; this project's own longest is 404.
-const LINE_CUT = 1000;
+export const LINE_CUT = 1000;
 
 // The search itself, in a worker thread: a regular expression can take practically forever on some
 // text, and only a thread can be stopped in the middle of one. Plain JavaScript, so it works the same
 // from the built files and in the tests; it takes Node's modules with process.getBuiltinModule, which
 // works whether Node runs it as a script or as a module. It collects lines, each cut at `lineCut`
-// characters, up to the output cap, and counts the rest.
+// characters, up to the output cap as search_files shows them, and counts the rest.
 const GREP = String.raw`
 const { parentPort, workerData } = process.getBuiltinModule("node:worker_threads");
 const { readFileSync } = process.getBuiltinModule("node:fs");
 const { pattern, files, cap, binaryBytes, lineCut } = workerData;
 const regex = new RegExp(pattern);
-const lines = [];
+const matches = [];
 let size = 0;
 let beyond = 0;
 for (const f of files) {
@@ -158,15 +170,15 @@ for (const f of files) {
     const shown = text.length > lineCut ? text.slice(0, lineCut) + " [cut: " + (text.length - lineCut) + " more characters]" : text;
     const line = f.shown + ":" + (i + 1) + ": " + shown;
     if (!beyond && size + line.length + 1 <= cap) {
-      lines.push(line);
+      matches.push({ file: f.shown, line: i + 1, text: shown });
       size += line.length + 1;
     } else beyond++;
   });
 }
-parentPort.postMessage({ lines, beyond });
+parentPort.postMessage({ matches, beyond });
 `;
 
-function grep(pattern: string, files: { abs: string; shown: string }[], signal?: AbortSignal): Promise<{ lines: string[]; beyond: number }> {
+function grep(pattern: string, files: { abs: string; shown: string }[], signal?: AbortSignal): Promise<{ matches: Match[]; beyond: number }> {
   return new Promise((resolve, reject) => {
     signal?.throwIfAborted();
     const worker = new Worker(GREP, { eval: true, workerData: { pattern, files, cap: MAX_TOOL_OUTPUT, binaryBytes: BINARY_TEST_BYTES, lineCut: LINE_CUT } });
@@ -186,6 +198,36 @@ function grep(pattern: string, files: { abs: string; shown: string }[], signal?:
   });
 }
 
+// The lines matching `pattern` in the files `walked` gives, narrowed by `glob`: LocalWorkspace's search.
+export async function searchIn(
+  root: string,
+  walked: AsyncIterable<string>,
+  pattern: string,
+  glob: string | undefined,
+  signal?: AbortSignal,
+): Promise<{ matches: Match[]; beyond: number }> {
+  const name = glob?.replaceAll("\\", "/");
+  const base = await realpath(root);
+  const found: { abs: string; shown: string }[] = [];
+  for await (const f of walked) {
+    const shown = shownPath(base, f);
+    if (name && !path.posix.matchesGlob(name.includes("/") ? shown : path.basename(f), name)) continue;
+    if (programEnvironment(f)) continue;
+    // A hard link can be another name for a file in the data folder, which the walk, going by folders,
+    // cannot see. So a file with more than one name is checked as read_file checks a path. Only those:
+    // the check took about 1.5 ms a file on Windows (measured 2026-10-26).
+    if (((await id(f))?.nlink ?? 0n) > 1n) {
+      try {
+        resolveIn(root, f);
+      } catch {
+        continue;
+      }
+    }
+    found.push({ abs: f, shown });
+  }
+  return grep(pattern, found, signal);
+}
+
 export const searchFilesTool = defineTool(
   "search_files",
   "Search file contents with a regular expression (JavaScript syntax), giving path:line: text for each matching line. path narrows the search to a folder or one file (the project by default); glob narrows it by name, as in *.ts, or by path when it has a slash. Skips binary files, .git and what the .gitignore files list.",
@@ -199,27 +241,9 @@ export const searchFilesTool = defineTool(
       const hint = flag ? `. JavaScript has no flags inside a pattern, such as ${flag[0]}; search_files matches case exactly, so give both cases where it matters, as in [Mm]ax` : "";
       throw new Error(`${pattern} is not a regular expression: ${errorText(err)}${hint}`);
     }
-    const name = glob?.replaceAll("\\", "/");
-    const base = await realpath(ctx.root);
-    const found: { abs: string; shown: string }[] = [];
-    for await (const f of files(start, ctx, "search")) {
-      const shown = shownPath(base, f);
-      if (name && !path.posix.matchesGlob(name.includes("/") ? shown : path.basename(f), name)) continue;
-      if (programEnvironment(f)) continue;
-      // A hard link can be another name for a file in the data folder, which the walk, going by folders,
-      // cannot see. So a file with more than one name is checked as read_file checks a path. Only those:
-      // the check took about 1.5 ms a file on Windows (measured 2026-10-26).
-      if (((await id(f))?.nlink ?? 0n) > 1n) {
-        try {
-          resolveIn(ctx.root, f);
-        } catch {
-          continue;
-        }
-      }
-      found.push({ abs: f, shown });
-    }
-    const { lines, beyond } = await grep(pattern, found, ctx.signal);
-    if (!lines.length) return `No lines match ${pattern}`;
-    return capped(lines, "matching lines", beyond);
+    await allowed(start, ctx, "search");
+    const { matches, beyond } = await ctx.workspace.search(start, pattern, glob, ctx.signal);
+    if (!matches.length) return `No lines match ${pattern}`;
+    return capped(matches.map((m) => `${m.file}:${m.line}: ${m.text}`), "matching lines", beyond);
   },
 );

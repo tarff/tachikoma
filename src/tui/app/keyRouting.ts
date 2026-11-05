@@ -82,10 +82,10 @@ export const keyRouting = (ui: UI, fns: Fns) => {
 
   // Once Ink has ended no key comes here, nor a paste or a mouse report (App.tsx, mouse.ts): Ink's cleanup takes their
   // listeners away with the App's, which sets `ended` (App.tsx). It is checked all the same, as the first phase, which
-  // hides the others.
+  // hides the others. In copy mode's review the review reads every key itself (Review.tsx; release 7 plan, Task 21).
   const onInput = (ch: string, key: Key) => {
     const h = ui.happening(() => fns.menuFor(ui.editor.current) !== null);
-    if (h.phase.kind === "ended" || h.phase.kind === "printed") return; // printed out: a key read with the `[` that printed the view out
+    if (h.phase.kind === "ended" || h.phase.kind === "review" || h.phase.kind === "printed") return; // printed out: a key read with the `[` that printed the view out
     ui.clearCopied();
     ui.notes.current = []; // a live edit's lines leave the hint row at the next key (note, output.ts)
     const field = h.phase.kind === "search" || h.phase.kind === "picker" || (h.phase.kind === "detail" && h.phase.searching);
@@ -111,10 +111,13 @@ export const keyRouting = (ui: UI, fns: Fns) => {
       else if (!got && !key.ctrl && !key.meta && ch) to?.({ text: ch }); // typed text read together, or a paste (usePaste, App.tsx)
     } else if (kind === "question") {
       // Ctrl-C declines the question and stops its owner only: the lead's turn, or that subagent. A plain question's
-      // answer is logged as yes or no, a permission's as allowed or declined (Task 18's code review).
-      const [yes, no] = ui.question!.plain ? ["yes", "no"] : ["allowed", "declined"];
+      // answer is logged as yes or no (Task 18's code review), a permission's as what the user did (release 7 plan,
+      // choice 66).
+      const [yes, no, cancelled] = ui.question!.plain
+        ? ["yes", "no", "no (cancelled)"]
+        : ["You allowed this.", "You declined this.", "You cancelled this."];
       if (action === "app:interrupt") {
-        ui.question!.answer(false, `${no} (cancelled)`);
+        ui.question!.answer(false, cancelled);
         if (ui.question!.owner) ui.question!.owner.stop();
         else {
           ui.abort.current?.abort();
@@ -143,7 +146,7 @@ export const keyRouting = (ui: UI, fns: Fns) => {
     if (h.working || ui.editor.current.text) return;
     const again = ui.first.current?.name === name;
     fns.forget();
-    if (again) ui.exit();
+    if (again) fns.leave();
     else fns.remember(name);
   };
 
@@ -203,7 +206,7 @@ export const keyRouting = (ui: UI, fns: Fns) => {
       else if (!got) for (const c of commands(ch, key)) fns.run(c);
     } else if (name === "Ctrl-C" && e.text) fns.clear(e); // one press clears
     else if (!again) fns.remember(name);
-    else if (name !== "Esc") return ui.exit();
+    else if (name !== "Esc") return fns.leave();
     else if (e.text) fns.clear(e); // Esc Esc; on an empty prompt it does nothing
     ui.rerender((n) => n + 1);
   };

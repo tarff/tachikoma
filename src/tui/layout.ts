@@ -106,6 +106,8 @@ export interface FrameIn {
   question: boolean; // a question drawn in the prompt's place
   askedText: string | null; // in full screen, the question's line, unless the model list is open
   askedShort: string | null; // the line it would show instead if too long to fit, while it can still move into the conversation
+  askedWarnings: string[]; // the question's red lines, drawn above its line wherever askedText is (release 7 plan, Task 8)
+  askedNote: boolean; // whether it has a grey line, auto mode's pause (Task 10), drawn above any red lines
 }
 
 export interface FrameOut {
@@ -122,8 +124,19 @@ export interface FrameOut {
   pickerRows: number;
   questionFits: boolean; // the question's line leaves the conversation its one row
   asked: string[]; // the rows of the question's line drawn: its short line's, when it does not fit and can move
+  warned: string[]; // the red lines drawn above it, a row each, the last saying how many more when they do not all fit
+  noted: boolean; // its grey line drawn, a row above any red lines, when there is a row for it
   viewHeight: number; // the conversation's rows, in full screen
   promptFirst: number; // the prompt's first row
+}
+
+// The red lines in `room` rows: all when they fit, or else all but the last row's worth and that row counting the rest,
+// which is never one, as the count takes a line's place; with room for one row only, it counts them all.
+function fewest(lines: string[], room: number): string[] {
+  if (lines.length <= room) return lines;
+  if (room === 0) return [];
+  if (room === 1) return [`${lines.length} dangers`];
+  return [...lines.slice(0, room - 1), `…and ${lines.length - room + 1} more dangers`];
 }
 
 // The frame's rows. The prompt's space (release 3 design): the live part stays a row shorter than the terminal, since at
@@ -141,18 +154,37 @@ export interface FrameOut {
 // one whose rows would leave the conversation less than its one row draws its short line instead, when it has one to
 // move to (release 5 plan, Task 11). The model list takes the rows it needs, up to all but the conversation's least row,
 // its filter line and the status line (release 5 plan, choice 19).
+// A dangerous command's red lines above a question are drawn a row each, cut at the terminal's width as Ink's
+// truncate-end cuts (release 7 plan, Task 8 and choice 63). At least one red row is always kept: the tool line and the
+// hint row count, in place of the cursor's row, the question's own rows (its short line's, when it can move) and one red
+// row, so they give way first; the working line, not drawn under a question, counts none then; and the red row counts in
+// whether the question fits, so one that would leave none moves to its short line. The red lines take the rows the
+// question leaves beyond the conversation's one, as fewest() above shares them; none only when the short line itself
+// fills the terminal. A question's grey line, auto mode's pause (Task 10), counts as one of the question's own rows, as the
+// first red row does, and is cut as the red lines are; it is drawn only when there is a row for it beyond the
+// conversation's one and beyond the red row always kept, so a red row comes first. The gate never sends it with red lines
+// today (a paused question has no dangers), but the frame takes both.
 export function frame(i: FrameIn): FrameOut {
-  const base = i.rows - 1 - 1 - (i.working ? 1 : 0) - (i.full ? 1 : 0);
-  const cursor = i.detail ? 0 : 1; // the cursor's row, kept while the prompt is drawn
+  const reds = i.askedText === null ? [] : i.askedWarnings;
+  const note = i.askedText !== null && i.askedNote ? 1 : 0;
+  const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
+  const base = i.rows - 1 - 1 - (i.working && !i.question ? 1 : 0) - (i.full ? 1 : 0);
+  // The rows kept below the tool line and the hint: the cursor's, while the prompt is drawn, or a question's least.
+  const cursor = i.askedText !== null ? note + linesOf(i.askedShort ?? i.askedText).length + Math.min(1, reds.length) : i.detail ? 0 : 1;
   const tooled = i.toolLine && base >= 1 + cursor + (i.hint ? 1 : 0);
   const room = base - (tooled ? 1 : 0);
   const hinted = i.hint && room >= 1 + cursor;
   const space = Math.max(1, room - (hinted ? 1 : 0));
   const menuRows = i.menu !== null ? Math.min(i.menu, Math.max(1, space - 1)) : 0;
   const panel = i.taskRows(Math.max(0, space - 1 - menuRows));
-  const promptSpace = i.menu !== null ? 1 : space - panel.length;
+  const promptRoom = i.menu !== null ? 1 : space - panel.length;
+  // In full screen the prompt draws at most half the terminal's rows, Math.floor(rows / 2), and at least one; a longer
+  // prompt scrolls in its box, so the conversation stays readable (release 7 plan, choice 120, the user's hand check).
+  // The rules above still apply when they give less: a menu cuts it to the cursor's row, the panel takes its rows first.
+  // The to-do list and the queue still give way to the whole prompt, as before, so the rows it frees go to the conversation.
+  const promptSpace = i.full ? Math.min(promptRoom, Math.max(1, Math.floor(i.rows / 2))) : promptRoom;
   const promptShown = Math.min(i.promptRows, Math.max(1, promptSpace));
-  const promptLeft = space - menuRows - panel.length - Math.min(i.promptRows, promptSpace);
+  const promptLeft = space - menuRows - panel.length - Math.min(i.promptRows, promptRoom);
   const todoShown = i.todoRows(promptLeft);
   const left = promptLeft - todoShown.length;
   const queuedShown = i.queued <= left ? i.queued : Math.max(0, left);
@@ -162,10 +194,11 @@ export function frame(i: FrameIn): FrameOut {
   const live = (askedRows: number) =>
     (i.pickerNeeded !== null ? pickerRows + 1 : i.question ? askedRows : i.detail ? (i.working ? 1 : 0) : abovePrompt + promptShown + menuRows + panel.length) +
     (hinted ? 1 : 0) + 1 + (tooled ? 1 : 0);
-  const linesOf = (text: string | null) => (text === null ? [] : wrap(text, i.columns, false).map((r) => r.text));
-  const questionFits = i.askedText === null || i.rows - 1 - live(linesOf(i.askedText).length) >= 1; // as viewHeight, below
+  const questionFits = i.askedText === null || i.rows - 1 - live(note + linesOf(i.askedText).length + Math.min(1, reds.length)) >= 1; // as viewHeight, below
   const asked = linesOf(questionFits || i.askedShort === null ? i.askedText : i.askedShort);
-  const viewHeight = Math.max(1, i.rows - 1 - live(asked.length));
+  const noted = note === 1 && i.rows - 1 - live(asked.length + Math.min(1, reds.length)) - 1 >= 1 ? 1 : 0; // 1: the conversation's least row
+  const warned = fewest(reds, Math.max(0, i.rows - 1 - live(noted + asked.length) - 1));
+  const viewHeight = Math.max(1, i.rows - 1 - live(noted + warned.length + asked.length));
   return {
     tooled,
     hinted,
@@ -180,6 +213,8 @@ export function frame(i: FrameIn): FrameOut {
     pickerRows,
     questionFits,
     asked,
+    warned,
+    noted: noted === 1,
     viewHeight,
     promptFirst: (i.full ? viewHeight : 0) + abovePrompt,
   };

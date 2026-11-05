@@ -3,7 +3,7 @@ import type { Cache } from "../providers/pictures.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { type Ask, Declined } from "./permissions.js";
-import { errorText, type Message, type Part, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
+import { errorText, type Message, marker, type Part, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
 
 export function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
@@ -22,11 +22,19 @@ export interface SessionOptions {
   // The permission question's path, for asking whether to send a refused request again without its pictures (release 6
   // plan, Task 18). Subagents have none: they are never sent pictures.
   ask?: Ask;
+  // A subagent's session: the text it is sent is its brief, which the lead wrote, not the user's own words, so it is not
+  // kept as a prompt (release 7 plan, choice 6).
+  subagent?: boolean;
 }
 
 export class Session {
   // Append-only. Earlier messages are never edited, for the same reason the system prompt is fixed.
   readonly messages: Message[] = [];
+  // For the judge (release 7 plan, Task 9 and choice 6), in order: the user's own prompts, the text given to `send` with
+  // each picture as its marker, never the tool results or waiting text that also travel in user messages; and each call
+  // of a reply that is run, in the reply's order, by name and input, never its result.
+  readonly prompts: string[] = [];
+  readonly calls: { name: string; input: unknown }[] = [];
   #lead: Provider;
   #fallback: Provider | undefined;
   #running = false;
@@ -76,6 +84,9 @@ export class Session {
 
   async #turn(typed: Part[], signal?: AbortSignal): Promise<void> {
     const { bus } = this.opts;
+    // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept.
+    const words = typed.flatMap((p) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
+    if (words && !this.opts.subagent) this.prompts.push(words);
     const parts: Part[] = [...typed, ...this.#waiting()];
     if (!parts.length) return;
     this.#push({ role: "user", parts });
@@ -118,6 +129,8 @@ export class Session {
         return;
       }
       if (calls.length === 0) return;
+      // Kept for the judge in the reply's order, before any runs, as delegate's calls start before the others.
+      for (const c of calls) this.calls.push({ name: c.name, input: c.input });
 
       // Calls of a side-by-side tool (delegate) all start first, together; the rest run one after
       // another. The results go back in the reply's order, then whatever is waiting for the lead,

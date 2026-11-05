@@ -64,6 +64,7 @@ describe("StatusLine's pieces", () => {
     for (const [mode, color] of [
       ["ask", "green"],
       ["project", "yellow"],
+      ["auto", "magenta"],
       ["never", "red"],
     ] as const)
       expect(pieces("mode", { ...info, mode })).toEqual([{ text: "perm", dim: true }, { text: " " }, { text: mode, color }]);
@@ -263,6 +264,17 @@ describe("describe", () => {
     expect(shown("shell", { command: "npm test\necho done" })).toBe("● shell npm test");
     expect(shown("x", { s: 1 })).toBe('● x {"s":1}'); // a tool without its own summary
     expect(shown("shell", { command: 5 })).toBe('● shell {"command":5}'); // nothing it can summarise
+  });
+
+  // Release 7 plan, choices 66 and 67: a declined question's answer line under the tool line stands for its call's result
+  // row; one that names what it answers leaves a short row in its place.
+  it("leaves out or shortens the result rows of the calls given as answered, and only theirs", () => {
+    const result = (callId: string) => ({ type: "tool_result", callId, output: `The user declined: run: ${callId}`, isError: true }) as const;
+    const answered = new Map([["c1", null], ["c2", "You declined this."]]);
+    expect(describeMessage({ role: "user", parts: [result("c1"), result("c2"), result("c3")] }, answered)).toEqual([
+      { text: "  ⎿ You declined this.", color: "gray", oneLine: true },
+      { text: "  ⎿ The user declined: run: c3", color: "red", oneLine: true },
+    ]);
   });
 
   it("does not show text a background task added for the lead", () => {

@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import path from "node:path";
+import { PermissionGate } from "../src/core/permissions.js";
 import {
   approvalQuestion,
   exitOn,
@@ -16,6 +17,7 @@ import {
   jsonLine,
   leadOf,
   prose,
+  protectionOf,
   resolve,
   screenMode,
   scrollSpeed,
@@ -67,10 +69,50 @@ describe("the instruction files on screen", () => {
 // The line a -p run prints for each action it declines, naming the subagent that asked, if one did (found at the
 // combined review: its space after the colon was lost).
 describe("headlessDeclined", () => {
-  const why = "declined, nobody to ask in -p mode (--mode project allows writes inside the project, but shell commands and anything outside it are still refused)";
+  const why =
+    "declined, nobody to ask in -p mode (--mode project allows ordinary writes inside the project, " +
+    "but protected files, shell commands and anything outside it are still refused)";
   it("says why, then the action, after a space, its subagent's name escaped before it", () => {
     expect(headlessDeclined("run: ls")).toBe(`${why}: run: ls`);
     expect(headlessDeclined("run: ls", "t2 (a\u001b[2Jb)")).toBe(`${why}: t2 (a\\u001b[2Jb): run: ls`);
+  });
+
+  // Release 7 plan, Task 8: a dangerous command's red lines, escaped by the gate as the action is, each on its own line
+  // before the declined one. The gate is the one -p mode makes; the command is text it reads, never run.
+  it("says each danger first, a line each, escaped as the gate escapes them", async () => {
+    const line = "git push --force origin a\u001b[8m; git reset --hard HEAD~3";
+    let printed = "";
+    const ask = async (summary: string, _detail?: string, owner?: { name: string }, _plain?: boolean, warnings?: string[]) => {
+      printed = headlessDeclined(summary, owner?.name, warnings);
+      return false;
+    };
+    const gate = new PermissionGate("project", ask, "x", { headless: true });
+    await expect(gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line })).rejects.toThrow("Not allowed: this command matches");
+    expect(printed).toBe(
+      [
+        "Danger: rewriting or deleting git history: git push --force origin a\\u001b[8m",
+        "Danger: rewriting or deleting git history: git reset --hard HEAD~3",
+        `${why}: run: git push --force origin a\\u001b[8m; git reset --hard HEAD~3`,
+      ].join("\n"),
+    );
+  });
+});
+
+// Release 7 plan, Task 8 (choices 57 and 59): what the launch hands the gate from git's settings, for the file tools.
+describe("protectionOf", () => {
+  it("protects the hooks folders and the git folders as folders, and the settings files as files", () => {
+    const git = {
+      files: ["/p/.git/config", "/home/me/.gitconfig"],
+      hooksPaths: ["/p/githooks"],
+      gitDirs: ["/p/.bare"],
+      problems: [{ file: "/p/x", why: "it is a link" }],
+      lineEndings: {},
+    };
+    expect(protectionOf(git)).toEqual({ hooks: ["/p/githooks", "/p/.bare"], files: ["/p/.git/config", "/home/me/.gitconfig"] });
+  });
+
+  it("is empty without git, so only the fixed list protects (choice 11)", () => {
+    expect(protectionOf(undefined)).toEqual({ hooks: [], files: [] });
   });
 });
 
@@ -283,6 +325,26 @@ describe("resolve", () => {
     expect(resolve({}, {}, {}).fallback).toBeUndefined();
   });
 
+  // Release 7 design, "Launching" and "The modes": the sandbox and its network are off unless asked for, and the judge is
+  // unset, the lead's model then judging (release 7 plan, Task 7). An empty --judge still wins, as --worker's does.
+  it("takes the sandbox, the network and the judge from the flag, then the file, then the default", () => {
+    expect(resolve({ sandbox: "live" }, {}, { sandbox: "copy" }).sandbox).toBe("live");
+    expect(resolve({}, {}, { sandbox: "copy" }).sandbox).toBe("copy");
+    expect(resolve({}, {}, {}).sandbox).toBe("off");
+    expect(resolve({ network: "off" }, {}, { network: "on" }).network).toBe("off");
+    expect(resolve({}, {}, { network: "on" }).network).toBe("on");
+    expect(resolve({}, {}, {}).network).toBe("off");
+    expect(resolve({ judge: "j:1" }, {}, { judge: "j:2" }).judge).toBe("j:1");
+    expect(resolve({ judge: "" }, {}, { judge: "j:2" }).judge).toBe("");
+    expect(resolve({}, {}, { judge: "j:2" }).judge).toBe("j:2");
+    expect(resolve({}, {}, {}).judge).toBeUndefined();
+  });
+
+  it("takes auto mode from the flag or the file", () => {
+    expect(resolve({ mode: "auto" }, {}, { mode: "ask" }).mode).toBe("auto");
+    expect(resolve({}, {}, { mode: "auto" }).mode).toBe("auto");
+  });
+
   it("takes max tasks and the status parts from the flag, then the file, then the default", () => {
     expect(resolve({ "max-tasks": "4" }, {}, { maxTasks: 6 }).maxTasks).toBe(4);
     expect(resolve({}, {}, { maxTasks: 6 }).maxTasks).toBe(6);
@@ -306,9 +368,11 @@ describe("resolve", () => {
   });
 
   it("still checks a flag given over the file, in the flag's words", () => {
-    expect(() => resolve({ mode: "x" }, {}, { mode: "ask" })).toThrow('--mode must be one of: ask, project (got "x")');
-    // `never` is not offered, but still read, so the launch can say it is switched off (release 6 plan, choice 30).
+    expect(() => resolve({ mode: "x" }, {}, { mode: "ask" })).toThrow('--mode must be one of: ask, project, auto, never (got "x")');
+    // `never` is offered and read, as copy mode is built (release 7 plan, Task 21); the launch says it needs copy mode.
     expect(resolve({ mode: "never" }, {}, {}).mode).toBe("never");
+    expect(() => resolve({ sandbox: "x" }, {}, { sandbox: "off" })).toThrow('--sandbox must be one of: off, live, copy (got "x")');
+    expect(() => resolve({ network: "x" }, {}, { network: "off" })).toThrow('--network must be one of: off, on (got "x")');
     expect(() => resolve({ effort: "x" }, {}, {})).toThrow('--effort must be one of: low, medium, high, xhigh, max (got "x")');
     expect(() => resolve({ "max-tasks": "1e1" }, {}, { maxTasks: 2 })).toThrow('--max-tasks must be a whole number from 1 (got "1e1")');
     expect(() => resolve({ status: "nope" }, {}, { status: ["lead"] })).toThrow(
@@ -331,6 +395,9 @@ describe("givenBy", () => {
       status: "lead",
       classic: true,
       "scroll-speed": "2",
+      sandbox: "off",
+      network: "on",
+      judge: "j:1",
     };
     const env = { TACHI_LEAD: "a:2", TACHI_WORKER: "w:2", TACHI_CLASSIC: "1", TACHI_SCROLL_SPEED: "4" };
     expect(givenBy(flags, env)).toEqual({
@@ -343,6 +410,9 @@ describe("givenBy", () => {
       status: "--status",
       screen: "--classic",
       scrollSpeed: "--scroll-speed",
+      sandbox: "--sandbox",
+      network: "--network",
+      judge: "--judge",
     });
     expect(givenBy({}, env)).toEqual({ lead: "TACHI_LEAD", worker: "TACHI_WORKER", screen: "TACHI_CLASSIC", scrollSpeed: "TACHI_SCROLL_SPEED" });
     expect(givenBy({}, { TACHI_LEAD: "", TACHI_WORKER: "", TACHI_CLASSIC: "0", TACHI_SCROLL_SPEED: "" })).toEqual({});

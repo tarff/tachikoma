@@ -1,11 +1,12 @@
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { oneOf, speedValue, statusSegments, taskCount } from "./clilib.js";
+import { type Network, NETWORKS, oneOf, SANDBOXES, type Sandbox, speedValue, statusSegments, taskCount } from "./clilib.js";
 import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode, OFFERED } from "./core/permissions.js";
 import { errorText } from "./core/types.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
+import { type Kind, KINDS, type UserRules } from "./safety/rules.js";
 import type { Segment } from "./tui/StatusLine.js";
 
 // The names live beside the data folder's, so the file tools can refuse them without loading this module.
@@ -31,13 +32,28 @@ export interface Settings {
   editorMode?: "normal" | "vim";
   vimInsertModeRemaps?: Record<string, "<Esc>">;
   editor?: string;
+  dangerousCommands?: UserRules;
+  sandbox?: Sandbox;
+  network?: Network;
+  judge?: string;
+  sandboxLimits?: SandboxLimits;
+}
+
+// The box's limits as the user wrote them (release 7 plan, Task 12): memory in Docker's own units, g or m. Each one
+// left out is the default for the Docker in use, and each one given is checked against it at the launch (choice 75,
+// src/sandbox/executor.ts, boxLimits).
+export interface SandboxLimits {
+  memory?: string;
+  cpus?: number;
+  pids?: number;
 }
 
 export type Loaded = { settings: Settings; warnings: string[] } | { problem: string };
 
 // Each value gets its flag's check and words, after the file's and the entry's names (the plan's choice 8); a value of the
 // wrong JSON type is a problem too. An unknown name is a warning and the rest applies. $schema, which editors use to check
-// the file, is allowed and ignored. The lead, fallback and worker are checked by createProvider at use, as flags are.
+// the file, is allowed and ignored. The lead, fallback, worker and judge are checked by createProvider at use, as flags
+// are.
 export function readSettings(text: string): Loaded {
   const settings: Settings = {};
   const warnings: string[] = [];
@@ -45,8 +61,10 @@ export function readSettings(text: string): Loaded {
     for (const [name, value] of Object.entries(entriesOf(text))) {
       const entry = `${SETTINGS}: ${JSON.stringify(name)}`;
       if (name === "$schema") continue;
-      else if (name === "lead" || name === "fallback" || name === "worker" || name === "editor") settings[name] = textOf(entry, value);
+      else if (name === "lead" || name === "fallback" || name === "worker" || name === "editor" || name === "judge") settings[name] = textOf(entry, value);
       else if (name === "mode") settings.mode = oneOf(entry, textOf(entry, value), MODES, OFFERED);
+      else if (name === "sandbox") settings.sandbox = oneOf(entry, textOf(entry, value), SANDBOXES);
+      else if (name === "network") settings.network = oneOf(entry, textOf(entry, value), NETWORKS);
       else if (name === "effort") settings.effort = oneOf(entry, textOf(entry, value), EFFORTS);
       else if (name === "screen") settings.screen = oneOf(entry, textOf(entry, value), ["full", "classic"] as const);
       else if (name === "editorMode") settings.editorMode = oneOf(entry, textOf(entry, value), ["normal", "vim"] as const);
@@ -61,6 +79,8 @@ export function readSettings(text: string): Loaded {
         }
         settings.status = statusSegments(value, entry);
       } else if (name === "vimInsertModeRemaps") settings.vimInsertModeRemaps = remaps(entry, value, warnings);
+      else if (name === "dangerousCommands") settings.dangerousCommands = userRules(entry, value, warnings);
+      else if (name === "sandboxLimits") settings.sandboxLimits = sandboxLimits(entry, value, warnings);
       else warnings.push(`${entry} is not a setting; it was left out`);
     }
   } catch (err) {
@@ -132,3 +152,60 @@ function remaps(entry: string, value: unknown, warnings: string[]): Record<strin
   return kept;
 }
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+// The user's own dangerous-command rules (release 7 plan, Task 4 and choice 5): "add", commands' first words, none blank,
+// as a blank one would be the start of every command, and none with quotes, kept with single spaces; "off", kinds by
+// their table names. Either may be left out, and a repeat is kept once. Other names in it are left out with a
+// warning, as the file's own are.
+function userRules(entry: string, value: unknown, warnings: string[]): UserRules {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw wrongType(entry, 'an object, such as {"add": ["terraform apply"], "off": ["installing software"]}', value);
+  }
+  const rules: UserRules = { add: [], off: [] };
+  for (const [name, list] of Object.entries(value)) {
+    const part = `${SETTINGS}: ${JSON.stringify(`dangerousCommands.${name}`)}`;
+    if (name === "add") {
+      if (!Array.isArray(list) || !list.every((v) => typeof v === "string" && v.trim())) {
+        throw new Error(`${part} must be a list of commands in quotes, such as ["terraform apply"]`);
+      }
+      // A command's words have their quotes taken off (split.ts), so a rule holding one could never match.
+      const quoted = list.find((v: string) => /["']/.test(v));
+      if (quoted !== undefined) throw new Error(`${part} rules are matched word by word and cannot hold quotes (got ${JSON.stringify(quoted)})`);
+      rules.add = [...new Set(list.map((v: string) => v.trim().split(/\s+/).join(" ")))]; // " make  deploy " is "make deploy"
+    } else if (name === "off") {
+      const bad = Array.isArray(list) ? list.find((v) => !(KINDS as readonly unknown[]).includes(v)) : list;
+      if (bad !== undefined) throw new Error(`${part} must be a list of: ${KINDS.join(", ")} (got ${JSON.stringify(bad)})`);
+      rules.off = [...new Set(list as Kind[])];
+    } else warnings.push(`${part} is not a setting; it was left out`);
+  }
+  return rules;
+}
+
+// The box's limits (release 7 plan, Task 12): memory as a whole number of Docker's g or m, which Docker reads as
+// gibibytes and mebibytes; CPUs above 0, with decimals, as Docker's --cpus takes them; processes a whole number from 1,
+// as Docker's --pids-limit takes 0 and below as no limit. Other names in it are left out with a warning, as the file's
+// own are.
+function sandboxLimits(entry: string, value: unknown, warnings: string[]): SandboxLimits {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw wrongType(entry, 'an object, such as {"memory": "8g", "cpus": 4, "pids": 1024}', value);
+  }
+  const limits: SandboxLimits = {};
+  for (const [name, v] of Object.entries(value)) {
+    const part = `${SETTINGS}: ${JSON.stringify(`sandboxLimits.${name}`)}`;
+    if (name === "memory") {
+      if (typeof v !== "string" || !/^[1-9]\d*[gm]$/.test(v)) {
+        throw wrongType(part, 'a whole number of gigabytes or megabytes in quotes, such as "8g" or "512m"', v);
+      }
+      limits.memory = v;
+    } else if (name === "cpus") {
+      if (typeof v !== "number" || !Number.isFinite(v) || !(v > 0)) throw wrongType(part, "a number of CPUs above 0, such as 2 or 1.5", v);
+      // Docker refuses more ("value is too precise"; release 7 plan, choices 82 and 91).
+      if (Number(v.toFixed(9)) !== v) throw new Error(`${part} can have at most 9 decimal places (got ${v})`);
+      limits.cpus = v;
+    } else if (name === "pids") {
+      if (!Number.isInteger(v) || (v as number) < 1) throw wrongType(part, "a whole number of processes from 1, such as 1024", v);
+      limits.pids = v as number;
+    } else warnings.push(`${part} is not a setting; it was left out`);
+  }
+  return limits;
+}

@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readdir, rmdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { onTestFinished } from "vitest";
 import { Bus, type ErrorEvent } from "../src/core/bus.js";
 import { type Mode, PermissionGate } from "../src/core/permissions.js";
 import type { CompletionRequest, Message, Part, Provider, Turn, Usage } from "../src/core/types.js";
-import { LocalExecutor } from "../src/exec/local.js";
+import { LocalExecutor, LocalWorkspace } from "../src/exec/local.js";
+import type { Workspace } from "../src/exec/workspace.js";
 import type { ToolContext } from "../src/tools/tool.js";
 
 // An animated GIF of two frames, white then black, made in memory: two frames the same would be stored as one. sharp is
@@ -75,7 +76,36 @@ export async function tempContext(mode: Mode = "never", answers: boolean[] = [])
     details.push(detail);
     return answers.shift() ?? false;
   });
-  return { root, executor: new LocalExecutor(), gate, asked, details };
+  return { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate, asked, details };
+}
+
+// A Workspace that keeps each call, as its name and what it was given, and answers from `files`, a made-up project's
+// files by absolute path, so a caller given it is seen reaching the Workspace and never the disk (release 7 plan, Task
+// 14). A path leaving `root` is outside; find and search give one canned answer each.
+export function fakeWorkspace(root: string, files: Record<string, string> = {}) {
+  const calls: string[] = [];
+  const file = (abs: string) => {
+    const f = files[abs];
+    if (f === undefined) throw new Error(`${abs} is not in the fake workspace`);
+    return f;
+  };
+  const workspace: Workspace = {
+    root,
+    resolve: async (p) => {
+      calls.push(`resolve ${p}`);
+      const abs = path.resolve(root, p);
+      return { abs, outside: path.relative(root, abs).startsWith(".."), shown: abs };
+    },
+    readText: async (abs) => (calls.push(`readText ${abs}`), file(abs)),
+    writeText: async (abs, content) => void (calls.push(`writeText ${abs}`), (files[abs] = content)),
+    find: async (start, pattern) => (calls.push(`find ${start} ${pattern}`), ["made/up.ts"]),
+    search: async (start, pattern, glob) => {
+      calls.push(`search ${start} ${pattern} ${glob}`);
+      return { matches: [{ file: "made/up.ts", line: 1, text: "made up" }], beyond: 0 };
+    },
+    branch: async () => (calls.push("branch"), "made-up-branch"),
+  };
+  return { workspace, calls, files };
 }
 
 export const texts = (m: Message) => m.parts.flatMap((p: Part) => (p.type === "text" ? [p.text] : []));
@@ -132,3 +162,32 @@ if (mode === "line") {
   }
 }
 `;
+
+// Removes a folder the test made: a link or junction is removed itself, never followed.
+export async function removeTree(folder: string): Promise<void> {
+  for (const e of await readdir(folder, { withFileTypes: true })) {
+    const p = path.join(folder, e.name);
+    if (e.isDirectory() && !e.isSymbolicLink()) await removeTree(p);
+    else await unlink(p);
+  }
+  await rmdir(folder);
+}
+
+export const ZERO = String.fromCharCode(0);
+// The sandbox's test project (tests/sandbox): .gitignore files at two levels (one bringing back with "!"), CRLF and
+// non-ASCII text, a binary file and a repository's HEAD.
+export const TREE: Record<string, string> = {
+  ".gitignore": "build/\n*.log\n!keep.log\n",
+  "src/a.ts": "const a = 1;\nexport { a };\n",
+  "src/b.ts": "line one\r\nmatch here\r\n",
+  "src/core/c.ts": "match again\n",
+  "src/.gitignore": "secret.ts\n",
+  "src/secret.ts": "match hidden\n",
+  "build/out.js": "match built\n",
+  "x.log": "match log\n",
+  "keep.log": "match kept\n",
+  "notes/caf\u00e9.txt": "caf\u00e9 match\n",
+  "bin.dat": `match${ZERO}binary\n`,
+  ".git/HEAD": "ref: refs/heads/feature/x\n",
+  ".git/config": "match in git\n",
+};

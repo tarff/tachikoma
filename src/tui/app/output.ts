@@ -7,6 +7,7 @@ export const output = (ui: UI, fns: Fns) => {
   // In full screen the lines go to the view's rows too, and a view held away from the bottom counts them (release 5
   // design, "Scrolling"); setting `lines` draws them either way.
   const say = (...add: Line[]) => {
+    ui.toolLine.current = null; // a tool line's own message sets it again after (App.tsx, onMessage; release 7 plan, choice 66)
     const shown = add.map(escaped);
     if (ui.fullNow.current) {
       const before = ui.kept.lines.length;

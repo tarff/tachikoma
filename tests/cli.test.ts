@@ -1,26 +1,71 @@
-import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { boxProtection, dropOnExit, keptForReview, type Network, sandboxReady, sandboxStart } from "../src/clilib.js";
+import { onPath } from "../src/exec/env.js";
+import type { DockerRun } from "../src/sandbox/docker.js";
+import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
+import { removeTree } from "./helpers.js";
+
+// Docker's answer for an image with no bash (node:22-alpine, as the quality review gave it).
+const NO_BASH = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "bash": executable file not found in $PATH: unknown';
 
 // Runs the real command through tsx, in a fresh project folder with a pretend home folder, and with
 // the walk for instruction files starting at a fresh folder of its own, so no case reads the user's
-// files. Every case here stops before any model answers.
+// files. Every case here stops before any model answers. The launch reads git's settings (release 7 plan, Task 8), so
+// git is given empty system and user settings files of the test's own, and every variable it finds a home folder by
+// (HOME, HOMEDRIVE and HOMEPATH, USERPROFILE, XDG_CONFIG_HOME) names the pretend one: no case has git read the user's.
 function tachi(...args: (string | Record<string, string>)[]) {
+  const { argv, options } = launch(args);
+  const r = spawnSync(process.execPath, argv, { ...options, input: "x\n", encoding: "utf8" });
+  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+}
+
+// tachi(), without blocking: for a case whose model is a stand-in served by this test (release 7 plan, Task 10).
+function tachiLater(...args: (string | Record<string, string>)[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const { argv, options } = launch(args);
+  const child = spawn(process.execPath, argv, options);
+  onTestFinished(() => void child.kill()); // a run still going when the test ends, as a failing one can leave it
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+  child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+  child.stdin.end("x\n");
+  return new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+function launch(args: (string | Record<string, string>)[]) {
   const env = args.find((a) => typeof a === "object") ?? {};
   const words = args.filter((a) => typeof a === "string");
   const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
   const home = path.join(top, "home");
   mkdirSync(home);
-  const r = spawnSync(process.execPath, ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, path.resolve("src/cli.tsx"), ...words], {
-    cwd: env.cwd ?? top,
-    input: "x\n",
-    encoding: "utf8",
-    env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "", ...env },
-  });
-  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  const system = path.join(top, "system.gitconfig");
+  const global = path.join(top, "global.gitconfig");
+  for (const file of [system, global]) writeFileSync(file, "");
+  const git = {
+    GIT_CONFIG_SYSTEM: system,
+    GIT_CONFIG_GLOBAL: global,
+    HOMEDRIVE: home.slice(0, 2),
+    HOMEPATH: home.slice(2),
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+  };
+  return {
+    argv: ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, path.resolve("src/cli.tsx"), ...words],
+    options: {
+      cwd: env.cwd ?? top,
+      env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "", ...git, ...env },
+    },
+  };
 }
 
 // A pretend home folder holding ~/.tachikoma/settings.json, given to tachi() as its HOME and USERPROFILE.
@@ -94,6 +139,13 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(r.stderr).toContain("Usage: tachi login chatgpt [--new | --account <number>]");
   });
 
+  // Only the usage, so Docker is never run: the command's steps are tested with a stand-in Docker (tests/sandbox).
+  it("explains tachi sandbox's usage, before any launch check", () => {
+    const r = tachi("sandbox", "make");
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe("Usage: tachi sandbox build");
+  });
+
   it("with -p, leaves out instruction files from outside the project and says which, printing nothing about the rest", () => {
     const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
     const proj = path.join(top, "proj");
@@ -109,6 +161,10 @@ describe("tachi", { timeout: 15_000 }, () => {
     const help = tachi("--help").stdout;
     expect(help).toMatch(/^ {2}--classic /m);
     expect(help).toMatch(/\/screen switches between full\s+screen\s+and\s+classic/);
+  });
+
+  it("lists tachi review in the help", () => {
+    expect(tachi("--help").stdout).toMatch(/^ {2}tachi review \[<name> \[--discard\]\] +list the copies kept for review, open one, or discard one$/m);
   });
 
   it("lists /settings, /keybindings and /vim in the help", () => {
@@ -198,27 +254,124 @@ describe("tachi", { timeout: 15_000 }, () => {
   it("stops on a broken settings file, with its problem", () => {
     let r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"mode": "x"}'));
     expect(r.code).toBe(1);
-    expect(r.stderr).toMatch(/^settings\.json: "mode" must be one of: ask, project \(got "x"\)/);
+    expect(r.stderr).toMatch(/^settings\.json: "mode" must be one of: ask, project, auto, never \(got "x"\)/);
     r = tachi("--lead", "ollama:none", "-p", "hi", homeWith("{"));
     expect(r.code).toBe(1);
     expect(r.stderr).toMatch(/^settings\.json is not valid JSON: /);
   });
 
-  // Release 6 plan, choice 30: `never` is switched off until release 7, from the flag or the file, with -p and without.
-  // Without -p the stand-in terminal would stop the start later, so the refusal comes first.
-  it("refuses never mode, from --mode or the settings file, with and without -p", () => {
-    const off = "never is switched off until release 7, which adds the safety checks it needs; use ask or project\n";
-    for (const r of [tachi("--lead", "ollama:none", "--mode", "never", "-p", "hi"), tachi("--lead", "ollama:none", "--mode", "never")]) {
+  // Release 7 plan, Task 7 and choice 1: `never` only with copy mode, so nothing reaches the folder before the user has
+  // reviewed it, from the flag or the file, with -p and without; live link is not enough. Without -p the stand-in terminal
+  // would stop the start later, so the refusal comes first. Seven starts.
+  it("refuses never mode without --sandbox copy, from --mode or the settings file, with and without -p", { timeout: 60_000 }, () => {
+    const needs = "never needs --sandbox copy, so nothing reaches your folder before you have reviewed it; launch with --sandbox copy --mode never.\n";
+    const flag = [["--mode", "never", "-p", "hi"], ["--mode", "never"], ["--mode", "never", "--sandbox", "live", "-p", "hi"]];
+    for (const args of flag) {
+      const r = tachi("--lead", "ollama:none", ...args);
       expect(r.code).toBe(1);
-      expect(r.stderr).toBe(`--mode: ${off}`);
+      expect(r.stderr).toBe(`--mode ${needs}`);
     }
     for (const r of [tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"mode": "never"}')), tachi("--lead", "ollama:none", homeWith('{"mode": "never"}'))]) {
       expect(r.code).toBe(1);
-      expect(r.stderr).toBe(`settings.json: "mode": ${off}`);
+      expect(r.stderr).toBe(`settings.json: "mode": ${needs}`);
     }
-    // A flag still wins over the file, so --mode ask starts.
+    // A flag still wins over the file, so --mode ask starts, and so does auto.
     expect(tachi("--lead", "ollama:none", "--mode", "ask", homeWith('{"mode": "never"}')).stderr).toContain("Interactive mode needs a terminal; use -p");
-    expect(tachi("--help").stdout).toMatch(/^ {2}--mode <mode> +when to ask before acting: ask \| project \(default: ask\);\n +never is switched off until release 7\n/m);
+    expect(tachi("--lead", "ollama:none", "--mode", "auto").stderr).toBe('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.\n');
+  });
+
+  // Release 7 plan, Task 21: copy mode is built, so it launches, and never with it, from the flag or the settings file.
+  // PATH is an empty folder of the test's own, so the launch stops at its Docker step with Docker not installed, having
+  // passed the mode's check, and no case here runs Docker. The project is a folder of its own, beside the pretend home, so
+  // choice 13's refusal does not come first. Five starts.
+  it("launches copy mode, and never with it, from the flag or the settings file, as far as Docker", { timeout: 60_000 }, () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    const empty = path.join(top, "empty");
+    mkdirSync(proj);
+    mkdirSync(empty);
+    const where = { cwd: proj, PATH: empty, Path: empty, TACHI_DATA_DIR: path.join(top, "data") };
+    const notInstalled = `${NOT_INSTALLED}\n`;
+    for (const r of [
+      tachi("--lead", "ollama:none", "--sandbox", "copy", "-p", "hi", where),
+      tachi("--lead", "ollama:none", "--sandbox", "copy", "--mode", "never", "-p", "hi", where),
+      tachi("--lead", "ollama:none", "-p", "hi", { ...where, ...homeWith('{"sandbox": "copy", "mode": "never"}') }),
+    ]) {
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(notInstalled);
+    }
+    // A flag wins over the file, so --sandbox off starts.
+    expect(tachi("--lead", "ollama:none", "--sandbox", "off", homeWith('{"sandbox": "copy"}')).stderr).toContain("Interactive mode needs a terminal; use -p");
+    const r = tachi("--lead", "ollama:none", "--sandbox", "x", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe('--sandbox must be one of: off, live, copy (got "x")\n');
+  });
+
+  // Choice 29: headless copy mode names the copy kept for review on stderr, after the answer (cli.tsx).
+  it("words the headless line naming the copy kept for review", () => {
+    expect(keptForReview("0d6c1f2e")).toBe("Changes kept for review: tachi review 0d6c1f2e");
+  });
+
+  // Task 16: live link's first step is choice 13's refusal, before Docker is asked anything. Here the project folder holds
+  // the pretend home folder, so the real command stops there, and no case here reaches Docker. Two starts.
+  it("refuses live link on a folder that holds the home folder, from the flag or the settings file, before Docker", { timeout: 60_000 }, () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+    const home = path.join(top, "home");
+    mkdirSync(path.join(home, ".tachikoma"), { recursive: true });
+    writeFileSync(path.join(home, ".tachikoma", "settings.json"), '{"sandbox": "live"}');
+    const where = { cwd: top, HOME: home, USERPROFILE: home, TACHI_DATA_DIR: path.join(tmpdir(), "tachi-cli-no-data") };
+    const refusal =
+      `The sandbox cannot run on ${top}: it holds Tachikoma's settings folder, which must never be in the box. ` +
+      "Start Tachikoma in a project folder.\n";
+    for (const r of [tachi("--lead", "ollama:none", "--sandbox", "live", "-p", "hi", where), tachi("--lead", "ollama:none", "-p", "hi", where)]) {
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(refusal);
+    }
+  });
+
+  // Release 7 plan, choice 22: the network setting acts only in the sandbox, so --network without it is said once at
+  // launch, and the session starts. The file's entry is not warned of, as only a flag is typed for this launch. Four starts.
+  it("warns that --network was ignored without the sandbox, and starts", { timeout: 60_000 }, () => {
+    const started = 'Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.\n'; // the stand-in terminal stops it there
+    for (const net of ["on", "off"]) {
+      const r = tachi("--lead", "ollama:none", "--network", net);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(`--network acts only with the sandbox on; it was ignored\n${started}`);
+    }
+    expect(tachi("--lead", "ollama:none", homeWith('{"network": "on"}')).stderr).toBe(started);
+    const r = tachi("--lead", "ollama:none", "--network", "x", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe('--network must be one of: off, on (got "x")\n');
+  });
+
+  // Release 7 plan, Task 7: the judge is made at launch, as --worker is, so a bad one stops it in its own words.
+  it("names --judge, or the settings file's judge, when its value is bad", () => {
+    const bad = 'Expected <provider>:<model>, e.g. anthropic:claude-opus-5-5 (got "nope")\n';
+    let r = tachi("--lead", "ollama:none", "--judge", "nope", "-p", "hi");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe(`--judge: ${bad}`);
+    r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"judge": "nope"}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe(`settings.json: "judge": ${bad}`);
+  });
+
+  it("describes the four modes and --sandbox, --network and --judge in the help, one line each", () => {
+    const help = tachi("--help").stdout;
+    expect(help).toContain(
+      [
+        "  --mode <mode>     when to ask before acting (default: ask):",
+        "                    ask: before each write and shell command, and before anything outside the project",
+        "                    project: before shell commands and anything outside the project",
+        "                    auto: reads and edits in the project run, the judge model decides the rest,",
+        "                          and dangerous commands ask you",
+        "                    never: never ask; only with --sandbox copy, where you review changes at the end",
+        "  --sandbox <how>   off | live | copy (default: off): commands run in Docker on this folder or a copy",
+        "  --network <net>   off | on (default: off): whether commands in the sandbox can reach the internet",
+        "  --judge <spec>    the model that judges in auto mode; the lead's model unless set",
+        "",
+      ].join("\n"),
+    );
   });
 
   // The security review's finding 2: a bad value in the settings file reaches stderr with its control characters as
@@ -277,9 +430,663 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"worker": "nope"}')).stderr).toMatch(/^settings\.json: "worker": Expected/);
   });
 
+  // Release 7 plan, Task 4: while any kind of the dangerous-command check is off, each launch says so in one line. Port 9,
+  // as below: the run gets as far as asking the model and fails there, with nothing sent anywhere.
+  it("says at launch which kinds of the dangerous-command check are off, and nothing while none is", () => {
+    const unreachable = { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" };
+    const run = (rules: string) => tachi("-p", "hi", { ...homeWith(`{"lead": "openai:none", "dangerousCommands": ${rules}}`), ...unreachable });
+    const off = run('{"off": ["installing software", "sending files out"]}');
+    expect(off.stderr).toMatch(/^The dangerous-command check is off for: installing software, sending files out; in auto and never, those commands run without it\.\n/);
+    expect(off.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
+    for (const none of ['{"add": ["make deploy"]}', '{"off": []}']) expect(run(none).stderr).not.toContain("dangerous-command check");
+  });
+
+  it("stops the launch on a bad dangerousCommands entry", () => {
+    const r = tachi("--lead", "ollama:none", "-p", "hi", homeWith('{"dangerousCommands": {"off": ["installing"]}}'));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toMatch(/^settings\.json: "dangerousCommands\.off" must be a list of: wiping or formatting disks, .* \(got "installing"\)\n$/);
+  });
+
+  // Release 7 plan, Task 8: when git's settings cannot be read at launch, it says so in one line and starts, with only the
+  // fixed list protecting. The user settings file here is the test's own, of 12,000 entries of 100 letters, so git's
+  // listing of it passes Node's execFile maxBuffer (1 MiB) and the run fails as git killed by a signal would. Port 9, as
+  // below: the run then gets as far as asking the model and fails there.
+  it.skipIf(!onPath("git"))("says at launch when git's settings could not be read, and starts", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-cli-git-"));
+    const big = path.join(dir, "big.gitconfig");
+    writeFileSync(big, `[sample]\n${Array.from({ length: 12_000 }, (_, i) => `\tkey${i} = ${"x".repeat(100)}\n`).join("")}`);
+    const unreachable = { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" };
+    const r = tachi("--lead", "openai:none", "-p", "hi", { GIT_CONFIG_GLOBAL: big, ...unreachable });
+    expect(r.stderr).toMatch(/^git's settings could not be read \(stdout maxBuffer length exceeded\); only the fixed list of protected paths applies\n/);
+    expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
+    expect(tachi("--lead", "openai:none", "-p", "hi", unreachable).stderr).not.toContain("git's settings");
+  });
+
+  // Release 7 plan, choice 65: in -p, a judge that cannot be reached refuses the action as a no does, says so on stderr,
+  // and fails no run. The lead and the judge are a stand-in for OpenAI's chat completions that this test serves on the
+  // loopback address: the lead asks to read a made-up file outside the project, then answers; the judge's request fails.
+  it("with -p in auto, says a judge's error on stderr, refuses the action, and still ends as the run did", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const notes = path.join(top, "elsewhere", "notes.txt");
+    const sent: { model: string; messages: { role: string; content?: unknown }[] }[] = [];
+    // An async handler, as FakeOpenAI's, answering 500 if it throws, so a mistake here fails the run, not the test file.
+    const handle = async (req: http.IncomingMessage, res: http.ServerResponse) => {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      const request = JSON.parse(body) as (typeof sent)[number];
+      sent.push(request);
+      const json = (status: number, o: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(o));
+      if (request.model === "judge") return void json(400, { error: { message: "the judge is down", type: "invalid_request_error" } });
+      const first = !request.messages.some((m) => m.role === "tool");
+      const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: notes }) } };
+      const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+      json(200, { id: "r", object: "chat.completion", created: 0, model: request.model, choices: [{ index: 0, finish_reason: first ? "tool_calls" : "stop", message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
+    };
+    const server = http.createServer(
+      (req, res) =>
+        void handle(req, res).catch(() => {
+          if (!res.headersSent) res.writeHead(500);
+          res.end();
+        }),
+    );
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const r = await tachiLater("--lead", "openai:lead", "--judge", "openai:judge", "--mode", "auto", "-p", "read the notes", { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url });
+    expect(r.stderr).toBe("judge: 400 the judge is down\n");
+    expect(r.stdout).toBe("done\n");
+    expect(r.code).toBe(0);
+    expect(sent.map((x) => x.model)).toEqual(["lead", "judge", "lead"]);
+    expect(sent[2]!.messages.at(-1)).toMatchObject({ role: "tool", content: "Error: The judge refused: the judge could not be reached: 400 the judge is down" }); // the provider marks a refused call so
+  });
+
   // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.
   it("with -p, runs on the settings file's lead", () => {
     const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });
     expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
+  });
+});
+
+// Release 7 plan, Task 16: live link's launch, in-process, with Docker a stand-in that records its calls and answers by
+// them (choice 69), git's settings given, and the letter-case check (choice 104) and the submodules (choice 123) given, so
+// no case here runs Docker or git.
+describe("live link's launch, with a stand-in Docker", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  type Answer = { code: number; out: string; err: string } | "missing";
+  const ok = (out = ""): Answer => ({ code: 0, out, err: "" });
+  const STEPS = [
+    "home", "case", "missing", "stopped", "image", "git-throws", "git-missing", "submodules-throws",
+    "submodules", "room", "limits", "start", "no-bash", "node-missing", "node-old",
+  ] as const;
+  type Step = (typeof STEPS)[number];
+  // This PC's `docker info`, the parts read (executor.test.ts), with the limit flags given.
+  const INFO = (more: Record<string, unknown> = {}) =>
+    JSON.stringify({ NCPU: 24, MemTotal: 33518923776, SecurityOptions: [], MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true, ...more });
+
+  function stand(broken: Set<Step>, info = INFO()) {
+    const calls: string[][] = [];
+    const run: DockerRun = async (args) => {
+      calls.push(args);
+      if (broken.has("missing")) return "missing";
+      const [verb] = args;
+      if (verb === "version") return broken.has("stopped") ? { code: 1, out: "", err: "error during connect: the pipe is gone\n" } : ok("linux\n");
+      if (verb === "image") return broken.has("image") ? { code: 1, out: "", err: "No such image\n" } : ok("sha256:0\n");
+      if (verb === "info") return broken.has("room") ? { code: 1, out: "", err: "error during connect: busy\n" } : ok(`${info}\n`);
+      if (verb === "run") return broken.has("start") ? { code: 125, out: "", err: "docker: Error response from daemon: invalid mount config.\n" } : ok("b0x\n");
+      if (verb === "exec" && args.includes("/sys/fs/cgroup/memory.events")) return ok("oom_kill 0\n");
+      if (verb === "exec" && args[1] === "-w") {
+        if (args.at(-1)!.startsWith("curl")) return { code: 6, out: "", err: "" };
+        // An image without bash (node:22-alpine): Docker's own words for the wrapper's bash.
+        if (broken.has("no-bash")) return { code: 127, out: "", err: `${NO_BASH}
+` };
+        if (broken.has("node-missing")) return { code: 127, out: "", err: "bash: line 1: node: command not found\n" };
+        return ok(broken.has("node-old") ? "v20.1.0 undefined" : "v24.22.2 function");
+      }
+      if (verb === "inspect") return ok("true\n");
+      return ok();
+    };
+    return { run, calls };
+  }
+
+  // A project folder of the test's own, and the data folder beside it, or inside it for choice 13's step.
+  // `made` adds to the project and the folder around it before the launch.
+  async function launch(broken: Set<Step>, info?: string, network: Network = "off", made?: (top: string, root: string) => void) {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-box-"));
+    onTestFinished(() => removeTree(top));
+    const root = path.join(top, "project");
+    mkdirSync(root);
+    made?.(top, root);
+    vi.stubEnv("TACHI_DATA_DIR", broken.has("home") ? path.join(root, "data") : path.join(top, "data"));
+    const fake = stand(broken, info);
+    const lines: string[] = [];
+    const io = {
+      out: (line: string) => lines.push(line),
+      err: (line: string) => lines.push(line),
+      signal: new AbortController().signal,
+      run: fake.run,
+      gitSettings: async () => {
+        if (broken.has("git-throws")) throw new Error("git was ended by SIGKILL");
+        return broken.has("git-missing") ? undefined : { files: [], hooksPaths: [], gitDirs: [], problems: [], lineEndings: {} };
+      },
+      ignoresCase: () => broken.has("case"),
+      submodules: async () => {
+        if (broken.has("submodules-throws")) throw new Error("git was ended by SIGKILL");
+        return broken.has("submodules");
+      },
+    };
+    const ready = await sandboxReady(root, io);
+    if ("exit" in ready) return { root, exit: ready.exit, lines, calls: fake.calls, started: undefined };
+    const limits = broken.has("limits") ? { cpus: 999 } : undefined;
+    const started = await sandboxStart(root, ready, { network, limits, session: "s1" }, io);
+    return { root, lines, calls: fake.calls, ...("exit" in started ? { exit: started.exit, started: undefined } : { exit: undefined, started }) };
+  }
+
+  const said = (step: Step, root: string): string =>
+    ({
+      home: `The sandbox cannot run on ${root}: it holds Tachikoma's data folder, which must never be in the box. Start Tachikoma in a project folder.`,
+      missing: NOT_INSTALLED,
+      stopped: NOT_RUNNING,
+      image: NOT_BUILT,
+      "git-throws": "Live link is refused: git's settings could not be read (git was ended by SIGKILL). Launch with --sandbox copy instead.",
+      case:
+        "Live link is refused: this folder ignores letter case, as Windows and macOS do by default, so the box could reach git's files by " +
+        "another spelling. Launch with --sandbox copy instead.",
+      "git-missing": "Live link needs git on this PC to read git's settings; use --sandbox copy, or install git.",
+      "submodules-throws": "Live link is refused: git's settings could not be read (git was ended by SIGKILL). Launch with --sandbox copy instead.",
+      submodules:
+        "Live link is refused: this project has git submodules, whose git settings the box could change for git on your " +
+        "machine to run. Launch with --sandbox copy instead.",
+      room: "The sandbox could not read Docker's CPUs and memory: error during connect: busy",
+      limits: 'settings.json: "sandboxLimits": "cpus" is 999, but Docker has 24 CPUs. Lower it, or give Docker more memory or CPUs.',
+      start: "The sandbox could not start: docker: Error response from daemon: invalid mount config.",
+      "no-bash": `The sandbox's image could not run Tachikoma's check in the box (${NO_BASH}). The box needs bash, util-linux's setsid and Node 22.5 or newer.`,
+      "node-missing": "The sandbox's image has no node, which Tachikoma's file tools need in the box.",
+      "node-old": "The sandbox's image has node v20.1.0, but Tachikoma's file tools need Node 22.5 or newer in the box.",
+    })[step];
+
+  // A Ctrl-C during the git step stops the launch as one during the image's does (image.ts, 128 + SIGINT's number), with
+  // nothing more said, whether git was ended by it or had already answered.
+  it("stops on a Ctrl-C during git's settings, saying nothing more", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "tachi-cli-box-"));
+    onTestFinished(() => removeTree(root));
+    vi.stubEnv("TACHI_DATA_DIR", path.join(tmpdir(), "tachi-cli-no-data"));
+    for (const answered of [false, true]) {
+      const stop = new AbortController();
+      const lines: string[] = [];
+      const fake = stand(new Set());
+      const got = await sandboxReady(root, {
+        out: (line) => lines.push(line),
+        err: (line) => lines.push(line),
+        signal: stop.signal,
+        run: fake.run,
+        ignoresCase: () => false,
+        submodules: async () => false,
+        gitSettings: async () => {
+          stop.abort();
+          if (!answered) throw new Error("git was ended by SIGINT");
+          return { files: [], hooksPaths: [], gitDirs: [], problems: [], lineEndings: {} };
+        },
+      });
+      expect(got).toEqual({ exit: 130 });
+      expect(lines).toEqual([]);
+    }
+  });
+
+  // Each step's refusal with that step and every later one broken, so each is said before all that follow.
+  it("refuses in the launch order, each step before every later one, with exit 1", async () => {
+    for (const [i, step] of STEPS.entries()) {
+      const r = await launch(new Set(STEPS.slice(i)));
+      expect(r.lines, step).toEqual([said(step, r.root)]);
+      expect(r.exit, step).toBe(1);
+    }
+  });
+
+  it("removes the box when the node check stops the launch", async () => {
+    for (const step of ["no-bash", "node-missing", "node-old"] as const) {
+      const r = await launch(new Set([step]));
+      expect(r.calls.at(-1), step).toEqual(["rm", "-f", "b0x"]);
+    }
+  });
+
+  it("asks Docker nothing before choice 13's refusal, and builds nothing headless", async () => {
+    expect((await launch(new Set(["home"]))).calls).toEqual([]);
+    expect((await launch(new Set(["image"]))).calls.some((c) => c[0] === "build")).toBe(false);
+  });
+
+  it("starts the box after the leftover boxes are removed, with live link's mounts and git settings, and says how", async () => {
+    const r = await launch(new Set());
+    expect(r.exit).toBeUndefined();
+    const verbs = r.calls.map((c) => c[0]);
+    expect(verbs.indexOf("ps")).toBeLessThan(verbs.indexOf("run"));
+    const run = r.calls.find((c) => c[0] === "run")!;
+    expect(run.slice(run.indexOf("--network"), run.indexOf("--network") + 2)).toEqual(["--network", "none"]);
+    expect(run).toContain("GIT_CONFIG_KEY_0=safe.directory");
+    expect(run.slice(run.indexOf("--tmpfs"), run.indexOf("--tmpfs") + 2)).toEqual(["--tmpfs", "/work/.tachikoma"]);
+    expect(run[run.indexOf("-v") + 1]).toBe(`${r.root}:/work`);
+    expect(r.lines).toEqual([]);
+    const started = r.started!;
+    expect(started.lines).toEqual([`Sandbox: live link on ${r.root}, network off, limits 4g, 4 CPUs, 1024 processes.`]);
+    expect([started.root, started.workspace.root]).toEqual(["/work", "/work"]);
+    expect(started.system).toContain("The project root is /work.");
+    expect(started.system).toContain("Shell commands run with bash on linux.");
+    expect(started.subagentSystem).toContain("The project root is /work.");
+    expect(started.gate).toEqual({ root: "/work", home: "/tmp", shell: "bash" });
+    expect(started.shellTool.spec.description).toContain("with bash");
+  });
+
+  it("starts with the network on as bridge, saying so", async () => {
+    const r = await launch(new Set(), undefined, "on");
+    const run = r.calls.find((c) => c[0] === "run")!;
+    expect(run.slice(run.indexOf("--network"), run.indexOf("--network") + 2)).toEqual(["--network", "bridge"]);
+    expect(r.started!.lines[0]).toContain(", network on, ");
+  });
+
+  it("says each limit Docker cannot apply, after the launch line (choice 83)", async () => {
+    const r = await launch(new Set(), INFO({ MemoryLimit: false, PidsLimit: false }));
+    expect(r.started!.lines.slice(1)).toEqual([
+      "Docker cannot limit the box's memory on this machine, so the box runs without that limit.",
+      "Docker cannot limit the box's processes on this machine, so the box runs without that limit.",
+    ]);
+  });
+
+  // Choice 107 (design, "Live link"): a .git file naming a git folder outside the project, which is not mounted, so git
+  // does not work in the box; one naming a folder inside it, or a .git folder, says nothing.
+  it("says when .git is a file naming a git folder outside the project", async () => {
+    const line = "Git does not work in the box here: .git points to a git folder outside the project. Commit on this computer.";
+    const pointing = (where: (top: string, root: string) => string) => (top: string, root: string) => {
+      mkdirSync(where(top, root), { recursive: true });
+      writeFileSync(path.join(root, ".git"), `gitdir: ${where(top, root)}
+`);
+    };
+    const outside = await launch(new Set(), undefined, "off", pointing((top) => path.join(top, "main", ".git", "worktrees", "project")));
+    expect(outside.started!.lines.slice(1)).toEqual([line]);
+    const inside = await launch(new Set(), undefined, "off", pointing((_, root) => path.join(root, "repo.git")));
+    expect(inside.started!.lines).toHaveLength(1);
+    const folder = await launch(new Set(), undefined, "off", (_, root) => mkdirSync(path.join(root, ".git")));
+    expect(folder.started!.lines).toHaveLength(1);
+  });
+
+  // Choice 21: with the network off, every failed command gets the line, as which failures were the network's cannot be told.
+  it("adds the network line to a failed command's result with the network off, and not with it on", async () => {
+    const line = "(The box's network is off, so nothing in it can reach the internet. To allow it, launch with --network on.)";
+    const failing = async (network: Network) => {
+      const r = await launch(new Set<Step>(), undefined, network);
+      return r.started!.executor.exec("curl -sS http://example.invalid/", "/work");
+    };
+    expect((await failing("off")).stderr).toBe(line);
+    expect((await failing("on")).stderr).toBe("");
+  });
+});
+
+// Release 7 plan, Task 21: copy mode's launch, in-process, with Docker a stand-in as above, and git's settings given. The
+// data folder is the test's, so the copy is made there; nothing runs Docker or git.
+describe("copy mode's launch, with a stand-in Docker", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  const ok = (out = "") => ({ code: 0, out, err: "" });
+  const INFO = JSON.stringify({ NCPU: 24, MemTotal: 33518923776, SecurityOptions: [], MemoryLimit: true, CpuCfsQuota: true, PidsLimit: true });
+  const LINE = /^Sandbox: copy of (.+) \(2 files, \d+\.\d s\), network off, limits 4g, 4 CPUs, 1024 processes\. Your folder is not touched until you review the changes\.$/;
+  // Docker's words when the image has no git: the box's git runs as a docker exec of its own (DockerRun), with no shell.
+  const NO_GIT = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "git": executable file not found in $PATH: unknown';
+  const git = (...args: string[]) => ["exec", "-w", "/work", "b0x", "git", ...args];
+  const COMMIT = git("-c", "user.name=Tachikoma", "-c", "user.email=tachikoma@localhost", "commit", "-q", "--allow-empty", "-m", "The project as Tachikoma copied it");
+
+  // `broken`: "git" for git's settings that cannot be read on the host, "commit" for the box's git missing. `head`: the
+  // text of a .git/HEAD made by hand in the project, which the snapshot leaves out; no .git when not given.
+  async function launch(broken: "git" | "commit" | null = null, head?: string, abortAtCopy = false) {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-copy-")));
+    onTestFinished(() => removeTree(top));
+    const root = path.join(top, "project");
+    const elsewhere = path.join(top, "elsewhere");
+    mkdirSync(path.join(root, ".husky"), { recursive: true });
+    mkdirSync(elsewhere);
+    writeFileSync(path.join(root, "a.txt"), "made-up text\n");
+    writeFileSync(path.join(root, ".husky", "pre-commit"), "made-up hook\n");
+    symlinkSync(elsewhere, path.join(root, "out"), "junction"); // a link to outside the project, left out of the copy
+    if (head !== undefined) {
+      mkdirSync(path.join(root, ".git"));
+      writeFileSync(path.join(root, ".git", "HEAD"), head);
+    }
+    const data = path.join(top, "data");
+    vi.stubEnv("TACHI_DATA_DIR", data);
+    const calls: string[][] = [];
+    const run: DockerRun = async (args) => {
+      calls.push(args);
+      const [verb] = args;
+      if (verb === "version") return ok("linux\n");
+      if (verb === "image") return ok("sha256:0\n");
+      if (verb === "info") return ok(`${INFO}\n`);
+      if (verb === "run") return ok("b0x\n");
+      if (verb === "exec" && args.includes("/sys/fs/cgroup/memory.events")) return ok("oom_kill 0\n");
+      if (verb === "exec" && args[4] === "git") return broken === "commit" ? { code: 127, out: "", err: `${NO_GIT}\n` } : ok();
+      if (verb === "exec" && args[1] === "-w") return ok("v24.22.2 function"); // the node check
+      if (verb === "inspect") return ok("true\n"); // the box still runs
+      return ok();
+    };
+    const lines: string[] = [];
+    const notes: string[] = [];
+    const stop = new AbortController();
+    const io = {
+      out: (line: string) => lines.push(line),
+      err: (line: string) => lines.push(line),
+      // With `abortAtCopy`, a Ctrl-C as the copy starts, as cli.tsx's SIGINT listener aborts the launch's signal.
+      note: (line: string) => (notes.push(line), abortAtCopy && stop.abort()),
+      signal: stop.signal,
+      run,
+      gitSettings: async (r: string) => {
+        if (broken === "git") throw new Error("git was ended by SIGKILL");
+        return { files: [], hooksPaths: [path.join(r, "hooks")], gitDirs: [], problems: [], lineEndings: {} };
+      },
+      ignoresCase: () => {
+        throw new Error("copy mode asks nothing about letter case (choice 104 is live link's)");
+      },
+      submodules: async () => {
+        throw new Error("copy mode asks nothing about submodules (choice 123 is live link's)");
+      },
+    };
+    const ready = await sandboxReady(root, io, { session: "s1" });
+    if ("exit" in ready && !abortAtCopy) throw new Error(lines.join("\n"));
+    if ("exit" in ready) return { top, root, data, lines, notes, calls, started: ready };
+    const started = await sandboxStart(root, ready, { network: "off", limits: undefined, session: "s1" }, io);
+    return { top, root, data, lines, notes, calls, started };
+  }
+
+  it("copies the project, mounts only the copy's work folder, makes it one commit, and says how", async () => {
+    const r = await launch();
+    expect(r.lines).toEqual([]);
+    // The user's choice: a grey line while the folder is copied, naming it as the launch line does.
+    expect(r.notes).toEqual([`Copying ${r.root} for the sandbox...`]);
+    if ("exit" in r.started) throw new Error("the launch stopped");
+    const folder = path.join(r.data, "copies", "s1");
+    const work = path.join(folder, "work");
+    expect(readFileSync(path.join(work, "a.txt"), "utf8")).toBe("made-up text\n");
+    // Under its holding name: cli.tsx keeps the copy, naming it manifest.json, only once the session starts (dropOnExit).
+    expect(JSON.parse(readFileSync(path.join(folder, "manifest.pending.json"), "utf8"))).toMatchObject({ session: "s1", pid: process.pid, root: r.root });
+    expect(existsSync(path.join(folder, "manifest.json"))).toBe(false);
+    expect(r.started.copy).toMatchObject({ folder, manifest: { session: "s1" } });
+    // Nothing is made in the project: live link's .tachikoma is not needed here.
+    expect(readdirSync(r.root).sort()).toEqual([".husky", "a.txt", "out"]);
+    const runArgs = r.calls.find((c) => c[0] === "run")!;
+    expect(runArgs.filter((a) => a === "-v")).toHaveLength(1);
+    expect(runArgs[runArgs.indexOf("-v") + 1]).toBe(`${work}:/work`);
+    expect(runArgs).not.toContain("--tmpfs");
+    expect(runArgs).toContain("tachikoma.session=s1");
+    expect(runArgs).toContain("GIT_CONFIG_KEY_0=safe.directory");
+    // After the node check, the box makes /work a repository of one commit by Tachikoma (choice 24), each git run an
+    // argument list of its own; with no branch on the host, git's own default.
+    const execs = r.calls.filter((c) => c[0] === "exec" && c[1] === "-w");
+    expect(execs[0]!.at(-1)).toMatch(/^node /);
+    expect(execs.slice(1)).toEqual([git("init", "-q"), git("add", "-A"), COMMIT]);
+    expect(r.started.lines[0]).toMatch(LINE);
+    expect(LINE.exec(r.started.lines[0]!)![1]).toBe(r.root);
+    expect(r.started.lines.slice(1)).toEqual(["Left out, never applied: out (a link that leads outside the project)"]);
+    // The gate's protection is the box's view of git's paths, as in live link.
+    expect(r.started.protection).toEqual({ hooks: ["/work/hooks"], files: [] });
+    expect([r.started.root, r.started.workspace.root]).toEqual(["/work", "/work"]);
+  });
+
+  // The user's choice: the box's repository takes the host's branch, read as the status line reads it, given to git as
+  // one word that cannot be an option. A detached HEAD, or a name outside git's plain letters, leaves git's default.
+  it("names the box's branch after the host's, and leaves git's default where there is none to take", { timeout: 60_000 }, async () => {
+    const init = async (head: string) => (await launch(null, head)).calls.find((c) => c[4] === "git" && c[5] === "init");
+    expect(await init("ref: refs/heads/feature/made-up-1.2_x\n")).toEqual(git("init", "-q", "--initial-branch=feature/made-up-1.2_x"));
+    for (const head of [
+      "0123456789abcdef0123456789abcdef01234567\n", // detached
+      "ref: refs/heads/-q\n",
+      "ref: refs/heads/a..b\n",
+      "ref: refs/heads/a b\n",
+      "ref: refs/heads/x;y\n",
+      "ref: refs/heads/topic.lock\n",
+      "ref: refs/heads/a.lock/b\n", // git refuses .lock at the end of any part
+      "ref: refs/heads/.hidden\n",
+    ]) {
+      expect(await init(head), head).toEqual(git("init", "-q"));
+    }
+  });
+
+  // The quality review: Ctrl-C during the copy stops the snapshot at its next entry, and the launch ends as a Ctrl-C does,
+  // saying nothing; the exit handler then removes the half-made copy.
+  it("stops the copy on Ctrl-C, ending with 130, and the exit handler removes what was made", async () => {
+    const r = await launch(null, undefined, true);
+    expect(r.started).toEqual({ exit: 130 });
+    expect(r.lines).toEqual([]);
+    const folder = path.join(r.data, "copies", "s1");
+    expect(existsSync(folder)).toBe(true);
+    const proc = new EventEmitter();
+    const said: string[] = [];
+    dropOnExit(folder, proc, (line) => said.push(line));
+    proc.emit("exit");
+    expect(existsSync(folder)).toBe(false);
+    expect(said).toEqual(["Removing the copy..."]); // half made, so no manifest to count
+  });
+
+  it("goes on with the fixed list when git's settings cannot be read, and says so", async () => {
+    const r = await launch("git");
+    expect(r.lines).toEqual(["git's settings could not be read (git was ended by SIGKILL); only the fixed list of protected paths applies"]);
+    expect("exit" in r.started).toBe(false);
+  });
+
+  // The copy is removed by the launch's one cleanup at exit (dropOnExit, below), as cli.tsx ends the launch here.
+  it("stops when the box cannot make its commit, removing the box", async () => {
+    const r = await launch("commit");
+    expect(r.started).toEqual({ exit: 1 });
+    expect(r.lines).toEqual([`The sandbox could not make the copy a git repository in the box (${NO_GIT}).`]);
+    expect(r.calls.at(-1)).toEqual(["rm", "-f", "b0x"]);
+  });
+});
+
+// Task 21's review: a copy made at launch goes when the process ends before the session starts, however it ends (a
+// refusal, Ctrl-C at a question or while the box starts), from one "exit" handler; once kept, it stays. Removing it can
+// take a while, so a line says so first, counting the manifest's files as the review does (the user's words).
+describe("dropOnExit", () => {
+  it("removes the copy at exit, saying so first, never following a link out of it, until it is kept", () => {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-drop-")));
+    onTestFinished(() => removeTree(top));
+    const outside = path.join(top, "outside");
+    mkdirSync(outside);
+    writeFileSync(path.join(outside, "kept.txt"), "made-up\n");
+    const made = (name: string) => {
+      const folder = path.join(top, "copies", name);
+      mkdirSync(path.join(folder, "work", "sub"), { recursive: true });
+      writeFileSync(path.join(folder, "manifest.pending.json"), JSON.stringify({ entries: { sub: { type: "folder" }, "sub/a.txt": { type: "file" } } }));
+      writeFileSync(path.join(folder, "work", "sub", "a.txt"), "made-up\n");
+      symlinkSync(outside, path.join(folder, "work", "link"), "junction");
+      return folder;
+    };
+    const proc = new EventEmitter();
+    const said: string[] = [];
+    const say = (line: string) => said.push(line);
+    const dropped = made("s1");
+    dropOnExit(dropped, proc, say);
+    const kept = made("s2");
+    dropOnExit(kept, proc, say)();
+    dropOnExit(path.join(top, "copies", "never-made"), proc, say); // a snapshot that failed before making its folder
+    proc.emit("exit");
+    expect(said).toEqual(["Removing the copy (1 file)..."]);
+    expect(existsSync(dropped)).toBe(false);
+    // Kept, it takes its final name, so `tachi review` lists it from now on.
+    expect(existsSync(path.join(kept, "manifest.json"))).toBe(true);
+    expect(existsSync(path.join(kept, "manifest.pending.json"))).toBe(false);
+    expect(readFileSync(path.join(outside, "kept.txt"), "utf8")).toBe("made-up\n");
+  });
+
+  // The quality review: a removal that fails is said, with the review's line, so the folder can be deleted by hand.
+  it("says when the copy could not be removed", () => {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-drop-")));
+    onTestFinished(() => removeTree(top));
+    const folder = path.join(top, "copies", "s1");
+    mkdirSync(folder, { recursive: true });
+    const proc = new EventEmitter();
+    const said: string[] = [];
+    dropOnExit(folder, proc, (line) => said.push(line), () => {
+      throw new Error("made-up failure");
+    });
+    proc.emit("exit");
+    expect(said).toEqual(["Removing the copy...", `The copy could not be removed (made-up failure); delete ${folder} by hand.`]);
+  });
+});
+
+// Task 21: the real command in copy mode with -p, end to end, with Docker a stand-in swapped in for src/sandbox/docker.ts
+// by a resolve hook of the test's own (tests/standin), so no Docker is reached, no box is started and no program is
+// planted. PATH is an empty folder, so nothing else is found either; the lead is a stand-in for OpenAI's chat completions
+// served on the loopback address, which answers at once with no tool call.
+describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000 }, () => {
+  // `change`: the lead's stand-in writes a file into the copy's work/ before it answers, as the box would.
+  async function copyRun(standin: "ok" | "start-fails" | "stuck", change = false) {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-e2e-")));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    const empty = path.join(top, "empty");
+    const data = path.join(top, "data");
+    mkdirSync(proj);
+    mkdirSync(empty);
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const server = http.createServer((req, res) => {
+      req.resume().on("end", () => {
+        if (change) for (const session of readdirSync(path.join(data, "copies"))) writeFileSync(path.join(data, "copies", session, "work", "new.txt"), "made-up\n");
+        const message = { role: "assistant", content: "done" };
+        const body = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [{ index: 0, finish_reason: "stop", message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, PATH: empty, Path: empty, TACHI_DATA_DIR: data, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, TACHI_TEST_STANDIN_DOCKER: standin };
+    const { argv, options } = launch(["--lead", "openai:lead", "--sandbox", "copy", "-p", "hi", env]);
+    argv.splice(2, 0, "--import", pathToFileURL(path.resolve("tests/standin/register.mjs")).href); // after tsx's loader
+    const child = spawn(process.execPath, argv, options);
+    onTestFinished(() => void child.kill());
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+    child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+    child.stdin.end();
+    const code = await new Promise<number | null>((resolve, reject) => {
+      child.on("error", reject);
+      child.on("close", resolve);
+    });
+    return { code, stdout, stderr, proj, copies: path.join(data, "copies") };
+  }
+
+  it("answers, then names the copy kept for review on stderr, keeping it and leaving the folder untouched", async () => {
+    const r = await copyRun("ok", true);
+    expect(r.stdout).toBe("done\n");
+    expect(r.code).toBe(0);
+    const lines = r.stderr.trimEnd().split("\n");
+    expect(lines[0]).toBe(`Copying ${r.proj} for the sandbox...`); // not a terminal, so not grey
+    expect(lines[1]).toMatch(/^Sandbox: copy of .+ \(1 file, \d+\.\d s\), network off, /);
+    const [session] = readdirSync(r.copies);
+    expect(lines.at(-1)).toBe(`Changes kept for review: tachi review ${session}`);
+    expect(existsSync(path.join(r.copies, session!, "manifest.json"))).toBe(true);
+    expect(readdirSync(r.proj)).toEqual(["notes.txt"]);
+    // The plan's test: `tachi review` lists the copy kept.
+    expect(tachi("review", { TACHI_DATA_DIR: path.dirname(r.copies) }).stdout).toContain(`  ${session}  ${r.proj}  `);
+  });
+
+  // Choice 121 (the user's): with nothing to review, the copy is removed, and said so in place of the kept line.
+  it("removes the copy when the session changed nothing, saying so on stderr", async () => {
+    const r = await copyRun("ok");
+    expect(r.stdout).toBe("done\n");
+    expect(r.code).toBe(0);
+    const lines = r.stderr.trimEnd().split("\n");
+    expect(lines.slice(-2)).toEqual(["Removing the copy (1 file)...", "Nothing changed in the copy, so it was removed."]);
+    expect(readdirSync(r.copies)).toEqual([]);
+    expect(readdirSync(r.proj)).toEqual(["notes.txt"]);
+  });
+
+  // As leave() says it in the interface (queue.ts): a box Docker still lists keeps the copy, which is not looked at.
+  it("says the box could not be removed, then names the copy kept, when Docker still lists the box", async () => {
+    const r = await copyRun("stuck");
+    expect(r.code).toBe(0);
+    const lines = r.stderr.trimEnd().split("\n");
+    const [session] = readdirSync(r.copies);
+    expect(lines.slice(-2)).toEqual(["The box could not be removed, so the copy was not reviewed.", `Changes kept for review: tachi review ${session}`]);
+    expect(existsSync(path.join(r.copies, session!, "manifest.json"))).toBe(true);
+  });
+
+  it("removes the copy when the launch stops after it was made", async () => {
+    const r = await copyRun("start-fails");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("The sandbox could not start: docker: Error response from daemon: made-up failure.");
+    expect(readdirSync(r.copies)).toEqual([]);
+  });
+});
+
+// Task 21: `tachi review` run as the real command, with no terminal, so the list and what refuses without one; opening and
+// discarding are tested in-process (tests/sandbox/copies.test.ts), and with real Docker (tests/sandbox/copy.test.ts).
+// Nothing here reaches Docker: the list never asks it, and the rest stop before.
+describe("tachi review", { timeout: 15_000 }, () => {
+  // A data folder holding one copy, s1, of a made-up project, made by hand as the snapshot leaves one, and none private.
+  function dataWithCopy() {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-review-")));
+    onTestFinished(() => removeTree(top));
+    const data = path.join(top, "data");
+    const folder = path.join(data, "copies", "s1");
+    for (const sub of ["base", "work"]) mkdirSync(path.join(folder, sub), { recursive: true });
+    const manifest = { session: "s1", pid: 0, root: path.join(top, "project"), at: "2026-11-05T03:04:00.000Z", entries: {}, leftOut: [] };
+    writeFileSync(path.join(folder, "manifest.json"), JSON.stringify(manifest));
+    writeFileSync(path.join(folder, "work", "new.txt"), "made-up text\n");
+    return { data, folder, root: manifest.root };
+  }
+
+  it("says when no copies are waiting", () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-review-"));
+    onTestFinished(() => removeTree(top));
+    const r = tachi("review", { TACHI_DATA_DIR: path.join(top, "data") });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe("No copies are waiting.\n");
+  });
+
+  it("lists the copies waiting", () => {
+    const w = dataWithCopy();
+    const r = tachi("review", { TACHI_DATA_DIR: w.data });
+    expect(r.code).toBe(0);
+    const lines = r.stdout.trimEnd().split("\n");
+    expect(lines[0]).toBe("Copies waiting for review (tachi review <name> opens one):");
+    const d = new Date("2026-11-05T03:04:00.000Z"); // the manifest's, in this machine's time, as the child's
+    const two = (n: number) => String(n).padStart(2, "0");
+    const time = `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+    expect(lines[1]).toBe(`  s1  ${w.root}  ${time}  1 change`);
+  });
+
+  it("names a copy that is not waiting", () => {
+    const w = dataWithCopy();
+    const r = tachi("review", "s2", { TACHI_DATA_DIR: w.data });
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe("No copy named s2 is waiting; tachi review lists them.");
+  });
+
+  it("opens and discards nothing without a terminal, saying why", () => {
+    const w = dataWithCopy();
+    for (const args of [["s1"], ["s1", "--discard"]]) {
+      const r = tachi("review", ...args, { TACHI_DATA_DIR: w.data });
+      expect(r.code).toBe(1);
+      expect(r.stderr.trim()).toBe("tachi review s1 needs a terminal; with none, nothing is applied or discarded.");
+      expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+    }
+  });
+
+  it("explains its usage", () => {
+    const r = tachi("review", "s1", "--all");
+    expect(r.code).toBe(1);
+    expect(r.stderr.trim()).toBe("Usage: tachi review [<name> [--discard]]");
+  });
+});
+
+// From Task 14's review: the write tools look at /work paths in the box, so the hooks folders and settings files git's
+// settings name inside the project are given as the box sees them; those outside it the box cannot reach.
+describe("boxProtection", () => {
+  it("gives the project's protected paths as /work paths, leaving out those outside it", () => {
+    const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-prot-")));
+    const p = { hooks: [path.join(root, ".husky", "_"), path.join(tmpdir(), "elsewhere-hooks")], files: [path.join(root, "team.gitconfig")] };
+    expect(boxProtection(root, p)).toEqual({ hooks: ["/work/.husky/_"], files: ["/work/team.gitconfig"] });
   });
 });

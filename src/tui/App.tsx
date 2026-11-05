@@ -1,19 +1,21 @@
 import path from "node:path";
 import { Box, Static, Text, useInput, usePaste } from "ink";
 import { useEffect, useRef } from "react";
-import type { Given } from "../clilib.js";
+import { checkOffLine, type Given } from "../clilib.js";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
-import { type Ask, type Mode, visible } from "../core/permissions.js";
+import { type Ask, type Mode, type Protection, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
 import type { Stats } from "../core/stats.js";
 import type { Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
+import type { Workspace } from "../exec/workspace.js";
 import { KEYBINDINGS } from "../keybindings.js";
 import type { ModelGroup } from "../providers/models.js";
+import type { UserRules } from "../safety/rules.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
-import { characters, FROM, gray, isFile, type Question, visualSelection } from "./app/constants.js";
+import { characters, FROM, gray, isFile, type Question, STOPPING, visualSelection } from "./app/constants.js";
 import { handover } from "./app/handover.js";
 import { keyRouting } from "./app/keyRouting.js";
 import { liveEdits } from "./app/liveEdits.js";
@@ -38,6 +40,7 @@ import type { Hand } from "./owner.js";
 import { pasteTo, phaseInputs } from "./phase.js";
 import type { Pictures, Read } from "./pictures.js";
 import { Prompt, promptWidth } from "./Prompt.js";
+import { Review, type ReviewCopy } from "./Review.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
 import { TaskPanel, taskRows } from "./TaskPanel.js";
 import type { Screen } from "./terminal.js";
@@ -53,9 +56,13 @@ export interface AppProps {
   stats: Stats;
   mode: Mode; // the mode the session started in
   onMode: (mode: Mode) => void; // Shift+Tab: the mode the permission check uses from the next action
+  // A live edit of settings.json's "dangerousCommands" that tightens the check: the rules it uses from the next action
+  // (release 7 plan, Task 4).
+  onRules: (rules: UserRules) => void;
   project: string; // the project folder's name, for the status line
   root: string; // the project folder, where `@` paths start
-  gitBranch: () => string | null; // read at the start and after each turn: the model may switch branches
+  workspace: Workspace; // the project's files, for the branch (release 7 plan, Task 14)
+  branch: string | null; // the git branch at the start, read before the first frame; read again after each turn
   historyFile: string; // this project's past prompts
   intro: Line[]; // shown first: the instruction files read
   errorFile: string;
@@ -89,13 +96,26 @@ export interface AppProps {
   // The settings file as the launch read it, and the entries a flag or variable gave then (clilib.ts, givenBy): with
   // it the App watches the file and applies each edit (release 6 design, "Live edits"); without it, as in most tests,
   // it does not.
-  live?: { loaded: { settings: Settings; warnings: string[] }; given: Given };
+  // `networkLine`: the launch's line saying --network was ignored without the sandbox, if it said one (clilib.ts);
+  // `gitLine`: the one saying git's settings could not be read, escaped (cli.tsx; release 7 plan, Task 8).
+  live?: { loaded: { settings: Settings; warnings: string[] }; given: Given; networkLine?: string; gitLine?: string };
   // The session's pictures (pictures.ts; release 6 plan, choice 9); the App makes its own when not given. Tests give
   // one to end its reads.
   pictures?: Pictures;
   // chat:imagePaste's read of the clipboard's picture, null where there is no reader; the system's reader when not
   // given (clipboard.ts, imageReader). Tests give a stand-in, so none reads the user's clipboard.
   readPicture?: (() => Promise<Read>) | null;
+  // Copy mode (release 7 plan, Task 21; queue.ts, leave): the copy the session works on; `stop` removes its box, true
+  // once Docker reports it gone; `protection` is worked out on the host when the review opens, never the gate's view of
+  // the box, and when it throws the review does not open; `ended` takes the lines to print once Ink has ended. Without
+  // it, leaving only exits.
+  copy?: {
+    copy: ReviewCopy;
+    stop: () => Promise<boolean>;
+    protection: () => Promise<Protection>;
+    ended: (lines: string[]) => void;
+    remove?: (folder: string) => Promise<void>; // a test's stand-in for removeCopy (choice 121; copies.ts, dropIfNothing)
+  };
 }
 
 type OutputArea = ReturnType<typeof output>;
@@ -112,7 +132,7 @@ type PromptKeysArea = ReturnType<typeof promptKeys>;
 export interface Fns {
   say: OutputArea["say"]; show: OutputArea["show"]; note: OutputArea["note"]; noteAlone: OutputArea["noteAlone"];
   make: OutputArea["make"]; lookUpWindow: OutputArea["lookUpWindow"];
-  submit: QueueArea["submit"]; next: QueueArea["next"]; recordToOpen: QueueArea["recordToOpen"];
+  submit: QueueArea["submit"]; next: QueueArea["next"]; recordToOpen: QueueArea["recordToOpen"]; leave: QueueArea["leave"];
   perform: QueueArea["perform"]; tasksCommand: QueueArea["tasksCommand"]; recordOf: QueueArea["recordOf"];
   pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"];
   readsEnded: PictureReadsArea["readsEnded"]; stopReads: PictureReadsArea["stopReads"];
@@ -159,7 +179,7 @@ export function App(props: AppProps) {
   ui.history.current ??= new History(ui.historyFile, (line) => fns.say({ text: line, color: "magenta" }));
 
   useEffect(() => {
-    ui.bindAsk((text, detail, owner, plain) => {
+    ui.bindAsk((text, detail, owner, plain, warnings, note) => {
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped, nor a
       // stopped subagent about anything.
       const signal = owner ? owner.signal : ui.abort.current?.signal;
@@ -177,7 +197,10 @@ export function App(props: AppProps) {
         let open = true; // answered once: two keys arriving together would otherwise both be logged
         // When its owner stops (Esc or Ctrl-C for the lead's turn, /tasks stop, a failure), the
         // question goes from the line, on screen or not, answered as cancelled.
-        const cancel = () => q.answer(false, "cancelled");
+        const cancel = () => q.answer(false, plain ? "cancelled" : "This was cancelled.");
+        // The lead's own question comes from its call running now, the last to start: delegate's calls, which ask only
+        // through their subagents, start before the rest (session.ts; release 7 plan, choice 66).
+        const asking = owner || plain ? undefined : ui.calls.current.at(-1);
         const q: Question = {
           text: owner ? `${visible(owner.name)} to ${text}` : text,
           // A subagent's name is its id, then its description in brackets (tasks.ts); a summary starts with its action:
@@ -186,6 +209,9 @@ export function App(props: AppProps) {
           ...(owner ? { owner } : {}),
           ...(range ? { detail: range } : {}),
           ...(plain ? { plain } : {}),
+          warnings: warnings ?? [],
+          ...(note !== undefined ? { note } : {}), // auto mode's pause, a row of the question's own (release 7 plan, Task 10)
+          ...(asking && !asking.outcome ? { call: asking.id } : {}),
           answer: (ok, how) => {
             if (!open) return;
             open = false;
@@ -200,7 +226,19 @@ export function App(props: AppProps) {
             // list, a chord typed in the list to the list's keys (the code re-checks).
             if (typedAt) latest.current.dropChord();
             if (q.detail && q.following) ui.view.current = FOLLOWING; // otherwise the view stays (release 5 design, "Scrolling")
-            latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
+            // A permission's answer is one line (release 7 plan, choice 66): under its call's tool line while that is still
+            // the conversation's last line, and otherwise naming what it answers, as a subagent's does, a write's after its
+            // preview and one that waited in the line. Each danger follows it, the whole line red then. A declined call's
+            // result row is left out under its tool line, as this line says it, and is otherwise the answer alone, so the
+            // results keep their places in call order (choice 67); the model is still told its full message. A plain
+            // question keeps its own record.
+            if (q.plain) latest.current.say({ text: `${q.short ?? q.text}: ${how}`, color: "gray" });
+            else {
+              const said = [how, ...q.warnings].join(" ");
+              const under = q.call !== undefined && ui.toolLine.current === q.call;
+              if (!ok && q.call !== undefined) ui.answered.current.set(q.call, under ? null : how);
+              latest.current.say({ text: under ? `  ⎿ ${said}` : `${q.short ?? q.text}: ${said}`, color: q.warnings.length ? "red" : "gray" });
+            }
             resolve(ok);
             ui.rerender((n) => n + 1);
             latest.current.next(); // an answer may have waited for this question to close
@@ -220,7 +258,16 @@ export function App(props: AppProps) {
         void latest.current.comeBack();
       });
     });
-    const onMessage = (m: Message) => latest.current.say(...describe(m));
+    // A message ending in its one tool call leaves that call's tool line the last said, for its question's answer to go
+    // under (release 7 plan, choice 66). With more calls than one, none does: an earlier call that asks nothing prints
+    // nothing before the last one's question, and its result comes first, so each answer names its call and each result
+    // keeps its place (choice 67). An answered call's id is let go with its result, as a provider may use an id again.
+    const onMessage = (m: Message) => {
+      latest.current.say(...describe(m, ui.answered.current));
+      for (const p of m.parts) if (p.type === "tool_result") ui.answered.current.delete(p.callId);
+      const last = m.parts.at(-1);
+      if (last?.type === "tool_call" && m.parts.filter((p) => p.type === "tool_call").length === 1) ui.toolLine.current = last.id;
+    };
     const onError = (e: ErrorEvent) => {
       if (e.kind === "tool") ui.rerender((n) => n + 1);
       else if (e.kind === "fallback") latest.current.say({ text: `↪ ${e.message}`, color: "magenta" });
@@ -270,8 +317,15 @@ export function App(props: AppProps) {
     ui.bus.on("note", onNote);
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
-    // stderr is seen, and they are not said twice.
-    fns.say(...(ui.fullNow.current ? (ui.live?.loaded.warnings ?? []).map(gray) : []), ...ui.intro);
+    // stderr is seen, and they are not said twice. So does the line naming the kinds of the dangerous-command check that
+    // are off, in red, as it says the check is weaker (release 7 plan, Task 4, the user's choice). The line saying
+    // --network was ignored is a warning too, grey as the settings file's, in the launch's order (release 7 plan, choice 22),
+    // and so is the one saying git's settings could not be read (Task 8).
+    const off = ui.fullNow.current && ui.live ? checkOffLine(ui.live.loaded.settings.dangerousCommands) : null;
+    const said = ui.live ? [ui.live.networkLine, ui.live.gitLine].filter((l) => l !== undefined) : [];
+    const warnings = ui.fullNow.current && ui.live ? [...ui.live.loaded.warnings, ...said] : [];
+    const launchLines: Line[] = [...warnings.map(gray), ...(off ? [{ text: off, color: "red" }] : [])];
+    fns.say(...launchLines, ...ui.intro);
     // A watch that cannot start leaves the session as the launch set it, and says so.
     let unwatch: (() => void) | undefined;
     try {
@@ -373,6 +427,14 @@ export function App(props: AppProps) {
   const latest = useRef(handlers);
   latest.current = handlers;
   ui.late.latest = latest; // for newPicture's settle (pictureReads.ts)
+
+  // Copy mode's leaving (queue.ts, leave): its line while the box stops, or a copy with nothing to review is removed
+  // (choice 121), then the review in place of everything else, with the live table of keys (release 7 plan, Task 21).
+  if (ui.reviewing && ui.copy) {
+    const { protection, onEnd, read } = ui.reviewing;
+    return <Review copy={ui.copy.copy} bindings={ui.table} protection={protection} onEnd={onEnd} read={read} />;
+  }
+  if (ui.leaving.current) return <Text color="gray">{ui.leavingLine.current ?? STOPPING}</Text>;
 
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = ui.detail.current;
@@ -494,6 +556,8 @@ export function App(props: AppProps) {
     question: ui.question !== null,
     askedText: ui.full && ui.question && !ui.picker ? allow(ui.question.short ?? ui.question.text, ui.question.plain) : null,
     askedShort: movable ? allow(shortOf(ui.question), ui.question.plain) : null,
+    askedWarnings: ui.question?.warnings ?? [],
+    askedNote: ui.question?.note !== undefined,
   });
   const { tooled, menuRows, panel, promptSpace, promptShown, todoShown, pickerRows, viewHeight, promptFirst } = f;
   ui.late.viewHeight = viewHeight; // for the functions that read it once the drawing is done (state.ts, late)
@@ -522,7 +586,14 @@ export function App(props: AppProps) {
     if (!ui.question.detail) {
       const n = characters(ui.question.text);
       const from = ui.kept.lines.length;
-      fns.say({ text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" }, { text: ui.question.text, color: "gray" });
+      // Its red lines go with it, above its text, so "shown above" shows the dangers too (release 7 plan, Task 8), and so
+      // does its grey line, auto mode's pause, above any red lines, which the gate never sends with it today (Task 10).
+      fns.say(
+        { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" },
+        ...(ui.question.note === undefined ? [] : [{ text: ui.question.note, color: "gray" }]),
+        ...ui.question.warnings.map((text): Line => ({ text, color: "red" })),
+        { text: ui.question.text, color: "gray" },
+      );
       ui.question.detail = [from, ui.kept.lines.length - 1];
     }
     ui.question.short = shortOf(ui.question);
@@ -620,14 +691,36 @@ export function App(props: AppProps) {
           <ModelPicker groups={ui.picker} current={ui.session.lead.id} onPick={fns.pick} onClose={fns.closePicker} keys={ui.pickerKey} bindings={ui.table} />
         )
       ) : ui.question ? (
+        // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8); auto mode's pause, a
+        // grey row, goes above any red lines, which the gate never sends with it today (Task 10).
         ui.full ? (
-          f.asked.map((r, i) => (
-            <Text key={i} color="yellow" wrap="truncate-end">
-              {r}
-            </Text>
-          ))
+          <>
+            {f.noted && (
+              <Text color="gray" wrap="truncate-end">
+                {ui.question.note}
+              </Text>
+            )}
+            {f.warned.map((r, i) => (
+              <Text key={`w${i}`} color="red" wrap="truncate-end">
+                {r}
+              </Text>
+            ))}
+            {f.asked.map((r, i) => (
+              <Text key={i} color="yellow" wrap="truncate-end">
+                {r}
+              </Text>
+            ))}
+          </>
         ) : (
-          <Text color="yellow">{allow(ui.question.text, ui.question.plain)}</Text>
+          <>
+            {ui.question.note !== undefined && <Text color="gray">{ui.question.note}</Text>}
+            {ui.question.warnings.map((w, i) => (
+              <Text key={i} color="red">
+                {w}
+              </Text>
+            ))}
+            <Text color="yellow">{allow(ui.question.text, ui.question.plain)}</Text>
+          </>
         )
       ) : d ? (
         workingLine // the working line stays under the detail view while a turn runs (release 5 plan, choice 12)

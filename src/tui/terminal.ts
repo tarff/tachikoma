@@ -13,10 +13,15 @@ export const SHOW_CURSOR = "\u001b[?25h";
 // Bracketed paste, which marks a paste's start and end: the codes Ink turns it on and off with (Ink's components/App.js).
 export const PASTE_ON = "\u001b[?2004h";
 export const PASTE_OFF = "\u001b[?2004l";
+// Windows Terminal's win32 input mode, its private mode 9001 (input.ts, RECORD; release 7 plan, Task 22).
+export const WIN32_ON = "\u001b[?9001h";
+export const WIN32_OFF = "\u001b[?9001l";
 
 export class Screen {
   #full = false;
   #mouse = false;
+  #win32 = false;
+  #win32Used = false; // ever on: putting the terminal back turns it off again (restore)
   #restored = false;
   #used = false; // anything ever turned on, so there is anything to undo
   // Set by the App while the detail view is printed out (`[`), or while an editor has the terminal (app/handover.tsx,
@@ -68,6 +73,17 @@ export class Screen {
     this.#write(on ? SECOND_SCREEN : FIRST_SCREEN);
   }
 
+  // With raw mode, from the keyboard's filter (cli.tsx; input.ts, InputFilter's win32). Never on again once the terminal
+  // is put back, as nothing would turn it off: Ink's resume takes raw mode back even while it unmounts (ink.js,
+  // endSuspend), which a /screen to classic can meet (app/handover.tsx, switchScreen).
+  setWin32(on: boolean): void {
+    if (on === this.#win32 || (on && this.#restored)) return;
+    this.#win32 = on;
+    this.#used ||= on;
+    this.#win32Used ||= on;
+    this.#write(on ? WIN32_ON : WIN32_OFF);
+  }
+
   // Other codes and printing (OSC 52, `[`) go the same way as the switches, so they stay in order with them.
   write(s: string): void {
     this.#write(s);
@@ -76,10 +92,15 @@ export class Screen {
   // Every way out ends here, some more than once (a crash and then the exit it causes): only the first writes. The cursor
   // is always shown, as Ink hides it while drawing (release 5 design, "When something goes wrong"). A screen never switched
   // writes nothing, so classic mode, and output sent to a file, stay exactly as in release 4 (found at Task 6's review).
+  // Win32 input mode goes off here once more if it was ever on: its off from Ink's unmount, just before, went the
+  // asynchronous way, which the process ending may cut short, and a shell left in the mode would get records for keys.
+  // It counts as turned on, so in Windows Terminal classic mode writes here too.
   restore(): void {
     if (this.#restored || !this.#used) return;
     this.#restored = true;
-    this.#writeNow((this.#mouse ? MOUSE_OFF : "") + (this.#full ? FIRST_SCREEN : "") + SHOW_CURSOR);
+    const win32 = this.#win32Used ? WIN32_OFF : "";
+    this.#writeNow(win32 + (this.#mouse ? MOUSE_OFF : "") + (this.#full ? FIRST_SCREEN : "") + SHOW_CURSOR);
+    this.#win32 = false;
     this.#mouse = false;
     this.#full = false;
   }

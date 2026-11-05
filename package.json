@@ -9,7 +9,8 @@
     "tachi": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "sandbox"
   ],
   "engines": {
     "node": ">=22.20"

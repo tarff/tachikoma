@@ -1,12 +1,13 @@
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { type Ask, type Owner, PermissionGate } from "../../src/core/permissions.js";
+import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import { Tasks } from "../../src/core/tasks.js";
 import type { Provider } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { readFileTool } from "../../src/tools/files.js";
-import { Bus, FakeProvider, Held, callTool, collectErrors, reply, tempContext } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, collectErrors, reply, tempContext, texts } from "../helpers.js";
 
 async function setup(worker: Provider | (() => Provider), opts: { max?: number; ask?: Ask } = {}) {
   const bus = new Bus();
@@ -32,6 +33,17 @@ describe("Tasks", () => {
     expect(await t.done).toEqual({ state: "done", text: "It is in src/auth.ts:12" });
     expect(tasks.all[0]!.state).toBe("done");
     expect(tasks.take()).toEqual([]); // the waiting delegate call had it
+  });
+
+  // Release 7 plan, choice 6: a subagent's brief is the lead's words, so the judge never takes it for the user's.
+  it("keeps no prompt in a subagent's session", async () => {
+    const send = vi.spyOn(Session.prototype, "send");
+    onTestFinished(() => send.mockRestore());
+    const { tasks } = await setup(new FakeProvider("w", [reply("found it")]));
+    await tasks.start("find the login code", { background: false }).done;
+    const session = send.mock.contexts[0] as Session;
+    expect(texts(session.messages[0]!)).toEqual(["find the login code"]); // the subagent's own session
+    expect(session.prompts).toEqual([]);
   });
 
   it("numbers subagents through the session", async () => {

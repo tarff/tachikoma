@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -15,9 +16,12 @@ import { privateDir } from "../../src/auth/private.js";
 import type { Given } from "../../src/clilib.js";
 import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { system32 } from "../../src/exec/env.js";
+import type { Executor } from "../../src/exec/executor.js";
+import { LocalWorkspace } from "../../src/exec/local.js";
+import type { Workspace } from "../../src/exec/workspace.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
-import type { Provider } from "../../src/core/types.js";
+import type { Provider, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { delegateTool } from "../../src/tools/delegate.js";
@@ -26,6 +30,9 @@ import { History } from "../../src/tui/history.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import type { ModelGroup } from "../../src/providers/models.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
+import { judgeOf } from "../../src/safety/judge.js";
+import { dangers, NO_RULES } from "../../src/safety/rules.js";
+import type { Manifest } from "../../src/sandbox/snapshot.js";
 import { readSettings, type Settings, settingsDir, shownFile } from "../../src/settings.js";
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
@@ -35,7 +42,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
-import { Bus, FakeProvider, Held, callTool, reply, standInEditor, tempContext, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 
@@ -126,14 +133,22 @@ async function mount(
     live?: AppProps["live"]; // the settings file as launch read it, which the App then watches; not watched when not given
     pictures?: Pictures; // the session's pictures, whose reads the test ends
     readPicture?: AppProps["readPicture"]; // Alt+V's read; one that never answers when not given, null for no reader
+    judge?: Provider; // auto mode's judge, given to the gate as cli.tsx gives it (release 7 plan, Task 10)
+    executor?: Executor; // what the tools run through; a real one in a temp folder when not given
+    workspace?: Workspace; // the project's files, for the tools and the App; the temp folder's, with `branches`, when not given
+    copy?: AppProps["copy"]; // copy mode's copy, and what leave() does with it (release 7 plan, Task 21)
   } = {},
 ) {
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
+  if (opts.executor) ctx.executor = opts.executor;
+  ctx.workspace = opts.workspace ?? Object.assign(new LocalWorkspace(ctx.root), { branch: async () => opts.branches?.shift() ?? null });
   let ask: Ask = async () => false;
-  const gate = new PermissionGate(opts.mode ?? "ask", (s, d, o) => ask(s, d, o));
   const lead = opts.lead ?? new FakeProvider("a", turns);
+  const judge = judgeOf(opts.judge, () => session, "", bus); // as cli.tsx gives it: unset, the lead leading judges
+  const gate = new PermissionGate(opts.mode ?? "ask", (...a) => ask(...a), undefined, { root: ctx.root, judge });
+  gate.rules = opts.live?.loaded.settings.dangerousCommands ?? NO_RULES; // as cli.tsx sets it at launch
   const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
   const session = new Session({
     lead,
@@ -166,9 +181,13 @@ async function mount(
       onMode={(m) => {
         gate.mode = m;
       }}
+      onRules={(r) => {
+        gate.rules = r;
+      }}
       project="proj"
       root={ctx.root}
-      gitBranch={() => opts.branches?.shift() ?? null}
+      workspace={ctx.workspace}
+      branch={opts.branches?.shift() ?? null}
       historyFile={historyFile}
       intro={opts.intro ?? []}
       errorFile={opts.errorFile ?? path.join(ctx.root, "errors.jsonl")}
@@ -200,6 +219,7 @@ async function mount(
       // No test reads the user's clipboard: unless a test gives its own reader, Alt+V's read never answers, and the
       // test ends it through the session's Pictures.
       readPicture={opts.readPicture === undefined ? () => new Promise(() => {}) : opts.readPicture}
+      copy={opts.copy}
     />,
   );
   mounted.push(app);
@@ -207,7 +227,7 @@ async function mount(
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, gate, ask: (s: string, d?: string, o?: Owner) => ask(s, d, o) };
+  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, gate, ask: (...a: Parameters<Ask>) => ask(...a) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -238,6 +258,16 @@ describe("App", () => {
     expect(app.lastFrame()).toContain("proj git:(main)");
     await type(app, "switch");
     await until(app, "proj git:(side)");
+  });
+
+  // Release 7 plan, Task 14: the branch after a turn comes from the Workspace, here a fake one, never the disk.
+  it("reads the branch after a turn through the Workspace", async () => {
+    const { workspace, calls } = fakeWorkspace(path.resolve("/made/up/project"));
+    const { app } = await mount([reply("ok")], { segments: ["project"], workspace });
+    expect(app.lastFrame()).not.toContain("git:(");
+    await type(app, "switch");
+    await until(app, "proj git:(made-up-branch)");
+    expect(calls).toEqual(["branch"]);
   });
 
   it("shows the project folder, and counts the session's length once a minute", async () => {
@@ -280,8 +310,9 @@ describe("App", () => {
     const target = path.join(ctx.root, "a.txt");
     await until(app, `Allow write ${target}? [y/n]`);
     app.stdin.write("\u0003");
-    await until(app, `write ${target}: declined (cancelled)`);
+    await until(app, `write ${target}: You cancelled this.`);
     await gone(app, "Esc to stop");
+    expect(app.lastFrame()).toContain("  ⎿ You cancelled this."); // its result row, short, after the preview (release 7 plan, choice 67)
     expect(app.lastFrame()).not.toContain("[y/n]");
     expect(app.lastFrame()).not.toContain("written");
     expect(existsSync(target)).toBe(false);
@@ -307,7 +338,7 @@ describe("App", () => {
     app.stdin.write("y");
     app.stdin.write("n");
     await until(app, "written");
-    expect(app.lastFrame()).toContain(`write ${target}: allowed`);
+    expect(app.lastFrame()).toContain(`write ${target}: You allowed this.`);
     expect(app.lastFrame()).not.toContain("declined");
   });
 
@@ -762,6 +793,190 @@ describe("App", () => {
     expect(frame).toContain(`✗ provider: bad${OSC52_SHOWN}`);
     expectNoRawControls(frame);
   });
+
+  // Release 7 plan, Task 8: one red line per danger above the yellow question, in full screen and classic mode, with the
+  // model's text escaped as the question's is. The gate is asked directly, so nothing runs the command.
+  it.each([true, false])("draws a dangerous command's red lines above its question, escaped (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const { app, gate } = await mount([], { full });
+      const line = "git push --force origin a\u202eb\u001b[8m; git reset --hard HEAD~3";
+      const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
+        () => "allowed",
+        (err: Error) => err.message,
+      );
+      await until(app, "Allow run:");
+      const frame = app.lastFrame()!;
+      const red = [
+        "Danger: rewriting or deleting git history: git push --force origin a\\u202eb\\u001b[8m",
+        "Danger: rewriting or deleting git history: git reset --hard HEAD~3",
+      ];
+      for (const r of red) expect(frame).toContain(`\u001b[31m${r}`);
+      expect(frame.indexOf(red[0]!)).toBeLessThan(frame.indexOf(red[1]!));
+      expect(frame.indexOf(red[1]!)).toBeLessThan(frame.indexOf("\u001b[33mAllow run:"));
+      for (const raw of ["\u202e", "\u001b[8m"]) expect(frame).not.toContain(raw);
+      await press(app, "n");
+      expect(await asking).toMatch(/^The user declined: run: git push --force/);
+      // The red lines go with the question, and its answer's line keeps the dangers, red (release 7 plan, choice 66).
+      const after = app.lastFrame()!;
+      expect(after).not.toContain("Allow run:");
+      expect(after).toContain("\u001b[31mrun: git push --force origin a\\u202eb\\u001b[8m; git reset --hard HEAD~3: You declined this.");
+      expect(stripVTControlCharacters(after).split("Danger:")).toHaveLength(3);
+      for (const raw of ["‮", "\u001b[8m"]) expect(after).not.toContain(raw);
+    });
+  });
+
+  // Release 7 plan, Task 10 and choice 65: a judge that cannot be reached refuses the action, which the screen shows as an
+  // error, and the turn goes on.
+  it("shows a judge that cannot be reached as an error, refuses the action, and the turn goes on", async () => {
+    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const judge = new FakeProvider("judge", [new Error("judge down")]);
+    const { app } = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("carried on")], { mode: "auto", judge });
+    await type(app, "write it");
+    await until(app, "carried on");
+    expect(app.lastFrame()).toContain("✗ judge: judge down");
+    expect(existsSync(target)).toBe(false);
+  });
+
+  // Release 7 plan, Task 10: after 3 refusals in a row the next action that would go to the judge asks, with auto mode's
+  // pause in grey just above it, in full screen and classic; approving it resumes auto mode, so the next goes to the judge.
+  it.each([true, false])("says auto mode's pause in grey above its question, and approving resumes it (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
+      const writes = ["a", "b", "c", "d", "e"].map((n, i) => callTool(`c${i + 1}`, "write_file", { path: path.join(folder, `${n}.txt`), content: n }).parts).flat();
+      const no = reply('{"allow": false, "reason": "No."}');
+      const judge = new FakeProvider("judge", [no, no, no, reply('{"allow": true}')]);
+      const { app } = await mount([{ parts: writes, usage }, reply("carried on")], { mode: "auto", judge, full });
+      await type(app, "write them");
+      await until(app, "Allow write");
+      const frame = app.lastFrame()!;
+      const line = "\u001b[90mAuto mode paused after 3 refusals; approving this resumes it.";
+      expect(frame).toContain(line);
+      expect(frame.indexOf(line)).toBeLessThan(frame.indexOf(`\u001b[33mAllow write ${path.join(folder, "d.txt")}?`));
+      await press(app, "y");
+      await until(app, "carried on");
+      expect(existsSync(path.join(folder, "d.txt"))).toBe(true);
+      expect(existsSync(path.join(folder, "e.txt"))).toBe(true);
+      expect(app.lastFrame()).toContain(`write ${path.join(folder, "d.txt")}: You allowed this.`); // after its preview (choice 66)
+      expect(judge.seen).toHaveLength(4);
+    });
+  });
+
+  // Release 7 plan, Task 10: auto mode's pause is a grey row of its own question, above its yellow rows, so it waits in
+  // the line with that question and shows only while it is the one asked. The App's ask is called directly. The gate never
+  // sends a grey line with red lines today (a paused question has no dangers); the two tests below give both, as the
+  // screen takes both, the grey row above.
+  const PAUSE = "Auto mode paused after 3 refusals; approving this resumes it.";
+  it.each([true, false])("draws a question's grey line with that question, not under one ahead of it in the line (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const { app, ask } = await mount([], { full });
+      const first = ask("run: git push --force", undefined, undefined, undefined, ["Danger: rewriting or deleting git history: git push --force"]);
+      const second = ask("read /made/up/elsewhere/notes.txt", undefined, undefined, undefined, [], PAUSE);
+      await until(app, "Allow run: git push --force?");
+      expect(app.lastFrame()).not.toContain("Auto mode paused");
+      await press(app, "n");
+      expect(await first).toBe(false);
+      await until(app, "Allow read /made/up/elsewhere/notes.txt?");
+      const frame = app.lastFrame()!;
+      expect(frame.split(`\u001b[90m${PAUSE}`)).toHaveLength(2); // once, in grey
+      expect(frame.indexOf(PAUSE)).toBeLessThan(frame.indexOf("\u001b[33mAllow read /made/up/elsewhere/notes.txt?"));
+      await press(app, "n");
+      expect(await second).toBe(false);
+      expect(app.lastFrame()).not.toContain("Auto mode paused"); // it went with its question
+    });
+  });
+
+  it("puts a moved question's grey line in its block in the conversation, above any red lines, and keeps it above the short line", async () => {
+    await inColour(async () => {
+      const line = `echo ${"x".repeat(900)}`;
+      const { app, ask } = await mount([], { full: true, rows: 12 });
+      const asking = ask(`run: ${line}`, undefined, undefined, undefined, ["Danger: a made-up danger"], PAUSE);
+      await until(app, "Allow run (shown above)?");
+      const rows = app.lastFrame()!.split("\n");
+      const heading = rows.findIndex((r) => r.includes(`┌ run (${line.length + "run: ".length} characters)`));
+      expect(heading).toBeGreaterThanOrEqual(0);
+      expect(rows[heading + 1]).toContain(`\u001b[90m${PAUSE}`);
+      expect(rows[heading + 2]).toContain("\u001b[31mDanger: a made-up danger");
+      expect(rows[heading + 3]).toContain("\u001b[90mrun: echo xxx");
+      expect(rows.filter((r) => r.includes(PAUSE))).toHaveLength(2); // in the conversation, and above the short line
+      await press(app, "n");
+      expect(await asking).toBe(false);
+    });
+  });
+
+  it("fits a question's grey line in a small terminal, with red lines given too, keeping a red row", async () => {
+    await inColour(async () => {
+      const warnings = Array.from({ length: 7 }, (_, i) => `Danger: rewriting or deleting git history: git push --force origin b${i + 1}`);
+      const { app, ask } = await mount([], { full: true, rows: 8 });
+      const asking = ask("run: git push --force origin b1", undefined, undefined, undefined, warnings, PAUSE);
+      await until(app, "more dangers");
+      const frame = app.lastFrame()!;
+      expect(frame.split("\n").length).toBeLessThanOrEqual(7); // the frame's row short of the terminal's eight
+      expect(frame).toContain(`\u001b[90m${PAUSE}`);
+      expect(frame).toContain(`\u001b[31m${warnings[0]}`);
+      expect(frame).toContain("\u001b[31m…and 5 more dangers"); // eight rows: a row short, the conversation, grey, three red, the question, status
+      expect(frame.indexOf(PAUSE)).toBeLessThan(frame.indexOf(warnings[0]!));
+      expect(frame).toContain("\u001b[33mAllow run: git push --force origin b1?");
+      await press(app, "n");
+      expect(await asking).toBe(false);
+    });
+  });
+
+  // Release 7 plan, Task 8's code review: a question too long to fit moves into the conversation, its red lines with it,
+  // in red, under its heading and above its text, so its short line's "shown above" shows the dangers too.
+  it("puts a moved question's red lines in the conversation, above its text", async () => {
+    await inColour(async () => {
+      const line = `echo ${"x".repeat(900)}; git push --force`;
+      const { app, gate } = await mount([], { full: true, rows: 12 });
+      const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
+        () => "allowed",
+        (err: Error) => err.message,
+      );
+      await until(app, "Allow run (shown above)?");
+      const rows = app.lastFrame()!.split("\n");
+      const red = "\u001b[31mDanger: rewriting or deleting git history: git push --force";
+      const heading = rows.findIndex((r) => r.includes(`┌ run (${line.length + "run: ".length} characters)`));
+      expect(heading).toBeGreaterThanOrEqual(0);
+      expect(rows[heading + 1]).toContain(red);
+      expect(rows[heading + 2]).toContain("\u001b[90mrun: echo xxx");
+      expect(rows.filter((r) => r.includes(red))).toHaveLength(2); // in the conversation, and above the short line
+      await press(app, "n");
+      expect(await asking).toMatch(/^The user declined: run: echo/);
+    });
+  });
+
+  // Release 7 plan, choice 63: in full screen the red lines are a row each, cut at the terminal's width, and those that do
+  // not fit are counted in the last red row, so the frame stays inside the terminal. Classic mode draws them whole.
+  it("cuts the red lines to a row each in full screen, and counts those that do not fit, keeping the frame inside the terminal", async () => {
+    await inColour(async () => {
+      const line = [`git push --force origin ${"x".repeat(120)}`, ...Array.from({ length: 6 }, (_, i) => `git push --force origin b${i + 1}`)].join("; ");
+      const { app, gate } = await mount([], { full: true, rows: 10 });
+      const asking = gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
+        () => "allowed",
+        (err: Error) => err.message,
+      );
+      await until(app, "more dangers");
+      const frame = app.lastFrame()!;
+      expect(frame.split("\n").length).toBeLessThanOrEqual(9); // the frame's row short of the terminal's ten
+      expect(frame).toContain(`\u001b[31mDanger: rewriting or deleting git history: git push --force origin ${"x".repeat(32)}…`);
+      // Ten rows: the frame's row short, the conversation's one, the question's four and the status line leave three.
+      expect(frame).toContain("\u001b[31mDanger: rewriting or deleting git history: git push --force origin b1\u001b[39m");
+      expect(frame).toContain("\u001b[31m…and 5 more dangers");
+      expect(frame).not.toContain("\u001b[31mDanger: rewriting or deleting git history: git push --force origin b2");
+      await press(app, "n");
+      expect(await asking).toMatch(/^The user declined: run: git push --force/);
+      const classic = await mount([], { rows: 10 });
+      const whole = classic.gate.require({ kind: "shell", outside: false, summary: `run: ${line}`, command: line }).then(
+        () => "allowed",
+        (err: Error) => err.message,
+      );
+      await until(classic.app, "origin b6");
+      expect(classic.app.lastFrame()!.split("\u001b[31mDanger: ").length - 1).toBe(7);
+      expect(classic.app.lastFrame()).not.toContain("…"); // the long one wraps, whole
+      expect(classic.app.lastFrame()).not.toContain("more dangers");
+      await press(classic.app, "n");
+      expect(await whole).toMatch(/^The user declined/);
+    });
+  });
 });
 
 // Each key in its own read of the terminal, as a person types them.
@@ -845,6 +1060,21 @@ describe("App's keys for stopping and exiting", () => {
     expect(app.lastFrame()).toContain("> hi");
   });
 
+  // Release 7 plan, Task 10: Esc while the judge is out stops its request, and the action does not run.
+  it("runs nothing when Esc stops the turn while the judge is out", async () => {
+    const judge = new Held("fake:judge");
+    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const { app } = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("never sent")], { mode: "auto", judge });
+    await type(app, "write it");
+    await waitFor(() => judge.asked.length === 1);
+    await press(app, "\u001b");
+    await gone(app, "Esc to stop");
+    await tick();
+    expect(existsSync(target)).toBe(false);
+    expect(app.lastFrame()).not.toContain("never sent");
+    expect(app.lastFrame()).not.toContain("✗");
+  });
+
   it("declines one action on Esc at a question, and the turn carries on", async () => {
     const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("carried on")]);
     await type(app, "make a file");
@@ -852,7 +1082,7 @@ describe("App's keys for stopping and exiting", () => {
     await until(app, `Allow write ${target}? [y/n] · Esc to decline`);
     await press(app, "\u001b");
     await until(app, "carried on");
-    expect(app.lastFrame()).toContain(`write ${target}: declined`);
+    expect(app.lastFrame()).toContain(`write ${target}: You declined this.`);
     expect(existsSync(target)).toBe(false);
   });
 
@@ -1425,7 +1655,7 @@ describe("App's questions", () => {
     await until(app, "Allow t3 (read␍the tests) to read /c? [y/n]");
     await press(app, "\u001b");
     expect(await Promise.all(answers)).toEqual([true, false, false]);
-    expect(app.lastFrame()).toContain("t2 (find the login code) to read /b: declined");
+    expect(app.lastFrame()).toContain("t2 (find the login code) to read /b: You declined this.");
   });
 
   it("on Ctrl-C at a subagent's question, stops that subagent, not the lead's turn", async () => {
@@ -1450,7 +1680,7 @@ describe("App's questions", () => {
     t2.owner.stop();
     await until(app, "Allow t3 (y) to read /c?");
     expect(await Promise.all(answers.slice(0, 2))).toEqual([false, false]);
-    expect(app.lastFrame()).toContain("t2 (x) to read /b: cancelled");
+    expect(app.lastFrame()).toContain("t2 (x) to read /b: This was cancelled.");
   });
 
   it("on Ctrl-C at the lead's question, stops the turn and takes away its questions only", async () => {
@@ -1464,6 +1694,246 @@ describe("App's questions", () => {
     await press(app, "y");
     expect(await answer).toBe(true);
     expect(t3.stopped).toBe(false);
+  });
+});
+
+// A shell that runs nothing: it keeps each command it is given, as text, and says it succeeded, so a dangerous-looking
+// command's answer can be shown without anything running it (release 7 plan, choice 66).
+function noShell() {
+  const ran: string[] = [];
+  const executor: Executor = {
+    exec: async (command) => {
+      ran.push(command);
+      return { code: 0, signal: null, stdout: "", stderr: "" };
+    },
+  };
+  return { ran, executor };
+}
+
+// Release 7 plan, choice 66: an answered question is one line under its tool line, "You allowed this." or "You declined
+// this." with each danger after it, red when it has one; a declined call's own result row is left out, as that line says
+// it, while the model is told its full message. A line not under its tool line names what it answers, and the declined
+// call keeps a short result row in its place, in call order (choice 67).
+describe("App's answers", () => {
+  // The frame's rows without colour, in full screen without the scroll bar's column (shown, below).
+  const rows = (app: ReturnType<typeof render>, full: boolean) =>
+    stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
+  // The rows from the one that starts with `tool` on.
+  const from = (app: ReturnType<typeof render>, full: boolean, tool: string) => {
+    const r = rows(app, full);
+    const at = r.findIndex((x) => x.startsWith(tool));
+    expect(at).toBeGreaterThanOrEqual(0);
+    return r.slice(at);
+  };
+  // The user's own example, from the auto-mode terminal check after Part 2, where the folder deleted was the project's,
+  // so the check finds it whole: here the test's own project folder, which nothing runs against.
+  it.each([true, false])("says a declined dangerous command once, its danger kept, red, under its tool line (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const { ran, executor } = noShell();
+      const turns: Turn[] = [];
+      const lead = new FakeProvider("a", turns);
+      const { app, ctx } = await mount([], { lead, mode: "auto", full, executor });
+      const line = `Set-Location ${path.dirname(ctx.root)}; Remove-Item -LiteralPath ${ctx.root} -Recurse -Force; Test-Path ${ctx.root}`;
+      turns.push(callTool("c1", "shell", { command: line }), reply("left it"));
+      await type(app, "delete the folder");
+      await until(app, "Allow run:");
+      await press(app, "n");
+      await until(app, "left it");
+      const r = from(app, full, "● shell Set-Location");
+      const answer = r.slice(1, r.findIndex((x) => x.startsWith("left it")));
+      expect(answer[0]).toMatch(/^ {2}⎿ You declined this\. Danger: deleting whole folders: Remove-Item/);
+      // One line, wrapped: nothing else between the tool line and the reply, and no result row of its own.
+      const red = `Danger: deleting whole folders: Remove-Item -LiteralPath ${ctx.root} -Recurse -Force`;
+      expect(answer.join("").replace(/\s+/g, "")).toBe(`⎿ You declined this. ${red}`.replace(/\s+/g, ""));
+      expect(app.lastFrame()).toContain("\u001b[31m  ⎿ You declined this.");
+      expect(app.lastFrame()).not.toContain("The user declined");
+      expect(app.lastFrame()).not.toContain("run: Set-Location");
+      // The model is told as before.
+      expect(lead.seen[1]!.at(-1)!.parts[0]).toMatchObject({ type: "tool_result", output: `The user declined: run: ${line}`, isError: true });
+      expect(ran).toEqual([]);
+    });
+  });
+
+  it.each([true, false])("says an allowed command without a danger in grey under its tool line, its result after (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const { ran, executor } = noShell();
+      const { app } = await mount([callTool("c1", "shell", { command: "git status" }), reply("looked")], { full, executor });
+      await type(app, "look");
+      await until(app, "Allow run: git status?");
+      await press(app, "y");
+      await until(app, "looked");
+      expect(from(app, full, "● shell git status").slice(0, 3)).toEqual(["● shell git status", "  ⎿ You allowed this.", "  ⎿ ok"]);
+      expect(app.lastFrame()).toContain("\u001b[90m  ⎿ You allowed this.");
+      expect(app.lastFrame()).not.toContain("run: git status");
+      expect(ran).toEqual(["git status"]);
+    });
+  });
+
+  it("says an allowed command's danger, red, under its tool line, its result after", async () => {
+    await inColour(async () => {
+      const { ran, executor } = noShell();
+      const { app } = await mount([callTool("c1", "shell", { command: "git push --force" }), reply("pushed")], { executor });
+      await type(app, "push");
+      await until(app, "Allow run: git push --force?");
+      await press(app, "y");
+      await until(app, "pushed");
+      expect(from(app, false, "● shell git push --force").slice(0, 3)).toEqual([
+        "● shell git push --force",
+        "  ⎿ You allowed this. Danger: rewriting or deleting git history: git push --force",
+        "  ⎿ ok",
+      ]);
+      expect(app.lastFrame()).toContain("\u001b[31m  ⎿ You allowed this. Danger:");
+      expect(ran).toEqual(["git push --force"]);
+    });
+  });
+
+  it.each([true, false])("says a question cancelled with Ctrl-C under its tool line, without its result row (full screen: %s)", async (full) => {
+    const { ran, executor } = noShell();
+    const lead = new FakeProvider("a", [callTool("c1", "shell", { command: "git status" }), reply("never sent")]);
+    const { app, session } = await mount([], { lead, full, executor });
+    await type(app, "look");
+    await until(app, "Allow run: git status?");
+    await press(app, "\u0003");
+    await gone(app, "Esc to stop");
+    const r = from(app, full, "● shell git status");
+    expect(r.slice(0, 2)).toEqual(["● shell git status", "  ⎿ You cancelled this."]);
+    expect(r[2] ?? "").not.toContain("⎿"); // no result row of its own, short or whole
+    expect(app.lastFrame()).not.toContain("The user declined");
+    expect(session.messages.at(-1)!.parts[0]).toMatchObject({ output: "The user declined: run: git status" });
+    expect(ran).toEqual([]);
+  });
+
+  it("names a subagent's question in its answer, as the subagent's tool line is not in the conversation", async () => {
+    await inColour(async () => {
+      const { app, ask } = await mount([]);
+      const t2 = asker("t2 (tidy up)");
+      const red = "Danger: rewriting or deleting git history: git push --force";
+      const answer = ask("run: git push --force", undefined, t2.owner, undefined, [red]);
+      await until(app, "Allow t2 (tidy up) to run: git push --force?");
+      await press(app, "n");
+      expect(await answer).toBe(false);
+      const said = `t2 (tidy up) to run: git push --force: You declined this. ${red}`;
+      expect(from(app, false, "t2 (tidy up) to run:").slice(0, 2).join(" ").replace(/\s+/g, " ")).toBe(said); // wrapped at a space
+      expect(app.lastFrame()).toContain("\u001b[31mt2 (tidy up) to run: git push --force: You declined this.");
+    });
+  });
+
+  it.each([true, false])("names a write in its answer, as its preview comes between, and keeps a short result row (full screen: %s)", async (full) => {
+    const lead = new FakeProvider("a", [callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("carried on")]);
+    const { app, ctx } = await mount([], { lead, full });
+    await type(app, "make a file");
+    const target = path.join(ctx.root, "a.txt");
+    await until(app, `Allow write ${target}?`);
+    await press(app, "n");
+    await until(app, "carried on");
+    const r = from(app, full, "● write_file a.txt");
+    expect(r.slice(0, 5)).toEqual(["● write_file a.txt", `┌ write ${target} (1 line)`, "x", `write ${target}: You declined this.`, "  ⎿ You declined this."]);
+    expect(app.lastFrame()).not.toContain("The user declined");
+    expect(lead.seen[1]!.at(-1)!.parts[0]).toMatchObject({ output: `The user declined: write ${target}` });
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("names each of a reply's calls in its answer when another's line comes between", async () => {
+    const { ran, executor } = noShell();
+    const parts = [...callTool("c1", "shell", { command: "git status" }).parts, ...callTool("c2", "shell", { command: "git log" }).parts];
+    const { app } = await mount([{ parts, usage }, reply("done")], { executor });
+    await type(app, "look");
+    await until(app, "Allow run: git status?");
+    await press(app, "y");
+    await until(app, "Allow run: git log?");
+    await press(app, "n");
+    await until(app, "done");
+    expect(from(app, false, "● shell git status").slice(0, 6)).toEqual([
+      "● shell git status",
+      "● shell git log",
+      "run: git status: You allowed this.",
+      "run: git log: You declined this.",
+      "  ⎿ ok",
+      "  ⎿ You declined this.", // in call order, so the ok above is not read as git log's (choice 67)
+    ]);
+    expect(ran).toEqual(["git status"]);
+  });
+
+  // A call that asks nothing prints nothing, so a reply's last tool line is not under its question's answer when an
+  // earlier call of the reply came first: the answer names its call, and each result keeps its place (choice 67).
+  it("names a reply's last call in its answer when an earlier call asked nothing", async () => {
+    const { ran, executor } = noShell();
+    const parts = [...callTool("c1", "read_file", { path: "a.txt" }).parts, ...callTool("c2", "shell", { command: "git push --force" }).parts];
+    const { app, ctx } = await mount([{ parts, usage }, reply("done")], { executor });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a line\n");
+    await type(app, "look and push");
+    await until(app, "Allow run: git push --force?");
+    await press(app, "n");
+    await until(app, "done");
+    expect(from(app, false, "● read_file a.txt").slice(0, 6)).toEqual([
+      "● read_file a.txt",
+      "● shell git push --force",
+      "run: git push --force: You declined this. Danger: rewriting or deleting git history: git push", // wrapped
+      "--force",
+      "  ⎿ ok",
+      "  ⎿ You declined this.",
+    ]);
+    expect(ran).toEqual([]);
+  });
+
+  it("names the lead's question in its answer when another's answer came first, as it waited in the line", async () => {
+    const { executor } = noShell();
+    const lead = new Held();
+    const { app, ask } = await mount([], { lead, executor });
+    await type(app, "look");
+    await until(app, "> look");
+    const t2 = asker("t2 (x)");
+    const first = ask("read /made/up/b.txt", undefined, t2.owner);
+    await until(app, "Allow t2 (x) to read /made/up/b.txt?");
+    lead.answer(callTool("c1", "shell", { command: "git status" })); // its question waits behind t2's
+    await until(app, "● shell git status");
+    await press(app, "y");
+    expect(await first).toBe(true);
+    await until(app, "Allow run: git status?");
+    await press(app, "n");
+    await waitFor(() => lead.asked.length === 2);
+    lead.answer("done");
+    await until(app, "done");
+    expect(from(app, false, "● shell git status").slice(0, 4)).toEqual([
+      "● shell git status",
+      "t2 (x) to read /made/up/b.txt: You allowed this.",
+      "run: git status: You declined this.",
+      "  ⎿ You declined this.",
+    ]);
+  });
+
+  // An answered call's id is let go with its result, as a provider may use an id again: a later call of the same id
+  // shows its result.
+  it("shows the result of a later call that has a declined call's id", async () => {
+    const { ran, executor } = noShell();
+    const turns = [callTool("c1", "shell", { command: "git status" }), callTool("c1", "shell", { command: "git log" }), reply("done")];
+    const { app } = await mount(turns, { executor });
+    await type(app, "look");
+    await until(app, "Allow run: git status?");
+    await press(app, "n");
+    await until(app, "Allow run: git log?");
+    await press(app, "y");
+    await until(app, "done");
+    expect(from(app, false, "● shell git status").slice(0, 4)).toEqual(["● shell git status", "  ⎿ You declined this.", "● shell git log", "  ⎿ You allowed this."]);
+    expect(from(app, false, "● shell git log")[2]).toBe("  ⎿ ok");
+    expect(ran).toEqual(["git log"]);
+  });
+
+  it("keeps the result row of a refusal nobody was asked about: the judge's, and a mode's", async () => {
+    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const judge = new FakeProvider("judge", [reply('{"allow": false, "reason": "Not this one."}')]);
+    const judged = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("carried on")], { mode: "auto", judge });
+    await type(judged.app, "write it");
+    await until(judged.app, "carried on");
+    expect(judged.app.lastFrame()).toContain("  ⎿ The judge refused: Not this one.");
+    expect(judged.app.lastFrame()).not.toContain("You declined");
+    const { ran, executor } = noShell();
+    const never = await mount([callTool("c1", "shell", { command: "git push --force" }), reply("carried on")], { mode: "never", executor });
+    await type(never.app, "push");
+    await until(never.app, "carried on");
+    expect(never.app.lastFrame()).toContain("  ⎿ Not allowed: this command matches the dangerous-command check");
+    expect(never.app.lastFrame()).not.toContain("You declined");
+    expect(ran).toEqual([]);
   });
 });
 
@@ -1612,8 +2082,9 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     expect(app.lastFrame()).toContain("›  ?\n");
   });
 
-  it("switches between ask and project on Shift+Tab, saying so, and the check uses the new mode from the next action", async () => {
-    const { app, ctx } = await mount([callTool("c1", "write_file", { path: "a.txt", content: "x" }), reply("written")]);
+  it("cycles ask, project and auto on Shift+Tab, saying so, and the check uses the new mode from the next action", async () => {
+    const write = (id: string, file: string) => callTool(id, "write_file", { path: file, content: "x" });
+    const { app, ctx } = await mount([write("c1", "a.txt"), reply("written"), write("c2", "b.txt"), reply("written again")]);
     await press(app, "\u001b[Z");
     expect(app.lastFrame()).toContain("mode is now project");
     expect(app.lastFrame()).toContain("perm project");
@@ -1621,14 +2092,79 @@ describe("App's keys for the modes, the model list and the last turn", () => {
     await until(app, "written"); // not asked: project mode allows writes inside the project
     expect(existsSync(path.join(ctx.root, "a.txt"))).toBe(true);
     await press(app, "\u001b[Z");
+    expect(app.lastFrame()).toContain("mode is now auto");
+    expect(app.lastFrame()).toContain("perm auto");
+    // Auto writes a file in the project without asking, as project does (release 7 plan, Task 10).
+    await type(app, "again");
+    await until(app, "written again");
+    expect(existsSync(path.join(ctx.root, "b.txt"))).toBe(true);
+    await press(app, "\u001b[Z");
     expect(app.lastFrame()).toContain("mode is now ask");
     expect(app.lastFrame()).toContain("perm ask");
+    expect(app.lastFrame()).not.toContain("mode is now never");
+  });
+
+  // Release 7 plan, Task 10: the judge's answer counts only under the mode it was asked under. Shift+Tab while it is out
+  // takes the session to ask, so the write asks, though the judge said yes.
+  it("asks when Shift+Tab changes the mode while the judge is out, whatever it answers", async () => {
+    const judge = new Held("fake:judge");
+    const target = path.join(await mkdtemp(path.join(tmpdir(), "tachi-")), "a.txt");
+    const { app } = await mount([callTool("c1", "write_file", { path: target, content: "x" }), reply("carried on")], { mode: "auto", judge });
+    await type(app, "write it");
+    await waitFor(() => judge.asked.length === 1);
+    await press(app, "\u001b[Z");
+    expect(app.lastFrame()).toContain("mode is now ask");
+    judge.answer('{"allow": true}');
+    await until(app, `Allow write ${target}?`);
+    await press(app, "n");
+    await until(app, "carried on");
+    expect(existsSync(target)).toBe(false);
+  });
+
+  // Release 7 plan, Task 10: with no judge set, the lead judges, the one leading at each action (release 7 design, "The
+  // modes": "Unset, the lead's own model judges, through the login already in use"), so a /lead switch moves the judge.
+  it("judges with the lead leading at each action when no judge is set, so /lead moves the judge too", async () => {
+    const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const write = (id: string, n: string) => callTool(id, "write_file", { path: path.join(folder, `${n}.txt`), content: n });
+    const allow = reply('{"allow": true}');
+    const a = new FakeProvider("a", [write("c1", "a"), allow, reply("first done")]);
+    const b = new FakeProvider("b", [write("c2", "b"), allow, reply("second done")]);
+    const { app } = await mount([], { lead: a, newLead: b, mode: "auto" });
+    await type(app, "write a");
+    await until(app, "first done");
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await type(app, "write b");
+    await until(app, "second done");
+    // A judge's request is its one message of labelled blocks (safety/judge.ts, request).
+    const judged = (p: FakeProvider) => p.seen.filter((m) => m.length === 1 && JSON.stringify(m[0]).includes("The user's own messages")).length;
+    expect([judged(a), judged(b)]).toEqual([1, 1]);
+    expect(["a", "b"].map((n) => existsSync(path.join(folder, `${n}.txt`)))).toEqual([true, true]);
+  });
+
+  // A judge that --judge or the settings file set stays the judge for the session, whoever leads (Task 10).
+  it("keeps a set judge after /lead", async () => {
+    const folder = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    const write = (id: string, n: string) => callTool(id, "write_file", { path: path.join(folder, `${n}.txt`), content: n });
+    const judge = new FakeProvider("judge", [reply('{"allow": true}'), reply('{"allow": true}')]);
+    const a = new FakeProvider("a", [write("c1", "a"), reply("first done")]);
+    const b = new FakeProvider("b", [write("c2", "b"), reply("second done")]);
+    const { app } = await mount([], { lead: a, newLead: b, mode: "auto", judge });
+    await type(app, "write a");
+    await until(app, "first done");
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await type(app, "write b");
+    await until(app, "second done");
+    expect(judge.seen).toHaveLength(2);
+    expect([a.seen.length, b.seen.length]).toEqual([2, 2]); // each lead's own two requests, and no judge's
+    expect(["a", "b"].map((n) => existsSync(path.join(folder, `${n}.txt`)))).toEqual([true, true]);
   });
 
   it("takes never into the cycle only when the session started in it", async () => {
     const { app } = await mount([], { mode: "never" });
-    await press(app, "\u001b[Z", "\u001b[Z", "\u001b[Z");
-    expect(app.lastFrame()).toContain("mode is now ask\nmode is now project\nmode is now never\n");
+    await press(app, "\u001b[Z", "\u001b[Z", "\u001b[Z", "\u001b[Z");
+    expect(app.lastFrame()).toContain("mode is now ask\nmode is now project\nmode is now auto\nmode is now never\n");
   });
 
   it("does nothing on Shift+Tab while a question is showing", async () => {
@@ -1838,9 +2374,11 @@ describe("App in full screen", () => {
         stats={new Stats(bus)}
         mode="ask"
         onMode={() => {}}
+        onRules={() => {}}
         project="proj"
         root={ctx.root}
-        gitBranch={() => null}
+        workspace={ctx.workspace}
+        branch={null}
         historyFile={path.join(histories, `${nextHistory++}.jsonl`)}
         intro={said(60)}
         errorFile={path.join(ctx.root, "errors.jsonl")}
@@ -1894,13 +2432,16 @@ describe("App in full screen", () => {
     expect(rows).toHaveLength(23);
   });
 
-  it("leaves the conversation a row however tall the prompt grows, and the frame a row short of the terminal", async () => {
+  // Release 7 plan, choice 120 (the user's hand check): a tall prompt draws at most half the rows, twelve of 24.
+  it("leaves the conversation the rows a tall prompt's half leaves, and the frame a row short of the terminal", async () => {
     const { app } = await mount([], { full: true, intro: said(60) });
     await press(app, Array.from({ length: 20 }, (_, i) => `p${i}`).join("\n")); // Ctrl+J between them
     const rows = shown(app);
     expect(rows).toHaveLength(23);
-    expect(rows[0]).toBe("said 59.");
-    expect(rows[1]).toBe("› p0");
+    expect(rows[0]).toBe("said 51.");
+    expect(rows[8]).toBe("said 59.");
+    expect(rows[9]).toBe("› ↑ 9 rows above");
+    expect(rows[20]).toBe("  p19");
   });
 
   it("scrolls with PgUp while a question waits, and still answers it with y", async () => {
@@ -2714,16 +3255,17 @@ describe("App's clicks in full screen", () => {
       frame = app.lastFrame();
       await pointer(mouse, ...click(4, 2));
       expect(app.lastFrame()).toBe(frame);
-      await press(app, "\u0015", "a", ..."bcdefghij".split("").flatMap((c) => ["\n", c])); // Ctrl+U empties it; ten lines
-      expect(shown(app).slice(1, 7)).toEqual(["› ↑ 5 rows above", "  f", "  g", "  h", "  i", "  j"]);
-      await pointer(mouse, ...click(4, 1));
+      // Ctrl+U empties it; ten lines, in five rows, half the terminal's (release 7 plan, choice 120).
+      await press(app, "\u0015", "a", ..."bcdefghij".split("").flatMap((c) => ["\n", c]));
+      expect(shown(app).slice(2, 7)).toEqual(["› ↑ 6 rows above", "  g", "  h", "  i", "  j"]);
+      await pointer(mouse, ...click(4, 2));
       await press(app, "X");
       expect(shown(app)[6]).toBe("  jX");
       await press(app, "\u007f", ...Array(9).fill("\u001b[A")); // Backspace, then up to the first row
-      expect(shown(app).slice(1, 7)).toEqual(["› a", "  b", "  c", "  d", "  e", "  ↓ 5 rows below"]);
+      expect(shown(app).slice(2, 7)).toEqual(["› a", "  b", "  c", "  d", "  ↓ 6 rows below"]);
       await pointer(mouse, ...click(4, 6));
       await press(app, "Y");
-      expect(shown(app)[1]).toBe("› aY");
+      expect(shown(app)[2]).toBe("› aY");
     } finally {
       await rm(ctx.root, { recursive: true, force: true });
     }
@@ -2881,7 +3423,7 @@ describe("App's questions in full screen", () => {
     await press(app, "y");
     expect(await second).toBe(true);
     await gone(app, "[y/n]");
-    expect(shown(app).slice(16, 20)).toEqual(["b 4.", "a reply", "t2 (a) to write a.txt: allowed", "t3 (b) to write b.txt: allowed"]);
+    expect(shown(app).slice(16, 20)).toEqual(["b 4.", "a reply", "t2 (a) to write a.txt: You allowed this.", "t3 (b) to write b.txt: You allowed this."]);
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -2926,8 +3468,8 @@ describe("App's questions in full screen", () => {
     expect(app.lastFrame()).not.toContain("line 4.");
     await press(app, "y");
     expect(await answer).toBe(true);
-    await until(app, "write a.txt: allowed");
-    expect(shown(app)[19]).toBe("write a.txt: allowed");
+    await until(app, "write a.txt: You allowed this.");
+    expect(shown(app)[19]).toBe("write a.txt: You allowed this.");
     expect(app.lastFrame()).not.toContain("new lines");
   });
 
@@ -2956,9 +3498,9 @@ describe("App's questions in full screen", () => {
   };
 
   it.each([
-    { key: "y", ok: true, how: "allowed" },
-    { key: "n", ok: false, how: "declined" },
-    { key: "\u001b", ok: false, how: "declined" },
+    { key: "y", ok: true, how: "You allowed this." },
+    { key: "n", ok: false, how: "You declined this." },
+    { key: "\u001b", ok: false, how: "You declined this." },
   ])("puts all of a question too long to fit in the conversation, and answers it with $key", async ({ key, ok, how }) => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
     const long = command(300); // 3,005 characters
@@ -3017,7 +3559,7 @@ describe("App's questions in full screen", () => {
     await press(app, PG_DOWN, PG_DOWN); // past the heading's rows, to its preview's lines
     expect(shown(app)).toEqual(expect.arrayContaining(detail(5, "b").split("\n")));
     await press(app, CTRL_END);
-    expect(shown(app).slice(19, 21)).toEqual(["c 29.", "t2 (a) to run: ls: allowed"]); // the newest lines: no copy of the path
+    expect(shown(app).slice(19, 21)).toEqual(["c 29.", "t2 (a) to run: ls: You allowed this."]); // the newest lines: no copy of the path
     await press(app, "y");
     expect(await second).toBe(true);
     await until(app, "Allow t4 (c) to write c.txt? [y/n]");
@@ -3047,13 +3589,13 @@ describe("App's questions in full screen", () => {
     expect(await answer).toBe(true);
     await tick();
     expect(shown(app)[0]).toBe(top);
-    expect(app.lastFrame()).not.toContain("run: ls: allowed");
+    expect(app.lastFrame()).not.toContain("run: ls: You allowed this.");
   });
 
   // Whether the view was following is kept from the question's first draw, not from when a resize moves it into the
   // conversation.
   it.each([
-    { name: "following", before: false, after: "run (shown above): allowed" },
+    { name: "following", before: false, after: "run (shown above): You allowed this." },
     { name: "scrolled up", before: true, after: "↓ 1 new line · Ctrl+End" },
   ])("after a question moved into the conversation by a resize, follows again only if it was $name when it came", async ({ before, after }) => {
     const { app, ask } = await mount([], { full: true, intro: said(60) });
@@ -3325,7 +3867,7 @@ describe("App's detail view in full screen", () => {
     expect(shown(app).slice(14, 21)).toEqual(["┌ write a.txt (5 lines)", "line 0.", "line 1.", "line 2.", "line 3.", "line 4.", ""]);
     await press(app, "n");
     expect(await answer).toBe(false);
-    await until(app, "write a.txt: declined");
+    await until(app, "write a.txt: You declined this.");
   });
 
   it("selects and copies in the view, saying so in the key row's place until a key, and clears the selection when it closes", async () => {
@@ -3747,9 +4289,11 @@ async function onTerminal(
       stats={new Stats(bus)}
       mode="ask"
       onMode={() => {}}
+      onRules={() => {}}
       project="proj"
       root={ctx.root}
-      gitBranch={() => null}
+      workspace={ctx.workspace}
+      branch={null}
       historyFile={path.join(histories, `${nextHistory++}.jsonl`)}
       intro={opts.intro ?? []}
       errorFile={path.join(ctx.root, "errors.jsonl")}
@@ -4777,7 +5321,7 @@ describe("App's keys from the table of actions", () => {
     await until(app, "Allow write a.txt? [y/n] · Esc to decline");
     await press(app, ESC_ESC);
     expect(await answer).toBe(false);
-    await until(app, "write a.txt: declined");
+    await until(app, "write a.txt: You declined this.");
   });
 
   it("warns at the first Ctrl-D in the detail view and in Ctrl+R's search", async () => {
@@ -6104,15 +6648,109 @@ describe("App's live settings", () => {
     expect(gate.mode).toBe("project");
   });
 
-  it("refuses a live never, and keeps a session started in never in it", async () => {
+  // Release 7 plan, Task 7: `never` is no longer switched off, so a live one gets the same line as any other mode.
+  it("keeps the mode as at launch on a live never, and a session started in never in it", async () => {
     const a = await watching([], {});
     a.write({ mode: "never" });
-    await sees(a.app, '"mode": "never" is switched off until release 7; the mode stays ask');
+    await sees(a.app, PINNED("ask"));
+    expect(flat(a.app)).not.toContain("switched off");
     expect(a.app.lastFrame()).toContain("perm ask");
     const b = await watching([], { mode: "never" }, { mode: "never" });
     b.write({ mode: "ask" });
     await sees(b.app, PINNED("never"));
     expect(b.app.lastFrame()).toContain("perm never");
+  });
+
+  // Release 7 design, "The modes": a live edit of the sandbox, its network or the judge waits for the next launch, as
+  // "mode" does, with the same kind of grey line (release 7 plan, Task 7); one a flag gave stays as the flag set it.
+  it("keeps the sandbox, the network and the judge as at launch on a live edit, and says so", async () => {
+    const stays = (key: string, value: string) => `"${key}" changes in settings.json take effect at the next launch; it stays ${value}`;
+    const a = await watching([], {});
+    a.write({ sandbox: "copy", network: "on", judge: "ollama:j" });
+    await sees(a.app, stays("sandbox", "off"));
+    await sees(a.app, stays("network", "off"));
+    await sees(a.app, stays("judge", "the lead's model"));
+    const b = await watching([], { network: "on", judge: "ollama:j" });
+    b.write({});
+    await sees(b.app, stays("network", "on"));
+    await sees(b.app, stays("judge", "ollama:j"));
+    const c = await watching([], {}, {}, { sandbox: "--sandbox", network: "--network", judge: "--judge" });
+    c.write({ sandbox: "live", network: "on", judge: "ollama:j" });
+    for (const key of ["sandbox", "network", "judge"]) await sees(c.app, `settings.json's "${key}" was left as --${key} set it for this session`);
+  });
+
+  // Release 7 plan, Task 4 (design, "Configurable"): an edit that loosens the dangerous-command check gets a red warning
+  // and waits for the next launch, so a command the user allowed cannot loosen it in the session; one that tightens it
+  // gets a grey notice and applies at once.
+  describe("dangerousCommands", () => {
+    const CHECK = "settings.json: dangerous-command check:";
+    const LOOSENED = "in auto and never, those commands will run without the check. Takes effect at the next launch.";
+    const OFF = `${CHECK} "installing software" switched off; ${LOOSENED}`;
+    const REMOVED = `${CHECK} your rule "make deploy" removed; ${LOOSENED}`;
+    const ADDED = `${CHECK} rule "make deploy" added; it applies now.`;
+    const ON = `${CHECK} "installing software" switched back on; it applies now.`;
+    const SH = { root: "/tmp/x", home: "/home/u", shell: "bash" as const, has: () => false };
+    const kinds = (line: string, gate: PermissionGate) => dangers(line, SH, gate.rules).map((d) => d.kind);
+    // The frame without its colours, as flat() gives it; a wrapped row's colours sit around its line break.
+    const plain = (app: ReturnType<typeof render>) => stripVTControlCharacters(app.lastFrame()!).replaceAll(/ *\n */g, " ");
+
+    it("leaves a kind switched off for the next launch, with a red warning, and applies an added rule at once, in grey", async () => {
+      await inColour(async () => {
+        const { app, gate, write } = await watching([], {});
+        write({ dangerousCommands: { off: ["installing software"] } });
+        await vi.waitFor(() => expect(plain(app)).toContain(OFF), WATCHED);
+        expect(app.lastFrame()).toContain(`\u001b[31m${CHECK} "installing software" switched off;`);
+        expect(gate.rules).toEqual({ add: [], off: [] });
+        expect(kinds("npm install left-pad", gate)).toEqual(["installing software"]);
+        write({ dangerousCommands: { off: ["installing software"], add: ["make deploy"] } });
+        await vi.waitFor(() => expect(plain(app)).toContain(ADDED), WATCHED);
+        expect(app.lastFrame()).toContain(`\u001b[90m${ADDED}`);
+        expect(plain(app).split(OFF).length - 1).toBe(1); // said for the edit that switched it off
+        expect(gate.rules).toEqual({ add: ["make deploy"], off: [] });
+        expect(kinds("make deploy", gate)).toEqual(["your own rule: make deploy"]);
+      });
+    });
+
+    it("leaves a removed rule for the next launch, with a red warning, and applies a kind switched back on at once, in grey", async () => {
+      await inColour(async () => {
+        const { app, gate, write } = await watching([], { dangerousCommands: { add: ["make deploy"], off: ["installing software"] } });
+        expect(kinds("npm install left-pad", gate)).toEqual([]);
+        write({});
+        await vi.waitFor(() => expect(plain(app)).toContain(ON), WATCHED);
+        expect(plain(app)).toContain(REMOVED);
+        expect(app.lastFrame()).toContain(`\u001b[31m${CHECK} your rule "make deploy" removed;`);
+        expect(app.lastFrame()).toContain(`\u001b[90m${CHECK} "installing software" switched back on;`);
+        expect(gate.rules).toEqual({ add: ["make deploy"], off: [] });
+        expect(kinds("npm install left-pad", gate)).toEqual(["installing software"]);
+        expect(kinds("make deploy", gate)).toEqual(["your own rule: make deploy"]);
+      });
+    });
+
+    it("gives a subagent's gate the rules in force, one made before the edit too", async () => {
+      const { gate, write, app } = await watching([], {});
+      const child = gate.for({ name: "t1", signal: new AbortController().signal, stop: () => {} });
+      write({ dangerousCommands: { add: ["make deploy"] } });
+      await sees(app, ADDED);
+      expect(child.rules).toEqual({ add: ["make deploy"], off: [] });
+    });
+
+    // The kind was never off in force (the edit switching it off waited), so the check never stopped: nothing to say.
+    it("says nothing when a kind switched off in the session, and so still checked, is switched back on", async () => {
+      const { app, gate, write } = await watching([], {});
+      write({ dangerousCommands: { off: ["installing software"] } });
+      await vi.waitFor(() => expect(plain(app)).toContain(OFF), WATCHED);
+      write({ dangerousCommands: { off: [], add: ["make deploy"] } });
+      await vi.waitFor(() => expect(plain(app)).toContain(ADDED), WATCHED);
+      expect(plain(app)).not.toContain("switched back on");
+      expect(gate.rules).toEqual({ add: ["make deploy"], off: [] });
+    });
+
+    it("takes a spacing-only edit of a rule as no change", async () => {
+      const { app, write } = await watching([], { dangerousCommands: { add: ["make deploy"], off: [] } });
+      write({ dangerousCommands: { add: [" make  deploy "] }, maxTasks: 3 });
+      await sees(app, `maxTasks is now 3 ${FROM}`);
+      expect(plain(app)).not.toContain("dangerous-command check");
+    });
   });
 
   // Test 7 too: a change made while a tool runs inside a turn is sent from the request after the tool's result.
@@ -6452,6 +7090,57 @@ describe("App's live settings", () => {
     expect(full.app.lastFrame()).toContain(warning);
     const classic = await mount([], { home: freshHome(), live: { loaded, given: {} } });
     expect(classic.app.lastFrame()).not.toContain(warning);
+  });
+
+  // Release 7 plan, Task 4: the launch's line naming the kinds of the dangerous-command check that are off, in red, as it
+  // says the check is weaker (the user's choice); in classic mode and -p only on stderr.
+  it("shows in full screen, in red, which kinds of the dangerous-command check are off, and nothing while none is", async () => {
+    await inColour(async () => {
+      const start = "The dangerous-command check is off for: installing software, sending files out;";
+      const line = `${start} in auto and never, those commands run without it.`;
+      const launch = (dangerousCommands: Settings["dangerousCommands"]) => ({ loaded: { settings: { dangerousCommands }, warnings: [] }, given: {} });
+      const off = launch({ add: [], off: ["installing software", "sending files out"] });
+      const full = await mount([], { full: true, home: freshHome(), live: off });
+      expect(full.app.lastFrame()).toContain(`\u001b[31m${start}`);
+      expect(stripVTControlCharacters(full.app.lastFrame()!).replaceAll(/ *\n */g, " ")).toContain(line); // a wrapped row's colours sit around its break
+      const classic = await mount([], { home: freshHome(), live: off });
+      expect(classic.app.lastFrame()).not.toContain("dangerous-command check");
+      const none = await mount([], { full: true, home: freshHome(), live: launch({ add: ["make deploy"], off: [] }) });
+      expect(none.app.lastFrame()).not.toContain("dangerous-command check");
+    });
+  });
+
+  // Release 7 plan, choice 22: the launch's line saying --network was ignored without the sandbox, which full screen hides
+  // on stderr until the user quits, so it shows in the session too, grey as the settings file's warnings; in classic mode
+  // only on stderr.
+  it("shows in full screen, in grey, that --network was ignored without the sandbox, and nothing without the line", async () => {
+    await inColour(async () => {
+      const line = "--network acts only with the sandbox on; it was ignored";
+      const live = { loaded: { settings: {}, warnings: [] }, given: { network: "--network" }, networkLine: line };
+      const full = await mount([], { full: true, home: freshHome(), live });
+      expect(full.app.lastFrame()).toContain(`\u001b[90m${line}`);
+      const classic = await mount([], { home: freshHome(), live });
+      expect(classic.app.lastFrame()).not.toContain(line);
+      const none = await mount([], { full: true, home: freshHome(), live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+      expect(none.app.lastFrame()).not.toContain("--network");
+    });
+  });
+
+  // Release 7 plan, Task 8: the launch's line saying git's settings could not be read, repeated in full screen as the
+  // --network line is, grey as the settings file's warnings; in classic mode only on stderr.
+  it("shows in full screen, in grey, that git's settings could not be read, and nothing without the line", async () => {
+    await inColour(async () => {
+      const line = "git's settings could not be read (stdout maxBuffer length exceeded); only the fixed list of protected paths applies";
+      const live = { loaded: { settings: {}, warnings: [] }, given: {}, gitLine: line };
+      const full = await mount([], { full: true, home: freshHome(), live });
+      // Ink wraps it at the test terminal's 100 columns.
+      expect(full.app.lastFrame()).toContain("\u001b[90mgit's settings could not be read (stdout maxBuffer length exceeded); only the fixed list of ");
+      expect(full.app.lastFrame()).toContain("\u001b[90mprotected paths applies");
+      const classic = await mount([], { home: freshHome(), live });
+      expect(classic.app.lastFrame()).not.toContain("git's settings");
+      const none = await mount([], { full: true, home: freshHome(), live: { loaded: { settings: {}, warnings: [] }, given: {} } });
+      expect(none.app.lastFrame()).not.toContain("git's settings");
+    });
   });
 
   // Release 6 plan, Task 11: the keys file beside the settings file, through the same watcher.
@@ -7238,5 +7927,247 @@ describe("App's live settings", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// Release 7 plan, Task 21: in copy mode, leaving stops the box, and once Docker reports it gone the review opens in the
+// App's place, with the App's own keys off; the review's end lines are handed back to print once Ink has ended. The copy
+// is made by hand, as tests/tui/review.test.tsx makes it, in a data folder of the test's own, with one change the box
+// made; the box is a stand-in.
+describe("App's leave() in copy mode", () => {
+  function copyWorld() {
+    const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-leave-")));
+    onTestFinished(() => removeTree(dir));
+    const root = path.join(dir, "project");
+    const folder = path.join(dir, "data", "copies", "s1");
+    for (const f of [root, path.join(folder, "base"), path.join(folder, "work")]) mkdirSync(f, { recursive: true });
+    for (const where of [root, path.join(folder, "base")]) writeFileSync(path.join(where, "a.txt"), "made-up text\n");
+    writeFileSync(path.join(folder, "work", "a.txt"), "the box's text\n");
+    const st = statSync(path.join(folder, "work", "a.txt"));
+    const sha256 = createHash("sha256").update("made-up text\n").digest("hex");
+    const manifest: Manifest = { session: "s1", pid: process.pid, root, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
+    manifest.entries["a.txt"] = { type: "file", sha256, exec: false, size: st.size, mtimeMs: st.mtimeMs };
+    writeFileSync(path.join(folder, "manifest.json"), JSON.stringify(manifest));
+    const said: string[] = [];
+    const ended: string[][] = [];
+    let release!: (gone: boolean) => void;
+    const copy: NonNullable<AppProps["copy"]> = {
+      copy: { session: "s1", folder, manifest },
+      stop: () => {
+        said.push("stop");
+        return new Promise((resolve) => (release = resolve));
+      },
+      protection: async () => {
+        said.push("protection");
+        return { hooks: [], files: [] };
+      },
+      ended: (lines) => ended.push(lines),
+    };
+    return { folder, copy, said, ended, gone: (yes: boolean) => release(yes) };
+  }
+
+  it("opens the review at /exit once the box is gone, where keys never reach the prompt and Ctrl-C does only the review's", async () => {
+    const w = copyWorld();
+    const lead = new FakeProvider("a", []);
+    const { app } = await mount([], { lead, copy: w.copy });
+    await type(app, "/exit");
+    expect(w.said).toEqual(["stop"]);
+    await until(app, "Stopping the box...");
+    await press(app, "x");
+    expect(app.lastFrame()).not.toContain("› x");
+    w.gone(true);
+    await until(app, "Review the copy's changes: 1 file.");
+    expect(w.said).toEqual(["stop", "protection"]);
+    // Typed text and Enter go to the review, whose Enter opens the diff; nothing is sent to the lead.
+    await press(app, "h", "i", "\r");
+    await until(app, "changed a.txt");
+    expect(lead.seen).toEqual([]);
+    // Ctrl-C closes the diff only, and then leaves the copy for later; the App's own Ctrl-C, which counts toward exiting,
+    // never acts.
+    await press(app, "\u0003");
+    await until(app, "Review the copy's changes: 1 file.");
+    expect(app.lastFrame()).not.toContain("Press Ctrl-C again to exit");
+    expect(w.ended).toEqual([]);
+    await press(app, "\u0003");
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended).toEqual([["The copy is kept; tachi review s1 opens it again."]]);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+    expect(existsSync(`${w.folder}.lock`)).toBe(false); // the lock beside the copy's folder is let go
+    expect(lead.seen).toEqual([]);
+  });
+
+  it("opens the review on Ctrl-D twice too, and exits once it ends", async () => {
+    const w = copyWorld();
+    const { app } = await mount([], { copy: w.copy });
+    await press(app, "\u0004", "\u0004");
+    w.gone(true);
+    await until(app, "Review the copy's changes: 1 file.");
+    await press(app, "l");
+    await waitFor(() => w.ended.length === 1);
+    await expectExited(app);
+  });
+
+  it("keeps the copy unreviewed when Docker still lists the box, and says so", async () => {
+    const w = copyWorld();
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(false);
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual([
+      "The box could not be removed, so the copy was not reviewed.",
+      "The copy is kept; tachi review s1 opens it again.",
+    ]);
+    expect(w.said).toEqual(["stop"]);
+    await expectExited(app);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+  });
+
+  // Task 21's review: without git's settings, a hooks folder they name would not be marked protected, so a file in it
+  // could be applied unseen. The review does not open; the copy is kept, and the lines say why.
+  it("keeps the copy unreviewed when git's settings cannot be read on the host, and says so", async () => {
+    const w = copyWorld();
+    w.copy.protection = async () => {
+      w.said.push("protection");
+      throw new Error("git was ended by SIGKILL\u001b[8m");
+    };
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual([
+      "The review did not open: git's settings could not be read (git was ended by SIGKILL\\u001b[8m), so the hooks folders they name could not be protected.",
+      "The copy is kept; tachi review s1 opens it again.",
+    ]);
+    expect(app.lastFrame()).not.toContain("Review the copy's changes");
+    expect(w.said).toEqual(["stop", "protection"]);
+    await expectExited(app);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+    expect(existsSync(`${w.folder}.lock`)).toBe(false);
+  });
+
+  // Choice 121 (the user's): with nothing to review there is no review; the copy is removed, still under the lock and
+  // once the box is gone. The box's change is taken back here, so work/ is as the snapshot left it; with `ignored`, the
+  // snapshot holds a .gitignore and the box made a file in a path it ignores.
+  function unchanged(w: ReturnType<typeof copyWorld>, ignored = false) {
+    writeFileSync(path.join(w.folder, "work", "a.txt"), "made-up text\n");
+    if (!ignored) return;
+    for (const where of ["base", "work"]) writeFileSync(path.join(w.folder, where, ".gitignore"), "*.log\n");
+    const st = statSync(path.join(w.folder, "work", ".gitignore"));
+    const sha256 = createHash("sha256").update("*.log\n").digest("hex");
+    w.copy.copy.manifest.entries[".gitignore"] = { type: "file", sha256, exec: false, size: st.size, mtimeMs: st.mtimeMs };
+    writeFileSync(path.join(w.folder, "work", "made.log"), "made-up log\n");
+  }
+  const reviewDrawn = (app: ReturnType<typeof render>) => app.frames.some((f) => f.includes("Review the copy's changes"));
+
+  it("skips the review and removes the copy when nothing changed, saying so", async () => {
+    const w = copyWorld();
+    unchanged(w);
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual(["Nothing changed in the copy, so it was removed."]);
+    expect(w.said).toEqual(["stop"]); // git's settings, which only a review needs, are never read
+    expect(reviewDrawn(app)).toBe(false);
+    expect(app.frames.some((f) => f.includes("Removing the copy (1 file)..."))).toBe(true);
+    await expectExited(app);
+    expect(existsSync(w.folder)).toBe(false);
+    expect(existsSync(`${w.folder}.lock`)).toBe(false);
+  });
+
+  it("skips the review and removes the copy when its only changes are in paths git ignores, counting them", async () => {
+    const w = copyWorld();
+    unchanged(w, true);
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual(["Nothing to review (1 change only in paths git ignores, never applied), so the copy was removed."]);
+    expect(reviewDrawn(app)).toBe(false);
+    await expectExited(app);
+    expect(existsSync(w.folder)).toBe(false);
+  });
+
+  it("says when the copy with nothing to review could not be removed", async () => {
+    const w = copyWorld();
+    unchanged(w);
+    w.copy.remove = async () => {
+      throw new Error("made-up failure");
+    };
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual([`The copy could not be removed (made-up failure); delete ${w.folder} by hand.`]);
+    expect(reviewDrawn(app)).toBe(false);
+    await expectExited(app);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+  });
+
+  it("opens the review when the box left only something never applied, for the user to see it", async () => {
+    const w = copyWorld();
+    unchanged(w);
+    mkdirSync(path.join(w.folder, "work", ".tachikoma"));
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await until(app, "Left out, never applied: .tachikoma");
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+  });
+
+  it("opens the review as before when the copy's changes cannot be read", async () => {
+    const w = copyWorld();
+    renameSync(path.join(w.folder, "work"), path.join(w.folder, "elsewhere"));
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    w.gone(true);
+    await until(app, "The copy's changes could not be read:");
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+  });
+
+  // The quality review: a failure while leaving is said escaped, with where the copy is.
+  it("says what failed while leaving, escaped, and that the copy is kept", async () => {
+    const w = copyWorld();
+    w.copy.stop = async () => {
+      throw new Error("docker went away\u001b[8m");
+    };
+    const { app } = await mount([], { copy: w.copy });
+    await type(app, "/exit");
+    await waitFor(() => w.ended.length === 1);
+    expect(w.ended[0]).toEqual(["docker went away\\u001b[8m", "The copy is kept; tachi review s1 opens it again."]);
+    await expectExited(app);
+  });
+
+  // The App and the review read one table of keys (Bindings), which holds a chord's first strokes: were the App's own
+  // keys or mouse on during the review, its lookups would take or drop the review's chord. Here a keys-file chord of the
+  // Review context, Ctrl+X then z, leaves the copy for later, a wheel notch coming between in full screen.
+  it("leaves the review's chords to it, the App's keys and mouse taking no part", async () => {
+    for (const full of [false, true]) {
+      const w = copyWorld();
+      const bindings = new Bindings(tableOf({ ...DEFAULTS, Review: { ...DEFAULTS.Review, "ctrl+x z": "review:later" } }));
+      const { app, mouse } = await mount([], { copy: w.copy, bindings, full });
+      await type(app, "/exit");
+      w.gone(true);
+      await until(app, "Review the copy's changes: 1 file.");
+      await press(app, "\u0018"); // Ctrl+X
+      if (full) await wheel(mouse, "down");
+      await press(app, "z");
+      await waitFor(() => w.ended.length === 1);
+      expect(w.ended[0], full ? "full screen" : "classic").toEqual(["The copy is kept; tachi review s1 opens it again."]);
+    }
+  });
+
+  // A signal exit or a crash ends Ink without leave() (cli.tsx, restoreOnExit, unmounts it): the box is removed by the
+  // executor's exit handler, and the copy stays, unreviewed, for `tachi review` (design: "Nothing is thrown away until the
+  // user has reviewed it").
+  it("keeps the copy, unreviewed, when Ink ends without leaving, as on a signal or a crash", async () => {
+    const w = copyWorld();
+    const { app } = await mount([], { copy: w.copy });
+    app.unmount();
+    await tick();
+    expect(w.said).toEqual([]);
+    expect(w.ended).toEqual([]);
+    expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
+    expect(existsSync(path.join(w.folder, "work", "a.txt"))).toBe(true);
   });
 });

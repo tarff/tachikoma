@@ -1,14 +1,19 @@
+import { withLock } from "../../auth/lock.js";
 import { summarize } from "../../core/errorlog.js";
+import { type Protection, visible } from "../../core/permissions.js";
 import type { Task } from "../../core/tasks.js";
 import { errorText } from "../../core/types.js";
 import { KEYBINDINGS } from "../../keybindings.js";
+import { dropIfNothing } from "../../sandbox/copies.js";
+import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { callLines, type Line } from "../describe.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
+import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
-import { COMMANDS, FROM, gray, isCommand, names } from "./constants.js";
+import { COMMANDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened } from "./constants.js";
 import type { UI } from "./state.js";
 
 export const queue = (ui: UI, fns: Fns) => {
@@ -34,7 +39,7 @@ export const queue = (ui: UI, fns: Fns) => {
   // while the terminal is handed over (release 6 design, "When a live change applies").
   const next = () => {
     const h = ui.happening();
-    if (h.phase.kind === "ended" || h.working || h.waiting) return;
+    if (h.phase.kind === "ended" || h.phase.kind === "review" || h.working || h.waiting) return;
     const w = ui.waiting.current;
     if (w.lead !== undefined) fns.fileLead(w.lead);
     w.lead = undefined;
@@ -82,7 +87,7 @@ export const queue = (ui: UI, fns: Fns) => {
     try {
       if (alone("/exit")) {
         ui.queue.current = [];
-        return ui.exit();
+        return fns.leave();
       }
       if (alone("/errors")) return fns.say(...summarize(ui.errorFile).map((row) => ({ text: row, oneLine: true })));
       // Not to full screen where it can't draw: classic, as at the start (clilib.ts, screenMode).
@@ -146,7 +151,9 @@ export const queue = (ui: UI, fns: Fns) => {
       } finally {
         ui.setBusy(false);
         ui.working.current = false;
-        ui.setBranch(ui.gitBranch());
+        // The model may have switched branches. Through the Workspace, so it lands just after the turn ends (release 7
+        // plan, Task 14).
+        void ui.workspace.branch().then(ui.setBranch, (err) => fns.say({ text: errorText(err), color: "red" }));
       }
     } catch (err) {
       fns.say({ text: errorText(err), color: "red" });
@@ -200,5 +207,45 @@ export const queue = (ui: UI, fns: Fns) => {
     ui.setPicker(null);
     fns.next();
   };
-  return { submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker };
+  // Leaving the session (/exit, and Ctrl-C or Ctrl-D twice): Ink ends, as ever. In copy mode the box is stopped first,
+  // with the turn and the subagents, and once Docker reports it gone the review (Review.tsx) opens in the App's place,
+  // Ink still mounted, under the lock beside the copy's folder, so two reviews of one copy take turns; its lines are
+  // handed back, to print once Ink has ended (release 7 plan, Task 21). From the first step the App's own keys, pastes
+  // and mouse are off (phase.ts, review), and nothing more starts. A view printed out comes back first, so the review
+  // can draw. A copy with nothing to review is removed instead, its line printed (choice 121; copies.ts, dropIfNothing).
+  const leave = () => {
+    const c = ui.copy;
+    if (!c) return ui.exit();
+    if (ui.leaving.current) return;
+    ui.leaving.current = true;
+    ui.tasks.stop();
+    ui.abort.current?.abort();
+    ui.rerender((n) => n + 1);
+    void (async () => {
+      await fns.comeBack();
+      if (!(await c.stop())) return c.ended([NOT_GONE, kept(c.copy.session)]);
+      await withLock(copyLock(c.copy.folder), async () => {
+        // Nothing to review: no review, and the copy is removed (choice 121), before git's settings are read, as they
+        // only matter to a review.
+        const read = await dropIfNothing(c.copy, (line) => {
+          ui.leavingLine.current = line;
+          ui.rerender((n) => n + 1);
+        }, c.remove);
+        if (typeof read === "string") return c.ended([read]);
+        // Without git's settings a hooks folder they name is not marked protected, so a file in it could be applied
+        // unseen: no review, and the copy is kept (Task 21's review).
+        let protection: Protection;
+        try {
+          protection = await c.protection();
+        } catch (err) {
+          return c.ended([visible(reviewUnopened(errorText(err))), kept(c.copy.session)]);
+        }
+        const end = await new Promise<ReviewEnd>((onEnd) => ui.setReviewing({ protection, onEnd, read }));
+        c.ended(end.lines);
+      });
+    })()
+      .catch((err) => c.ended([visible(errorText(err)), kept(c.copy.session)]))
+      .finally(() => ui.exit());
+  };
+  return { submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave };
 };

@@ -28,10 +28,14 @@ describe("readSettings", () => {
       editorMode: "vim",
       vimInsertModeRemaps: { jj: "<Esc>" },
       editor: "code --wait",
+      sandbox: "off",
+      network: "off",
+      judge: "anthropic:claude-haiku-5-5",
     };
     expect(read(file)).toEqual({ settings: file, warnings: [] });
-    const others = { mode: "never", effort: "max", screen: "classic", editorMode: "normal", maxTasks: 1, scrollSpeed: 0.5 };
+    const others = { mode: "never", effort: "max", screen: "classic", editorMode: "normal", maxTasks: 1, scrollSpeed: 0.5, sandbox: "copy", network: "on" };
     expect(read(others)).toEqual({ settings: others, warnings: [] });
+    expect(read({ mode: "auto", sandbox: "live" })).toEqual({ settings: { mode: "auto", sandbox: "live" }, warnings: [] });
   });
 
   it("has every entry optional", () => {
@@ -47,7 +51,9 @@ describe("readSettings", () => {
   });
 
   it("refuses a value its flag would refuse, in the flag's words after the file and the entry", () => {
-    expect(problem({ mode: "x" })).toBe('settings.json: "mode" must be one of: ask, project (got "x")');
+    expect(problem({ mode: "x" })).toBe('settings.json: "mode" must be one of: ask, project, auto, never (got "x")');
+    expect(problem({ sandbox: "on" })).toBe('settings.json: "sandbox" must be one of: off, live, copy (got "on")');
+    expect(problem({ network: "yes" })).toBe('settings.json: "network" must be one of: off, on (got "yes")');
     expect(problem({ effort: "huge" })).toBe('settings.json: "effort" must be one of: low, medium, high, xhigh, max (got "huge")');
     expect(problem({ screen: "half" })).toBe('settings.json: "screen" must be one of: full, classic (got "half")');
     expect(problem({ editorMode: "emacs" })).toBe('settings.json: "editorMode" must be one of: normal, vim (got "emacs")');
@@ -63,7 +69,7 @@ describe("readSettings", () => {
   it("refuses a value of the wrong JSON type, naming the entry", () => {
     expect(problem({ maxTasks: "8" })).toBe('settings.json: "maxTasks" must be a number, without quotes (got "8")');
     expect(problem({ scrollSpeed: "3" })).toBe('settings.json: "scrollSpeed" must be a number, without quotes (got "3")');
-    for (const name of ["lead", "fallback", "worker", "editor", "mode", "effort", "screen", "editorMode"]) {
+    for (const name of ["lead", "fallback", "worker", "editor", "mode", "effort", "screen", "editorMode", "sandbox", "network", "judge"]) {
       expect(problem({ [name]: 5 })).toBe(`settings.json: "${name}" must be text in quotes (got 5)`);
     }
     expect(problem({ lead: null })).toBe('settings.json: "lead" must be text in quotes (got null)');
@@ -109,6 +115,131 @@ describe("readSettings", () => {
     const words = (k: string) =>
       `settings.json: "vimInsertModeRemaps" entry ${JSON.stringify(k)} is not two letters, digits, punctuation marks or symbols mapped to "<Esc>"`;
     expect(r).toEqual({ settings: { vimInsertModeRemaps: {} }, warnings: pairs.map((k) => `${words(k)}; it was left out`) });
+  });
+
+  // Release 7 plan, Task 4 and choice 5: the user's own dangerous-command rules.
+  describe("dangerousCommands", () => {
+    const KINDS_LIST =
+      "wiping or formatting disks, deleting whole folders, permissions and system settings, stopping processes or the machine, " +
+      "rewriting or deleting git history, sending files out, installing software, downloading and running code, acting outside the machine";
+
+    it("takes commands added and kinds switched off, each list optional, a repeat kept once", () => {
+      const both = { add: ["terraform apply", "make deploy"], off: ["installing software", "sending files out"] };
+      expect(read({ dangerousCommands: both })).toEqual({ settings: { dangerousCommands: both }, warnings: [] });
+      expect(read({ dangerousCommands: { add: ["make deploy", "make deploy"] } })).toEqual({
+        settings: { dangerousCommands: { add: ["make deploy"], off: [] } },
+        warnings: [],
+      });
+      expect(read({ dangerousCommands: { off: ["installing software"] } })).toEqual({
+        settings: { dangerousCommands: { add: [], off: ["installing software"] } },
+        warnings: [],
+      });
+      expect(read({ dangerousCommands: {} })).toEqual({ settings: { dangerousCommands: { add: [], off: [] } }, warnings: [] });
+    });
+
+    it("refuses an off that names no kind, listing the kinds", () => {
+      expect(problem({ dangerousCommands: { off: ["x"] } })).toBe(`settings.json: "dangerousCommands.off" must be a list of: ${KINDS_LIST} (got "x")`);
+      expect(problem({ dangerousCommands: { off: ["installing software", "Installing software"] } })).toBe(
+        `settings.json: "dangerousCommands.off" must be a list of: ${KINDS_LIST} (got "Installing software")`,
+      );
+      expect(problem({ dangerousCommands: { off: [5] } })).toBe(`settings.json: "dangerousCommands.off" must be a list of: ${KINDS_LIST} (got 5)`);
+      expect(problem({ dangerousCommands: { off: "installing software" } })).toBe(
+        `settings.json: "dangerousCommands.off" must be a list of: ${KINDS_LIST} (got "installing software")`,
+      );
+    });
+
+    it("refuses an add that is not a list of non-empty text", () => {
+      for (const bad of ["terraform apply", [""], ["  "], [5], ["make deploy", null], null]) {
+        expect(problem({ dangerousCommands: { add: bad } })).toBe(
+          'settings.json: "dangerousCommands.add" must be a list of commands in quotes, such as ["terraform apply"]',
+        );
+      }
+    });
+
+    it("takes a rule's words with any spacing as one rule, written with single spaces", () => {
+      expect(read({ dangerousCommands: { add: [" make deploy ", "make  deploy", "make\tdeploy", "terraform apply"] } })).toEqual({
+        settings: { dangerousCommands: { add: ["make deploy", "terraform apply"], off: [] } },
+        warnings: [],
+      });
+    });
+
+    // A command's words have their quotes taken off (split.ts), so a rule holding one could never match.
+    it("refuses a rule holding a quote", () => {
+      for (const bad of ['git commit -m "wip"', "echo 'x'", 'say"hi']) {
+        expect(problem({ dangerousCommands: { add: ["make deploy", bad] } })).toBe(
+          `settings.json: "dangerousCommands.add" rules are matched word by word and cannot hold quotes (got ${JSON.stringify(bad)})`,
+        );
+      }
+    });
+
+    it("refuses a value that is not an object, and leaves out an unknown name in it with a warning", () => {
+      for (const bad of ["installing software", ["installing software"], null]) {
+        expect(problem({ dangerousCommands: bad })).toBe(
+          `settings.json: "dangerousCommands" must be an object, such as {"add": ["terraform apply"], "off": ["installing software"]} (got ${JSON.stringify(bad)})`,
+        );
+      }
+      expect(read({ dangerousCommands: { of: ["installing software"], add: ["make deploy"] } })).toEqual({
+        settings: { dangerousCommands: { add: ["make deploy"], off: [] } },
+        warnings: ['settings.json: "dangerousCommands.of" is not a setting; it was left out'],
+      });
+    });
+  });
+
+  // Release 7 plan, Task 12 and choice 75: the box's limits, each optional, kept as written; Docker's figures are checked
+  // at the launch (src/sandbox/executor.ts, boxLimits).
+  describe("sandboxLimits", () => {
+    it("takes memory in Docker's g or m, CPUs and processes, each optional", () => {
+      const all = { memory: "8g", cpus: 1.5, pids: 2048 };
+      expect(read({ sandboxLimits: all })).toEqual({ settings: { sandboxLimits: all }, warnings: [] });
+      expect(read({ sandboxLimits: { memory: "512m" } })).toEqual({ settings: { sandboxLimits: { memory: "512m" } }, warnings: [] });
+      expect(read({ sandboxLimits: {} })).toEqual({ settings: { sandboxLimits: {} }, warnings: [] });
+    });
+
+    it("refuses what is not an object", () => {
+      expect(problem({ sandboxLimits: "8g" })).toBe(
+        'settings.json: "sandboxLimits" must be an object, such as {"memory": "8g", "cpus": 4, "pids": 1024} (got "8g")',
+      );
+    });
+
+    it("refuses each entry's wrong values", () => {
+      for (const bad of ["8", "8gb", "0g", "1.5g", "8G", 8, "-1m"]) {
+        expect(problem({ sandboxLimits: { memory: bad } })).toBe(
+          'settings.json: "sandboxLimits.memory" must be a whole number of gigabytes or megabytes in quotes, such as "8g" or "512m" ' +
+            `(got ${JSON.stringify(bad)})`,
+        );
+      }
+      for (const bad of [0, -2, "4"]) {
+        expect(problem({ sandboxLimits: { cpus: bad } })).toBe(
+          `settings.json: "sandboxLimits.cpus" must be a number of CPUs above 0, such as 2 or 1.5 (got ${JSON.stringify(bad)})`,
+        );
+      }
+      for (const bad of [0, 1.5, -1, "1024"]) {
+        expect(problem({ sandboxLimits: { pids: bad } })).toBe(
+          `settings.json: "sandboxLimits.pids" must be a whole number of processes from 1, such as 1024 (got ${JSON.stringify(bad)})`,
+        );
+      }
+    });
+
+    // Choice 91: Docker's own limit for --cpus (choice 82), and numbers past JSON's range, which read as Infinity.
+    it("refuses cpus with more than 9 decimal places, and cpus or pids that are not finite", () => {
+      expect(read({ sandboxLimits: { cpus: 1.123456789 } })).toEqual({ settings: { sandboxLimits: { cpus: 1.123456789 } }, warnings: [] });
+      expect(problem({ sandboxLimits: { cpus: 1.1234567891 } })).toBe(
+        'settings.json: "sandboxLimits.cpus" can have at most 9 decimal places (got 1.1234567891)',
+      );
+      expect(readSettings('{"sandboxLimits": {"cpus": 1e999}}')).toEqual({
+        problem: 'settings.json: "sandboxLimits.cpus" must be a number of CPUs above 0, such as 2 or 1.5 (got null)',
+      });
+      expect(readSettings('{"sandboxLimits": {"pids": 1e999}}')).toEqual({
+        problem: 'settings.json: "sandboxLimits.pids" must be a whole number of processes from 1, such as 1024 (got null)',
+      });
+    });
+
+    it("leaves out a name it does not know, with a warning, and keeps the rest", () => {
+      expect(read({ sandboxLimits: { disk: "10g", cpus: 2 } })).toEqual({
+        settings: { sandboxLimits: { cpus: 2 } },
+        warnings: ['settings.json: "sandboxLimits.disk" is not a setting; it was left out'],
+      });
+    });
   });
 
   it("says when the file is not valid JSON, in the parser's words", () => {

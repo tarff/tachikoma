@@ -2,8 +2,12 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Readable } from "node:stream";
+import { resolveIn } from "../tools/files.js";
+import { filesIn, findIn, searchIn } from "../tools/search.js";
+import { gitBranch } from "../tui/git.js";
 import { commandEnv, system32 } from "./env.js";
 import { type ExecResult, type Executor, MAX_TOOL_OUTPUT } from "./executor.js";
+import type { Match, Workspace } from "./workspace.js";
 
 export function shellFor(platform: NodeJS.Platform = process.platform): { name: string; argv: (command: string) => string[] } {
   if (platform === "win32") {
@@ -39,8 +43,8 @@ const running = new Set<ChildProcess>();
 process.on("exit", () => running.forEach(killTree));
 
 // Keeps the first MAX_TOOL_OUTPUT characters and reads (and drops) the rest, so the command never
-// blocks on a full pipe and a flood of output cannot exhaust memory.
-function collect(stream: Readable): () => string {
+// blocks on a full pipe and a flood of output cannot exhaust memory. The box's commands are cut the same (docker.ts).
+export function collect(stream: Readable): () => string {
   let text = "";
   let dropped = 0;
   stream.setEncoding("utf8"); // decodes characters split across chunks
@@ -88,13 +92,38 @@ export class LocalExecutor implements Executor {
       child.on("close", onClose);
     });
   }
+}
 
-  readFile(abs: string): Promise<string> {
+// The project's files on the host (workspace.ts): today's code for each, unchanged (plan, Task 13). The checks a path
+// needs before it is read (the gate's question) are the caller's; find and search take `start` as resolve does.
+export class LocalWorkspace implements Workspace {
+  constructor(readonly root: string) {}
+
+  async resolve(p: string, opts?: { trusted?: boolean }) {
+    return resolveIn(this.root, p, opts);
+  }
+
+  readText(abs: string): Promise<string> {
     return readFile(abs, "utf8");
   }
 
-  async writeFile(abs: string, content: string): Promise<void> {
+  // Makes the parent folders first, as write_file always has.
+  async writeText(abs: string, content: string): Promise<void> {
     await mkdir(path.dirname(abs), { recursive: true });
     await writeFile(abs, content, "utf8");
+  }
+
+  find(start: string, pattern: string, signal?: AbortSignal): Promise<string[]> {
+    const { abs, outside } = resolveIn(this.root, start);
+    return findIn(this.root, filesIn(this.root, abs, outside, signal), pattern);
+  }
+
+  search(start: string, pattern: string, glob: string | undefined, signal?: AbortSignal): Promise<{ matches: Match[]; beyond: number }> {
+    const { abs, outside } = resolveIn(this.root, start);
+    return searchIn(this.root, filesIn(this.root, abs, outside, signal), pattern, glob, signal);
+  }
+
+  async branch(): Promise<string | null> {
+    return gitBranch(this.root);
   }
 }

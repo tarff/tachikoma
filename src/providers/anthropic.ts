@@ -159,15 +159,17 @@ export class AnthropicProvider implements Provider {
   async #complete(req: CompletionRequest): Promise<Turn> {
     const { system, messages, tools, signal } = req;
     const effort = this.#effort; // read once, so the request measured is the request sent
+    const list = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema as BetaTool["input_schema"] }));
     const params = (prepared: Prepared) => ({
       model: this.model,
       max_tokens: MAX_TOKENS,
       system,
       // No eager_input_streaming: only finalMessage() is read, so streaming tool input early gains
       // nothing here, and it would move input validation from the API to us (claude-api skill, tool-use-concepts.md).
-      tools: tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema as BetaTool["input_schema"] })),
+      // Left out when there are none, as the judge's request has (release 7 plan, Task 9), as openai.ts and chatgpt.ts do.
+      ...(list.length ? { tools: list } : {}),
       messages: toAnthropic(messages, prepared),
-      cache_control: { type: "ephemeral" as const },
+      ...(req.cache === false ? {} : { cache_control: { type: "ephemeral" as const } }),
       ...(effort ? { output_config: { effort } } : {}),
       ...(FALLBACK_MODELS.has(this.model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
     });

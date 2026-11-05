@@ -65,7 +65,7 @@ export const mouse = (ui: UI, fns: Fns) => {
     // open.
     const h = ui.happening(m.kind === "wheel" ? () => fns.menuFor(ui.editor.current) !== null : undefined);
     const { phase } = h;
-    if (!ui.fullNow.current || phase.kind === "ended" || phase.kind === "printed") return;
+    if (!ui.fullNow.current || phase.kind === "ended" || phase.kind === "review" || phase.kind === "printed") return;
     const { columns, viewHeight } = ui.frame.current;
     if (ui.frame.current.detail !== ui.detail.current) return;
     const p = ui.pane();

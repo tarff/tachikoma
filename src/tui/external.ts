@@ -73,7 +73,11 @@ async function runEditor(file: string, command: string, run: Runner): Promise<st
   try {
     const { code, signal } =
       process.platform === "win32"
-        ? await run(system32("cmd.exe"), ["/d", "/s", "/c", `"${command} "${file}" & exit"`], { ...options, windowsVerbatimArguments: true })
+        ? await run(system32("cmd.exe"), ["/d", "/s", "/c", `"${command} "${file}" & exit"`], {
+            ...options,
+            env: notHereFirst(options.env),
+            windowsVerbatimArguments: true,
+          })
         : await run("/bin/sh", ["-c", `${command} "$1"`, "sh", file], options);
     if (code === 0) return null;
     if (code === NOT_FOUND_EXIT) return NOT_FOUND;
@@ -81,4 +85,15 @@ async function runEditor(file: string, command: string, run: Runner): Promise<st
   } catch (err) {
     return errorText(err);
   }
+}
+
+// cmd.exe looks for a bare name such as `code` in its working folder, normally the project, before PATH, so a code.cmd
+// put in the project would run (plan, choice 58). With NoDefaultCurrentDirectoryInExePath set it looks on PATH alone
+// (Windows' NeedCurrentDirectoryForExePath; checked on Windows 11 build 26200, 2026-10-31: a .cmd in the working folder
+// ran without it and was not found with it). The name is matched in any case, as Windows does. The editor inherits it,
+// and a VS Code started here passes it on to its own terminals. That is a change the user can see, though a safe one:
+// in those terminals a bare `tool.bat` in the working folder no longer runs; `.\tool.bat` still does.
+const NO_HERE = "NoDefaultCurrentDirectoryInExePath";
+function notHereFirst(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...Object.fromEntries(Object.entries(env).filter(([name]) => name.toUpperCase() !== NO_HERE.toUpperCase())), [NO_HERE]: "1" };
 }

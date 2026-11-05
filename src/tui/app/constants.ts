@@ -25,6 +25,9 @@ export type Question = {
   detail?: [number, number];
   following?: boolean;
   plain?: boolean; // a question of its own, asked without "Allow" (permissions.ts, Ask)
+  warnings: string[]; // the red lines drawn above it, one per danger, escaped (permissions.ts, Ask; release 7 plan, Task 8)
+  note?: string; // a grey row, auto mode's pause, drawn above any red lines, which the gate never sends with it (permissions.ts, Ask; Task 10)
+  call?: string; // the lead's call that asks it, from its tool-start, so its answer can go under its tool line (choice 66)
   answer: (ok: boolean, how: string) => void;
 };
 // While the left button is held after a press in the conversation: what the press took (the pressed character, or a
@@ -67,15 +70,17 @@ export const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.
 
 // The settings file's entries a live edit applies here, in the design's table's order ("When a live change applies").
 // vimInsertModeRemaps is read at each key (vimTakes), and the editor at each Ctrl+G, /settings and /keybindings; both
-// are here for their lines (plan, Tasks 12 and 21).
+// are here for their lines (plan, Tasks 12 and 21). dangerousCommands is release 7's (release 7 plan, Task 4), and so are
+// sandbox, network and judge, here for their lines too, as each waits for the next launch (Task 7).
 export const LIVE = [
-  "lead", "mode", "effort", "fallback", "worker", "maxTasks",
-  "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor",
+  "lead", "mode", "sandbox", "network", "judge", "effort", "fallback", "worker", "maxTasks",
+  "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor", "dangerousCommands",
 ] as const;
 export const FROM = ` (from ${SETTINGS})`;
 
 // The contexts in force in each phase (phase.ts), innermost first (release 6 plan, Task 6's table). Printed out and
-// ended, keys go where they went before the table: to the reader of the printed view, or nowhere.
+// ended, keys go where they went before the table: to the reader of the printed view, or nowhere. In the review the
+// review reads its own keys, in these contexts at its list (Review.tsx; release 7 plan, Task 21), and the App none.
 export const PHASE_CONTEXTS: Record<Phase["kind"], Context[]> = {
   prompt: ["Chat", "Global"],
   menu: ["Autocomplete", "Chat", "Global"],
@@ -83,6 +88,7 @@ export const PHASE_CONTEXTS: Record<Phase["kind"], Context[]> = {
   search: ["HistorySearch", "Global"],
   detail: ["Transcript", "Global"],
   picker: ["Select", "Global"],
+  review: ["Review", "Global"],
   printed: [],
   ended: [],
 };
@@ -133,6 +139,12 @@ export const printable = (s: Stroke) => !s.ctrl && !s.alt && (s.key === "space" 
 // The line while the editor runs, and the codes that erase it (handover.tsx, away; release 6 plan, choice 33).
 export const WAITING = "Waiting for your editor to close the file... (Tachikoma ignores Ctrl-C until then) ";
 export const ERASE_LINE = "\r\u001b[K";
+// Copy mode's leaving (queue.ts, leave): the line while the box stops, and the one when Docker still lists it after.
+export const STOPPING = "Stopping the box...";
+export const NOT_GONE = "The box could not be removed, so the copy was not reviewed.";
+// When git's settings cannot be read on the host as the review would open (the user's words; Task 21's review).
+export const reviewUnopened = (why: string) =>
+  `The review did not open: git's settings could not be read (${why}), so the hooks folders they name could not be protected.`;
 // The wheel's reports carry no key, so no flag of one is set.
 export const NO_KEY = {} as Key;
 // VISUAL's selection, as vim.ts's visual() takes it, to draw (release 6 plan, choice 28): from the anchor to the

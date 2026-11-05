@@ -51,6 +51,8 @@ learn from experience. The command is `tachi`.
 | `never` mode switched off | From release 6 until release 7, `never` is refused however it is asked for (`--mode never` or `"mode": "never"` in the settings file), at launch with one line, in `tachi` and `tachi -p` alike. Release 7 brings, before `never` returns: (1) the Docker sandbox; (2) auto mode, a second model judging each action before it runs; (3) a check on dangerous commands of every kind, not only ones that delete files. Examples only, for release 7's design to settle: wiping or formatting disks, changing permissions or system settings, stopping processes, rewriting or force-pushing git history, sending files or secrets off the machine, installing software | User, 2026-10-29 ("we can't have never mode deleting a filesystem"; options chosen: "Switch never off (Recommended)", then "Off now, checks in 7"; then "not just file deletion, any other dangerous commands too"; release 6 plan, choice 30) |
 | Shift+Enter in Windows Terminal | Release 7: Windows Terminal sends Shift+Enter as Enter (README, Known limits; tested 2026-10-25), so a new line takes Ctrl+J or `\` then Enter. First re-test whether the user's current Windows Terminal answers the kitty keyboard protocol, which Tachikoma already asks for; if it still does not, read Windows Terminal's own win32 input mode, which sends each key with its Shift, Ctrl and Alt state, since Ink cannot read it. A Windows Terminal `sendInput` setting would act in every program there, PowerShell included, so it is not the fix | User, 2026-10-30, at release 6's terminal checklist ("why cant we get shift+enter to work?", then "yes" to adding it to release 7) |
 | Workflows | Release 12, after the loops: a saved route of steps, as LangGraph does, for a process that should run the same way every time (build, then a spec review, then a code review, fixing until both approve). Each step is a delegated task with its own worker; the arrows between steps are real checks, such as the tests passing or a reviewer approving, never the model saying it is done; a check that fails sends the work back to the step that needs fixing. The free loop stays the default; a workflow is for repeated processes only. Release 12's design settles the file format and the limits | User, 2026-10-30 ("like langgraph", then "Add it at the end of release 12"), after agreeing it is the next stage on from loops |
+| Release 7 | Docker, not each system's own sandbox. The sandbox is off unless asked for (`--sandbox live` or `copy`); asked for without Docker, the launch stops. The box's network is off unless asked for; the list of allowed sites moves to release 8, with the MCP client. The image is built on the user's PC from a shipped Dockerfile, after asking. `never` only in copy mode (`--sandbox copy`), never in live link or on the host. In live link all of `.git` is read-only in the box, with every project file git's settings include, and nothing on the host opens a path in the box's folder while it runs; `tachi sandbox build` builds the image, and headless never builds. Protected paths (Claude Code's list, such as `.git`, `.vscode` and `.envrc`) are never written without a check, and now ask in `project` mode too. Auto mode as Claude Code's, a fourth mode on the host or in the sandbox, its judge the `judge` setting or the lead's model. The dangerous-command check warns, asks or refuses by mode, and the user's own settings file can add rules or switch a kind off, with a warning | User, 2026-10-30, options chosen ([release 7 design](2026-10-30-tachikoma-release-7-design.md)) |
+| Release 7, as built | Live link is refused where the project folder ignores letter case, Windows' and macOS's default, as the box reached `.git` as `.GIT` and `GIT~1` on Docker Desktop for Windows (measured), so copy mode is the sandbox there; the box's default limits (4 GB, 4 CPUs, 1,024 processes) scale with Docker's size, always leaving 1 GiB free, and 1 CPU when it has more than one; the `@` menu and pasted paths stay on the host, a box call taking a median 360 ms; changes in git-ignored paths are counted in the review, never applied; changes to protected paths start as skipped; deletes are applied first; the box's repository takes the host's branch; a hard link counts as a protected write; the judge sees earlier writes by their length, and a judge that cannot be reached fails no `-p` run; Shift+Enter in Windows Terminal through its win32 input mode, as kitty's query got no answer; in full screen the prompt takes at most half the rows; tested on Windows 11 only until release 13's CI | User, 2026-10-31 to 2026-11-05, at the build and its reviews ([release 7 plan](2026-10-31-tachikoma-release-7.md), its 122 choices; [release 7 design](2026-10-30-tachikoma-release-7-design.md), "As built") |
 
 ## 1. Overall shape
 
@@ -376,7 +378,8 @@ are using. CLI workers and MCP tools run their own actions, under their own rule
 - Is driven through the `docker` command, not a library, so its commands match what a user would
   type.
 - Uses a default image with Node, Python, git and uv. A project can supply its own Dockerfile.
-- Has network access set per session: on, off, or a list of allowed sites.
+- Has network access set per session: on, off, or a list of allowed sites. Release 7 builds off
+  (the default) and on; the list comes in release 8, with the MCP client, which shares its check.
 - Runs without special powers: no root-level privileges, no access to Docker itself, no sharing the
   host's processes or network, no extra folders from the host, and no access to Tachikoma's saved
   logins. A project's own Dockerfile cannot add any of these.
@@ -500,6 +503,9 @@ the live project through it.
 
 **Permission modes** are the same for both executors: ask before every risky action, ask only for
 actions outside the project, or never ask. "Never ask" is meant to be paired with the sandbox.
+Release 7 adds `auto`, where a second model judges what would otherwise be asked, and allows
+`never` only in copy mode; writes to protected paths ask in `project` mode too
+([release 7 design](2026-10-30-tachikoma-release-7-design.md)).
 
 ### MCP tools
 
@@ -736,7 +742,8 @@ tachi setup
 - installs uv if it is missing, after asking
 - builds the pinned Python environment
 - downloads the model
-- checks Docker
+- checks Docker, and offers release 7's choices: building the sandbox image, the judge, and
+  the sandbox and network defaults
 - asks for API keys, and also picks up keys already set as environment variables
   (`ANTHROPIC_API_KEY`, etc.)
 - on its first run, offers to import from the tools it finds (Claude Code, Codex and others):
@@ -896,11 +903,14 @@ Each release works on its own and can be shown.
 6. A settings file, and key extras: vim mode, image paste, external editor, stash, rebinding keys
    in a file; the context window of OpenAI API models, from a dated table of OpenAI's model pages
    ([release 6 design](2026-10-28-tachikoma-release-6-design.md))
-7. Docker sandbox, both modes, including conflict-safe apply for copy-then-review; auto mode, a
-   second model judging each action; a check on dangerous commands of every kind. `never` mode,
-   switched off in release 6, returns only with these three
-8. MCP client, and MemPalace in the uv environment behind the shared supervisor; transcripts on
-   disk; shortening the history; lessons from the error log, stored in the palace and recalled
+7. Docker sandbox, both modes, including conflict-safe apply for copy-then-review (live link only
+   where the folder minds letter case, so copy mode on Windows and macOS); auto mode, a second
+   model judging each action; a check on dangerous commands of every kind, and protected paths.
+   `never` mode, switched off in release 6, returns only with these three, in copy mode only;
+   Shift+Enter in Windows Terminal ([release 7 design](2026-10-30-tachikoma-release-7-design.md))
+8. MCP client, and the sandbox's list of allowed sites, which shares its address check; MemPalace
+   in the uv environment behind the shared supervisor; transcripts on disk; shortening the history;
+   lessons from the error log, stored in the palace and recalled
 9. Skills: the loader, vendored superpowers, Tachikoma's own skills, and skills drafted from
    experience, saved on the user's yes
 10. Codebase search with EmbeddingGemma 2

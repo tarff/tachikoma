@@ -1,6 +1,7 @@
 import { resolve } from "../../clilib.js";
 import { errorText, type Provider } from "../../core/types.js";
 import { KEYBINDINGS, type KeysLoaded } from "../../keybindings.js";
+import { NO_RULES } from "../../safety/rules.js";
 import { type Loaded, SETTINGS, type Settings } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { editorCommand } from "../external.js";
@@ -25,7 +26,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       // VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
       const flag = key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : ui.live?.given[key];
       if (flag) fns.note(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
-      else fns.applyEntry(key, read.settings, now);
+      else fns.applyEntry(key, read.settings, now, before);
     }
     fns.next();
   };
@@ -49,10 +50,10 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     ui.keysWarned.current = problems;
     ui.setTable(read.table);
   };
-  // One entry's new value, `s` the file's and `now` what applies (above), with its line. A lead or a screen waits for
-  // next() (queue.ts). A model the file names that cannot be made is said, as at launch (cli.tsx), and the one before
-  // is kept.
-  const applyEntry = (key: (typeof LIVE)[number], s: Settings, now: ReturnType<typeof resolve>) => {
+  // One entry's new value, `s` the file's, `now` what applies (above) and `was` the file's before the edit, with its line.
+  // A lead or a screen waits for next() (queue.ts). A model the file names that cannot be made is said, as at launch
+  // (cli.tsx), and the one before is kept.
+  const applyEntry = (key: (typeof LIVE)[number], s: Settings, now: ReturnType<typeof resolve>, was: Settings) => {
     const line = (value: string) => fns.note(gray(`${key} is now ${value}${FROM}`));
     const model = (spec: string | undefined) => {
       if (!spec) return undefined; // an empty --fallback or --worker is none at launch too (cli.tsx)
@@ -68,11 +69,16 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       // A session cannot be without a lead, so removing the entry keeps the one it has (the design's table).
       if (s.lead === undefined) fns.note(gray(`"lead" was removed from ${SETTINGS}; the lead stays ${ui.session.lead.id}`));
     } else if (key === "mode") {
-      // `never` is refused live (the user's choice, design's table), and at launch too until release 7 (plan, choice 30).
-      if (now.mode === "never") return fns.note(gray(`"mode": "never" is switched off until release 7; the mode stays ${ui.perm.current}`));
       // A live edit never changes the mode, so a shell command the user allowed cannot rewrite the file to put the
       // session in project mode; Shift+Tab still does (plan, choice 32, the user's: "Pin at launch").
       fns.note(gray(`"mode" changes in ${SETTINGS} take effect at the next launch; the mode stays ${ui.perm.current}`));
+    } else if (key === "sandbox" || key === "network" || key === "judge") {
+      // These wait for the next launch too, with the same kind of line (release 7 design, "The modes"; plan, Task 7), so a
+      // shell command the user allowed cannot rewrite the file to change where commands run or who judges them. A flag
+      // that gave one at launch was said above, so the session's value is what the launch read in the file. Only the judge
+      // is ever unset, and then the lead's model judges.
+      const launched = resolve({}, {}, ui.live?.loaded.settings ?? {})[key] || "the lead's model";
+      fns.note(gray(`"${key}" changes in ${SETTINGS} take effect at the next launch; it stays ${launched}`));
     } else if (key === "effort") {
       ui.effortNow.current = { effort: now.effort };
       ui.session.lead.setEffort?.(now.effort);
@@ -101,7 +107,23 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     else if (key === "editor") line(editorCommand(process.env, s.editor, process.platform)); // read again at each use (away)
     else if (key === "editorMode") fns.setVim(s.editorMode === "vim", FROM); // at once, as /vim (design's table)
     else if (key === "vimInsertModeRemaps") line(Object.keys(s.vimInsertModeRemaps ?? {}).join(", ") || "none");
-    else {
+    else if (key === "dangerousCommands") {
+      // Release 7 design, "Configurable": what the edit loosens, a kind switched off or a rule removed, gets a red warning
+      // and waits for the next launch, so a command the user allowed cannot loosen the check by rewriting the file; what
+      // it tightens, a rule added or a kind switched back on, gets a grey notice and applies at once.
+      const [before, after] = [was.dangerousCommands ?? NO_RULES, s.dangerousCommands ?? NO_RULES];
+      const check = `${SETTINGS}: dangerous-command check:`;
+      const loosened = (what: string) =>
+        fns.note({ text: `${check} ${what}; in auto and never, those commands will run without the check. Takes effect at the next launch.`, color: "red" });
+      for (const kind of after.off) if (!before.off.includes(kind)) loosened(`"${kind}" switched off`);
+      for (const rule of before.add) if (!after.add.includes(rule)) loosened(`your rule "${rule}" removed`);
+      const r = ui.rules.current;
+      for (const rule of after.add) if (!before.add.includes(rule)) fns.note(gray(`${check} rule "${rule}" added; it applies now.`));
+      // A kind switched off in this session was still checked, as that waited, so switching it back on says nothing.
+      for (const kind of r.off) if (!after.off.includes(kind)) fns.note(gray(`${check} "${kind}" switched back on; it applies now.`));
+      ui.rules.current = { add: [...new Set([...r.add, ...after.add])], off: r.off.filter((kind) => after.off.includes(kind)) };
+      ui.onRules(ui.rules.current);
+    } else {
       // scrollSpeed. The wheel's carried fraction is in the old speed's units, so the new one starts with none (review
       // fixes plan, fix 6).
       ui.setSpeed(now.speed);

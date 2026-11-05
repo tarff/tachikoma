@@ -3,7 +3,8 @@ import type { Key } from "ink";
 // Every key Tachikoma reacts to is a named action in a context (release 6 design, "Keys become named actions"), written as
 // Claude Code's keybindings.json writes them, so a keys file from Claude Code can be read as it is ("The keys file"). The
 // syntax, the context names, the action names and the reserved keys are Claude Code's keybindings page's, read 2026-10-28.
-export const CONTEXTS = ["Global", "Chat", "Autocomplete", "Confirmation", "HistorySearch", "Select", "Transcript", "Scroll"] as const;
+// Review is Tachikoma's own: the review of a copy's changes (release 7 plan, choice 27).
+export const CONTEXTS = ["Global", "Chat", "Autocomplete", "Confirmation", "HistorySearch", "Select", "Transcript", "Scroll", "Review"] as const;
 export type Context = (typeof CONTEXTS)[number];
 
 // One keystroke. `key` is a lower-case character or a special key's name ("enter", "pageup", "wheelup"); a capital letter is
@@ -185,6 +186,19 @@ export function defaultsFor(platform: NodeJS.Platform, wsl: boolean): Record<Con
       wheelup: "scroll:lineUp",
       "shift+down": "scroll:lineDown",
       wheeldown: "scroll:lineDown",
+    },
+    // Choice 27's keys: Up and Down move, Space keeps or skips, Enter shows the diff, `a` applies, `l` leaves the copy for
+    // later, `d` discards it; on a conflict, `m` merges and `s` skips.
+    Review: {
+      up: "review:previous",
+      down: "review:next",
+      space: "review:toggle",
+      enter: "review:diff",
+      a: "review:apply",
+      l: "review:later",
+      d: "review:discard",
+      m: "review:merge",
+      s: "review:skip",
     },
   };
 }
