@@ -1140,6 +1140,15 @@ more code; none has a release set to change it, unless it says so.
   box can make a `.git` there, which git on your machine then uses (`safe.bareRepository = explicit`
   does not stop it). With no top-level `config` file, the top-level read-only part protects nothing.
   A project's own top-level `objects` or `refs` folder is read-only in the box.
+- **Submodules are looked for once, at launch:** one added during the session, by `git submodule
+  add` or a checkout of a branch that has one, is open to the box as above. A project that is a
+  submodule's folder not yet checked out in an outer repository is not refused, and the outer
+  repository's `git status` would go into a `.git` the box makes there.
+- **A repository nested in the project that is not a submodule** keeps its own `.git` writable from
+  the box; git run inside it on your machine would use what the box wrote.
+- **The submodule check comes after the image is built,** so on a first launch the build can come
+  before the refusal. When the check cannot list git's index, the refusal names git's settings,
+  with git's own reason, such as a repository owned by another user.
 - **The letter-case check looks at the project folder only:** a subfolder set to mind letter case
   differently is not seen. On a Windows folder set to mind case, short names such as `GIT~1` may
   still reach `.git` (measured on an ordinary folder); folders made from WSL under `/mnt/c` mind
