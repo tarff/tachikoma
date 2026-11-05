@@ -932,8 +932,7 @@ the plan's review.
     at least one, where the rules before gave more; a longer prompt scrolls in its box, following
     the cursor, as it did at the old limit. A menu still cuts it to the cursor's row; the to-do
     list and the queue still give way to the whole prompt, so the rows freed go to the
-    conversation. Classic mode is unchanged. Commit `fix: in full screen the prompt takes at most
-    half the rows, so the conversation stays readable (choice 120)`.
+    conversation. Classic mode is unchanged.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.
