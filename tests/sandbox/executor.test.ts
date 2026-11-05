@@ -5,7 +5,7 @@ import { mkdtemp, rmdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it, onTestFinished, type TestContext } from "vitest";
+import { describe, expect, it, onTestFinished, type TestContext, vi } from "vitest";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { docker, type DockerRun, dockerState } from "../../src/sandbox/docker.js";
 import {
@@ -73,9 +73,24 @@ describe("the box's limits (choices 75, 76, 80, 82 and 83)", () => {
     expect(unlimitedLine("processes")).toBe("Docker cannot limit the box's processes on this machine, so the box runs without that limit.");
   });
 
-  it("still passes a limit Docker cannot apply (choice 83)", async () => {
+  it("still works out a limit Docker cannot apply (choice 83)", async () => {
     const space = await room(info(24, 33518923776, { MemoryLimit: false, CpuCfsQuota: false, PidsLimit: false }));
     expect(boxLimits(undefined, space)).toEqual({ limits: { memory: 4 * GB, cpus: 4, pids: 1024 } });
+  });
+
+  // Docker refuses to make a box with --cpus where it cannot apply it ("NanoCPUs can not be set"), as rootless Docker
+  // does by default, so each limit it cannot apply has its flags left out.
+  it("leaves out of docker run the flags of each limit Docker cannot apply (choice 83)", async () => {
+    const flags = async (unlimited: Unlimited[]) => {
+      const fake = fakeDocker((args) => ok(args[0] === "run" ? "b0x\n" : "oom_kill 0\n"));
+      await (await DockerExecutor.start({ ...OPTS, unlimited }, fake.run)).stop();
+      return fake.calls[0]!.filter((a) => ["--memory", "--memory-swap", "--cpus", "--pids-limit"].includes(a));
+    };
+    expect(await flags([])).toEqual(["--memory", "--memory-swap", "--cpus", "--pids-limit"]);
+    expect(await flags(["CPUs"])).toEqual(["--memory", "--memory-swap", "--pids-limit"]);
+    expect(await flags(["memory"])).toEqual(["--cpus", "--pids-limit"]);
+    expect(await flags(["processes"])).toEqual(["--memory", "--memory-swap", "--cpus"]);
+    expect(await flags(["memory", "CPUs", "processes"])).toEqual([]);
   });
 
   it("says so when docker info's answer is not JSON, or has no CPUs or memory", async () => {
@@ -448,6 +463,27 @@ describe("sweepBoxes (the boxes of sessions whose process is gone)", () => {
       ["ps", "-a", "--filter", "label=tachikoma.session", "--format", '{{.ID}}\t{{.Label "tachikoma.host"}}\t{{.Label "tachikoma.pid"}}'],
       ["rm", "-f", "aaa"],
     ]);
+  });
+
+  it("loads on a Linux whose /proc/self/ns/pid cannot be read (WSL1), labelling boxes without it", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.resetModules();
+    vi.doMock("node:fs", async (real) => ({
+      ...(await real<typeof import("node:fs")>()),
+      readlinkSync: () => {
+        throw Object.assign(new Error("ENOENT: no such file or directory, readlink '/proc/self/ns/pid'"), { code: "ENOENT" });
+      },
+    }));
+    onTestFinished(() => {
+      Object.defineProperty(process, "platform", platform);
+      vi.doUnmock("node:fs");
+      vi.resetModules();
+    });
+    const fresh = await import("../../src/sandbox/executor.js");
+    const fake = fakeDocker((args) => ok(args[0] === "run" ? "b0x\n" : "oom_kill 0\n"));
+    await (await fresh.DockerExecutor.start(OPTS, fake.run)).stop();
+    expect(fake.calls[0]).toContain(`tachikoma.host=${os.hostname()}/linux`);
   });
 });
 

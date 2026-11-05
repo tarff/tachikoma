@@ -438,7 +438,8 @@ export async function sandboxStart(
     const labels = opts.labels ? { labels: opts.labels } : {};
     const user = boxUser(room);
     const folder = copy ? path.join(copy.folder, "work") : root; // in copy mode only the copy's work/ is mounted
-    box = await DockerExecutor.start({ image: ready.tag, folder, network, limits: got.limits, mounts, env, session, user, ...labels }, run);
+    const { unlimited } = room;
+    box = await DockerExecutor.start({ image: ready.tag, folder, network, limits: got.limits, unlimited, mounts, env, session, user, ...labels }, run);
   } catch (err) {
     return refuse(errorText(err));
   }

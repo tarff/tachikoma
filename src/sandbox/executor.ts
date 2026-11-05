@@ -15,7 +15,8 @@ import type { Mount } from "./mounts.js";
 // down only to a whole MiB (choice 80) and to 9 decimal places (choice 82).
 export interface Limits { memory: number; cpus: number; pids: number }
 // `mounts` are live link's (mounts.ts); `user` is boxUser's; `env` are variables every command in the box gets, as live
-// link's git settings (choice 100); `labels` are added to the box's own.
+// link's git settings (choice 100); `labels` are added to the box's own; `unlimited` are the limits Docker cannot apply
+// (dockerRoom), whose flags are left out.
 export interface BoxOptions {
   image: string;
   folder: string;
@@ -26,6 +27,7 @@ export interface BoxOptions {
   user: string;
   env?: Record<string, string>;
   labels?: Record<string, string>;
+  unlimited?: Unlimited[];
 }
 // The limits Docker can be asked for but may not apply (choice 83), as its line names them.
 export type Unlimited = "memory" | "CPUs" | "processes";
@@ -33,7 +35,9 @@ export type Unlimited = "memory" | "CPUs" | "processes";
 // info`'s NCPU, MemTotal, SecurityOptions, and MemoryLimit, CpuCfsQuota and PidsLimit).
 export interface Room { cpus: number; memory: number; rootless: boolean; unlimited: Unlimited[] }
 
-// The launch's line for each limit Docker cannot apply (choice 83). Its flag is still passed.
+// The launch's line for each limit Docker cannot apply (choice 83). Its flag is left out: Docker drops a memory or
+// processes limit it cannot apply with a warning, but refuses to make the box at all with a --cpus it cannot apply
+// ("NanoCPUs can not be set"), as rootless Docker cannot by default: it is given memory and processes controls, not CPU.
 export const unlimitedLine = (what: Unlimited) => `Docker cannot limit the box's ${what} on this machine, so the box runs without that limit.`;
 
 // Docker reads g and m as 2^30 and 2^20 bytes (measured on 2026-11-02: --memory 1g and 512m gave HostConfig.Memory
@@ -118,7 +122,15 @@ export const NO_DOCKER = "no docker program is on PATH any more";
 export const BOX_HOME = "/tmp";
 // The process space this Tachikoma's pid belongs to, for the box's label (choice 93): the computer's name, which WSL's
 // distros share with Windows, its system, and on Linux its pid namespace, which tells two distros or containers apart.
-const HOST = [os.hostname(), process.platform, ...(process.platform === "linux" ? [readlinkSync("/proc/self/ns/pid")] : [])].join("/");
+// Where that cannot be read (WSL1, a locked-down /proc), the label goes without it, as this runs at every launch.
+const pidSpace = () => {
+  try {
+    return [readlinkSync("/proc/self/ns/pid")];
+  } catch {
+    return [];
+  }
+};
+const HOST = [os.hostname(), process.platform, ...(process.platform === "linux" ? pidSpace() : [])].join("/");
 // The box's cgroup's memory events, as the box sees them. Only cgroup v2 has the file (Docker Desktop's, and most Linux
 // today); cgroup v1, Ubuntu 20.04's and RHEL 8's default, has none, and OOMKilled is read instead (exec, below).
 const EVENTS = "/sys/fs/cgroup/memory.events";
@@ -221,12 +233,15 @@ export class DockerExecutor implements Executor {
   // this process.
   static async start(opts: BoxOptions, run: DockerRun = docker): Promise<DockerExecutor> {
     const { memory, cpus, pids } = opts.limits;
+    const unlimited = opts.unlimited ?? [];
+    const limit = (what: Unlimited, flags: string[]) => (unlimited.includes(what) ? [] : flags);
     const mounts = opts.mounts.flatMap((m) => ("hidden" in m ? ["--tmpfs", m.box] : ["-v", `${m.host}:${m.box}${m.readOnly ? ":ro" : ""}`]));
     const got = await run([
       "run", "-d", "--pull", "never", "--init", "--user", opts.user, "-e", `HOME=${BOX_HOME}`,
       ...Object.entries(opts.env ?? {}).flatMap(([name, value]) => ["-e", `${name}=${value}`]), "--cap-drop", "ALL",
       "--security-opt", "no-new-privileges", "--network", opts.network === "on" ? "bridge" : "none",
-      "--memory", String(memory), "--memory-swap", String(memory), "--cpus", String(cpus), "--pids-limit", String(pids),
+      ...limit("memory", ["--memory", String(memory), "--memory-swap", String(memory)]), ...limit("CPUs", ["--cpus", String(cpus)]),
+      ...limit("processes", ["--pids-limit", String(pids)]),
       "-v", `${opts.folder}:/work`, ...mounts, "-w", "/work",
       "--label", `tachikoma.session=${opts.session}`, "--label", `tachikoma.host=${HOST}`, "--label", `tachikoma.pid=${process.pid}`,
       ...Object.entries(opts.labels ?? {}).flatMap(([name, value]) => ["--label", `${name}=${value}`]),
