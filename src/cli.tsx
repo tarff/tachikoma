@@ -204,7 +204,9 @@ if (verb === "login" || verb === "logout") {
 // Task 11). The question needs a terminal; with none, nothing is built.
 if (verb === "sandbox") {
   const stop = new AbortController();
-  process.once("SIGINT", () => stop.abort()); // Ctrl-C while the build runs, with raw mode off
+  // Ctrl-C while the build runs, with raw mode off. `on`, not `once`: a second Ctrl-C while the build is being stopped
+  // (2-4 s on Windows, docker.ts) must not get Node's default exit, which would end Tachikoma before the stop finished.
+  process.on("SIGINT", () => stop.abort());
   try {
     const code = await sandboxCommand(process.argv.slice(3), process.cwd(), {
       ...(process.stdin.isTTY ? { ask: askAtStart } : {}),

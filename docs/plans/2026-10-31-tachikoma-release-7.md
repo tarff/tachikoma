@@ -990,8 +990,14 @@ the plan's review.
     no image). So the build's docker run asks for `tree`, and on Windows a stop ends the tree with
     `killTree` (`src/exec/local.ts`) and still counts as a stop. Only the build asks: taskkill
     took 2.2 to 3.8 s even for one program (5 runs), which would slow Esc in the box by as much.
-    Windows only: off Windows the terminal's Ctrl-C reaches docker and buildx itself, unmeasured,
-    checked with release 13's Linux/macOS testing (choice 79).
+    Should taskkill fail, docker itself is still ended. The stop of the build now takes 2-4 s on
+    Windows, so `Stopping the build...` is printed first (the user's choice), and a second Ctrl-C
+    meanwhile is ignored (`tachi sandbox build` listens with `process.on`, not `once`, as the
+    launch does). Windows only: off Windows the terminal's Ctrl-C reaches docker and buildx
+    itself, unmeasured, checked with release 13's Linux/macOS testing (choice 79). Known limits:
+    Ctrl-Break, and closing the terminal window, during a build end Tachikoma without the stop
+    (through `exitOn` at a launch, by Node's own exit in `tachi sandbox build`), so buildx can
+    still finish the build there, as before.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.

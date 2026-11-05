@@ -9,10 +9,10 @@ import { collect, killTree } from "../exec/local.js";
 // stdout and stderr as it comes, for a build's progress; `input` goes to its stdin. With `cut`, each stream keeps only
 // what a tool's output keeps (local.ts, collect), so a command in the box cannot fill the host's memory with output.
 // With `tree`, on Windows a stop ends docker's whole process tree (local.ts, killTree), not docker alone: `docker
-// build` runs the buildx plugin as a child program that the terminal's Ctrl-C does not reach, and when only docker was
-// ended, buildx went on and saved the image (measured 2026-11-06; ending the tree made Docker cancel the build). Only
-// the build asks for it, as taskkill took 2-4 s where it was measured, which would slow every stop of a command in the
-// box (choice 125).
+// build` runs the buildx plugin as a child program, and neither gets the terminal's Ctrl-C, as both start without a
+// console window; when docker alone was ended, buildx went on to finish the build and save the image (measured
+// 2026-11-06; ending the tree made Docker cancel the build). Only the build asks for it, as taskkill took 2-4 s where it
+// was measured, which would slow every stop of a command in the box (choice 125).
 export type DockerRun = (
   args: string[],
   opts?: { line?: (line: string) => void; input?: Buffer; signal?: AbortSignal; cut?: boolean; tree?: boolean },
@@ -33,7 +33,11 @@ export const docker: DockerRun = (args, opts = {}) => {
       signal: tree ? undefined : opts.signal,
       stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
-    const stop = () => killTree(child);
+    // docker itself too, should taskkill fail; a kill of a docker that has exited does nothing.
+    const stop = () => {
+      killTree(child);
+      child.kill();
+    };
     if (tree) opts.signal?.addEventListener("abort", stop, { once: true });
     let out = "";
     let err = "";

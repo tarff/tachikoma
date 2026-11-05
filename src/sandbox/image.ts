@@ -242,12 +242,18 @@ async function askAndBuild(
     io.out(UNBUILT);
     return { exit: 0 };
   }
+  // Stopping the build takes 2-4 s on Windows (docker.ts), so a Ctrl-C during it says so first. Added before the docker
+  // run's own listener, so it prints before the stop.
+  const stopping = () => io.out("Stopping the build...");
+  io.signal.addEventListener("abort", stopping, { once: true });
   try {
     await buildImage(info, (line) => io.out(visible(line, { tabs: true })), io.signal, run);
   } catch {
     if (io.signal.aborted) return { exit: STOP }; // a stop is not a failure
     io.err(BUILD_FAILED);
     return { exit: 1 };
+  } finally {
+    io.signal.removeEventListener("abort", stopping);
   }
   return { tag: info.tag };
 }
