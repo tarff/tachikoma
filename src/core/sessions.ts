@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { constants, copyFileSync, type Dirent, lstatSync, mkdirSync, readdirSync, rmdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, copyFileSync, type Dirent, lstatSync, mkdirSync, readdirSync, rmdirSync, type Stats, statSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { tryLock } from "../auth/lock.js";
 import { privateDir } from "../auth/private.js";
 import { projectFile } from "./datadir.js";
-import { readTranscript, wholeLines } from "./transcript.js";
+import { readOutline, wholeLines } from "./transcript.js";
 import { errorText } from "./types.js";
 
 // The saved sessions of each project (release 8a design, "Saving sessions"): <data>/sessions/<project>/ holds each
@@ -47,10 +47,16 @@ export function listSessions(dir: string, opts: { print: boolean }): Row[] {
     if (!e.isFile() || !e.name.endsWith(".jsonl")) continue;
     const id = path.basename(e.name, ".jsonl");
     const file = path.join(dir, e.name);
-    const r = readTranscript(file, path.join(dir, id, "pictures"));
-    if ("problem" in r || !r.messages.length || (r.start.print && !opts.print)) continue;
-    const { mtime, size } = statSync(file);
-    rows.push({ id, name: r.name, firstPrompt: r.firstPrompt ?? "", lead: r.lead, changed: mtime, size, print: r.start.print });
+    const r = readOutline(file);
+    if (!r?.said || (r.start.print && !opts.print)) continue;
+    let st: Stats;
+    try {
+      st = statSync(file);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue; // deleted since, by another launch's sweep
+      throw err;
+    }
+    rows.push({ id, name: r.name, firstPrompt: r.firstPrompt ?? "", lead: r.lead, changed: st.mtime, size: st.size, print: r.start.print });
   }
   return rows.sort((a, b) => b.changed.getTime() - a.changed.getTime());
 }

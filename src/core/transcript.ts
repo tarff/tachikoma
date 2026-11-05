@@ -199,6 +199,37 @@ export function readTranscript(file: string, pictures: string): Read | { problem
   }
 }
 
+// What the session list shows of a transcript (release 8a plan, choice 9): its start line, last name, last lead and first
+// prompt, and whether it holds any conversation, read from its lines alone: no pictures, pairing or subagents' files.
+export interface Outline {
+  start: Extract<Line, { t: "start" }>;
+  name?: string;
+  lead: string;
+  firstPrompt?: string;
+  said: boolean;
+}
+
+// Null for a file that cannot be read, or whose first line is not a whole start line, as readTranscript refuses it.
+export function readOutline(file: string): Outline | null {
+  let rows: (Line | undefined)[];
+  try {
+    rows = parse(readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+  const start = rows[0];
+  if (start?.t !== "start") return null;
+  const outline: Outline = { start, lead: start.lead, said: false };
+  for (const l of rows) {
+    if (l?.t === "name") outline.name = l.name;
+    if (l?.t === "lead") outline.lead = l.lead;
+    if (l?.t === "message" || l?.t === "shortened") outline.said = true;
+    // The first of readTranscript's prompts: a user message's own words, from a message line, never a shortening's.
+    if (l?.t === "message" && l.message.role === "user") outline.firstPrompt ??= l.message.parts.flatMap(own).join("") || undefined;
+  }
+  return outline;
+}
+
 // The text up to its last line break: what a copy of a session takes (release 8a design, "When something goes wrong").
 export function wholeLines(file: string): string {
   const text = readFileSync(file, "utf8");

@@ -21,7 +21,7 @@ describe("sessions", { timeout: 15_000 }, () => {
   let folders = 0;
   beforeAll(async () => {
     top = await mkdtemp(path.join(tmpdir(), "tachi-sessions-"));
-    data = path.join(top, "data");
+    data = path.join(top, "data", "tachikoma");
     shared = sessionsDir(top, data);
     privateDir(shared);
   });
@@ -91,6 +91,20 @@ describe("sessions", { timeout: 15_000 }, () => {
       expect(listSessions(dir, { print: false })).toEqual([
         { id: "s1", name: "build fix", firstPrompt: "fix the build", lead: "fake:b", changed, size: readFileSync(file).length, print: false },
       ]);
+    });
+
+    // Folders that cannot be listed or read stand in for the session's pictures and subagents: the list reads only the
+    // transcript's lines (release 8a plan, choice 9), so it never comes to them. Each is a link to itself, which gives
+    // ELOOP, so no permission is changed.
+    it("reads only the transcript, never the session's pictures or subagents", () => {
+      const dir = folder();
+      const file = session(dir, "s1", { prompt: "hi" });
+      appendFileSync(file, `${JSON.stringify({ t: "subagent", at, id: "t1", description: "find it", file: "t1.jsonl" })}\n`);
+      const look = { role: "user", parts: [{ type: "image", id: 1, mediaType: "image/png", file: "1.png" }] };
+      appendFileSync(file, `${JSON.stringify({ t: "message", at, message: look })}\n`);
+      mkdirSync(path.join(dir, "s1"));
+      for (const name of ["pictures", "subagents"]) symlinkSync(path.join(dir, "s1", name), path.join(dir, "s1", name), "junction");
+      expect(listSessions(dir, { print: false })).toMatchObject([{ id: "s1", firstPrompt: "hi" }]);
     });
 
     it("is empty for a project with no sessions folder", () => {
@@ -233,6 +247,17 @@ describe("sessions", { timeout: 15_000 }, () => {
       const quoted = stuck.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
       expect(lines[0]).toMatch(new RegExp(`^An old session could not be deleted: ${quoted} \\((EPERM|EISDIR): .+\\)\\.$`));
       expect(readdirSync(dir)).toEqual(["stuck.jsonl"]);
+    });
+
+    it("names a sessions folder it cannot read in a line", () => {
+      const data = folder();
+      // A plain file where the sessions folder should be, so reading it fails; no permission is changed.
+      const sessions = path.join(data, "sessions");
+      writeFileSync(sessions, "not a folder");
+      const lines = sweep(data, 30, now);
+      expect(lines).toHaveLength(1);
+      const quoted = sessions.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+      expect(lines[0]).toMatch(new RegExp(`^An old session could not be deleted: ${quoted} \\(ENOTDIR: .+\\)\\.$`));
     });
 
     it("finds nothing to do in a data folder without sessions", () => {
