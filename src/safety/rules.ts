@@ -695,13 +695,14 @@ function rewritesHistory(args: string[]): boolean {
 }
 
 // curl sending a file: -T or --upload-file, -F or --form, -K or --config (whose file can hold any of these), or -d,
-// --data..., --json or -H and --header with a value starting with @ (a file's contents); --data-urlencode, --variable and
-// --url-query with @ before any = (name@file); and the --expand-* options, whose {{variables}} can hold a file's contents
-// (choice 50). --form-string sends no file (choice 51). In a bundle of short options, the first that takes a value takes
-// the rest of the word, or the next word, as its value (choice 51: -uFred:pw is -u with Fred:pw).
+// --data..., --json, -H and --header or --proxy-header with a value starting with @ (a file's contents);
+// --data-urlencode, --variable and --url-query with @ before any = (name@file); and the --expand-* options, whose
+// {{variables}} can hold a file's contents (choice 50). --form-string sends no file (choice 51). In a bundle of short
+// options, the first that takes a value takes the rest of the word, or the next word, as its value (choice 51: -uFred:pw
+// is -u with Fred:pw).
 const CURL_LONG = [
-  "upload-file", "form", "form-string", "config", "json", "header", "data", "data-ascii", "data-binary", "data-raw", "data-urlencode",
-  "variable", "url", "url-query",
+  "upload-file", "form", "form-string", "config", "json", "header", "proxy-header", "data", "data-ascii", "data-binary", "data-raw",
+  "data-urlencode", "variable", "url", "url-query",
 ];
 // curl's short options that take a value (`curl --help all`).
 const CURL_VALUES = "AbcCdDeEFHKmoPQrtTuUwxXyYz";

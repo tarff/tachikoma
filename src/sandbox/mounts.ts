@@ -98,7 +98,8 @@ export function liveMounts(
   ];
   // Git's objects are left out: a clone from a local path hard-links them, and they cannot make git run anything.
   const gitFolders = new Set([path.join(root, ".git"), ...git.gitDirs].map(realPath));
-  const objects = realPath(path.join(root, "objects"));
+  // By its own path, not its real one: a top-level `objects` that is a link to `.git` must not leave `.git` out.
+  const objects = path.join(real, "objects");
   for (const p of [...kept.map(([, host]) => host).filter((host) => host !== objects), path.join(real, ".tachikoma")]) {
     const linked = hardLinked(p, gitFolders, false);
     if (linked !== undefined) return { refused: linkRefused(path.relative(real, linked).split(path.sep).join("/")) };
@@ -140,16 +141,23 @@ export function ignoresCase(folder: string): boolean {
   return other !== undefined && other.dev === same.dev && other.ino === same.ino;
 }
 
-// The first file at or under `p` with another name (a hard link), links and junctions not followed, skipping a folder
-// named `objects` inside a git folder. One that cannot be read is named too, as nothing in it can be checked; one gone
-// is skipped, as elsewhere here.
+// The first file at or under `p` with another name (a hard link), links and junctions not followed, skipping a git
+// folder's `objects` and `lfs/objects`: a folder of that name elsewhere (a branch folder, a worktree's) is checked. One
+// that cannot be read is named too, as nothing in it can be checked; one gone is skipped, as elsewhere here.
 function hardLinked(p: string, gitFolders: Set<string | undefined>, inGit: boolean): string | undefined {
   try {
     const st = lstatSync(p, { throwIfNoEntry: false });
     if (st?.isFile()) return st.nlink > 1 ? p : undefined;
-    if (!st?.isDirectory() || (inGit && path.basename(p) === "objects")) return undefined;
+    if (!st?.isDirectory() || (inGit && objectStore(p))) return undefined;
     const inside = inGit || gitFolders.has(p);
-    for (const name of readdirSync(p)) {
+    let names: string[];
+    try {
+      names = readdirSync(p);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw err;
+    }
+    for (const name of names) {
       const linked = hardLinked(path.join(p, name), gitFolders, inside);
       if (linked !== undefined) return linked;
     }
@@ -157,6 +165,14 @@ function hardLinked(p: string, gitFolders: Set<string | undefined>, inGit: boole
   } catch {
     return p;
   }
+}
+
+// Whether a folder is a git folder's object store: `objects` beside a HEAD file, or `lfs/objects` below one.
+function objectStore(p: string): boolean {
+  if (path.basename(p) !== "objects") return false;
+  const parent = path.dirname(p);
+  const git = path.basename(parent) === "lfs" ? path.dirname(parent) : parent;
+  return statSync(path.join(git, "HEAD"), { throwIfNoEntry: false })?.isFile() === true;
 }
 
 // A path's real place, or undefined when it does not exist. `native` gives the long name for a short (8.3) one.

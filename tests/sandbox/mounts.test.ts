@@ -217,13 +217,19 @@ describe("liveMounts", () => {
   });
 
   it("takes hard-linked git objects, as a clone from a local path makes them (choice 124)", () => {
-    const w = world([".git/objects/ab/cdef", ".git/lfs/objects/12/3456", ".git/index"]);
+    const w = world([".git/HEAD", ".git/objects/ab/cdef", ".git/lfs/objects/12/3456", ".git/index"]);
     linkSync(w.at(".git/objects/ab/cdef"), w.at("copy-1"));
     linkSync(w.at(".git/lfs/objects/12/3456"), w.at("copy-2"));
     expect(live(w.root, w.git)).toEqual({ mounts: [readOnly(w.at(".git"), "/work/.git"), HIDDEN], env: SAFE });
     // An index beside them is still checked.
     linkSync(w.at(".git/index"), w.at("copy-3"));
     expect(live(w.root, w.git)).toEqual({ refused: linkRefused(".git/index") });
+  });
+
+  it("checks a folder named objects that is not a git folder's object store (choice 124)", () => {
+    const w = world([".git/HEAD", ".git/worktrees/objects/commondir"]);
+    linkSync(w.at(".git/worktrees/objects/commondir"), w.at("copy-1"));
+    expect(live(w.root, w.git)).toEqual({ refused: linkRefused(".git/worktrees/objects/commondir") });
   });
 
   it("refuses a file in .tachikoma with a hard link (choice 124)", () => {
