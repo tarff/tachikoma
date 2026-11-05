@@ -710,9 +710,12 @@ function uploads(args: string[]): boolean {
     const next = args[k + 1] ?? "";
     if (a.startsWith("--expand-")) return true;
     const option = long(a, CURL_LONG);
-    if (option === "data-urlencode" || option === "variable" || option === "url-query") return /^[^=]*@/.test(next);
+    // A long option's value is the next word, or glued on after = (--data-binary=@a.bin).
+    const eq = a.indexOf("=");
+    const given = eq < 0 ? next : a.slice(eq + 1);
+    if (option === "data-urlencode" || option === "variable" || option === "url-query") return /^[^=]*@/.test(given);
     if (option === "url" || option === "form-string") return false;
-    if (option) return ["upload-file", "form", "config"].includes(option) || next.startsWith("@");
+    if (option) return ["upload-file", "form", "config"].includes(option) || given.startsWith("@");
     if (!/^-[^-]/.test(a)) return false;
     const j = [...a].findIndex((ch, i) => i > 0 && CURL_VALUES.includes(ch));
     if (j < 0) return false;
