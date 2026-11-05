@@ -94,9 +94,10 @@ Claude Code").
 - Not brought back: the to-do list, and subagents that had not finished, each of which gets one
   line in the conversation saying so.
 - A tool call the old session never answered (a crash during a turn) is never run again. It may
-  have run, in full or in part, before its result could be saved, so its result says the outcome
-  is unknown and tells the model to check before trying it again (wording to be approved in the
-  plan). The same result goes to any call left without one after a bad line is skipped (see "When
+  have run, in full or in part, before its result could be saved, so its result is (approved as
+  worded): "Outcome unknown: the session ended while this was running, or before its result was
+  saved. It may have run in full or in part. Check what it would have changed before running it
+  again." The same result goes to any call left without one after a bad line is skipped (see "When
   something goes wrong"), and a result whose call is missing is dropped, so every call still has
   exactly one result.
 
