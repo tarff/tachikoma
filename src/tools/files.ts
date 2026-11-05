@@ -270,8 +270,8 @@ export function resolveIn(
 // In the box `real` is a /work path, so the box says (`linked`, Task 16) and the host's disk is not asked.
 function protectedOf(ctx: ToolContext, real: string | undefined, linked: boolean | undefined): string | undefined {
   if (real === undefined) return undefined;
-  const { hooks, files } = ctx.gate.protection;
-  const part = protectedPart(ctx.root, real, hooks, files);
+  const { hooks, files, ignoresCase } = ctx.gate.protection;
+  const part = protectedPart(ctx.root, real, hooks, files, process.platform, ignoresCase);
   if (part !== undefined) return part;
   const file = linked === undefined ? statSync(real, { bigint: true, throwIfNoEntry: false }) : undefined;
   return (linked ?? (file?.isFile() && file.nlink >= 2n)) ? "a file with another name" : undefined;

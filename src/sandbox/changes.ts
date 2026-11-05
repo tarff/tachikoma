@@ -42,7 +42,7 @@ export async function changes(manifest: Manifest, work: string): Promise<Changes
   const walk = async (rel: string): Promise<void> => {
     for (const d of await readdir(at(work, rel), { withFileTypes: true })) {
       const r = rel ? `${rel}/${d.name}` : d.name;
-      if (reserved(d.name)) {
+      if (reserved(d.name, manifest.ignoresCase)) {
         leftOut.push({ path: r, why: NEVER_APPLIED });
         continue;
       }

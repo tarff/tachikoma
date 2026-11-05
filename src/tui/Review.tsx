@@ -172,7 +172,8 @@ export function Review({
           ...found.changes.map((change): Item => {
             // A change to a path the file tools protect, read as protected.ts reads a path in the project, starts as
             // skip, marked (choice 115); the user can still keep it.
-            const marked = protectedPart(manifest.root, path.join(manifest.root, ...change.path.split("/")), protection.hooks, protection.files) !== undefined;
+            const place = path.join(manifest.root, ...change.path.split("/"));
+            const marked = protectedPart(manifest.root, place, protection.hooks, protection.files, process.platform, manifest.ignoresCase) !== undefined;
             return { change, keep: "binary" in change ? !marked : null, marked };
           }),
         ];

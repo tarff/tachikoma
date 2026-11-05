@@ -28,10 +28,12 @@ export interface Action {
 }
 
 // The git settings' paths the protected paths add, read once at launch (release 7 plan, Task 8; choices 57 and 59):
-// `hooks` the hooks folders and git folders, `files` the settings files (safety/protected.ts, protectedPart).
+// `hooks` the hooks folders and git folders, `files` the settings files (safety/protected.ts, protectedPart). `ignoresCase`:
+// the project's folder ignores letter case, read at launch too (cli.tsx), so protected paths ignore it on any system.
 export interface Protection {
   hooks: string[];
   files: string[];
+  ignoresCase?: boolean;
 }
 
 // In auto, true is what its fast path does not pass, a read or a write outside the project and a shell command, which the

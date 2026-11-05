@@ -179,6 +179,14 @@ describe("changes", () => {
     expect(leftOut.map((l) => l.path)).toEqual(folded ? ["sub/.GIT"] : []);
   });
 
+  it("skips it on any system when the snapshot found the project's folder ignores letter case, as WSL's /mnt/c does", async () => {
+    const w = await copied({ "a.txt": "a\n" });
+    w.write("sub/.GIT/config", "spelt in capitals\n");
+    const { changes: found, leftOut } = await changes({ ...w.manifest, ignoresCase: true }, w.work);
+    expect(found).toEqual([]);
+    expect(leftOut).toEqual([{ path: "sub/.GIT", why: "Tachikoma's own and git's folders are never applied" }]);
+  });
+
   it("lists an entry that is not a file, folder or link, and counts a file replaced by one as deleted", async (ctx) => {
     if (windows) return ctx.skip("Node on Windows makes no socket in a folder; a box's own pipe is tested in real Docker below");
     // A socket's path must fit in 104 bytes on macOS (sun_path, <sys/un.h>), whose temporary folder alone is about 57,

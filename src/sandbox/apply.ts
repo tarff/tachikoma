@@ -53,8 +53,9 @@ const KEPT = ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"];
 // permission bits), or anything else.
 type Now = { kind: "none" } | { kind: "file"; sha256: string; exec: boolean; mode: number } | { kind: "other" };
 
-// One change on its way in: the project's real place, the change's path, and where it is logged.
-type Job = { root: string; rel: string; session: string; log: string; opts: ApplyOptions };
+// One change on its way in: the project's real place, the change's path, where it is logged, and whether the project's
+// folder ignores letter case (the manifest's).
+type Job = { root: string; rel: string; session: string; log: string; opts: ApplyOptions; folds: boolean };
 
 // Applies `c` to the real project, or says why not. With `merge`, a conflict is merged with git (choice 25). A failure
 // to read or write, such as a full disk, rejects; what was logged then tells appliedSoFar what happened.
@@ -62,20 +63,21 @@ export async function applyChange(c: Change, ctx: ApplyContext, merge = false, o
   const refused = (why: string): Outcome => ({ path: c.path, result: "refused", why });
   const conflict = (why: string): Outcome => ({ path: c.path, result: "conflict", why });
   // Compared as the snapshot and the changes compare them, so another spelling that reaches `.git` is refused too.
-  if (c.path.split("/").some(reserved)) return refused(NEVER_APPLIED);
+  const folds = ctx.manifest.ignoresCase ?? false;
+  if (c.path.split("/").some((part) => reserved(part, folds))) return refused(NEVER_APPLIED);
   // Links and type changes, the kinds with no `binary`, are shown only (choice 26). Told by the field, as the union is
   // not narrowed by `kind` here (checked with this repo's TypeScript).
   if (!("binary" in c)) return refused(BY_HAND);
   if (c.ignored) return refused(IGNORED);
   const root = realpathSync.native(ctx.root);
-  const at = await placeOf(root, c.path, false);
+  const at = await placeOf(root, c.path, false, folds);
   if ("why" in at) return refused(at.why);
   const now: Now = at.blocked ? { kind: "other" } : await stateOf(at.file);
   const was = Object.hasOwn(ctx.manifest.entries, c.path) ? ctx.manifest.entries[c.path] : undefined;
   const same =
     c.kind === "added" ? now.kind === "none" : now.kind === "file" && was?.type === "file" && now.sha256 === was.sha256 && now.exec === was.exec;
   const from = path.join(ctx.work, ...c.path.split("/"));
-  const job: Job = { root, rel: c.path, session: ctx.session, log: path.join(path.dirname(ctx.work), "applied.jsonl"), opts };
+  const job: Job = { root, rel: c.path, session: ctx.session, log: path.join(path.dirname(ctx.work), "applied.jsonl"), opts, folds };
   if (same) return replace(job, now, c.kind === "deleted" ? undefined : { file: await boxFile(from), mode: modeFor(now, c.execAfter ?? false) });
   if (c.binary) return conflict(BINARY);
   if (!merge) return conflict(CHANGED_SINCE);
@@ -114,7 +116,7 @@ export async function applyChange(c: Change, ctx: ApplyContext, merge = false, o
     // written over or through. The markers have the real file's permission bits, as they hold its text.
     const markers = `${c.path}.tachikoma-merge`;
     if (await lstat(`${at.file}.tachikoma-merge`).catch(missing)) return conflict(markersTaken(markers));
-    const place = await placeOf(root, markers, false);
+    const place = await placeOf(root, markers, false, folds);
     if ("why" in place) return refused(place.why);
     if (!place.file) return conflict(CHANGED_SINCE);
     if (!(await copyTo(yours, place.file, windows ? undefined : now.mode).catch(taken))) return conflict(markersTaken(markers));
@@ -134,7 +136,7 @@ export async function applyChange(c: Change, ctx: ApplyContext, merge = false, o
 // written, nothing is replaced. A change that stops short of the swap removes the backup it made itself, never one an
 // earlier apply made, so a merge of the file later is not refused over it.
 async function replace(job: Job, now: Now, source: { file: string; mode: number | undefined } | undefined): Promise<Outcome> {
-  const { root, rel, log, opts } = job;
+  const { root, rel, log, opts, folds } = job;
   const before = hashOf(now)!;
   await opts.step?.("checked");
   let made: string | undefined;
@@ -150,7 +152,7 @@ async function replace(job: Job, now: Now, source: { file: string; mode: number 
   const after = source ? await hashFile(source.file) : "";
   await logRow(log, { path: rel, state: "pending", before, after });
   // An added file's folders are made now, each checked as it is.
-  const at = await placeOf(root, rel, source !== undefined);
+  const at = await placeOf(root, rel, source !== undefined, folds);
   if ("why" in at) return stopped("refused", at.why);
   if (!at.file) return stopped("conflict", CHANGED_SINCE);
   let temp: string | undefined;
@@ -161,7 +163,7 @@ async function replace(job: Job, now: Now, source: { file: string; mode: number 
       if ((await copyTo(source.file, temp, source.mode)) !== after) return await stopped("conflict", CHANGED_SINCE);
     }
     await opts.step?.("written");
-    const again = await placeOf(root, rel, false);
+    const again = await placeOf(root, rel, false, folds);
     if ("why" in again) return await stopped("refused", again.why);
     if (again.blocked || hashOf(await stateOf(again.file)) !== before) return await stopped("conflict", CHANGED_SINCE);
     await opts.step?.("rename");
@@ -184,7 +186,7 @@ async function replace(job: Job, now: Now, source: { file: string; mode: number 
 // `made`: the backup, when this call made it.
 async function backUp(job: Job, before: string, mode: number): Promise<{ result: "refused" | "conflict"; why: string } | { made?: string }> {
   const rel = `.tachikoma/backups/${job.session}/${job.rel}`;
-  const at = await placeOf(job.root, rel, true, true);
+  const at = await placeOf(job.root, rel, true, job.folds, true);
   if ("why" in at) return { result: "refused", why: at.why };
   const real = path.join(job.root, ...job.rel.split("/"));
   const file = at.file!; // with `make`, every folder on the way is there
@@ -204,8 +206,9 @@ async function backUp(job: Job, before: string, mode: number): Promise<{ result:
 // name (a short name such as GIT~1 on Windows). An existing file there must be a plain file with one name. With `make`,
 // missing folders are made, one at a time, each read again once made. Where a folder is missing, the deepest one there
 // is checked first, so a missing folder is never made in the wrong place, nor reported as simply missing. `blocked`: a
-// folder on the way is a file, so nothing can be there; no `file`: a folder on the way is missing.
-async function placeOf(root: string, rel: string, make: boolean, ours = false): Promise<{ why: string } | { file?: string; blocked?: boolean }> {
+// folder on the way is a file, so nothing can be there; no `file`: a folder on the way is missing. `folds`: the
+// manifest's ignoresCase.
+async function placeOf(root: string, rel: string, make: boolean, folds: boolean, ours = false): Promise<{ why: string } | { file?: string; blocked?: boolean }> {
   const parts = rel.split("/");
   if (parts.some((p) => p === "" || p === "." || p === ".." || p.includes(path.sep))) return { why: leadsOutside(rel) };
   // The real place of a folder on the way, or why it is refused.
@@ -213,7 +216,7 @@ async function placeOf(root: string, rel: string, make: boolean, ours = false): 
     const real = await realpath(folder);
     const fromRoot = path.relative(root, real);
     if (leaves(fromRoot)) return { why: leadsOutside(rel) };
-    if (!ours && fromRoot.split(path.sep).some(reserved)) return { why: NEVER_APPLIED };
+    if (!ours && fromRoot.split(path.sep).some((part) => reserved(part, folds))) return { why: NEVER_APPLIED };
     return { real };
   };
   let folder = root;

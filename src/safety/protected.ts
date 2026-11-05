@@ -1,9 +1,10 @@
 // The protected paths (release 7 design, "Protected paths"; plan, Task 6 and choices 10, 57 and 59): Claude Code's
 // list, plus .tachikoma. Other programs run these or read them as settings, so a write to one asks, or is refused in
 // `never` (Task 8). A name counts at any depth in the project: a folder's as any one part of the path, a file's as its
-// last part (choice 10), each part as the file system reads it: ignoring case on Windows and macOS, and on Windows the
-// dots and spaces at a name's end and a ":stream" after it (choice 60). So `web/.husky/pre-commit`, `tools/.npmrc` and,
-// on Windows, `tools/.npmrc.` are protected. A folder's name in the project's own path counts too (choice 62).
+// last part (choice 10), each part as the file system reads it: ignoring case on Windows and macOS, and on a project
+// folder that ignores it elsewhere (WSL's /mnt/c, say), and on Windows the dots and spaces at a name's end and a
+// ":stream" after it (choice 60). So `web/.husky/pre-commit`, `tools/.npmrc` and, on Windows, `tools/.npmrc.` are
+// protected. A folder's name in the project's own path counts too (choice 62).
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
@@ -41,22 +42,24 @@ export const PROTECTED_FILES: readonly string[] = [
 // (choice 59): a path in one gives the folder. `files` are Task 5's git settings files (choice 57): a path that is one
 // gives that file. Every comparison is of the path's root (a drive, a share or /), ignoring case where names do, and
 // then part by part, each part as the file system reads it (choice 60). `platform` is the system's, which a test gives
-// as another's, with that system's path rules, as inData does.
+// as another's, with that system's path rules, as inData does. `ignoresCase`: the project's folder ignores letter case
+// though the system does not (mounts.ts, ignoresCase, read once at launch), so case is ignored as on macOS.
 export function protectedPart(
   root: string,
   real: string,
   hooks: string[],
   files: string[],
   platform: NodeJS.Platform = process.platform,
+  ignoresCase = false,
 ): string | undefined {
   const { join, parse, resolve, sep } = platform === "win32" ? path.win32 : path.posix;
-  const same = (a: string, b: string) => fold(a, platform) === fold(b, platform);
+  const same = (a: string, b: string) => fold(a, platform, ignoresCase) === fold(b, platform, ignoresCase);
   // A path's root, as spelled (`spelt`) and as compared (`top`), and its parts after it. The root is not folded as a
   // part is, as a drive's `C:` would become `c`, a server's name in a network path.
   const split = (p: string): Split => {
     const whole = resolve(p);
     const spelt = parse(whole).root;
-    const top = platform === "win32" || platform === "darwin" ? spelt.toLowerCase() : spelt;
+    const top = platform === "win32" || platform === "darwin" || ignoresCase ? spelt.toLowerCase() : spelt;
     return { spelt, top, parts: whole.slice(spelt.length).split(sep).filter(Boolean) };
   };
   // Whether `p` is `folder`, or inside it; and whether it is `file`.
@@ -75,7 +78,7 @@ export function protectedPart(
     }
   }
   const last = at.parts.length > base.parts.length ? at.parts.at(-1) : undefined;
-  if (last !== undefined && PROTECTED_FILES.some((name) => isFile(last, name, platform))) return last;
+  if (last !== undefined && PROTECTED_FILES.some((name) => isFile(last, name, platform, ignoresCase))) return last;
   return hooks.find((folder) => under(split(folder), at)) ?? files.find((file) => is(split(file), at));
 }
 
@@ -83,18 +86,19 @@ type Split = { spelt: string; top: string; parts: string[] };
 
 // Whether a path's last part is a protected file's name. A name ending in `.*` is matched by its start and a dot, after
 // which anything may follow.
-function isFile(part: string, name: string, platform: NodeJS.Platform): boolean {
-  if (name.endsWith(".*")) return fold(part, platform).startsWith(`${fold(name.slice(0, -2), platform)}.`);
-  return fold(part, platform) === fold(name, platform);
+function isFile(part: string, name: string, platform: NodeJS.Platform, ignoresCase: boolean): boolean {
+  if (name.endsWith(".*")) return fold(part, platform, ignoresCase).startsWith(`${fold(name.slice(0, -2), platform, ignoresCase)}.`);
+  return fold(part, platform, ignoresCase) === fold(name, platform, ignoresCase);
 }
 
 // A path part as the file system reads it (choice 60). Windows drops the dots and spaces at a name's end and a
 // ":stream" after it, so `.npmrc.` and `.npmrc:x` write `.npmrc`, and ignores case; macOS ignores case too (as
-// settingsName and sameIgnoringCase in tools/files.ts do; a copy, since that file will import this one in Task 8).
-// Copy mode reads `.git` and `.tachikoma` with it too (sandbox/snapshot.ts), so what it leaves out is what apply refuses.
-export function fold(part: string, platform: NodeJS.Platform): string {
+// settingsName and sameIgnoringCase in tools/files.ts do; a copy, since that file will import this one in Task 8), and
+// so does a folder elsewhere that ignores it (`ignoresCase`). Copy mode reads `.git` and `.tachikoma` with it too
+// (sandbox/snapshot.ts), so what it leaves out is what apply refuses.
+export function fold(part: string, platform: NodeJS.Platform, ignoresCase = false): string {
   if (platform === "win32") return part.replace(/:.*/s, "").replace(/[. ]+$/, "").toLowerCase();
-  return platform === "darwin" ? part.toLowerCase() : part;
+  return platform === "darwin" || ignoresCase ? part.toLowerCase() : part;
 }
 
 // A path's real place, or undefined when it cannot be told; `native` gives the long name for a short (8.3) one.

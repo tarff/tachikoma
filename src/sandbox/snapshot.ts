@@ -12,14 +12,17 @@ import { privateDir, writePrivate } from "../auth/private.js";
 import { dataDir } from "../core/datadir.js";
 import { fold } from "../safety/protected.js";
 import { leaves } from "../tools/files.js";
+import { ignoresCase } from "./mounts.js";
 
 // Each path is the project's own, its parts joined by `/` on every system. A link's `target` is the one stored in the
 // project, as written there, to show; `inCopy` is the one work/ holds, read back after it was made, which the changes
 // compare work/ against (Task 18), so a rewritten target never shows as a change (main design, "Links"). For a link kept
 // as written the two are the same. A file's `size` and `mtimeMs` are work/'s copy's, read just after it was made: the
 // changes compare a git-ignored file by them instead of its hash (choice 112). `pid` is the session's process, so `tachi
-// review` can tell whether the session that runs the copy's box has ended (Task 21).
-export interface Manifest { session: string; pid: number; root: string; at: string; entries: Record<string, ManifestEntry>; leftOut: { path: string; why: string }[] }
+// review` can tell whether the session that runs the copy's box has ended (Task 21). `ignoresCase`: the project's folder
+// ignores letter case (mounts.ts, ignoresCase), read as the copy is made, so the copy, the changes, apply and the
+// review's protected files ignore it on any system.
+export interface Manifest { session: string; pid: number; root: string; at: string; entries: Record<string, ManifestEntry>; leftOut: { path: string; why: string }[]; ignoresCase?: boolean }
 export type ManifestEntry =
   | { type: "file"; sha256: string; exec: boolean; size: number; mtimeMs: number }
   | { type: "folder" }
@@ -31,11 +34,11 @@ export class SnapshotRefused extends Error {}
 
 const windows = process.platform === "win32";
 
-// Compared as protected.ts reads a name (letter case folded on Windows and macOS, Windows' trailing dots and spaces
-// dropped), so another spelling of `.git` that reaches it is left out too (choice 104's measurement), as Task 19 refuses
-// it.
+// Compared as protected.ts reads a name (letter case folded on Windows and macOS, and where the manifest says the folder
+// ignores it; Windows' trailing dots and spaces dropped), so another spelling of `.git` that reaches it is left out too
+// (choice 104's measurement), as Task 19 refuses it.
 const RESERVED = [".git", ".tachikoma"];
-export const reserved = (name: string) => RESERVED.includes(fold(name, process.platform));
+export const reserved = (name: string, ignoresCase = false) => RESERVED.includes(fold(name, process.platform, ignoresCase));
 
 const LEADS_OUTSIDE = "a link that leads outside the project";
 const LEADS_NOWHERE = "a link that leads nowhere";
@@ -49,11 +52,12 @@ export const PENDING = "manifest.pending.json";
 // Copies `root` into `<data>/copies/<session>/`, and writes PENDING, its manifest, last. `copied` is a test's, called after
 // each file is copied and before it is hashed again. `signal` is checked at each entry, so a Ctrl-C during a long copy
 // stops it with the signal's error, leaving what was made for the launch to remove (clilib.ts, dropOnExit).
+// `ignoresCase` is the letter-case check, which tests replace.
 export async function snapshot(
   root: string,
   session: string,
   data = dataDir(),
-  opts: { copied?: (path: string) => void | Promise<void>; signal?: AbortSignal } = {},
+  opts: { copied?: (path: string) => void | Promise<void>; signal?: AbortSignal; ignoresCase?: (folder: string) => boolean } = {},
 ): Promise<{ manifest: Manifest; base: string; work: string }> {
   const real = realpathSync.native(root);
   const copies = path.join(data, "copies", session);
@@ -65,13 +69,14 @@ export async function snapshot(
   await mkdir(work);
   // No prototype, so a file named `__proto__` is an entry like any other, not the object's prototype.
   const manifest: Manifest = { session, pid: process.pid, root: real, at: new Date().toISOString(), entries: Object.create(null), leftOut: [] };
+  manifest.ignoresCase = (opts.ignoresCase ?? ignoresCase)(root);
   const links: string[] = [];
 
   const walk = async (rel: string): Promise<void> => {
     const from = path.join(real, ...rel.split("/"));
     for (const d of await readdir(from, { withFileTypes: true })) {
       opts.signal?.throwIfAborted();
-      if (reserved(d.name)) continue;
+      if (reserved(d.name, manifest.ignoresCase)) continue;
       const r = rel ? `${rel}/${d.name}` : d.name;
       const src = path.join(from, d.name);
       const to = (copy: string) => path.join(copy, ...r.split("/"));

@@ -658,4 +658,12 @@ describe("protected writes", () => {
     const child = ctx.gate.for({ name: "t2", signal: new AbortController().signal, stop: () => {} });
     await expect(writeFileTool.run({ path: "team.gitconfig", content: "x" }, { ...ctx, gate: child })).rejects.toThrow(notAllowed(config, config));
   });
+
+  it("ignore letter case on any system when the gate holds that the project's folder does, as WSL's /mnt/c does", async () => {
+    const ctx = await tempContext("never");
+    ctx.gate.protection = { hooks: [], files: [], ignoresCase: true };
+    const planted = path.join(ctx.root, ".GIT", "hooks", "x");
+    await expect(writeFileTool.run({ path: ".GIT/hooks/x", content: "x" }, ctx)).rejects.toThrow(notAllowed(planted, ".GIT"));
+    expect(readdirSync(ctx.root)).toEqual([]);
+  });
 });

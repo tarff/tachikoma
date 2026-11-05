@@ -264,7 +264,8 @@ The list is Claude Code's, plus Tachikoma's own `.tachikoma`:
   among them.
 
 A name counts at any depth (`web/.husky/pre-commit`, `tools/.npmrc`), ignoring letter case on
-Windows and macOS, and a path counts by where it really leads, after links. A write to an existing
+Windows and macOS and on a folder that ignores it elsewhere, such as WSL's `/mnt/c`; a path counts
+by where it really leads, after links. A write to an existing
 file that has another name (a hard link) counts too, as it could be a second name for a protected
 file. Git's settings are read at launch with `git config --file`, which runs nothing; without git on
 your machine, only the fixed list applies.
@@ -427,7 +428,8 @@ This is why `never` is refused in live link.
 
 - **The copy:** at launch, `Copying <folder> for the sandbox...`, then everything in the project is
   copied into Tachikoma's data folder, files git ignores included, except every `.git` and
-  `.tachikoma`, at any depth. A large ignored folder such as `node_modules` makes this slow:
+  `.tachikoma`, at any depth, in any letter case on Windows and macOS and on a folder that ignores
+  it elsewhere. A large ignored folder such as `node_modules` makes this slow:
   Tachikoma's own folder, 14,681 files and 174 MB, took 33 seconds. Links inside the project are
   made again in the copy; links leading outside it are left out and listed. The launch line then
   says `Sandbox: copy of <folder> (<n> files, <s> s), network …, limits …. Your folder is not

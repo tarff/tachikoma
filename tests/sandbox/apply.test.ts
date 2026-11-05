@@ -302,6 +302,18 @@ describe("applyChange", () => {
     expect(listing(w.root)).toEqual(["a.txt"]);
   });
 
+  it("refuses another spelling of .git on any system when the snapshot found the project's folder ignores letter case", async () => {
+    const w = world({ "a.txt": "a\n" });
+    w.ctx.manifest.ignoresCase = true; // as on WSL's /mnt/c
+    for (const rel of [".GIT/hooks/pre-commit", "sub/.Git/config"]) {
+      const c: Change = { kind: "added", path: rel, binary: false, execAfter: false, ignored: false };
+      w.box(c.path, "made-up\n");
+      expect(await applyChange(c, w.ctx)).toEqual({ path: c.path, result: "refused", why: NEVER_APPLIED });
+    }
+    expect(listing(w.root)).toEqual(["a.txt"]);
+    expect(w.log()).toEqual([]);
+  });
+
   it("refuses links and paths whose type changed: they are applied by hand", async () => {
     const w = world({ "a.txt": "a\n" });
     const handed: Change[] = [

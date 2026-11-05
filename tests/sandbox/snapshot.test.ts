@@ -115,6 +115,17 @@ describe("snapshot", () => {
     }
   });
 
+  it("leaves out another spelling of .git on any system where the project's folder ignores letter case, and records it", async () => {
+    const w = world({ "a.txt": "kept\n", ".GIT/hooks/pre-commit": "made-up\n", "sub/.Tachikoma/x": "made-up\n" });
+    const asked: string[] = [];
+    const ignoresCase = (folder: string) => (asked.push(folder), true); // as WSL's /mnt/c does
+    const { manifest, work } = await snapshot(w.root, "s1", w.data, { ignoresCase });
+    expect(asked).toEqual([w.root]);
+    expect(manifest.ignoresCase).toBe(true);
+    expect(Object.keys(manifest.entries).sort()).toEqual(["a.txt", "sub"]);
+    expect(readdirSync(work).sort()).toEqual(["a.txt", "sub"]);
+  });
+
   it("records the size and modified time of work/'s copy, not the project's file", async () => {
     const w = world({ "a.txt": "five\n" });
     // A day before the snapshot, so the copy's own time, taken as it is made, differs.

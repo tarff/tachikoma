@@ -53,6 +53,7 @@ import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
 import { boxCheck, dropIfNothing, reviewCommand } from "./sandbox/copies.js";
 import { sandboxCommand } from "./sandbox/image.js";
+import { ignoresCase } from "./sandbox/mounts.js";
 import { copyLock } from "./sandbox/snapshot.js";
 import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
@@ -387,6 +388,8 @@ if (sandbox !== "off") {
     gitLine = gitUnread(err);
     console.error(gitLine);
   }
+  // A folder that ignores letter case where the system does not, such as WSL's /mnt/c, has protected paths ignore it too.
+  protection.ignoresCase = ignoresCase(root);
 }
 // The user's own rules (release 7 plan, Task 4). A kind switched off is said at each launch (checkOffLine), and again in
 // full screen (App.tsx).

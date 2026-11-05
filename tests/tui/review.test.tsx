@@ -560,6 +560,15 @@ describe("Review's protected files", SLOW, () => {
       "p\n",
     ]);
   });
+
+  it("marks another spelling of a protected folder on any system when the snapshot found the project's folder ignores letter case", async () => {
+    const w = world({ "web/.HUSKY/pre-commit": "h\n" });
+    w.box("web/.HUSKY/pre-commit", "from the box\n");
+    w.manifest.ignoresCase = true; // as on WSL's /mnt/c
+    const { app } = open(w);
+    await until(app, TOP);
+    expect(rowWith(app, "pre-commit")).toMatch(/^changed +web\/\.HUSKY\/pre-commit +skip \(protected\)$/);
+  });
 });
 
 describe("Review's later and discard", SLOW, () => {

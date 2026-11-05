@@ -74,6 +74,20 @@ describe("protectedPart", () => {
     }
   });
 
+  it("ignores case on Linux too where the project's folder ignores it, as WSL's /mnt/c does", () => {
+    const [platform, rules, top] = SYSTEMS[2]!;
+    const hooks = rules.join(top, "tools", "hooks");
+    const file = rules.join(top, "shared", "team.gitconfig");
+    expect(protectedPart(top, rules.join(top, ".GIT", "hooks", "x"), [], [], platform, true)).toBe(".GIT");
+    expect(protectedPart(top, rules.join(top, "TOOLS", ".NPMRC"), [], [], platform, true)).toBe(".NPMRC");
+    expect(protectedPart(top, rules.join(top, "LEFTHOOK-LOCAL.YML"), [], [], platform, true)).toBe("LEFTHOOK-LOCAL.YML");
+    expect(protectedPart(top, rules.join(top, "TOOLS", "Hooks", "x"), [hooks], [], platform, true)).toBe(hooks);
+    expect(protectedPart(top, rules.join(top, "Shared", "TEAM.gitconfig"), [], [file], platform, true)).toBe(file);
+    expect(protectedPart(top, rules.join(top.toUpperCase(), ".npmrc"), [], [], platform, true)).toBe(".npmrc");
+    // Without it, Linux keeps exact case.
+    expect(protectedPart(top, rules.join(top, ".GIT", "hooks", "x"), [], [], platform, false)).toBeUndefined();
+  });
+
   it("drops a part's trailing dots and spaces and a :stream on Windows only, as Windows does (choice 60)", () => {
     const [, w, top] = SYSTEMS[0]!;
     const hooks = w.join(top, "tools", "hooks");
