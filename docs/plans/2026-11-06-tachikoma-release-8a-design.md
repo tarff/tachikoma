@@ -46,7 +46,8 @@ Sources, read on 2026-11-06:
   (Anthropic's thinking blocks), so a resumed session can carry on with the same provider. Other
   lines record the session's start (project path, lead, Tachikoma's version, whether it is a `-p`
   run, and the system prompt and tool list its requests send), a lead switch, a name, and a
-  shortening, with the system prompt the requests after it send.
+  shortening: one line holding the system prompt the requests after it send and the new history,
+  so a shortening is saved whole or not at all.
 - **Pictures** are saved once each, as a file in `<id>/pictures/`; the transcript's line holds the
   picture's number and file name, not its data (option chosen: "Save them privately").
 - **Subagents** each have their own transcript, `<id>/subagents/t3.jsonl`.

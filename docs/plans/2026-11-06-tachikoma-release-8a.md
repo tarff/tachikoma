@@ -258,7 +258,13 @@ Each is marked in its task. The user approves them with the plan.
    call `session.load(conversation)`. They never make a new `Session`, because the judge
    (cli.tsx:446), the subagents' worker (:455) and the App (App.tsx:53) hold the object. `load`
    replaces the messages, prompts, calls, system prompt, transcript and next picture number in
-   place.
+   place, and:
+   - **empties the shrunk-picture cache** (`#shrunk`, session.ts:43). Its keys are a picture's
+     number and the limits it was shrunk to (providers/pictures.ts:62-66), so a cache kept across
+     conversations would send the last conversation's picture 1 for this one's picture 1;
+   - **takes `prompts` and `calls` from the transcript's whole record** (choice 6), never from
+     the loaded messages, which after a shortening hold only the summary;
+   - **raises the subagents' next id** to follow the saved ones (choice 4).
 2. **The message array is changed in place** (emptied and refilled) by `load` and by shortening,
    so the `readonly` field and a subagent's alias (tasks.ts:193) stay valid. The comment at
    session.ts:31 changes to say the history only grows except when shortened or loaded.
@@ -274,22 +280,46 @@ Each is marked in its task. The user approves them with the plan.
    - `message`: one `Message`.
    - `lead`: a new lead's id.
    - `name`: a name given.
-   - `shortened`: the new system prompt, followed by the new history's messages as ordinary
-     `message` lines.
-   - `subagent`: a subagent's id and its file's name.
+   - `shortened`: the new system prompt and the new history's one message, in the same line.
+   - `subagent`: a subagent's id and its file's name, written before the subagent's first
+     message.
 
-   Reading takes the last `shortened` line as the start of the history, as Claude Code does.
+   Reading takes the last whole `shortened` line as the start of the history, as Claude Code
+   does. A shortening is one line, so it is one append: a crash or a failed write during it leaves
+   a torn line, which is skipped as a bad line, and the history before it is read whole. No
+   shortening is ever half saved.
+
+   **Subagent ids continue from the transcript.** Today they restart at `t1` in each process
+   (tasks.ts:97), so a resumed session's next subagent would add to the old `t1.jsonl`.
+   `Tasks` gains `from(n)`, which raises its next number to at least `n` and never lowers it;
+   ids come from that number, not `all.length`. On a load, `n` is one more than the highest id
+   in the transcript's `subagent` lines or in its `subagents` folder's file names, so a line lost
+   to a crash cannot hand out a used name.
 5. **Pictures** are written once, as `<id>/pictures/<n>.<png|jpg|gif|webp>`, when the message
    holding them is saved. The line holds `{type:"image", id, mediaType, file}` in place of `data`.
    - On load, each picture is read back into a Buffer.
    - A picture file that cannot be read becomes the text `[Image #n: not found]`.
-   - The window's next picture number is the highest loaded plus 1, through a new
-     `Pictures.from(n)`.
+   - **The window's next picture number** is one more than the highest number in the whole
+     transcript (every `message` and `shortened` line, before and after shortenings) or in the
+     `pictures` folder's file names. A shortening leaves earlier pictures out of the loaded
+     history, but their files stay, so the loaded history alone could hand out a used number. A
+     file saved just before a crash, whose line never was, counts too.
+   - `Pictures.from(n)` raises the window's next number to at least `n` and never lowers it, so
+     a picture read before a switch keeps its number, and no number is used twice in a window.
+   - **A picture already saved is not written again.** The transcript keeps the numbers it has
+     saved or read; a `shortened` line holding the prompt in progress refers to that prompt's
+     picture files as they are.
 6. **Bad lines** are skipped and counted. After reading:
    - a call with no result gets the approved "Outcome unknown…" result;
    - a result whose call is missing is dropped;
    - a reply that is the last line, with calls and no results, is the crash case, handled the
-     same way.
+     same way;
+   - **the judge's records** are rebuilt from every `message` line in the file, before and after
+     its shortenings: `prompts` from the user messages' own text (parts without `from`, pictures
+     as markers), and
+     `calls` from every reply's calls in order, as session.ts:88-89 and :133 keep them. A
+     `shortened` line's message is never read as a prompt, so the summary never stands in for
+     what the user typed.
 
 **The store**
 7. **The folder** is `<data>/sessions/<sha256 of the project's real path>/`, the hash
@@ -513,7 +543,7 @@ export type Line =
   | { t: "message"; at: string; message: SavedMessage }
   | { t: "lead"; at: string; lead: string }
   | { t: "name"; at: string; name: string }
-  | { t: "shortened"; at: string; system: string }
+  | { t: "shortened"; at: string; system: string; message: SavedMessage }   // one line: choice 4
   | { t: "subagent"; at: string; id: string; file: string };
 export class Transcript {
   constructor(file: string, pictures: string);      // <id>.jsonl, <id>/pictures
@@ -522,7 +552,9 @@ export class Transcript {
   mend(): void;                                     // a file not ending in "\n" gets one (design, "When something goes wrong")
 }
 export interface Read { start: Extract<Line, { t: "start" }>; messages: Message[]; system: string; lead: string; name?: string;
-  firstPrompt?: string; damaged: number; unfinished: { id: string; description: string }[] }
+  firstPrompt?: string; damaged: number; unfinished: { id: string; description: string }[];
+  prompts: string[]; calls: { name: string; input: unknown }[];   // from the whole file (choice 6)
+  nextPicture: number; nextTask: number }                         // choices 5 and 4
 export function readTranscript(file: string, pictures: string): Read | { problem: string };
 export function wholeLines(file: string): string;   // the text up to the last "\n", for copies (design)
 ```
@@ -536,11 +568,15 @@ export function wholeLines(file: string): string;   // the text up to the last "
 - **Pictures** are written to their own file before their message's line, as `wx` (once). The
   message's image parts are saved as `{type:"image", id, mediaType, file}` (choice 5).
 - **`readTranscript`:**
-  - It starts at the last `shortened` line (choice 4).
+  - Its history starts at the last whole `shortened` line's message (choice 4).
+  - Its `prompts` and `calls` come from every `message` line in the file (choice 6).
+  - `nextPicture` and `nextTask` are the high-water marks of choices 5 and 4.
   - It skips bad lines and counts them.
   - It reads pictures back, with "not found" in place of a missing one.
   - It pairs calls and results (choice 6), with the approved "Outcome unknown" text.
   - It lists subagents whose files show no final answer (choice 4's `subagent` line, and Task 5).
+- **Pictures already saved** (read back, or written earlier by this transcript) are not written
+  again (choice 5).
 - **`mend`** only adds `\n`. It never truncates.
 
 **Tests:**
@@ -551,7 +587,17 @@ export function wholeLines(file: string): string;   // the text up to the last "
   line is counted damaged.
 - A damaged middle line leaves a call without its result; it gets the "Outcome unknown" result,
   and a result without its call is dropped.
-- Reading starts after the last `shortened`.
+- Reading starts at the last `shortened` line's message.
+- **An interrupted shortening,** at each write boundary: a `shortened` line torn halfway (a file
+  cut short by the test) reads back the history before it, whole, with one line damaged; a
+  failed `shortened` write leaves the file reading back the same.
+- `prompts` and `calls` include those before a shortening, and the summary is not among the
+  prompts.
+- `nextPicture` after a shortening that left picture 3 out of the history is 4; a picture file 5
+  with no line makes it 6.
+- `nextTask` follows the highest `subagent` line, and a `subagents` file with no line.
+- A `shortened` line holding a kept prompt's picture writes no picture file again, and reads it
+  back.
 - A file standing where the sessions folder should be makes the write fail and sets `failed`; no
   permissions are changed.
 - `wholeLines` leaves out a torn last line.
@@ -571,15 +617,18 @@ export interface Row { id: string; name?: string; firstPrompt: string; lead: str
 export function listSessions(dir: string, opts: { print: boolean }): Row[];   // choice 9
 export function findSession(dir: string, idOrName: string): Row | Row[] | null;   // an exact id, else every row with that name
 export function openSession(dir: string, id: string): { release: () => void } | null;   // tryLock (choice 8)
-export function copySession(dir: string, id: string): string;           // a new id; whole lines and pictures (design, "Names, branches")
+export function copySession(dir: string, id: string): string;           // a new id; whole lines, pictures, subagents (design, "Names, branches")
 export function sweep(data: string, days: number, now: Date): string[];   // the lines for files it could not delete (choice 10)
 // lock.ts
 export function tryLock(file: string): (() => void) | null;
 ```
 
 **Behaviour:** as choices 7-10.
-- `copySession` copies `wholeLines` and the pictures folder, and gives the copy's `start` line the
-  new id. Subagent files are not copied.
+- `copySession` copies `wholeLines` of the transcript and the whole `<id>/` folder: the pictures,
+  and each subagent's file as its `wholeLines`. It gives the copy's `start` line the new id. A
+  copy without its subagents' files would read every finished subagent as unfinished, and tell the
+  model its answer was lost. The folder is copied link-safely: `readdir` with file types, links
+  left out, never followed.
 - `cleanupPeriodDays` is a whole number from 1, read as `taskCount` reads `maxTasks`. Its message
   is the one in "Lines this plan adds". It is not LIVE: it is read once at launch.
 
@@ -597,7 +646,8 @@ export function tryLock(file: string): (() => void) | null;
   - It succeeds once.
   - A second call in another process (a child `node -e` holding it) gets `null`.
   - A lock file holding a dead pid is taken.
-- `copySession` makes an independent copy whose pictures read back.
+- `copySession` makes an independent copy whose pictures read back, and whose finished subagent
+  reads as finished: no "answer was lost" line.
 - **The sweep:**
   - It deletes a session older than the days, using a set time: `utimesSync` on a test file is a
     time change, not a permission change.
@@ -614,10 +664,11 @@ Commit: `feat: the sessions folder: the list, finding by id or name, the open lo
 
 **Files:**
 - Modify: `src/core/session.ts`, `src/core/tasks.ts`, `src/tui/pictures.ts`.
-- Modify: `tests/core/session.test.ts`, `tests/core/tasks.test.ts`.
+- Modify: `tests/core/session.test.ts`, `tests/core/tasks.test.ts`, `tests/tui/pictures.test.ts`.
 
 ```ts
-export interface Conversation { id: string; messages: Message[]; system: string; transcript?: Transcript; nextPicture: number }
+export interface Conversation { id: string; messages: Message[]; system: string; transcript?: Transcript;
+  prompts: string[]; calls: { name: string; input: unknown }[]; nextPicture: number; nextTask: number }
 // SessionOptions gains: transcript?: Transcript; systemNow?: () => string (choice 3)
 class Session {
   id: string;
@@ -630,12 +681,16 @@ class Session {
 **Behaviour:**
 - `#push` writes the `message` line before it emits `message` (choice 4).
 - `setLead` writes a `lead` line.
-- `load` rebuilds:
-  - `prompts`, from the user messages' own text: parts without `from`, pictures as markers;
-  - `calls`, from every reply's calls in order, as session.ts:88-89 and :133 keep them.
+- **`load`** (choice 1):
+  - It fills `prompts` and `calls` from the conversation's, which the reader took from the whole
+    file (choice 6). A new conversation's are empty.
+  - It empties `#shrunk` (`clear()`, as the field is `readonly`).
+  - It calls `Pictures.from(nextPicture)` and `Tasks.from(nextTask)`.
 - **A subagent's session** writes `<id>/subagents/<tN>.jsonl`, and the lead's transcript gets a
   `subagent` line naming it (tasks.ts:184-192; design, "Saving sessions").
-- **Pictures:** `Pictures` gains `from(n)`, so the next number follows the loaded ones (choice 5).
+- **Pictures:** `Pictures` gains `from(n)`, which only raises the next number (choice 5).
+- **Subagent ids:** `Tasks` gains `from(n)`, which only raises the next number; `start` takes
+  ids from it, not from `all.length` (choice 4).
 - `#request` uses `this.system`.
 
 **Tests:**
@@ -645,8 +700,16 @@ class Session {
   - A refusal writes nothing.
 - **`load`:**
   - It swaps the history in place: `tasks.ts`'s alias sees the new messages.
-  - It rebuilds `prompts` and `calls` as the judge needs them.
+  - It sets `prompts` and `calls` from the conversation, as the judge needs them.
   - The next turn sends the loaded system prompt.
+  - **Two conversations, one picture number:** conversation A sends picture 1; loading B, whose
+    picture 1 has other bytes, makes the next request send B's bytes, not A's.
+- **Resuming after a shortening in auto mode:** a session shortened, then read back and loaded,
+  gives the judge the original prompts and calls; the summary is not among the prompts.
+- **Subagents across a restart:** delegate once (`t1`), read the transcript back into a new
+  `Tasks` and `Session` as a new process would, delegate again: the new one is `t2` with its
+  own file, and `t1.jsonl` is unchanged.
+- `Pictures.from` and `Tasks.from` never lower the next number.
 - A subagent's turn writes its own file and a `subagent` line.
 - A failed write leaves the turn running and `failed` set.
 
@@ -828,6 +891,7 @@ export type When = "between" | "start" | "during";   // design, "How shortening 
 export async function shorten(s: {
   lead: Provider; system: string; messages: Message[]; tools: ToolSpec[]; calls: { name: string; input: unknown }[];
   workspace: Workspace; sizes: Sizes; window: number; focus?: string; signal?: AbortSignal;
+  onUsage: (u: { provider: string; usage: Usage; priceKnown?: boolean }) => void;   // each summary request's
 }, when: When): Promise<{ messages: Message[]; summary: string } | { problem: string }>;
 ```
 
@@ -841,8 +905,10 @@ export async function shorten(s: {
   - The latest round is copied in as text.
   - If the prompt and the round do not fit, the round is summarised whole.
   - If the prompt alone does not fit, `shorten` returns the problem.
-- Summaries are requests: `signal` stops them, and their usage is emitted on the bus by the
-  caller.
+- **Summaries are requests:** `signal` stops them. Every request `shorten` makes reports its usage
+  through `onUsage` as soon as it ends, as `#request` does (session.ts:147, :164-165): the
+  declined attempts first, then the reply's, with the provider that served it. This holds for a
+  piece that is then split again, a request that fails, and one cut off, since each is billed.
 
 **Tests** (each with a scripted fake lead that records what it was sent):
 - **Between turns:**
@@ -863,6 +929,8 @@ export async function shorten(s: {
   exchange, then their summaries combined; a summary cut off at the window splits the same way;
   one exchange still too long returns the problem.
 - A cancelled summary returns the problem and changes nothing.
+- **Usage:** one summary reports one usage; a split reports one for the refused whole, each half
+  and the combining request; a cancel after the first half reports that half's.
 
 Commit: `feat: shortening summarises everything before what must stay, and keeps the request in progress whole`.
 
@@ -870,8 +938,8 @@ Commit: `feat: shortening summarises everything before what must stay, and keeps
 
 **Waits for Task 1's results (through Task 9).**
 
-**Files:** modify `src/core/session.ts`, `src/tui/app/queue.ts` (`/lead`), and
-`tests/core/session.test.ts`.
+**Files:** modify `src/core/session.ts`, `src/tui/app/queue.ts` (`/lead`), `src/core/bus.ts`,
+`src/core/stats.ts`, and `tests/core/session.test.ts`, `tests/core/stats.test.ts`.
 
 **Behaviour:**
 - **Before every request,** `fits` is checked against the window and the `/autocompact` size.
@@ -882,13 +950,17 @@ Commit: `feat: shortening summarises everything before what must stay, and keeps
   - It first checks the transcript has not `failed`. If it has, the turn ends with the line.
   - It runs `onShorten`.
   - It rebuilds the system prompt with `systemNow()`.
-  - It writes `shortened` and the new history's lines.
+  - It writes one `shortened` line: the new system prompt and the new history's message
+    (choice 4).
   - It replaces the history in place.
   - It emits a new bus event, `shortened: [string]`, with the summary.
 - **`/lead` to a provider whose window is smaller** checks `fits`. If the conversation will not
   fit, it shortens with the current lead first, and refuses with the line if that fails.
 - **A subagent's session and `-p`** shorten the same way.
 - **The judge's `prompts` and `calls` are never shortened.**
+- **Summary usage** goes on the bus as `usage` with a new `summary: true`. `Stats` counts its
+  spend, as it does the judge's, but does not set the gauge's context from it: a summary request
+  is not the conversation's (stats.ts:14-20).
 
 **Tests:**
 - An estimate over the window shortens before the request, and the request holds the new
@@ -900,6 +972,7 @@ Commit: `feat: shortening summarises everything before what must stay, and keeps
 - `/lead` to a smaller window shortens; a failed summary keeps the old lead.
 - A subagent shortens.
 - `prompts` survive a shortening.
+- Summary usage adds to the cost and the totals but leaves the gauge's context alone.
 
 Commit: `feat: the session shortens a conversation that will not fit, before the request or after a "too long" answer`.
 
