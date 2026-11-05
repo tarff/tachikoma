@@ -16,7 +16,7 @@ import { DISCARDED, discardAsked, kept, notRemoved, removing, type ReviewCopy, t
 import { appliedSoFar, type ToReview, toReview } from "./apply.js";
 import { docker, type DockerRun } from "./docker.js";
 import { alive, sessionGone } from "./executor.js";
-import { copyLock, MANIFEST, type Manifest, removeCopy } from "./snapshot.js";
+import { copyLock, fileCount, MANIFEST, type Manifest, removeCopy } from "./snapshot.js";
 
 // The plan's words (Task 21).
 const NONE = "No copies are waiting.";
@@ -212,7 +212,7 @@ async function discardCopy(copy: ReviewCopy, data: string, io: ReviewIo): Promis
     io.out(kept(copy.session));
     return 0;
   }
-  io.out(removing(Object.values(copy.manifest.entries).filter((e) => e.type === "file").length));
+  io.out(removing(fileCount(copy.manifest)));
   try {
     await uninterrupted(() => (io.remove ?? removeCopy)(copy.folder));
   } catch (err) {
@@ -224,11 +224,12 @@ async function discardCopy(copy: ReviewCopy, data: string, io: ReviewIo): Promis
 }
 
 // Choice 121 (the user's): a copy session that ends with nothing to review, no change the review would list (apply.ts,
-// toReview) and nothing the box left that it notes as never applied, skips the review and removes the copy, at the session's end (queue.ts, leave) and with -p (cli.tsx), each
-// once the box is gone and under the copy's lock. Gives the line to print, the copy removed or why not; or, with
-// something to review, what toReview gave, so the review does not read it again; or undefined when it cannot be read,
-// for the review to say why, or -p to keep the copy, as before. `say` gives the removing line first, as a copy holding
-// node_modules takes a while; once begun, the removal goes on through Ctrl-C, as discard's does.
+// toReview) and nothing the box left that it notes as never applied, skips the review and removes the copy, at the
+// session's end (queue.ts, leave) and with -p (cli.tsx), each once the box is gone and under the copy's lock. Gives the
+// line to print, the copy removed or why not; or, with something to review, what toReview gave, so the review does not
+// read it again; or undefined when it cannot be read, for the review to say why, or -p to keep the copy, as before.
+// `say` gives the removing line first, as a copy holding node_modules takes a while; once begun, the removal goes on
+// through Ctrl-C, as discard's does.
 export async function dropIfNothing(copy: ReviewCopy, say: (line: string) => void, remove: (folder: string) => Promise<void> = removeCopy): Promise<string | ToReview | undefined> {
   let found: ToReview;
   try {
@@ -240,7 +241,7 @@ export async function dropIfNothing(copy: ReviewCopy, say: (line: string) => voi
   // for the user to see before it is deleted, so it keeps the review; the box's own repository at the top does not, as
   // the review does not list it (choice 114), nor does what the launch left out, said at launch.
   if (found.changes.length || found.leftOut.some((l) => l.path !== ".git")) return found;
-  say(removing(Object.values(copy.manifest.entries).filter((e) => e.type === "file").length));
+  say(removing(fileCount(copy.manifest)));
   try {
     await uninterrupted(() => remove(copy.folder));
   } catch (err) {

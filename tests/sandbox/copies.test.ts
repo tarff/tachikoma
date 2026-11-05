@@ -383,6 +383,18 @@ describe("a copy with nothing to review", () => {
     expect(existsSync(c.folder)).toBe(false);
   });
 
+  // What the launch left out was said at launch (manifest.leftOut), so it is nothing to review.
+  it("is removed when nothing changed, what the launch left out not counting", async () => {
+    const w = world();
+    const c = w.copy("s1", { "a.txt": "made-up a\n" });
+    c.manifest.leftOut.push({ path: "out", why: "a link that leads outside the project" });
+    writeFileSync(path.join(c.folder, "manifest.json"), JSON.stringify(c.manifest));
+    const s = said();
+    expect(await dropIfNothing({ session: "s1", ...c }, s.say)).toBe("Nothing changed in the copy, so it was removed.");
+    expect(s.lines).toEqual(["Removing the copy (1 file)..."]);
+    expect(existsSync(c.folder)).toBe(false);
+  });
+
   it("is removed when its only changes are in paths git ignores, counting them", async () => {
     const w = world();
     const tree = { ".gitignore": "*.log\n", "a.txt": "made-up a\n" };

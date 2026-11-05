@@ -63,6 +63,7 @@ import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { shellTool } from "./tools/shell.js";
 import { todoTool } from "./tools/todo.js";
 import { App } from "./tui/App.js";
+import { NOT_GONE } from "./tui/app/constants.js";
 import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
 import { historyFile } from "./tui/history.js";
@@ -503,7 +504,7 @@ if (parsed.print !== undefined) {
       if ((await boxCheck(manifest)) === "free") {
         const read = await withLock(copyLock(folder), () => dropIfNothing({ session: sessionId, folder, manifest }, (l) => console.error(l)));
         if (typeof read === "string") line = read;
-      }
+      } else console.error(NOT_GONE); // as leave() says it
     } catch (err) {
       console.error(visible(errorText(err)));
     }

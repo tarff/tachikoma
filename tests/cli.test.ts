@@ -923,7 +923,7 @@ describe("dropOnExit", () => {
 // served on the loopback address, which answers at once with no tool call.
 describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000 }, () => {
   // `change`: the lead's stand-in writes a file into the copy's work/ before it answers, as the box would.
-  async function copyRun(standin: "ok" | "start-fails", change = false) {
+  async function copyRun(standin: "ok" | "start-fails" | "stuck", change = false) {
     const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-e2e-")));
     onTestFinished(() => removeTree(top));
     const proj = path.join(top, "proj");
@@ -987,6 +987,16 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     expect(lines.slice(-2)).toEqual(["Removing the copy (1 file)...", "Nothing changed in the copy, so it was removed."]);
     expect(readdirSync(r.copies)).toEqual([]);
     expect(readdirSync(r.proj)).toEqual(["notes.txt"]);
+  });
+
+  // As leave() says it in the interface (queue.ts): a box Docker still lists keeps the copy, which is not looked at.
+  it("says the box could not be removed, then names the copy kept, when Docker still lists the box", async () => {
+    const r = await copyRun("stuck");
+    expect(r.code).toBe(0);
+    const lines = r.stderr.trimEnd().split("\n");
+    const [session] = readdirSync(r.copies);
+    expect(lines.slice(-2)).toEqual(["The box could not be removed, so the copy was not reviewed.", `Changes kept for review: tachi review ${session}`]);
+    expect(existsSync(path.join(r.copies, session!, "manifest.json"))).toBe(true);
   });
 
   it("removes the copy when the launch stops after it was made", async () => {

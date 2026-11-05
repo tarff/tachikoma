@@ -225,6 +225,13 @@ export const queue = (ui: UI, fns: Fns) => {
       await fns.comeBack();
       if (!(await c.stop())) return c.ended([NOT_GONE, kept(c.copy.session)]);
       await withLock(copyLock(c.copy.folder), async () => {
+        // Nothing to review: no review, and the copy is removed (choice 121), before git's settings are read, as they
+        // only matter to a review.
+        const read = await dropIfNothing(c.copy, (line) => {
+          ui.leavingLine.current = line;
+          ui.rerender((n) => n + 1);
+        }, c.remove);
+        if (typeof read === "string") return c.ended([read]);
         // Without git's settings a hooks folder they name is not marked protected, so a file in it could be applied
         // unseen: no review, and the copy is kept (Task 21's review).
         let protection: Protection;
@@ -233,12 +240,6 @@ export const queue = (ui: UI, fns: Fns) => {
         } catch (err) {
           return c.ended([visible(reviewUnopened(errorText(err))), kept(c.copy.session)]);
         }
-        // Nothing to review: no review, and the copy is removed (choice 121).
-        const read = await dropIfNothing(c.copy, (line) => {
-          ui.leavingLine.current = line;
-          ui.rerender((n) => n + 1);
-        }, c.remove);
-        if (typeof read === "string") return c.ended([read]);
         const end = await new Promise<ReviewEnd>((onEnd) => ui.setReviewing({ protection, onEnd, read }));
         c.ended(end.lines);
       });

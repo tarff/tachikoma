@@ -24,6 +24,8 @@ export type ManifestEntry =
   | { type: "file"; sha256: string; exec: boolean; size: number; mtimeMs: number }
   | { type: "folder" }
   | { type: "link"; target: string; inCopy: string };
+// How many files the copy holds, for the removing line (Review.tsx, removing).
+export const fileCount = (manifest: Manifest) => Object.values(manifest.entries).filter((e) => e.type === "file").length;
 
 export class SnapshotRefused extends Error {}
 

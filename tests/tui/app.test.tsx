@@ -8067,7 +8067,7 @@ describe("App's leave() in copy mode", () => {
     w.gone(true);
     await waitFor(() => w.ended.length === 1);
     expect(w.ended[0]).toEqual(["Nothing changed in the copy, so it was removed."]);
-    expect(w.said).toEqual(["stop", "protection"]);
+    expect(w.said).toEqual(["stop"]); // git's settings, which only a review needs, are never read
     expect(reviewDrawn(app)).toBe(false);
     expect(app.frames.some((f) => f.includes("Removing the copy (1 file)..."))).toBe(true);
     await expectExited(app);

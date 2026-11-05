@@ -9,7 +9,7 @@ import { protectedPart } from "../safety/protected.js";
 import { type ApplyOptions, applyChange, CANNOT_MERGE, type Outcome, type ToReview, toReview } from "../sandbox/apply.js";
 import type { Change } from "../sandbox/changes.js";
 import { fileDiff } from "../sandbox/diff.js";
-import { type Manifest, removeCopy } from "../sandbox/snapshot.js";
+import { fileCount, type Manifest, removeCopy } from "../sandbox/snapshot.js";
 import { type Bindings, type Context, strokeOf } from "./bindings.js";
 import { type Line, screen } from "./describe.js";
 import { type Detail, DetailView, opened } from "./DetailView.js";
@@ -209,7 +209,7 @@ export function Review({
   // The copy removed, or why not, in a line. Nothing is left that could be applied half removed (removeCopy). It usually
   // holds node_modules, and can take a while, so a line says so first, counting the manifest's files, not the disk's.
   const removed = async (): Promise<string | null> => {
-    s.doing = removing(Object.values(manifest.entries).filter((e) => e.type === "file").length);
+    s.doing = removing(fileCount(manifest));
     again();
     try {
       await remove(folder);

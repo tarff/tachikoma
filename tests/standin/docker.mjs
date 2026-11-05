@@ -1,6 +1,7 @@
 // The stand-in Docker for the real command (register.mjs), answering as tests/cli.test.ts's in-process stand-ins do: a
 // ready Docker with the image built, the box started as "b0x", its node check and git passing. TACHI_TEST_STANDIN_DOCKER
-// is "start-fails" for a box Docker will not start. Nothing is recorded: the test reads the command's output and folders.
+// is "start-fails" for a box Docker will not start, and "stuck" for one Docker still lists once removed. Nothing is
+// recorded: the test reads the command's output and folders.
 import { dockerState, lineSplitter } from "../../src/sandbox/docker.ts";
 
 export { dockerState, lineSplitter };
@@ -22,5 +23,6 @@ export const docker = async (args) => {
   if (verb === "exec" && args[4] === "git") return ok();
   if (verb === "exec" && args[1] === "-w") return ok("v24.22.2 function"); // the node check
   if (verb === "inspect") return ok("true\n");
+  if (verb === "ps" && args.includes("-q") && process.env.TACHI_TEST_STANDIN_DOCKER === "stuck") return ok("b0x\n"); // never removed
   return ok();
 };
