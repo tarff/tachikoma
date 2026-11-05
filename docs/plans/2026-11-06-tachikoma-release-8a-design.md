@@ -45,7 +45,8 @@ Sources, read on 2026-11-06:
 - **What.** One line per message, saved whole, the provider's own content for a reply included
   (Anthropic's thinking blocks), so a resumed session can carry on with the same provider. Other
   lines record the session's start (project path, lead, Tachikoma's version, whether it is a `-p`
-  run), a lead switch, a name, and a shortening.
+  run, and the system prompt and tool list its requests send), a lead switch, a name, and a
+  shortening, with the system prompt the requests after it send.
 - **Pictures** are saved once each, as a file in `<id>/pictures/`; the transcript's line holds the
   picture's number and file name, not its data (option chosen: "Save them privately").
 - **Subagents** each have their own transcript, `<id>/subagents/t3.jsonl`.
@@ -90,7 +91,15 @@ Claude Code").
   launch's own lead is used, with one line saying so (option chosen: "Lead only").
 - The mode, the sandbox and the network come from this launch's flags and settings, as for a new
   session, so resuming never brings back `auto` or `never` unasked.
-- The system prompt is built afresh, so instruction files are read again.
+- The system prompt the session last sent, read from the transcript, as Claude Code does (user,
+  2026-11-06, option chosen: "Reuse the saved prompt"). Anthropic's newer models refuse a past
+  thinking block when anything before it changed, the system prompt or the tool list included
+  (see "Before the build", check 2), so a prompt built afresh would refuse a resumed Anthropic
+  session whenever an instruction file had changed. Edits to instruction files apply from the next
+  shortening, `/clear`, or a new session: a shortening leaves no past replies, so it builds the
+  prompt afresh and saves it. If this launch's tool list differs from the saved one, the old
+  replies go from Tachikoma's own record, without their thinking blocks, calls and results kept
+  together, and one line says so.
 - Not brought back: the to-do list, and subagents that had not finished, each of which gets one
   line in the conversation saying so.
 - A tool call the old session never answered (a crash during a turn) is never run again. It may
@@ -243,12 +252,28 @@ Each result is recorded in the plan.
 
 1. **Each provider's exact "too long" error,** from its documentation, then confirmed by a live
    test the user runs with their own key. "Too long" is never guessed from loose wording.
-2. **Whether Anthropic accepts a resumed conversation's thinking blocks after the system prompt
-   was built afresh,** by a live test. If it does not, a resumed Anthropic session sends its old
-   replies from Tachikoma's own record of them, without Anthropic's thinking blocks, as a session
-   that switched to Anthropic from another provider already does: the words, and each tool call
-   with its result, stay as calls and results, so none is left without the other. The same live
-   test checks that Anthropic accepts this form too.
+   **Read 2026-11-06:**
+   - **Anthropic** (platform.claude.com/docs/en/build-with-claude/context-windows, "Context window
+     overflow behavior"): "If the input alone already exceeds the model's context window, the API
+     returns a 400 `invalid_request_error` ("prompt is too long") on every model." And "On Claude
+     4.5 models and newer, if input tokens plus `max_tokens` exceeds the context window size, the
+     API accepts the request. If generation then reaches the context window limit, it stops with
+     `stop_reason: "model_context_window_exceeded"`."
+   - **ChatGPT plans** (OpenAI's own Codex, read on GitHub, `codex-rs/codex-api/src/sse/
+     responses_error.rs` and its tests): the stream ends with a `response.failed` event whose
+     `error.code` is `context_length_exceeded`, message "Your input exceeds the context window of
+     this model. Please adjust your input and try again."
+   - **OpenAI API:** its error-codes and conversation-state pages name no code for it; the live
+     test decides.
+2. **Whether Anthropic accepts a resumed conversation's thinking blocks.** **Read 2026-11-06**
+   (platform.claude.com/docs/en/api/errors, "Thinking block bound to a different conversation"):
+   on Claude 5.1 and later models, a thinking block sent back fails "if something before the block
+   changed after the block was produced, such as the `system` prompt, `tools`, or an earlier
+   message". So a resumed session reuses its saved system prompt (see "Resuming"), and when the
+   tool list differs, sends its old replies from Tachikoma's own record of them, without Anthropic's
+   thinking blocks, as a session that switched to Anthropic from another provider already does: the
+   words, and each tool call with its result, stay as calls and results, so none is left without
+   the other. A live test confirms both forms are accepted.
 3. **Whether Anthropic's token count takes the full request:** tools, pictures, and the fallback
    setting.
 
