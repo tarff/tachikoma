@@ -980,6 +980,18 @@ the plan's review.
     another name (a hard link), through which the box could change it. Launch with --sandbox copy
     instead.` and `Live link is refused: <path> cannot be read, so whether a file in it has
     another name (a hard link) cannot be checked. Launch with --sandbox copy instead.`
+125. **Ctrl-C during the image's build stops the build** (the user's choice, "Find and fix", their
+    terminal check of checklist item 9 on 2026-11-06: Ctrl-C returned at once, but the image
+    appeared about 20 s later). `docker build` runs the buildx plugin as a child program, and
+    docker is started without a console window, so the terminal's Ctrl-C reaches neither; the stop
+    ended `docker.exe` alone. Measured on 2026-11-06 with Docker Desktop: after that, buildx kept
+    running and saved the image about 34 s later (`docker buildx history ls`: "Completed"), while
+    ending docker's whole tree (`taskkill /T /F`) made Docker cancel the build ("Error" at 11.8 s,
+    no image). So the build's docker run asks for `tree`, and on Windows a stop ends the tree with
+    `killTree` (`src/exec/local.ts`) and still counts as a stop. Only the build asks: taskkill
+    took 2.2 to 3.8 s even for one program (5 runs), which would slow Esc in the box by as much.
+    Windows only: off Windows the terminal's Ctrl-C reaches docker and buildx itself, unmeasured,
+    checked with release 13's Linux/macOS testing (choice 79).
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.

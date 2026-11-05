@@ -136,7 +136,7 @@ export function buildQuestion(images: string[], project: boolean): string {
 export async function buildImage(info: ImageInfo, out: (line: string) => void, signal: AbortSignal, run: DockerRun = docker): Promise<void> {
   const context = await mkdtemp(path.join(os.tmpdir(), "tachi-build-"));
   try {
-    const got = await run(["build", "--tag", info.tag, "--file", "-", context], { line: out, input: info.text, signal });
+    const got = await run(["build", "--tag", info.tag, "--file", "-", context], { line: out, input: info.text, signal, tree: true });
     if (got === "missing" || got.code !== 0) throw new Error(BUILD_FAILED);
   } finally {
     // Never recursive, so nothing but the empty folder is ever removed. A folder that cannot be removed is left, and

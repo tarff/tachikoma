@@ -56,12 +56,13 @@ function fakeDocker(
     inspect?: () => void;
   } = {},
 ) {
-  const calls: { args: string[]; input?: string; signal?: AbortSignal; context?: string[] }[] = [];
+  const calls: { args: string[]; input?: string; signal?: AbortSignal; tree?: boolean; context?: string[] }[] = [];
   const run: DockerRun = async (args, o = {}) => {
     const call: (typeof calls)[number] = {
       args,
       ...(o.input !== undefined ? { input: o.input.toString("utf8") } : {}),
       ...(o.signal ? { signal: o.signal } : {}),
+      ...(o.tree ? { tree: o.tree } : {}),
     };
     calls.push(call);
     if (opts.state === "missing") return "missing";
@@ -301,6 +302,8 @@ describe("prepareImage (the launch)", () => {
     expect(existsSync(build!.args.at(-1)!)).toBe(false); // the empty folder is removed after
     expect(build!.input).toBe(PROJECT); // the text the tag hashes, with LF line endings (choice 68)
     expect(build!.signal).toBe(stop.signal);
+    expect(build!.tree).toBe(true); // a stop ends buildx too (choice 125)
+    expect(docker.calls.filter((c) => c.tree).map((c) => c.args[0])).toEqual(["build"]); // only the build
     expect(t.printed).toEqual(["out: #1 load", "out: #2 DONE"]);
   });
 
