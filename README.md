@@ -158,8 +158,8 @@ tachi review [<name> [--discard]]                  list the copies kept for revi
 Options --lead to --scroll-speed can also be set in ~/.tachikoma/settings.json; a flag or variable wins.
 ```
 
-(The block leaves out the help's first and last lines, the closing "In a session:" paragraph among
-them, and its indent; on Windows the settings line reads `~\.tachikoma\settings.json`.)
+(The block leaves out the help's first line, its "Usage:" and "Options:" headings, its closing "In
+a session:" paragraph, and its indent; on Windows the settings line reads `~\.tachikoma\settings.json`.)
 
 In a session, `/lead <provider:model>` switches the lead model, `/lead` or `/model` alone lists the
 models to pick from, `/login chatgpt` and `/logout chatgpt` sign in and out, `/tasks` lists the
@@ -1016,9 +1016,9 @@ more code; none has a release set to change it, unless it says so.
 - **Code that is not on the line is not read:** a script (`python wipe.py`); code given inline to an
   interpreter (`python -c`, `node -e`), or fed to one in a here-document or a piped string in the
   line; and code sent to a container or another machine (`docker exec -i c sh`, `ssh host sh`). Nor
-  are code piped to R, or the command `yarn exec` and `yarn dlx` run (`yarn dlx` itself still counts
-  as installing); and a relative path to the shell's input is not followed after `cd /dev`, or after
-  PowerShell's `Set-Location`.
+  is code piped to R, or the command that `yarn exec` or `yarn dlx` runs (`yarn dlx` itself still
+  counts as installing). In PowerShell, a relative path to the shell's input is not followed after a
+  change of folder (`Set-Location`, or its `cd` and `sl` names).
 - **Values made while the line runs.** Bash runs a command hidden in a value it does arithmetic on
   (`a[$(cmd)]`). The check asks when it can see such code on the line, but not when the value comes
   from a command's output, a file, a pipe or a download (including `$(( $(cmd) ))`), nor from a file
@@ -1201,7 +1201,7 @@ more code; none has a release set to change it, unless it says so.
   make a new line.
 - **Typing a character with Alt and its code on the number pad** is not supported there
   (untried).
-- **Some keys do nothing while Tachikoma runs there:** Ctrl or Alt with another key Windows gives no
+- **Some keys do nothing while Tachikoma runs there:** Ctrl or Alt with a key Windows gives no
   character for, except Ctrl+Space; and F13 to F20. The arrows, Home, End, PgUp,
   PgDn, Insert, Delete, F1 to F12, Enter, Backspace and Tab do work with Ctrl and Alt.
 - **AltGr is told apart only by the character it makes,** so Ctrl+Alt with a key that makes a
