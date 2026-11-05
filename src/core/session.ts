@@ -3,15 +3,12 @@ import type { Cache } from "../providers/pictures.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { type Ask, Declined } from "./permissions.js";
+import { CUT_OFF } from "./transcript.js";
 import { errorText, type Message, marker, type Part, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
 
 export function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
 }
-
-// How the result of each call of a cut-off reply begins; a saved session's reader knows those calls by it (release 8a
-// plan, choice 6).
-export const CUT_OFF = "Not run: the response was cut off (";
 
 export interface SessionOptions {
   lead: Provider;

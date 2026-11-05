@@ -1,7 +1,6 @@
 import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { privateDir } from "../auth/private.js";
-import { CUT_OFF } from "./session.js";
 import { errorText, type Image, type Message, marker, type Part, type ToolCall, type ToolResult, type ToolSpec } from "./types.js";
 
 // A session's transcript (release 8a design, "Saving sessions"): one JSON line per event, appended as it happens, as the
@@ -118,6 +117,10 @@ export interface Read {
 const UNKNOWN =
   "Outcome unknown: the session ended while this was running, or before its result was saved. It may have run in full or in part. " +
   "Check what it would have changed before running it again.";
+
+// How session.ts begins the result of each call of a cut-off reply, so a saved session's reader knows those calls by it
+// (release 8a plan, choice 6).
+export const CUT_OFF = "Not run: the response was cut off (";
 
 // Whether a reply was cut off, so its calls never ran: the message after it is exactly what session.ts writes for one,
 // an error result for each call, in the reply's order, each starting CUT_OFF.
