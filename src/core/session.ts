@@ -9,6 +9,10 @@ export function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
 }
 
+// How the result of each call of a cut-off reply begins; a saved session's reader knows those calls by it (release 8a
+// plan, choice 6).
+export const CUT_OFF = "Not run: the response was cut off (";
+
 export interface SessionOptions {
   lead: Provider;
   fallback?: Provider; // retries a turn the lead refused; chosen by the user, never by default
@@ -124,7 +128,7 @@ export class Session {
         bus.emit("error", { kind: turn.cutOff.kind, attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
         // Every tool call needs a result before the next request, even ones we refuse to run.
         if (calls.length) {
-          this.#push({ role: "user", parts: calls.map((c) => result(c, `Not run: the response was cut off (${turn.cutOff!.detail}).`, true)) });
+          this.#push({ role: "user", parts: calls.map((c) => result(c, `${CUT_OFF}${turn.cutOff!.detail}).`, true)) });
         }
         return;
       }

@@ -1,6 +1,7 @@
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { privateDir } from "../auth/private.js";
+import { CUT_OFF } from "./session.js";
 import { errorText, type Image, type Message, marker, type Part, type ToolCall, type ToolResult, type ToolSpec } from "./types.js";
 
 // A session's transcript (release 8a design, "Saving sessions"): one JSON line per event, appended as it happens, as the
@@ -81,8 +82,16 @@ export class Transcript {
   mend(): void {
     if (this.#failed !== null) return;
     try {
-      const text = readFileSync(this.file);
-      if (text.length && text.at(-1) !== 0x0a) appendFileSync(this.file, "\n", { encoding: "utf8", mode: 0o600 });
+      const last = Buffer.alloc(1);
+      const fd = openSync(this.file, "r");
+      try {
+        const { size } = fstatSync(fd);
+        if (size) readSync(fd, last, 0, 1, size - 1);
+        else last[0] = 0x0a; // an empty file has no line to mend
+      } finally {
+        closeSync(fd);
+      }
+      if (last[0] !== 0x0a) appendFileSync(this.file, "\n", { encoding: "utf8", mode: 0o600 });
     } catch (err) {
       this.#failed = errorText(err);
     }
@@ -110,8 +119,17 @@ const UNKNOWN =
   "Outcome unknown: the session ended while this was running, or before its result was saved. It may have run in full or in part. " +
   "Check what it would have changed before running it again.";
 
-// How session.ts's result for each call of a cut-off reply begins.
-const CUT = "Not run: the response was cut off (";
+// Whether a reply was cut off, so its calls never ran: the message after it is exactly what session.ts writes for one,
+// an error result for each call, in the reply's order, each starting CUT_OFF.
+function cutOff(reply: SavedMessage, next: SavedMessage | undefined): boolean {
+  const calls = reply.parts.filter((p) => p.type === "tool_call");
+  return (
+    calls.length > 0 &&
+    next?.role === "user" &&
+    next.parts.length === calls.length &&
+    next.parts.every((p, i) => p.type === "tool_result" && p.isError && p.callId === calls[i]!.id && p.output.startsWith(CUT_OFF))
+  );
+}
 
 // A part of a user message as the user typed it: its text, or a picture's marker; never a result or waiting text.
 const own = (p: SavedMessage["parts"][number]) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : []);
@@ -130,7 +148,7 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     const prompts: string[] = [];
     const calls: { name: string; input: unknown }[] = [];
     const subagents: Extract<Line, { t: "subagent" }>[] = [];
-    const used = [0];
+    const used: number[] = [];
     const said = lines.flatMap((l) => (l.t === "message" ? [l.message] : []));
     for (const [i, m] of said.entries()) {
       // As session.ts keeps them for the judge: the user's own words, each picture as its marker, and the calls of each
@@ -139,8 +157,7 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       // results cannot be told from one that ran, so its calls count.
       const words = m.parts.flatMap(own).join("");
       if (m.role === "user" && words) prompts.push(words);
-      const cut = said[i + 1]?.parts.some((p) => p.type === "tool_result" && p.output.startsWith(CUT));
-      if (!cut) for (const p of m.parts) if (p.type === "tool_call") calls.push({ name: p.name, input: p.input });
+      if (!cutOff(m, said[i + 1])) for (const p of m.parts) if (p.type === "tool_call") calls.push({ name: p.name, input: p.input });
     }
     for (const l of lines) {
       if (l.t === "message") history.push(l.message);
@@ -157,7 +174,7 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     // The session's folder, which holds the pictures and subagents folders (release 8a design, "Saving sessions").
     const subagentsDir = path.join(path.dirname(pictures), "subagents");
     // The numbers to hand out next follow every one used, in a line or by a file whose line a crash lost (choices 4, 5).
-    const nextPicture = Math.max(...used, ...numbered(pictures, /^(\d+)\.(png|jpg|gif|webp)$/)) + 1;
+    const nextPicture = Math.max(0, ...used, ...numbered(pictures, /^(\d+)\.(png|jpg|gif|webp)$/)) + 1;
     const nextTask = Math.max(0, ...subagents.map((s) => Number(/^t(\d+)$/.exec(s.id)?.[1] ?? 0)), ...numbered(subagentsDir, /^t(\d+)\.jsonl$/)) + 1;
     return {
       start,
@@ -167,7 +184,8 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       name,
       firstPrompt: prompts[0],
       damaged,
-      unfinished: subagents.filter((s) => !finished(path.join(subagentsDir, s.file))).map(({ id, description }) => ({ id, description })),
+      // A subagent's file is named after its id (release 8a plan, Task 5: `<id>/subagents/<tN>.jsonl`).
+      unfinished: subagents.filter((s) => !finished(path.join(subagentsDir, `${s.id}.jsonl`))).map(({ id, description }) => ({ id, description })),
       prompts,
       calls,
       nextPicture,
@@ -218,12 +236,15 @@ function valid(l: unknown): l is Line {
   return false;
 }
 
-// Each picture read back from its file; one that cannot be read becomes a note in its place (choice 5).
+// Each picture read back from its file, named from its number and format as #save names it, so a line cannot lead the
+// read elsewhere; one that cannot be read becomes a note in its place (choice 5).
 function restore(m: SavedMessage, pictures: string): Message {
   const parts = m.parts.map((p): Part => {
     if (p.type !== "image") return p;
+    const ext: string | undefined = EXT[p.mediaType];
     try {
-      return { type: "image", id: p.id, mediaType: p.mediaType, data: readFileSync(path.join(pictures, p.file)) };
+      if (ext === undefined) throw new Error("not a format Tachikoma saves");
+      return { type: "image", id: p.id, mediaType: p.mediaType, data: readFileSync(path.join(pictures, `${p.id}.${ext}`)) };
     } catch {
       return { type: "text", text: `[Image #${p.id}: not found]` };
     }
@@ -240,7 +261,8 @@ function pair(history: Message[]): Message[] {
   for (let i = 0; i < history.length; i++) {
     const m = history[i]!;
     if (m.role === "user") {
-      if (others(m).length) out.push({ ...m, parts: others(m) });
+      const parts = others(m);
+      if (parts.length) out.push({ ...m, parts });
       continue;
     }
     out.push(m);
@@ -254,12 +276,12 @@ function pair(history: Message[]): Message[] {
   return out;
 }
 
-// The numbers in a folder's file names, none when it is not there.
+// The numbers in a folder's file names, none when it is not there or is a file.
 function numbered(dir: string, name: RegExp): number[] {
   try {
     return readdirSync(dir).map((n) => Number(name.exec(n)?.[1] ?? 0));
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if (["ENOENT", "ENOTDIR"].includes((err as NodeJS.ErrnoException).code ?? "")) return [];
     throw err;
   }
 }

@@ -2,20 +2,41 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFile
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import { privateDir } from "../../src/auth/private.js";
 import { type Line, readTranscript, Transcript, wholeLines } from "../../src/core/transcript.js";
 import type { Message } from "../../src/core/types.js";
 import { removeTree } from "../helpers.js";
 
-// Release 8a plan, Task 3. Each case's sessions folder is inside a fresh temporary folder, as privateDir needs (plan,
-// "Rules for every task"); making it private starts PowerShell on Windows, as the error log's tests say.
+// Release 8a plan, Task 3. The sessions folder is inside a fresh temporary folder, as privateDir needs (plan, "Rules for
+// every task"). Making a folder private starts PowerShell on Windows, so the cases share one, each with its own session
+// in it, as the App's tests share their history folder; only the cases that break the layout get a folder of their own.
 describe("transcript", { timeout: 15_000 }, () => {
-  async function place() {
-    const top = await mkdtemp(path.join(tmpdir(), "tachi-transcript-"));
-    onTestFinished(() => removeTree(top));
-    const dir = path.join(top, "data", "sessions", "project");
-    return { top, dir, file: path.join(dir, "s1.jsonl"), pictures: path.join(dir, "s1", "pictures"), subagents: path.join(dir, "s1", "subagents") };
+  let top: string;
+  let shared: string;
+  let sessions = 0;
+  beforeAll(async () => {
+    top = await mkdtemp(path.join(tmpdir(), "tachi-transcript-"));
+    shared = path.join(top, "sessions", "project");
+    privateDir(shared);
+  });
+  afterAll(() => removeTree(top));
+  function place() {
+    const id = `s${++sessions}`;
+    return { file: path.join(shared, `${id}.jsonl`), pictures: path.join(shared, id, "pictures"), subagents: path.join(shared, id, "subagents") };
   }
+  async function fresh() {
+    const own = await mkdtemp(path.join(tmpdir(), "tachi-transcript-"));
+    onTestFinished(() => removeTree(own));
+    const dir = path.join(own, "data", "sessions", "project");
+    return { top: own, file: path.join(dir, "s1.jsonl"), pictures: path.join(dir, "s1", "pictures") };
+  }
+  // A subagent's file, written as its transcript would write it: a Transcript would make the new subagents folder
+  // private, which starts PowerShell again.
+  const subagentFile = (folder: string, id: string, lines: object[]) => {
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(path.join(folder, `${id}.jsonl`), lines.map((l) => `${JSON.stringify({ at: "2026-11-06T00:00:00.000Z", ...l })}\n`).join(""));
+  };
   const start: Omit<Extract<Line, { t: "start" }>, "at"> = {
     t: "start",
     v: 1,
@@ -54,7 +75,7 @@ describe("transcript", { timeout: 15_000 }, () => {
     "Check what it would have changed before running it again.";
 
   it("reads back every kind of line, a reply's provider content included", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     const reply: Message = {
       role: "assistant",
@@ -95,7 +116,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("saves a picture as its own file, before its line, and reads its bytes back", async () => {
-    const p = await place();
+    const p = place();
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 255]);
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
@@ -110,7 +131,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("reads a picture whose file is gone as a note saying so", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     t.write({ t: "message", message: picture(2, Buffer.from("bytes")) });
@@ -127,7 +148,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("mends a torn last line before the next write, so it stays one damaged line and the new message reads back", async () => {
-    const p = await place();
+    const p = place();
     const first = new Transcript(p.file, p.pictures);
     first.write(start);
     first.write({ t: "message", message: prompt("one") });
@@ -136,7 +157,7 @@ describe("transcript", { timeout: 15_000 }, () => {
     // A new process resuming the session.
     const t = new Transcript(p.file, p.pictures);
     t.mend();
-    t.mend();
+    t.mend(); // the second finds the line break the first added, and adds nothing
     expect(readFileSync(p.file, "utf8")).toBe(`${before}\n`);
     t.write({ t: "message", message: said("two") });
     const r = read(p);
@@ -145,7 +166,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("gives a call whose result line is damaged the 'Outcome unknown' result, and drops a result whose call is damaged", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     for (const message of [prompt("go"), asks("c1", { path: "a" }), answers("c1", "A"), asks("c2", { path: "b" }), answers("c2", "B"), said("done")]) {
@@ -164,7 +185,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("gives the calls of a reply that ended the file the 'Outcome unknown' result: the crash case", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     t.write({ t: "message", message: prompt("go") });
@@ -177,7 +198,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("starts the history at the last shortening's message and system prompt", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     t.write({ t: "message", message: prompt("one") });
@@ -192,8 +213,8 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   describe("an interrupted shortening", () => {
-    async function shortenedOnce() {
-      const p = await place();
+    function shortenedOnce() {
+      const p = place();
       const t = new Transcript(p.file, p.pictures);
       t.write(start);
       t.write({ t: "message", message: prompt("one") });
@@ -202,7 +223,7 @@ describe("transcript", { timeout: 15_000 }, () => {
     }
 
     it("reads back the whole history before a shortening line torn halfway, with one line damaged", async () => {
-      const { p, t } = await shortenedOnce();
+      const { p, t } = shortenedOnce();
       t.write({ t: "shortened", system: "New prompt.", message: prompt("summary") });
       const text = readFileSync(p.file, "utf8");
       const cut = text.lastIndexOf("\n", text.length - 2) + 1;
@@ -214,14 +235,13 @@ describe("transcript", { timeout: 15_000 }, () => {
     });
 
     it("leaves the file reading back the same when the shortening's write fails", async () => {
-      const { p, t } = await shortenedOnce();
+      const { p, t } = shortenedOnce();
       const before = readFileSync(p.file, "utf8");
       mkdirSync(path.dirname(p.pictures), { recursive: true });
       writeFileSync(p.pictures, ""); // a file where the pictures folder should be, so the summary's picture cannot be saved
       t.write({ t: "shortened", system: "New prompt.", message: picture(1, Buffer.from("x")) });
       expect(t.failed).toEqual(expect.any(String));
       expect(readFileSync(p.file, "utf8")).toBe(before);
-      rmSync(p.pictures);
       const r = read(p);
       expect(r.messages).toEqual([prompt("one"), said("1")]);
       expect(r).toMatchObject({ system: "Be brief.", damaged: 0 });
@@ -229,7 +249,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("rebuilds the judge's prompts and calls from the whole file, never from a summary", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     const waiting = { type: "text", text: "Background task t1 finished", from: "tasks" } as const;
@@ -249,7 +269,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("leaves a cut-off reply's calls out of the judge's calls, as session.ts never keeps them", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     const notRun = (id: string): Message => ({
@@ -267,8 +287,35 @@ describe("transcript", { timeout: 15_000 }, () => {
     ]);
   });
 
+  it("counts both calls of a reply whose results only look like a cut-off reply's", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "message", message: prompt("go") });
+    const reply: Message = {
+      role: "assistant",
+      parts: [
+        { type: "tool_call", id: "c1", name: "read_file", input: { path: "a" } },
+        { type: "tool_call", id: "c2", name: "read_file", input: { path: "b" } },
+      ],
+    };
+    t.write({ t: "message", message: reply });
+    const results: Message = {
+      role: "user",
+      parts: [
+        { type: "tool_result", callId: "c1", output: "A", isError: false },
+        { type: "tool_result", callId: "c2", output: "Not run: the response was cut off (a file that says so)", isError: true },
+      ],
+    };
+    t.write({ t: "message", message: results });
+    expect(read(p).calls).toEqual([
+      { name: "read_file", input: { path: "a" } },
+      { name: "read_file", input: { path: "b" } },
+    ]);
+  });
+
   it("numbers the next picture past every picture in the file and its folder", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     t.write({ t: "message", message: picture(3, Buffer.from("x")) });
@@ -280,7 +327,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("numbers the next subagent past every subagent line and every subagent file", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     t.write({ t: "subagent", id: "t1", description: "one", file: "t1.jsonl" });
@@ -292,19 +339,17 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("lists the subagents whose files hold no final answer", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     for (const [id, description, messages] of [
       ["t1", "finished one", [prompt("brief 1"), asks("c1", {}), answers("c1", "x"), said("found it")]],
       ["t2", "cut off in a call", [prompt("brief 2"), asks("c1", {})]],
-      ["t3", "never started", []],
+      ["t3", "never started", []], // so it has no file
     ] as const) {
       t.write({ t: "subagent", id, description, file: `${id}.jsonl` });
-      const sub = new Transcript(path.join(p.subagents, `${id}.jsonl`), path.join(p.pictures, "unused"));
-      for (const message of messages) sub.write({ t: "message", message });
+      if (messages.length) subagentFile(p.subagents, id, messages.map((message) => ({ t: "message", message })));
     }
-    rmSync(path.join(p.subagents, "t3.jsonl"), { force: true });
     expect(read(p).unfinished).toEqual([
       { id: "t2", description: "cut off in a call" },
       { id: "t3", description: "never started" },
@@ -312,7 +357,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("lists no subagent whose file ends saying it failed or was stopped, as the lead was told so", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     for (const [id, state] of [
@@ -321,16 +366,14 @@ describe("transcript", { timeout: 15_000 }, () => {
       ["t3", null],
     ] as const) {
       t.write({ t: "subagent", id, description: `${state ?? "lost"} one`, file: `${id}.jsonl` });
-      const sub = new Transcript(path.join(p.subagents, `${id}.jsonl`), path.join(p.pictures, "unused"));
-      sub.write({ t: "message", message: prompt("brief") });
-      sub.write({ t: "message", message: asks("c1", {}) });
-      if (state) sub.write({ t: "ended", state });
+      const ended = state ? [{ t: "ended", state }] : [];
+      subagentFile(p.subagents, id, [{ t: "message", message: prompt("brief") }, { t: "message", message: asks("c1", {}) }, ...ended]);
     }
     expect(read(p).unfinished).toEqual([{ id: "t3", description: "lost one" }]);
   });
 
   it("writes no picture file again for a kept prompt's picture in a shortening line, and reads it back", async () => {
-    const p = await place();
+    const p = place();
     const bytes = Buffer.from("the picture");
     const first = new Transcript(p.file, p.pictures);
     first.write(start);
@@ -346,7 +389,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("stops saving, saying why, when a file stands where the sessions folder should be", async () => {
-    const p = await place();
+    const p = await fresh();
     mkdirSync(path.join(p.top, "data"));
     writeFileSync(path.join(p.top, "data", "sessions"), "");
     const t = new Transcript(p.file, p.pictures);
@@ -359,7 +402,7 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("gives the whole lines of a file, leaving out a torn last one", async () => {
-    const p = await place();
+    const p = place();
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
     t.write({ t: "message", message: prompt("one") });
@@ -369,15 +412,14 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   it("says a file it cannot read is not a session", async () => {
-    const p = await place();
+    const p = await fresh();
     const r = readTranscript(p.file, p.pictures);
     expect(r).toEqual({ problem: expect.stringMatching(/^.+s1\.jsonl could not be read as a session \(.+\)\.$/) });
   });
 
   it("says a file whose first line is missing or damaged is not a session", async () => {
-    const p = await place();
+    const p = place();
     const words = `${p.file} could not be read as a session (its first line is missing or damaged).`;
-    mkdirSync(p.dir, { recursive: true });
     writeFileSync(p.file, "");
     expect(readTranscript(p.file, p.pictures)).toEqual({ problem: words });
     const t = new Transcript(p.file, p.pictures);
