@@ -962,6 +962,20 @@ the plan's review.
     problems; a git run that fails refuses live link as git's settings that cannot be read do. The
     approved line: `Live link is refused: this project has git submodules, whose git settings the
     box could change for git on your machine to run. Launch with --sandbox copy instead.`
+124. **Live link is refused when a protected file has a hard link** (the user's choice, "Refuse live
+    link (Recommended)", the PR #9 review). A file mounted read-only that shares its contents with
+    another name in the project, `notes.txt` with `.git/config` say, can be changed in the box
+    through the writable name, and git on the host then runs what the box put there. The box
+    cannot make a new hard link to a read-only file (a link across mounts fails), so only those
+    there at launch count. At launch, last of live link's refusals and before `.tachikoma` is made,
+    every read-only place (files, and folders walked without following links or junctions) and
+    `.tachikoma` are checked; the first file with another name refuses. A folder named `objects`
+    in a git folder (`.git/objects`, `.git/lfs/objects`, the top-level block's) is skipped, as a
+    clone from a local path hard-links objects and their contents cannot make git run anything;
+    the index, refs, `HEAD`, settings, hooks and `info` are checked. A place that cannot be read
+    refuses with the same line naming it. The approved line: `Live link is refused: <path> has
+    another name in the project (a hard link), through which the box could change it. Launch with
+    --sandbox copy instead.`, with the path from the project's folder, in `/` separators.
 94. **Reviews stop at what breaks** (the user's choice, Task 12's quality review: "Are we over
     engineering?"). From Task 12 on, code fixes only what breaks a common setup (Docker Desktop
     on Windows or macOS, Docker on Linux, rootless Docker) or does something wrong or unsafe.

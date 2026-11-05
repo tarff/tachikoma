@@ -31,11 +31,18 @@ export const SUBMODULES_REFUSED =
   "Live link is refused: this project has git submodules, whose git settings the box could change for git on your " +
   "machine to run. Launch with --sandbox copy instead.";
 
+// Choice 124's refusal (PR #9 review): a read-only file's other name in the project is writable in the box. The box
+// cannot make a new one, as a link across mounts fails (EXDEV), so only those there at launch count.
+const linkRefused = (rel: string) =>
+  `Live link is refused: ${rel} has another name in the project (a hard link), through which the box could change ` +
+  "it. Launch with --sandbox copy instead.";
+
 // The mounts, and the variables the box's git needs, or why live link is refused. Only once nothing refuses is a missing
 // `.tachikoma` made, an empty folder of Tachikoma's own (choice 31): left unmounted, the box could make one. First of
 // all, a folder that ignores letter case is refused (choice 104): a mount covers one spelling, and on Docker Desktop for
 // Windows the box reached `.git/hooks` as `.GIT/hooks`. `ignoresCase` is the check, which tests replace. `submodules`
 // is whether the project has any (gitconfig.ts, hasSubmodules), refused after git's settings' problems (choice 123).
+// Last, once the mounts are known, a file with a hard link in a read-only place or `.tachikoma` (choice 124).
 export function liveMounts(
   root: string,
   git: GitSettings | undefined,
@@ -89,6 +96,13 @@ export function liveMounts(
     ...[...pins].sort(([a], [b]) => (a < b ? -1 : 1)).map(([box, host]) => ({ host, box, readOnly: false })),
     ...kept.map(([box, host]) => ({ host, box, readOnly: true })),
   ];
+  // Git's objects are left out: a clone from a local path hard-links them, and they cannot make git run anything.
+  const gitFolders = new Set([path.join(root, ".git"), ...git.gitDirs].map(realPath));
+  const objects = realPath(path.join(root, "objects"));
+  for (const p of [...kept.map(([, host]) => host).filter((host) => host !== objects), path.join(real, ".tachikoma")]) {
+    const linked = hardLinked(p, gitFolders, false);
+    if (linked !== undefined) return { refused: linkRefused(path.relative(real, linked).split(path.sep).join("/")) };
+  }
   const own = path.join(root, ".tachikoma");
   if (!lstatSync(own, { throwIfNoEntry: false })) mkdirSync(own);
   mounts.push({ box: `${BOX}/.tachikoma`, hidden: true });
@@ -124,6 +138,25 @@ export function ignoresCase(folder: string): boolean {
   const other = lstatSync(path.join(path.dirname(named), swapped), { bigint: true, throwIfNoEntry: false });
   const same = lstatSync(named, { bigint: true });
   return other !== undefined && other.dev === same.dev && other.ino === same.ino;
+}
+
+// The first file at or under `p` with another name (a hard link), links and junctions not followed, skipping a folder
+// named `objects` inside a git folder. One that cannot be read is named too, as nothing in it can be checked; one gone
+// is skipped, as elsewhere here.
+function hardLinked(p: string, gitFolders: Set<string | undefined>, inGit: boolean): string | undefined {
+  try {
+    const st = lstatSync(p, { throwIfNoEntry: false });
+    if (st?.isFile()) return st.nlink > 1 ? p : undefined;
+    if (!st?.isDirectory() || (inGit && path.basename(p) === "objects")) return undefined;
+    const inside = inGit || gitFolders.has(p);
+    for (const name of readdirSync(p)) {
+      const linked = hardLinked(path.join(p, name), gitFolders, inside);
+      if (linked !== undefined) return linked;
+    }
+    return undefined;
+  } catch {
+    return p;
+  }
 }
 
 // A path's real place, or undefined when it does not exist. `native` gives the long name for a short (8.3) one.

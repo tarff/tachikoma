@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
@@ -195,6 +195,46 @@ describe("liveMounts", () => {
       ],
       env: SAFE,
     });
+  });
+
+  // Choice 124 (PR #9 review): the box could write through another name of a read-only file.
+  const linkRefused = (rel: string) =>
+    `Live link is refused: ${rel} has another name in the project (a hard link), through which the box could ` +
+    "change it. Launch with --sandbox copy instead.";
+
+  it("refuses a .git/config with a hard link elsewhere in the project, naming it, making nothing (choice 124)", () => {
+    const w = world([".git/config", ".git/HEAD"]);
+    linkSync(w.at(".git/config"), w.at("notes.txt"));
+    expect(live(w.root, w.git)).toEqual({ refused: linkRefused(".git/config") });
+    expect(existsSync(w.at(".tachikoma"))).toBe(false);
+  });
+
+  it("refuses a file in a hooks folder with a hard link (choice 124)", () => {
+    const w = world([".git/", "tools/hooks/pre-commit"]);
+    w.git.hooksPaths.push(w.at("tools/hooks"));
+    linkSync(w.at("tools/hooks/pre-commit"), w.at("run.sh"));
+    expect(live(w.root, w.git)).toEqual({ refused: linkRefused("tools/hooks/pre-commit") });
+  });
+
+  it("takes hard-linked git objects, as a clone from a local path makes them (choice 124)", () => {
+    const w = world([".git/objects/ab/cdef", ".git/lfs/objects/12/3456", ".git/index"]);
+    linkSync(w.at(".git/objects/ab/cdef"), w.at("copy-1"));
+    linkSync(w.at(".git/lfs/objects/12/3456"), w.at("copy-2"));
+    expect(live(w.root, w.git)).toEqual({ mounts: [readOnly(w.at(".git"), "/work/.git"), HIDDEN], env: SAFE });
+    // An index beside them is still checked.
+    linkSync(w.at(".git/index"), w.at("copy-3"));
+    expect(live(w.root, w.git)).toEqual({ refused: linkRefused(".git/index") });
+  });
+
+  it("refuses a file in .tachikoma with a hard link (choice 124)", () => {
+    const w = world([".tachikoma/settings.json"]);
+    linkSync(w.at(".tachikoma/settings.json"), w.at("settings.json"));
+    expect(live(w.root, w.git)).toEqual({ refused: linkRefused(".tachikoma/settings.json") });
+  });
+
+  it("takes read-only places and .tachikoma with no hard links (choice 124)", () => {
+    const w = world([".git/config", ".git/hooks/pre-commit", ".tachikoma/settings.json", "notes.txt"]);
+    expect(live(w.root, w.git)).toEqual({ mounts: [readOnly(w.at(".git"), "/work/.git"), HIDDEN], env: SAFE });
   });
 
   it("gives the line-ending settings as git's session-only variables, after safe.directory (choice 100)", () => {
