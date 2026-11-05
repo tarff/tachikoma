@@ -3,7 +3,7 @@
 // a hooks folder, can make the user's next git command on the host run a program. So protected paths (Task 6) ask
 // before a write to any file or folder listed here (choice 57), and live link makes those inside the project read-only
 // in the box. A second `git config` per file gives the line-ending settings live link passes into the box's git (choice
-// 100). What is guaranteed: the only git command run is `git config`, which reads settings and runs nothing; it
+// 100). What is guaranteed: the settings are read only by `git config`, which reads settings and runs nothing; it
 // is started by its full path, from the system's temporary folder, with none of the user's git variables but the two
 // naming the settings files. Git still looks for a `.git` in the temporary folder itself; GIT_CEILING_DIRECTORIES
 // only stops it climbing above that folder, so a project that holds the temporary folder (the home folder, say) is
@@ -168,7 +168,8 @@ const ownEnv = (env: NodeJS.ProcessEnv) =>
 export function hasSubmodules(root: string, env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   if (!repository(root)) return Promise.resolve(false);
   return new Promise((resolve, reject) => {
-    const args = ["--no-pager", "-c", "core.fsmonitor=false", "ls-files", "--stage", "-z"];
+    // Empty, not "false": git before 2.36 reads the setting as a program's name, and would run one called false.
+    const args = ["--no-pager", "-c", "core.fsmonitor=", "ls-files", "--stage", "-z"];
     const child = spawn(onPath("git", env)!, args, { cwd: root, env: ownEnv(env), windowsHide: true });
     let found = false;
     let rest = "";

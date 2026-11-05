@@ -389,7 +389,14 @@ if (sandbox !== "off") {
     console.error(gitLine);
   }
   // A folder that ignores letter case where the system does not, such as WSL's /mnt/c, has protected paths ignore it too.
-  protection.ignoresCase = ignoresCase(root);
+  // Windows and macOS fold case anyway. A folder the probe cannot read counts as ignoring case, so more is protected.
+  if (process.platform !== "win32" && process.platform !== "darwin") {
+    try {
+      protection.ignoresCase = ignoresCase(root);
+    } catch {
+      protection.ignoresCase = true;
+    }
+  }
 }
 // The user's own rules (release 7 plan, Task 4). A kind switched off is said at each launch (checkOffLine), and again in
 // full screen (App.tsx).
