@@ -110,6 +110,9 @@ const UNKNOWN =
   "Outcome unknown: the session ended while this was running, or before its result was saved. It may have run in full or in part. " +
   "Check what it would have changed before running it again.";
 
+// How session.ts's result for each call of a cut-off reply begins.
+const CUT = "Not run: the response was cut off (";
+
 // A part of a user message as the user typed it: its text, or a picture's marker; never a result or waiting text.
 const own = (p: SavedMessage["parts"][number]) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : []);
 
@@ -128,15 +131,19 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     const calls: { name: string; input: unknown }[] = [];
     const subagents: Extract<Line, { t: "subagent" }>[] = [];
     const used = [0];
+    const said = lines.flatMap((l) => (l.t === "message" ? [l.message] : []));
+    for (const [i, m] of said.entries()) {
+      // As session.ts keeps them for the judge: the user's own words, each picture as its marker, and the calls of each
+      // reply that was run. A shortening's message is never one of them, so a summary never stands in for what the user
+      // typed. A cut-off reply's calls are never run (session.ts's "Not run" results); a reply a crash left without
+      // results cannot be told from one that ran, so its calls count.
+      const words = m.parts.flatMap(own).join("");
+      if (m.role === "user" && words) prompts.push(words);
+      const cut = said[i + 1]?.parts.some((p) => p.type === "tool_result" && p.output.startsWith(CUT));
+      if (!cut) for (const p of m.parts) if (p.type === "tool_call") calls.push({ name: p.name, input: p.input });
+    }
     for (const l of lines) {
-      if (l.t === "message") {
-        history.push(l.message);
-        // As session.ts keeps them for the judge: the user's own words, each picture as its marker, and every call. A
-        // shortening's message is never one of them, so a summary never stands in for what the user typed.
-        const words = l.message.parts.flatMap(own).join("");
-        if (l.message.role === "user" && words) prompts.push(words);
-        for (const p of l.message.parts) if (p.type === "tool_call") calls.push({ name: p.name, input: p.input });
-      }
+      if (l.t === "message") history.push(l.message);
       // The history starts at the last whole shortening, as Claude Code resumes "the last compaction's summary".
       if (l.t === "shortened") {
         system = l.system;

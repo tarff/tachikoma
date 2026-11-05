@@ -248,6 +248,25 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(r.firstPrompt).toBe("look at [Image #4]");
   });
 
+  it("leaves a cut-off reply's calls out of the judge's calls, as session.ts never keeps them", async () => {
+    const p = await place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    const notRun = (id: string): Message => ({
+      role: "user",
+      parts: [{ type: "tool_result", callId: id, output: "Not run: the response was cut off (max_tokens).", isError: true }],
+    });
+    for (const message of [prompt("go"), asks("c1", { path: "run" }), answers("c1", "A"), asks("c2", { path: "cut off" }), notRun("c2")]) {
+      t.write({ t: "message", message });
+    }
+    // A reply the crash left without results: the file cannot tell it from one that ran, so its calls count.
+    t.write({ t: "message", message: asks("c3", { path: "crash" }) });
+    expect(read(p).calls).toEqual([
+      { name: "read_file", input: { path: "run" } },
+      { name: "read_file", input: { path: "crash" } },
+    ]);
+  });
+
   it("numbers the next picture past every picture in the file and its folder", async () => {
     const p = await place();
     const t = new Transcript(p.file, p.pictures);
@@ -317,10 +336,12 @@ describe("transcript", { timeout: 15_000 }, () => {
     first.write(start);
     first.write({ t: "message", message: picture(1, bytes) });
     // A resumed session's transcript, shortening with the prompt that holds picture 1 kept: its file is already there.
+    // Other bytes under the same number, so a write over the saved file would show.
     const t = new Transcript(p.file, p.pictures);
-    t.write({ t: "shortened", system: "New prompt.", message: picture(1, bytes) });
+    t.write({ t: "shortened", system: "New prompt.", message: picture(1, Buffer.from("other")) });
     expect(t.failed).toBeNull();
     expect(readdirSync(p.pictures)).toEqual(["1.png"]);
+    expect(readFileSync(path.join(p.pictures, "1.png"))).toEqual(bytes);
     expect(read(p).messages).toEqual([picture(1, bytes)]);
   });
 
