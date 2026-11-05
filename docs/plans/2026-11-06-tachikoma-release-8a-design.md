@@ -78,8 +78,9 @@ Claude Code").
   chosen; the one left stays saved.
 - **`/clear`** starts a new, empty session in this window, with the same lead and mode; the old
   one stays in the list (option chosen: "Add /clear").
-- `/resume` and `/clear` wait their turn in the queue, as `/lead` does, while a turn runs, and are
-  refused while a subagent is still running, with a line naming it.
+- `/resume`, `/clear` and `/branch` (below) wait their turn in the queue, as `/lead` does, while a
+  turn runs, and are refused while a subagent is still running, with a line naming it, so a
+  subagent's answer can never arrive in the wrong session.
 
 **What comes back:**
 - The conversation, from the last shortening on when it was shortened, as Claude Code does it.
@@ -92,8 +93,12 @@ Claude Code").
 - The system prompt is built afresh, so instruction files are read again.
 - Not brought back: the to-do list, and subagents that had not finished, each of which gets one
   line in the conversation saying so.
-- A tool call the old session never answered (a crash during a turn) gets the result "Not run: the
-  session ended before this ran." It is never run again.
+- A tool call the old session never answered (a crash during a turn) is never run again. It may
+  have run, in full or in part, before its result could be saved, so its result says the outcome
+  is unknown and tells the model to check before trying it again (wording to be approved in the
+  plan). The same result goes to any call left without one after a bad line is skipped (see "When
+  something goes wrong"), and a result whose call is missing is dropped, so every call still has
+  exactly one result.
 
 **A session open in another window.** A small lock file marks a session open, the lock the saved
 ChatGPT login uses, which frees itself when its window ends. Resuming a session open elsewhere opens
@@ -165,11 +170,23 @@ before a `/lead` switch.
    general"). In 8a the step is empty, built as the place they join.
 3. **The summary request.** The current lead is sent the history up to the cut, then one message
    with the summary instructions below. `/compact <words>` adds the words as what to focus on.
-4. **The cut** is just before the latest finished round of tool calls; a tool call and its result
-   are never split. If the part before it is too big for the lead, it is summarised in pieces that
-   fit, and the pieces combined (main design).
-5. **The new history** is one message: the summary; the user's request in progress, word for word,
-   when a turn is under way; the latest round's tool results, as text; and up to 5 of the files
+4. **Nothing is left out:** every message either goes into the summary or is kept. A tool call and
+   its result are never split. What is kept depends on when shortening runs:
+   - **Between turns** (`/compact`, a `/lead` switch): the whole history goes into the summary,
+     whether or not it holds any tool calls.
+   - **At the start of a turn,** the check before its first request: everything before the prompt
+     just typed goes into the summary, and that prompt is kept whole, its pictures included.
+   - **During a turn,** the check before a request that follows a round of tool calls: everything
+     up to and including the reply that made the latest round goes into the summary, the turn's
+     earlier rounds among it, with what is done and what is left. The turn's prompt is kept whole,
+     and so are the latest round's calls and results, copied in as text, as the main design's cut
+     inside a turn does it. If the prompt and those results still do not fit, the results go into
+     the summary too; if the prompt alone does not fit, the turn ends with the error in "When to
+     shorten".
+
+   If the part to be summarised is too big for the lead, it is summarised in pieces that fit, and
+   the pieces combined (main design).
+5. **The new history** is one message: the summary; what step 4 keeps; and up to 5 of the files
    read or edited in this session, most recently changed first, each only if under 5,000 tokens,
    a larger one named without its content (Claude Code's figures; option chosen: "Like Claude
    Code", over keeping recent exchanges word for word, which had no way to be measured). A file's
@@ -189,8 +206,8 @@ still says a rule that must hold belongs in `dangerousCommands`, since a model c
 
 **Carried over from the main design:** a failed or cancelled summary changes nothing; Ctrl-C stops
 it and its cost counts as any request's; the summary must fit the space the next request has, and
-is checked before it is used. Pictures are not carried into the new history: the summary mentions
-them, and the transcript keeps them.
+is checked before it is used. Pictures in the summarised part are not carried into the new history:
+the summary mentions them, and the transcript keeps them.
 
 **On screen,** nothing leaves the scrollback. One line says "Conversation shortened (Ctrl+O shows
 the summary)", and the status line's context gauge drops.
@@ -207,8 +224,13 @@ chosen: "Shorten them too").
 - **The start-up sweep** skips a file it cannot delete and names it in one line; start-up never
   fails over it.
 - **A transcript that cannot be read whole,** such as a half-written last line after a crash: the
-  bad line is skipped, as the error log does. If no conversation can be rebuilt, resuming says so
-  and starts nothing.
+  bad line is skipped, as the error log does, and calls and results are then paired as in
+  "Resuming". If no conversation can be rebuilt, resuming says so and starts nothing.
+- **A torn last line is mended before anything is added.** Under the session's lock, before the
+  first append of a resumed session, a file that does not end in a line break gets one, so the next
+  line starts on its own and the torn one stays a single skipped line, never joined to a new
+  message. Nothing in the file is deleted. A copy of a session open elsewhere takes only its whole
+  lines.
 - Every failure says what broke and what to do, and goes into the error log.
 
 ## Before the build
@@ -230,9 +252,13 @@ Each result is recorded in the plan.
 - **The main design's edge cases:** a finished tool round kept across a shortening and a lead
   switch; one turn too big on its own; a failed transcript write; a failed or cancelled summary; a
   reply cut off at the window never runs its tools.
-- **Added here:** resuming after a crash during a turn; a session open twice; pictures brought
-  back; the 30-day sweep against links and open sessions; `/clear`, `/resume` and `/branch` while a
-  subagent runs; a name more than one session has; `/export` to a file that exists.
+- **Added here:** shortening a conversation with no tool calls, and one whose latest round of tool
+  calls is followed by exchanges without any; shortening at the start of a turn and during one;
+  resuming after a crash during a turn; a torn last line, then a resume, an append and a second
+  resume; a bad line in the middle leaving a call without its result; a session open twice;
+  pictures brought back; the 30-day sweep against links and open sessions; `/clear`, `/resume` and
+  `/branch` while a subagent runs, and queued while a turn runs; a name more than one session has;
+  `/export` to a file that exists.
 
 ## Not in this release
 
