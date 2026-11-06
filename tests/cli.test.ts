@@ -50,6 +50,7 @@ function launch(args: (string | Record<string, string>)[]) {
   const env = args.find((a) => typeof a === "object") ?? {};
   const words = args.filter((a) => typeof a === "string");
   const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+  onTestFinished(() => removeTree(top));
   const home = path.join(top, "home");
   mkdirSync(home);
   const system = path.join(top, "system.gitconfig");
@@ -80,6 +81,7 @@ function launch(args: (string | Record<string, string>)[]) {
 // A pretend home folder holding ~/.tachikoma/settings.json, given to tachi() as its HOME and USERPROFILE.
 function homeWith(settings: string) {
   const home = mkdtempSync(path.join(tmpdir(), "tachi-cli-home-"));
+  onTestFinished(() => removeTree(home));
   mkdirSync(path.join(home, ".tachikoma"));
   writeFileSync(path.join(home, ".tachikoma", "settings.json"), settings);
   return { USERPROFILE: home, HOME: home };

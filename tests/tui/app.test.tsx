@@ -9038,11 +9038,10 @@ describe("App's /compact and /autocompact", () => {
     await inColour(async () => {
       const { app, session } = await mount([]);
       session.autoCompact = 5;
-      for (const wrong of ["/autocompact", "/autocompact 0", "/autocompact 2g", "/autocompact 1.5k", "/autocompact 200k more"]) {
-        await type(app, wrong);
-      }
+      const wrongs = ["/autocompact", "/autocompact 0", "/autocompact 2g", "/autocompact 1.5k", "/autocompact 200k more", "/autocompact 9007199254740992"];
+      for (const wrong of wrongs) await type(app, wrong);
       const usageLine = "Usage: /autocompact <tokens>, such as 200k, or /autocompact off";
-      expect(flat(app).split(usageLine)).toHaveLength(6);
+      expect(flat(app).split(usageLine)).toHaveLength(wrongs.length + 1);
       expect(app.lastFrame()).toContain("\u001b[31mUsage: /autocompact");
       expect(session.autoCompact).toBe(5);
     });

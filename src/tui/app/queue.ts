@@ -238,6 +238,21 @@ export const queue = (ui: UI, fns: Fns) => {
       .catch((err) => fns.say({ text: errorText(err), color: "red" }))
       .finally(fns.next);
   };
+  // A shortening between turns, for /lead and /compact, run as a turn is: the working line and its spinner, what is typed
+  // waiting in the queue, and Ctrl-C stopping it through its own signal, handed back with what it gave.
+  const between = async <T>(run: (signal: AbortSignal) => Promise<T>) => {
+    const { signal } = (ui.abort.current = new AbortController());
+    ui.doing.current = { label: "Working", at: Date.now(), from: { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } };
+    ui.setNow(ui.doing.current.at);
+    ui.setBusy(true);
+    ui.working.current = true;
+    try {
+      return { got: await run(signal), signal };
+    } finally {
+      ui.setBusy(false);
+      ui.working.current = false;
+    }
+  };
   // `/lead <provider:model>` and the model list's pick, this window only, saving nothing (choice 26, the user's). A
   // conversation that will not fit the new lead's smaller window is shortened first, by the lead leading now, and the
   // switch is refused if it cannot be (release 8a design, "When to shorten"). Meanwhile it works as a turn does: what is
@@ -247,18 +262,7 @@ export const queue = (ui: UI, fns: Fns) => {
     // With nothing to shorten, or no window to look up, no check can be needed: the switch is made at once, so a prompt
     // typed straight after /lead waits for it in the queue as one of its own (Task 13's spec review).
     if (!ui.session.messages.length || !provider.contextWindow) return ui.session.setLead(provider);
-    const { signal } = (ui.abort.current = new AbortController());
-    ui.doing.current = { label: "Working", at: Date.now(), from: { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } };
-    ui.setNow(ui.doing.current.at);
-    ui.setBusy(true);
-    ui.working.current = true;
-    let problem;
-    try {
-      problem = await ui.session.makeRoom(provider, signal);
-    } finally {
-      ui.setBusy(false);
-      ui.working.current = false;
-    }
+    const { got: problem, signal } = await between((signal) => ui.session.makeRoom(provider, signal));
     if (signal.aborted) return;
     if (problem === undefined) return ui.session.setLead(provider);
     fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "red" });
@@ -269,18 +273,7 @@ export const queue = (ui: UI, fns: Fns) => {
   // the session's (App.tsx).
   const compact = async (focus: string) => {
     if (!ui.session.messages.length) return fns.say(gray(SHORTEN_WORDS.nothing));
-    const { signal } = (ui.abort.current = new AbortController());
-    ui.doing.current = { label: "Working", at: Date.now(), from: { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } };
-    ui.setNow(ui.doing.current.at);
-    ui.setBusy(true);
-    ui.working.current = true;
-    let problem;
-    try {
-      problem = await ui.session.compact(focus, signal);
-    } finally {
-      ui.setBusy(false);
-      ui.working.current = false;
-    }
+    const { got: problem } = await between((signal) => ui.session.compact(focus, signal));
     if (problem === CANCELLED) fns.say({ text: `✗ ${cannot(CANCELLED)}`, color: "red" });
   };
   // /autocompact <tokens> or off (choice 26): digits with an optional k or m, k 1,000 and m 1,000,000 as Claude Code's

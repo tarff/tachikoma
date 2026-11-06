@@ -263,10 +263,10 @@ export class Session {
             // "Show the line, send anyway"), and the /autocompact size is not tried again until the next turn, so a summary
             // that keeps failing costs one request and one line a prompt (user, 2026-11-06: "Retry next turn"); the
             // window's check goes on. Over the window, the turn ends with the line.
-            const still = limit === window || (window !== null && (await this.#over(lead, window, signal)));
-            if (still === undefined) return; // stopped
-            this.#say(lead, cannot(r.problem), !still);
-            if (still) return;
+            const overWindow = limit === window || (window !== null && (await this.#over(lead, window, signal)));
+            if (overWindow === undefined) return; // stopped
+            this.#say(lead, cannot(r.problem), !overWindow);
+            if (overWindow) return;
             autoFailed = true;
           } else if (limit === window) {
             // Not saved, it cannot be shortened: over the window it ends with the line. Past the /autocompact size alone,

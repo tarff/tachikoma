@@ -1255,6 +1255,20 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
     expect([summaries, texts(session.messages.at(-1)!)]).toEqual([["S."], ["after"]]);
   });
 
+  // Task 13's quality review: the wait for the next turn is the /autocompact size's alone, never the window's.
+  it("still shortens for the window after a failed /autocompact summary, when the request sent anyway is too long", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const lead = new Lead("fake:a", [measured("noted"), refusal, new TooLong("prompt is too long"), summaryOf("S."), reply("after")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    session.autoCompact = 700;
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen.map(isSummary)).toEqual([false, true, false, true, false]);
+    expect(lead.seen[4]!.messages).toEqual([typed(shortened("S.", "now this"))]);
+    expect([summaries, texts(session.messages.at(-1)!)]).toEqual([["S."], ["after"]]);
+    expect(errors.map((e) => [e.message, e.sent])).toEqual([["The conversation could not be shortened (declined); it is unchanged.", true]]);
+  });
+
   it("ends the turn with the line when a summary for the /autocompact size fails and the request does not fit the window either", async () => {
     const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
     const lead = new Lead("fake:a", [measured("noted"), refusal], 700);
