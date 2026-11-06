@@ -319,19 +319,20 @@ describe("AnthropicProvider", () => {
   // Release 8a plan, choice 20, with the error Task 1 recorded: "refused: status 400, type invalid_request_error, code none
   // (BadRequestError): prompt is too long: 1000050 tokens > 1000000 maximum".
   it("knows a request too long for the window from the error complete() throws, and no other 400", async () => {
-    const refusal = (message: string) => async () =>
-      new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message } }), {
+    const refusal = (message: string, type: string) => async () =>
+      new Response(JSON.stringify({ type: "error", error: { type, message } }), {
         status: 400,
         headers: { "content-type": "application/json" },
       });
     // The SDK takes `fetch` when the provider is made, so each is made after its stand-in.
-    const tooLong = async (message: string) => {
-      vi.stubGlobal("fetch", refusal(message));
+    const tooLong = async (message: string, type = "invalid_request_error") => {
+      vi.stubGlobal("fetch", refusal(message, type));
       const p = new AnthropicProvider("claude-opus-5-5");
       return p.tooLong(await p.complete({ system: "s", messages: [], tools: [] }).catch((e: unknown) => e));
     };
     expect(await tooLong("prompt is too long: 1000050 tokens > 1000000 maximum")).toBe(true);
     expect(await tooLong("Could not process image")).toBe(false);
+    expect(await tooLong("prompt is too long: 1000050 tokens > 1000000 maximum", "api_error")).toBe(false);
   });
 
   // Release 8a plan, choice 19: Task 1 found the count refuses `fallbacks` ("fallbacks: Extra inputs are not permitted").

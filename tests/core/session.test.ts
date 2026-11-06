@@ -260,7 +260,7 @@ describe("Session", () => {
   });
 
   // Release 8a plan, choice 21: "window" changes nothing yet; Task 12 shortens the history and sends it again.
-  it("answers a reply cut off at the window as one that hit a limit", async () => {
+  it("reports a reply cut off at the window as one that hit a limit", async () => {
     const cut = { ...callTool("c1", "echo", { text: "x" }), cutOff: { kind: "window" as const, detail: "The conversation filled the context window" } };
     const { session, errors } = await setup([cut]);
     await session.send("go");
