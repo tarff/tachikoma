@@ -319,20 +319,22 @@ describe("AnthropicProvider", () => {
   // Release 8a plan, choice 20, with the error Task 1 recorded: "refused: status 400, type invalid_request_error, code none
   // (BadRequestError): prompt is too long: 1000050 tokens > 1000000 maximum".
   it("knows a request too long for the window from the error complete() throws, and no other 400", async () => {
-    const refusal = (message: string, type: string) => async () =>
+    const refusal = (message: string, type: string, status: number) => async () =>
       new Response(JSON.stringify({ type: "error", error: { type, message } }), {
-        status: 400,
+        status,
         headers: { "content-type": "application/json" },
       });
     // The SDK takes `fetch` when the provider is made, so each is made after its stand-in.
-    const tooLong = async (message: string, type = "invalid_request_error") => {
-      vi.stubGlobal("fetch", refusal(message, type));
+    const tooLong = async (message: string, type = "invalid_request_error", status = 400) => {
+      vi.stubGlobal("fetch", refusal(message, type, status));
       const p = new AnthropicProvider("claude-opus-5-5");
       return p.tooLong(await p.complete({ system: "s", messages: [], tools: [] }).catch((e: unknown) => e));
     };
     expect(await tooLong("prompt is too long: 1000050 tokens > 1000000 maximum")).toBe(true);
     expect(await tooLong("Could not process image")).toBe(false);
     expect(await tooLong("prompt is too long: 1000050 tokens > 1000000 maximum", "api_error")).toBe(false);
+    // 413, as the SDK retries only 408, 409, 429 and 5xx, so the test does not wait.
+    expect(await tooLong("prompt is too long: 1000050 tokens > 1000000 maximum", "invalid_request_error", 413)).toBe(false);
   });
 
   // Release 8a plan, choice 19: Task 1 found the count refuses `fallbacks` ("fallbacks: Extra inputs are not permitted").
