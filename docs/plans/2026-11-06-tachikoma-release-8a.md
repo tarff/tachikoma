@@ -1187,6 +1187,13 @@ Commit: `feat: the session shortens a conversation that will not fit, before the
   window, shows the red line and sends the request as it is; the next request tries again
   (Task 13, user, 2026-11-06, option chosen: "Show the line, send anyway"). This changes Task 12's
   session.ts, which ends the turn.
+- **Its other lines** (Task 13, user, 2026-11-06, option chosen: "Approve all"): the `/` menu
+  notes "Shorten the conversation into a summary now; words after it say what to focus on"
+  (`/compact [words]`) and "Shorten once the conversation passes a number of tokens, such as 200k;
+  off, only when it would not fit" (`/autocompact <tokens>`); the heading over the summary on
+  Ctrl+O, `The summary the conversation was shortened to:`; and the settings edits
+  `autoCompactWindow is now <n> (from settings.json)` and `autoCompactWindow is now off (from
+  settings.json)`. Token counts are written as `200,000`.
 - **The `shortened` event:**
   - It says the approved grey line.
   - It keeps the summary, so Ctrl+O opens it: `openDetail` in full screen, printed in classic.
