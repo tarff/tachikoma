@@ -1183,6 +1183,10 @@ Commit: `feat: the session shortens a conversation that will not fit, before the
 - **`/compact [words]`** shortens between turns, with the words as the focus. With no messages,
   it says its line.
 - **`/autocompact`** and **`autoCompactWindow`** work as choice 26.
+- **A shortening for the `/autocompact` size that fails,** when the request still fits the
+  window, shows the red line and sends the request as it is; the next request tries again
+  (Task 13, user, 2026-11-06, option chosen: "Show the line, send anyway"). This changes Task 12's
+  session.ts, which ends the turn.
 - **The `shortened` event:**
   - It says the approved grey line.
   - It keeps the summary, so Ctrl+O opens it: `openDetail` in full screen, printed in classic.
