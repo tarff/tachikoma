@@ -391,7 +391,10 @@ Each is marked in its task. The user approves them with the plan.
     the tool specs. Pictures count 0 characters.
 17. **The ratio** is the lead request's reported prompt (`input + cacheRead + cacheWrite`) divided
     by that request's characters. It is kept per provider id for this session, and only from a
-    request that succeeded.
+    request that succeeded. A reply served by Anthropic's fallback model teaches the model that
+    answered (`turn.servedBy`), not the lead, so no ratio is borrowed from another model; under a
+    fallback that serves every request, the lead is counted exactly each time (Task 10, user,
+    2026-11-06, option chosen: "The model that answered").
 18. **Pictures added since the last request add nothing to the estimate.** Anthropic's exact
     count, when it runs, includes them; elsewhere the "too long" safety net covers them. No
     per-picture number is set, as none has a source for every provider.
@@ -1093,6 +1096,13 @@ Commit: `feat: shortening summarises everything before what must stay, and keeps
 **Behaviour:**
 - **Before every request,** `fits` is checked against the window and the `/autocompact` size.
   `false` shortens first, with `when` worked out from where the turn is.
+  - A lead with no known window (`contextWindow()` gives `null`) and no `/autocompact` size has
+    no advance check; the "too long" answer still shortens.
+  - The characters given to `learn` are counted once, beside the request, from exactly what was
+    sent, before the reply joins the history. `learn` takes the id of the model that answered
+    (`turn.servedBy ?? lead.id`, choice 17).
+  - `Session.load()` (a resume, `/clear`, `/branch`) starts a new `Sizes`, so a loaded
+    conversation is counted exactly on Anthropic, as the design's "When to shorten" says.
 - **A `"window"` cut-off or a `tooLong` error** shortens and sends once more. Both are checked
   before the pictures question. A second refusal ends the turn with the line.
 - **Each shortening:**
