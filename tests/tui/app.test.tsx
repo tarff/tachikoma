@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -13,15 +13,16 @@ import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/mes
 import { Models } from "@anthropic-ai/sdk/resources/models";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
-import type { Given } from "../../src/clilib.js";
+import { type Given, newSaved, WindowSessions } from "../../src/clilib.js";
 import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { system32 } from "../../src/exec/env.js";
 import type { Executor } from "../../src/exec/executor.js";
 import { LocalWorkspace } from "../../src/exec/local.js";
 import type { Workspace } from "../../src/exec/workspace.js";
 import { Session } from "../../src/core/session.js";
+import { listSessions, openSession } from "../../src/core/sessions.js";
 import { Stats } from "../../src/core/stats.js";
-import { Transcript } from "../../src/core/transcript.js";
+import { sessionPaths, Transcript } from "../../src/core/transcript.js";
 import type { Message, Provider, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
@@ -103,6 +104,10 @@ let nextHistory = 0;
 // The home folder whose settings and keys files /settings and /keybindings open, shared by the tests that do not look
 // at them.
 const sharedHome = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+// The window's sessions for an App rendered without mount(), which saves none: nothing is written unless /clear, /resume
+// or /branch runs, into a folder two levels inside a fresh temp folder.
+const unsaved = () =>
+  new WindowSessions(path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "sessions"), { project: "", version: "test", tools: [] });
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
@@ -139,12 +144,14 @@ async function mount(
     executor?: Executor; // what the tools run through; a real one in a temp folder when not given
     workspace?: Workspace; // the project's files, for the tools and the App; the temp folder's, with `branches`, when not given
     copy?: AppProps["copy"]; // copy mode's copy, and what leave() does with it (release 7 plan, Task 21)
-    sessions?: string; // the data folder sessions are saved in; a fresh one for this mount when not given
+    sessions?: string; // the sessions folder, as sessionsDir gives it; a fresh one for this mount when not given
+    save?: boolean; // the session saves there from the start, as cli.tsx starts one (App's sessions); unsaved otherwise
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
-  // give an earlier mount's to find what it saved (release 8a plan, Task 2). Nothing in the App reads it until Task 5.
-  const sessions = opts.sessions ?? path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "tachikoma");
+  // give an earlier mount's to find what it saved (release 8a plan, Task 2). Only a mount with `save` writes a
+  // transcript there from the start; any other has none until /clear, /resume or /branch opens one.
+  const sessions = opts.sessions ?? path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "sessions");
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
@@ -155,14 +162,32 @@ async function mount(
   const judge = judgeOf(opts.judge, () => session, "", bus); // as cli.tsx gives it: unset, the lead leading judges
   const gate = new PermissionGate(opts.mode ?? "ask", (...a) => ask(...a), undefined, { root: ctx.root, judge });
   gate.rules = opts.live?.loaded.settings.dangerousCommands ?? NO_RULES; // as cli.tsx sets it at launch
-  const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
+  const tasks = new Tasks({
+    bus,
+    max: 8,
+    worker: () => opts.worker ?? new FakeProvider("w", []),
+    system: "sub",
+    tools: SUBAGENT_TOOLS,
+    ctx: { ...ctx, gate },
+    transcript: () => session.transcript, // as cli.tsx gives it
+  });
+  // As cli.tsx makes them: one Pictures for the session and the App (leadSession), the window's sessions, and the inbox,
+  // the lost subagents' lines first.
+  const pictures = opts.pictures ?? new Pictures();
+  const tools = [...TOOLS, delegateTool(tasks, { headless: false })];
+  const start = { project: ctx.root, version: "test", tools: tools.map((t) => t.spec) };
+  const opened = opts.save ? newSaved(sessions, { id: randomUUID(), ...start, lead: lead.id, print: false, system: "t" }) : undefined;
+  const windowSessions = new WindowSessions(sessions, start, opened);
   const session = new Session({
     lead,
-    tools: [...TOOLS, delegateTool(tasks, { headless: false })],
+    tools,
     system: "t",
+    systemNow: async () => "t, read again", // the instruction files read again (release 8a plan, choice 3)
     ctx: { ...ctx, gate },
     bus,
-    inbox: () => tasks.take(),
+    pictures,
+    tasks,
+    inbox: () => [...windowSessions.lost(), ...tasks.take()],
     ask: (...a) => ask(...a), // as cli.tsx gives it
   });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
@@ -221,7 +246,8 @@ async function mount(
       bindings={opts.bindings}
       home={opts.home ?? sharedHome}
       live={opts.live}
-      pictures={opts.pictures}
+      pictures={pictures}
+      saved={windowSessions}
       // No test reads the user's clipboard: unless a test gives its own reader, Alt+V's read never answers, and the
       // test ends it through the session's Pictures.
       readPicture={opts.readPicture === undefined ? () => new Promise(() => {}) : opts.readPicture}
@@ -232,8 +258,9 @@ async function mount(
   // ink-testing-library's terminal has no height; 24 rows is Ink's own default size (getWindowSize).
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
+  if (opened) session.load(opened.conversation); // once the App listens, as cli.tsx loads it
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, sessions, mouse, copies, gate, ask: (...a: Parameters<Ask>) => ask(...a) };
+  return { app, session, ctx, bus, tasks, historyFile, sessions, mouse, copies, gate, pictures, ask: (...a: Parameters<Ask>) => ask(...a) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -2418,6 +2445,7 @@ describe("App in full screen", () => {
         bus={bus}
         stats={new Stats(bus)}
         mode="ask"
+        saved={unsaved()}
         onMode={() => {}}
         onRules={() => {}}
         project="proj"
@@ -4333,6 +4361,7 @@ async function onTerminal(
       bus={bus}
       stats={new Stats(bus)}
       mode="ask"
+      saved={unsaved()}
       onMode={() => {}}
       onRules={() => {}}
       project="proj"
@@ -4777,7 +4806,7 @@ describe("App's /screen", () => {
     expect(app.lastFrame()).not.toContain("screen is now");
     await type(app, "/nope");
     await until(app, "Unknown command: /nope.");
-    expect(app.lastFrame()!.replaceAll("\n", " ")).toContain("/errors, /screen, /settings, /keybindings, /vim, /exit"); // a long line wraps
+    expect(app.lastFrame()!.replaceAll(/ *\n */g, " ")).toContain("/errors, /screen, /settings, /keybindings, /vim, /exit"); // a long line wraps
     await press(app, "/", "s");
     expect(app.lastFrame()).toContain("› /s\n  /screen  Switch between full screen and classic\n");
   });
@@ -8214,5 +8243,346 @@ describe("App's leave() in copy mode", () => {
     expect(w.ended).toEqual([]);
     expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
     expect(existsSync(path.join(w.folder, "work", "a.txt"))).toBe(true);
+  });
+});
+
+// Release 8a plan, Task 7: /clear, /resume, /branch and /rename switch and name the window's saved sessions. Every case
+// saves into one sessions folder, made private once, as privateDir starts PowerShell for each new folder on Windows
+// (about 1.5 s), so a case's /resume list holds earlier cases' sessions too, newest first: each picks the one it saved
+// last, the newest.
+describe("App's sessions", () => {
+  const dir = path.join(mkdtempSync(path.join(tmpdir(), "tachi-sessions-")), "data", "sessions");
+  beforeAll(() => privateDir(dir));
+  const saved = (turns: ConstructorParameters<typeof FakeProvider>[1], opts: Parameters<typeof mount>[1] = {}) =>
+    mount(turns, { ...opts, save: true, sessions: dir });
+  const bg = (id: string, task: string) => callTool(id, "delegate", { description: task, task, background: true });
+  const note = (text: string) => ({ type: "text", text, from: "tasks" });
+  const typed = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+  const fileOf = (id: string) => sessionPaths(dir, id).file;
+  const rowOf = (id: string) => listSessions(dir, { print: false }).find((r) => r.id === id);
+  // A line may wrap at the screen's width, so it is looked for without the frame's blanks and line breaks.
+  const bare = (s: string) => s.replace(/\s/g, "");
+  // A red line that may wrap: its start in red, and its words whole.
+  const saidInRed = (app: ReturnType<typeof render>, line: string) => {
+    expect(app.lastFrame()).toContain(`\u001b[31m${line.slice(0, 10)}`);
+    expect(bare(stripVTControlCharacters(app.lastFrame()!))).toContain(bare(line));
+  };
+  // Whether another window could take the session's lock now, letting it go again at once.
+  const free = (id: string) => {
+    const lock = openSession(dir, id);
+    lock?.release();
+    return lock !== null;
+  };
+  // A session saved by an earlier window, which then closed, letting it go.
+  const earlier = async (prompt: string, close = true) => {
+    const first = await saved([reply("noted")]);
+    await type(first.app, prompt);
+    await until(first.app, "noted");
+    if (close) first.app.unmount();
+    return first;
+  };
+
+  it("starts a new session on /clear, with the instruction files read again, the last one kept and let go", async () => {
+    const lead = new Held("fake:a");
+    const { app, session } = await saved([], { lead });
+    await type(app, "first");
+    lead.answer("one");
+    await until(app, "one");
+    const old = session.id;
+    const before = readFileSync(fileOf(old), "utf8");
+    await type(app, "/clear");
+    await until(app, "Started a new session; the last one is kept (tachi --resume lists it).");
+    expect(session.id).not.toBe(old);
+    expect(free(old)).toBe(true); // carry-over note b
+    expect(free(session.id)).toBe(false);
+    await type(app, "second");
+    await waitFor(() => lead.asked.length === 2);
+    expect(lead.asked[1]!.messages).toEqual([typed("second")]);
+    expect(lead.asked[1]!.system).toBe("t, read again");
+    lead.answer("two");
+    await until(app, "two");
+    expect(readFileSync(fileOf(old), "utf8")).toBe(before);
+    expect(rowOf(session.id)?.firstPrompt).toBe("second");
+  });
+
+  // Choice 15.
+  it("clears the to-do list, the tool line and the gauge's context on a switch", async () => {
+    const { app, bus } = await saved([callTool("c1", "find_files", { pattern: "*.none" }), reply("looked")], { segments: ["context", "tools"] });
+    await type(app, "go");
+    await until(app, "looked");
+    bus.emit("todo", [{ text: "write the fix", status: "pending" }]);
+    await tick();
+    expect(app.lastFrame()).toContain("☐ write the fix");
+    expect(app.lastFrame()).toContain("ctx 15");
+    expect(app.lastFrame()).toContain("find_files ×1");
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    expect(app.lastFrame()).not.toContain("☐ write the fix");
+    expect(app.lastFrame()).toContain("ctx 0");
+    expect(app.lastFrame()).not.toContain("find_files ×1");
+  });
+
+  it("lists the other saved sessions on /resume, and a pick draws its conversation, then its line, and carries it on", async () => {
+    const first = await earlier("remember apple");
+    const lead = new FakeProvider("b", [reply("an apple")]);
+    const { app, session } = await saved([], { lead });
+    const own = session.id;
+    await type(app, "/resume");
+    await until(app, "Saved sessions in this folder, newest first:");
+    expect(app.lastFrame()).toMatch(/Saved sessions in this folder, newest first:\nremember apple +<1m ago +fake:a +[\d.]+k? bytes\n/);
+    expect(app.lastFrame()).toContain("↑↓ move · Enter opens · Esc closes");
+    await press(app, "\r");
+    await until(app, "Resumed: remember apple.");
+    expect(app.lastFrame()).toMatch(/> remember apple\nnoted\nResumed: remember apple\.\n/);
+    expect(session.id).toBe(first.session.id);
+    expect(free(own)).toBe(true);
+    await type(app, "which fruit?");
+    await until(app, "an apple");
+    expect(lead.seen[0]).toEqual([typed("remember apple"), { role: "assistant", parts: [{ type: "text", text: "noted" }] }, typed("which fruit?")]);
+  });
+
+  it("opens a copy on /resume of a session open in another window, saying so, and leaves that one's file as it was", async () => {
+    const first = await earlier("remember pear", false);
+    const before = readFileSync(fileOf(first.session.id), "utf8");
+    const { app, session } = await saved([reply("a pear")]);
+    await type(app, "/resume");
+    await until(app, "remember pear");
+    await press(app, "\r");
+    await until(app, "Resumed: remember pear.");
+    expect(app.lastFrame()).toMatch(/noted\nOpened a copy: that session is open in another window\.\nResumed: remember pear\.\n/);
+    expect(session.id).not.toBe(first.session.id);
+    await type(app, "which fruit?");
+    await until(app, "a pear");
+    expect(session.messages).toHaveLength(4);
+    expect(readFileSync(fileOf(first.session.id), "utf8")).toBe(before);
+  });
+
+  it("closes /resume's list on Esc, the window staying in its session", async () => {
+    await earlier("a session to leave");
+    const { app, session } = await saved([]);
+    const own = session.id;
+    await type(app, "/resume");
+    await until(app, "a session to leave");
+    await press(app, "\u001b");
+    await gone(app, "Saved sessions in this folder");
+    expect(session.id).toBe(own);
+    expect(free(own)).toBe(false);
+  });
+
+  it("says so on /resume when no other session is saved", async () => {
+    const { app } = await mount([]); // a folder of its own, with nothing saved in it
+    await type(app, "/resume");
+    await until(app, "No other saved sessions in this folder.");
+  });
+
+  it("says in red that a picked session could not be read, and stays in this one", async () => {
+    await inColour(async () => {
+      const first = await earlier("soon gone");
+      const { app, session } = await saved([]);
+      const own = session.id;
+      await type(app, "/resume");
+      await until(app, "soon gone");
+      unlinkSync(fileOf(first.session.id)); // the earlier window's transcript, gone before it is picked
+      await press(app, "\r");
+      await until(app, "could not be read as a session");
+      saidInRed(app, `${fileOf(first.session.id)} could not be read as a session (ENOENT`);
+      expect(session.id).toBe(own);
+      expect(free(own)).toBe(false);
+    });
+  });
+
+  // Carry-over note a: a resumed session's own lost subagents reach its next request, and are then marked reported.
+  it("hands the model a resumed session's lost subagents with its next request, then marks them reported", async () => {
+    const first = await saved([reply("noted")]);
+    await type(first.app, "start a search");
+    await until(first.app, "noted");
+    first.session.transcript!.write({ t: "subagent", id: "t1", description: "find x", file: "t1.jsonl" }); // t1 ran as the window closed
+    first.app.unmount();
+    const lead = new FakeProvider("b", [reply("ok")]);
+    const { app } = await saved([], { lead });
+    await type(app, "/resume");
+    await until(app, "start a search");
+    await press(app, "\r");
+    await until(app, "Resumed: start a search.");
+    await type(app, "go on");
+    await until(app, "ok");
+    const lost = "Subagent t1 (find x) had not finished when the session ended; its answer was lost.";
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([{ type: "text", text: "go on" }, note(lost)]);
+    expect(readFileSync(path.join(sessionPaths(dir, first.session.id).subagents, "t1.jsonl"), "utf8")).toContain('"state":"lost"');
+  });
+
+  it("drops a resumed session's lost subagents unsaid on /clear, so the new conversation never hears of them", async () => {
+    const first = await saved([reply("noted")]);
+    await type(first.app, "search again");
+    await until(first.app, "noted");
+    first.session.transcript!.write({ t: "subagent", id: "t1", description: "find y", file: "t1.jsonl" });
+    first.app.unmount();
+    const lead = new FakeProvider("b", [reply("fresh")]);
+    const { app } = await saved([], { lead });
+    await type(app, "/resume");
+    await until(app, "search again");
+    await press(app, "\r");
+    await until(app, "Resumed: search again.");
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    await type(app, "hello");
+    await until(app, "fresh");
+    expect(lead.seen[0]).toEqual([typed("hello")]);
+    expect(existsSync(path.join(sessionPaths(dir, first.session.id).subagents, "t1.jsonl"))).toBe(false); // never reported, so still lost
+  });
+
+  // Carry-over note c: the window's pictures and the resumed session's saved ones never share a number.
+  it("gives a picture numbered before /resume a new number, as the resumed session has saved one under its own", async () => {
+    const PICTURE = process.platform === "win32" ? "\u001bv" : "\u0016"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+    const CTRL_S = "\u0013";
+    const OLD = { mediaType: "image/png" as const, data: Buffer.from([1, 2, 3]) }; // stand-ins, never read from disk
+    const NEW = { mediaType: "image/png" as const, data: Buffer.from([4, 5, 6]) };
+    const first = await saved([reply("seen")]);
+    await press(first.app, "look ", PICTURE);
+    first.pictures.set(1, OLD);
+    await press(first.app, "\r");
+    await until(first.app, "seen");
+    first.app.unmount();
+    const { app, session, pictures } = await saved([reply("both seen")]);
+    await press(app, "and ", PICTURE, CTRL_S); // this window's picture #1, stashed
+    pictures.set(1, NEW);
+    await type(app, "/resume");
+    await until(app, "look [Image #1]");
+    await press(app, "\r");
+    await until(app, "Resumed: look [Image #1].");
+    await press(app, CTRL_S, "\r");
+    await until(app, "both seen");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "look " }, { type: "image", id: 1, ...OLD }]);
+    expect(session.messages[2]!.parts).toEqual([{ type: "text", text: "and " }, { type: "image", id: 2, ...NEW }]);
+    const folder = sessionPaths(dir, first.session.id).pictures;
+    expect(readFileSync(path.join(folder, "1.png"))).toEqual(OLD.data);
+    expect(readFileSync(path.join(folder, "2.png"))).toEqual(NEW.data);
+  });
+
+  it("branches on /branch <name>: the copy is named so, the next turn writes to it, and the original stays as it was", async () => {
+    const { app, session } = await saved([reply("one"), reply("two")]);
+    await type(app, "first");
+    await until(app, "one");
+    const original = session.id;
+    const before = readFileSync(fileOf(original), "utf8");
+    await type(app, "/branch side road");
+    await until(app, "Branched:");
+    expect(bare(app.lastFrame()!)).toContain(bare(`one\n> first\none\nBranched: this window is now side road; the original is kept as ${original}.`));
+    expect(session.id).not.toBe(original);
+    expect(free(original)).toBe(true);
+    await type(app, "second");
+    await until(app, "two");
+    expect(readFileSync(fileOf(original), "utf8")).toBe(before);
+    expect(rowOf(session.id)).toMatchObject({ name: "side road", firstPrompt: "first" });
+    expect(readFileSync(fileOf(session.id), "utf8")).toContain('"text":"second"');
+  });
+
+  it("names a branch after the first prompt when /branch is given no name", async () => {
+    const { app, session } = await saved([reply("one")]);
+    await type(app, "plan the trip");
+    await until(app, "one");
+    const original = session.id;
+    await type(app, "/branch");
+    await until(app, "Branched:");
+    expect(bare(app.lastFrame()!)).toContain(bare(`Branched: this window is now plan the trip; the original is kept as ${original}.`));
+    expect(rowOf(session.id)?.name).toBe("plan the trip");
+  });
+
+  it("has nothing to branch before the first prompt", async () => {
+    const { app, session } = await saved([]);
+    const own = session.id;
+    await type(app, "/branch");
+    await until(app, "Nothing to branch yet: this session has no prompt.");
+    expect(session.id).toBe(own);
+  });
+
+  it("says in red that this session could not be copied for /branch, and stays in it", async () => {
+    await inColour(async () => {
+      const { app, session } = await saved([reply("one")]);
+      await type(app, "first");
+      await until(app, "one");
+      const own = session.id;
+      unlinkSync(fileOf(own)); // this window's own transcript, gone
+      await type(app, "/branch");
+      await until(app, "could not be copied");
+      saidInRed(app, `${fileOf(own)} could not be copied (ENOENT`);
+      expect(session.id).toBe(own);
+    });
+  });
+
+  it("names the session on /rename, as the list shows it, and says how it is used when given no name", async () => {
+    await inColour(async () => {
+      const { app, session } = await saved([reply("one")]);
+      await type(app, "hello");
+      await until(app, "one");
+      await type(app, "/rename");
+      await until(app, "\u001b[31mUsage: /rename <name>");
+      await type(app, "/rename my work");
+      await until(app, "Session named my work.");
+      expect(rowOf(session.id)?.name).toBe("my work");
+    });
+  });
+
+  it.each(["/clear", "/resume", "/branch"])("refuses %s in red while a subagent runs, naming it", async (command) => {
+    await inColour(async () => {
+      const { app, session } = await saved([bg("c1", "find x"), reply("started it")], { worker: new Held("fake:w") });
+      await type(app, "go");
+      await until(app, "started it");
+      const own = session.id;
+      await type(app, command);
+      await until(app, `\u001b[31m${command} waits until no subagent is running: t1 still running. /tasks stop stops them.`);
+      expect(session.id).toBe(own);
+    });
+  });
+
+  it.each([
+    ["/clear", "Started a new session"],
+    ["/resume", "Saved sessions in this folder, newest first:"],
+    ["/branch", "Branched: this window is now go on;"],
+  ])("runs %s queued during a turn once the turn ends", async (command, line) => {
+    await earlier("one to resume");
+    const lead = new Held("fake:a");
+    const { app } = await saved([], { lead });
+    await type(app, "go on");
+    await waitFor(() => lead.asked.length === 1);
+    await type(app, command);
+    expect(app.lastFrame()).not.toContain(line);
+    lead.answer("done");
+    await until(app, line);
+  });
+
+  it("leaves a stopped subagent's note with the last session: /clear's first request holds none of it", async () => {
+    const lead = new FakeProvider("a", [bg("c1", "find x"), reply("started it"), reply("fresh")]);
+    const { app, tasks } = await saved([], { lead, worker: new Held("fake:w") });
+    await type(app, "go");
+    await until(app, "started it");
+    await type(app, "/tasks stop");
+    await until(app, "Stopped every subagent.");
+    await waitFor(() => tasks.all[0]!.state === "stopped");
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    await type(app, "hello");
+    await until(app, "fresh");
+    expect(lead.seen[2]).toEqual([typed("hello")]);
+  });
+
+  it("gives the old conversation a subagent's answer that came while /clear waited in the queue, and the new one none", async () => {
+    const worker = new Held("fake:w");
+    const lead = new Held("fake:a");
+    const { app } = await saved([], { lead, worker });
+    await type(app, "go");
+    lead.answer(bg("c1", "find x"));
+    await waitFor(() => lead.asked.length === 2 && worker.asked.length === 1);
+    await type(app, "/clear");
+    worker.answer("found");
+    await tick();
+    lead.answer("started");
+    await waitFor(() => lead.asked.length === 3);
+    expect(lead.asked[2]!.messages.at(-1)!.parts).toEqual([note("Background task t1 (find x) finished:\nfound")]);
+    lead.answer("read it");
+    await until(app, "Started a new session");
+    await type(app, "new");
+    await waitFor(() => lead.asked.length === 4);
+    expect(lead.asked[3]!.messages).toEqual([typed("new")]);
   });
 });

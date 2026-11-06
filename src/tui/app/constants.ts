@@ -52,8 +52,22 @@ export const isFile = (file: string) => {
 };
 
 export const COMMANDS =
-  "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /tasks, /errors, /screen, /settings, " +
-  "/keybindings, /vim, /exit";
+  "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /clear, /resume, /branch [name], /rename <name>, " +
+  "/tasks, /errors, /screen, /settings, /keybindings, /vim, /exit";
+// Release 8a plan, Task 7: the words its table does not give, drafted at the build, awaiting the user's approval. The `/`
+// menu's notes; /resume with no other session saved; /branch before any prompt, or once saving has stopped (session.ts,
+// "Saving fails"), and /rename then, as nothing they wrote would be saved; and the in-window list's hint, whose Esc
+// closes the list where `tachi -r`'s quits.
+export const DRAFTS = {
+  clear: "Start a new session in this window; the last one stays saved",
+  resume: "Pick a saved session and switch this window to it",
+  branch: "Carry on in a copy of this session, named after its first prompt unless named",
+  rename: "Name this session, as /resume and tachi --resume list it",
+  noOther: "No other saved sessions in this folder.",
+  nothingToBranch: "Nothing to branch yet: this session has no prompt.",
+  unsaved: (command: string) => `${command} needs this session saved, and saving it stopped.`,
+  closes: "closes",
+};
 // "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
 export const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 export const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
@@ -65,6 +79,7 @@ export const characters = (text: string) => [...segmenter.segment(text)].length;
 // is a message).
 export const NAMES = [
   "/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen", "/settings", "/keybindings", "/vim",
+  "/clear", "/resume", "/branch", "/rename",
 ];
 export const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 

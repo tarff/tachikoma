@@ -1,7 +1,7 @@
 import path from "node:path";
 import { Box, Static, Text, useInput, usePaste } from "ink";
 import { useEffect, useRef } from "react";
-import { checkOffLine, type Given } from "../clilib.js";
+import { checkOffLine, type Given, type WindowSessions } from "../clilib.js";
 import type { Bus, ErrorEvent, Events } from "../core/bus.js";
 import { type Ask, type Mode, type Protection, visible } from "../core/permissions.js";
 import type { Session } from "../core/session.js";
@@ -41,6 +41,7 @@ import { pasteTo, phaseInputs } from "./phase.js";
 import type { Pictures, Read } from "./pictures.js";
 import { Prompt, promptWidth } from "./Prompt.js";
 import { Review, type ReviewCopy } from "./Review.js";
+import { SessionList } from "./SessionList.js";
 import { type Segment, StatusLine } from "./StatusLine.js";
 import { TaskPanel, taskRows } from "./TaskPanel.js";
 import type { Screen } from "./terminal.js";
@@ -116,6 +117,9 @@ export interface AppProps {
     ended: (lines: string[]) => void;
     remove?: (folder: string) => Promise<void>; // a test's stand-in for removeCopy (choice 121; copies.ts, dropIfNothing)
   };
+  // The window's saved sessions (clilib.ts, WindowSessions), which /clear, /resume and /branch switch between and /rename
+  // names (release 8a plan, Task 7).
+  saved: WindowSessions;
 }
 
 type OutputArea = ReturnType<typeof output>;
@@ -134,7 +138,10 @@ export interface Fns {
   make: OutputArea["make"]; lookUpWindow: OutputArea["lookUpWindow"];
   submit: QueueArea["submit"]; next: QueueArea["next"]; recordToOpen: QueueArea["recordToOpen"]; leave: QueueArea["leave"];
   perform: QueueArea["perform"]; tasksCommand: QueueArea["tasksCommand"]; recordOf: QueueArea["recordOf"];
-  pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"];
+  pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"]; subagentsRunning: QueueArea["subagentsRunning"];
+  switchTo: QueueArea["switchTo"]; startFresh: QueueArea["startFresh"]; resume: QueueArea["resume"];
+  pickSession: QueueArea["pickSession"]; closeSessions: QueueArea["closeSessions"]; branch: QueueArea["branch"];
+  rename: QueueArea["rename"];
   readsEnded: PictureReadsArea["readsEnded"]; stopReads: PictureReadsArea["stopReads"];
   settle: PictureReadsArea["settle"]; newPicture: PictureReadsArea["newPicture"];
   imagePaste: PictureReadsArea["imagePaste"]; pastePictures: PictureReadsArea["pastePictures"];
@@ -378,6 +385,7 @@ export function App(props: AppProps) {
       // Ink ending on a drawing error would leave with nothing on screen.
       ui.tasks.stop();
       ui.abort.current?.abort();
+      ui.saved.release(); // the window leaves its session (release 8a plan, choice 8)
     };
   }, []);
 
@@ -414,7 +422,7 @@ export function App(props: AppProps) {
       else fns.run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       ui.rerender((n) => n + 1);
     },
-    { isActive: !ui.picker },
+    { isActive: !ui.picker && !ui.sessions }, // the sessions' list drops a paste itself (SessionList.tsx)
   );
 
   // What the listeners set up once, at mount (the bus's, bindAsk's and the mouse's), call: the latest drawing's
@@ -443,7 +451,9 @@ export function App(props: AppProps) {
   const prompt = ui.search.current ? fns.shown() : ui.editor.current;
   fns.staleVim(); // while drawing too, for a change no key made (a picture's read ending), safe as `copied` below says
   const highlight = ui.search.current ? undefined : visualSelection(ui.vim.current, prompt);
-  const menu = ui.picker || ui.question || d ? null : fns.menuFor(prompt);
+  // The model list or /resume's list of sessions, drawn in the prompt's place: the picker phase (phase.ts).
+  const picking = ui.picker !== null || ui.sessions !== null;
+  const menu = picking || ui.question || d ? null : fns.menuFor(prompt);
   if (menu?.kind !== "path") ui.listed.current = null;
 
   // The hint line, under the prompt (release 3 design, "On screen"): whichever applies. `left` is the
@@ -461,7 +471,7 @@ export function App(props: AppProps) {
   const hints = (...parts: (string | false | null)[]) => parts.filter(Boolean).join(" · ");
   // Only a chord the keys drawn would go on with: none read at the prompt's side once a question is drawn, as a click on
   // the model list can bring one there with no key between (lookUp drops it at the next key; choice 32's code review).
-  const chord = ui.asked.current === (!!ui.question && !ui.picker) ? fns.chordKeys().waiting(Date.now()) : null;
+  const chord = ui.asked.current === (!!ui.question && !picking) ? fns.chordKeys().waiting(Date.now()) : null;
   const fillKeys = [ui.keyOf("autocomplete:accept", "Autocomplete", "tab"), ui.keyOf("chat:submit", "Chat", "enter")];
   const previous = ui.keyOf("history:previous", "Chat", "up");
   // The last line of a live edit, with how many more it said, which the conversation shows (note, output.ts).
@@ -474,7 +484,7 @@ export function App(props: AppProps) {
       ? `${keyText(chord)} ...`
       : exitKey
       ? `Press ${exitKey} again to exit`
-      : d && !ui.picker
+      : d && !picking
       ? keyRow(d, ui.table)
       : searching
       ? hints(
@@ -484,7 +494,7 @@ export function App(props: AppProps) {
           said(ui.keyOf("historySearch:accept", "HistorySearch", "tab"), "edit"),
           "Ctrl-C cancel",
         )
-        : ui.picker || ui.question
+        : picking || ui.question
           ? null
           : menu
             ? hints(
@@ -538,7 +548,7 @@ export function App(props: AppProps) {
   const shortOf = (q: Question) => `${q.label} (shown above)`;
   const laid = layout(prompt.text, promptWidth(ui.columns));
   const offered = ui.full && ui.picker ? listRows(ui.picker, "") : [];
-  const movable = ui.full && ui.question && !ui.picker && !ui.question.short; // a question that can still move into the conversation
+  const movable = ui.full && ui.question && !picking && !ui.question.short; // a question that can still move into the conversation
   const f = frameOf({
     rows: ui.height,
     columns: ui.columns,
@@ -547,16 +557,17 @@ export function App(props: AppProps) {
     cursorRow: laid.places.get(prompt.cursor)!.row,
     promptTop: ui.promptTop.current,
     working: ui.busy,
-    toolLine: !ui.picker && ui.shownSegments.includes("tools") && ui.calls.current.length > 0,
+    toolLine: !picking && ui.shownSegments.includes("tools") && ui.calls.current.length > 0,
     detail: d !== null,
     hint: hintFor(1) !== null, // whether there is a hint does not depend on the rows left (usualHint)
     menu: menu ? menu.entries.length : null,
     taskRows: (rows) => taskRows(ui.tasks.all, rows, ui.now),
     todoRows: (rows) => (!ui.todos.current.hidden && unfinished(ui.todos.current.items) ? todoRows(ui.todos.current.items, rows) : []),
     queued: ui.queue.current.length,
-    pickerNeeded: ui.picker ? offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1) : null,
+    // The sessions' list: its heading and a row each.
+    pickerNeeded: ui.picker ? offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1) : ui.sessions ? ui.sessions.rows.length + 1 : null,
     question: ui.question !== null,
-    askedText: ui.full && ui.question && !ui.picker ? allow(ui.question.short ?? ui.question.text, ui.question.plain) : null,
+    askedText: ui.full && ui.question && !picking ? allow(ui.question.short ?? ui.question.text, ui.question.plain) : null,
     askedShort: movable ? allow(shortOf(ui.question), ui.question.plain) : null,
     askedWarnings: ui.question?.warnings ?? [],
     askedNote: ui.question?.note !== undefined,
@@ -607,7 +618,7 @@ export function App(props: AppProps) {
   // that; otherwise its heading goes on the top row. The view is held there, never moved to the bottom (view.ts,
   // first), so what arrives while the question waits does not move it, and the lines already below the detail (a reply,
   // an earlier answer) are counted as unseen. A question without a detail leaves the view (release 5 plan, choice 11).
-  if (ui.full && ui.question && !ui.picker && (ui.question.following === undefined || moved)) {
+  if (ui.full && ui.question && !picking && (ui.question.following === undefined || moved)) {
     if (ui.question.following === undefined) ui.question.following = ui.view.current.at === null;
     if (ui.question.detail) {
       const [from, to] = ui.question.detail;
@@ -621,13 +632,13 @@ export function App(props: AppProps) {
     columns: ui.columns,
     viewHeight,
     promptFirst,
-    promptRows: ui.picker || ui.question || ui.search.current || d ? 0 : promptShown,
+    promptRows: picking || ui.question || ui.search.current || d ? 0 : promptShown,
     promptWindow: f.promptWindow,
     menuRows,
     editor: ui.editor.current,
     chosen: ui.chosen.current,
     detail: d,
-    picker: ui.picker !== null,
+    picker: picking,
     question: ui.question !== null,
   };
   // Where vim takes Esc first (vimFirst) the line names it twice; a key chat:cancel has with Ctrl or Alt never goes to
@@ -691,6 +702,16 @@ export function App(props: AppProps) {
           </Box>
         ) : (
           <ModelPicker groups={ui.picker} current={ui.session.lead.id} onPick={fns.pick} onClose={fns.closePicker} keys={ui.pickerKey} bindings={ui.table} />
+        )
+      ) : ui.sessions ? (
+        // /resume's list (release 8a plan, choice 14), where the model list goes. In classic mode it takes the rows above
+        // the status line, less its hint's and the one Ink ends on.
+        ui.full ? (
+          <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
+            <SessionList {...ui.sessions} bindings={ui.table} onPick={fns.pickSession} onClose={fns.closeSessions} keys={ui.pickerKey} maxRows={pickerRows} />
+          </Box>
+        ) : (
+          <SessionList {...ui.sessions} bindings={ui.table} onPick={fns.pickSession} onClose={fns.closeSessions} keys={ui.pickerKey} maxRows={ui.height - 3} />
         )
       ) : ui.question ? (
         // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8); auto mode's pause, a

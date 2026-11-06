@@ -1,9 +1,11 @@
 import { Box, Text, useInput, usePaste, useWindowSize } from "ink";
 import { useRef, useState } from "react";
 import type { Row } from "../core/sessions.js";
+import { DRAFTS } from "./app/constants.js";
 import { type Bindings, strokeOf } from "./bindings.js";
 import { screen } from "./describe.js";
 import { both, named, pieces } from "./keys.js";
+import type { PickerKey } from "./ModelPicker.js";
 import { k } from "./StatusLine.js";
 
 // `tachi -r`'s list of this folder's saved sessions (release 8a design, "Resuming"; plan, choice 12): newest first, each
@@ -36,6 +38,8 @@ export function SessionList({
   bindings,
   onPick,
   onClose,
+  keys,
+  maxRows,
 }: {
   rows: Row[]; // newest first (sessions.ts, listSessions)
   name?: string;
@@ -43,6 +47,11 @@ export function SessionList({
   bindings: Bindings; // the table of keys, for Select's keys and the names the hint gives them
   onPick: (id: string) => void;
   onClose: () => void;
+  // In the window, /resume's list (release 8a plan, choice 14): the App hands it the keys it finds in the table, as it
+  // hands the model list its own (ModelPicker.tsx), so one stroke is looked up once; and the rows for the heading and the
+  // sessions, the App's other rows drawn around them. Its Esc closes the list there, the session going on.
+  keys?: { current: ((k: PickerKey) => void) | null };
+  maxRows?: number;
 }) {
   const { rows: tall } = useWindowSize();
   const listed = name === undefined ? rows : rows.filter((r) => r.name === name);
@@ -73,16 +82,18 @@ export function SessionList({
       const got = stroke && bindings.press(stroke, ["Select", "Global"], Date.now());
       if (!got || !("pending" in got)) act(got?.action ?? null);
     }
-  });
+  }, { isActive: keys === undefined });
+  // Typed text has nothing to go into here.
+  if (keys) keys.current = (k) => act(typeof k === "object" && "action" in k ? k.action : null);
 
   // The keys' names, from the bindings, as ModelPicker's hint names them; a part with no key is left out.
   const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
   const moves = both(key("select:previous", "up"), key("select:next", "down"));
   const [enter, esc] = [key("select:accept", "enter"), key("select:cancel", "escape")];
-  const hint = [moves && `${moves} move`, enter && `${enter} opens`, esc && `${esc} quits`].filter(Boolean).join(" · ");
+  const hint = [moves && `${moves} move`, enter && `${enter} opens`, esc && `${esc} ${keys ? DRAFTS.closes : "quits"}`].filter(Boolean).join(" · ");
 
   // The list in the rows between the heading and the hint, its window moved only as far as keeps the chosen row in it.
-  const room = Math.max(1, tall - 1 - 2); // the terminal's rows, less the one Ink ends on
+  const room = Math.max(1, (maxRows ?? tall - 2) - 1); // the terminal's rows, less the one Ink ends on and the hint's
   if (s.at < s.first) s.first = s.at;
   if (s.at >= s.first + room) s.first = s.at - room + 1;
   // The columns after the label line up, each as wide as its widest entry.

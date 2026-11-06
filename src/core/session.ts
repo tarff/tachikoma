@@ -123,6 +123,12 @@ export class Session {
     this.#saving(); // a write made before the load, such as launch's start line or mend
   }
 
+  // The system prompt built afresh, for /clear (release 8a plan, Task 7): the instruction files read again, or without
+  // systemNow the starting one.
+  freshSystem(): Promise<string> {
+    return this.opts.systemNow?.() ?? Promise.resolve(this.opts.system);
+  }
+
   get fallback(): Provider | undefined {
     return this.#fallback;
   }

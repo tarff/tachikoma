@@ -725,6 +725,60 @@ export function resumed(s: Saved, o: { tools: ToolSpec[]; lead: string; name?: s
   };
 }
 
+// The saved sessions a window opens (release 8a plan, Task 7): its sessions folder, what a new session's start line holds
+// besides its id, lead and system prompt, and the session open now, with its lock and the lines about its lost subagents
+// still to hand the model. /clear, /resume and /branch open the next session as the launch does, and once the window has
+// switched to it, the last one's lock is let go and its lost lines dropped, so they never reach the new conversation.
+export class WindowSessions {
+  #open: Opened | undefined;
+  #lost: string[];
+
+  constructor(
+    readonly dir: string,
+    readonly start: { project: string; version: string; tools: ToolSpec[] },
+    open?: Opened,
+  ) {
+    this.#open = open;
+    this.#lost = [...(open?.lost ?? [])];
+  }
+
+  // The lost lines, once, for the model's next request, as waiting text goes; their subagents are then marked reported.
+  lost(): string[] {
+    const now = this.#lost.splice(0);
+    if (now.length) this.#open?.reported();
+    return now;
+  }
+
+  // /clear's session: a new one under a fresh id, as the launch starts one.
+  fresh(lead: string, system: string): Opened {
+    return newSaved(this.dir, { id: randomUUID(), ...this.start, lead, print: false, system });
+  }
+
+  // /resume's pick, opened as the launch opens it, a copy when another window holds it; and /branch's copy of the session
+  // open now, named, its lock taken before it is written. The window's lead stays: one that differs from the saved one
+  // is written into it, as `--lead` writes it at the launch.
+  resume(id: string, lead: string): Opened | { problem: string } {
+    const s = openSaved(this.dir, id, { fork: false });
+    return "problem" in s ? s : resumed(s, { tools: this.start.tools, lead });
+  }
+  branch(id: string, lead: string, name: string): Opened | { problem: string } {
+    const s = openSaved(this.dir, id, { fork: true });
+    return "problem" in s ? s : resumed(s, { tools: this.start.tools, lead, name });
+  }
+
+  // The window has switched to `next`: the last session's lock is let go (release 8a plan, choice 8).
+  switched(next: Opened): void {
+    this.#open?.release();
+    this.#open = next;
+    this.#lost = [...next.lost];
+  }
+
+  // The window has closed: its session's lock is let go then, as at /clear.
+  release(): void {
+    this.#open?.release();
+  }
+}
+
 // A shortening's system prompt (release 8a plan, choice 3): the launch's own first part, and the instruction files read
 // again. A file outside the project goes in only when the launch's question allowed it; one not asked about then is left
 // out without asking (user, 2026-11-06: "Re-read, reuse launch's answer"). `asked` holds the launch's answer for each

@@ -12,6 +12,9 @@ export { marker, type Picture } from "../core/types.js";
 
 export class Pictures {
   #last = 0;
+  // The first number the conversation loaded last leaves free: a picture numbered below it in this window was numbered
+  // before that conversation came, and may share a number with one it saved (release 8a plan, Task 7).
+  #loaded = 1;
   readonly #reads = new Map<number, { read: Read | "reading"; settled: Promise<void>; end: () => void }>();
   readonly #sent = new Set<number>();
 
@@ -28,6 +31,13 @@ export class Pictures {
   // switch, keep numbers no other picture in the window takes (release 8a plan, choice 5).
   from(n: number): void {
     this.#last = Math.max(this.#last, n - 1);
+    this.#loaded = n;
+  }
+
+  // The number a picture goes into the conversation under: its own, or one of its own for a picture numbered before the
+  // conversation loaded now, such as one stashed through a /resume, so no two pictures of a conversation share a number.
+  sendAs(id: number): number {
+    return id < this.#loaded ? ++this.#last : id;
   }
 
   // A read's result, wherever its marker is. Every read ends in one of these, never left "reading". The first ending
@@ -78,7 +88,7 @@ export function messageParts(d: Draft, pictures: Pictures): Part[] {
     const p = pictures.get(s.id);
     if (typeof p !== "object" || "failed" in p || pictures.sent(s.id)) continue;
     text(s.from);
-    parts.push({ type: "image", id: s.id, ...p });
+    parts.push({ type: "image", id: pictures.sendAs(s.id), ...p });
     pictures.markSent(s.id);
     at = s.to;
   }

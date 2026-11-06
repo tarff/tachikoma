@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import path from "node:path";
@@ -35,6 +35,7 @@ import {
   scrollSpeed,
   statusSegments,
   systemAgain,
+  WindowSessions,
 } from "../src/clilib.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
 import { FakeProvider, removeTree, tempContext } from "./helpers.js";
@@ -758,6 +759,56 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       const o = newSaved(blocked, { ...begin, id: "fresh", print: false });
       expect(o.conversation.transcript!.failed).not.toBeNull();
       expect(read(blocked)).toBe("not a folder");
+    });
+  });
+
+  // Release 8a plan, Task 7: the window's session, which /clear, /resume and /branch switch. Its lost lines are handed
+  // out once and then marked reported; switching lets the last session's lock go and drops its lost lines unsaid.
+  describe("WindowSessions", () => {
+    const lost = (id: string) => [start(id), message(prompt("go")), { t: "subagent", at, id: "t1", description: "find x", file: "t1.jsonl" }];
+    const lines = (file: string) => read(file).trim().split("\n").map((l) => JSON.parse(l));
+    const marked = (id: string) => existsSync(path.join(dir, id, "subagents", "t1.jsonl"));
+    const opened = (id: string) => {
+      const s = openSaved(dir, id, { fork: false });
+      if ("problem" in s) throw new Error(s.problem);
+      return resumed(s, { tools, lead: "fake:a" });
+    };
+
+    it("hands out the open session's lost lines once, then marks them reported", () => {
+      saved(dir, "w1", lost("w1"));
+      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, opened("w1"));
+      onTestFinished(() => w.release());
+      expect(w.lost()).toEqual(["Subagent t1 (find x) had not finished when the session ended; its answer was lost."]);
+      expect(marked("w1")).toBe(true);
+      expect(w.lost()).toEqual([]);
+    });
+
+    it("lets the last session go on a switch, its lost lines dropped and never marked, and starts a fresh one", () => {
+      saved(dir, "w2", lost("w2"));
+      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, opened("w2"));
+      onTestFinished(() => w.release());
+      const next = w.fresh("fake:b", "Fresh prompt.");
+      w.switched(next);
+      expect(w.lost()).toEqual([]);
+      expect(marked("w2")).toBe(false);
+      const lock = openSession(dir, "w2"); // free for another window now
+      expect(lock).not.toBeNull();
+      lock!.release();
+      expect(openSession(dir, next.conversation.id)).toBeNull(); // the new one's held
+      const fresh = { t: "start", project: top, lead: "fake:b", print: false, system: "Fresh prompt.", tools };
+      expect(lines(next.conversation.transcript!.file)).toMatchObject([fresh]);
+    });
+
+    it("branches a copy of a session under its name, leaving the original as it was", () => {
+      const file = saved(dir, "w3", talk("w3", "one"));
+      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools });
+      const copy = w.branch("w3", "fake:a", "side");
+      if ("problem" in copy) throw new Error(copy.problem);
+      onTestFinished(copy.release);
+      expect(copy.conversation.id).not.toBe("w3");
+      expect(copy.conversation.messages).toEqual([prompt("one"), said("Done.")]);
+      expect(lines(copy.conversation.transcript!.file).at(-1)).toMatchObject({ t: "name", name: "side" });
+      expect(read(file)).toBe(talk("w3", "one").map((l) => `${JSON.stringify(l)}\n`).join(""));
     });
   });
 

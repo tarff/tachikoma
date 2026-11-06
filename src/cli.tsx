@@ -44,6 +44,7 @@ import {
   screenMode,
   type Started,
   systemAgain,
+  WindowSessions,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { dataDir, KEYBINDINGS, projectFile, settingsDir } from "./core/datadir.js";
@@ -583,21 +584,18 @@ const opened = saved
 attachErrorLog(bus, errorFile, opened.conversation.id);
 const said = [...opened.lines, ...(leadLine ? [{ text: leadLine }] : [])].map((l) => ({ ...l, text: visible(l.text) }));
 // The subagents a crash cut short reach the model with its next request, as waiting answers do (release 8a design,
-// "Resuming"), and are marked reported once handed out.
-const lost = [...opened.lost];
+// "Resuming"), and are marked reported once handed out: the window's session's, which /clear, /resume and /branch switch
+// (release 8a plan, Task 7).
+const windowSessions = new WindowSessions(sessions, { project: root, version: VERSION, tools: specs }, opened);
 const { session, pictures } = leadSession({
   lead,
   fallback,
   tools,
   system,
-  systemNow: systemAgain(first, instructionsAt, mode === "never" ? "all" : asked), // a shortening's prompt (release 8a plan, choice 3)
+  systemNow: systemAgain(first, instructionsAt, mode === "never" ? "all" : asked), // a shortening's and /clear's prompt (release 8a plan, choice 3)
   ctx: { root: where.root, executor, workspace, gate },
   bus,
-  inbox: () => {
-    const now = lost.splice(0);
-    if (now.length) opened.reported();
-    return [...now, ...tasks.take()];
-  },
+  inbox: () => [...windowSessions.lost(), ...tasks.take()],
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
   tasks,
 });
@@ -734,6 +732,7 @@ if (parsed.print !== undefined) {
       home={os.homedir()}
       live={{ loaded, given: givenBy(parsed, process.env), ...(netLine ? { networkLine: netLine } : {}), ...(gitLine ? { gitLine } : {}) }}
       {...(copy ? { copy } : {})}
+      saved={windowSessions}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing

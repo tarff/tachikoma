@@ -2,6 +2,7 @@ import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { errorText } from "../core/types.js";
 import { resolveIn } from "../tools/files.js";
+import { DRAFTS } from "./app/constants.js";
 
 // The `/` and `@` menus (release 3 design, "Menus and modes"), worked out from the prompt's text: what
 // each entry shows, what Tab (and, for a path, Enter) puts in the prompt in place of the text from
@@ -27,6 +28,10 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/model", run: "/model", note: "Pick the lead model from a list" },
   { label: "/login chatgpt", run: "/login chatgpt", note: "Sign in to ChatGPT" },
   { label: "/logout chatgpt", run: "/logout chatgpt", note: "Sign out of ChatGPT" },
+  { label: "/clear", run: "/clear", note: DRAFTS.clear },
+  { label: "/resume", run: "/resume", note: DRAFTS.resume },
+  { label: "/branch [name]", run: "/branch", note: DRAFTS.branch },
+  { label: "/rename <name>", run: "/rename", note: DRAFTS.rename },
   { label: "/tasks", run: "/tasks", note: "List the subagents; /tasks t1 shows one, /tasks stop stops them" },
   { label: "/errors", run: "/errors", note: "Summarise the error log" },
   { label: "/screen", run: "/screen", note: "Switch between full screen and classic" },
