@@ -5419,7 +5419,8 @@ describe("App's keys from the table of actions", () => {
     await until(app, "  /exit  Quit");
     await wheel(mouse, "down");
     await press(app, "\t");
-    expect(app.lastFrame()).toContain("› /exit");
+    // /export comes first, so a notch down is the second entry.
+    expect(app.lastFrame()).toContain("› /errors");
   });
 
   it("scrolls on a wheel notch that drops a waiting chord, and takes the chord from the hint row", async () => {

@@ -33,6 +33,10 @@ const ALLOWED: Record<string, { lines: string[]; why: string }> = {
     lines: ['import { mkdirSync, writeFileSync } from "node:fs";'],
     why: "/settings and /keybindings make a missing file in the settings folder, not in the project",
   },
+  "tui/app/queue.ts": {
+    lines: ['import { lstat, writeFile } from "node:fs/promises";'],
+    why: "/export writes the file the user names on the host, refusing any entry already at that name",
+  },
 };
 
 const src = fileURLToPath(new URL("../../src/", import.meta.url));
