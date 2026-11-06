@@ -1299,7 +1299,8 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     expect(r.code).toBe(0);
     const lines = r.stderr.trimEnd().split("\n");
     expect(lines[0]).toBe(`Copying ${r.proj} for the sandbox...`); // not a terminal, so not grey
-    expect(lines[1]).toMatch(/^Sandbox: copy of .+ \(1 file, \d+\.\d s\), network off, /);
+    expect(lines[1]).toBe("Starting the sandbox...");
+    expect(lines[2]).toMatch(/^Sandbox: copy of .+ \(1 file, \d+\.\d s\), network off, /);
     const [session] = readdirSync(r.copies);
     expect(lines.at(-1)).toBe(`Changes kept for review: tachi review ${session}`);
     expect(existsSync(path.join(r.copies, session!, "manifest.json"))).toBe(true);

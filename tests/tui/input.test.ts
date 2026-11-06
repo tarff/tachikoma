@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { render, useInput, usePaste } from "ink";
 import { createElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -38,6 +39,10 @@ class Source extends EventEmitter {
   }
   unref() {
     this.calls.push("unref");
+    return this;
+  }
+  resume() {
+    this.calls.push("resume");
     return this;
   }
 }
@@ -396,13 +401,29 @@ describe("InputFilter", () => {
     expect([filter.read(), filter.read(), filter.read()]).toEqual(["a", "b", null]);
   });
 
-  it("sets the source to utf8, then passes the stream calls on", () => {
+  it("sets the source to utf8 and resumes it, then passes the stream calls on", () => {
     const source = new Source();
     const filter = new InputFilter(source as never);
     expect(filter.isTTY).toBe(true);
     filter.setRawMode(true).setEncoding("utf8").ref().unref();
     filter.setRawMode(false);
-    expect(source.calls).toEqual(["setEncoding(utf8)", "setRawMode(true)", "setEncoding(utf8)", "ref", "unref", "setRawMode(false)"]);
+    expect(source.calls).toEqual(["setEncoding(utf8)", "resume", "setRawMode(true)", "setEncoding(utf8)", "ref", "unref", "setRawMode(false)"]);
+  });
+
+  // The question at the start pauses stdin after its key (cli.tsx, askAtStart), and a data listener alone leaves a stream
+  // paused that way: the window then heard no key, Ctrl-C included.
+  it("reads a source that was paused before it, with the keys typed meanwhile", async () => {
+    const source = Object.assign(new PassThrough(), { setRawMode: () => source, ref: () => source, unref: () => source });
+    source.pause();
+    source.write("hi");
+    const filter = new InputFilter(source as never);
+    const reads: string[] = [];
+    filter.on("readable", () => {
+      let s: string | null;
+      while ((s = filter.read()) !== null) reads.push(s);
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(reads).toEqual(["hi"]);
   });
 
   it("while held, keeps raw mode off and unref from the source, and passes everything after", () => {
@@ -492,10 +513,6 @@ describe("InputFilter", () => {
     class Flowing extends Source {
       pause() {
         this.calls.push("pause");
-        return this;
-      }
-      resume() {
-        this.calls.push("resume");
         return this;
       }
     }

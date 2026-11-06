@@ -538,6 +538,7 @@ const instructions = await readInstructions(instructionsAt, async (reached) => {
 // it, on /work (choice 19). Its launch lines are grey in the interface, and on stderr with -p.
 let box: Started | undefined;
 if (ready) {
+  console.error(styleText("gray", "Starting the sandbox...", { stream: process.stderr })); // the user's words: the start takes seconds
   const started = await sandboxStart(root, ready, { network: options.network, limits: loaded.settings.sandboxLimits, session: sessionId }, {
     err: (line) => console.error(line),
   });
