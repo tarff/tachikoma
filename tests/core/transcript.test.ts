@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
-import { type Line, readTranscript, Transcript, wholeLines } from "../../src/core/transcript.js";
+import { type Line, readOutline, readTranscript, Transcript, wholeLines } from "../../src/core/transcript.js";
 import type { Message } from "../../src/core/types.js";
 import { removeTree } from "../helpers.js";
 
@@ -427,5 +427,24 @@ describe("transcript", { timeout: 15_000 }, () => {
     t.write({ t: "message", message: prompt("one") });
     tear(p.file, 0);
     expect(readTranscript(p.file, p.pictures)).toEqual({ problem: words });
+  });
+
+  // The session list's reader (release 8a plan, Task 4) shows what resuming would load.
+  it("outlines a file as the full reader reads it", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "name", name: "the fix" });
+    t.write({ t: "lead", lead: "fake:b" });
+    t.write({ t: "message", message: answers("c1", "a result whose call is gone") });
+    t.write({ t: "message", message: prompt("the real prompt") });
+    t.write({ t: "message", message: said("Done.") });
+    t.write({ t: "message", message: prompt("and then?") });
+    tear(p.file, 5);
+    const full = read(p);
+    const outline = readOutline(p.file)!;
+    expect(full.damaged).toBe(1);
+    expect(outline).toEqual({ start: full.start, name: full.name, lead: full.lead, firstPrompt: full.firstPrompt, said: true });
+    expect(outline).toMatchObject({ name: "the fix", lead: "fake:b", firstPrompt: "the real prompt" });
   });
 });

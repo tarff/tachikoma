@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -107,6 +108,16 @@ describe("sessions", { timeout: 15_000 }, () => {
       expect(listSessions(dir, { print: false })).toMatchObject([{ id: "s1", firstPrompt: "hi" }]);
     });
 
+    it("leaves out a session whose start line is torn", () => {
+      const dir = folder();
+      const file = session(dir, "torn", { prompt: "hi" });
+      const lines = readFileSync(file, "utf8").split("\n");
+      lines[0] = lines[0]!.slice(0, lines[0]!.length / 2);
+      writeFileSync(file, lines.join("\n"));
+      session(dir, "whole", { prompt: "hi" });
+      expect(listSessions(dir, { print: true }).map((r) => r.id)).toEqual(["whole"]);
+    });
+
     it("is empty for a project with no sessions folder", () => {
       expect(listSessions(path.join(top, "no such folder"), { print: true })).toEqual([]);
     });
@@ -185,6 +196,13 @@ describe("sessions", { timeout: 15_000 }, () => {
       writeFileSync(path.join(pictures, "1.png"), "changed");
       expect(readFileSync(copy, "utf8")).toBe(before);
       expect(readFileSync(path.join(shared, id, "pictures", "1.png"))).toEqual(bytes);
+      // A session whose own folder is a link: the copy leaves it out, and what it points at is untouched.
+      session(shared, "linked", { prompt: "hi" });
+      symlinkSync(outside, path.join(shared, "linked"), "junction");
+      const linked = copySession(shared, "linked");
+      expect(read(path.join(shared, `${linked}.jsonl`), path.join(shared, linked, "pictures")).start.id).toBe(linked);
+      expect(existsSync(path.join(shared, linked))).toBe(false);
+      expect(readdirSync(outside)).toEqual(["secret.txt"]);
     });
   });
 
@@ -200,9 +218,13 @@ describe("sessions", { timeout: 15_000 }, () => {
     const old = new Date(now.getTime() - 31 * DAY);
     const age = (p: string, when: Date) => utimesSync(p, when, when);
 
-    it("deletes every project's sessions unchanged for longer than the days, with their folders and locks, and keeps a newer one", () => {
+    it("deletes every project's sessions unchanged for longer than the days, with their folders and locks, and keeps a newer one", async () => {
       const { data, dir } = place();
       age(session(dir, "old", { prompt: "hi" }), old);
+      // A lock left by a window that has ended: its pid is no longer running.
+      const gone = spawn(process.execPath, ["-e", ""]);
+      await new Promise((r) => gone.on("close", r));
+      writeFileSync(path.join(dir, "old.lock"), String(gone.pid));
       mkdirSync(path.join(dir, "old", "pictures"), { recursive: true });
       writeFileSync(path.join(dir, "old", "pictures", "1.png"), "bytes");
       age(session(dir, "new", { prompt: "hi" }), new Date(now.getTime() - 29 * DAY));
@@ -230,6 +252,9 @@ describe("sessions", { timeout: 15_000 }, () => {
       writeFileSync(path.join(outside, "keep.txt"), "kept");
       mkdirSync(path.join(dir, "old", "pictures"), { recursive: true });
       symlinkSync(outside, path.join(dir, "old", "pictures", "elsewhere"), "junction");
+      // A session whose own folder is a link to the same place.
+      age(session(dir, "away", { prompt: "hi" }), old);
+      symlinkSync(outside, path.join(dir, "away"), "junction");
       expect(sweep(data, 30, now)).toEqual([]);
       expect(readdirSync(dir)).toEqual([]);
       expect(readFileSync(path.join(outside, "keep.txt"), "utf8")).toBe("kept");

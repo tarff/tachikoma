@@ -205,6 +205,19 @@ describe("tryLock", () => {
     again!();
   });
 
+  it("is released once: an old release leaves the lock taken since standing", async () => {
+    const file = await lockFile();
+    const first = tryLock(file)!;
+    first();
+    const second = tryLock(file);
+    expect(second).not.toBeNull();
+    first();
+    expect(readFileSync(file, "utf8")).toBe(String(process.pid));
+    expect(tryLock(file)).toBeNull();
+    second!();
+    expect(existsSync(file)).toBe(false);
+  });
+
   it("is not taken while another process holds it, and does not wait", async () => {
     const file = await lockFile();
     // A plain Node process writes the lock as tryLock does, its pid in it, and holds it until its input ends.

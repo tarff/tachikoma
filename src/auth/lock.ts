@@ -160,7 +160,14 @@ const queues = new Map<string, Promise<void>>();
 // in this process is held: tryTake would take its own pid for one left by an earlier process.
 export function tryLock(file: string): (() => void) | null {
   if (held.has(file) || tryTake(file) !== null) return null;
-  return () => release(file);
+  // Once only, so a window's old release can never remove the lock it, or another part of it, took since.
+  let done = false;
+  return () => {
+    if (!done) {
+      done = true;
+      release(file);
+    }
+  };
 }
 
 export function withLock<T>(file: string, fn: () => Promise<T>, onWait: (pid: number) => void = () => {}, signal?: AbortSignal): Promise<T> {
