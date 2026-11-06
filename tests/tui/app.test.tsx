@@ -11,7 +11,7 @@ import chalk from "chalk";
 import { Completions } from "openai/resources/chat/completions";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { Models } from "@anthropic-ai/sdk/resources/models";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import { type Given, newSaved, WindowSessions } from "../../src/clilib.js";
 import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
@@ -106,9 +106,10 @@ let nextHistory = 0;
 // at them.
 const sharedHome = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
 // The window's sessions for an App rendered without mount(), which saves none: nothing is written unless /clear, /resume
-// or /branch runs, into a folder two levels inside a fresh temp folder.
-const unsaved = () =>
-  new WindowSessions(path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "sessions"), { project: "", version: "test", tools: [] });
+// or /branch runs, into one folder of this file's own, two levels inside a fresh temp folder, removed at the end.
+const unsavedTop = mkdtempSync(path.join(tmpdir(), "tachi-app-data-"));
+afterAll(() => removeTree(unsavedTop));
+const unsaved = () => new WindowSessions(path.join(unsavedTop, "data", "sessions"), { project: "", version: "test", tools: [] });
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
@@ -8252,8 +8253,10 @@ describe("App's leave() in copy mode", () => {
 // (about 1.5 s), so a case's /resume list holds earlier cases' sessions too, newest first: each picks the one it saved
 // last, the newest.
 describe("App's sessions", () => {
-  const dir = path.join(mkdtempSync(path.join(tmpdir(), "tachi-sessions-")), "data", "sessions");
+  const top = mkdtempSync(path.join(tmpdir(), "tachi-sessions-"));
+  const dir = path.join(top, "data", "sessions");
   beforeAll(() => privateDir(dir));
+  afterAll(() => removeTree(top));
   const saved = (turns: ConstructorParameters<typeof FakeProvider>[1], opts: Parameters<typeof mount>[1] = {}) =>
     mount(turns, { ...opts, save: true, sessions: dir });
   const bg = (id: string, task: string) => callTool(id, "delegate", { description: task, task, background: true });
@@ -8420,6 +8423,26 @@ describe("App's sessions", () => {
     expect(readFileSync(fileOf(first.session.id), "utf8")).toBe(before);
   });
 
+  // A prompt read with /resume in one read of the terminal starts its turn under the list: a pick then cannot load, so it
+  // leaves the turn's state as it was, and lets the picked session go.
+  it("leaves a turn started under /resume's list alone when a pick cannot load, and lets the picked session go", async () => {
+    const first = await earlier("picked mid-turn");
+    const lead = new Held("fake:a");
+    const { app, session, bus } = await saved([], { lead });
+    const own = session.id;
+    app.stdin.write("/resume\rhi\r");
+    await until(app, "picked mid-turn");
+    await waitFor(() => lead.asked.length === 1);
+    bus.emit("todo", [{ text: "keep this", status: "pending" }]);
+    await press(app, "\r");
+    await until(app, "A turn is already running");
+    expect(app.lastFrame()).toContain("☐ keep this");
+    expect(session.id).toBe(own);
+    expect(free(first.session.id)).toBe(true);
+    lead.answer("done");
+    await until(app, "done");
+  });
+
   it("closes /resume's list on Esc, the window staying in its session", async () => {
     await earlier("a session to leave");
     const { app, session } = await saved([]);
@@ -8584,6 +8607,19 @@ describe("App's sessions", () => {
       await until(app, "Session named my work.");
       expect(rowOf(session.id)?.name).toBe("my work");
     });
+  });
+
+  // A name is the first line only, so none holds a line break (Ctrl+J, chat:newline, puts one in the prompt).
+  it("names a session or a branch from the first line of what follows /rename or /branch", async () => {
+    const { app, session } = await saved([reply("one")]);
+    await type(app, "hello");
+    await until(app, "one");
+    await press(app, "/rename two words", "\n", "and more", "\r");
+    await until(app, "Session named two words.");
+    expect(rowOf(session.id)?.name).toBe("two words");
+    await press(app, "/branch a side", "\n", "and more", "\r");
+    await until(app, "Branched: this window is now a side;");
+    expect(rowOf(session.id)?.name).toBe("a side");
   });
 
   it.each(["/clear", "/resume", "/branch"])("refuses %s in red while a subagent runs, naming it", async (command) => {

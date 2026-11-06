@@ -725,6 +725,11 @@ export function resumed(s: Saved, o: { tools: ToolSpec[]; lead: string; name?: s
   };
 }
 
+// The line when a resumed session's saved lead cannot be made, so `instead` leads (release 8a plan, choice 13): at the
+// launch and at /resume's pick.
+export const leadGone = (saved: string, err: unknown, instead: string) =>
+  `The session's lead, ${saved}, is not set up (${errorText(err)}); ${instead} leads instead.`;
+
 // The saved sessions a window opens (release 8a plan, Task 7): its sessions folder, what a new session's start line holds
 // besides its id, lead and system prompt, and the session open now, with its lock and the lines about its lost subagents
 // still to hand the model. /clear, /resume and /branch open the next session as the launch does, and once the window has
@@ -754,13 +759,15 @@ export class WindowSessions {
     return newSaved(this.dir, { id: randomUUID(), ...this.start, lead, print: false, system });
   }
 
-  // /resume's pick, opened as the launch opens it, a copy when another window holds it; and /branch's copy of the session
-  // open now, named, its lock taken before it is written. `lead` is given the session's saved lead and says which leads
-  // it now: one that differs from the saved one is written into it, as the launch writes it.
+  // /resume's pick, opened as the launch opens it, a copy when another window holds it. `lead` is given the session's
+  // saved lead and says which leads it now: one that differs from the saved one is written into it, as the launch writes
+  // it.
   resume(id: string, lead: (saved: string) => string): Opened | { problem: string } {
     const s = openSaved(this.dir, id, { fork: false });
     return "problem" in s ? s : resumed(s, { tools: this.start.tools, lead: lead(s.read.lead) });
   }
+
+  // /branch's copy of the session open now, named, its lock taken before it is written, as --fork-session's is.
   branch(id: string, lead: string, name: string): Opened | { problem: string } {
     const s = openSaved(this.dir, id, { fork: true });
     return "problem" in s ? s : resumed(s, { tools: this.start.tools, lead, name });

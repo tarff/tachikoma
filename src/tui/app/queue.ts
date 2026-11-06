@@ -1,5 +1,5 @@
 import { withLock } from "../../auth/lock.js";
-import type { Opened } from "../../clilib.js";
+import { leadGone, type Opened } from "../../clilib.js";
 import { summarize } from "../../core/errorlog.js";
 import { type Protection, visible } from "../../core/permissions.js";
 import { listSessions } from "../../core/sessions.js";
@@ -15,7 +15,7 @@ import { type Draft, joined, trimmed } from "../pictures.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
-import { COMMANDS, SESSION_WORDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened } from "./constants.js";
+import { COMMANDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened, SESSION_WORDS } from "./constants.js";
 import type { UI } from "./state.js";
 
 export const queue = (ui: UI, fns: Fns) => {
@@ -117,8 +117,9 @@ export const queue = (ui: UI, fns: Fns) => {
         ui.session.setLead(fns.make(spec)); // this window only, saving nothing (choice 26, the user's)
         return;
       }
-      // The window's saved sessions (release 8a plan, Task 7). A name is the rest of the line as typed.
-      const rest = text.slice(first.length).trim();
+      // The window's saved sessions (release 8a plan, Task 7). A name is the rest of the first line as typed, so none
+      // holds a line break.
+      const rest = text.slice(first.length).trim().split(/\r?\n/)[0]!.trim();
       if (command === "/rename") return fns.rename(rest);
       if (alone("/clear") || alone("/resume") || command === "/branch") {
         const refused = fns.subagentsRunning(command);
@@ -275,18 +276,25 @@ export const queue = (ui: UI, fns: Fns) => {
   // The window takes another session (release 8a plan, choice 15): the last one's shown calls, to-do list, answers and
   // tool line go, and the gauge's context, 0 until the next request. The subagents' waiting text is dropped: an answer
   // that wakes the lead was read in a turn of its own before this command ran (next), so what is left is a stopped
-  // subagent's note, which belongs to the last conversation. The conversation is loaded, and the last session let go;
-  // then its conversation is drawn as the launch draws a resumed one, and its lines said, so a saving failure the load
-  // reports comes first (Task 7). The window's sandbox carries on: a copy-mode box is not started afresh, so its review
-  // at exit covers both sessions' changes (Task 7).
+  // subagent's note, which belongs to the last conversation. The conversation is loaded first: a load refused, as one is
+  // while a turn runs (a prompt read with /resume in one read of the terminal starts its turn under the list), lets the
+  // next session go and leaves the turn's state as it was. Then the last session is let go, and the conversation drawn
+  // as the launch draws a resumed one, and its lines said, so a saving failure the load reports comes first (Task 7). The
+  // window's sandbox carries on: a copy-mode box is not started afresh, so its review at exit covers both sessions'
+  // changes (Task 7).
   const switchTo = (next: Opened, lines: Line[]) => {
+    try {
+      ui.session.load(next.conversation);
+    } catch (err) {
+      next.release();
+      throw err;
+    }
+    ui.saved.switched(next);
     ui.tasks.take();
     ui.calls.current = [];
     ui.todos.current = { items: [], hidden: false };
     ui.answered.current.clear();
     ui.stats.context = 0;
-    ui.session.load(next.conversation);
-    ui.saved.switched(next);
     fns.say(...conversationLines(next.conversation.messages), ...lines);
     ui.rerender((n) => n + 1);
   };
@@ -322,7 +330,7 @@ export const queue = (ui: UI, fns: Fns) => {
           made = fns.make(saved);
           return saved;
         } catch (err) {
-          gone = `The session's lead, ${saved}, is not set up (${errorText(err)}); ${now} leads instead.`;
+          gone = leadGone(saved, err, now);
           return now;
         }
       });
@@ -365,7 +373,7 @@ export const queue = (ui: UI, fns: Fns) => {
     fns.say(!t || t.failed !== null ? { text: SESSION_WORDS.unsaved("/rename"), color: "red" } : gray(`Session named ${name}.`));
   };
   return {
-    submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave, subagentsRunning, switchTo, startFresh, resume,
+    submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave, subagentsRunning, startFresh, resume,
     pickSession, closeSessions, branch, rename,
   };
 };

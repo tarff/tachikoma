@@ -26,6 +26,7 @@ import {
   instructionsLine,
   jsonLine,
   keptForReview,
+  leadGone,
   leadOf,
   leadSession,
   MAX_TASKS,
@@ -386,8 +387,9 @@ if (parsed.continue || parsed.resume !== undefined) {
   if (chosen === undefined) process.exit(0); // the list closed: nothing to open
 }
 // Opened, mended and read before anything starts, the instruction files' question and the sandbox among them, so a
-// session that cannot be read starts nothing (release 8a design, "When something goes wrong"). Its lock is held until the
-// process exits, however it exits (lock.ts).
+// session that cannot be read starts nothing (release 8a design, "When something goes wrong"). Its lock is let go at
+// /clear, /resume and /branch and when the window closes (release 8a plan, choice 8), and at the process's exit at the
+// latest, however it exits (lock.ts).
 let saved: Saved | undefined;
 if (chosen !== undefined) {
   const got = openSaved(sessions, chosen, { fork: parsed["fork-session"] === true });
@@ -417,7 +419,7 @@ let fallback: Provider | undefined;
 try {
   lead = savedLead !== undefined && savedLead !== leadSpec ? makeProvider(savedLead) : launchLead();
 } catch (err) {
-  leadLine = `The session's lead, ${savedLead}, is not set up (${errorText(err)}); ${leadSpec} leads instead.`;
+  leadLine = leadGone(savedLead!, err, leadSpec); // only the saved lead's failure comes here: launchLead's ends the launch
   lead = launchLead();
 }
 try {

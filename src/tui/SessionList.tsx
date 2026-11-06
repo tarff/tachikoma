@@ -13,7 +13,7 @@ import { k } from "./StatusLine.js";
 // Enter opens, Esc quits, as Select's keys are bound; Ctrl-C quits too. With `name`, only the sessions that name belongs
 // to are listed, for a name more than one session has. Names and prompts are the user's text, so they are escaped.
 
-// The header lines are Task 6's SESSION_WORDS, for the user's approval.
+// The header lines are Task 6's, approved by the user (release 8a plan, "Lines this plan adds").
 const heading = (name: string | undefined) =>
   name === undefined ? "Saved sessions in this folder, newest first:" : `Saved sessions named ${name}, newest first:`;
 
