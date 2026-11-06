@@ -1066,6 +1066,12 @@ export async function shorten(s: {
   - The latest round is copied in as text.
   - If the prompt and the round do not fit, the round is summarised whole.
   - If the prompt alone does not fit, `shorten` returns the problem.
+- **A part too long to summarise is cut in half** at the message nearest the middle, never between
+  a call and its results, so a long task can be cut inside. A half after the first opens with
+  `This is the later part of a conversation; the part before it is summarised separately.` (to the
+  model), as Anthropic refuses a request that opens with a reply, and is sent without the stored
+  replies' own form (`native`), as Anthropic refuses thinking moved from its place (Task 11, user,
+  2026-11-06, option chosen: "Cut anywhere, add a line").
 - **Summaries are requests:** `signal` stops them. Every request `shorten` makes reports what
   usage it has through `onUsage` as soon as it ends, as `#request` does (session.ts:147,
   :164-165): the declined attempts first, then the reply's, with the provider that served it.
