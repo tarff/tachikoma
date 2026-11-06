@@ -757,6 +757,14 @@ class Session {
 - **Subagent ids:** `Tasks` gains `from(n)`, which only raises the next number; `start` takes
   ids from it, not from `all.length` (choice 4).
 - `#request` uses `this.system`.
+- **Saving fails, once per transcript** (added 2026-11-06 in Task 5's review: no task showed the
+  line). When the transcript's `failed` first becomes set, the session emits an `error` event of
+  a new kind, `saving`, holding the approved "Saving fails" line, so the error log keeps it. The
+  window draws it as `✗ ` and the line, with no `saving:` label (user, 2026-11-06, option
+  chosen: "✗ then the line"); `-p` prints the line alone. It fails no `-p` run and no subagent,
+  as "nothing else stops" (design, "When something goes wrong").
+- **`load` keeps the "no pictures to this provider" answer** for the window (user, 2026-11-06,
+  option chosen: "Keep for the window").
 
 **Tests:**
 - Saving:
@@ -778,7 +786,10 @@ class Session {
 - A subagent's turn writes its own file and a `subagent` line.
 - A subagent that fails, and one that is stopped, each end their file with an `ended` line; read
   back, neither is listed as unfinished.
-- A failed write leaves the turn running and `failed` set.
+- A failed write leaves the turn running and `failed` set, and emits the "Saving fails" line
+  once, word for word, of kind `saving`; a second failed write emits nothing more. The window
+  shows `✗ ` and the line; a `-p` run with it still exits 0; a subagent whose own file fails is
+  not reported failed.
 
 Commit: `feat: the session saves each message as it is added, and can load a saved conversation`.
 
