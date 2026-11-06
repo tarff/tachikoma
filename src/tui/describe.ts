@@ -1,3 +1,4 @@
+import { callText } from "../core/exportText.js";
 import { visible } from "../core/permissions.js";
 import type { Message } from "../core/types.js";
 import { marker } from "./pictures.js";
@@ -60,6 +61,10 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
   return lines;
 }
 
+// A resumed conversation as the scrollback shows a live one, message by message (release 8a plan, Task 6; user,
+// 2026-11-06: "Show it").
+export const conversationLines = (messages: Message[]): Line[] => messages.flatMap((m) => describe(m));
+
 // Ctrl+O: every tool call of the latest turn, from its prompt on, with its full input and result,
 // under a heading. A call of a turn still running may have no result yet. A turn starts with a user
 // message that is not tool results: a prompt, or background answers alone.
@@ -74,5 +79,5 @@ export function lastTurn(messages: Message[]): Line[] {
 export function callLines(messages: Message[]): Line[] {
   const parts = messages.flatMap((m) => m.parts);
   const results = new Map(parts.flatMap((p) => (p.type === "tool_result" ? [[p.callId, p.output] as const] : [])));
-  return parts.flatMap((c) => (c.type === "tool_call" ? [{ text: `● ${c.name} ${JSON.stringify(c.input, null, 2)}\n  ⎿ ${results.get(c.id) ?? "(not finished)"}`, color: "gray" }] : []));
+  return parts.flatMap((c) => (c.type === "tool_call" ? [{ text: callText(c, results.get(c.id)), color: "gray" }] : []));
 }

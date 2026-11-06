@@ -1,13 +1,27 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
-import { type Ask, Declined } from "../../src/core/permissions.js";
-import { Session } from "../../src/core/session.js";
+import { privateDir } from "../../src/auth/private.js";
+import type { Events } from "../../src/core/bus.js";
+import { callText } from "../../src/core/exportText.js";
+import { characters } from "../../src/core/fit.js";
+import { type Ask, Declined, PermissionGate } from "../../src/core/permissions.js";
+import { type Conversation, Session, UNSAVED } from "../../src/core/session.js";
+import { CANCELLED, INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
-import type { Part, Provider, Turn } from "../../src/core/types.js";
+import { Tasks } from "../../src/core/tasks.js";
+import { type Line, pathsOf, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
+import { type CompletionRequest, type Message, type Part, type Provider, sentAll, type Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
+import { judgeOf } from "../../src/safety/judge.js";
+import { writeFileTool } from "../../src/tools/files.js";
 import { defineTool } from "../../src/tools/tool.js";
-import { Bus, FakeProvider, callTool, collectErrors, reply, tempContext, usage } from "../helpers.js";
+import { Pictures } from "../../src/tui/pictures.js";
+import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts, usage } from "../helpers.js";
 
 const echo = defineTool("echo", "Echo text back", z.object({ text: z.string() }), async ({ text }) => text);
 const boom = defineTool("boom", "Always fails", z.object({}), async () => {
@@ -31,6 +45,23 @@ describe("Session", () => {
     await session.send("hi");
     expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
     expect(session.messages[1]!.parts).toEqual([{ type: "text", text: "hello" }]);
+  });
+
+  // Release 8a plan, choice 27 (user, 2026-11-06: "Record each reply's lead"): the lead that answered, the fallback that
+  // rescued a refusal, or the model the provider says served it; never sent to a provider.
+  it("keeps on each reply the lead that answered it, and sends none to the provider", async () => {
+    const { session, lead } = await setup([reply("one"), { ...reply("two"), servedBy: "anthropic:claude-opus-4-8" }]);
+    await session.send("hi");
+    expect(session.messages[1]).toEqual({ role: "assistant", parts: [{ type: "text", text: "one" }], lead: "fake:a" });
+    await session.send("again");
+    expect(session.messages[3]!.lead).toBe("anthropic:claude-opus-4-8");
+    expect(lead.seen[1]![1]).toEqual({ role: "assistant", parts: [{ type: "text", text: "one" }] });
+    expect(lead.seen[1]![1]).not.toHaveProperty("lead");
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const rescue = new FakeProvider("b", [reply("b")]);
+    const rescued = new Session({ lead: new FakeProvider("a", [refused]), fallback: rescue, tools: [], system: "t", ctx: await tempContext(), bus: new Bus() });
+    await rescued.send("go");
+    expect(rescued.messages[1]!.lead).toBe("fake:b");
   });
 
   it("runs a tool and sends its result back before the final reply", async () => {
@@ -231,6 +262,16 @@ describe("Session", () => {
     await session.send("go");
     expect(session.messages.at(-1)!.parts[0]).toMatchObject({ type: "tool_result", callId: "c1", isError: true });
     expect(errors).toEqual([expect.objectContaining({ kind: "max_tokens", message: "limit" })]);
+  });
+
+  // Release 8a plan, choice 21: a session that cannot shorten, here one saving nothing, never stores the reply, and reports
+  // it as one that hit a limit, its size and window not known.
+  it("never stores a reply cut off at the window, reporting it as one that hit a limit when it cannot be shortened", async () => {
+    const cut = { ...callTool("c1", "echo", { text: "x" }), cutOff: { kind: "window" as const, detail: "The conversation filled the context window" } };
+    const { session, errors } = await setup([cut]);
+    await session.send("go");
+    expect(session.messages).toEqual([{ role: "user", parts: [{ type: "text", text: "go" }] }]);
+    expect(errors).toEqual([expect.objectContaining({ kind: "max_tokens", message: "The conversation filled the context window" })]);
   });
 
   it("cuts very long tool output", async () => {
@@ -447,7 +488,7 @@ describe("Session, when a request with pictures is refused", () => {
     // The conversation is never changed (release 6 design, "When the provider refuses"): the pictures stay in it.
     expect(session.messages).toEqual([
       { role: "user", parts: look },
-      { role: "assistant", parts: [{ type: "text", text: "seen" }] },
+      { role: "assistant", parts: [{ type: "text", text: "seen" }], lead: "fake:a" },
     ]);
   });
 
@@ -537,5 +578,812 @@ describe("Session, when a request with pictures is refused", () => {
       expect(box).toEqual(["t3 finished: found it"]);
       expect(session.messages[0]).toEqual({ role: "user", parts: look });
     }
+  });
+});
+
+// Release 8a plan, Task 5: the session saves each message as it joins the history, and takes a saved or new conversation in
+// place. The sessions folder is inside a fresh temporary folder and made private once, as tests/core/transcript.test.ts
+// does, each case with its own session in it.
+describe("Session, saved and loaded", { timeout: 15_000 }, () => {
+  let top: string;
+  let shared: string;
+  let sessions = 0;
+  beforeAll(async () => {
+    top = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
+    shared = path.join(top, "sessions", "project");
+    privateDir(shared);
+  });
+  afterAll(() => removeTree(top));
+  function place() {
+    const id = `s${++sessions}`;
+    return { id, file: path.join(shared, `${id}.jsonl`), pictures: path.join(shared, id, "pictures") };
+  }
+  const start = (id: string): Omit<Extract<Line, { t: "start" }>, "at"> => ({
+    t: "start",
+    v: 1,
+    id,
+    project: "C:\\a project",
+    lead: "fake:a",
+    version: "0.8.0",
+    print: false,
+    system: "test",
+    tools: [],
+  });
+  const lines = (file: string) =>
+    readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Line);
+  const read = (p: { file: string; pictures: string }) => {
+    const r = readTranscript(p.file, p.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    return r;
+  };
+  const conversation = (over: Partial<Conversation> = {}): Conversation => ({
+    id: "c",
+    messages: [],
+    system: "t",
+    prompts: [],
+    calls: [],
+    nextPicture: 1,
+    nextTask: 1,
+    ...over,
+  });
+  // A transcript read back, as a new process would load it.
+  const loaded = (r: Read, transcript: Transcript): Conversation => ({
+    id: r.start.id,
+    messages: r.messages,
+    system: r.system,
+    transcript,
+    prompts: r.prompts,
+    calls: r.calls,
+    nextPicture: r.nextPicture,
+    nextTask: r.nextTask,
+  });
+  const said = (text: string): Message => ({ role: "assistant", parts: [{ type: "text", text }] });
+  const typed = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+
+  it("writes the user's message, the reply and the result in order, each line on disk before its message event", async () => {
+    const p = place();
+    const bus = new Bus();
+    const seen: [Line | undefined, Message][] = [];
+    bus.on("message", (m) => seen.push([lines(p.file).at(-1), m]));
+    const lead = new FakeProvider("a", [callTool("c1", "echo", { text: "ping" }), reply("done")]);
+    const session = new Session({ lead, tools: [echo], system: "test", ctx: await tempContext(), bus, transcript: new Transcript(p.file, p.pictures) });
+    await session.send("go");
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(seen).toEqual(session.messages.map((m) => [{ t: "message", at: expect.any(String), message: m }, m]));
+    expect(lines(p.file).map((l) => (l.t === "message" ? l.message : l))).toEqual(session.messages);
+  });
+
+  it("writes nothing for a refused reply", async () => {
+    const p = place();
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const transcript = new Transcript(p.file, p.pictures);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), tools: [], system: "t", ctx: await tempContext(), bus: new Bus(), transcript });
+    await session.send("go");
+    expect(lines(p.file)).toEqual([{ t: "message", at: expect.any(String), message: typed("go") }]);
+  });
+
+  it("writes a line for a new lead", async () => {
+    const p = place();
+    const transcript = new Transcript(p.file, p.pictures);
+    const session = new Session({ lead: new FakeProvider("a", []), tools: [], system: "t", ctx: await tempContext(), bus: new Bus(), transcript });
+    session.setLead(new FakeProvider("b", []));
+    expect(lines(p.file)).toEqual([{ t: "lead", at: expect.any(String), lead: "fake:b" }]);
+  });
+
+  // A transcript that cannot be written: a file where the sessions folder should be, with no permission changed (plan,
+  // Task 3). The write fails before any folder is made private.
+  async function unwritable(id = "s1") {
+    const own = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
+    onTestFinished(() => removeTree(own));
+    mkdirSync(path.join(own, "data"));
+    writeFileSync(path.join(own, "data", "sessions"), "not a folder");
+    const dir = path.join(own, "data", "sessions", "project");
+    return new Transcript(path.join(dir, `${id}.jsonl`), path.join(dir, id, "pictures"));
+  }
+  // The approved "Saving fails" line (plan, "Lines this plan adds").
+  const savingFails = (t: Transcript) =>
+    `Saving this session stopped: ${t.file} could not be written (${t.failed}). ` +
+    "It cannot be resumed, and a conversation too long for the model will end with an error.";
+
+  it("goes on with the turn when a write fails, saving stopped with its reason, said once in the approved words", async () => {
+    const transcript = await unwritable();
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const events: Message[] = [];
+    bus.on("message", (m) => events.push(m));
+    const lead = new FakeProvider("a", [reply("still here"), reply("and here")]);
+    const session = new Session({ lead, tools: [], system: "t", ctx: await tempContext(), bus, transcript });
+    await session.send("go");
+    expect(events).toEqual([typed("go"), { ...said("still here"), lead: "fake:a" }]);
+    expect(session.messages).toEqual(events);
+    expect(transcript.failed).toEqual(expect.stringMatching(/\S/));
+    expect(errors).toEqual([{ kind: "saving", attempted: transcript.file, message: savingFails(transcript), lead: "fake:a" }]);
+    // Later writes, which saving no longer makes, say nothing more.
+    await session.send("again");
+    session.setLead(new FakeProvider("b", []));
+    expect(texts(session.messages.at(-1)!)).toEqual(["and here"]);
+    expect(errors).toHaveLength(1);
+  });
+
+  it("says saving stopped once per transcript at a load, for a write made elsewhere, such as Tasks' subagent line", async () => {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const session = new Session({ lead: new FakeProvider("a", []), tools: [], system: "t", ctx: await tempContext(), bus });
+    const first = await unwritable("s1");
+    first.write({ t: "name", name: "x" });
+    session.load(conversation({ transcript: first }));
+    session.load(conversation({ transcript: first })); // the same transcript again: said already
+    const second = await unwritable("s2");
+    second.write({ t: "name", name: "x" });
+    session.load(conversation({ transcript: second }));
+    expect(errors.map((e) => [e.kind, e.message])).toEqual([
+      ["saving", savingFails(first)],
+      ["saving", savingFails(second)],
+    ]);
+  });
+
+  it("loads a conversation in place, so an alias of its history sees it, with its prompts, calls, id and transcript", async () => {
+    const p = place();
+    const pictures = new Pictures();
+    const tasks: number[] = [];
+    const lead = new FakeProvider("a", [reply("one"), reply("three")]);
+    const session = new Session({ lead, tools: [], system: "t", ctx: await tempContext(), bus: new Bus(), pictures, tasks: { from: (n) => tasks.push(n) } });
+    await session.send("first");
+    const alias = session.messages; // as tasks.ts holds a subagent's
+    const history = [typed("before"), said("two")];
+    const calls = [{ name: "read_file", input: { path: "a.txt" } }];
+    const transcript = new Transcript(p.file, p.pictures);
+    session.load(conversation({ id: p.id, messages: history, transcript, prompts: ["before"], calls, nextPicture: 7, nextTask: 4 }));
+    expect(alias).toBe(session.messages);
+    expect(alias).toEqual(history);
+    expect([session.id, session.prompts, session.calls]).toEqual([p.id, ["before"], calls]);
+    expect([pictures.next(), tasks]).toEqual([7, [4]]);
+    await session.send("again");
+    expect(lead.seen[1]).toEqual([...history, typed("again")]);
+    expect(lines(p.file).map((l) => l.t === "message" && texts(l.message as Message))).toEqual([["again"], ["three"]]);
+    // A new conversation's records are empty.
+    session.load(conversation());
+    expect([session.messages, session.prompts, session.calls]).toEqual([[], [], []]);
+  });
+
+  it("refuses to load while a turn runs, leaving the turn's history as it is", async () => {
+    const lead = new Held("fake:a");
+    const session = new Session({ lead, tools: [], system: "t", ctx: await tempContext(), bus: new Bus() });
+    const turn = session.send("hi");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(() => session.load(conversation({ messages: [said("other")] }))).toThrow("A turn is already running");
+    lead.answer("ok");
+    await turn;
+    expect(session.messages).toEqual([typed("hi"), { ...said("ok"), lead: "fake:a" }]);
+  });
+
+  it("sends the loaded conversation's system prompt in the next turn", async () => {
+    const systems: string[] = [];
+    const lead: Provider = { id: "fake:a", complete: async (req) => (systems.push(req.system), reply("ok")) };
+    const session = new Session({ lead, tools: [], system: "the first", ctx: await tempContext(), bus: new Bus() });
+    await session.send("hi");
+    session.load(conversation({ system: "the saved one" }));
+    await session.send("hi again");
+    expect(systems).toEqual(["the first", "the saved one"]);
+    expect(session.system).toBe("the saved one");
+  });
+
+  it("sends the loaded conversation's own picture 1, not the last conversation's", async () => {
+    // Stand-ins sharp cannot read, so each goes as it is (providers/pictures.ts, shrink), and the copy kept is its bytes.
+    const a = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]);
+    const b = Buffer.from([0x89, 0x50, 0x4e, 0x47, 2]);
+    const sent: (Buffer | string)[] = [];
+    const lead: Provider = {
+      id: "fake:a",
+      complete: async (req) => {
+        const one = (await fitted(req, LIMITS.ollama, (p) => p)).get(1)!;
+        sent.push(typeof one === "string" ? one : one.data);
+        return reply("seen");
+      },
+    };
+    const session = new Session({ lead, tools: [], system: "t", ctx: await tempContext(), bus: new Bus() });
+    await session.send([{ type: "text", text: "look " }, { type: "image", id: 1, mediaType: "image/png", data: a }]);
+    const other: Message = { role: "user", parts: [{ type: "text", text: "see " }, { type: "image", id: 1, mediaType: "image/png", data: b }] };
+    session.load(conversation({ messages: [other, said("seen")] }));
+    await session.send("again");
+    expect(sent).toEqual([a, b]);
+  });
+
+  it("gives auto mode's judge the prompts and calls from before a shortening once read back and loaded, never the summary", async () => {
+    const p = place();
+    const saved = new Transcript(p.file, p.pictures);
+    saved.write(start(p.id));
+    const first = new Session({
+      lead: new FakeProvider("a", [callTool("c1", "echo", { text: "ping" }), reply("pinged"), reply("ok")]),
+      tools: [echo],
+      system: "test",
+      ctx: await tempContext(),
+      bus: new Bus(),
+      transcript: saved,
+    });
+    await first.send("ping it");
+    await first.send("thanks");
+    // The line a shortening writes (plan, choice 4), its summary standing in for the history.
+    const summary = typed("This conversation was shortened. A summary of everything before this point:\n\nThe user had ping echoed.");
+    saved.write({ t: "shortened", system: "test, rebuilt", message: summary });
+
+    // A new window, in auto mode, as cli.tsx makes its judge.
+    const bus = new Bus();
+    const judge = new FakeProvider("judge", [reply(JSON.stringify({ allow: false, reason: "It was not asked for." }))]);
+    const ctx = await tempContext();
+    let session: Session | undefined;
+    const gate = new PermissionGate("auto", async () => false, undefined, { root: ctx.root, headless: false, judge: judgeOf(judge, () => session!, "", bus) });
+    const lead = new FakeProvider("a", [callTool("c2", "write_file", { path: path.join(top, "elsewhere", "a.txt"), content: "x" }), reply("done")]);
+    session = new Session({ lead, tools: [writeFileTool], system: "t", ctx: { ...ctx, gate }, bus });
+    session.load(loaded(read(p), new Transcript(p.file, p.pictures)));
+    await session.send("write it");
+    // The prompt joins the shortening's message, so user and assistant messages alternate (Task 12).
+    expect(lead.seen[0]).toEqual([{ role: "user", parts: [...summary.parts, ...typed("write it").parts] }]);
+    const asked = texts(judge.seen[0]![0]!)[0]!.split("\n"); // the prompts' block, then the calls' (judge.ts, request)
+    expect(JSON.parse(asked[1]!)).toEqual(["ping it", "thanks", "write it"]);
+    expect(JSON.parse(asked[4]!).map((c: { name: string }) => c.name)).toEqual(["echo", "write_file"]);
+    expect(JSON.parse(asked[4]!)[0]).toEqual({ name: "echo", input: { text: "ping" } });
+  });
+});
+
+// Release 8a plan, Task 12: the session shortens a conversation that will not fit, before the request or after a "too
+// long" answer (design, "When to shorten" and "How shortening works").
+describe("Session, shortening", { timeout: 15_000 }, () => {
+  let top: string;
+  let n = 0;
+  beforeAll(async () => {
+    top = await mkdtemp(path.join(tmpdir(), "tachi-shorten-"));
+  });
+  afterAll(() => removeTree(top));
+  // Two levels inside the test's temp folder; `inherits`, as a subagent's file is made, so no PowerShell starts.
+  const saving = () => {
+    const dir = path.join(top, "sessions", "project");
+    const id = `s${++n}`;
+    return new Transcript(path.join(dir, `${id}.jsonl`), path.join(dir, id, "pictures"), { inherits: true });
+  };
+  const savedLines = (t: Transcript) =>
+    readFileSync(t.file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Line);
+
+  class TooLong extends Error {
+    status = 400;
+  }
+  type Script = Turn | Error | ((req: CompletionRequest) => Turn | Promise<Turn>);
+  // A scripted lead with a window, which calls a TooLong error too long, and records each request as it was sent.
+  class Lead implements Provider {
+    readonly seen: Omit<CompletionRequest, "signal" | "shrunk" | "leftOut">[] = [];
+    readonly shrunk: unknown[] = [];
+    constructor(
+      readonly id: string,
+      private readonly turns: Script[],
+      private readonly window: number | null = null,
+    ) {}
+    async complete(req: CompletionRequest): Promise<Turn> {
+      const { signal: _, shrunk, leftOut: __, ...rest } = req;
+      this.seen.push(structuredClone(rest));
+      this.shrunk.push(shrunk);
+      const next = this.turns.shift();
+      if (!next) throw new Error(`${this.id} ran out of turns`);
+      if (next instanceof Error) throw next;
+      return typeof next === "function" ? next(req) : next;
+    }
+    tooLong(err: unknown): boolean {
+      return err instanceof TooLong;
+    }
+    async contextWindow(): Promise<number | null> {
+      return this.window;
+    }
+  }
+  // A reply whose usage reports one token a character of the request it answers, so the session's ratio is 1.
+  const measured =
+    (text: string, more: Partial<Turn> = {}) =>
+    (req: CompletionRequest): Turn => ({
+      ...reply(text),
+      ...more,
+      usage: { input: characters(req.system, req.messages, req.tools), output: 0, cacheRead: 0, cacheWrite: 0 },
+    });
+  const summaryOf = (text: string) => reply(text);
+  const isSummary = (req: { messages: Message[] }) => texts(req.messages.at(-1)!).at(-1) === INSTRUCTIONS;
+  const typed = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+  const shortened = (summary: string, request: string) =>
+    `This conversation was shortened. A summary of everything before this point:\n\n${summary}\n\nThe request being worked on, word for word:\n${request}`;
+  const big = "x".repeat(600);
+  const cutAtWindow = { ...reply("half a repl"), cutOff: { kind: "window" as const, detail: "The conversation filled the context window" } };
+
+  async function setup(lead: Provider, more: Partial<ConstructorParameters<typeof Session>[0]> = {}) {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const summaries: string[] = [];
+    bus.on("shortened", (s) => summaries.push(s));
+    const usages: Events["usage"][0][] = [];
+    bus.on("usage", (u) => usages.push(u));
+    const transcript = saving();
+    const ctx = await tempContext();
+    const session = new Session({ lead, tools: [echo], system: "t", systemNow: async () => "t, read again", ctx, bus, transcript, ...more });
+    return { session, bus, errors, summaries, usages, transcript };
+  }
+  // A transcript that cannot be written: a file where its folder should be, with no permission changed (Task 3).
+  async function unsavable() {
+    const own = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
+    onTestFinished(() => removeTree(own));
+    mkdirSync(path.join(own, "data"));
+    writeFileSync(path.join(own, "data", "sessions"), "not a folder");
+    const dir = path.join(own, "data", "sessions", "project");
+    return new Transcript(path.join(dir, "s.jsonl"), path.join(dir, "s", "pictures"));
+  }
+  // A lead that counts requests exactly, each count from `counts` in turn: a number, or "stop", which stops the turn
+  // there, as Ctrl-C would, and rejects as the SDK does.
+  function counting(lead: Lead, stop: AbortController, counts: (number | "stop")[]) {
+    return Object.assign(lead, {
+      countTokens: async () => {
+        const next = counts.shift();
+        if (next !== "stop") return next ?? 0;
+        stop.abort();
+        throw new Error("Request was aborted.");
+      },
+    });
+  }
+  // The approved line for a request still too long (plan, "Lines this plan adds"), at the ratio of 1.
+  const tooLongLine = (session: Session, lead: string, window: number) =>
+    `The request is too long for ${lead}: about ${characters(session.system, sentAll(session.messages), [echo.spec]).toLocaleString("en-US")} tokens, ` +
+    `against a window of ${window.toLocaleString("en-US")}.`;
+
+  it("shortens before a request its estimate puts over the window, the request holding the new history and the prompt", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("The user sent many x."), reply("done")], 700);
+    const { session, errors, summaries, usages, transcript } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen).toHaveLength(3);
+    // The summary request: the whole history before the prompt, the instructions last, with the conversation's system prompt.
+    expect(isSummary(lead.seen[1]!)).toBe(true);
+    expect(lead.seen[1]!.system).toBe("t");
+    expect(lead.seen[1]!.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    const history: Message = typed(shortened("The user sent many x.", "now this"));
+    expect(lead.seen[2]!.messages).toEqual([history]);
+    expect(lead.seen[2]!.system).toBe("t, read again");
+    expect(session.messages).toEqual([history, { role: "assistant", parts: [{ type: "text", text: "done" }], lead: "fake:a" }]);
+    expect(session.system).toBe("t, read again");
+    expect(summaries).toEqual(["The user sent many x."]);
+    expect(errors).toEqual([]);
+    // One line, the new system prompt and the new history together (choice 4), before the reply's.
+    const saved = savedLines(transcript).map((l) => l.t);
+    expect(saved).toEqual(["message", "message", "message", "shortened", "message"]);
+    expect(savedLines(transcript)[3]).toEqual({ t: "shortened", at: expect.any(String), system: "t, read again", message: history });
+    // The summary's usage is marked so (stats.ts leaves the context alone for it).
+    expect(usages.map((u) => u.summary ?? false)).toEqual([false, true, false]);
+  });
+
+  it("shortens and sends once more after a reply cut off at the window, never storing that reply", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), cutAtWindow, summaryOf("Many x."), reply("whole")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen).toHaveLength(4);
+    expect(isSummary(lead.seen[2]!)).toBe(true);
+    expect(lead.seen[3]!.messages).toEqual([typed(shortened("Many x.", "now this"))]);
+    expect(JSON.stringify(session.messages)).not.toContain("half a repl");
+    expect(texts(session.messages.at(-1)!)).toEqual(["whole"]);
+    expect([summaries, errors]).toEqual([["Many x."], []]);
+  });
+
+  it("shortens after a too-long 400 with pictures in the history, without asking about the pictures", async () => {
+    const asked: unknown[] = [];
+    const lead = new Lead("fake:a", [measured("seen"), new TooLong("prompt is too long"), summaryOf("A picture was shown."), reply("ok")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead, { ask: async (...a) => (asked.push(a), true) });
+    await session.send([{ type: "text", text: "look " }, { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }]);
+    await session.send("and now");
+    expect(asked).toEqual([]);
+    expect(errors).toEqual([]);
+    expect(summaries).toEqual(["A picture was shown."]);
+    expect(lead.seen[3]!.messages).toEqual([typed(shortened("A picture was shown.", "and now"))]);
+    // The summary request carries the session's shrunk pictures, as the conversation's requests do (Task 11's reviews).
+    expect(lead.shrunk[2]).toBe(lead.shrunk[0]);
+    expect(lead.shrunk[2]).toBeInstanceOf(Map);
+  });
+
+  it("sends a summary without the pictures to a lead the user said to send none to", async () => {
+    const PNG = { type: "image" as const, id: 1, mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) };
+    const refused = Object.assign(new Error("bad image"), { status: 400 });
+    const lead = new Lead("fake:a", [refused, measured("seen"), new TooLong("prompt is too long"), summaryOf("A picture."), reply("ok")], 1_000_000);
+    const { session } = await setup(lead, { ask: async () => true });
+    await session.send([{ type: "text", text: "look " }, PNG]);
+    await session.send("and now");
+    expect(lead.seen.map((r) => r.refusedBy)).toEqual([undefined, "fake:a", "fake:a", "fake:a", "fake:a"]);
+    expect(isSummary(lead.seen[3]!)).toBe(true);
+  });
+
+  it("ends the turn with the line when the request is still too long once shortened", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), summaryOf("Many x."), new TooLong("prompt is too long")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen).toHaveLength(4);
+    expect(summaries).toEqual(["Many x."]);
+    expect(session.messages).toEqual([typed(shortened("Many x.", "now this"))]);
+    expect(errors).toEqual([{ kind: "shortening", attempted: "request to fake:a", message: tooLongLine(session, "fake:a", 1_000_000), lead: "fake:a" }]);
+  });
+
+  it("ends the turn with the provider's own error when the request's size or window is not known", async () => {
+    const lead = new Lead("fake:a", [reply("noted"), new TooLong("prompt is too long"), summaryOf("Many x."), new TooLong("prompt is too long: 9 > 8")]);
+    const { session, errors } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(errors).toEqual([{ kind: "provider", attempted: "request to fake:a", message: "prompt is too long: 9 > 8", lead: "fake:a", status: 400 }]);
+  });
+
+  it("refuses to shorten when saving has stopped, ending the turn with the line and the history unchanged", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long")], 1_000_000);
+    const own = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
+    onTestFinished(() => removeTree(own));
+    mkdirSync(path.join(own, "data"));
+    writeFileSync(path.join(own, "data", "sessions"), "not a folder"); // a file where the folder should be (Task 3)
+    const transcript = new Transcript(path.join(own, "data", "sessions", "project", "s.jsonl"), path.join(own, "data", "sessions", "project", "s", "pictures"));
+    const { session, errors, summaries } = await setup(lead, { transcript });
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen).toHaveLength(2); // no summary request
+    expect(summaries).toEqual([]);
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(errors.map((e) => e.kind)).toEqual(["saving", "shortening"]);
+    expect(errors[1]!.message).toBe(tooLongLine(session, "fake:a", 1_000_000));
+  });
+
+  it("changes nothing when saving first fails at the shortened line, and ends the turn with the line", async () => {
+    // A transcript whose write of the `shortened` line fails, as `write` records a failure: without throwing.
+    class FailsThere extends Transcript {
+      #broken: string | null = null;
+      override get failed(): string | null {
+        return this.#broken ?? super.failed;
+      }
+      override write(line: Parameters<Transcript["write"]>[0]): void {
+        if (line.t === "shortened") this.#broken = "the disk is full";
+        else super.write(line);
+      }
+    }
+    const t = saving();
+    const transcript = new FailsThere(t.file, t.pictures, { inherits: true });
+    const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), summaryOf("Many x.")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead, { transcript });
+    await session.send(big);
+    await session.send("now this");
+    const before = [typed(big), { role: "assistant", parts: [{ type: "text", text: "noted" }], lead: "fake:a" }, typed("now this")];
+    expect(session.messages).toEqual(before);
+    expect(session.system).toBe("t");
+    expect(summaries).toEqual([]);
+    expect(errors.map((e) => [e.kind, e.message])).toEqual([
+      [
+        "saving",
+        `Saving this session stopped: ${t.file} could not be written (the disk is full). ` +
+          "It cannot be resumed, and a conversation too long for the model will end with an error.",
+      ],
+      ["shortening", tooLongLine(session, "fake:a", 1_000_000)],
+    ]);
+  });
+
+  it("says why a summary failed, in the approved line, and leaves the conversation as it was", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "I can't summarise that." } };
+    const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), refusal], 1_000_000);
+    const { session, errors } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(session.messages).toHaveLength(3);
+    expect(errors).toEqual([
+      {
+        kind: "shortening",
+        attempted: "request to fake:a",
+        message: "The conversation could not be shortened (I can't summarise that.); it is unchanged.",
+        lead: "fake:a",
+      },
+    ]);
+  });
+
+  it("keeps the turn's own request through a second shortening in the same turn, never the first one's message", async () => {
+    const lead = new Lead(
+      "fake:a",
+      [
+        measured("noted"),
+        callTool("c1", "echo", { text: "one" }),
+        new TooLong("prompt is too long"),
+        summaryOf("First summary."),
+        callTool("c2", "echo", { text: "two" }),
+        new TooLong("prompt is too long"),
+        summaryOf("Second summary."),
+        reply("done"),
+      ],
+      1_000_000,
+    );
+    const { session, summaries, errors } = await setup(lead);
+    await session.send(big);
+    await session.send("do it");
+    expect([summaries, errors]).toEqual([["First summary.", "Second summary."], []]);
+    const last = texts(lead.seen[7]!.messages[0]!).join("");
+    const round = callText({ type: "tool_call", id: "c2", name: "echo", input: { text: "two" } }, "two");
+    expect(last).toBe(`${shortened("Second summary.", "do it")}\n\nThe latest round of tool calls, and their results:\n${round}`);
+    // The second summary was given the first shortening's message to summarise.
+    expect(texts(lead.seen[6]!.messages[0]!).join("")).toContain("First summary.");
+  });
+
+  it("joins the prompt after a shortening between turns to the new history's message", async () => {
+    const a = new Lead("fake:a", [measured("noted"), summaryOf("Many x.")], 10_000);
+    const b = new Lead("fake:b", [reply("hello")], 500);
+    const { session, summaries } = await setup(a);
+    await session.send(big);
+    expect(await session.makeRoom(b)).toBeUndefined();
+    session.setLead(b);
+    await session.send("next");
+    const history = "This conversation was shortened. A summary of everything before this point:\n\nMany x.";
+    expect(summaries).toEqual(["Many x."]);
+    expect(b.seen[0]!.messages).toEqual([{ role: "user", parts: [{ type: "text", text: history }, { type: "text", text: "next" }] }]);
+  });
+
+  it("shortens on a switch to a smaller window with the lead leading now, and keeps the conversation when that fails", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const a = new Lead("fake:a", [measured("noted"), refusal], 10_000);
+    const { session, summaries } = await setup(a);
+    await session.send(big);
+    expect(await session.makeRoom(new Lead("fake:b", [], 500))).toBe("declined");
+    expect([session.messages.length, summaries]).toEqual([2, []]);
+    // A window as large, or one not known, needs no check.
+    expect(await session.makeRoom(new Lead("fake:c", [], 10_000))).toBeUndefined();
+    expect(await session.makeRoom(new Lead("fake:d", []))).toBeUndefined();
+    expect(a.seen).toHaveLength(2);
+  });
+
+  it("refuses a switch that needs shortening when saving has stopped", async () => {
+    const a = new Lead("fake:a", [measured("noted")], 10_000);
+    const { session } = await setup(a, { transcript: await unsavable() });
+    await session.send(big);
+    expect(await session.makeRoom(new Lead("fake:b", [], 500))).toBe(UNSAVED);
+    expect(a.seen).toHaveLength(1); // no summary request
+  });
+
+  it("refuses a switch while a turn runs, as it would shorten the history under it", async () => {
+    const lead = new Held("fake:a");
+    const { session } = await setup(lead);
+    const turn = session.send("hi");
+    await new Promise((r) => setTimeout(r, 20));
+    await expect(session.makeRoom(new Lead("fake:b", [], 500))).rejects.toThrow("A turn is already running");
+    lead.answer("ok");
+    await turn;
+  });
+
+  it("shortens a subagent's conversation the same way", async () => {
+    const turns = [measured("noted"), callTool("c1", "echo", { text: "one" }), new TooLong("prompt is too long"), summaryOf("Sub summary."), reply("done")];
+    const lead = new Lead("fake:w", turns, 1_000_000);
+    const { session, summaries } = await setup(lead, { subagent: true, id: "t1" });
+    await session.send(big);
+    await session.send("brief");
+    expect(summaries).toEqual(["Sub summary."]);
+    expect(texts(session.messages.at(-1)!)).toEqual(["done"]);
+  });
+
+  it("keeps the judge's prompts and calls whole through a shortening", async () => {
+    const turns = [callTool("c1", "echo", { text: "one" }), measured("noted"), new TooLong("prompt is too long"), summaryOf("S."), reply("ok")];
+    const lead = new Lead("fake:a", turns, 1_000_000);
+    const { session, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("then this");
+    expect(summaries).toEqual(["S."]);
+    expect(session.prompts).toEqual([big, "then this"]);
+    expect(session.calls).toEqual([{ name: "echo", input: { text: "one" } }]);
+  });
+
+  it("learns the ratio under the model that answered, so a lead with none has no advance check", async () => {
+    const lead = new Lead("fake:a", [measured("noted", { servedBy: "fake:other" }), reply("sent as it is")], 700);
+    const { session, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect([lead.seen.length, summaries]).toEqual([2, []]);
+  });
+
+  it("starts the ratios afresh on a load, so a loaded conversation has no estimate yet", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), reply("sent as it is")], 700);
+    const { session, summaries } = await setup(lead);
+    await session.send(big);
+    session.load({ id: "c", messages: [...session.messages], system: "t", transcript: saving(), prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+    await session.send("now this");
+    expect([lead.seen.length, summaries]).toEqual([2, []]);
+  });
+
+  it("has no advance check with no window known and no /autocompact size, and checks against the size when set", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), measured("sent as it is"), summaryOf("S."), reply("after")]);
+    const { session, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect([lead.seen.length, summaries]).toEqual([2, []]);
+    session.autoCompact = 700;
+    await session.send("and this");
+    expect(summaries).toEqual(["S."]);
+    expect(isSummary(lead.seen[2]!)).toBe(true);
+  });
+
+  // Task 12's review: a second reply that filled the window is no "too long" answer; the line would give a size within it.
+  it("ends the turn with the reply's own words when it fills the window again once shortened", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), cutAtWindow, summaryOf("Many x."), cutAtWindow], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(summaries).toEqual(["Many x."]);
+    expect(session.messages).toEqual([typed(shortened("Many x.", "now this"))]);
+    expect(errors).toEqual([{ kind: "max_tokens", attempted: "response from fake:a", message: "The conversation filled the context window", lead: "fake:a" }]);
+  });
+
+  it("ends the turn with the line when a request shortened in advance is still too long, without shortening again", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Many x."), new TooLong("prompt is too long")], 700);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect([lead.seen.length, summaries]).toEqual([3, ["Many x."]]);
+    expect(errors).toEqual([{ kind: "shortening", attempted: "request to fake:a", message: tooLongLine(session, "fake:a", 700), lead: "fake:a" }]);
+  });
+
+  // Decision 3 of the build: the /autocompact size is not the model's limit, so the model's own answer decides.
+  it("sends a request past the /autocompact size but within the window as it is when saving has stopped", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), reply("sent as it is")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead, { transcript: await unsavable() });
+    session.autoCompact = 700;
+    await session.send(big);
+    await session.send("now this");
+    expect([lead.seen.length, summaries]).toEqual([2, []]);
+    expect(texts(session.messages.at(-1)!)).toEqual(["sent as it is"]);
+    expect(errors.map((e) => e.kind)).toEqual(["saving"]);
+  });
+
+  // Task 13 (user, 2026-11-06: "Show the line, send anyway", then "Retry next turn"): the line's event is marked as sent,
+  // so -p's run does not fail for it (cli.tsx); the rest of the turn sends without another summary, and the next turn
+  // tries once again.
+  it("sends a request past the /autocompact size but within the window as it is when its summary fails, trying again next turn", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const call = measured("", { parts: callTool("c1", "echo", { text: "one" }).parts });
+    const lead = new Lead("fake:a", [measured("noted"), refusal, call, measured("rest of the turn"), summaryOf("S."), reply("after")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    session.autoCompact = 700;
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen.map(isSummary)).toEqual([false, true, false, false]);
+    expect(texts(lead.seen[2]!.messages.at(-1)!)).toEqual(["now this"]);
+    expect(texts(session.messages.at(-1)!)).toEqual(["rest of the turn"]);
+    const line = "The conversation could not be shortened (declined); it is unchanged.";
+    expect(errors).toEqual([{ kind: "shortening", attempted: "request to fake:a", message: line, lead: "fake:a", sent: true }]);
+    await session.send("and this");
+    expect(lead.seen.map(isSummary)).toEqual([false, true, false, false, true, false]);
+    expect([summaries, texts(session.messages.at(-1)!)]).toEqual([["S."], ["after"]]);
+  });
+
+  // Task 13's quality review: the wait for the next turn is the /autocompact size's alone, never the window's.
+  it("still shortens for the window after a failed /autocompact summary, when the request sent anyway is too long", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const lead = new Lead("fake:a", [measured("noted"), refusal, new TooLong("prompt is too long"), summaryOf("S."), reply("after")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    session.autoCompact = 700;
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen.map(isSummary)).toEqual([false, true, false, true, false]);
+    expect(lead.seen[4]!.messages).toEqual([typed(shortened("S.", "now this"))]);
+    expect([summaries, texts(session.messages.at(-1)!)]).toEqual([["S."], ["after"]]);
+    expect(errors.map((e) => [e.message, e.sent])).toEqual([["The conversation could not be shortened (declined); it is unchanged.", true]]);
+  });
+
+  it("ends the turn with the line when a summary for the /autocompact size fails and the request does not fit the window either", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const lead = new Lead("fake:a", [measured("noted"), refusal], 700);
+    const { session, errors } = await setup(lead);
+    session.autoCompact = 600;
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen).toHaveLength(2);
+    // Not marked as sent: the turn ends with it, so -p's run fails (cli.tsx).
+    expect(errors).toEqual([
+      { kind: "shortening", attempted: "request to fake:a", message: "The conversation could not be shortened (declined); it is unchanged.", lead: "fake:a" },
+    ]);
+  });
+
+  // Task 13: /compact.
+  it("shortens the whole conversation on /compact, with its words as the focus", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted."), reply("next")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    expect(await session.compact("focus on tests")).toBeUndefined();
+    expect(texts(lead.seen[1]!.messages.at(-1)!).at(-1)).toBe(`${INSTRUCTIONS}\n\nFocus on: focus on tests`);
+    expect(lead.seen[1]!.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(session.messages).toEqual([typed("This conversation was shortened. A summary of everything before this point:\n\nCompacted.")]);
+    expect([summaries, errors]).toEqual([["Compacted."], []]);
+  });
+
+  it("says a failed /compact in the line, the conversation unchanged; a stop is the caller's to say", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const stop = new AbortController();
+    const stopped = () => {
+      stop.abort();
+      throw new Error("Request was aborted.");
+    };
+    const lead = new Lead("fake:a", [measured("noted"), refusal, stopped], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    expect(await session.compact("")).toBe("declined");
+    expect(texts(lead.seen[1]!.messages.at(-1)!).at(-1)).toBe(INSTRUCTIONS);
+    expect(await session.compact("", stop.signal)).toBe(CANCELLED);
+    expect(session.messages).toHaveLength(2);
+    expect(summaries).toEqual([]);
+    expect(errors).toEqual([
+      { kind: "shortening", attempted: "request to fake:a", message: "The conversation could not be shortened (declined); it is unchanged.", lead: "fake:a" },
+    ]);
+  });
+
+  // PR #10's review: a stop while the instruction files are read again, after the summary came, saves and changes nothing.
+  it("changes nothing when /compact is stopped while the instruction files are read again", async () => {
+    const stop = new AbortController();
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
+    const systemNow = async () => {
+      stop.abort();
+      return "t, read again";
+    };
+    const { session, summaries, transcript } = await setup(lead, { systemNow });
+    await session.send(big);
+    expect(await session.compact("", stop.signal)).toBe(CANCELLED);
+    expect([session.messages.length, session.system, summaries]).toEqual([2, "t", []]);
+    expect(savedLines(transcript).some((l) => l.t === "shortened")).toBe(false);
+  });
+
+  it("refuses /compact when saving has stopped, saying why in the line", async () => {
+    const lead = new Lead("fake:a", [measured("noted")], 1_000_000);
+    const { session, errors } = await setup(lead, { transcript: await unsavable() });
+    await session.send(big);
+    expect(await session.compact("")).toBe(UNSAVED);
+    expect(lead.seen).toHaveLength(1);
+    expect(errors.map((e) => e.message).at(-1)).toBe("The conversation could not be shortened (saving this session stopped); it is unchanged.");
+  });
+
+  // Task 12's review: a stop ends the turn as any stop does, saying nothing (session.ts, #execute).
+  it("ends the turn quietly when it is stopped during a shortening, the conversation unchanged", async () => {
+    const stop = new AbortController();
+    const stopped = () => {
+      stop.abort();
+      throw new Error("Request was aborted.");
+    };
+    const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), stopped], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this", stop.signal);
+    expect([errors, summaries]).toEqual([[], []]);
+    expect(session.messages).toHaveLength(3);
+  });
+
+  it("ends the turn quietly when it is stopped while the request is counted for the line, never as the provider's error", async () => {
+    const stop = new AbortController();
+    // No ratio (a usage of 0 teaches none) and no transcript, so the line's size is the count, which is stopped.
+    const unmeasured = { ...reply("noted"), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    const lead = counting(new Lead("fake:a", [unmeasured, new TooLong("prompt is too long")], 1_000_000), stop, [10, 10, "stop"]);
+    const { session, errors } = await setup(lead, { transcript: undefined });
+    await session.send(big);
+    await session.send("now this", stop.signal);
+    expect(errors).toEqual([]);
+  });
+
+  it("ends the turn quietly when it is stopped while the request is counted before it is sent", async () => {
+    const stop = new AbortController();
+    const lead = counting(new Lead("fake:a", [], 1_000_000), stop, ["stop"]);
+    const { session, errors } = await setup(lead);
+    await session.send(big, stop.signal);
+    expect([errors, lead.seen]).toEqual([[], []]);
+    expect(session.messages).toEqual([typed(big)]);
+  });
+
+  it("shortens a subagent's conversation through Tasks, saving the shortening in its own file", async () => {
+    const lead = saving();
+    const turns = [callTool("c1", "echo", { text: "one" }), new TooLong("prompt is too long"), summaryOf("Sub summary."), reply("done")];
+    const worker = new Lead("fake:w", turns, 1_000_000);
+    const bus = new Bus();
+    const ctx = await tempContext();
+    const tasks = new Tasks({ bus, max: 8, worker: () => worker, system: "sub", tools: [echo], ctx, transcript: () => lead });
+    expect(await tasks.start("brief", { background: false }).done).toEqual({ state: "done", text: "done" });
+    const own = new Transcript(path.join(pathsOf(lead.file).subagents, "t1.jsonl"), lead.pictures);
+    expect(savedLines(own).map((l) => l.t)).toEqual(["message", "message", "message", "shortened", "message"]);
+    expect(isSummary(worker.seen[2]!)).toBe(true);
   });
 });

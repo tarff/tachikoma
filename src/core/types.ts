@@ -32,6 +32,31 @@ export interface Message {
   // The provider's own content for this turn, replayed unchanged when the same kind of provider leads
   // again. Anthropic needs this: thinking blocks must come back byte-identical.
   native?: { provider: string; content: unknown };
+  // A reply's: the id of the lead that answered it, for /export, and saved with it (release 8a plan, choice 27). The
+  // session never sends it to a provider.
+  lead?: string;
+}
+
+// A message as a request carries it: without the reply's lead, which is the session's own (release 8a plan, choice 27),
+// so no provider can send it on.
+export function sent(m: Message): Message {
+  if (m.lead === undefined) return m;
+  const { lead: _, ...rest } = m;
+  return rest;
+}
+
+// A history as a request carries it: each message as sent() makes it, a user message right after another joining it as
+// more parts, so user and assistant messages alternate, every provider gets the same shape, and a resumed session joins
+// them the same way. A prompt after a shortening between turns follows the new history's message so (release 8a plan,
+// Task 12).
+export function sentAll(messages: Message[]): Message[] {
+  const out: Message[] = [];
+  for (const m of messages.map(sent)) {
+    const last = out.at(-1);
+    if (m.role === "user" && last?.role === "user") out[out.length - 1] = { ...last, parts: [...last.parts, ...m.parts] };
+    else out.push(m);
+  }
+  return out;
 }
 
 export interface ToolSpec {
@@ -52,8 +77,9 @@ export interface Turn {
   parts: Part[];
   native?: Message["native"];
   usage: Usage;
-  // Set when the model stopped before finishing: output limit, context limit or refusal.
-  cutOff?: { kind: "max_tokens" | "refusal"; detail: string };
+  // Set when the model stopped before finishing: output limit, context limit or refusal. "window": the reply filled
+  // Anthropic's context window (release 8a plan, choice 21).
+  cutOff?: { kind: "max_tokens" | "window" | "refusal"; detail: string };
   // Set when the provider itself handed the request to another model (Anthropic's fallback).
   fallbacks?: { from: string; to: string }[];
   servedBy?: string; // "<provider>:<model>" that actually answered, when not the one asked
@@ -85,14 +111,20 @@ export interface Provider {
   complete(req: CompletionRequest): Promise<Turn>;
   contextWindow?(signal?: AbortSignal): Promise<number | null>; // the signal stops the lookup (review fixes plan, fix 5)
   setEffort?(effort: Effort | undefined): void; // Anthropic's only, as --effort is
+  // Whether `err`, as complete() threw it, says the request was too long for the model (release 8a plan, choice 20).
+  tooLong?(err: unknown): boolean;
+  // The provider's own count of the request's input tokens (release 8a plan, choice 19): Anthropic's only.
+  countTokens?(req: CompletionRequest): Promise<number>;
 }
 
 // A provider's failure with the HTTP status it came with, so the session can tell a refused request (400) apart without
 // reading the provider's words (release 6 plan, choice 10). The SDKs' own `APIError` carries `status` the same way.
+// `code` is the provider's own code for it, kept so chatgpt.ts can tell a too-long request (release 8a plan, choice 20).
 export class ProviderError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly code?: string,
   ) {
     super(message);
   }

@@ -165,6 +165,16 @@ export class OpenAIProvider implements Provider {
     }
   }
 
+  // OpenRouter's answer to a request over the window (release 8a plan, choice 20), as Task 1 recorded it: "status 400,
+  // type none, code 400 (BadRequestError): This endpoint's maximum context length is 1050000 tokens. ...". Its code is
+  // only the status again, so the message tells it apart. complete() throws the SDK's error as it came. The other kinds
+  // never answer: no page names the OpenAI API's, Kimi's or Ollama's too-long error and no live test has seen one.
+  tooLong(err: unknown): boolean {
+    if (this.kind !== "openrouter" || !(err instanceof OpenAI.APIError) || err.status !== 400) return false;
+    const message: unknown = (err.error as { message?: unknown } | undefined)?.message;
+    return typeof message === "string" && message.startsWith("This endpoint's maximum context length is");
+  }
+
   // The table is OpenAI's, so it answers only for openai leads at OpenAI's own address. Another address, set by
   // OPENAI_BASE_URL, may serve other models under the same names, as OpenRouter, Kimi and Ollama do. Null shows the tokens
   // in use.

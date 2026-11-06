@@ -289,6 +289,9 @@ export class InputFilter extends EventEmitter {
     this.#win32 = win32;
     source.setEncoding("utf8");
     source.on("data", this.#onData);
+    // A data listener doesn't wake a stream paused on purpose, as the question at the start leaves stdin (cli.tsx,
+    // askAtStart); what the terminal gave since then comes now (on Windows, with raw mode off, only a finished line).
+    source.resume();
     // A stream tells a readable listener added while data waits, on the next tick. Ink removes its listener in
     // suspendTerminal() and adds it back on resume, and adds it first when useInput mounts: keys typed meanwhile would
     // otherwise wait for the next key.

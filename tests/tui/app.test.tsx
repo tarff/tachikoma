@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -11,17 +11,23 @@ import chalk from "chalk";
 import { Completions } from "openai/resources/chat/completions";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { Models } from "@anthropic-ai/sdk/resources/models";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
-import type { Given } from "../../src/clilib.js";
+import { type Given, newSaved, WindowSessions } from "../../src/clilib.js";
 import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { system32 } from "../../src/exec/env.js";
 import type { Executor } from "../../src/exec/executor.js";
 import { LocalWorkspace } from "../../src/exec/local.js";
 import type { Workspace } from "../../src/exec/workspace.js";
 import { Session } from "../../src/core/session.js";
+import { attachErrorLog } from "../../src/core/errorlog.js";
+import { exportText } from "../../src/core/exportText.js";
+import { characters } from "../../src/core/fit.js";
+import { listSessions, openSession } from "../../src/core/sessions.js";
+import { INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
-import type { Provider, Turn } from "../../src/core/types.js";
+import { sessionPaths, Transcript } from "../../src/core/transcript.js";
+import type { CompletionRequest, Message, Provider, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { delegateTool } from "../../src/tools/delegate.js";
@@ -37,12 +43,13 @@ import { readSettings, type Settings, settingsDir, shownFile } from "../../src/s
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
+import { conversationLines } from "../../src/tui/describe.js";
 import { Pictures, type Read } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
-import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, texts, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 
@@ -101,6 +108,11 @@ let nextHistory = 0;
 // The home folder whose settings and keys files /settings and /keybindings open, shared by the tests that do not look
 // at them.
 const sharedHome = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+// The window's sessions for an App rendered without mount(), which saves none: nothing is written unless /clear, /resume
+// or /branch runs, into one folder of this file's own, two levels inside a fresh temp folder, removed at the end.
+const unsavedTop = mkdtempSync(path.join(tmpdir(), "tachi-app-data-"));
+afterAll(() => removeTree(unsavedTop));
+const unsaved = () => new WindowSessions(path.join(unsavedTop, "data", "sessions"), { project: "", version: "test", tools: [] }, { box: false, full: "" });
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
@@ -137,8 +149,14 @@ async function mount(
     executor?: Executor; // what the tools run through; a real one in a temp folder when not given
     workspace?: Workspace; // the project's files, for the tools and the App; the temp folder's, with `branches`, when not given
     copy?: AppProps["copy"]; // copy mode's copy, and what leave() does with it (release 7 plan, Task 21)
+    sessions?: string; // the sessions folder, as sessionsDir gives it; a fresh one for this mount when not given
+    save?: boolean; // the session saves there from the start, as cli.tsx starts one (App's sessions); unsaved otherwise
   } = {},
 ) {
+  // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
+  // give an earlier mount's to find what it saved (release 8a plan, Task 2). Only a mount with `save` writes a
+  // transcript there from the start; any other has none until /clear, /resume or /branch opens one.
+  const sessions = opts.sessions ?? path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "sessions");
   const bus = new Bus();
   const stats = new Stats(bus);
   const ctx = await tempContext();
@@ -149,14 +167,32 @@ async function mount(
   const judge = judgeOf(opts.judge, () => session, "", bus); // as cli.tsx gives it: unset, the lead leading judges
   const gate = new PermissionGate(opts.mode ?? "ask", (...a) => ask(...a), undefined, { root: ctx.root, judge });
   gate.rules = opts.live?.loaded.settings.dangerousCommands ?? NO_RULES; // as cli.tsx sets it at launch
-  const tasks = new Tasks({ bus, max: 8, worker: () => opts.worker ?? new FakeProvider("w", []), system: "sub", tools: SUBAGENT_TOOLS, ctx: { ...ctx, gate } });
+  const tasks = new Tasks({
+    bus,
+    max: 8,
+    worker: () => opts.worker ?? new FakeProvider("w", []),
+    system: "sub",
+    tools: SUBAGENT_TOOLS,
+    ctx: { ...ctx, gate },
+    transcript: () => session.transcript, // as cli.tsx gives it
+  });
+  // As cli.tsx makes them: one Pictures for the session and the App (leadSession), the window's sessions, and the inbox,
+  // the lost subagents' lines first.
+  const pictures = opts.pictures ?? new Pictures();
+  const tools = [...TOOLS, delegateTool(tasks, { headless: false })];
+  const start = { project: ctx.root, version: "test", tools: tools.map((t) => t.spec) };
+  const opened = opts.save ? newSaved(sessions, { id: randomUUID(), ...start, lead: lead.id, print: false, system: "t", box: false }) : undefined;
+  const windowSessions = new WindowSessions(sessions, start, { box: false, full: "t" }, opened);
   const session = new Session({
     lead,
-    tools: [...TOOLS, delegateTool(tasks, { headless: false })],
+    tools,
     system: "t",
+    systemNow: async () => "t, read again", // the instruction files read again (release 8a plan, choice 3)
     ctx: { ...ctx, gate },
     bus,
-    inbox: () => tasks.take(),
+    pictures,
+    tasks,
+    inbox: () => [...windowSessions.lost(), ...tasks.take()],
     ask: (...a) => ask(...a), // as cli.tsx gives it
   });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
@@ -215,7 +251,8 @@ async function mount(
       bindings={opts.bindings}
       home={opts.home ?? sharedHome}
       live={opts.live}
-      pictures={opts.pictures}
+      pictures={pictures}
+      saved={windowSessions}
       // No test reads the user's clipboard: unless a test gives its own reader, Alt+V's read never answers, and the
       // test ends it through the session's Pictures.
       readPicture={opts.readPicture === undefined ? () => new Promise(() => {}) : opts.readPicture}
@@ -226,8 +263,9 @@ async function mount(
   // ink-testing-library's terminal has no height; 24 rows is Ink's own default size (getWindowSize).
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
+  if (opened) session.load(opened.conversation); // once the App listens, as cli.tsx loads it
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, mouse, copies, gate, ask: (...a: Parameters<Ask>) => ask(...a) };
+  return { app, session, ctx, bus, tasks, historyFile, sessions, mouse, copies, gate, pictures, ask: (...a: Parameters<Ask>) => ask(...a) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -288,6 +326,20 @@ describe("App", () => {
     expect(app.lastFrame()).toMatch(/^Instructions: CLAUDE.md \(12 bytes\)\n/);
   });
 
+  // Release 8a plan, Task 6 (user, 2026-11-06: "Show it"): a resumed conversation is drawn as a live one, above the lines
+  // saying how it was resumed, as cli.tsx gives them.
+  it("draws a resumed conversation's prompts, replies and tool rows above the resume lines", async () => {
+    const history: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "read the notes" }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "read_file", input: { path: "notes.txt" } }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "the notes", isError: false }] },
+      { role: "assistant", parts: [{ type: "text", text: "They say hello." }] },
+    ];
+    const { app } = await mount([], { intro: [...conversationLines(history), { text: "Resumed: read the notes.", color: "gray" }] });
+    const frame = app.lastFrame()!;
+    expect(frame).toMatch(/^> read the notes\n● read_file notes\.txt\n {2}⎿ ok\nThey say hello\.\nResumed: read the notes\.\n/);
+  });
+
   it("sends what the user types and shows the reply", async () => {
     const { app } = await mount([reply("hello there")]);
     await type(app, "hi");
@@ -345,8 +397,66 @@ describe("App", () => {
   it("switches the lead with /lead", async () => {
     const { app, session } = await mount([]);
     await type(app, "/lead fake:b");
-    expect(session.lead.id).toBe("fake:b");
+    await waitFor(() => session.lead.id === "fake:b");
     expect(app.lastFrame()).toContain("lead is now fake:b");
+  });
+
+  // Release 8a plan, Task 12: a conversation that will not fit the new lead's smaller window is shortened first, with the
+  // lead leading now; a summary that fails keeps that lead, with the approved line.
+  it("shortens before /lead switches to a smaller window, and refuses the switch when the summary fails", async () => {
+    let window = 0;
+    const turns: ((req: CompletionRequest) => Turn)[] = [
+      // One token a character, so the ratio is 1; the new lead's window then holds the tools and a summary, not the prompt.
+      (req) => {
+        window = characters(req.system, [], req.tools) + 1000;
+        return { ...reply("noted"), usage: { ...usage, input: characters(req.system, req.messages, req.tools) } };
+      },
+      () => ({ ...reply(""), cutOff: { kind: "refusal", detail: "declined" } }),
+      () => reply("The user sent many x."),
+    ];
+    const lead: Provider = { id: "fake:a", complete: async (req) => turns.shift()!(req) };
+    const newLead: Provider = { id: "fake:b", complete: async () => reply("hi"), contextWindow: async () => window };
+    const { app, session } = await mount([], { lead, newLead, save: true });
+    await session.send("x".repeat(2000));
+    const flat = () => app.lastFrame()!.replaceAll(/ *\n */g, " "); // a long line wraps
+    await type(app, "/lead fake:b");
+    await waitFor(() => flat().includes("fake:b was not made the lead: the conversation does not fit its window and could not be shortened (declined)."));
+    expect([session.lead.id, session.messages.length]).toEqual(["fake:a", 2]);
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    expect(session.messages.map(texts)).toEqual([["This conversation was shortened. A summary of everything before this point:\n\nThe user sent many x."]]);
+  });
+
+  // Task 12's review: a stopped /lead says nothing, as a stopped turn does, and keeps the lead.
+  it("keeps the lead, saying nothing, when Ctrl-C stops /lead's summary, and goes on after", async () => {
+    let window = 0;
+    let summarising = false;
+    const turns: ((req: CompletionRequest) => Promise<Turn>)[] = [
+      async (req) => {
+        window = characters(req.system, [], req.tools) + 1000; // as above: the prompt does not fit, the summary would
+        return { ...reply("noted"), usage: { ...usage, input: characters(req.system, req.messages, req.tools) } };
+      },
+      (req) =>
+        new Promise((_, reject) => {
+          summarising = true;
+          req.signal?.addEventListener("abort", () => reject(new Error("Request was aborted.")), { once: true });
+        }),
+      async () => reply("still fake:a"),
+    ];
+    const lead: Provider = { id: "fake:a", complete: (req) => turns.shift()!(req) };
+    const newLead: Provider = { id: "fake:b", complete: async () => reply("hi"), contextWindow: async () => window };
+    const { app, session } = await mount([], { lead, newLead, save: true });
+    await session.send("x".repeat(2000));
+    await type(app, "/lead fake:b");
+    await waitFor(() => summarising);
+    app.stdin.write("\u0003"); // Ctrl-C
+    await tick();
+    await type(app, "and now");
+    await until(app, "still fake:a");
+    expect(session.lead.id).toBe("fake:a");
+    expect(app.lastFrame()).not.toContain("was not made the lead");
+    expect(app.lastFrame()).not.toContain("could not be shortened");
+    expect(session.messages).toHaveLength(4);
   });
 
   // Release 6 plan, choice 34 (the user: "can we have lead list the models?"): /lead alone opens the model list, as
@@ -648,7 +758,7 @@ describe("App", () => {
     await type(app, "hi");
     await until(app, "there");
     await tick();
-    expect(asked).toBe(2);
+    expect(asked).toBe(3); // the launch's, the session's before its request (release 8a plan, Task 12), and the reply's
     expect(app.lastFrame()).toContain("% left");
   });
 
@@ -835,6 +945,31 @@ describe("App", () => {
     await until(app, "carried on");
     expect(app.lastFrame()).toContain("✗ judge: judge down");
     expect(existsSync(target)).toBe(false);
+  });
+
+  // Release 8a plan, Task 5: the "Saving fails" line in red after ✗, with no label (user, 2026-11-06, "✗ then the line").
+  it("shows saving stopped as ✗ and the line alone, in red", async () => {
+    await inColour(async () => {
+      const { app, session, bus } = await mount([reply("still here")]);
+      const errors: string[] = [];
+      bus.on("error", (e) => errors.push(e.message));
+      // A file where the sessions folder should be, so the first write fails, with no permission changed.
+      const own = await mkdtemp(path.join(tmpdir(), "tachi-"));
+      onTestFinished(() => removeTree(own));
+      writeFileSync(path.join(own, "sessions"), "not a folder");
+      const dir = path.join(own, "sessions", "project");
+      const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"));
+      session.load({ id: "s1", messages: [], system: "t", transcript, prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+      await type(app, "hi");
+      await until(app, "still here");
+      const frame = app.lastFrame()!;
+      expect(errors).toEqual([expect.stringMatching(/^Saving this session stopped: /)]);
+      expect(frame).toContain("\u001b[31m✗ Saving this session stopped:");
+      // The line wraps at the screen's width, so it is compared without its blanks and line breaks.
+      const bare = (s: string) => s.replace(/\s/g, "");
+      expect(bare(stripVTControlCharacters(frame))).toContain(bare(`✗ ${errors[0]}`));
+      expect(frame).not.toContain("saving:");
+    });
   });
 
   // Release 7 plan, Task 10: after 3 refusals in a row the next action that would go to the judge asks, with auto mode's
@@ -1995,13 +2130,15 @@ describe("App's menus", () => {
     expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model; alone, pick it from a list\n  /model  Pick the lead model from a list\n");
     expect(app.lastFrame()).toContain("↑↓ choose · Tab fill · Enter run · Esc close");
     await press(app, "e");
-    expect(app.lastFrame()).toContain("› /e\n  /errors  Summarise the error log\n  /exit  Quit\n");
+    expect(app.lastFrame()).toContain(
+      "› /e\n  /export [file]  Write the conversation to a file as text; alone, copy it\n  /errors  Summarise the error log\n  /exit  Quit\n",
+    );
     expect(app.lastFrame()).not.toContain("/model");
   });
 
   it("runs the chosen command on Enter, Down choosing the next", async () => {
     const { app } = await mount([]);
-    await press(app, "/", "e", "\u001b[B", "\r");
+    await press(app, "/", "e", "x", "\u001b[B", "\r"); // /export, then /exit
     await expectExited(app);
   });
 
@@ -2373,6 +2510,7 @@ describe("App in full screen", () => {
         bus={bus}
         stats={new Stats(bus)}
         mode="ask"
+        saved={unsaved()}
         onMode={() => {}}
         onRules={() => {}}
         project="proj"
@@ -4288,6 +4426,7 @@ async function onTerminal(
       bus={bus}
       stats={new Stats(bus)}
       mode="ask"
+      saved={unsaved()}
       onMode={() => {}}
       onRules={() => {}}
       project="proj"
@@ -4732,7 +4871,7 @@ describe("App's /screen", () => {
     expect(app.lastFrame()).not.toContain("screen is now");
     await type(app, "/nope");
     await until(app, "Unknown command: /nope.");
-    expect(app.lastFrame()!.replaceAll("\n", " ")).toContain("/errors, /screen, /settings, /keybindings, /vim, /exit"); // a long line wraps
+    expect(app.lastFrame()!.replaceAll(/ *\n */g, " ")).toContain("/errors, /screen, /settings, /keybindings, /vim, /exit"); // a long line wraps
     await press(app, "/", "s");
     expect(app.lastFrame()).toContain("› /s\n  /screen  Switch between full screen and classic\n");
   });
@@ -5252,6 +5391,16 @@ describe("App's keys from the table of actions", () => {
     expect(app.lastFrame()).not.toContain("write the fix");
   });
 
+  // PR #10's review: a letter bound in Select still goes into the model list's filter, as /resume's list takes it instead.
+  it("types a letter bound in Select into the model list's filter", async () => {
+    const { app } = await mount([], { bindings: table("Select", { j: "select:next" }), models: [{ provider: "fake", models: ["just", "slow"] }] });
+    await type(app, "/model");
+    await until(app, "fake:just");
+    await tick(); // the picker starts reading keys just after it first appears
+    await press(app, "j");
+    expect(app.lastFrame()).toContain("Filter: j ·");
+  });
+
   it("completes a chord ending in a letter in the model list's filter, and types a letter that does not complete it or comes after 3 s", async () => {
     const { app, bus } = await mount([], { bindings: chord(), models: [{ provider: "fake", models: ["quick", "slow"] }] });
     bus.emit("todo", todo);
@@ -5340,7 +5489,8 @@ describe("App's keys from the table of actions", () => {
     await until(app, "  /exit  Quit");
     await wheel(mouse, "down");
     await press(app, "\t");
-    expect(app.lastFrame()).toContain("› /exit");
+    // /export comes first, so a notch down is the second entry.
+    expect(app.lastFrame()).toContain("› /errors");
   });
 
   it("scrolls on a wheel notch that drops a waiting chord, and takes the chord from the hint row", async () => {
@@ -6679,6 +6829,20 @@ describe("App's live settings", () => {
     for (const key of ["sandbox", "network", "judge"]) await sees(c.app, `settings.json's "${key}" was left as --${key} set it for this session`);
   });
 
+  // Release 8a plan, choice 26: "autoCompactWindow" is LIVE, set as /autocompact sets it; a bad one keeps the last good.
+  it("sets the /autocompact size from a live autoCompactWindow, off when removed, and says a bad one", async () => {
+    const { app, session, write } = await watching([], {});
+    write({ autoCompactWindow: 200000 });
+    await sees(app, `autoCompactWindow is now 200,000 ${FROM}`);
+    expect(session.autoCompact).toBe(200_000);
+    write({ autoCompactWindow: 0 });
+    await sees(app, 'settings.json: "autoCompactWindow" must be a whole number from 1 (got "0"); the last good settings still apply');
+    expect(session.autoCompact).toBe(200_000);
+    write({});
+    await sees(app, `autoCompactWindow is now off ${FROM}`);
+    expect(session.autoCompact).toBeNull();
+  });
+
   // Release 7 plan, Task 4 (design, "Configurable"): an edit that loosens the dangerous-command check gets a red warning
   // and waits for the next launch, so a command the user allowed cannot loosen it in the session; one that tightens it
   // gets a grey notice and applies at once.
@@ -6759,6 +6923,9 @@ describe("App's live settings", () => {
     onTestFinished(() => void vi.unstubAllEnvs());
     const lookup = vi.spyOn(Models.prototype, "retrieve").mockResolvedValue({ max_input_tokens: 1_000 } as never); // no request leaves
     onTestFinished(() => lookup.mockRestore());
+    // Nor does the count the session asks for before a request with no ratio yet (release 8a plan, Task 12).
+    const count = vi.spyOn(Messages.prototype, "countTokens").mockResolvedValue({ input_tokens: 1 } as never);
+    onTestFinished(() => count.mockRestore());
     const answer = (content: unknown[], stop_reason: string) =>
       ({
         id: "msg_1",
@@ -8169,5 +8336,769 @@ describe("App's leave() in copy mode", () => {
     expect(w.ended).toEqual([]);
     expect(existsSync(path.join(w.folder, "manifest.json"))).toBe(true);
     expect(existsSync(path.join(w.folder, "work", "a.txt"))).toBe(true);
+  });
+});
+
+// Release 8a plan, Task 7: /clear, /resume, /branch and /rename switch and name the window's saved sessions. Every case
+// saves into one sessions folder, made private once, as privateDir starts PowerShell for each new folder on Windows
+// (about 1.5 s), so a case's /resume list holds earlier cases' sessions too, newest first: each picks the one it saved
+// last, the newest.
+describe("App's sessions", () => {
+  const top = mkdtempSync(path.join(tmpdir(), "tachi-sessions-"));
+  const dir = path.join(top, "data", "sessions");
+  beforeAll(() => privateDir(dir));
+  afterAll(() => removeTree(top));
+  const saved = (turns: ConstructorParameters<typeof FakeProvider>[1], opts: Parameters<typeof mount>[1] = {}) =>
+    mount(turns, { ...opts, save: true, sessions: dir });
+  const bg = (id: string, task: string) => callTool(id, "delegate", { description: task, task, background: true });
+  const note = (text: string) => ({ type: "text", text, from: "tasks" });
+  const typed = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+  const fileOf = (id: string) => sessionPaths(dir, id).file;
+  const rowOf = (id: string) => listSessions(dir, { print: false }).find((r) => r.id === id);
+  // A line may wrap at the screen's width, so it is looked for without the frame's blanks and line breaks.
+  const bare = (s: string) => s.replace(/\s/g, "");
+  // A red line that may wrap: its start in red, and its words whole.
+  const saidInRed = (app: ReturnType<typeof render>, line: string) => {
+    expect(app.lastFrame()).toContain(`\u001b[31m${line.slice(0, 10)}`);
+    expect(bare(stripVTControlCharacters(app.lastFrame()!))).toContain(bare(line));
+  };
+  // Whether another window could take the session's lock now, letting it go again at once.
+  const free = (id: string) => {
+    const lock = openSession(dir, id);
+    lock?.release();
+    return lock !== null;
+  };
+  // A session saved by an earlier window, which then closed, letting it go.
+  const earlier = async (prompt: string, close = true) => {
+    const first = await saved([reply("noted")]);
+    await type(first.app, prompt);
+    await until(first.app, "noted");
+    if (close) first.app.unmount();
+    return first;
+  };
+
+  it("starts a new session on /clear, with the instruction files read again, the last one kept and let go", async () => {
+    const lead = new Held("fake:a");
+    const { app, session } = await saved([], { lead });
+    await type(app, "first");
+    lead.answer("one");
+    await until(app, "one");
+    const old = session.id;
+    const before = readFileSync(fileOf(old), "utf8");
+    await type(app, "/clear");
+    await until(app, "Started a new session; the last one is kept (tachi --resume lists it).");
+    expect(session.id).not.toBe(old);
+    expect(free(old)).toBe(true); // carry-over note b
+    expect(free(session.id)).toBe(false);
+    await type(app, "second");
+    await waitFor(() => lead.asked.length === 2);
+    expect(lead.asked[1]!.messages).toEqual([typed("second")]);
+    expect(lead.asked[1]!.system).toBe("t, read again");
+    lead.answer("two");
+    await until(app, "two");
+    expect(readFileSync(fileOf(old), "utf8")).toBe(before);
+    expect(rowOf(session.id)?.firstPrompt).toBe("second");
+  });
+
+  // Choice 15.
+  it("clears the to-do list, the tool line and the gauge's context on a switch", async () => {
+    const { app, bus } = await saved([callTool("c1", "find_files", { pattern: "*.none" }), reply("looked")], { segments: ["context", "tools"] });
+    await type(app, "go");
+    await until(app, "looked");
+    bus.emit("todo", [{ text: "write the fix", status: "pending" }]);
+    await tick();
+    expect(app.lastFrame()).toContain("☐ write the fix");
+    expect(app.lastFrame()).toContain("ctx 15");
+    expect(app.lastFrame()).toContain("find_files ×1");
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    expect(app.lastFrame()).not.toContain("☐ write the fix");
+    expect(app.lastFrame()).toContain("ctx 0");
+    expect(app.lastFrame()).not.toContain("find_files ×1");
+  });
+
+  it("lists the other saved sessions on /resume, and a pick draws its conversation, then its line, and carries it on", async () => {
+    const first = await earlier("remember apple");
+    const lead = new FakeProvider("a", [reply("an apple")]); // the saved session's lead, so the window keeps it
+    const { app, session } = await saved([], { lead });
+    const own = session.id;
+    await type(app, "/resume");
+    await until(app, "Saved sessions in this folder, newest first:");
+    expect(app.lastFrame()).toMatch(/Saved sessions in this folder, newest first:\nremember apple +<1m ago +fake:a +[\d.]+k? bytes\n/);
+    expect(app.lastFrame()).toContain("↑↓ move · Enter opens · Esc closes");
+    await press(app, "\r");
+    await until(app, "Resumed: remember apple.");
+    expect(app.lastFrame()).toMatch(/> remember apple\nnoted\nResumed: remember apple\.\n/);
+    expect(session.id).toBe(first.session.id);
+    expect(free(own)).toBe(true);
+    await type(app, "which fruit?");
+    await until(app, "an apple");
+    expect(lead.seen[0]).toEqual([typed("remember apple"), { role: "assistant", parts: [{ type: "text", text: "noted" }] }, typed("which fruit?")]);
+  });
+
+  // User, 2026-11-06: "The session's saved lead", switched as /lead switches it, so the status line follows.
+  it("switches to a resumed session's saved lead, as /lead does", async () => {
+    const first = await earlier("lead a's session");
+    const saidAgain = new FakeProvider("a", [reply("a again")]);
+    const made: string[] = [];
+    const { app, session } = await saved([], { lead: new FakeProvider("b", []), newLead: saidAgain, made });
+    await type(app, "/resume");
+    await until(app, "lead a's session");
+    await press(app, "\r");
+    await until(app, "lead is now fake:a");
+    expect(made).toEqual(["fake:a"]);
+    expect(app.lastFrame()).toMatch(/Resumed: lead a's session\.\nlead is now fake:a\n/);
+    expect(app.lastFrame()).toMatch(/lead fake:a/); // the status line
+    expect(session.lead).toBe(saidAgain);
+    await type(app, "go on");
+    await until(app, "a again");
+    expect(rowOf(first.session.id)?.lead).toBe("fake:a");
+  });
+
+  it("keeps the window's lead when a resumed session's saved lead cannot be made, saying so", async () => {
+    const first = await earlier("lead a's other session");
+    const lead = new FakeProvider("b", [reply("b answers")]);
+    const { app, session } = await saved([], { lead, leadFails: "no key for fake" });
+    await type(app, "/resume");
+    await until(app, "lead a's other session");
+    await press(app, "\r");
+    await until(app, "Resumed: lead a's other session.");
+    expect(bare(app.lastFrame()!)).toContain(bare("The session's lead, fake:a, is not set up (no key for fake); fake:b leads instead."));
+    expect(session.lead).toBe(lead);
+    await type(app, "go on");
+    await until(app, "b answers");
+    expect(rowOf(first.session.id)?.lead).toBe("fake:b"); // written into it, as tachi -r writes it
+  });
+
+  // Release 8a plan, Task 7: the error log follows the open session, as cli.tsx attaches it.
+  it("logs an error after /clear under the new session's id", async () => {
+    const errors = path.join(path.dirname(dir), "errors", "log.jsonl"); // two levels inside the folder made for the sessions
+    const { app, session, bus } = await saved([new Error("provider down")]);
+    attachErrorLog(bus, errors, () => session.id);
+    const old = session.id;
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    await type(app, "hi");
+    await until(app, "provider down");
+    const rows = readFileSync(errors, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(rows).toMatchObject([{ session: session.id, message: "provider down" }]);
+    expect(session.id).not.toBe(old);
+  });
+
+  // Release 8a plan, Task 7: /clear says its line once the new conversation is loaded, so a saving failure comes first.
+  it("says /clear's line after the new session's saving failure", async () => {
+    const own = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    onTestFinished(() => removeTree(own));
+    writeFileSync(path.join(own, "data"), "not a folder"); // a file where the sessions folder's parent should be
+    const { app } = await mount([], { sessions: path.join(own, "data", "sessions") });
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    const frame = app.lastFrame()!;
+    expect(frame.indexOf("✗ Saving this session stopped:")).toBeGreaterThan(-1);
+    expect(frame.indexOf("✗ Saving this session stopped:")).toBeLessThan(frame.indexOf("Started a new session"));
+  });
+
+  it("opens a copy on /resume of a session open in another window, saying so, and leaves that one's file as it was", async () => {
+    const first = await earlier("remember pear", false);
+    const before = readFileSync(fileOf(first.session.id), "utf8");
+    const { app, session } = await saved([reply("a pear")]);
+    await type(app, "/resume");
+    await until(app, "remember pear");
+    await press(app, "\r");
+    await until(app, "Resumed: remember pear.");
+    expect(app.lastFrame()).toMatch(/noted\nOpened a copy: that session is open in another window\.\nResumed: remember pear\.\n/);
+    expect(session.id).not.toBe(first.session.id);
+    await type(app, "which fruit?");
+    await until(app, "a pear");
+    expect(session.messages).toHaveLength(4);
+    expect(readFileSync(fileOf(first.session.id), "utf8")).toBe(before);
+  });
+
+  // A prompt read with /resume in one read of the terminal starts its turn under the list: a pick then cannot load, so it
+  // leaves the turn's state as it was, and lets the picked session go.
+  it("leaves a turn started under /resume's list alone when a pick cannot load, and lets the picked session go", async () => {
+    const first = await earlier("picked mid-turn");
+    const lead = new Held("fake:a");
+    const { app, session, bus } = await saved([], { lead });
+    const own = session.id;
+    app.stdin.write("/resume\rhi\r");
+    await until(app, "picked mid-turn");
+    await waitFor(() => lead.asked.length === 1);
+    bus.emit("todo", [{ text: "keep this", status: "pending" }]);
+    await press(app, "\r");
+    await until(app, "A turn is already running");
+    expect(app.lastFrame()).toContain("☐ keep this");
+    expect(session.id).toBe(own);
+    expect(free(first.session.id)).toBe(true);
+    lead.answer("done");
+    await until(app, "done");
+  });
+
+  // PR #10's review: a letter bound in Select moves and opens in /resume's list, as in tachi -r's; only the model list's
+  // filter takes typed letters.
+  it("takes letters bound in Select in /resume's list", async () => {
+    await earlier("the older one");
+    await earlier("the newer one");
+    const bindings = new Bindings(tableOf({ ...DEFAULTS, Select: { ...DEFAULTS.Select, j: "select:next", o: "select:accept" } }));
+    const { app } = await saved([], { bindings });
+    await type(app, "/resume");
+    await until(app, "the older one");
+    await press(app, "j", "o");
+    await until(app, "Resumed: the older one.");
+  });
+
+  it("closes /resume's list on Esc, the window staying in its session", async () => {
+    await earlier("a session to leave");
+    const { app, session } = await saved([]);
+    const own = session.id;
+    await type(app, "/resume");
+    await until(app, "a session to leave");
+    await press(app, "\u001b");
+    await gone(app, "Saved sessions in this folder");
+    expect(session.id).toBe(own);
+    expect(free(own)).toBe(false);
+  });
+
+  it("says so on /resume when no other session is saved", async () => {
+    const { app } = await mount([]); // a folder of its own, with nothing saved in it
+    await type(app, "/resume");
+    await until(app, "No other saved sessions in this folder.");
+  });
+
+  it("says in red that a picked session could not be read, and stays in this one", async () => {
+    await inColour(async () => {
+      const first = await earlier("soon gone");
+      const { app, session } = await saved([]);
+      const own = session.id;
+      await type(app, "/resume");
+      await until(app, "soon gone");
+      unlinkSync(fileOf(first.session.id)); // the earlier window's transcript, gone before it is picked
+      await press(app, "\r");
+      await until(app, "could not be read as a session");
+      saidInRed(app, `${fileOf(first.session.id)} could not be read as a session (ENOENT`);
+      expect(session.id).toBe(own);
+      expect(free(own)).toBe(false);
+    });
+  });
+
+  // Carry-over note a: a resumed session's own lost subagents reach its next request, and are then marked reported.
+  it("hands the model a resumed session's lost subagents with its next request, then marks them reported", async () => {
+    const first = await saved([reply("noted")]);
+    await type(first.app, "start a search");
+    await until(first.app, "noted");
+    first.session.transcript!.write({ t: "subagent", id: "t1", description: "find x", file: "t1.jsonl" }); // t1 ran as the window closed
+    first.app.unmount();
+    const lead = new FakeProvider("a", [reply("ok")]);
+    const { app } = await saved([], { lead });
+    await type(app, "/resume");
+    await until(app, "start a search");
+    await press(app, "\r");
+    await until(app, "Resumed: start a search.");
+    await type(app, "go on");
+    await until(app, "ok");
+    const lost = "Subagent t1 (find x) had not finished when the session ended; its answer was lost.";
+    expect(lead.seen[0]!.at(-1)!.parts).toEqual([{ type: "text", text: "go on" }, note(lost)]);
+    expect(readFileSync(path.join(sessionPaths(dir, first.session.id).subagents, "t1.jsonl"), "utf8")).toContain('"state":"lost"');
+  });
+
+  it("drops a resumed session's lost subagents unsaid on /clear, so the new conversation never hears of them", async () => {
+    const first = await saved([reply("noted")]);
+    await type(first.app, "search again");
+    await until(first.app, "noted");
+    first.session.transcript!.write({ t: "subagent", id: "t1", description: "find y", file: "t1.jsonl" });
+    first.app.unmount();
+    const lead = new FakeProvider("a", [reply("fresh")]);
+    const { app } = await saved([], { lead });
+    await type(app, "/resume");
+    await until(app, "search again");
+    await press(app, "\r");
+    await until(app, "Resumed: search again.");
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    await type(app, "hello");
+    await until(app, "fresh");
+    expect(lead.seen[0]).toEqual([typed("hello")]);
+    expect(existsSync(path.join(sessionPaths(dir, first.session.id).subagents, "t1.jsonl"))).toBe(false); // never reported, so still lost
+  });
+
+  // Carry-over note c: the window's pictures and the resumed session's saved ones never share a number.
+  it("gives a picture numbered before /resume a new number, as the resumed session has saved one under its own", async () => {
+    const PICTURE = process.platform === "win32" ? "\u001bv" : "\u0016"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+    const CTRL_S = "\u0013";
+    const OLD = { mediaType: "image/png" as const, data: Buffer.from([1, 2, 3]) }; // stand-ins, never read from disk
+    const NEW = { mediaType: "image/png" as const, data: Buffer.from([4, 5, 6]) };
+    const first = await saved([reply("seen")]);
+    await press(first.app, "look ", PICTURE);
+    first.pictures.set(1, OLD);
+    await press(first.app, "\r");
+    await until(first.app, "seen");
+    first.app.unmount();
+    const { app, session, pictures } = await saved([reply("both seen")]);
+    await press(app, "and ", PICTURE, CTRL_S); // this window's picture #1, stashed
+    pictures.set(1, NEW);
+    await type(app, "/resume");
+    await until(app, "look [Image #1]");
+    await press(app, "\r");
+    await until(app, "Resumed: look [Image #1].");
+    await press(app, CTRL_S, "\r");
+    await until(app, "both seen");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "look " }, { type: "image", id: 1, ...OLD }]);
+    expect(session.messages[2]!.parts).toEqual([{ type: "text", text: "and " }, { type: "image", id: 2, ...NEW }]);
+    const folder = sessionPaths(dir, first.session.id).pictures;
+    expect(readFileSync(path.join(folder, "1.png"))).toEqual(OLD.data);
+    expect(readFileSync(path.join(folder, "2.png"))).toEqual(NEW.data);
+  });
+
+  it("branches on /branch <name>: the copy is named so, the next turn writes to it, and the original stays as it was", async () => {
+    const { app, session } = await saved([reply("one"), reply("two")]);
+    await type(app, "first");
+    await until(app, "one");
+    const original = session.id;
+    const before = readFileSync(fileOf(original), "utf8");
+    await type(app, "/branch side road");
+    await until(app, "Branched:");
+    // The same conversation, so it is not drawn again (release 8a final review, user, 2026-11-07: "Drop the reprint").
+    expect(bare(app.lastFrame()!)).toContain(bare(`> first\none\nBranched: this window is now side road; the original is kept as ${original}.`));
+    expect(app.lastFrame()!.split("> first")).toHaveLength(2);
+    expect(session.id).not.toBe(original);
+    expect(free(original)).toBe(true);
+    await type(app, "second");
+    await until(app, "two");
+    expect(readFileSync(fileOf(original), "utf8")).toBe(before);
+    expect(rowOf(session.id)).toMatchObject({ name: "side road", firstPrompt: "first" });
+    expect(readFileSync(fileOf(session.id), "utf8")).toContain('"text":"second"');
+  });
+
+  // Release 8a final review (user, 2026-11-07: "Clear them"): /clear and /resume share the switch that lets them go.
+  it("lets the last conversation's finished subagents go from /tasks on /clear, and keeps them on /branch", async () => {
+    const lead = new FakeProvider("a", [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")]);
+    const { app, tasks } = await saved([], { lead, worker: new FakeProvider("w", [reply("found")]) });
+    await type(app, "go");
+    await until(app, "done");
+    await type(app, "/branch");
+    await until(app, "Branched:");
+    expect(tasks.all.map((t) => t.id)).toEqual(["t1"]);
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    expect(tasks.all).toEqual([]);
+    await type(app, "/tasks");
+    await until(app, "No subagents yet.");
+  });
+
+  it("lets the last conversation's finished subagents go from /tasks on /resume", async () => {
+    await earlier("an earlier one");
+    const lead = new FakeProvider("a", [callTool("c1", "delegate", { description: "find y", task: "find y" }), reply("done")]);
+    const { app, tasks } = await saved([], { lead, worker: new FakeProvider("w", [reply("found")]) });
+    await type(app, "go");
+    await until(app, "done");
+    expect(tasks.all.map((t) => t.id)).toEqual(["t1"]);
+    await type(app, "/resume");
+    await until(app, "an earlier one");
+    await press(app, "\r");
+    await until(app, "Resumed: an earlier one.");
+    expect(tasks.all).toEqual([]);
+  });
+
+  it("names a branch after the first prompt when /branch is given no name", async () => {
+    const { app, session } = await saved([reply("one")]);
+    await type(app, "plan the trip");
+    await until(app, "one");
+    const original = session.id;
+    await type(app, "/branch");
+    await until(app, "Branched:");
+    expect(bare(app.lastFrame()!)).toContain(bare(`Branched: this window is now plan the trip; the original is kept as ${original}.`));
+    expect(rowOf(session.id)?.name).toBe("plan the trip");
+  });
+
+  it("has nothing to branch before the first prompt", async () => {
+    const { app, session } = await saved([]);
+    const own = session.id;
+    await type(app, "/branch");
+    await until(app, "Nothing to branch yet: this session has no prompt.");
+    expect(session.id).toBe(own);
+  });
+
+  it("says in red that this session could not be copied for /branch, and stays in it", async () => {
+    await inColour(async () => {
+      const { app, session } = await saved([reply("one")]);
+      await type(app, "first");
+      await until(app, "one");
+      const own = session.id;
+      unlinkSync(fileOf(own)); // this window's own transcript, gone
+      await type(app, "/branch");
+      await until(app, "could not be copied");
+      saidInRed(app, `${fileOf(own)} could not be copied (ENOENT`);
+      expect(session.id).toBe(own);
+    });
+  });
+
+  it("names the session on /rename, as the list shows it, and says how it is used when given no name", async () => {
+    await inColour(async () => {
+      const { app, session } = await saved([reply("one")]);
+      await type(app, "hello");
+      await until(app, "one");
+      await type(app, "/rename");
+      await until(app, "\u001b[31mUsage: /rename <name>");
+      await type(app, "/rename my work");
+      await until(app, "Session named my work.");
+      expect(rowOf(session.id)?.name).toBe("my work");
+    });
+  });
+
+  // A name is the first line only, so none holds a line break (Ctrl+J, chat:newline, puts one in the prompt).
+  it("names a session or a branch from the first line of what follows /rename or /branch", async () => {
+    const { app, session } = await saved([reply("one")]);
+    await type(app, "hello");
+    await until(app, "one");
+    await press(app, "/rename two words", "\n", "and more", "\r");
+    await until(app, "Session named two words.");
+    expect(rowOf(session.id)?.name).toBe("two words");
+    await press(app, "/branch a side", "\n", "and more", "\r");
+    await until(app, "Branched: this window is now a side;");
+    expect(rowOf(session.id)?.name).toBe("a side");
+  });
+
+  it.each(["/clear", "/resume", "/branch"])("refuses %s in red while a subagent runs, naming it", async (command) => {
+    await inColour(async () => {
+      const { app, session } = await saved([bg("c1", "find x"), reply("started it")], { worker: new Held("fake:w") });
+      await type(app, "go");
+      await until(app, "started it");
+      const own = session.id;
+      await type(app, command);
+      await until(app, `\u001b[31m${command} waits until no subagent is running: t1 still running. /tasks stop stops them.`);
+      expect(session.id).toBe(own);
+    });
+  });
+
+  it.each([
+    ["/clear", "Started a new session"],
+    ["/resume", "Saved sessions in this folder, newest first:"],
+    ["/branch", "Branched: this window is now go on;"],
+  ])("runs %s queued during a turn once the turn ends", async (command, line) => {
+    await earlier("one to resume");
+    const lead = new Held("fake:a");
+    const { app } = await saved([], { lead });
+    await type(app, "go on");
+    await waitFor(() => lead.asked.length === 1);
+    await type(app, command);
+    expect(app.lastFrame()).not.toContain(line);
+    lead.answer("done");
+    await until(app, line);
+  });
+
+  it("leaves a stopped subagent's note with the last session: /clear's first request holds none of it", async () => {
+    const lead = new FakeProvider("a", [bg("c1", "find x"), reply("started it"), reply("fresh")]);
+    const { app, tasks } = await saved([], { lead, worker: new Held("fake:w") });
+    await type(app, "go");
+    await until(app, "started it");
+    await type(app, "/tasks stop");
+    await until(app, "Stopped every subagent.");
+    await waitFor(() => tasks.all[0]!.state === "stopped");
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    await type(app, "hello");
+    await until(app, "fresh");
+    expect(lead.seen[2]).toEqual([typed("hello")]);
+  });
+
+  it("gives the old conversation a subagent's answer that came while /clear waited in the queue, and the new one none", async () => {
+    const worker = new Held("fake:w");
+    const lead = new Held("fake:a");
+    const { app } = await saved([], { lead, worker });
+    await type(app, "go");
+    lead.answer(bg("c1", "find x"));
+    await waitFor(() => lead.asked.length === 2 && worker.asked.length === 1);
+    await type(app, "/clear");
+    worker.answer("found");
+    await tick();
+    lead.answer("started");
+    await waitFor(() => lead.asked.length === 3);
+    expect(lead.asked[2]!.messages.at(-1)!.parts).toEqual([note("Background task t1 (find x) finished:\nfound")]);
+    lead.answer("read it");
+    await until(app, "Started a new session");
+    await type(app, "new");
+    await waitFor(() => lead.asked.length === 4);
+    expect(lead.asked[3]!.messages).toEqual([typed("new")]);
+  });
+});
+
+// Release 8a plan, Task 8: /export writes the conversation as text to a file, from the project folder, never over one
+// that exists, or alone copies it through the clipboard's stand-in.
+describe("App's /export", () => {
+  const bare = (s: string) => s.replace(/\s/g, "");
+  // A line that may wrap at the screen's width: its start in red when it is red, and its words whole.
+  const said = (app: ReturnType<typeof render>, line: string, red = false) => {
+    if (red) expect(app.lastFrame()).toContain(`\u001b[31m${line.slice(0, 10)}`);
+    expect(bare(stripVTControlCharacters(app.lastFrame()!))).toContain(bare(line));
+  };
+  const talk = async (opts: Parameters<typeof mount>[1] = {}) => {
+    const m = await mount([callTool("c1", "find_files", { pattern: "*.none" }), reply("looked")], opts);
+    await type(m.app, "go");
+    await until(m.app, "looked");
+    return m;
+  };
+
+  it("writes the conversation to a file in the project folder on /export <file>, with its call and result", async () => {
+    const { app, ctx, session } = await talk();
+    await type(app, "/export talk.txt");
+    await until(app, "Exported to");
+    const file = path.join(ctx.root, "talk.txt");
+    said(app, `Exported to ${file}.`);
+    const text = readFileSync(file, "utf8");
+    expect(text).toBe(exportText(session.messages, "fake:a"));
+    expect(text).toMatch(/^You:\ngo\n\nTachikoma \(fake:a\):\n● find_files \{\n {2}"pattern": "\*\.none"\n\}\n {2}⎿ .+\n\n/);
+    expect(text.endsWith("\n\nTachikoma (fake:a):\nlooked\n")).toBe(true);
+  });
+
+  it("refuses a file that already exists, in red, and leaves it as it was", async () => {
+    await inColour(async () => {
+      const { app, ctx } = await talk();
+      const file = path.join(ctx.root, "talk.txt");
+      writeFileSync(file, "mine");
+      await type(app, "/export talk.txt");
+      await until(app, "already exists");
+      said(app, `${file} already exists; nothing was written.`, true);
+      expect(readFileSync(file, "utf8")).toBe("mine");
+    });
+  });
+
+  // A file where a folder should be makes the write fail. The line was approved by the user on 2026-11-06 (constants.ts,
+  // EXPORT_WORDS).
+  // The reason is Node's code and words, without the path they end with, so the file is named once (quality review). Windows
+  // reports a path through a file as missing.
+  it("says in red when the file cannot be written", async () => {
+    await inColour(async () => {
+      const { app, ctx } = await talk();
+      writeFileSync(path.join(ctx.root, "notes"), "a file, not a folder");
+      await type(app, "/export notes/talk.txt");
+      await until(app, "could not be written");
+      const why = process.platform === "win32" ? "ENOENT: no such file or directory" : "ENOTDIR: not a directory";
+      said(app, `${path.join(ctx.root, "notes", "talk.txt")} could not be written (${why}).`, true);
+      expect(bare(stripVTControlCharacters(app.lastFrame()!))).not.toContain(bare(`open '${path.join(ctx.root, "notes")}`));
+    });
+  });
+
+  // Quality review: a path in matching quotes, as a dropped one comes; on Windows only ", as an apostrophe is part of a name.
+  it("takes a file's name out of the quotes around it", async () => {
+    const { app, ctx } = await talk();
+    await type(app, '/export "my notes.txt"');
+    await until(app, "Exported to");
+    said(app, `Exported to ${path.join(ctx.root, "my notes.txt")}.`);
+    expect(existsSync(path.join(ctx.root, "my notes.txt"))).toBe(true);
+  });
+
+  // Quality review: `wx` follows a link at the name on Windows, a junction to a missing folder making that folder. Any link
+  // there counts as a file already there. The junction is this test's own, in the mount's own folder, and is unlinked,
+  // never followed. Links in the folders above are a known limit.
+  it("refuses a link standing at the file's name, writing nothing where it points", async () => {
+    await inColour(async () => {
+      const { app, ctx } = await talk();
+      const link = path.join(ctx.root, "planted.txt");
+      const target = path.join(ctx.root, "elsewhere");
+      symlinkSync(target, link, "junction");
+      onTestFinished(() => unlinkSync(link));
+      await type(app, "/export planted.txt");
+      await until(app, "already exists");
+      said(app, `${link} already exists; nothing was written.`, true);
+      expect(existsSync(target)).toBe(false);
+    });
+  });
+
+  it("takes the file's name from the first line of what follows /export", async () => {
+    const { app, ctx } = await talk();
+    await press(app, "/export one.txt", "\n", "and more", "\r");
+    await until(app, "Exported to");
+    expect(existsSync(path.join(ctx.root, "one.txt"))).toBe(true);
+  });
+
+  it("copies the conversation on /export alone through the clipboard, saying how many characters", async () => {
+    const ran: string[] = [];
+    const { app, copies, session } = await talk({ run: async (text) => void ran.push(text) });
+    await type(app, "/export");
+    await until(app, "Copied the conversation");
+    const text = exportText(session.messages, "fake:a");
+    expect(copies).toEqual([text]);
+    expect(ran).toEqual([text]);
+    said(app, `Copied the conversation (${[...text].length} characters).`);
+  });
+
+  // User, 2026-11-06: "Record each reply's lead".
+  it("heads each reply with the lead that wrote it, across a /lead switch", async () => {
+    const { app, copies } = await mount([reply("from a")], { newLead: new FakeProvider("b", [reply("from b")]) });
+    await type(app, "one");
+    await until(app, "from a");
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await type(app, "two");
+    await until(app, "from b");
+    await type(app, "/export");
+    await until(app, "Copied the conversation");
+    expect(copies).toEqual(["You:\none\n\nTachikoma (fake:a):\nfrom a\n\nYou:\ntwo\n\nTachikoma (fake:b):\nfrom b\n"]);
+  });
+
+  // User, 2026-11-06: "Include, headed Subagents:". The answer as the lead got it, in the turn of its own it woke.
+  it("puts a background subagent's answer under Subagents:, where it arrived", async () => {
+    const bg = callTool("c1", "delegate", { description: "find x", task: "find x", background: true });
+    const lead = new FakeProvider("a", [bg, reply("started it"), reply("read it")]);
+    const worker = new Held("fake:w");
+    const { app, copies } = await mount([], { lead, worker });
+    await type(app, "go");
+    await until(app, "started it");
+    worker.answer("found it");
+    await until(app, "read it");
+    await type(app, "/export");
+    await until(app, "Copied the conversation");
+    expect(copies[0]).toContain(
+      "Tachikoma (fake:a):\nstarted it\n\nSubagents:\nBackground task t1 (find x) finished:\nfound it\n\nTachikoma (fake:a):\nread it\n",
+    );
+  });
+
+  it("says when the clipboard tool fails that the terminal alone copied, as a selection's copy says", async () => {
+    const { app } = await talk({ run: async () => Promise.reject(new Error("xclip not found")) });
+    await type(app, "/export");
+    await until(app, "Copied with the terminal only; xclip not found");
+  });
+});
+
+// Release 8a plan, Task 13: /compact, /autocompact, and the shortened line. A mount with `save`, as shortening needs the
+// session saved.
+describe("App's /compact and /autocompact", () => {
+  const LINE = "Conversation shortened (Ctrl+O shows the summary)";
+  const HISTORY = "This conversation was shortened. A summary of everything before this point:\n\n";
+  // A line that may wrap at the screen's width.
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
+  const isSummary = (messages: Message[]) => texts(messages.at(-1)!).at(-1)!.startsWith(INSTRUCTIONS);
+  const talked = async (turns: ConstructorParameters<typeof FakeProvider>[1], opts: Parameters<typeof mount>[1] = {}) => {
+    const m = await mount([reply("noted"), ...turns], { save: true, ...opts });
+    await type(m.app, "hi");
+    await until(m.app, "noted");
+    return m;
+  };
+
+  it("sends a summary request on /compact, shows the line, and Ctrl+O then shows the summary until the next turn", async () => {
+    const lead = new FakeProvider("a", [reply("noted"), reply("Compacted."), reply("again")]);
+    const { app, session } = await talked([], { lead });
+    await type(app, "/compact");
+    await until(app, LINE);
+    expect(isSummary(lead.seen[1]!)).toBe(true);
+    expect(texts(lead.seen[1]!.at(-1)!).at(-1)).toBe(INSTRUCTIONS);
+    expect(session.messages.map(texts)).toEqual([[`${HISTORY}Compacted.`]]);
+    await press(app, "\u000f");
+    expect(app.lastFrame()).toContain(`${LINE}\nThe summary the conversation was shortened to:\nCompacted.\n`);
+    await type(app, "more");
+    await until(app, "again");
+    await press(app, "\u000f");
+    expect(app.lastFrame()).toContain("Last turn: 0 tool calls");
+  });
+
+  it("opens the summary in the detail view on Ctrl+O in full screen", async () => {
+    const { app } = await talked([reply("Compacted.")], { full: true });
+    await type(app, "/compact");
+    await until(app, LINE);
+    await press(app, "\u000f");
+    expect(shown(app).slice(0, 2)).toEqual(["The summary the conversation was shortened to:", "Compacted."]);
+  });
+
+  it("puts /compact's words in the summary request as its focus", async () => {
+    const lead = new FakeProvider("a", [reply("noted"), reply("Compacted.")]);
+    const { app } = await talked([], { lead });
+    await type(app, "/compact focus on tests");
+    await until(app, LINE);
+    expect(texts(lead.seen[1]!.at(-1)!).at(-1)).toBe(`${INSTRUCTIONS}\n\nFocus on: focus on tests`);
+  });
+
+  it("says there is nothing to shorten on /compact before any message, sending nothing", async () => {
+    const lead = new FakeProvider("a", []);
+    const { app } = await mount([], { lead, save: true });
+    await type(app, "/compact");
+    await until(app, "Nothing to shorten yet.");
+    expect(lead.seen).toEqual([]);
+  });
+
+  it("says a failed /compact in red, the conversation unchanged", async () => {
+    await inColour(async () => {
+      const { app, session } = await talked([new Error("overloaded")]);
+      await type(app, "/compact");
+      await waitFor(() => flat(app).includes("✗ The conversation could not be shortened (overloaded); it is unchanged."));
+      expect(app.lastFrame()).toContain("\u001b[31m✗ The conversation");
+      expect(session.messages).toHaveLength(2);
+    });
+  });
+
+  it("stops /compact on Ctrl-C with the line, the conversation unchanged, and goes on after", async () => {
+    const lead = new Held("fake:a");
+    const { app, session } = await mount([], { lead, save: true });
+    await type(app, "hi");
+    lead.answer("noted");
+    await until(app, "noted");
+    await type(app, "/compact");
+    await waitFor(() => lead.asked.length === 2);
+    app.stdin.write("\u0003"); // Ctrl-C
+    await waitFor(() => flat(app).includes("✗ The conversation could not be shortened (cancelled by the user); it is unchanged."));
+    expect(session.messages).toHaveLength(2);
+    await type(app, "and now");
+    await waitFor(() => lead.asked.length === 3);
+    lead.answer("stale"); // the stopped summary request's, still first in Held's line, answered to no one
+    lead.answer("still here");
+    await until(app, "still here");
+    expect(app.lastFrame()).not.toContain("stale");
+  });
+
+  it("reads the gauge's context as 0 after a shortening, until the next request reports", async () => {
+    const { app } = await talked([reply("Compacted."), reply("again")], { segments: ["context"] });
+    await until(app, "ctx 15");
+    await type(app, "/compact");
+    await until(app, LINE);
+    expect(app.lastFrame()).toContain("ctx 0");
+    await type(app, "more");
+    await until(app, "ctx 15");
+  });
+
+  it("shortens a turn over the /autocompact size first, stops on /autocompact off, and says each", async () => {
+    const seen: Message[][] = [];
+    const answers = ["one", "two", "S.", "three", "four", "five"];
+    // A thousand tokens a character, so each request is estimated at millions of tokens.
+    const lead: Provider = {
+      id: "fake:a",
+      complete: async (req) => {
+        seen.push(structuredClone(req.messages));
+        return { ...reply(answers.shift()!), usage: { ...usage, input: 1000 * characters(req.system, req.messages, req.tools) } };
+      },
+    };
+    const { app, session } = await mount([], { lead, save: true });
+    await type(app, "a");
+    await until(app, "one");
+    await type(app, "b"); // no window known and no /autocompact size: no check
+    await until(app, "two");
+    await type(app, "/autocompact 200k");
+    await until(app, "Shortens once the conversation passes 200,000 tokens.");
+    expect(session.autoCompact).toBe(200_000);
+    await type(app, "c");
+    await until(app, "three");
+    expect(seen.map(isSummary)).toEqual([false, false, true, false]);
+    expect(app.lastFrame()).toContain(LINE);
+    await type(app, "/autocompact off");
+    await until(app, "Shortens only when a request would not fit.");
+    expect(session.autoCompact).toBeNull();
+    await type(app, "d");
+    await until(app, "four");
+    await type(app, "/autocompact 200M"); // more than the estimate
+    await until(app, "Shortens once the conversation passes 200,000,000 tokens.");
+    await type(app, "e");
+    await until(app, "five");
+    expect(seen.map(isSummary)).toEqual([false, false, true, false, false, false]);
+  });
+
+  it("gives the usage line in red for a wrong /autocompact, leaving the size as it was", async () => {
+    await inColour(async () => {
+      const { app, session } = await mount([]);
+      session.autoCompact = 5;
+      const wrongs = ["/autocompact", "/autocompact 0", "/autocompact 2g", "/autocompact 1.5k", "/autocompact 200k more", "/autocompact 9007199254740992"];
+      for (const wrong of wrongs) await type(app, wrong);
+      const usageLine = "Usage: /autocompact <tokens>, such as 200k, or /autocompact off";
+      expect(flat(app).split(usageLine)).toHaveLength(wrongs.length + 1);
+      expect(app.lastFrame()).toContain("\u001b[31mUsage: /autocompact");
+      expect(session.autoCompact).toBe(5);
+    });
   });
 });

@@ -1,6 +1,7 @@
 import { useApp, useWindowSize } from "ink";
 import { useRef, useState } from "react";
 import { type Mode, type Protection, visible } from "../../core/permissions.js";
+import type { Row } from "../../core/sessions.js";
 import type { Effort } from "../../providers/anthropic.js";
 import type { ModelGroup } from "../../providers/models.js";
 import { NO_RULES } from "../../safety/rules.js";
@@ -57,6 +58,7 @@ export function useAppState({
   pictures: picturesGiven,
   readPicture,
   copy,
+  saved,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -182,6 +184,9 @@ export function useAppState({
   // kept after it until the next turn starts.
   const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
   const calls = useRef<Call[]>([]);
+  // The last shortening's summary, which Ctrl+O shows in place of the last turn's calls until the next turn starts
+  // (release 8a plan, Task 13).
+  const summary = useRef<string | null>(null);
   // The call whose tool line is the conversation's last line, so a question it asks is answered in a line under it; and
   // the lead's calls a question was declined for, each with the short row in its result row's place, or null for none
   // when its answer is under its tool line (release 7 plan, choices 66 and 67; describe.ts).
@@ -198,7 +203,10 @@ export function useAppState({
   const question = questions.current[0] ?? null;
   const [contextWindow, setContextWindow] = useState<number | null>(null);
   const [picker, setPicker] = useState<ModelGroup[] | null>(null);
-  const listOpen = useRef(false); // the picker, for keys and answers read before the screen is drawn again
+  // /resume's list of the folder's other saved sessions, and when it was read, for how long ago each was used: the picker
+  // phase too, with Select's keys (release 8a plan, choice 14).
+  const [sessions, setSessions] = useState<{ rows: Row[]; now: number } | null>(null);
+  const listOpen = useRef(false); // the picker or the sessions' list, for keys and answers read before the screen is drawn again
   const announced = useRef(new Set<string>()); // background subagents whose ending has been shown
   const [, rerender] = useState(0);
   // A failure of the system's tool comes after the copy, and replaces its line in the hint row (release 5 design,
@@ -277,11 +285,11 @@ export function useAppState({
     table, setTable, chordTimer, keyOf, pickerKey, step, search, stash, chosen, closed, listed, columns, height, full,
     setFull, switching, setSwitching, kept, unkept, view, detail, pane, printed, dropping, waitingList, ended, owner,
     fullNow, frame, promptTop, menuTop, wheel, grab, selection, held, lastPress, copied, busy, setBusy, working, queue,
-    pictures, reading, reads, doing, calls, todos, perm, cycle, questions, question, contextWindow, setContextWindow,
+    pictures, reading, reads, doing, calls, summary, todos, perm, cycle, questions, question, contextWindow, setContextWindow,
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
-    happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing,
+    happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
   } as const;
 }
 

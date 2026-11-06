@@ -10,7 +10,7 @@ import type { Now } from "../phase.js";
 import { joined, trimmed } from "../pictures.js";
 import { promptWidth } from "../Prompt.js";
 import { FOLLOWING } from "../view.js";
-import { contextsOf, type Got } from "./constants.js";
+import { contextsOf, type Got, gray, SHORTEN_WORDS } from "./constants.js";
 import type { UI } from "./state.js";
 
 export const promptKeys = (ui: UI, fns: Fns) => {
@@ -31,7 +31,12 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     }
     // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom.
     if (c === "models") return fns.command("/model");
-    if (c === "lastTurn") return ui.fullNow.current ? fns.openDetail(lastTurn(ui.session.messages)) : fns.show(...lastTurn(ui.session.messages)); // release 5 plan, Task 12
+    // Release 5 plan, Task 12; after a shortening, its summary until the next turn (release 8a plan, Task 13).
+    if (c === "lastTurn") {
+      const s = ui.summary.current;
+      const lines = s === null ? lastTurn(ui.session.messages) : [gray(SHORTEN_WORDS.summary), gray(s)];
+      return ui.fullNow.current ? fns.openDetail(lines) : fns.show(...lines);
+    }
     if (c === "todos") return void (ui.todos.current.hidden = !ui.todos.current.hidden);
     // A message starting with `?` needs a space typed first.
     if (typeof c === "object" && c.type === "insert" && c.text === "?" && !e.text)

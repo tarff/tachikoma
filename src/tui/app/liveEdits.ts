@@ -6,7 +6,7 @@ import { type Loaded, SETTINGS, type Settings } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { editorCommand } from "../external.js";
 import { start as vimStart } from "../vim.js";
-import { FROM, gray, LIVE } from "./constants.js";
+import { FROM, gray, LIVE, tokens } from "./constants.js";
 import type { UI } from "./state.js";
 
 export const liveEdits = (ui: UI, fns: Fns) => {
@@ -107,7 +107,11 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     else if (key === "editor") line(editorCommand(process.env, s.editor, process.platform)); // read again at each use (away)
     else if (key === "editorMode") fns.setVim(s.editorMode === "vim", FROM); // at once, as /vim (design's table)
     else if (key === "vimInsertModeRemaps") line(Object.keys(s.vimInsertModeRemaps ?? {}).join(", ") || "none");
-    else if (key === "dangerousCommands") {
+    else if (key === "autoCompactWindow") {
+      // As /autocompact sets it, for this window; removing the entry turns it off (queue.ts).
+      ui.session.autoCompact = s.autoCompactWindow ?? null;
+      line(s.autoCompactWindow === undefined ? "off" : tokens(s.autoCompactWindow));
+    } else if (key === "dangerousCommands") {
       // Release 7 design, "Configurable": what the edit loosens, a kind switched off or a rule removed, gets a red warning
       // and waits for the next launch, so a command the user allowed cannot loosen the check by rewriting the file; what
       // it tightens, a rule added or a kind switched back on, gets a grey notice and applies at once.

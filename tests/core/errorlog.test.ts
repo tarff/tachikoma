@@ -31,7 +31,7 @@ describe("error log", { timeout: 15_000 }, () => {
     const file = projectFile("errors", root);
     expect(file).toBe(path.join(data, "errors", `${createHash("sha256").update(realpathSync.native(root)).digest("hex")}.jsonl`));
     const bus = new Bus();
-    attachErrorLog(bus, file, "s1");
+    attachErrorLog(bus, file, () => "s1");
     bus.emit("error", report);
     expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ session: "s1", ...report });
     expect(readdirSync(path.join(data, "errors"))).toEqual([path.basename(file)]);
@@ -44,7 +44,7 @@ describe("error log", { timeout: 15_000 }, () => {
     // A junction on Windows needs no special rights; elsewhere it is an ordinary symlink.
     await symlink(elsewhere, path.join(root, ".tachikoma"), "junction");
     const bus = new Bus();
-    attachErrorLog(bus, projectFile("errors", root), "s1");
+    attachErrorLog(bus, projectFile("errors", root), () => "s1");
     bus.emit("error", report);
     expect(readdirSync(elsewhere)).toEqual([]);
   });
@@ -57,7 +57,7 @@ describe("error log", { timeout: 15_000 }, () => {
     for (const p of spellings) {
       expect(projectFile("errors", p)).toBe(file);
       const bus = new Bus();
-      attachErrorLog(bus, projectFile("errors", p), "s1");
+      attachErrorLog(bus, projectFile("errors", p), () => "s1");
       bus.emit("error", report);
     }
     expect(readFileSync(file, "utf8").trim().split("\n")).toHaveLength(spellings.length);
@@ -70,7 +70,7 @@ describe("error log", { timeout: 15_000 }, () => {
     vi.stubEnv("TACHI_DATA_DIR", blocker); // the data folder is a file, so the errors folder cannot be made in it
     const file = projectFile("errors", root);
     const bus = new Bus();
-    attachErrorLog(bus, file, "s1");
+    attachErrorLog(bus, file, () => "s1");
     const said = vi.spyOn(console, "error").mockImplementation(() => {});
     expect(() => bus.emit("error", report)).not.toThrow();
     bus.emit("error", report);
@@ -83,7 +83,7 @@ describe("error log", { timeout: 15_000 }, () => {
     const { root } = await project();
     const file = projectFile("errors", root);
     const bus = new Bus();
-    attachErrorLog(bus, file, "s1");
+    attachErrorLog(bus, file, () => "s1");
     bus.emit("error", { kind: "tool", attempted: "shell", message: "exit code: 1\nmore", lead: "fake:a" });
     bus.emit("error", { kind: "provider", attempted: "request", message: "429", lead: "fake:a" });
 

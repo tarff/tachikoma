@@ -155,6 +155,21 @@ function abortable(before: Promise<void>, signal?: AbortSignal): Promise<void> {
 // when it does, so a call cancelled while waiting lets the next one go when its own turn comes.
 const queues = new Map<string, Promise<void>>();
 
+// The lock or nothing, without waiting: a session's open-lock, which its window holds until it leaves the session
+// (release 8a plan, choice 8). The same lock file as withLock's, so one a crashed window left is taken over. Held already
+// in this process is held: tryTake would take its own pid for one left by an earlier process.
+export function tryLock(file: string): (() => void) | null {
+  if (held.has(file) || tryTake(file) !== null) return null;
+  // Once only, so a window's old release can never remove the lock it, or another part of it, took since.
+  let done = false;
+  return () => {
+    if (!done) {
+      done = true;
+      release(file);
+    }
+  };
+}
+
 export function withLock<T>(file: string, fn: () => Promise<T>, onWait: (pid: number) => void = () => {}, signal?: AbortSignal): Promise<T> {
   const before = queues.get(file) ?? Promise.resolve();
   let finished!: () => void;

@@ -8,6 +8,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { boxProtection, dropOnExit, keptForReview, type Network, sandboxReady, sandboxStart } from "../src/clilib.js";
+import { projectFile } from "../src/core/datadir.js";
+import { openSession, sessionsDir } from "../src/core/sessions.js";
+import { readTranscript } from "../src/core/transcript.js";
 import { onPath } from "../src/exec/env.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
@@ -47,6 +50,7 @@ function launch(args: (string | Record<string, string>)[]) {
   const env = args.find((a) => typeof a === "object") ?? {};
   const words = args.filter((a) => typeof a === "string");
   const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-"));
+  onTestFinished(() => removeTree(top));
   const home = path.join(top, "home");
   mkdirSync(home);
   const system = path.join(top, "system.gitconfig");
@@ -59,11 +63,17 @@ function launch(args: (string | Record<string, string>)[]) {
     HOMEPATH: home.slice(2),
     XDG_CONFIG_HOME: path.join(home, ".config"),
   };
+  // Tachikoma's data folder, two levels inside the test's own, unless the case gives one: no case writes the user's error
+  // log, or from release 8a on their saved sessions (release 8a plan, Task 2).
+  const data = path.join(top, "data", "tachikoma");
   return {
     argv: ["--import", pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href, path.resolve("src/cli.tsx"), ...words],
     options: {
       cwd: env.cwd ?? top,
-      env: { ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "", ...git, ...env },
+      env: {
+        ...process.env, TACHI_LEAD: "", ANTHROPIC_API_KEY: "", TACHI_INSTRUCTIONS_TOP: top, USERPROFILE: home, HOME: home, CODEX_HOME: "",
+        TACHI_DATA_DIR: data, ...git, ...env,
+      },
     },
   };
 }
@@ -71,6 +81,7 @@ function launch(args: (string | Record<string, string>)[]) {
 // A pretend home folder holding ~/.tachikoma/settings.json, given to tachi() as its HOME and USERPROFILE.
 function homeWith(settings: string) {
   const home = mkdtempSync(path.join(tmpdir(), "tachi-cli-home-"));
+  onTestFinished(() => removeTree(home));
   mkdirSync(path.join(home, ".tachikoma"));
   writeFileSync(path.join(home, ".tachikoma", "settings.json"), settings);
   return { USERPROFILE: home, HOME: home };
@@ -112,6 +123,13 @@ describe("tachi", { timeout: 15_000 }, () => {
       expect(r.code).toBe(1);
       expect(r.stderr).toContain("--raw works only with -p, and not with --json");
     }
+  });
+
+  // Release 8a final review (user, 2026-11-07): it would otherwise be ignored without a word.
+  it("allows --fork-session only with -c or -r", () => {
+    const r = tachi("--lead", "ollama:none", "-p", "hi", "--fork-session");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("--fork-session works only with -c or -r");
   });
 
   it("warns that --raw output is not made safe for a terminal", () => {
@@ -211,6 +229,19 @@ describe("tachi", { timeout: 15_000 }, () => {
     const r = tachi("--lead", "openai:none", "-p", "hi", { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });
     expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
     expect(r.stdout + r.stderr).not.toContain("\u001b[?"); // how the second screen's, the mouse's and the cursor's codes begin
+  });
+
+  // Release 8a plan, Task 2: the data folder is checked in the env given to the child, before it starts, so a launch
+  // without one never writes the user's own error log; the user's folder is never listed. Port 9, as above.
+  it("with -p, logs a provider error in the test's own data folder", () => {
+    const { argv, options } = launch(["--lead", "openai:none", "-p", "hi", { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" }]);
+    const data = path.join(options.cwd, "data", "tachikoma");
+    expect(options.env.TACHI_DATA_DIR).toBe(data);
+    const r = spawnSync(process.execPath, argv, { ...options, input: "x\n", encoding: "utf8" });
+    expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
+    const rows = readFileSync(projectFile("errors", options.cwd, data), "utf8").trim().split("\n");
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!).message).toContain("Could not reach http://127.0.0.1:9/v1");
   });
 
   it("refuses interactive mode without a terminal, before starting the interface", () => {
@@ -431,8 +462,10 @@ describe("tachi", { timeout: 15_000 }, () => {
   });
 
   // Release 7 plan, Task 4: while any kind of the dangerous-command check is off, each launch says so in one line. Port 9,
-  // as below: the run gets as far as asking the model and fails there, with nothing sent anywhere.
-  it("says at launch which kinds of the dangerous-command check are off, and nothing while none is", () => {
+  // as below: the run gets as far as asking the model and fails there, with nothing sent anywhere. Each such launch makes
+  // its own data folder private for the error log, 6.8-7.4 s alone (2026-11-06; release 8a plan, Task 2), so the case
+  // has the describe's 15 s for each of its three launches.
+  it("says at launch which kinds of the dangerous-command check are off, and nothing while none is", { timeout: 45_000 }, () => {
     const unreachable = { OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" };
     const run = (rules: string) => tachi("-p", "hi", { ...homeWith(`{"lead": "openai:none", "dangerousCommands": ${rules}}`), ...unreachable });
     const off = run('{"off": ["installing software", "sending files out"]}');
@@ -450,8 +483,8 @@ describe("tachi", { timeout: 15_000 }, () => {
   // Release 7 plan, Task 8: when git's settings cannot be read at launch, it says so in one line and starts, with only the
   // fixed list protecting. The user settings file here is the test's own, of 12,000 entries of 100 letters, so git's
   // listing of it passes Node's execFile maxBuffer (1 MiB) and the run fails as git killed by a signal would. Port 9, as
-  // below: the run then gets as far as asking the model and fails there.
-  it.skipIf(!onPath("git"))("says at launch when git's settings could not be read, and starts", () => {
+  // below: the run then gets as far as asking the model and fails there. 15 s for each of its two launches, as above.
+  it.skipIf(!onPath("git"))("says at launch when git's settings could not be read, and starts", { timeout: 30_000 }, () => {
     const dir = mkdtempSync(path.join(tmpdir(), "tachi-cli-git-"));
     const big = path.join(dir, "big.gitconfig");
     writeFileSync(big, `[sample]\n${Array.from({ length: 12_000 }, (_, i) => `\tkey${i} = ${"x".repeat(100)}\n`).join("")}`);
@@ -509,6 +542,290 @@ describe("tachi", { timeout: 15_000 }, () => {
   it("with -p, runs on the settings file's lead", () => {
     const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });
     expect(r.stderr).toContain("Could not reach http://127.0.0.1:9/v1");
+  });
+});
+
+// Release 8a plan, Task 6: saved sessions at launch. The model is a stand-in for OpenAI's chat completions served by the
+// test on the loopback address, as above, answering "done" to each request (or `status` with an error) and keeping what
+// each was sent. Each case has its own project and data folder, two levels inside a fresh temporary folder; its sessions
+// are saved by a launch or written by hand as a Transcript writes them.
+describe("tachi's saved sessions", { timeout: 15_000 }, () => {
+  type Sent = { messages: { role: string; content?: unknown }[] };
+  async function standIn(status = 200) {
+    const sent: Sent[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        sent.push(JSON.parse(body));
+        const json = (code: number, o: unknown) => res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify(o));
+        if (status !== 200) return json(status, { error: { message: "the stand-in refused", type: "invalid_request_error" } });
+        const message = { role: "assistant", content: "done" };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        json(200, { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [{ index: 0, finish_reason: "stop", message }], usage });
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, sent };
+  }
+  // A project and data folder of the case's own, and its sessions folder, as the launch finds it.
+  function place() {
+    const top = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-cli-saved-")));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    const data = path.join(top, "data", "tachikoma");
+    mkdirSync(proj);
+    return { proj, data, dir: sessionsDir(proj, data) };
+  }
+  const at = "2026-11-06T00:00:00.000Z";
+  const start = (id: string, lead = "openai:lead") => ({
+    t: "start", at, v: 1, id, project: "p", lead, version: "0.8.0", print: false, system: "Saved prompt.",
+    tools: [],
+  });
+  const message = (role: "user" | "assistant", text: string) => ({ t: "message", at, message: { role, parts: [{ type: "text", text }] } });
+  const write = (dir: string, id: string, lines: object[], tail = "") => {
+    mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${id}.jsonl`);
+    writeFileSync(file, lines.map((l) => `${JSON.stringify(l)}\n`).join("") + tail);
+    return file;
+  };
+  const texts = (s: Sent) => JSON.stringify(s.messages);
+  // A launch's place and model, with TACHI_LEAD as its lead.
+  const where = (proj: string, data: string, url: string) => ({
+    cwd: proj,
+    TACHI_DATA_DIR: data,
+    TACHI_LEAD: "openai:lead",
+    OPENAI_API_KEY: "x",
+    OPENAI_BASE_URL: url,
+  });
+  // The help's lines for the new options (Task 6's draft, for the user's approval).
+  const HELP_SESSIONS = [
+    "  -c, --continue    reopen the newest session saved in this folder (with -p, the newest -p run)",
+    "  -r, --resume [<id or name>]  reopen a saved session by its id or name, or pick one from a list",
+    "  -n, --name <name>  name this session, to reopen it with --resume <name>",
+    "  --fork-session    with -c or -r, open a copy of the session and leave the saved one as it was",
+    "",
+  ].join("\n");
+
+  // Release 8a plan, Task 13 (user, 2026-11-06: "Show the line, send anyway"): a summary for the /autocompact size that
+  // fails, the request then sent as it is and answered, fails no -p run. The first reply reports a million prompt tokens,
+  // so the next request is over the settings file's size; the summary request is refused; the window is not known.
+  it("with -p, says a failed shortening for the /autocompact size, sends the request as it is, and still succeeds", async () => {
+    const { proj, data } = place();
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const sent: string[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const { messages } = JSON.parse(body) as Sent;
+        const json = (code: number, o: unknown) => res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify(o));
+        const summary = JSON.stringify(messages.at(-1)).includes("Summarise this conversation");
+        const first = !messages.some((m) => m.role === "tool");
+        sent.push(summary ? "summary" : first ? "first" : "after the call");
+        if (summary) return json(400, { error: { message: "the stand-in refused", type: "invalid_request_error" } });
+        const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "notes.txt" }) } };
+        const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+        const usage = { prompt_tokens: first ? 1_000_000 : 1, completion_tokens: 1, total_tokens: 2 };
+        const choice = { index: 0, finish_reason: first ? "tool_calls" : "stop", message };
+        json(200, { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage });
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const r = await tachiLater("-p", "read the notes", { ...where(proj, data, url), ...homeWith('{"autoCompactWindow": 1000}') });
+    expect(sent).toEqual(["first", "summary", "after the call"]);
+    expect(r).toMatchObject({ code: 0, stdout: "done\n", stderr: "The conversation could not be shortened (400 the stand-in refused); it is unchanged.\n" });
+  });
+
+  it("saves a -p run, named with -n, and -p -c carries it on with both prompts' history", { timeout: 30_000 }, async () => {
+    const { url, sent } = await standIn();
+    const { proj, data, dir } = place();
+    const env = { cwd: proj, TACHI_DATA_DIR: data, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url };
+    const first = await tachiLater("--lead", "openai:lead", "-p", "hi", "-n", "first run", env);
+    expect(first).toMatchObject({ code: 0, stdout: "done\n", stderr: "" });
+    const [file] = readdirSync(dir).filter((n) => n.endsWith(".jsonl"));
+    const version = JSON.parse(readFileSync("package.json", "utf8")).version;
+    const lines = readFileSync(path.join(dir, file!), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.slice(0, 2)).toMatchObject([{ t: "start", lead: "openai:lead", version, print: true, project: proj }, { t: "name", name: "first run" }]);
+    const again = await tachiLater("--lead", "openai:lead", "-p", "again", "-c", env);
+    expect(again).toMatchObject({ code: 0, stdout: "done\n", stderr: "Resumed: first run.\n" });
+    expect(sent[1]!.messages.slice(1)).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "done" },
+      { role: "user", content: "again" },
+    ]);
+    expect(readdirSync(dir).filter((n) => n.endsWith(".jsonl"))).toEqual([file]);
+  });
+
+  // These stop before any session is written, so none makes a folder private.
+  it("says when there is nothing to continue or resume, or no such session, and that -r alone needs a terminal", () => {
+    const { proj, data } = place();
+    const env = { cwd: proj, TACHI_DATA_DIR: data };
+    for (const [args, line] of [
+      [["-p", "hi", "-c"], "No saved session to continue in this folder."],
+      [["-r", "nope", "-p", "hi"], "No session named or numbered nope in this folder; tachi --resume lists them."],
+      [["-r"], "tachi --resume needs a terminal to list sessions; give it a session's id or name."],
+      [["-p", "hi", "-r"], "tachi --resume needs a terminal to list sessions; give it a session's id or name."],
+    ] as const) {
+      const r = tachi("--lead", "ollama:none", ...args, env);
+      expect(r.code).toBe(1);
+      expect(r.stderr).toBe(`${line}\n`);
+    }
+  });
+
+  it("opens a session by its name, sending its history", async () => {
+    const { url, sent } = await standIn();
+    const { proj, data, dir } = place();
+    write(dir, "a1", [start("a1"), message("user", "first"), message("assistant", "one"), { t: "name", at, name: "the fix" }]);
+    write(dir, "b2", [start("b2"), message("user", "second"), message("assistant", "two")]);
+    const r = await tachiLater("-p", "next", "-r", "the fix", where(proj, data, url));
+    expect(r).toMatchObject({ code: 0, stderr: "Resumed: the fix.\n" });
+    expect(sent[0]!.messages).toEqual([
+      { role: "system", content: "Saved prompt." },
+      { role: "user", content: "first" },
+      { role: "assistant", content: "one" },
+      { role: "user", content: "next" },
+    ]);
+  });
+
+  // The lock is held by this test's own process, which is running, so to the launch it is another window's.
+  it("opens a copy of a session another window has open, saying so, and leaves the original as it was", async () => {
+    const { url } = await standIn();
+    const { proj, data, dir } = place();
+    const file = write(dir, "held", [start("held"), message("user", "first"), message("assistant", "one")]);
+    const before = readFileSync(file, "utf8");
+    const lock = openSession(dir, "held");
+    onTestFinished(() => lock?.release());
+    const r = await tachiLater("-p", "next", "-r", "held", where(proj, data, url));
+    expect(r).toMatchObject({ code: 0, stderr: "Opened a copy: that session is open in another window.\nResumed: first.\n" });
+    expect(readFileSync(file, "utf8")).toBe(before);
+    const copies = readdirSync(dir).filter((n) => n.endsWith(".jsonl") && n !== "held.jsonl");
+    expect(copies).toHaveLength(1);
+    expect(readFileSync(path.join(dir, copies[0]!), "utf8")).toContain('"next"');
+  });
+
+  it("with --fork-session, opens a copy and leaves the original as it was", async () => {
+    const { url } = await standIn();
+    const { proj, data, dir } = place();
+    const file = write(dir, "orig", [start("orig"), message("user", "first"), message("assistant", "one")]);
+    const before = readFileSync(file, "utf8");
+    const r = await tachiLater("-p", "next", "-r", "orig", "--fork-session", where(proj, data, url));
+    expect(r).toMatchObject({ code: 0, stderr: "Resumed: first.\n" });
+    expect(readFileSync(file, "utf8")).toBe(before);
+    expect(readdirSync(dir).filter((n) => n.endsWith(".jsonl"))).toHaveLength(2);
+  });
+
+  // TACHI_LEAD is not --lead, so the saved lead is tried first (release 8a design, "Resuming"). The stand-in refuses the
+  // request, so the error log's row shows whose session it was.
+  it("falls back to the launch's lead when the saved one is not set up, saying so, and logs under the resumed id", async () => {
+    const { url, sent } = await standIn(400);
+    const { proj, data, dir } = place();
+    write(dir, "gone", [start("gone", "anthropic:claude-opus-5-5"), message("user", "first"), message("assistant", "one")]);
+    const r = await tachiLater("-p", "next", "-r", "gone", where(proj, data, url));
+    const line = "The session's lead, anthropic:claude-opus-5-5, is not set up (Set ANTHROPIC_API_KEY to use anthropic); openai:lead leads instead.";
+    expect(r.stderr).toBe(`Resumed: first.\n${line}\nprovider: 400 the stand-in refused\n`);
+    expect(sent).toHaveLength(1);
+    const rows = readFileSync(projectFile("errors", proj, data), "utf8").trim().split("\n");
+    expect(rows.map((row) => JSON.parse(row).session)).toEqual(["gone"]);
+  });
+
+  it("resumes a transcript with a torn last line, whose next lines are read whole afterwards", async () => {
+    const { url, sent } = await standIn();
+    const { proj, data, dir } = place();
+    const torn = '{"t":"message","at":"2026-11-06T00:00:00.000Z","mess';
+    const file = write(dir, "torn", [start("torn"), message("user", "first"), message("assistant", "one")], torn);
+    const r = await tachiLater("-p", "next", "-r", "torn", where(proj, data, url));
+    expect(r).toMatchObject({ code: 0, stderr: "Resumed: first.\n1 damaged lines of this session were skipped.\n" });
+    expect(sent[0]!.messages.slice(1).map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    const read = readTranscript(file, path.join(dir, "torn", "pictures"));
+    if ("problem" in read) throw new Error(read.problem);
+    expect(read.damaged).toBe(1);
+    expect(read.messages.map((m) => m.parts)).toEqual(["first", "one", "next", "done"].map((text) => [{ type: "text", text }]));
+  });
+
+  it("tells the model of a subagent that had not finished and of a call a crash left without its result", async () => {
+    const { url, sent } = await standIn();
+    const { proj, data, dir } = place();
+    const call = { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "read_file", input: { path: "notes.txt" } }] };
+    const subagent = { t: "subagent", at, id: "t1", description: "look around", file: "t1.jsonl" };
+    write(dir, "crashed", [start("crashed"), message("user", "go"), { t: "message", at, message: call }, subagent]);
+    const r = await tachiLater("-p", "next", "-r", "crashed", where(proj, data, url));
+    expect(r.code).toBe(0);
+    const request = texts(sent[0]!);
+    expect(request).toContain("Outcome unknown: the session ended while this was running, or before its result was saved.");
+    expect(request).toContain("Subagent t1 (look around) had not finished when the session ended; its answer was lost.");
+    // Told now, so marked in its file, and not told again (user, 2026-11-06: "Report once").
+    expect(readFileSync(path.join(dir, "crashed", "subagents", "t1.jsonl"), "utf8")).toContain('"state":"lost"');
+  });
+
+  // Release 8a plan, choice 4 (Task 6 spec review): a resume with another lead records it, so the next one opens with it.
+  it("opens with the lead a resume's --lead last gave", { timeout: 30_000 }, async () => {
+    const { url, sent } = await standIn();
+    const { proj, data, dir } = place();
+    write(dir, "s1", [{ ...start("s1"), print: true }, message("user", "first"), message("assistant", "one")]);
+    expect((await tachiLater("-p", "next", "-r", "s1", "--lead", "openai:other", where(proj, data, url))).code).toBe(0);
+    expect((await tachiLater("-p", "again", "-c", where(proj, data, url))).code).toBe(0);
+    expect(sent.map((s) => (s as Sent & { model: string }).model)).toEqual(["other", "other"]);
+  });
+
+  // Task 6's quality review: a window cannot start without a terminal, so it is refused before a held session is copied.
+  // The lock is this test process's own, as above.
+  it("refuses -c without a terminal before copying a session another window has open", () => {
+    const { proj, data, dir } = place();
+    write(dir, "held", [start("held"), message("user", "first"), message("assistant", "one")]);
+    const lock = openSession(dir, "held");
+    onTestFinished(() => lock?.release());
+    const r = tachi("--lead", "ollama:none", "-c", { cwd: proj, TACHI_DATA_DIR: data });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.\n');
+    expect(readdirSync(dir).filter((n) => n.endsWith(".jsonl"))).toEqual(["held.jsonl"]);
+  });
+
+  // Release 8a design, "When something goes wrong": a session that cannot be read starts nothing. PATH is an empty folder
+  // of the test's own, so a launch that went on to the sandbox would stop at its Docker step with Docker not installed;
+  // no case here runs Docker.
+  it("starts no sandbox for a session it cannot read", () => {
+    const { proj, data, dir } = place();
+    const empty = path.join(path.dirname(proj), "empty");
+    mkdirSync(empty);
+    const file = write(dir, "broken", [{ t: "not a start line" }]);
+    const r = tachi("--lead", "ollama:none", "--sandbox", "copy", "-p", "hi", "-r", "broken", { cwd: proj, TACHI_DATA_DIR: data, PATH: empty, Path: empty });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe(`${file} could not be read as a session (its first line is missing or damaged).\n`);
+    expect(existsSync(path.join(data, "copies"))).toBe(false);
+    expect(readdirSync(dir)).toEqual(["broken.jsonl"]);
+  });
+
+  // Moved here from Task 5: the transcript's folder is a file of the test's own, inside its data folder, so the start
+  // line cannot be written. The run still answers and ends as it did; the line is said alone.
+  it("with -p, says the Saving fails line alone when the transcript cannot be written, and exits 0", async () => {
+    const { url } = await standIn();
+    const { proj, data, dir } = place();
+    mkdirSync(path.dirname(dir), { recursive: true });
+    writeFileSync(dir, "not a folder");
+    const r = await tachiLater("--lead", "openai:lead", "-p", "hi", { cwd: proj, TACHI_DATA_DIR: data, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe("done\n");
+    const rest = "It cannot be resumed, and a conversation too long for the model will end with an error.";
+    expect(r.stderr).toMatch(/^Saving this session stopped: .+\.jsonl could not be written \(.+\)\. /);
+    expect(r.stderr.endsWith(`). ${rest}\n`)).toBe(true);
+    expect(r.stderr.split("\n")).toHaveLength(2); // one line
+    expect(r.stderr).toContain(dir);
+  });
+
+  it("lists -c, -r, -n and --fork-session in the help", () => {
+    expect(tachi("--help").stdout).toContain(HELP_SESSIONS);
   });
 });
 
@@ -982,7 +1299,8 @@ describe("tachi in copy mode with -p, with a stand-in Docker", { timeout: 60_000
     expect(r.code).toBe(0);
     const lines = r.stderr.trimEnd().split("\n");
     expect(lines[0]).toBe(`Copying ${r.proj} for the sandbox...`); // not a terminal, so not grey
-    expect(lines[1]).toMatch(/^Sandbox: copy of .+ \(1 file, \d+\.\d s\), network off, /);
+    expect(lines[1]).toBe("Starting the sandbox...");
+    expect(lines[2]).toMatch(/^Sandbox: copy of .+ \(1 file, \d+\.\d s\), network off, /);
     const [session] = readdirSync(r.copies);
     expect(lines.at(-1)).toBe(`Changes kept for review: tachi review ${session}`);
     expect(existsSync(path.join(r.copies, session!, "manifest.json"))).toBe(true);

@@ -1,19 +1,29 @@
+import { lstat, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { withLock } from "../../auth/lock.js";
+import { leadGone, type Opened } from "../../clilib.js";
 import { summarize } from "../../core/errorlog.js";
+import { exportText } from "../../core/exportText.js";
 import { type Protection, visible } from "../../core/permissions.js";
+import { cannot } from "../../core/session.js";
+import { listSessions } from "../../core/sessions.js";
+import { CANCELLED } from "../../core/shorten.js";
 import type { Task } from "../../core/tasks.js";
-import { errorText } from "../../core/types.js";
+import { errorText, type Provider } from "../../core/types.js";
 import { KEYBINDINGS } from "../../keybindings.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS } from "../../settings.js";
 import type { Fns } from "../App.js";
-import { callLines, type Line } from "../describe.js";
+import { unquoted } from "../clipboard.js";
+import { callLines, conversationLines, type Line } from "../describe.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
-import { COMMANDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened } from "./constants.js";
+import {
+  characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened, SESSION_WORDS, SHORTEN_WORDS,
+} from "./constants.js";
 import type { UI } from "./state.js";
 
 export const queue = (ui: UI, fns: Fns) => {
@@ -60,7 +70,8 @@ export const queue = (ui: UI, fns: Fns) => {
     const q = ui.queue.current;
     const command = q.findIndex((d) => isCommand(d.text));
     if (!h.queued) return;
-    if (h.phase.kind === "printed" && command === 0 && (fns.recordToOpen(q[0]!.text) || /^\/screen$/i.test(q[0]!.text))) return;
+    // /resume's list too, which would open under the printed view (release 8a plan, Task 7).
+    if (h.phase.kind === "printed" && command === 0 && (fns.recordToOpen(q[0]!.text) || /^\/(screen|resume)$/i.test(q[0]!.text))) return;
     if (ui.owner.busy && command === 0 && /^\/(screen|settings|keybindings)$/i.test(q[0]!.text)) return;
     ui.view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void fns.submit(joined(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command), "\n\n"));
@@ -109,22 +120,50 @@ export const queue = (ui: UI, fns: Fns) => {
         const t = fns.recordToOpen(text);
         return t ? fns.openDetail(fns.recordOf(t)) : fns.say(...fns.tasksCommand(words));
       }
-      if (command === "/lead" && !listing) {
-        const spec = words.join(" ");
-        ui.session.setLead(fns.make(spec)); // this window only, saving nothing (choice 26, the user's)
-        return;
+      if (command === "/lead" && !listing) return await leadTo(words.join(" "));
+      // The window's saved sessions (release 8a plan, Task 7). A name is the rest of the first line as typed, and so is
+      // /export's file, so none holds a line break.
+      const rest = text.slice(first.length).trim().split(/\r?\n/)[0]!.trim();
+      if (command === "/rename") return fns.rename(rest);
+      // /export's write may be slow, as to a network share: what is typed meanwhile waits in the queue, as during a turn.
+      if (command === "/export") {
+        ui.working.current = true;
+        try {
+          return await fns.exportTo(rest);
+        } finally {
+          ui.working.current = false;
+        }
+      }
+      // Release 8a plan, Task 13: /compact's words are all that follows it, line breaks and all.
+      if (command === "/compact") return await compact(text.slice(first.length).trim());
+      if (command === "/autocompact") return autoCompact(words);
+      if (alone("/clear") || alone("/resume") || command === "/branch") {
+        const refused = fns.subagentsRunning(command);
+        if (refused) return fns.say(refused);
+        if (command === "/resume") return fns.resume();
+        if (command === "/branch") return fns.branch(rest);
+        // The instruction files are read again meanwhile: what is typed waits in the queue, as during a turn.
+        ui.working.current = true;
+        try {
+          return await fns.startFresh();
+        } finally {
+          ui.working.current = false;
+        }
       }
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
       if (!account && !listing && /^\/[a-z]+$/i.test(text)) return fns.say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
-      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings"].includes(command))
+      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings", "/clear", "/resume"].includes(command))
         return fns.say({ text: `${command} takes nothing after it.`, color: "red" });
       ui.abort.current = new AbortController();
       const turn = !account && !listing;
       const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(ui.tasks.answering())}` : turn ? "Working" : "Reading the model lists";
       ui.doing.current = { label, at: Date.now(), from: turn ? { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } : null };
-      if (turn) ui.calls.current = [];
+      if (turn) {
+        ui.calls.current = [];
+        ui.summary.current = null; // Ctrl+O shows this turn's calls (App.tsx, onShortened)
+      }
       ui.setNow(ui.doing.current.at);
       ui.setBusy(true);
       ui.working.current = true;
@@ -195,12 +234,57 @@ export const queue = (ui: UI, fns: Fns) => {
     // The pick comes after any edit of the file's lead made while the list was open, so it wins, as a /lead typed
     // then would.
     ui.waiting.current.lead = undefined;
+    void leadTo(spec)
+      .catch((err) => fns.say({ text: errorText(err), color: "red" }))
+      .finally(fns.next);
+  };
+  // A shortening between turns, for /lead and /compact, run as a turn is: the working line and its spinner, what is typed
+  // waiting in the queue, and Ctrl-C stopping it through its own signal, handed back with what it gave.
+  const between = async <T>(run: (signal: AbortSignal) => Promise<T>) => {
+    const { signal } = (ui.abort.current = new AbortController());
+    ui.doing.current = { label: "Working", at: Date.now(), from: { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } };
+    ui.setNow(ui.doing.current.at);
+    ui.setBusy(true);
+    ui.working.current = true;
     try {
-      ui.session.setLead(fns.make(spec)); // this window only, as /lead (choice 26)
-    } catch (err) {
-      fns.say({ text: errorText(err), color: "red" });
+      return { got: await run(signal), signal };
+    } finally {
+      ui.setBusy(false);
+      ui.working.current = false;
     }
-    fns.next();
+  };
+  // `/lead <provider:model>` and the model list's pick, this window only, saving nothing (choice 26, the user's). A
+  // conversation that will not fit the new lead's smaller window is shortened first, by the lead leading now, and the
+  // switch is refused if it cannot be (release 8a design, "When to shorten"). Meanwhile it works as a turn does: what is
+  // typed waits in the queue, and Ctrl-C stops it, quietly, the lead staying as it was, as a stopped turn says nothing.
+  const leadTo = async (spec: string) => {
+    const provider = fns.make(spec);
+    // With nothing to shorten, or no window to look up, no check can be needed: the switch is made at once, so a prompt
+    // typed straight after /lead waits for it in the queue as one of its own (Task 13's spec review).
+    if (!ui.session.messages.length || !provider.contextWindow) return ui.session.setLead(provider);
+    const { got: problem, signal } = await between((signal) => ui.session.makeRoom(provider, signal));
+    if (signal.aborted) return;
+    if (problem === undefined) return ui.session.setLead(provider);
+    fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "red" });
+  };
+  // /compact [words]: the whole conversation shortened now, the words its summary's focus (release 8a plan, Task 13). It
+  // works as leadTo does: what is typed waits in the queue, and Ctrl-C stops it. A failure's red line comes from the
+  // session (session.ts, compact); a stop's is said here, as the user asked for the shortening, drawn as onError draws
+  // the session's (App.tsx).
+  const compact = async (focus: string) => {
+    if (!ui.session.messages.length) return fns.say(gray(SHORTEN_WORDS.nothing));
+    const { got: problem } = await between((signal) => ui.session.compact(focus, signal));
+    if (problem === CANCELLED) fns.say({ text: `✗ ${cannot(CANCELLED)}`, color: "red" });
+  };
+  // /autocompact <tokens> or off (choice 26): digits with an optional k or m, k 1,000 and m 1,000,000 as Claude Code's
+  // `/autocompact 500k` (plan, "Numbers in this plan"); this window only, saving nothing, as /vim.
+  const autoCompact = (words: string[]) => {
+    const [word = "", ...more] = words.map((w) => w.toLowerCase());
+    const m = /^(\d+)([km]?)$/.exec(word);
+    const n = m ? Number(m[1]) * (m[2] === "k" ? 1_000 : m[2] === "m" ? 1_000_000 : 1) : NaN;
+    if (more.length || (word !== "off" && !(Number.isSafeInteger(n) && n >= 1))) return fns.say({ text: SHORTEN_WORDS.usage, color: "red" });
+    ui.session.autoCompact = word === "off" ? null : n;
+    fns.say(gray(word === "off" ? SHORTEN_WORDS.off : SHORTEN_WORDS.passes(n)));
   };
   const closePicker = () => {
     ui.listOpen.current = false;
@@ -247,5 +331,152 @@ export const queue = (ui: UI, fns: Fns) => {
       .catch((err) => c.ended([visible(errorText(err)), kept(c.copy.session)]))
       .finally(() => ui.exit());
   };
-  return { submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave };
+  // /clear, /resume and /branch are refused while a subagent runs, so no answer can arrive in the wrong session (release 8a
+  // design, "Resuming"); during a turn they wait in the queue, as every command does. Null when none runs.
+  const subagentsRunning = (command: string): Line | null => {
+    const ids = ui.tasks.all.filter((t) => t.state === "running" || t.state === "waiting").map((t) => t.id).join(", ");
+    return ids ? { text: `${command} waits until no subagent is running: ${ids} still running. /tasks stop stops them.`, color: "red" } : null;
+  };
+  // The window takes another session (release 8a plan, choice 15): the last one's shown calls, to-do list, answers and
+  // tool line go, and the gauge's context, 0 until the next request. The subagents' waiting text is dropped: an answer
+  // that wakes the lead was read in a turn of its own before this command ran (next), so what is left is a stopped
+  // subagent's note, which belongs to the last conversation. The conversation is loaded first: a load refused, as one is
+  // while a turn runs (a prompt read with /resume in one read of the terminal starts its turn under the list), lets the
+  // next session go and leaves the turn's state as it was. Then the last session is let go, and the conversation drawn
+  // as the launch draws a resumed one, and its lines said, so a saving failure the load reports comes first (Task 7). The
+  // window's sandbox carries on: a copy-mode box is not started afresh, so its review at exit covers both sessions'
+  // changes (Task 7). Another conversation's finished subagents leave /tasks and the panel. A branch is the same
+  // conversation, so it keeps them, its waiting text, shown calls, to-do list, answers and gauge, and is not drawn again
+  // (release 8a final review, user, 2026-11-07: "Clear them", "Drop the reprint", "Keep them too").
+  const switchTo = (next: Opened, lines: Line[], branched = false) => {
+    try {
+      ui.session.load(next.conversation);
+    } catch (err) {
+      next.release();
+      throw err;
+    }
+    ui.saved.switched(next);
+    if (!branched) {
+      ui.tasks.take();
+      ui.tasks.forgetFinished();
+      ui.calls.current = [];
+      ui.summary.current = null;
+      ui.todos.current = { items: [], hidden: false };
+      ui.answered.current.clear();
+      ui.stats.context = 0;
+    }
+    fns.say(...(branched ? [] : conversationLines(next.conversation.messages)), ...lines);
+    ui.rerender((n) => n + 1);
+  };
+  // /clear: a new session, with the same lead and mode, its system prompt built afresh (design, "Resuming").
+  const startFresh = async () => {
+    const system = await ui.session.freshSystem();
+    switchTo(ui.saved.fresh(ui.session.lead.id, system), [gray("Started a new session; the last one is kept (tachi --resume lists it).")]);
+  };
+  // /resume: the folder's other saved sessions, in the list `tachi -r` shows (choice 14). True when it opened, holding the
+  // queue until a pick or Esc, as the model list does.
+  const resume = (): boolean | void => {
+    const rows = listSessions(ui.saved.dir, { print: false }).filter((r) => r.id !== ui.session.id);
+    if (!rows.length) return fns.say(gray(SESSION_WORDS.noOther));
+    ui.listOpen.current = true;
+    ui.setSessions({ rows, now: Date.now() });
+    return true;
+  };
+  // A pick opens the session as the launch opens it, a copy when another window holds it (Task 6); one that cannot be
+  // read or copied is said in red, and the window stays in its session (design, "When something goes wrong"). It leads
+  // with its saved lead, switched to as /lead switches, once its conversation is loaded; one that cannot be made leaves
+  // the window's leading, with the launch's line (user, 2026-11-06: "The session's saved lead").
+  const pickSession = (id: string) => {
+    ui.listOpen.current = false;
+    ui.setSessions(null);
+    ui.view.current = FOLLOWING; // what it says is asked for, as the model list's pick says (pick, above)
+    try {
+      const now = ui.session.lead.id;
+      let made: Provider | undefined;
+      let gone: string | undefined;
+      const next = ui.saved.resume(id, (saved) => {
+        if (saved === now) return now;
+        try {
+          made = fns.make(saved);
+          return saved;
+        } catch (err) {
+          gone = leadGone(saved, err, now);
+          return now;
+        }
+      });
+      if ("problem" in next) fns.say({ text: next.problem, color: "red" });
+      else {
+        switchTo(next, [...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "gray" })));
+        if (made) {
+          ui.waiting.current.lead = undefined; // it wins over a lead the settings file set meanwhile, as a /lead typed then would
+          ui.session.setLead(made);
+        }
+      }
+    } catch (err) {
+      fns.say({ text: errorText(err), color: "red" });
+    }
+    fns.next();
+  };
+  const closeSessions = () => {
+    ui.listOpen.current = false;
+    ui.setSessions(null);
+    fns.next();
+  };
+  // /branch [name]: a copy of this session, named, which the window carries on in (design, "Names, branches and export").
+  // Without a name it takes the first prompt's first line, as the resume line names a session. A session with no
+  // prompt has nothing to copy, and one whose saving stopped would leave out what came after.
+  const branch = (name: string) => {
+    const first = ui.session.prompts[0]?.split(/\r?\n/)[0];
+    if (!first) return fns.say(gray(SESSION_WORDS.nothingToBranch));
+    if (!ui.session.transcript || ui.session.transcript.failed !== null) return fns.say({ text: SESSION_WORDS.unsaved("/branch"), color: "red" });
+    const original = ui.session.id;
+    const named = name || first;
+    const next = ui.saved.branch(original, ui.session.lead.id, named);
+    if ("problem" in next) return fns.say({ text: next.problem, color: "red" });
+    switchTo(next, [gray(`Branched: this window is now ${named}; the original is kept as ${original}.`)], true);
+  };
+  // /rename <name> names this session in its transcript, as the lists then show it (design, "Names, branches and export").
+  const rename = (name: string) => {
+    if (!name) return fns.say({ text: "Usage: /rename <name>", color: "red" });
+    const t = ui.session.transcript;
+    t?.write({ t: "name", name });
+    fns.say(!t || t.failed !== null ? { text: SESSION_WORDS.unsaved("/rename"), color: "red" } : gray(`Session named ${name}.`));
+  };
+  // /export [file]: the conversation as text (core/exportText.ts), a reply saved without its lead headed by the one leading
+  // now. To a file, from the project folder, made with `wx` so one already there is never written over (release 8a plan,
+  // choice 27); alone, to the clipboard, whose own failure line follows in the hint row as a selection's copy's does
+  // (clipboard.ts).
+  const exportTo = async (file: string) => {
+    const text = exportText(ui.session.messages, ui.session.lead.id);
+    if (!file) {
+      ui.board.current!.copy(text);
+      return fns.say(gray(`Copied the conversation (${characters(text)} characters).`));
+    }
+    // A name in matching quotes, as a dropped path comes, is taken out of them: on Windows only ", as an apostrophe is
+    // part of a name there (clipboard.ts, unquoted).
+    const to = path.resolve(ui.root, unquoted(file, process.platform === "win32"));
+    const there = () => fns.say({ text: `${to} already exists; nothing was written.`, color: "red" });
+    try {
+      // A link at the name counts as a file there: on Windows `wx` follows one, a junction to a missing folder making
+      // that folder (Task 8's quality review). Links in the folders above are a known limit. Not sync, so a share that
+      // does not answer holds no key.
+      const taken = await lstat(to).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === "ENOENT") return undefined;
+        throw e;
+      });
+      if (taken) return there();
+      await writeFile(to, text, { flag: "wx" });
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === "EEXIST") return there();
+      // Node's code and words, without the path they end with, as the line names the file already.
+      const why = e.syscall && e.path ? e.message.replace(`, ${e.syscall} '${e.path}'`, "") : errorText(err);
+      return fns.say({ text: EXPORT_WORDS.unwritten(to, why), color: "red" });
+    }
+    fns.say(gray(`Exported to ${to}.`));
+  };
+  return {
+    submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave, subagentsRunning, startFresh, resume,
+    pickSession, closeSessions, branch, rename, exportTo,
+  };
 };

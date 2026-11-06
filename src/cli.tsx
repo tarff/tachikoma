@@ -5,11 +5,13 @@ import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs, styleText } from "node:util";
 import { type Instance, render } from "ink";
+import type { ReactElement } from "react";
 import { accountCommand } from "./auth/chatgpt.js";
 import { withLock } from "./auth/lock.js";
 import {
   approvalQuestion,
   checkOffLine,
+  chooseSession,
   dropOnExit,
   endOnEpipe,
   exitOn,
@@ -24,25 +26,34 @@ import {
   instructionsLine,
   jsonLine,
   keptForReview,
+  leadGone,
   leadOf,
+  leadSession,
   MAX_TASKS,
   networkLine,
+  newSaved,
+  openSaved,
   prose,
   protectionOf,
   type Ready,
   resolve,
+  resumed,
+  resumeArgs,
+  type Saved,
   sandboxReady,
   sandboxStart,
   screenMode,
   type Started,
+  systemAgain,
+  WindowSessions,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { dataDir, KEYBINDINGS, projectFile, settingsDir } from "./core/datadir.js";
 import { attachErrorLog } from "./core/errorlog.js";
-import { readInstructions } from "./core/instructions.js";
+import { type Reached, readInstructions } from "./core/instructions.js";
 import { type Ask, PermissionGate, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
-import { Session } from "./core/session.js";
+import { type Row, sessionsDir, sweep } from "./core/sessions.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
 import { errorText, type Provider } from "./core/types.js";
@@ -67,10 +78,12 @@ import { App } from "./tui/App.js";
 import { NOT_GONE } from "./tui/app/constants.js";
 import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
+import { conversationLines } from "./tui/describe.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { programRunning } from "./tui/owner.js";
 import { Review, type ReviewCopy, type ReviewEnd } from "./tui/Review.js";
+import { SessionList } from "./tui/SessionList.js";
 import { SEGMENTS } from "./tui/StatusLine.js";
 import { restoreOnExit, restoreWhenInkEnds, Screen, writeBestEffort } from "./tui/terminal.js";
 
@@ -109,17 +122,34 @@ Options:
   -p, --print <prompt>  run without the interface
   --json            with -p, print every event as one JSON line
   --raw             with -p, print the answer exactly as written, control codes and all
+  -c, --continue    reopen the newest session saved in this folder (with -p, the newest -p run)
+  -r, --resume [<id or name>]  reopen a saved session by its id or name, or pick one from a list
+  -n, --name <name>  name this session, to reopen it with --resume <name>
+  --fork-session    with -c or -r, open a copy of the session and leave the saved one as it was
   -h, --help        show this help
   Options --lead to --scroll-speed can also be set in ${shownFile()}; a flag or variable wins.
 
 In a session: /lead <provider:model> switches the lead model, /lead or /model picks from a list,
-/login chatgpt and /logout chatgpt sign in and out, /tasks lists the subagents (/tasks t1 shows one,
-/tasks stop stops them), /errors summarises the error log, /screen switches between full
-screen and classic, /settings opens the settings file in your editor, /keybindings opens the
-keys file in your editor, /vim switches vim mode in this window, /exit quits. Esc or Ctrl-C stops
-the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty prompt quits. Ctrl+T
-hides or shows the to-do list. Esc and Ctrl+T can be moved in the keys file; Ctrl-C and Ctrl-D
-cannot. ? on an empty prompt lists every key.`;
+/login chatgpt and /logout chatgpt sign in and out, /clear starts a new session in this window,
+/resume switches the window to a saved one, /branch [name] carries on in a copy of this session,
+/rename <name> names it, /export [file] writes the conversation to a file as text, or alone copies
+it, /compact [words] shortens it into a summary now, /autocompact <tokens> shortens it once it
+passes that many tokens (/autocompact off: only when a request would not fit), /tasks lists the
+subagents (/tasks t1 shows one, /tasks stop stops them), /errors summarises the error log,
+/screen switches between full screen and classic, /settings opens the settings file in your editor,
+/keybindings opens the keys file in your editor, /vim switches vim mode in this window, /exit quits.
+Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty
+prompt quits. Ctrl+T hides or shows the to-do list. Esc and Ctrl+T can be moved in the keys file;
+Ctrl-C and Ctrl-D cannot. ? on an empty prompt lists every key.`;
+
+// Sessions are kept 30 days unless the settings file says otherwise: Claude Code's sessions page, "Change the 30-day
+// retention" (release 8a plan, "Numbers in this plan").
+const KEEP_DAYS = 30;
+// Tachikoma's version, for a session's start line (release 8a plan, choice 4): package.json is one folder up from both
+// src/ and dist/.
+const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+
+const NO_TERMINAL = 'Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.';
 
 function fail(message: string): never {
   console.error(message);
@@ -127,9 +157,11 @@ function fail(message: string): never {
 }
 
 // The question at the start, before the screen is drawn (release 4 design, "Files that lead elsewhere
-// ask first"): y reads the files, any other key leaves them out, and Ctrl-C quits.
+// ask first"): y reads the files, any other key leaves them out, and Ctrl-C quits. Ink unrefs stdin when a screen drawn
+// before this one ends (`tachi -r`'s list), and Node would then exit instead of waiting for the key, so it is ref'd again.
 function askAtStart(question: string): Promise<boolean> {
   process.stdout.write(`${question} `);
+  process.stdin.ref();
   process.stdin.setRawMode(true);
   return new Promise((resolve) => {
     process.stdin.once("data", (data) => {
@@ -144,25 +176,55 @@ function askAtStart(question: string): Promise<boolean> {
   });
 }
 
-// `tachi review <name>`'s screen: the review alone, in full screen where it can draw, with the keys file's bindings as it
-// reads at this moment (its problems said first, on the normal screen); the mouse stays off, as nothing reads its reports.
-// Resolves once Ink has ended and the terminal is back, so the review's lines print after.
-async function drawReview(copy: ReviewCopy, protection: Protection): Promise<ReviewEnd> {
+// A screen drawn alone before the session (`tachi review <name>`'s review, `tachi -r`'s list): in full screen where it can
+// draw, with the keys file's bindings as it reads at this moment (its problems said first, on the normal screen); the
+// mouse stays off, as nothing reads its reports. `draw` is given the bindings and the screen's close. Resolves once Ink
+// has ended and the terminal is back, so the lines printed after it come after.
+async function drawAlone(draw: (bindings: Bindings, close: () => void) => ReactElement): Promise<void> {
   const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
   const bindings = keysNow();
   if (fullPossible(process.env, process.stdout.isTTY === true)) screen.setSecond(true);
-  let end: ReviewEnd | undefined;
-  const ended = (e: ReviewEnd) => {
-    end = e;
-    ink?.unmount();
-  };
-  ink = render(<Review copy={copy} bindings={bindings} protection={protection} onEnd={ended} />, { exitOnCtrlC: false });
+  ink = render(draw(bindings, () => ink?.unmount()), { exitOnCtrlC: false });
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   await exited;
+}
+
+async function drawReview(copy: ReviewCopy, protection: Protection): Promise<ReviewEnd> {
+  let end: ReviewEnd | undefined;
+  await drawAlone((bindings, close) => (
+    <Review
+      copy={copy}
+      bindings={bindings}
+      protection={protection}
+      onEnd={(e) => {
+        end = e;
+        close();
+      }}
+    />
+  ));
   return end!;
+}
+
+// The session picked from the list (release 8a plan, choice 12), or none when it was closed.
+async function drawSessions(rows: Row[], name: string | undefined): Promise<string | undefined> {
+  let picked: string | undefined;
+  await drawAlone((bindings, close) => (
+    <SessionList
+      rows={rows}
+      {...(name === undefined ? {} : { name })}
+      now={Date.now()}
+      bindings={bindings}
+      onPick={(id) => {
+        picked = id;
+        close();
+      }}
+      onClose={close}
+    />
+  ));
+  return picked;
 }
 
 // The keys file laid over the defaults, as a session's start reads it (settingsWatch.ts); a file that cannot be read is
@@ -261,8 +323,13 @@ try {
       print: { type: "string", short: "p" },
       json: { type: "boolean" },
       raw: { type: "boolean" },
+      continue: { type: "boolean", short: "c" },
+      resume: { type: "string", short: "r" },
+      name: { type: "string", short: "n" },
+      "fork-session": { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
+    args: resumeArgs(process.argv.slice(2)), // -r alone (release 8a plan, choice 11)
   }).values;
 } catch (err) {
   fail(`${errorText(err)}\n\n${HELP}`);
@@ -282,6 +349,8 @@ const leadSpec = leadOf(parsed, process.env, loaded.settings);
 if (!leadSpec) fail(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${shownFile()}.\n\n${HELP}`);
 if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
 if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works only with -p, and not with --json, which is already exact");
+// Approved by the user, 2026-11-07 (release 8a final review).
+if (parsed["fork-session"] && !parsed.continue && parsed.resume === undefined) fail("--fork-session works only with -c or -r");
 if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
 let options;
 try {
@@ -303,9 +372,38 @@ if (netLine) console.error(netLine);
 const root = process.cwd();
 const errorFile = projectFile("errors", root);
 const bus = new Bus();
-const sessionId = randomUUID(); // the error log's, and the box's label (sandbox/executor.ts)
-attachErrorLog(bus, errorFile, sessionId);
+// A new session's id, the box's label (sandbox/executor.ts) and its copy's name: a resumed session keeps its own id, and
+// its box starts afresh (release 8a design, "Resuming").
+const sessionId = randomUUID();
 const stats = new Stats(bus);
+const interactive = parsed.print === undefined;
+const gray = (line: string) => styleText("gray", visible(line), { stream: process.stderr });
+
+// Once per launch, after the settings and before the lead (release 8a plan, choice 10), and before any session is opened
+// here: a lock this process holds would look like an earlier process's, left behind, to a sweep that names it by another
+// path. The sweep and the sessions folder take their paths from one data folder string.
+const data = dataDir();
+for (const line of sweep(data, loaded.settings.cleanupPeriodDays ?? KEEP_DAYS, new Date())) console.error(gray(line));
+const sessions = sessionsDir(root, data);
+let chosen: string | undefined;
+if (parsed.continue || parsed.resume !== undefined) {
+  const terminal = interactive && process.stdin.isTTY === true;
+  const c = chooseSession(sessions, { continue: parsed.continue, resume: parsed.resume, print: !interactive, terminal });
+  if ("fail" in c) fail(visible(c.fail));
+  if (interactive && !terminal) fail(NO_TERMINAL); // before a held session is copied for a window that cannot start
+  chosen = "id" in c ? c.id : await drawSessions(c.list, c.name);
+  if (chosen === undefined) process.exit(0); // the list closed: nothing to open
+}
+// Opened, mended and read before anything starts, the instruction files' question and the sandbox among them, so a
+// session that cannot be read starts nothing (release 8a design, "When something goes wrong"). Its lock is let go at
+// /clear, /resume and /branch and when the window closes (release 8a plan, choice 8), and at the process's exit at the
+// latest, however it exits (lock.ts).
+let saved: Saved | undefined;
+if (chosen !== undefined) {
+  const got = openSaved(sessions, chosen, { fork: parsed["fork-session"] === true });
+  if ("problem" in got) fail(visible(got.problem));
+  saved = got;
+}
 
 const makeProvider = (spec: string): Provider => createProvider(spec, { effort });
 // A value came from the settings file when no flag gave it, nor a variable where it has one (an empty variable is unset).
@@ -313,12 +411,24 @@ const fromFile = (flag: string | undefined, variable?: string) => flag === undef
 // A spec the settings file gave names its entry, as one from a flag or variable names the flag (the plan's choice 8). Each
 // caller escapes the whole message with visible(), as the spec may come from the file (choice 30).
 const named = (entry: string, file: boolean, flag = "") => (file ? `${SETTINGS}: "${entry}": ` : flag);
+const launchLead = (): Provider => {
+  try {
+    return makeProvider(leadSpec);
+  } catch (err) {
+    fail(visible(`${named("lead", fromFile(parsed.lead, process.env.TACHI_LEAD))}${errorText(err)}`));
+  }
+};
+// A resumed session's lead is the one it last used, unless --lead is given; one that is no longer set up gives way to
+// the launch's own, with a line (release 8a design, "Resuming"; plan, choice 13).
+const savedLead = parsed.lead === undefined ? saved?.read.lead : undefined;
+let leadLine: string | undefined;
 let lead: Provider;
 let fallback: Provider | undefined;
 try {
-  lead = makeProvider(leadSpec);
+  lead = savedLead !== undefined && savedLead !== leadSpec ? makeProvider(savedLead) : launchLead();
 } catch (err) {
-  fail(visible(`${named("lead", fromFile(parsed.lead, process.env.TACHI_LEAD))}${errorText(err)}`));
+  leadLine = leadGone(savedLead!, err, leadSpec); // only the saved lead's failure comes here: launchLead's ends the launch
+  lead = launchLead();
 }
 try {
   if (options.fallback) fallback = makeProvider(options.fallback);
@@ -342,9 +452,8 @@ try {
   fail(visible(`${named("judge", fromFile(parsed.judge), "--judge: ")}${errorText(err)}`));
 }
 
-const interactive = parsed.print === undefined;
 // Before the instruction files are read, so nothing is asked with no terminal to answer.
-if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
+if (interactive && !process.stdin.isTTY) fail(NO_TERMINAL);
 // Git's settings files, hooks folders and git folders are read once at launch and protected for the whole session
 // (release 7 plan, Task 8; choices 57 and 59). Without git, only the fixed list applies (choice 11). If git's run fails,
 // only the fixed list applies, and the launch says so here and again in full screen (App.tsx).
@@ -407,8 +516,11 @@ const offLine = checkOffLine(rules);
 if (offLine) console.error(offLine);
 
 // Read once, at the start (release 4 design, "Instruction files"). TACHI_INSTRUCTIONS_TOP moves where
-// the walk down to the project starts, so tests never read the user's files.
-const instructions = await readInstructions({ root, codexHome: process.env.CODEX_HOME || undefined, top: process.env.TACHI_INSTRUCTIONS_TOP || undefined }, async (reached) => {
+// the walk down to the project starts, so tests never read the user's files. Each answer about a file outside the project
+// is kept, for a shortening's prompt to give again (systemAgain).
+const instructionsAt = { root, codexHome: process.env.CODEX_HOME || undefined, top: process.env.TACHI_INSTRUCTIONS_TOP || undefined };
+const asked = new Map<string, boolean>();
+const answer = async (reached: Reached[]): Promise<boolean> => {
   // As read_file reads outside the project then.
   if (mode === "never") return true;
   if (!interactive) {
@@ -416,11 +528,17 @@ const instructions = await readInstructions({ root, codexHome: process.env.CODEX
     return false;
   }
   return askAtStart(approvalQuestion(reached));
+};
+const instructions = await readInstructions(instructionsAt, async (reached) => {
+  const yes = await answer(reached);
+  for (const r of reached) asked.set(r.path, yes);
+  return yes;
 });
 // Then the box: leftover boxes removed, the box started and its node checked (sandboxStart). From here the model works in
 // it, on /work (choice 19). Its launch lines are grey in the interface, and on stderr with -p.
 let box: Started | undefined;
 if (ready) {
+  console.error(styleText("gray", "Starting the sandbox...", { stream: process.stderr })); // the user's words: the start takes seconds
   const started = await sandboxStart(root, ready, { network: options.network, limits: loaded.settings.sandboxLimits, session: sessionId }, {
     err: (line) => console.error(line),
   });
@@ -431,7 +549,8 @@ if (ready) {
   if (!interactive) for (const line of box.lines) console.error(line);
 }
 const where = box ?? { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root) };
-const system = [box?.system ?? systemPrompt(root), instructions.text].filter(Boolean).join("\n\n");
+const first = box?.system ?? systemPrompt(root);
+const system = [first, instructions.text].filter(Boolean).join("\n\n");
 
 let declined = false;
 let ask: Ask = async (summary, _detail, owner, _plain, warnings) => {
@@ -457,6 +576,7 @@ const tasks = new Tasks({
   system: [box?.subagentSystem ?? subagentPrompt(root), instructions.text].filter(Boolean).join("\n\n"), // the same instructions as the lead
   tools: SUBAGENT_TOOLS,
   ctx: { root: where.root, executor, workspace, gate },
+  transcript: () => session.transcript, // each subagent saves beside the lead (release 8a plan, Task 5)
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus. In the box the shell tool says
 // bash, whatever the host.
@@ -465,22 +585,47 @@ const tools = [
   todoTool((items) => bus.emit("todo", items)),
   delegateTool(tasks, { headless: !interactive }),
 ];
-const session: Session = new Session({
+// The session's transcript (release 8a plan, Task 6): a new one's start line, with -p marked so, or the saved session
+// opened above, or its copy. Its lines are said before the conversation is loaded, and the error log's rows carry its id.
+const specs = tools.map((t) => t.spec);
+const name = parsed.name?.trim() || undefined;
+const opened = saved
+  ? resumed(saved, { tools: specs, lead: lead.id, ...(name ? { name } : {}), prompt: { box: box !== undefined, full: system }, interactive })
+  : newSaved(
+      sessions,
+      { id: sessionId, project: root, lead: lead.id, version: VERSION, print: !interactive, system, box: box !== undefined, tools: specs },
+      name,
+    );
+const said = [...opened.lines, ...(leadLine ? [{ text: leadLine }] : [])].map((l) => ({ ...l, text: visible(l.text) }));
+// The subagents a crash cut short reach the model with its next request, as waiting answers do (release 8a design,
+// "Resuming"), and are marked reported once handed out: the window's session's, which /clear, /resume and /branch switch
+// (release 8a plan, Task 7).
+const windowSessions = new WindowSessions(sessions, { project: root, version: VERSION, tools: specs }, { box: box !== undefined, full: system }, opened);
+const { session, pictures } = leadSession({
   lead,
   fallback,
   tools,
   system,
+  systemNow: systemAgain(first, instructionsAt, mode === "never" ? "all" : asked), // a shortening's and /clear's prompt (release 8a plan, choice 3)
   ctx: { root: where.root, executor, workspace, gate },
   bus,
-  inbox: () => tasks.take(),
+  inbox: () => [...windowSessions.lost(), ...tasks.take()],
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
+  tasks,
 });
+// The settings file's /autocompact size, for -p too; a live edit or /autocompact changes it for the window (release 8a
+// plan, choice 26).
+session.autoCompact = loaded.settings.autoCompactWindow ?? null;
+// The open session's id at each error, so after a switch its rows carry the new one's (release 8a plan, Task 7).
+attachErrorLog(bus, errorFile, () => session.id);
 
 if (parsed.print !== undefined) {
   let failed = false;
   bus.on("error", (e) => {
-    // A judge that cannot be reached refuses one action, as a no does, and fails no run (release 7 plan, choice 65).
-    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge") failed = true;
+    // A judge that cannot be reached refuses one action, as a no does, and fails no run (release 7 plan, choice 65); nor
+    // does a transcript that cannot be saved (release 8a plan, Task 5), nor a shortening's line after which the request was
+    // sent as it is (Task 13): a later line that ends the turn has no mark, and still fails it.
+    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge" && e.kind !== "saving" && !(e.kind === "shortening" && e.sent)) failed = true;
   });
   if (parsed.json) {
     for (const event of ["message", "usage", "error", "lead"] as const) {
@@ -489,9 +634,13 @@ if (parsed.print !== undefined) {
   } else {
     bus.on("error", (e) => {
       if (e.kind === "fallback") console.error(prose(`note: ${e.message}`));
+      else if (e.kind === "saving" || e.kind === "shortening") console.error(prose(e.message)); // the line alone, as the window shows it
       else if (e.kind !== "tool") console.error(prose(`${e.kind}: ${e.message}`));
     });
   }
+  // Loaded once the error listeners are on, so a start line or mend that failed is said now, not at the first write.
+  for (const line of said) console.error(gray(line.text));
+  session.load(opened.conversation);
   // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us.
   // A second Ctrl-C gets Node's default and ends at once.
   const stop = new AbortController();
@@ -578,7 +727,14 @@ if (parsed.print !== undefined) {
       // end the launch; the tools say what failed when used (Task 14's review).
       branch={await workspace.branch().catch(() => null)}
       historyFile={historyFile(root)}
-      intro={[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" }]))}
+      // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan,
+      // Task 6).
+      intro={[
+        ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
+        ...conversationLines(opened.conversation.messages),
+        ...said.map((l) => ({ ...l, color: "gray" as const })),
+      ]}
+      pictures={pictures}
       errorFile={errorFile}
       segments={segments}
       makeProvider={makeProvider}
@@ -596,12 +752,16 @@ if (parsed.print !== undefined) {
       home={os.homedir()}
       live={{ loaded, given: givenBy(parsed, process.env), ...(netLine ? { networkLine: netLine } : {}), ...(gitLine ? { gitLine } : {}) }}
       {...(copy ? { copy } : {})}
+      saved={windowSessions}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
     // only the lines that changed, Ink's incrementalRendering, made no difference felt).
     { stdin: keys as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" }, maxFps: 60 },
   );
+  // Ink's first render, in its legacy mode, runs the App's effects before render() returns (measured 2026-11-06), so its
+  // listeners are on: a start line or mend that failed is said on screen now, not at the first write.
+  session.load(opened.conversation);
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   // After the terminal is back, as restoreWhenInkEnds waits on the same promise first; an error is its to report. The

@@ -11,12 +11,13 @@ type Row = ErrorEvent & { at: string; session: string };
 // A file made in the private folder has its permissions. One append per row, so two sessions in one project keep each
 // other's rows. The log is optional: if it cannot be written, it says so once and turns itself off.
 // The first error of a session runs PowerShell to make the folder private, about 0.4 s once (the code review measured
-// 385 ms); privateDir remembers the folder after that (review fixes plan, fix 11).
-export function attachErrorLog(bus: Bus, file: string, session: string): void {
+// 385 ms); privateDir remembers the folder after that (review fixes plan, fix 11). `session` gives the id of the session
+// open when the error comes, which /clear, /resume and /branch change (release 8a plan, Task 7).
+export function attachErrorLog(bus: Bus, file: string, session: () => string): void {
   const write = (e: ErrorEvent) => {
     try {
       privateDir(path.dirname(file));
-      const row: Row = { at: new Date().toISOString(), session, ...e };
+      const row: Row = { at: new Date().toISOString(), session: session(), ...e };
       appendFileSync(file, `${JSON.stringify(row)}\n`, { encoding: "utf8", mode: 0o600 });
     } catch (err) {
       bus.off("error", write);

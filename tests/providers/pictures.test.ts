@@ -216,6 +216,10 @@ describe("each request, from the session", () => {
   beforeEach(() => {
     vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
     vi.stubEnv("MOONSHOT_API_KEY", "test-key");
+    // The session looks up the window and may count the request before each request (release 8a plan, Task 12): neither
+    // leaves the machine. Unknown unless a test gives a window; a count that fails leaves the request unchecked (fit.ts).
+    vi.spyOn(Models.prototype, "retrieve").mockRejectedValue(new Error("no network in tests"));
+    vi.spyOn(Messages.prototype, "countTokens").mockRejectedValue(new Error("no network in tests"));
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -251,6 +255,16 @@ describe("each request, from the session", () => {
     bus.on("note", (line) => said.push(line));
     return { said, session: new Session({ lead, fallback, tools: [], system: "s", ctx: await tempContext(), bus }) };
   }
+
+  // Release 8a plan, Task 12's review: the session asks for the window before every request, and a failed lookup (a proxy
+  // without /v1/models, say) is not tried again, with the SDK's retries, before each one.
+  it("looks up a window that cannot be found once across a session's requests", async () => {
+    anthropicSees();
+    const { session: s } = await session(new AnthropicProvider("claude-opus-5-5"));
+    await s.send("one");
+    await s.send("two");
+    expect(Models.prototype.retrieve).toHaveBeenCalledTimes(1);
+  });
 
   // About 9 MB as base64 each, so five are 45 MB: the oldest two go to bring the request under Anthropic's 32 MB.
   it("leaves out the oldest pictures of a request over Anthropic's 32 MB, with a note for each and one line", async () => {

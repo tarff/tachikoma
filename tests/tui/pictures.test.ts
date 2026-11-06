@@ -38,6 +38,31 @@ describe("Pictures", () => {
     p.markSent(id);
     expect(p.sent(id)).toBe(true);
   });
+
+  // Release 8a plan, choice 5: a loaded conversation's pictures are never numbered again in the window.
+  it("raises the next number to follow a loaded conversation's pictures, and never lowers it", () => {
+    const p = new Pictures();
+    p.from(4);
+    expect(p.next()).toBe(4);
+    p.from(2); // a conversation with fewer pictures, loaded after
+    expect(p.next()).toBe(5);
+    p.from(5);
+    expect(p.next()).toBe(6);
+  });
+
+  // Release 8a plan, Task 7: a picture numbered before the conversation loaded now may share its number with one that
+  // conversation saved, so it goes in under a new one; one numbered since keeps its own.
+  it("sends a picture numbered before the last load under a new number, and one numbered since under its own", () => {
+    const p = new Pictures();
+    const before = p.next(); // 1
+    p.from(3); // a conversation that saved pictures 1 and 2
+    const since = p.next(); // 3
+    expect(p.sendAs(before)).toBe(4);
+    expect(p.sendAs(since)).toBe(3);
+    expect(p.next()).toBe(5);
+    p.from(1); // /clear: a conversation with no pictures saved
+    expect(p.sendAs(before)).toBe(before);
+  });
 });
 
 describe("messageParts", () => {

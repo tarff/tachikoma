@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir, uptime } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
-import { withLock } from "../../src/auth/lock.js";
+import { describe, expect, it, onTestFinished } from "vitest";
+import { tryLock, withLock } from "../../src/auth/lock.js";
+import { removeTree } from "../helpers.js";
 
 const lockUrl = pathToFileURL(path.resolve("src/auth/lock.ts")).href;
 
@@ -178,4 +179,69 @@ await withLock(${lock}, async () => {
     expect(Date.now() - released).toBeLessThan(2_500);
     expect(await other.done).toBe(0);
   }, 30_000);
+});
+
+// Release 8a plan, Task 4 (choice 8): the open-session lock, taken at once or not at all. Each lock is two levels inside
+// a fresh temporary folder (plan, "Rules for every task"), removed when the case ends.
+describe("tryLock", () => {
+  async function lockFile() {
+    const top = await tempDir();
+    onTestFinished(() => removeTree(top));
+    const dir = path.join(top, "data", "sessions");
+    mkdirSync(dir, { recursive: true });
+    return path.join(dir, "s1.lock");
+  }
+
+  it("is taken once, until it is released", async () => {
+    const file = await lockFile();
+    const release = tryLock(file);
+    expect(release).not.toBeNull();
+    expect(readFileSync(file, "utf8")).toBe(String(process.pid));
+    expect(tryLock(file)).toBeNull();
+    release!();
+    expect(existsSync(file)).toBe(false);
+    const again = tryLock(file);
+    expect(again).not.toBeNull();
+    again!();
+  });
+
+  it("is released once: an old release leaves the lock taken since standing", async () => {
+    const file = await lockFile();
+    const first = tryLock(file)!;
+    first();
+    const second = tryLock(file);
+    expect(second).not.toBeNull();
+    first();
+    expect(readFileSync(file, "utf8")).toBe(String(process.pid));
+    expect(tryLock(file)).toBeNull();
+    second!();
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("is not taken while another process holds it, and does not wait", async () => {
+    const file = await lockFile();
+    // A plain Node process writes the lock as tryLock does, its pid in it, and holds it until its input ends.
+    const holder = 'require("fs").writeFileSync(process.argv[1], String(process.pid), { flag: "wx" }); console.log("held"); process.stdin.resume();';
+    const child = spawn(process.execPath, ["-e", holder, file], { stdio: ["pipe", "pipe", "inherit"] });
+    const ended = new Promise((r) => child.on("close", r));
+    await new Promise<void>((resolve) => child.stdout.on("data", (d) => String(d).includes("held") && resolve()));
+    try {
+      expect(tryLock(file)).toBeNull();
+      expect(readFileSync(file, "utf8")).toBe(String(child.pid));
+    } finally {
+      child.stdin.end();
+      await ended;
+    }
+  }, 15_000);
+
+  it("takes a lock whose pid is no longer running", async () => {
+    const file = await lockFile();
+    const gone = spawn(process.execPath, ["-e", ""]);
+    await new Promise((r) => gone.on("close", r));
+    writeFileSync(file, String(gone.pid));
+    const release = tryLock(file);
+    expect(release).not.toBeNull();
+    expect(readFileSync(file, "utf8")).toBe(String(process.pid));
+    release!();
+  });
 });

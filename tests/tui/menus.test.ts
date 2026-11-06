@@ -14,12 +14,48 @@ describe("commandMenu", () => {
   it("lists every command for a slash at the start of the prompt, each saying what it does", () => {
     const m = commandMenu("/", 1);
     expect(labels(m)).toEqual([
-      ...["/lead <provider:model>", "/model", "/login chatgpt", "/logout chatgpt", "/tasks", "/errors", "/screen"],
-      ...["/settings", "/keybindings", "/vim", "/exit"],
+      ...["/lead <provider:model>", "/model", "/login chatgpt", "/logout chatgpt"],
+      ...["/clear", "/resume", "/branch [name]", "/rename <name>", "/export [file]", "/compact [words]", "/autocompact <tokens>"],
+      ...["/tasks", "/errors", "/screen", "/settings", "/keybindings", "/vim", "/exit"],
     ]);
     expect(m!.entries[0]).toMatchObject({ note: "Switch the lead model; alone, pick it from a list", fill: "/lead ", run: "/lead" });
-    expect(m!.entries[7]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
-    expect(m!.entries[8]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
+    expect(m!.entries[14]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
+    expect(m!.entries[15]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
+  });
+
+  // Release 8a plan, Task 13 (choice 25; constants.ts, SHORTEN_WORDS).
+  it("lists /compact and /autocompact, each saying what it does", () => {
+    expect(commandMenu("/", 1)!.entries.slice(9, 11)).toEqual([
+      {
+        label: "/compact [words]",
+        note: "Shorten the conversation into a summary now; words after it say what to focus on",
+        fill: "/compact ",
+        run: "/compact",
+      },
+      {
+        label: "/autocompact <tokens>",
+        note: "Shorten once the conversation passes a number of tokens, such as 200k; off, only when it would not fit",
+        fill: "/autocompact ",
+        run: "/autocompact",
+      },
+    ]);
+  });
+
+  // Release 8a plan, Task 7 (choice 25); the notes approved by the user on 2026-11-06 (constants.ts, SESSION_WORDS).
+  it("lists /clear, /resume, /branch and /rename, each saying what it does", () => {
+    expect(commandMenu("/", 1)!.entries.slice(4, 8)).toEqual([
+      { label: "/clear", note: "Start a new session in this window; the last one stays saved", fill: "/clear ", run: "/clear" },
+      { label: "/resume", note: "Pick a saved session and switch this window to it", fill: "/resume ", run: "/resume" },
+      { label: "/branch [name]", note: "Carry on in a copy of this session, named after its first prompt unless named", fill: "/branch ", run: "/branch" },
+      { label: "/rename <name>", note: "Name this session, as /resume and tachi --resume list it", fill: "/rename ", run: "/rename" },
+    ]);
+  });
+
+  // Release 8a plan, Task 8 (choice 25); the note approved by the user on 2026-11-06 (constants.ts, EXPORT_WORDS).
+  it("lists /export, saying what it does", () => {
+    expect(commandMenu("/", 1)!.entries[8]).toEqual({
+      label: "/export [file]", note: "Write the conversation to a file as text; alone, copy it", fill: "/export ", run: "/export",
+    });
   });
 
   it("narrows as the command is typed, in any case", () => {

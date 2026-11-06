@@ -16,6 +16,7 @@ import {
   runTool,
   systemTool,
   type Tool,
+  unquoted,
 } from "../../src/tui/clipboard.js";
 import { system32 } from "../../src/exec/env.js";
 
@@ -377,6 +378,20 @@ describe("readImage", () => {
   it("is none when osascript answers an empty line", async () => {
     const reader = { ...standIn('process.stdout.write("\\n")'), output: imageReader("darwin", {})!.output };
     await expect(readImage(reader)).resolves.toBe("none");
+  });
+});
+
+// Release 8a plan, Task 8's quality review: one pair of matching quotes around a word, as a dropped path has; with
+// doubleOnly, " alone, as on Windows an apostrophe is part of a name.
+describe("unquoted", () => {
+  it("takes off one pair of matching quotes, and only \" with doubleOnly", () => {
+    expect(unquoted('"my notes.txt"')).toBe("my notes.txt");
+    expect(unquoted("'my notes.txt'")).toBe("my notes.txt");
+    expect(unquoted('""a""')).toBe('"a"');
+    expect(unquoted("'my notes.txt'", true)).toBe("'my notes.txt'");
+    expect(unquoted('"my notes.txt"', true)).toBe("my notes.txt");
+    expect(unquoted("\"a'")).toBe("\"a'");
+    expect(unquoted("plain")).toBe("plain");
   });
 });
 

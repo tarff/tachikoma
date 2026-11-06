@@ -12,12 +12,13 @@ export class Stats {
 
   constructor(bus: Bus) {
     // A subagent's spend counts toward the totals; its context is its own, not the lead's. So is the judge's, whose
-    // request is apart from the conversation (release 7 plan, choice 9).
-    bus.on("usage", ({ provider, usage, priceKnown, task, judge }) => {
+    // request is apart from the conversation (release 7 plan, choice 9), and a shortening's summary request's, which is not
+    // the conversation's (release 8a plan, Task 12).
+    bus.on("usage", ({ provider, usage, priceKnown, task, judge, summary }) => {
       const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
       this.input += prompt;
       this.output += usage.output;
-      if (task === undefined && !judge) this.context = prompt + usage.output;
+      if (task === undefined && !judge && !summary) this.context = prompt + usage.output;
       const c = priceKnown === false ? null : cost(provider, usage);
       if (c === null) this.unpriced++;
       else this.cost += c;

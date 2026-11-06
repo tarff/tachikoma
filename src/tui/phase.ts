@@ -37,8 +37,9 @@ export interface PhaseInputs {
   // its own keys (Review.tsx). Ink gives every key to every useInput, so the App's are off, and its pastes and mouse.
   review: boolean;
   printed: boolean; // the detail view printed out (`[`)
-  picker: boolean; // the model list drawn
-  listOpen: boolean; // the model list open, drawn or waiting for the printed view to come back
+  // The model list drawn, or /resume's list of sessions, which takes Select's keys as it does (release 8a plan, choice 14).
+  picker: boolean;
+  listOpen: boolean; // either list open, the model list drawn or waiting for the printed view to come back
   question: boolean; // a question drawn
   questions: number; // the questions waiting, drawn or not
   detail: { search: { typing: boolean } | null } | null;
