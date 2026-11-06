@@ -36,7 +36,6 @@ export function SessionList({
   bindings,
   onPick,
   onClose,
-  height,
 }: {
   rows: Row[]; // newest first (sessions.ts, listSessions)
   name?: string;
@@ -44,7 +43,6 @@ export function SessionList({
   bindings: Bindings; // the table of keys, for Select's keys and the names the hint gives them
   onPick: (id: string) => void;
   onClose: () => void;
-  height?: number; // the rows it may draw; the terminal's less the one Ink ends on when not given
 }) {
   const { rows: tall } = useWindowSize();
   const listed = name === undefined ? rows : rows.filter((r) => r.name === name);
@@ -84,7 +82,7 @@ export function SessionList({
   const hint = [moves && `${moves} move`, enter && `${enter} opens`, esc && `${esc} quits`].filter(Boolean).join(" · ");
 
   // The list in the rows between the heading and the hint, its window moved only as far as keeps the chosen row in it.
-  const room = Math.max(1, (height ?? tall - 1) - 2);
+  const room = Math.max(1, tall - 1 - 2); // the terminal's rows, less the one Ink ends on
   if (s.at < s.first) s.first = s.at;
   if (s.at >= s.first + room) s.first = s.at - room + 1;
   // The columns after the label line up, each as wide as its widest entry.

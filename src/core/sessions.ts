@@ -86,29 +86,39 @@ export function openSession(dir: string, id: string): { release: () => void } | 
 // <id>/ folder, each subagent's file as its whole lines too, so a finished subagent still reads as finished (release 8a
 // plan, Task 4; design, "Names, branches and export"). A line the other window is still writing is left out (design,
 // "When something goes wrong"). A copy that fails partway is removed, its folder before its transcript, as the sweep
-// removes a session (release 8a plan, Task 6). `copy` is the new id, a test's own where given.
+// removes a session (release 8a plan, Task 6). A source whose first line cannot be read throws Unreadable, so the caller
+// can tell a session it cannot read from a copy it cannot write. `copy` is the new id; the parameter exists for the
+// tests, which give their own to stand a file where the copy's folder goes.
 export function copySession(dir: string, id: string, copy: string = randomUUID()): string {
   privateDir(dir);
-  const text = wholeLines(path.join(dir, `${id}.jsonl`));
+  const [from, to] = [sessionPaths(dir, id), sessionPaths(dir, copy)];
+  const text = wholeLines(from.file);
   const end = text.indexOf("\n") + 1; // after the start line, written first (choice 4)
   let first: object;
   try {
     first = JSON.parse(text.slice(0, end));
   } catch {
-    throw new Error("its first line is missing or damaged"); // readTranscript's reason (user, 2026-11-06)
+    throw new Unreadable("its first line is missing or damaged"); // readTranscript's reason (user, 2026-11-06)
   }
-  const file = path.join(dir, `${copy}.jsonl`);
-  writeFileSync(file, `${JSON.stringify({ ...first, id: copy })}\n${text.slice(end)}`, { flag: "wx", mode: 0o600 });
+  writeFileSync(to.file, `${JSON.stringify({ ...first, id: copy })}\n${text.slice(end)}`, { flag: "wx", mode: 0o600 });
   try {
     const folder = entries(dir).find((e) => e.name === id);
-    if (folder?.isDirectory()) copyTree(path.join(dir, id), path.join(dir, copy));
+    if (folder?.isDirectory()) copyTree(path.dirname(from.pictures), path.dirname(to.pictures));
   } catch (err) {
-    const made = entries(dir).find((e) => e.name === copy);
-    if (made) remove(path.join(dir, copy), made);
-    unlinkSync(file);
+    removeSession(dir, copy);
     throw err;
   }
   return copy;
+}
+
+export class Unreadable extends Error {}
+
+// A session's folder, then its transcript, as the sweep removes them: the folder read with file types, a link in it
+// unlinked, never entered (release 8a plan, "Rules for every task"). For a copy Tachikoma made and cannot use.
+export function removeSession(dir: string, id: string): void {
+  const folder = entries(dir).find((e) => e.name === id);
+  if (folder) remove(path.join(dir, id), folder);
+  unlinkSync(sessionPaths(dir, id).file);
 }
 
 // Links are left out, never followed, so a copy holds only what Tachikoma saved there (release 8a plan, Task 4).

@@ -35,22 +35,24 @@ import {
   protectionOf,
   type Ready,
   resolve,
+  resumed,
   resumeArgs,
+  type Saved,
   sandboxReady,
   sandboxStart,
   screenMode,
   type Started,
+  systemAgain,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
 import { dataDir, KEYBINDINGS, projectFile, settingsDir } from "./core/datadir.js";
 import { attachErrorLog } from "./core/errorlog.js";
-import { readInstructions } from "./core/instructions.js";
+import { type Reached, readInstructions } from "./core/instructions.js";
 import { type Ask, PermissionGate, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
-import { type Row, sessionPaths, sessionsDir, sweep } from "./core/sessions.js";
+import { type Row, sessionsDir, sweep } from "./core/sessions.js";
 import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
-import { readOutline } from "./core/transcript.js";
 import { errorText, type Provider } from "./core/types.js";
 import { LocalExecutor, LocalWorkspace } from "./exec/local.js";
 import { readKeybindings } from "./keybindings.js";
@@ -73,6 +75,7 @@ import { App } from "./tui/App.js";
 import { NOT_GONE } from "./tui/app/constants.js";
 import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
+import { conversationLines } from "./tui/describe.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { programRunning } from "./tui/owner.js";
@@ -369,6 +372,15 @@ if (parsed.continue || parsed.resume !== undefined) {
   chosen = "id" in c ? c.id : await drawSessions(c.list, c.name);
   if (chosen === undefined) process.exit(0); // the list closed: nothing to open
 }
+// Opened, mended and read before anything starts, the instruction files' question and the sandbox among them, so a
+// session that cannot be read starts nothing (release 8a design, "When something goes wrong"). Its lock is held until the
+// process exits, however it exits (lock.ts).
+let saved: Saved | undefined;
+if (chosen !== undefined) {
+  const got = openSaved(sessions, chosen, { fork: parsed["fork-session"] === true });
+  if ("problem" in got) fail(visible(got.problem));
+  saved = got;
+}
 
 const makeProvider = (spec: string): Provider => createProvider(spec, { effort });
 // A value came from the settings file when no flag gave it, nor a variable where it has one (an empty variable is unset).
@@ -385,7 +397,7 @@ const launchLead = (): Provider => {
 };
 // A resumed session's lead is the one it last used, unless --lead is given; one that is no longer set up gives way to
 // the launch's own, with a line (release 8a design, "Resuming"; plan, choice 13).
-const savedLead = chosen !== undefined && parsed.lead === undefined ? readOutline(sessionPaths(sessions, chosen).file)?.lead : undefined;
+const savedLead = parsed.lead === undefined ? saved?.read.lead : undefined;
 let leadLine: string | undefined;
 let lead: Provider;
 let fallback: Provider | undefined;
@@ -481,8 +493,11 @@ const offLine = checkOffLine(rules);
 if (offLine) console.error(offLine);
 
 // Read once, at the start (release 4 design, "Instruction files"). TACHI_INSTRUCTIONS_TOP moves where
-// the walk down to the project starts, so tests never read the user's files.
-const instructions = await readInstructions({ root, codexHome: process.env.CODEX_HOME || undefined, top: process.env.TACHI_INSTRUCTIONS_TOP || undefined }, async (reached) => {
+// the walk down to the project starts, so tests never read the user's files. Each answer about a file outside the project
+// is kept, for a shortening's prompt to give again (systemAgain).
+const instructionsAt = { root, codexHome: process.env.CODEX_HOME || undefined, top: process.env.TACHI_INSTRUCTIONS_TOP || undefined };
+const asked = new Map<string, boolean>();
+const answer = async (reached: Reached[]): Promise<boolean> => {
   // As read_file reads outside the project then.
   if (mode === "never") return true;
   if (!interactive) {
@@ -490,6 +505,11 @@ const instructions = await readInstructions({ root, codexHome: process.env.CODEX
     return false;
   }
   return askAtStart(approvalQuestion(reached));
+};
+const instructions = await readInstructions(instructionsAt, async (reached) => {
+  const yes = await answer(reached);
+  for (const r of reached) asked.set(r.path, yes);
+  return yes;
 });
 // Then the box: leftover boxes removed, the box started and its node checked (sandboxStart). From here the model works in
 // it, on /work (choice 19). Its launch lines are grey in the interface, and on stderr with -p.
@@ -505,7 +525,8 @@ if (ready) {
   if (!interactive) for (const line of box.lines) console.error(line);
 }
 const where = box ?? { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root) };
-const system = [box?.system ?? systemPrompt(root), instructions.text].filter(Boolean).join("\n\n");
+const first = box?.system ?? systemPrompt(root);
+const system = [first, instructions.text].filter(Boolean).join("\n\n");
 
 let declined = false;
 let ask: Ask = async (summary, _detail, owner, _plain, warnings) => {
@@ -541,14 +562,12 @@ const tools = [
   delegateTool(tasks, { headless: !interactive }),
 ];
 // The session's transcript (release 8a plan, Task 6): a new one's start line, with -p marked so, or the saved session
-// opened, or its copy. Its lines are said before the conversation is loaded, and the error log's rows carry its id.
+// opened above, or its copy. Its lines are said before the conversation is loaded, and the error log's rows carry its id.
 const specs = tools.map((t) => t.spec);
 const name = parsed.name?.trim() ? parsed.name : undefined;
-const opened =
-  chosen === undefined
-    ? newSaved(sessions, { id: sessionId, project: root, lead: lead.id, version: VERSION, print: !interactive, system, tools: specs }, name)
-    : openSaved(sessions, chosen, { fork: parsed["fork-session"] === true, tools: specs, ...(name ? { name } : {}) });
-if ("problem" in opened) fail(visible(opened.problem));
+const opened = saved
+  ? resumed(saved, { tools: specs, lead: lead.id, ...(name ? { name } : {}) })
+  : newSaved(sessions, { id: sessionId, project: root, lead: lead.id, version: VERSION, print: !interactive, system, tools: specs }, name);
 attachErrorLog(bus, errorFile, opened.conversation.id);
 const said = [...opened.lines, ...(leadLine ? [leadLine] : [])].map((l) => visible(l));
 // The subagents a crash cut short reach the model with its next request, as waiting answers do (release 8a design, "Resuming").
@@ -558,7 +577,7 @@ const { session, pictures } = leadSession({
   fallback,
   tools,
   system,
-  systemNow: () => system, // a shortening's prompt: this launch's, the instruction files as read at its start (release 8a plan, choice 3)
+  systemNow: systemAgain(first, instructionsAt, mode === "never" ? "all" : asked), // a shortening's prompt (release 8a plan, choice 3)
   ctx: { root: where.root, executor, workspace, gate },
   bus,
   inbox: () => [...lost.splice(0), ...tasks.take()],
@@ -673,7 +692,12 @@ if (parsed.print !== undefined) {
       // end the launch; the tools say what failed when used (Task 14's review).
       branch={await workspace.branch().catch(() => null)}
       historyFile={historyFile(root)}
-      intro={[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? []), ...said].flatMap((text) => (text === null ? [] : [{ text, color: "gray" }]))}
+      // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan, Task 6).
+      intro={[
+        ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
+        ...conversationLines(opened.conversation.messages),
+        ...said.map((text) => ({ text, color: "gray" as const })),
+      ]}
       pictures={pictures}
       errorFile={errorFile}
       segments={segments}

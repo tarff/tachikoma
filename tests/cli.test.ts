@@ -722,6 +722,31 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     expect(request).toContain("Subagent t1 (look around) had not finished when the session ended; its answer was lost.");
   });
 
+  // Release 8a plan, choice 4 (Task 6 spec review): a resume with another lead records it, so the next one opens with it.
+  it("opens with the lead a resume's --lead last gave", { timeout: 30_000 }, async () => {
+    const { url, sent } = await standIn();
+    const { proj, data, dir } = place();
+    write(dir, "s1", [{ ...start("s1"), print: true }, message("user", "first"), message("assistant", "one")]);
+    expect((await tachiLater("-p", "next", "-r", "s1", "--lead", "openai:other", where(proj, data, url))).code).toBe(0);
+    expect((await tachiLater("-p", "again", "-c", where(proj, data, url))).code).toBe(0);
+    expect(sent.map((s) => (s as Sent & { model: string }).model)).toEqual(["other", "other"]);
+  });
+
+  // Release 8a design, "When something goes wrong": a session that cannot be read starts nothing. PATH is an empty folder
+  // of the test's own, so a launch that went on to the sandbox would stop at its Docker step with Docker not installed;
+  // no case here runs Docker.
+  it("starts no sandbox for a session it cannot read", () => {
+    const { proj, data, dir } = place();
+    const empty = path.join(path.dirname(proj), "empty");
+    mkdirSync(empty);
+    const file = write(dir, "broken", [{ t: "not a start line" }]);
+    const r = tachi("--lead", "ollama:none", "--sandbox", "copy", "-p", "hi", "-r", "broken", { cwd: proj, TACHI_DATA_DIR: data, PATH: empty, Path: empty });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe(`${file} could not be read as a session (its first line is missing or damaged).\n`);
+    expect(existsSync(path.join(data, "copies"))).toBe(false);
+    expect(readdirSync(dir)).toEqual(["broken.jsonl"]);
+  });
+
   // Moved here from Task 5: the transcript's folder is a file of the test's own, inside its data folder, so the start
   // line cannot be written. The run still answers and ends as it did; the line is said alone.
   it("with -p, says the Saving fails line alone when the transcript cannot be written, and exits 0", async () => {

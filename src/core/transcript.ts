@@ -11,17 +11,19 @@ import { errorText, type Image, type Message, marker, type Part, type ToolCall, 
 type SavedImage = Omit<Image, "data"> & { file: string };
 export type SavedMessage = Omit<Message, "parts"> & { parts: (Exclude<Part, Image> | SavedImage)[] };
 
-// The line kinds of release 8a plan, choice 4; `ended` is written only in a subagent's own file. `M` is the message as
+// The line kinds of release 8a plan, choice 4; `ended` is written only in a subagent's own file, `lost` by a resume that
+// told the model its answer was lost (user, 2026-11-06: "Report once"). `tools`: the tool specs from that line on. `M` is the message as
 // given to `write`, its pictures' data in it; the file holds SavedMessage. A shortening is one line, so it is saved whole
 // or not at all.
 export type Line<M = SavedMessage> =
   | { t: "start"; at: string; v: 1; id: string; project: string; lead: string; version: string; print: boolean; system: string; tools: ToolSpec[] }
   | { t: "message"; at: string; message: M }
   | { t: "lead"; at: string; lead: string }
+  | { t: "tools"; at: string; tools: ToolSpec[] }
   | { t: "name"; at: string; name: string }
   | { t: "shortened"; at: string; system: string; message: M }
   | { t: "subagent"; at: string; id: string; description: string; file: string }
-  | { t: "ended"; at: string; state: "failed" | "stopped" };
+  | { t: "ended"; at: string; state: "failed" | "stopped" | "lost" };
 
 // Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -115,6 +117,11 @@ export interface Read {
   calls: { name: string; input: unknown }[];
   nextPicture: number; // choice 5
   nextTask: number; // choice 4
+  tools: ToolSpec[]; // the tools the history was last saved under: the last start or tools line
+  // The history for a launch with these tools: a reply keeps its provider's own content only when the tools it was saved
+  // under are these, as Anthropic refuses a thinking block once the tools before it changed (release 8a design, "Before
+  // the build", check 2; plan, choice 4). `dropped`: whether any reply's was left out.
+  withTools(tools: ToolSpec[]): { messages: Message[]; dropped: boolean };
 }
 
 // The result given to a call left without one (release 8a design, "Resuming"; approved as worded).
@@ -149,9 +156,9 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     // The start line is written first, once (choice 4); without it there is no system prompt or tool list to go on.
     const start = rows[0];
     if (start?.t !== "start") return { problem: `${file} could not be read as a session (its first line is missing or damaged).` };
-    let { system, lead } = start;
+    let { system, lead, tools } = start;
     let name: string | undefined;
-    let history: SavedMessage[] = [];
+    let history: { m: SavedMessage; tools: ToolSpec[] }[] = [];
     const prompts: string[] = [];
     const calls: { name: string; input: unknown }[] = [];
     const subagents: Extract<Line, { t: "subagent" }>[] = [];
@@ -167,11 +174,12 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       if (!cutOff(m, said[i + 1])) for (const p of m.parts) if (p.type === "tool_call") calls.push({ name: p.name, input: p.input });
     }
     for (const l of lines) {
-      if (l.t === "message") history.push(l.message);
+      if (l.t === "tools") tools = l.tools;
+      if (l.t === "message") history.push({ m: l.message, tools });
       // The history starts at the last whole shortening, as Claude Code resumes "the last compaction's summary".
       if (l.t === "shortened") {
         system = l.system;
-        history = [l.message];
+        history = [{ m: l.message, tools }];
       }
       if (l.t === "lead") lead = l.lead;
       if (l.t === "name") name = l.name;
@@ -183,9 +191,23 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     // The numbers to hand out next follow every one used, in a line or by a file whose line a crash lost (choices 4, 5).
     const nextPicture = Math.max(0, ...used, ...numbered(pictures, /^(\d+)\.(png|jpg|gif|webp)$/)) + 1;
     const nextTask = Math.max(0, ...subagents.map((s) => Number(/^t(\d+)$/.exec(s.id)?.[1] ?? 0)), ...numbered(subagentsDir, /^t(\d+)\.jsonl$/)) + 1;
+    // Each reply with the tools it was saved under; pair() keeps a reply as the same object.
+    const restored = history.map((h) => ({ m: restore(h.m, pictures), tools: h.tools }));
+    const savedUnder = new Map(restored.map((h) => [h.m, JSON.stringify(h.tools)]));
+    const messages = pair(restored.map((h) => h.m));
+    const withTools = (now: ToolSpec[]) => {
+      let dropped = false;
+      const kept = messages.map((m) => {
+        if (m.native === undefined || savedUnder.get(m) === JSON.stringify(now)) return m;
+        dropped = true;
+        const { native: _, ...rest } = m;
+        return rest;
+      });
+      return { messages: kept, dropped };
+    };
     return {
       start,
-      messages: pair(history.map((m) => restore(m, pictures))),
+      messages,
       system,
       lead,
       name,
@@ -197,6 +219,8 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       calls,
       nextPicture,
       nextTask,
+      tools,
+      withTools,
     };
   } catch (err) {
     return { problem: `${file} could not be read as a session (${errorText(err)}).` };
@@ -267,10 +291,11 @@ function valid(l: unknown): l is Line {
   if (r.t === "start") return r.v === 1 && strings("id", "project", "lead", "version", "system") && typeof r.print === "boolean" && Array.isArray(r.tools);
   if (r.t === "message") return isMessage(r.message);
   if (r.t === "lead") return strings("lead");
+  if (r.t === "tools") return Array.isArray(r.tools);
   if (r.t === "name") return strings("name");
   if (r.t === "shortened") return strings("system") && isMessage(r.message);
   if (r.t === "subagent") return strings("id", "description", "file");
-  if (r.t === "ended") return r.state === "failed" || r.state === "stopped";
+  if (r.t === "ended") return r.state === "failed" || r.state === "stopped" || r.state === "lost";
   return false;
 }
 
@@ -324,7 +349,7 @@ function numbered(dir: string, name: RegExp): number[] {
   }
 }
 
-// Whether a subagent's file shows it finished: an `ended` line, as the lead was told it failed or was stopped (choice 4),
+// Whether a subagent's file shows it finished: an `ended` line, as the lead was told it failed, was stopped or was lost (choice 4),
 // or its answer last, a reply with words and no calls, as tasks.ts takes the last reply's text for its answer. A file
 // that is gone or cannot be read shows neither.
 function finished(file: string): boolean {

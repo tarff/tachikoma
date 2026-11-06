@@ -372,6 +372,39 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(read(p).unfinished).toEqual([{ id: "t3", description: "lost one" }]);
   });
 
+  // Release 8a plan, choice 4 (Task 6 spec review): a resume that reported a subagent lost says so in its file.
+  it("lists no subagent whose file says a resume reported it lost", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "subagent", id: "t1", description: "look", file: "t1.jsonl" });
+    subagentFile(p.subagents, "t1", [{ t: "message", message: prompt("brief") }, { t: "ended", state: "lost" }]);
+    expect(read(p).unfinished).toEqual([]);
+  });
+
+  // Release 8a plan, choice 4 (Task 6 spec review): a reply keeps its provider's own content only under the tools it was
+  // saved under, the last start or tools line before it.
+  it("keeps a reply's own content only for the tools it was saved under", async () => {
+    const p = place();
+    const other = [{ name: "write_file", description: "Writes a file", inputSchema: { type: "object" } }];
+    const thought = (text: string): Message => ({ ...said(text), native: { provider: "anthropic", content: [{ type: "thinking", thinking: text }] } });
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "message", message: prompt("one") });
+    t.write({ t: "message", message: thought("under the first") });
+    t.write({ t: "tools", tools: other });
+    t.write({ t: "message", message: prompt("two") });
+    t.write({ t: "message", message: thought("under the other") });
+    const r = read(p);
+    expect(r.tools).toEqual(other);
+    expect(r.messages[1]!.native).toBeDefined();
+    const first = r.withTools(start.tools);
+    expect(first.dropped).toBe(true);
+    expect(first.messages.map((m) => m.native !== undefined)).toEqual([false, true, false, false]);
+    expect(r.withTools(other).messages.map((m) => m.native !== undefined)).toEqual([false, false, false, true]);
+    expect(r.withTools(other).dropped).toBe(true);
+  });
+
   it("writes no picture file again for a kept prompt's picture in a shortening line, and reads it back", async () => {
     const p = place();
     const bytes = Buffer.from("the picture");

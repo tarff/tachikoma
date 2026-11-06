@@ -22,7 +22,7 @@ import type { Workspace } from "../../src/exec/workspace.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import { Transcript } from "../../src/core/transcript.js";
-import type { Provider, Turn } from "../../src/core/types.js";
+import type { Message, Provider, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { delegateTool } from "../../src/tools/delegate.js";
@@ -38,6 +38,7 @@ import { readSettings, type Settings, settingsDir, shownFile } from "../../src/s
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
+import { conversationLines } from "../../src/tui/describe.js";
 import { Pictures, type Read } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
@@ -291,6 +292,20 @@ describe("App", () => {
   it("shows the start line, grey, first", async () => {
     const { app } = await mount([], { intro: [{ text: "Instructions: CLAUDE.md (12 bytes)", color: "gray" }] });
     expect(app.lastFrame()).toMatch(/^Instructions: CLAUDE.md \(12 bytes\)\n/);
+  });
+
+  // Release 8a plan, Task 6 (user, 2026-11-06: "Show it"): a resumed conversation is drawn as a live one, above the lines
+  // saying how it was resumed, as cli.tsx gives them.
+  it("draws a resumed conversation's prompts, replies and tool rows above the resume lines", async () => {
+    const history: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "read the notes" }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "read_file", input: { path: "notes.txt" } }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "the notes", isError: false }] },
+      { role: "assistant", parts: [{ type: "text", text: "They say hello." }] },
+    ];
+    const { app } = await mount([], { intro: [...conversationLines(history), { text: "Resumed: read the notes.", color: "gray" }] });
+    const frame = app.lastFrame()!;
+    expect(frame).toMatch(/^> read the notes\n● read_file notes\.txt\n {2}⎿ ok\nThey say hello\.\nResumed: read the notes\.\n/);
   });
 
   it("sends what the user types and shows the reply", async () => {

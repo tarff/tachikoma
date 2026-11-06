@@ -60,6 +60,10 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
   return lines;
 }
 
+// A resumed conversation as the scrollback shows a live one, message by message (release 8a plan, Task 6; user,
+// 2026-11-06: "Show it").
+export const conversationLines = (messages: Message[]): Line[] => messages.flatMap((m) => describe(m));
+
 // Ctrl+O: every tool call of the latest turn, from its prompt on, with its full input and result,
 // under a heading. A call of a turn still running may have no result yet. A turn starts with a user
 // message that is not tool results: a prompt, or background answers alone.

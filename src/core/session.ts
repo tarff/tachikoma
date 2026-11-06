@@ -16,7 +16,7 @@ export interface SessionOptions {
   tools: Tool[];
   system: string; // the starting value: Session.system is the conversation's (release 8a plan, choice 3)
   // The system prompt built afresh, the instruction files read again, for a shortening (release 8a plan, choice 3).
-  systemNow?: () => string;
+  systemNow?: () => Promise<string>;
   id?: string; // the session's, as its transcript is named: a subagent's is its own, t1 and so on
   // Where each message is saved as it joins the history (release 8a design, "Saving sessions"); none, nothing is saved.
   transcript?: Transcript;
