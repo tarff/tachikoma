@@ -465,7 +465,7 @@ are notes; red ones are failures.
 | `tachi -r <x>`, not found | `No session named or numbered <x> in this folder; tachi --resume lists them.` |
 | `tachi -r` without a terminal | `tachi --resume needs a terminal to list sessions; give it a session's id or name.` |
 | A transcript that cannot be read | `<file> could not be read as a session (<reason>).` With no readable first line, the reason is `its first line is missing or damaged` (user, 2026-11-06). |
-| A copy that cannot be written (user, 2026-11-06) | `<file> could not be copied (<reason>).` |
+| A copy that cannot be written (user, 2026-11-06) | `<file> could not be copied (<reason>).` When the copy's own lock is held, the reason is `its lock could not be taken` (user, 2026-11-06). |
 | Damaged lines skipped (grey) | `<n> damaged lines of this session were skipped.` |
 | The saved lead is gone (grey) | `The session's lead, <spec>, is not set up (<reason>); <spec> leads instead.` |
 | Open elsewhere (grey; approved in the design) | `Opened a copy: that session is open in another window.` |
