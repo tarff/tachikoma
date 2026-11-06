@@ -31,13 +31,16 @@ export const LATER_PART = "This is the later part of a conversation; the part be
 
 // Claude Code's figures (design, step 5; choice 22).
 const FILES = 5;
-const FILE_TOKENS = 5000;
+const FILE_TOKENS = 5000; // the approved "over 5,000 tokens" line repeats it, written out as approved
 const FILE_TOOLS = new Set(["read_file", "write_file", "edit_file"]);
 
 interface Shortening {
   lead: Provider;
   system: string;
   messages: Message[];
+  // during: the message that started this turn, as the session holds it (after a shortening it is no longer in
+  // `messages`, whose first message is then the last shortening's new history).
+  asked?: Message;
   tools: ToolSpec[];
   calls: { name: string; input: unknown }[];
   workspace: Workspace;
@@ -45,7 +48,7 @@ interface Shortening {
   window: number;
   focus?: string;
   signal?: AbortSignal;
-  onUsage: (u: { provider: string; usage: Usage; priceKnown?: boolean }) => void; // each summary request's
+  onUsage: (u: { provider: string; usage: Usage; priceKnown?: boolean }) => void; // each summary request's usage, as soon as it ends
 }
 
 // A reason to stop, carried out of the summary's pieces to shorten() itself.
@@ -66,19 +69,20 @@ export async function shorten(s: Shortening, when: When): Promise<{ messages: Me
     options = [{ part: messages.slice(0, -1) }];
   } else {
     const reply = messages.findLastIndex((m) => m.role === "assistant");
-    // The turn's prompt is its first message, the last user message before that reply that is not a round's results.
-    const asked = messages.findLastIndex((m, i) => i < reply && m.role === "user" && !m.parts.some((p) => p.type === "tool_result"));
-    prompt = messages[asked]!.parts;
+    // The turn's prompt is the caller's, not looked for in `messages`: in a turn already shortened once, the last user
+    // message there without results is that shortening's new history, which would be kept again, nesting deeper each time.
+    prompt = s.asked?.parts;
     options = [{ part: messages.slice(0, reply), round: roundText(messages[reply]!, messages[reply + 1]) }, { part: messages }];
   }
   try {
     // What is kept is checked alone first, so no summary is paid for that could not be used: a prompt that does not fit on
     // its own ends the shortening, and a round that does not fit with it goes into the summary from the start.
     if (prompt && !(await fit(s, newHistory({ prompt })))) return { problem: PROMPT_TOO_BIG };
+    // Only the first option can be empty: the second, during a turn, is the whole history.
+    if (!options[0]!.part.length) return { problem: NOTHING };
     if (options[0]!.round !== undefined && !(await fit(s, newHistory({ prompt, round: options[0]!.round })))) options.shift();
     const files = await recentFiles(s);
     for (const { part, round } of options) {
-      if (!part.length) return { problem: NOTHING };
       const summary = await summarise(s, part);
       // The summary must fit the space the next request has, and is checked before it is used (design, "Carried over").
       const message = newHistory({ summary, prompt, round, files });
@@ -100,9 +104,10 @@ async function fit(s: Shortening, message: Message): Promise<boolean> {
 }
 
 // One summary of `part`, in pieces only when needed (choice 23): the whole part first; if the lead says it is too long,
-// or the summary is cut off at the window or the output limit, the two halves either side of the whole exchange nearest
-// its middle, each the same way, then their summaries summarised together with the same instructions. `later`: this
-// piece does not start where the whole part does, so it is sent as laterPiece() makes it, and so are both its halves.
+// or the summary is cut off at the window or the output limit, the two halves either side of the message nearest its
+// middle, never between a call and its results (middle()), each the same way, then their summaries summarised together
+// with the same instructions. `later`: this piece does not start where the whole part does, so it is sent as
+// laterPiece() makes it, and so are both its halves.
 async function summarise(s: Shortening, part: Message[], later = false): Promise<string> {
   const whole = await ask(s, later ? laterPiece(part) : part);
   if (whole !== undefined) return whole;

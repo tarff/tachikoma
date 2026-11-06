@@ -49,14 +49,15 @@ class Lead implements Provider {
   }
 }
 
-// A project of in-memory files at /p; a path starting ../ is outside it, and a file not in `files` cannot be read.
+// A project of in-memory files at /p; a path starting ../ is outside it, a file not in `files` cannot be read, and ./a.txt
+// is really a.txt.
 function workspace(files: Record<string, string>): Workspace {
   const no = () => Promise.reject(new Error("not used"));
   return {
     root: "/p",
-    resolve: async (p) => ({ abs: `/p/${p}`, outside: p.startsWith("../"), shown: p }),
+    resolve: async (p) => ({ abs: `/p/${p}`, outside: p.startsWith("../"), shown: p, real: `/p/${p.replace(/^\.\//, "")}` }),
     readText: async (abs) => {
-      const text = files[abs.slice("/p/".length)];
+      const text = files[abs.slice("/p/".length).replace(/^\.\//, "")];
       if (text === undefined) throw new Error(`ENOENT: ${abs}`);
       return text;
     },
@@ -178,18 +179,19 @@ describe("during a turn", () => {
   const c1 = call("c1", "a.txt");
   const c2 = call("c2", "b.txt");
   const round: Message = { role: "assistant", parts: [{ type: "text", text: "Now b." }, c2] };
-  const turn = (output: string) => [user("p1"), said("a1"), user("the prompt"), asks(c1), results("c1", "A"), round, results("c2", output)];
+  const asked = user("the prompt");
+  const turn = (output: string) => [user("p1"), said("a1"), asked, asks(c1), results("c1", "A"), round, results("c2", output)];
 
   it("summarises up to the round's reply, with no call left without its result", async () => {
     const lead = new Lead([reply("SUMMARY")]);
-    await run(lead, turn("B"), "during").result;
+    await run(lead, turn("B"), "during", { asked }).result;
     expect(lead.seen).toEqual([[user("p1"), said("a1"), user("the prompt"), asks(c1), { role: "user", parts: [...results("c1", "A").parts, instructions] }]]);
     expect(complete(lead.seen[0]!)).toBe(true);
   });
 
   it("keeps the prompt whole and the latest round as text", async () => {
     const lead = new Lead([reply("SUMMARY")]);
-    const done = await run(lead, turn("B"), "during").result;
+    const done = await run(lead, turn("B"), "during", { asked }).result;
     const kept = `${SHORTENED}SUMMARY\n\n${REQUEST}the prompt\n\n${ROUND}Now b.\n${callText(c2, "B")}`;
     expect(done).toEqual({ messages: [{ role: "user", parts: [{ type: "text", text: kept }] }], summary: "SUMMARY" });
     expect(kept).toContain('● read_file {\n  "path": "b.txt"\n}\n  ⎿ B');
@@ -198,23 +200,47 @@ describe("during a turn", () => {
   it("summarises the round too, as a complete exchange, when it does not fit with the prompt", async () => {
     const big = "x".repeat(5000);
     const lead = new Lead([reply("SUMMARY")]);
-    const done = await run(lead, turn(big), "during", { sizes: counted(), window: 3000 }).result;
+    const done = await run(lead, turn(big), "during", { asked, sizes: counted(), window: 3000 }).result;
     expect(lead.seen).toEqual([[...turn(big).slice(0, -1), { role: "user", parts: [...results("c2", big).parts, instructions] }]]);
     expect(done).toEqual({ messages: [{ role: "user", parts: [{ type: "text", text: `${SHORTENED}SUMMARY\n\n${REQUEST}the prompt` }] }], summary: "SUMMARY" });
   });
 
   it("summarises the round too when the summary leaves no room for it", async () => {
+    const out = "x".repeat(1000);
     const lead = new Lead([reply("S".repeat(1000)), reply("SHORT")]);
-    const done = await run(lead, turn("x".repeat(1000)), "during", { sizes: counted(), window: 2000 }).result;
-    expect(lead.seen[1]).toHaveLength(turn("").length);
+    const done = await run(lead, turn(out), "during", { asked, sizes: counted(), window: 2000 }).result;
+    expect(lead.seen).toEqual([
+      [...turn(out).slice(0, 4), { role: "user", parts: [...results("c1", "A").parts, instructions] }],
+      [...turn(out).slice(0, -1), { role: "user", parts: [...results("c2", out).parts, instructions] }],
+    ]);
     expect(done).toEqual({ messages: [{ role: "user", parts: [{ type: "text", text: `${SHORTENED}SHORT\n\n${REQUEST}the prompt` }] }], summary: "SHORT" });
   });
 
   it("returns the problem when the prompt alone does not fit", async () => {
-    const history = [user("p1"), said("a1"), user("p".repeat(5000)), round, results("c2", "B")];
+    const big = user("p".repeat(5000));
+    const history = [user("p1"), said("a1"), big, round, results("c2", "B")];
     const lead = new Lead([]);
-    expect(await run(lead, history, "during", { sizes: counted(), window: 3000 }).result).toEqual({ problem: PROMPT_TOO_BIG });
+    expect(await run(lead, history, "during", { asked: big, sizes: counted(), window: 3000 }).result).toEqual({ problem: PROMPT_TOO_BIG });
     expect(lead.seen).toEqual([]);
+  });
+
+  it("shows a note that came in with the round's results in the round's text", async () => {
+    const note = { type: "text", text: "t1 finished", from: "tasks" } as const;
+    const history = [...turn("B").slice(0, -1), { role: "user" as const, parts: [...results("c2", "B").parts, note] }];
+    const done = await run(new Lead([reply("S")]), history, "during", { asked }).result;
+    const kept = `${SHORTENED}S\n\n${REQUEST}the prompt\n\n${ROUND}Now b.\n${callText(c2, "B")}\nt1 finished`;
+    expect(done).toEqual({ messages: [{ role: "user", parts: [{ type: "text", text: kept }] }], summary: "S" });
+  });
+
+  it("keeps the turn's own prompt in a turn already shortened, not the last new history", async () => {
+    const lead = new Lead([reply("S1"), reply("S2")]);
+    const first = await run(lead, [user("p1"), said("r1"), asked], "start").result;
+    if (!("messages" in first)) throw new Error(first.problem);
+    const shortened = first.messages[0]!;
+    const done = await run(lead, [shortened, asks(c1), results("c1", "A")], "during", { asked }).result;
+    expect(lead.seen[1]).toEqual([{ ...shortened, parts: [...shortened.parts, instructions] }]);
+    const kept = `${SHORTENED}S2\n\n${REQUEST}the prompt\n\n${ROUND}${callText(c1, "A")}`;
+    expect(done).toEqual({ messages: [{ role: "user", parts: [{ type: "text", text: kept }] }], summary: "S2" });
   });
 });
 
@@ -262,6 +288,10 @@ describe("files", () => {
     expect(await filesPart(calls, { workspace: refusing })).toBe(
       "--- secret (could not be read) ---\n--- e.txt ---\nE\n--- d.txt ---\nD\n--- c.txt ---\nC\n--- b.txt ---\nB",
     );
+  });
+
+  it("names a file written two ways once, by where it really is, as its latest call spells it", async () => {
+    expect(await filesPart([read("a.txt"), read("./a.txt")])).toBe("--- ./a.txt ---\nA");
   });
 
   it("trims a CRLF file's last line ending whole", async () => {
@@ -379,6 +409,19 @@ describe("usage", () => {
     const { used, result } = run(lead, [user("hi")], "between");
     await result;
     expect(used).toEqual([declined, { provider: "fake:other", usage }]);
+  });
+
+  it("reports a reply's usage when the stop comes after it arrived, then returns cancelled", async () => {
+    const stop = new AbortController();
+    const lead = new Lead([
+      () => {
+        stop.abort();
+        return reply("S");
+      },
+    ]);
+    const { used, result } = run(lead, [user("hi"), said("hello")], "between", { signal: stop.signal });
+    expect(await result).toEqual({ problem: CANCELLED });
+    expect(used).toEqual([{ provider: "fake:lead", usage }]);
   });
 
   it("reports the first half's usage when the second is cancelled", async () => {
