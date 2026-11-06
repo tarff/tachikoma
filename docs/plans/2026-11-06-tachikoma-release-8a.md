@@ -1184,9 +1184,11 @@ Commit: `feat: the session shortens a conversation that will not fit, before the
   it says its line.
 - **`/autocompact`** and **`autoCompactWindow`** work as choice 26.
 - **A shortening for the `/autocompact` size that fails,** when the request still fits the
-  window, shows the red line and sends the request as it is; the next request tries again
-  (Task 13, user, 2026-11-06, option chosen: "Show the line, send anyway"). This changes Task 12's
-  session.ts, which ends the turn.
+  window, shows the red line and sends the request as it is (Task 13, user, 2026-11-06, option
+  chosen: "Show the line, send anyway"). This changes Task 12's session.ts, which ends the turn.
+  It is not tried again for the `/autocompact` size until the next turn, so a summary that keeps
+  failing costs at most one request and one red line per prompt; a request that will not fit the
+  window still shortens (Task 13, user, 2026-11-06, option chosen: "Retry next turn").
 - **Its other lines** (Task 13, user, 2026-11-06, option chosen: "Approve all"): the `/` menu
   notes "Shorten the conversation into a summary now; words after it say what to focus on"
   (`/compact [words]`) and "Shorten once the conversation passes a number of tokens, such as 200k;
