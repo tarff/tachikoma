@@ -271,14 +271,23 @@ Each is marked in its task. The user approves them with the plan.
 3. **The system prompt becomes the conversation's.** It is kept on the session, saved in the
    transcript, and rebuilt only at a shortening, `/clear`, or a new session (design, "Resuming").
    `SessionOptions.system` stays the starting value. A shortening rebuilds it through a
-   `systemNow()` callback that cli.tsx passes in, which reads the instruction files again.
+   `systemNow()` callback that cli.tsx passes in, which reads the instruction files again. Files
+   outside the project go in only if the launch's question approved them; one not asked about at
+   launch is left out without asking (user, 2026-11-06, option chosen: "Re-read, reuse launch's
+   answer").
 
 **The file**
 4. **The format,** one JSON object per line, each with `"t"` and `"at"` (ISO time):
    - `start`, first, once: version 1, the session id, project path, lead, Tachikoma's version,
      `-p` or not, the system prompt, and the tool specs.
    - `message`: one `Message`.
-   - `lead`: a new lead's id.
+   - `lead`: a new lead's id. A resume whose lead differs from the saved one writes one too, so the
+     next resume opens with the lead last used (Task 6 spec review, 2026-11-06).
+   - `tools`: this launch's tool specs, written by a resume whose tools differ from the ones the
+     history was last saved under. A reply keeps its `native` on loading only when the tools it
+     was saved under (the last `start` or `tools` line before it) equal this launch's, so a
+     session resumed under other tools and then under the first ones again never sends thinking
+     made under the wrong tool list (Task 6 spec review, 2026-11-06).
    - `name`: a name given.
    - `shortened`: the new system prompt and the new history's one message, in the same line.
    - `subagent`: a subagent's id, its description and its file's name, written before the
@@ -287,7 +296,9 @@ Each is marked in its task. The user approves them with the plan.
    - `ended`, in a subagent's own file only: `failed` or `stopped`, written when it ends so
      (user, 2026-11-06, option chosen: "Record how it ended"). A subagent is unfinished only when
      its file has neither this line nor a final answer, so one the lead already heard failed or
-     was stopped is not reported as lost.
+     was stopped is not reported as lost. A resume that reports one as lost writes `lost` into its
+     file, so later resumes do not report it again (user, 2026-11-06, option chosen: "Report
+     once").
 
    Reading takes the last whole `shortened` line as the start of the history, as Claude Code
    does. A shortening is one line, so it is one append: a crash or a failed write during it leaves
@@ -454,13 +465,16 @@ are notes; red ones are failures.
 | `tachi -r <x>`, not found | `No session named or numbered <x> in this folder; tachi --resume lists them.` |
 | `tachi -r` without a terminal | `tachi --resume needs a terminal to list sessions; give it a session's id or name.` |
 | A transcript that cannot be read | `<file> could not be read as a session (<reason>).` With no readable first line, the reason is `its first line is missing or damaged` (user, 2026-11-06). |
+| A copy that cannot be written (user, 2026-11-06) | `<file> could not be copied (<reason>).` |
 | Damaged lines skipped (grey) | `<n> damaged lines of this session were skipped.` |
 | The saved lead is gone (grey) | `The session's lead, <spec>, is not set up (<reason>); <spec> leads instead.` |
 | Open elsewhere (grey; approved in the design) | `Opened a copy: that session is open in another window.` |
 | Tools changed (grey) | `The tools have changed since this session was saved, so its earlier replies are sent without their thinking.` |
 | A subagent unfinished at the crash (to the model) | `Subagent <id> (<description>) had not finished when the session ended; its answer was lost.` |
 | A crash's unanswered call (to the model; approved) | `Outcome unknown: the session ended while this was running, or before its result was saved. It may have run in full or in part. Check what it would have changed before running it again.` |
-| Resumed (grey) | `Resumed: <name or first prompt>.` |
+| Resumed (grey) | `Resumed: <name or first prompt>.` With neither, `Resumed: <id>.` (user, 2026-11-06). |
+| `tachi -r`'s list (user, 2026-11-06) | Headings `Saved sessions in this folder, newest first:` and `Saved sessions named <name>, newest first:`; hint `↑↓ move · Enter opens · Esc quits`; ages `<1m ago`, `<n>m ago`, `<n>h ago`, `<n>d ago`; sizes `<n> bytes`, `<n.n>k bytes`, `<n.n>M bytes`. |
+| HELP (user, 2026-11-06) | `-c, --continue    reopen the newest session saved in this folder (with -p, the newest -p run)`; `-r, --resume [<id or name>]  reopen a saved session by its id or name, or pick one from a list`; `-n, --name <name>  name this session, to reopen it with --resume <name>`; `--fork-session    with -c or -r, open a copy of the session and leave the saved one as it was` |
 | `/clear` (grey) | `Started a new session; the last one is kept (tachi --resume lists it).` |
 | `/branch` (grey) | `Branched: this window is now <name>; the original is kept as <id>.` |
 | `/resume`, `/clear` or `/branch` while a subagent runs (red) | `<command> waits until no subagent is running: <ids> still running. /tasks stop stops them.` |
@@ -602,10 +616,11 @@ export type Line =
   | { t: "start"; at: string; v: 1; id: string; project: string; lead: string; version: string; print: boolean; system: string; tools: ToolSpec[] }
   | { t: "message"; at: string; message: SavedMessage }
   | { t: "lead"; at: string; lead: string }
+  | { t: "tools"; at: string; tools: ToolSpec[] }
   | { t: "name"; at: string; name: string }
   | { t: "shortened"; at: string; system: string; message: SavedMessage }   // one line: choice 4
   | { t: "subagent"; at: string; id: string; description: string; file: string }
-  | { t: "ended"; at: string; state: "failed" | "stopped" };                  // in a subagent's file
+  | { t: "ended"; at: string; state: "failed" | "stopped" | "lost" };         // in a subagent's file
 export class Transcript {
   constructor(file: string, pictures: string);      // <id>.jsonl, <id>/pictures
   write(line: DistributiveOmit<Line, "at">): void;  // appendFileSync, one line; pictures saved first (choice 5)
@@ -824,11 +839,20 @@ Commit: `feat: the session saves each message as it is added, and can load a sav
 - **`-r` alone** opens `SessionList` before the App (choice 12).
 - **Opening:**
   - `openSession` is tried. If another window holds the session, or `--fork-session` is given, it
-    is copied and the copy opened, with the line (choice 8).
+    is copied and the copy opened. The "Opened a copy" line is said only when another window holds
+    it, as it would be false for `--fork-session` (choice 8).
+  - **It happens before anything starts:** the session is opened, mended and read before the
+    instruction-files question and the sandbox, so a session that cannot be read starts nothing
+    (design, "When something goes wrong"). A copy that then cannot be read is removed.
   - The opened session's `mend()` runs under its lock before anything is appended.
   - Damaged lines, unfinished subagents, the lead (choice 13), the saved system prompt and the
     tools comparison are as the design's "Resuming" says, each with its line.
-  - When the tools differ, the loaded replies' `native` is left out.
+  - When the tools differ, the loaded replies' `native` is left out, and a `tools` line is written.
+    The "Tools changed" line is said only when some loaded reply had `native` to leave out.
+  - A lead that differs from the saved one writes a `lead` line.
+  - Each unfinished subagent reported lost gets `ended` `lost` in its own file.
+  - **The conversation is drawn on screen** above the resume lines, as the App draws a live one
+    (user, 2026-11-06, option chosen: "Show it").
   - The copy-mode box starts afresh, as the design says.
 - **The lead's own error log** keeps using its own session id: a resumed session's error rows
   carry the resumed id.
@@ -848,6 +872,12 @@ local fake OpenAI server already in that file, :468-506):
 - `SessionList`: rows show name or first prompt, time, lead and size; Up/Down/Enter/Esc work;
   filtering by a name works.
 - `-r` without a terminal fails with the line.
+- A resume under other tools, then under the first ones again, sends no thinking made under the
+  other tools.
+- A resume with `--lead` makes the next `-c` open with that lead.
+- A lost subagent is reported on the first resume and not on the second.
+- `-r <a session with no readable first line>` with `--sandbox copy` starts no box.
+- The window draws a resumed conversation's prompts, replies and tool rows.
 - A `-p` run whose transcript cannot be written (a file where the sessions folder should be,
   inside the test's own data folder) prints the "Saving fails" line alone on stderr and exits 0
   (moved here from Task 5: no launch path wrote a transcript before this task).
