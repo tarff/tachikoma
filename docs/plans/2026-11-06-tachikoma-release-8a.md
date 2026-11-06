@@ -1146,8 +1146,9 @@ Commit: `feat: shortening summarises everything before what must stay, and keeps
   - During a turn, `shorten` is given `asked`: the message that started the turn, as the session
     holds it. After a first shortening it is no longer in the history, so it cannot be found there.
   - On `/lead`, `window` is the new lead's, while `fits` estimates with the current lead's ratio.
-  - After a between-turns shortening, the next prompt joins the new history's message, as
-    Anthropic refuses two user messages in a row.
+  - After a between-turns shortening, the next prompt joins the new history's message when
+    sent, so requests keep user and assistant alternating (the sources disagree on whether
+    Anthropic refuses two user messages in a row; joining is harmless either way).
   - Summary requests pass the session's picture cache and its "send without pictures" setting
     through, or it becomes a known limit: after "Send again without the pictures", a summary of a
     history with pictures is refused again.
