@@ -1,5 +1,4 @@
-import { lstatSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { withLock } from "../../auth/lock.js";
 import { leadGone, type Opened } from "../../clilib.js";
@@ -14,10 +13,10 @@ import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS } from "../../settings.js";
 import type { Fns } from "../App.js";
+import { unquoted } from "../clipboard.js";
 import { callLines, conversationLines, type Line } from "../describe.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
 import { kept, type ReviewEnd } from "../Review.js";
-import { unquoted } from "../clipboard.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
 import { characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened, SESSION_WORDS } from "./constants.js";
@@ -402,8 +401,13 @@ export const queue = (ui: UI, fns: Fns) => {
     const there = () => fns.say({ text: `${to} already exists; nothing was written.`, color: "red" });
     try {
       // A link at the name counts as a file there: on Windows `wx` follows one, a junction to a missing folder making
-      // that folder (Task 8's quality review). Links in the folders above are a known limit.
-      if (lstatSync(to, { throwIfNoEntry: false })) return there();
+      // that folder (Task 8's quality review). Links in the folders above are a known limit. Not sync, so a share that
+      // does not answer holds no key.
+      const taken = await lstat(to).catch((e: NodeJS.ErrnoException) => {
+        if (e.code === "ENOENT") return undefined;
+        throw e;
+      });
+      if (taken) return there();
       await writeFile(to, text, { flag: "wx" });
     } catch (err) {
       const e = err as NodeJS.ErrnoException;

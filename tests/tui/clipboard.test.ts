@@ -381,7 +381,6 @@ describe("readImage", () => {
   });
 });
 
-// Release 6 design, "From pasted paths".
 // Release 8a plan, Task 8's quality review: one pair of matching quotes around a word, as a dropped path has; with
 // doubleOnly, " alone, as on Windows an apostrophe is part of a name.
 describe("unquoted", () => {
@@ -396,6 +395,7 @@ describe("unquoted", () => {
   });
 });
 
+// Release 6 design, "From pasted paths".
 describe("imagePaths", () => {
   it("takes a path with or without quotes, a Windows one with spaces included", () => {
     expect(imagePaths(`"C:\\Users\\me\\My Pictures\\shot one.png"`)).toEqual(["C:\\Users\\me\\My Pictures\\shot one.png"]);
