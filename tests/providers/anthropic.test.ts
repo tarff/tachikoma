@@ -364,15 +364,18 @@ describe("AnthropicProvider", () => {
     expect(count.mock.calls[0]![1]?.signal).toBe(signal);
   });
 
-  it("asks again after a failed context-window lookup, and remembers a successful one", async () => {
+  // Release 8a plan, Task 12's review: the session asks before every request, so a failure is not tried again each time.
+  it("remembers a context-window lookup, a failed one as not known, and asks once", async () => {
     const retrieve = vi
       .spyOn(Models.prototype, "retrieve")
       .mockRejectedValueOnce(new Error("offline"))
       .mockResolvedValue({ max_input_tokens: 1_000 } as never);
-    const provider = new AnthropicProvider("claude-opus-5-5");
-    expect(await provider.contextWindow()).toBeNull();
-    expect(await provider.contextWindow()).toBe(1_000);
-    expect(await provider.contextWindow()).toBe(1_000);
+    const offline = new AnthropicProvider("claude-opus-5-5");
+    expect(await offline.contextWindow()).toBeNull();
+    expect(await offline.contextWindow()).toBeNull();
+    const online = new AnthropicProvider("claude-opus-5-5");
+    expect(await online.contextWindow()).toBe(1_000);
+    expect(await online.contextWindow()).toBe(1_000);
     expect(retrieve).toHaveBeenCalledTimes(2);
   });
 

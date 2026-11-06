@@ -46,8 +46,9 @@ export function sent(m: Message): Message {
 }
 
 // A history as a request carries it: each message as sent() makes it, a user message right after another joining it as
-// more parts, as Anthropic refuses two user messages in a row. A prompt after a shortening between turns follows the new
-// history's message so (release 8a plan, Task 12).
+// more parts, so user and assistant messages alternate, every provider gets the same shape, and a resumed session joins
+// them the same way. A prompt after a shortening between turns follows the new history's message so (release 8a plan,
+// Task 12).
 export function sentAll(messages: Message[]): Message[] {
   const out: Message[] = [];
   for (const m of messages.map(sent)) {

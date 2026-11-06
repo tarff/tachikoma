@@ -426,6 +426,38 @@ describe("App", () => {
     expect(session.messages.map(texts)).toEqual([["This conversation was shortened. A summary of everything before this point:\n\nThe user sent many x."]]);
   });
 
+  // Task 12's review: a stopped /lead says nothing, as a stopped turn does, and keeps the lead.
+  it("keeps the lead, saying nothing, when Ctrl-C stops /lead's summary, and goes on after", async () => {
+    let window = 0;
+    let summarising = false;
+    const turns: ((req: CompletionRequest) => Promise<Turn>)[] = [
+      async (req) => {
+        window = characters(req.system, [], req.tools) + 1000; // as above: the prompt does not fit, the summary would
+        return { ...reply("noted"), usage: { ...usage, input: characters(req.system, req.messages, req.tools) } };
+      },
+      (req) =>
+        new Promise((_, reject) => {
+          summarising = true;
+          req.signal?.addEventListener("abort", () => reject(new Error("Request was aborted.")), { once: true });
+        }),
+      async () => reply("still fake:a"),
+    ];
+    const lead: Provider = { id: "fake:a", complete: (req) => turns.shift()!(req) };
+    const newLead: Provider = { id: "fake:b", complete: async () => reply("hi"), contextWindow: async () => window };
+    const { app, session } = await mount([], { lead, newLead, save: true });
+    await session.send("x".repeat(2000));
+    await type(app, "/lead fake:b");
+    await waitFor(() => summarising);
+    app.stdin.write("\u0003"); // Ctrl-C
+    await tick();
+    await type(app, "and now");
+    await until(app, "still fake:a");
+    expect(session.lead.id).toBe("fake:a");
+    expect(app.lastFrame()).not.toContain("was not made the lead");
+    expect(app.lastFrame()).not.toContain("could not be shortened");
+    expect(session.messages).toHaveLength(4);
+  });
+
   // Release 6 plan, choice 34 (the user: "can we have lead list the models?"): /lead alone opens the model list, as
   // /model does; /lead with a model is unchanged (above).
   it("opens the model list on /lead alone, as /model does, and does not send it to the model", async () => {

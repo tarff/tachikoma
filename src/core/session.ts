@@ -157,18 +157,26 @@ export class Session {
   // window is shortened between turns by the lead leading now, estimated with that lead's ratio, as `next` has none yet
   // (plan, Task 12). The reason it could not be, for /lead's refusal; undefined when it fits, when that cannot be told, and
   // when it was shortened.
+  // A stop gives CANCELLED, so the switch is not made.
   async makeRoom(next: Provider, signal?: AbortSignal): Promise<string | undefined> {
-    if (!this.messages.length) return;
-    const lead = this.#lead;
-    const now = await this.#window(lead, signal);
-    const then = await this.#window(next, signal);
-    if (now === undefined || then === undefined) return CANCELLED;
-    if (then === null || (now !== null && then >= now)) return;
-    const over = await this.#over(lead, then, signal);
-    if (over === undefined) return CANCELLED;
-    if (!over) return;
-    const r = await this.#shorten(lead, "between", then, signal);
-    return r === "done" ? undefined : r === "unsaved" ? UNSAVED : r.problem;
+    // A turn running would go on with the history shortened under it, and one sent meanwhile likewise.
+    if (this.#running) throw new Error("A turn is already running");
+    this.#running = true;
+    try {
+      if (!this.messages.length) return;
+      const lead = this.#lead;
+      const now = await this.#window(lead, signal);
+      const then = await this.#window(next, signal);
+      if (now === undefined || then === undefined) return CANCELLED;
+      if (then === null || (now !== null && then >= now)) return;
+      const over = await this.#over(lead, then, signal);
+      if (over === undefined) return CANCELLED;
+      if (!over) return;
+      const r = await this.#shorten(lead, "between", then, signal);
+      return r === "done" ? undefined : r === "unsaved" ? UNSAVED : r.problem;
+    } finally {
+      this.#running = false;
+    }
   }
 
   get fallback(): Provider | undefined {
@@ -212,43 +220,57 @@ export class Session {
     let shortened = false;
     for (;;) {
       const lead = this.#lead;
-      // Not waited for when the lead has no window to look up, so its request goes as soon as before: a background
-      // subagent failing at once still reaches the lead's next request (app.test.tsx, "hands the lead a failure").
+      // Not waited for when the lead has no window to look up. A test-timing constraint: app.test.tsx's "hands the lead a
+      // failure during its turn" has a subagent whose request fails at once reach the lead's next request, which an extra
+      // wait before that subagent's request would make it miss.
       const window = lead.contextWindow ? await this.#window(lead, signal) : null;
       if (window === undefined) return; // stopped
       // The check before the request, against the window and the /autocompact size; with neither known there is none, and
       // the "too long" answer is the safety net (design, "When to shorten").
       const limit = Math.min(window ?? Infinity, this.autoCompact ?? Infinity);
+      // A stop meanwhile ends the turn as any stop does, saying nothing (#execute).
       if (!shortened && limit < Infinity) {
         const over = await this.#over(lead, limit, signal);
         if (over === undefined) return;
-        const r = over ? await this.#shorten(lead, when, window, signal, asked) : undefined;
-        if (r !== undefined && r !== "done" && r !== "unsaved") return this.#say(lead, cannot(r.problem));
-        // Not saved, it cannot be shortened: over the window it ends with the line, and past the /autocompact size alone it
-        // is sent as it is, the model's own answer deciding, as is one whose size cannot be told now.
-        const line = r === "unsaved" && limit === window ? await this.#tooLong(lead, window, signal) : null;
-        if (line) return this.#say(lead, line);
-        shortened = r === "done";
+        if (over) {
+          const r = await this.#shorten(lead, when, window, signal, asked);
+          if (signal?.aborted) return;
+          if (r === "done") shortened = true;
+          else if (r !== "unsaved") return this.#say(lead, cannot(r.problem));
+          else if (limit === window) {
+            // Not saved, it cannot be shortened: over the window it ends with the line. Past the /autocompact size alone,
+            // or with its size not known now, it is sent as it is, the model's own answer deciding.
+            const line = await this.#tooLong(lead, window, signal);
+            if (signal?.aborted) return;
+            if (line) return this.#say(lead, line);
+          }
+        }
       }
       let answeredBy = lead;
       let turn = await this.#request(lead, signal);
       if (!turn) return;
       // A "too long" answer, or a reply that filled the window, is never stored: the history is shortened and the request
-      // sent once more (plan, choices 20 and 21). Too long again, or not saved so not shortened, the turn ends with the line,
-      // or with the answer as it came when the request's size or the window is not known.
+      // sent once more (plan, choices 20 and 21). Too long again, or not saved so not shortened, the turn ends: a "too long"
+      // answer with the line, or as it came when the request's size or the window is not known; a reply that filled the
+      // window with its own words, as the line would give a size within the window.
       if ("tooLong" in turn || turn.cutOff?.kind === "window") {
         if (!shortened) {
           const r = await this.#shorten(lead, when, window, signal, asked);
+          if (signal?.aborted) return;
           if (r === "done") {
             shortened = true;
             continue;
           }
           if (r !== "unsaved") return this.#say(lead, cannot(r.problem));
         }
+        if (!("tooLong" in turn)) {
+          bus.emit("error", { kind: "max_tokens", attempted: `response from ${lead.id}`, message: turn.cutOff!.detail, lead: lead.id });
+          return;
+        }
         const line = await this.#tooLong(lead, window, signal);
+        if (signal?.aborted) return;
         if (line) this.#say(lead, line);
-        else if ("tooLong" in turn) this.#failed(lead, turn.tooLong);
-        else bus.emit("error", { kind: "max_tokens", attempted: `response from ${lead.id}`, message: turn.cutOff!.detail, lead: lead.id });
+        else this.#failed(lead, turn.tooLong);
         return;
       }
       const rescue = this.#fallback;
@@ -403,21 +425,20 @@ export class Session {
     const t = this.#transcript;
     if (!t || t.failed !== null) return "unsaved";
     for (const f of this.onShorten) f();
-    const req = this.#req(lead, signal);
     const r = await shorten(
       {
         lead,
         system: this.system,
         messages: this.messages,
         ...(asked ? { asked } : {}),
-        tools: req.tools,
+        tools: this.opts.tools.map((t) => t.spec),
         calls: this.calls,
         workspace: this.opts.ctx.workspace,
         sizes: this.#sizes,
         window: window ?? Infinity, // not known: every fit passes, and the "too long" answer is the safety net
         ...(signal ? { signal } : {}),
         shrunk: this.#shrunk,
-        ...(req.refusedBy ? { refusedBy: req.refusedBy } : {}),
+        ...(this.#refusedPictures.has(lead.id) ? { refusedBy: lead.id } : {}),
         // Counted as the judge's is, apart from the conversation's context (stats.ts).
         onUsage: (u) => bus.emit("usage", { ...u, summary: true }),
       },

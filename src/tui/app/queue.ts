@@ -231,21 +231,22 @@ export const queue = (ui: UI, fns: Fns) => {
   // `/lead <provider:model>` and the model list's pick, this window only, saving nothing (choice 26, the user's). A
   // conversation that will not fit the new lead's smaller window is shortened first, by the lead leading now, and the
   // switch is refused if it cannot be (release 8a design, "When to shorten"). Meanwhile it works as a turn does: what is
-  // typed waits in the queue, and Ctrl-C stops the summary.
+  // typed waits in the queue, and Ctrl-C stops it, quietly, the lead staying as it was, as a stopped turn says nothing.
   const leadTo = async (spec: string) => {
     const provider = fns.make(spec);
-    ui.abort.current = new AbortController();
+    const { signal } = (ui.abort.current = new AbortController());
     ui.doing.current = { label: "Working", at: Date.now(), from: { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } };
     ui.setNow(ui.doing.current.at);
     ui.setBusy(true);
     ui.working.current = true;
     let problem;
     try {
-      problem = await ui.session.makeRoom(provider, ui.abort.current.signal);
+      problem = await ui.session.makeRoom(provider, signal);
     } finally {
       ui.setBusy(false);
       ui.working.current = false;
     }
+    if (signal.aborted) return;
     if (problem === undefined) return ui.session.setLead(provider);
     fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "red" });
   };

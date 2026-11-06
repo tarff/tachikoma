@@ -212,15 +212,16 @@ export class AnthropicProvider implements Provider {
     return window !== null && window > 200_000 ? LIMITS.anthropic.maxCount! : SMALL_WINDOW_PICTURES;
   }
 
-  // Only a successful lookup is kept; a failed one (offline, say) is tried again next time. One stopped by `signal`
-  // rejects, so the turn ends as cancelled.
+  // The lookup's outcome is kept for the provider's life, a failed one (offline, or a proxy without /v1/models) as not
+  // known, since the session asks before every request and the SDK's retries would wait each time (release 8a plan, Task
+  // 12's review). One stopped by `signal` is not kept: it rejects, so the turn ends as cancelled.
   async contextWindow(signal?: AbortSignal): Promise<number | null> {
     if (this.#window === undefined) {
       try {
         this.#window = (await this.#client.models.retrieve(this.model, {}, { signal })).max_input_tokens;
       } catch (err) {
         if (signal?.aborted) throw err;
-        return null;
+        this.#window = null;
       }
     }
     return this.#window;

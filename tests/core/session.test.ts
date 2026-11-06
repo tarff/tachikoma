@@ -12,7 +12,8 @@ import { type Ask, Declined, PermissionGate } from "../../src/core/permissions.j
 import { type Conversation, Session, UNSAVED } from "../../src/core/session.js";
 import { INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
-import { type Line, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
+import { Tasks } from "../../src/core/tasks.js";
+import { type Line, pathsOf, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
 import { type CompletionRequest, type Message, type Part, type Provider, sentAll, type Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
@@ -819,7 +820,7 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
     session = new Session({ lead, tools: [writeFileTool], system: "t", ctx: { ...ctx, gate }, bus });
     session.load(loaded(read(p), new Transcript(p.file, p.pictures)));
     await session.send("write it");
-    // The prompt joins the shortening's message, as Anthropic refuses two user messages in a row (Task 12).
+    // The prompt joins the shortening's message, so user and assistant messages alternate (Task 12).
     expect(lead.seen[0]).toEqual([{ role: "user", parts: [...summary.parts, ...typed("write it").parts] }]);
     const asked = texts(judge.seen[0]![0]!)[0]!.split("\n"); // the prompts' block, then the calls' (judge.ts, request)
     expect(JSON.parse(asked[1]!)).toEqual(["ping it", "thanks", "write it"]);
@@ -852,7 +853,7 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
   class TooLong extends Error {
     status = 400;
   }
-  type Script = Turn | Error | ((req: CompletionRequest) => Turn);
+  type Script = Turn | Error | ((req: CompletionRequest) => Turn | Promise<Turn>);
   // A scripted lead with a window, which calls a TooLong error too long, and records each request as it was sent.
   class Lead implements Provider {
     readonly seen: Omit<CompletionRequest, "signal" | "shrunk" | "leftOut">[] = [];
@@ -905,6 +906,27 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
     const ctx = await tempContext();
     const session = new Session({ lead, tools: [echo], system: "t", systemNow: async () => "t, read again", ctx, bus, transcript, ...more });
     return { session, bus, errors, summaries, usages, transcript };
+  }
+  // A transcript that cannot be written: a file where its folder should be, with no permission changed (Task 3).
+  async function unsavable() {
+    const own = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
+    onTestFinished(() => removeTree(own));
+    mkdirSync(path.join(own, "data"));
+    writeFileSync(path.join(own, "data", "sessions"), "not a folder");
+    const dir = path.join(own, "data", "sessions", "project");
+    return new Transcript(path.join(dir, "s.jsonl"), path.join(dir, "s", "pictures"));
+  }
+  // A lead that counts requests exactly, each count from `counts` in turn: a number, or "stop", which stops the turn
+  // there, as Ctrl-C would, and rejects as the SDK does.
+  function counting(lead: Lead, stop: AbortController, counts: (number | "stop")[]) {
+    return Object.assign(lead, {
+      countTokens: async () => {
+        const next = counts.shift();
+        if (next !== "stop") return next ?? 0;
+        stop.abort();
+        throw new Error("Request was aborted.");
+      },
+    });
   }
   // The approved line for a request still too long (plan, "Lines this plan adds"), at the ratio of 1.
   const tooLongLine = (session: Session, lead: string, window: number) =>
@@ -1114,9 +1136,20 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
 
   it("refuses a switch that needs shortening when saving has stopped", async () => {
     const a = new Lead("fake:a", [measured("noted")], 10_000);
-    const { session } = await setup(a, { transcript: undefined });
+    const { session } = await setup(a, { transcript: await unsavable() });
     await session.send(big);
     expect(await session.makeRoom(new Lead("fake:b", [], 500))).toBe(UNSAVED);
+    expect(a.seen).toHaveLength(1); // no summary request
+  });
+
+  it("refuses a switch while a turn runs, as it would shorten the history under it", async () => {
+    const lead = new Held("fake:a");
+    const { session } = await setup(lead);
+    const turn = session.send("hi");
+    await new Promise((r) => setTimeout(r, 20));
+    await expect(session.makeRoom(new Lead("fake:b", [], 500))).rejects.toThrow("A turn is already running");
+    lead.answer("ok");
+    await turn;
   });
 
   it("shortens a subagent's conversation the same way", async () => {
@@ -1167,5 +1200,85 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
     await session.send("and this");
     expect(summaries).toEqual(["S."]);
     expect(isSummary(lead.seen[2]!)).toBe(true);
+  });
+
+  // Task 12's review: a second reply that filled the window is no "too long" answer; the line would give a size within it.
+  it("ends the turn with the reply's own words when it fills the window again once shortened", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), cutAtWindow, summaryOf("Many x."), cutAtWindow], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(summaries).toEqual(["Many x."]);
+    expect(session.messages).toEqual([typed(shortened("Many x.", "now this"))]);
+    expect(errors).toEqual([{ kind: "max_tokens", attempted: "response from fake:a", message: "The conversation filled the context window", lead: "fake:a" }]);
+  });
+
+  it("ends the turn with the line when a request shortened in advance is still too long, without shortening again", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Many x."), new TooLong("prompt is too long")], 700);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect([lead.seen.length, summaries]).toEqual([3, ["Many x."]]);
+    expect(errors).toEqual([{ kind: "shortening", attempted: "request to fake:a", message: tooLongLine(session, "fake:a", 700), lead: "fake:a" }]);
+  });
+
+  // Decision 3 of the build: the /autocompact size is not the model's limit, so the model's own answer decides.
+  it("sends a request past the /autocompact size but within the window as it is when saving has stopped", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), reply("sent as it is")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead, { transcript: await unsavable() });
+    session.autoCompact = 700;
+    await session.send(big);
+    await session.send("now this");
+    expect([lead.seen.length, summaries]).toEqual([2, []]);
+    expect(texts(session.messages.at(-1)!)).toEqual(["sent as it is"]);
+    expect(errors.map((e) => e.kind)).toEqual(["saving"]);
+  });
+
+  // Task 12's review: a stop ends the turn as any stop does, saying nothing (session.ts, #execute).
+  it("ends the turn quietly when it is stopped during a shortening, the conversation unchanged", async () => {
+    const stop = new AbortController();
+    const stopped = () => {
+      stop.abort();
+      throw new Error("Request was aborted.");
+    };
+    const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), stopped], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this", stop.signal);
+    expect([errors, summaries]).toEqual([[], []]);
+    expect(session.messages).toHaveLength(3);
+  });
+
+  it("ends the turn quietly when it is stopped while the request is counted for the line, never as the provider's error", async () => {
+    const stop = new AbortController();
+    // No ratio (a usage of 0 teaches none) and no transcript, so the line's size is the count, which is stopped.
+    const unmeasured = { ...reply("noted"), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+    const lead = counting(new Lead("fake:a", [unmeasured, new TooLong("prompt is too long")], 1_000_000), stop, [10, 10, "stop"]);
+    const { session, errors } = await setup(lead, { transcript: undefined });
+    await session.send(big);
+    await session.send("now this", stop.signal);
+    expect(errors).toEqual([]);
+  });
+
+  it("ends the turn quietly when it is stopped while the request is counted before it is sent", async () => {
+    const stop = new AbortController();
+    const lead = counting(new Lead("fake:a", [], 1_000_000), stop, ["stop"]);
+    const { session, errors } = await setup(lead);
+    await session.send(big, stop.signal);
+    expect([errors, lead.seen]).toEqual([[], []]);
+    expect(session.messages).toEqual([typed(big)]);
+  });
+
+  it("shortens a subagent's conversation through Tasks, saving the shortening in its own file", async () => {
+    const lead = saving();
+    const turns = [callTool("c1", "echo", { text: "one" }), new TooLong("prompt is too long"), summaryOf("Sub summary."), reply("done")];
+    const worker = new Lead("fake:w", turns, 1_000_000);
+    const bus = new Bus();
+    const ctx = await tempContext();
+    const tasks = new Tasks({ bus, max: 8, worker: () => worker, system: "sub", tools: [echo], ctx, transcript: () => lead });
+    expect(await tasks.start("brief", { background: false }).done).toEqual({ state: "done", text: "done" });
+    const own = new Transcript(path.join(pathsOf(lead.file).subagents, "t1.jsonl"), lead.pictures);
+    expect(savedLines(own).map((l) => l.t)).toEqual(["message", "message", "message", "shortened", "message"]);
+    expect(isSummary(worker.seen[2]!)).toBe(true);
   });
 });

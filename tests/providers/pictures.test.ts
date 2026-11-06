@@ -256,6 +256,16 @@ describe("each request, from the session", () => {
     return { said, session: new Session({ lead, fallback, tools: [], system: "s", ctx: await tempContext(), bus }) };
   }
 
+  // Release 8a plan, Task 12's review: the session asks for the window before every request, and a failed lookup (a proxy
+  // without /v1/models, say) is not tried again, with the SDK's retries, before each one.
+  it("looks up a window that cannot be found once across a session's requests", async () => {
+    anthropicSees();
+    const { session: s } = await session(new AnthropicProvider("claude-opus-5-5"));
+    await s.send("one");
+    await s.send("two");
+    expect(Models.prototype.retrieve).toHaveBeenCalledTimes(1);
+  });
+
   // About 9 MB as base64 each, so five are 45 MB: the oldest two go to bring the request under Anthropic's 32 MB.
   it("leaves out the oldest pictures of a request over Anthropic's 32 MB, with a note for each and one line", async () => {
     const nine: Picture = { mediaType: "image/png", data: await noise(1500, 1500) };
