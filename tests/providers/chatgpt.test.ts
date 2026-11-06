@@ -138,9 +138,11 @@ describe("fromStream", () => {
 
   it("stops on the usage limit, even part way through a stream", async () => {
     const failed = { type: "response.failed", response: { error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit" } } } as unknown as ResponseStreamEvent;
-    await expect(fromStream(events(done(text), failed), tools)).rejects.toThrow(new Error(USAGE_LIMIT));
+    const limit = new ProviderError(USAGE_LIMIT, undefined, "subscription_sharing_usage_limit_exceeded");
+    await expect(fromStream(events(done(text), failed), tools)).rejects.toThrow(limit);
     const error = { type: "error", code: "subscription_sharing_usage_unavailable", message: "busy", param: null } as unknown as ResponseStreamEvent;
-    await expect(fromStream(events(error), tools)).rejects.toThrow(new Error("ChatGPT plan use is unavailable right now (subscription_sharing_usage_unavailable). busy. Your sign-in is kept; try again later."));
+    const busy = "ChatGPT plan use is unavailable right now (subscription_sharing_usage_unavailable). busy. Your sign-in is kept; try again later.";
+    await expect(fromStream(events(error), tools)).rejects.toThrow(new ProviderError(busy, undefined, "subscription_sharing_usage_unavailable"));
   });
 
   it("says what each of the plan's errors means, in OpenAI's words, with the request ID", async () => {
@@ -156,7 +158,12 @@ describe("fromStream", () => {
       [error("subscription_sharing_unsupported_capability", "Not on this route", "tools"), "OpenAI could not complete the request (subscription_sharing_unsupported_capability, about tools). Not on this route."],
       [{ type: "response.failed", response: { error: { code: "server_error", message: "" } } } as unknown as ResponseStreamEvent, "OpenAI could not complete the request (server_error). The reply failed."],
     ];
-    for (const [event, message] of cases) await expect(fromStream(events(event), tools, "req_1")).rejects.toThrow(new Error(`${message} OpenAI's request ID: req_1.`));
+    for (const [event, message] of cases) {
+      // planError keeps OpenAI's code (release 8a plan, choice 20).
+      const code = event.type === "error" ? event.code : event.type === "response.failed" ? event.response.error?.code : undefined;
+      const thrown = new ProviderError(`${message} OpenAI's request ID: req_1.`, undefined, code ?? undefined);
+      await expect(fromStream(events(event), tools, "req_1")).rejects.toThrow(thrown);
+    }
   });
 
   it("marks a reply cut short, by the length limit or OpenAI's content filter, and a refusal", async () => {
@@ -266,7 +273,7 @@ describe("ChatGPTProvider", () => {
   it("stops on the usage limit at once, with no retry", async () => {
     const api = await fakeApi((_, res) => json(res, 429, { error: { code: "subscription_sharing_usage_limit_exceeded", message: "limit", type: "x", param: null } }));
     // A full stop goes after the address, before the request ID.
-    const limit = new ProviderError(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`, 429);
+    const limit = new ProviderError(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`, 429, "subscription_sharing_usage_limit_exceeded");
     await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(limit);
     expect(api.seen).toHaveLength(1);
   });
@@ -287,7 +294,8 @@ describe("ChatGPTProvider", () => {
     ];
     for (const [answer, message, status] of cases) {
       const api = await fakeApi((_, res) => answer(res));
-      await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(new ProviderError(message, status));
+      // Its code too is kept, which the too-long test below checks (release 8a plan, choice 20).
+      await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toMatchObject({ message, status });
     }
   });
 
@@ -303,13 +311,31 @@ describe("ChatGPTProvider", () => {
   it("keeps the request ID of a reply that fails part way through", async () => {
     const failed = { type: "response.failed", response: { error: { code: "server_error", message: "Something broke" } } };
     const api = await fakeApi((_, res) => sse(res, [done(text), failed]));
-    const broke = new ProviderError("OpenAI could not complete the request (server_error). Something broke. OpenAI's request ID: req_9.");
+    const broke = new ProviderError(
+      "OpenAI could not complete the request (server_error). Something broke. OpenAI's request ID: req_9.",
+      undefined,
+      "server_error",
+    );
     await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(broke);
     // A named `event: error`, which the SDK throws itself.
     const limit = { type: "error", code: "subscription_sharing_usage_limit_exceeded", message: "limit", param: null };
     const limited = await fakeApi((_, res) => sse(res, [done(text), limit]));
-    const limitError = new ProviderError(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`);
+    const limitError = new ProviderError(`${USAGE_LIMIT}. OpenAI's request ID: req_9.`, undefined, "subscription_sharing_usage_limit_exceeded");
     await expect(new ChatGPTProvider("gpt-6.1-sol", auth, limited.base).complete(request)).rejects.toThrow(limitError);
+  });
+
+  // Release 8a plan, choice 20: Codex's code for a request over the window, whether it comes as an HTTP refusal or in a
+  // reply that failed. Its message here is only a stand-in: no live test has recorded one.
+  it("knows a request too long for the window by its code, from the error complete() throws, and no other code", async () => {
+    const tooLong = async (answer: (res: http.ServerResponse) => void) => {
+      const api = await fakeApi((_, res) => answer(res));
+      const p = new ChatGPTProvider("gpt-6.1-sol", auth, api.base);
+      return p.tooLong(await p.complete(request).catch((e: unknown) => e));
+    };
+    const error = (code: string) => ({ code, message: "Over the window.", type: "x", param: null });
+    expect(await tooLong((res) => json(res, 400, { error: error("context_length_exceeded") }))).toBe(true);
+    expect(await tooLong((res) => sse(res, [{ type: "response.failed", response: { error: error("context_length_exceeded") } }]))).toBe(true);
+    expect(await tooLong((res) => json(res, 400, { error: error("too_long") }))).toBe(false);
   });
 
   it("says a connection that drops part way through a reply dropped", async () => {
@@ -334,13 +360,14 @@ describe("ChatGPTProvider", () => {
     await expect(new ChatGPTProvider("gpt-6.1-sol", auth, `http://127.0.0.1:${port}/v1`).complete(request)).rejects.toThrow(`Could not reach http://127.0.0.1:${port}/v1 (connect ECONNREFUSED`);
 
     // A list that came back but could not be read has no status to keep.
-    const cases: [(res: http.ServerResponse) => void, string, number?][] = [
+    const cases: [(res: http.ServerResponse) => void, string, number?, string?][] = [
       [(res) => res.writeHead(200, { "content-type": "text/html" }).end("<html>wifi</html>"), "OpenAI's model list could not be read. Check your network and try again."],
       [(res) => json(res, 200, { data: [] }), "OpenAI's model list could not be read. Check your network and try again. OpenAI's request ID: req_9."],
       [
         (res) => json(res, 403, { error: { code: "subscription_sharing_user_not_eligible", message: "Not for this workspace", type: "x", param: null } }),
         "This ChatGPT account cannot use its plan here (subscription_sharing_user_not_eligible). Not for this workspace. Use openai:<model> with an API key instead. OpenAI's request ID: req_9.",
         403,
+        "subscription_sharing_user_not_eligible",
       ],
       [
         (res) => json(res, 403, { detail: "Region not supported" }),
@@ -349,9 +376,9 @@ describe("ChatGPTProvider", () => {
       ],
       [(res) => res.writeHead(500).end(), "OpenAI could not complete the request (HTTP 500).", 500],
     ];
-    for (const [list, message, status] of cases) {
+    for (const [list, message, status, code] of cases) {
       const api = await fakeApi(() => {}, list);
-      const error = status ? new ProviderError(message, status) : new Error(message);
+      const error = status ? new ProviderError(message, status, code) : new Error(message);
       await expect(new ChatGPTProvider("gpt-6.1-sol", auth, api.base).complete(request)).rejects.toThrow(error);
     }
   });

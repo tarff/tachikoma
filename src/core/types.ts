@@ -63,8 +63,9 @@ export interface Turn {
   parts: Part[];
   native?: Message["native"];
   usage: Usage;
-  // Set when the model stopped before finishing: output limit, context limit or refusal.
-  cutOff?: { kind: "max_tokens" | "refusal"; detail: string };
+  // Set when the model stopped before finishing: output limit, context limit or refusal. "window": the reply filled
+  // Anthropic's context window (release 8a plan, choice 21).
+  cutOff?: { kind: "max_tokens" | "window" | "refusal"; detail: string };
   // Set when the provider itself handed the request to another model (Anthropic's fallback).
   fallbacks?: { from: string; to: string }[];
   servedBy?: string; // "<provider>:<model>" that actually answered, when not the one asked
@@ -96,14 +97,20 @@ export interface Provider {
   complete(req: CompletionRequest): Promise<Turn>;
   contextWindow?(signal?: AbortSignal): Promise<number | null>; // the signal stops the lookup (review fixes plan, fix 5)
   setEffort?(effort: Effort | undefined): void; // Anthropic's only, as --effort is
+  // Whether `err`, as complete() threw it, says the request was too long for the model (release 8a plan, choice 20).
+  tooLong?(err: unknown): boolean;
+  // The provider's own count of the request's input tokens (release 8a plan, choice 19): Anthropic's only.
+  countTokens?(req: CompletionRequest): Promise<number>;
 }
 
 // A provider's failure with the HTTP status it came with, so the session can tell a refused request (400) apart without
 // reading the provider's words (release 6 plan, choice 10). The SDKs' own `APIError` carries `status` the same way.
+// `code` is the provider's own code for it, kept so chatgpt.ts can tell a too-long request (release 8a plan, choice 20).
 export class ProviderError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly code?: string,
   ) {
     super(message);
   }

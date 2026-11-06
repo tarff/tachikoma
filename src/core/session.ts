@@ -192,7 +192,10 @@ export class Session {
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
       if (turn.cutOff) {
-        bus.emit("error", { kind: turn.cutOff.kind, attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
+        // A reply that filled the window is reported as hitting a limit, as it was before "window" told them apart
+        // (release 8a plan, choice 21), until Task 12 shortens the history and sends it again.
+        const kind = turn.cutOff.kind === "window" ? "max_tokens" : turn.cutOff.kind;
+        bus.emit("error", { kind, attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
         // Every tool call needs a result before the next request, even ones we refuse to run.
         if (calls.length) {
           this.#push({ role: "user", parts: calls.map((c) => result(c, `${CUT_OFF}${turn.cutOff!.detail}).`, true)) });

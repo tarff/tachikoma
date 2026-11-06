@@ -79,7 +79,8 @@ function planText({ code, param, status, message }: Failure): string {
   return `OpenAI ${what} the request${about ? ` (${about})` : ""}.${why}${status === 429 ? " Try again later." : ""}`;
 }
 
-const planError = (failure: Failure) => new ProviderError(withId(planText(failure), failure.requestId), failure.status);
+// The code is kept for tooLong() (release 8a plan, choice 20).
+const planError = (failure: Failure) => new ProviderError(withId(planText(failure), failure.requestId), failure.status, failure.code ?? undefined);
 
 // A connection that drops part way through a reply ends the stream with Node's bare "terminated", a
 // TypeError from undici (the fetch under the SDK).
@@ -296,6 +297,13 @@ export class ChatGPTProvider implements Provider {
       if (err instanceof OpenAI.APIError) throw planError({ code: err.code, param: err.param, status: err.status, message: said(err.error), requestId: err.requestID });
       throw err;
     }
+  }
+
+  // Codex's code for a request over the window, from its source (release 8a plan, choice 20; no live test, by the user's
+  // choice). complete() throws OpenAI's errors, an HTTP refusal or a reply that failed, as planError's ProviderError,
+  // which keeps the code.
+  tooLong(err: unknown): boolean {
+    return err instanceof ProviderError && err.code === "context_length_exceeded";
   }
 
   // From the model list the last request fetched, so the status line never reads or renews the login:

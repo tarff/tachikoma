@@ -111,7 +111,7 @@ export function fromAnthropic(msg: BetaMessage): Turn {
     if (declined.length) turn.declined = declined;
   }
   if (msg.stop_reason === "max_tokens") turn.cutOff = { kind: "max_tokens", detail: "The response hit the output limit" };
-  if (msg.stop_reason === "model_context_window_exceeded") turn.cutOff = { kind: "max_tokens", detail: "The conversation filled the context window" };
+  if (msg.stop_reason === "model_context_window_exceeded") turn.cutOff = { kind: "window", detail: "The conversation filled the context window" };
   if (msg.stop_reason === "refusal") turn.cutOff = { kind: "refusal", detail: `The model declined (category: ${msg.stop_details?.category ?? "none given"})` };
   return turn;
 }
@@ -156,7 +156,31 @@ export class AnthropicProvider implements Provider {
     }
   }
 
+  // Anthropic's answer to a request over the window (release 8a plan, choice 20), as Task 1 recorded it: "status 400, type
+  // invalid_request_error, code none (BadRequestError): prompt is too long: 1000050 tokens > 1000000 maximum". complete()
+  // throws the SDK's error as it came; its own message is the status and the body's JSON, so the body's message is read.
+  tooLong(err: unknown): boolean {
+    if (!(err instanceof Anthropic.APIError) || err.status !== 400 || err.type !== "invalid_request_error") return false;
+    const message: unknown = (err.error as { error?: { message?: unknown } } | undefined)?.error?.message;
+    return typeof message === "string" && message.startsWith("prompt is too long");
+  }
+
+  // Anthropic's count of the request complete() would send (release 8a plan, choice 19), without `max_tokens` and
+  // streaming, which are the reply's, and without `betas` and `fallbacks`: Task 1 found the count refuses the fallback
+  // setting ("fallbacks: Extra inputs are not permitted"). The count is Anthropic's estimate; Task 1 measured it 49
+  // tokens short of the real request at 1M.
+  async countTokens(req: CompletionRequest): Promise<number> {
+    const { max_tokens: _, betas: __, fallbacks: ___, ...count } = await this.#request(req);
+    return (await this.#client.beta.messages.countTokens(count, { signal: req.signal })).input_tokens;
+  }
+
   async #complete(req: CompletionRequest): Promise<Turn> {
+    const stream = this.#client.beta.messages.stream(await this.#request(req), { signal: req.signal });
+    return fromAnthropic(await stream.finalMessage());
+  }
+
+  // The request as complete() sends it, its pictures fitted to Anthropic's limits; countTokens() counts the same one.
+  async #request(req: CompletionRequest) {
     const { system, messages, tools, signal } = req;
     const effort = this.#effort; // read once, so the request measured is the request sent
     const list = tools.map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema as BetaTool["input_schema"] }));
@@ -174,8 +198,7 @@ export class AnthropicProvider implements Provider {
       ...(FALLBACK_MODELS.has(this.model) ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
     });
     const limits = { ...LIMITS.anthropic, maxCount: await this.#maxPictures(messages, signal) };
-    const stream = this.#client.beta.messages.stream(await fitted(req, limits, params), { signal });
-    return fromAnthropic(await stream.finalMessage());
+    return fitted(req, limits, params);
   }
 
   // Anthropic's vision page, "Request limits": 100 pictures a request "for models with a 200k-token context window",

@@ -259,6 +259,15 @@ describe("Session", () => {
     expect(errors).toEqual([expect.objectContaining({ kind: "max_tokens", message: "limit" })]);
   });
 
+  // Release 8a plan, choice 21: "window" changes nothing yet; Task 12 shortens the history and sends it again.
+  it("answers a reply cut off at the window as one that hit a limit", async () => {
+    const cut = { ...callTool("c1", "echo", { text: "x" }), cutOff: { kind: "window" as const, detail: "The conversation filled the context window" } };
+    const { session, errors } = await setup([cut]);
+    await session.send("go");
+    expect(session.messages.at(-1)!.parts[0]).toMatchObject({ type: "tool_result", callId: "c1", isError: true });
+    expect(errors).toEqual([expect.objectContaining({ kind: "max_tokens", message: "The conversation filled the context window" })]);
+  });
+
   it("cuts very long tool output", async () => {
     const { session } = await setup([callTool("c1", "echo", { text: "x".repeat(MAX_TOOL_OUTPUT + 5) }), reply("ok")]);
     await session.send("go");

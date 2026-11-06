@@ -199,6 +199,7 @@ describe("OpenAIProvider", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it("rejects names every object inherits", () => {
@@ -217,6 +218,26 @@ describe("OpenAIProvider", () => {
     const errors = collectErrors(bus);
     await new Session({ lead: new OpenAIProvider("ollama", "m"), tools: [], system: "s", ctx: await tempContext(), bus }).send("look");
     expect(errors).toEqual([expect.objectContaining({ kind: "provider", status: 400, message: expect.stringContaining("Invalid image") })]);
+  });
+
+  // Release 8a plan, choice 20, with the error Task 1 recorded from OpenRouter: "refused: status 400, type none, code 400
+  // (BadRequestError): This endpoint's maximum context length is 1050000 tokens. ...", its message cut at 200 characters.
+  it("knows OpenRouter's request too long for the window from the error complete() throws, and no other kind's or 400", async () => {
+    const recorded =
+      "This endpoint's maximum context length is 1050000 tokens. However, you requested about 1050018 tokens (1050018 of text input). " +
+      "Please reduce the length of either one, or use the context-compression pl";
+    // The SDK takes `fetch` when the provider is made, so each is made after its stand-in.
+    const tooLong = async (kind: string, message: string) => {
+      const body = JSON.stringify({ error: { message, code: 400 } });
+      vi.stubGlobal("fetch", async () => new Response(body, { status: 400, headers: { "content-type": "application/json" } }));
+      vi.stubEnv("OPENROUTER_API_KEY", "test-key");
+      vi.stubEnv("OPENAI_API_KEY", "test-key");
+      const p = new OpenAIProvider(kind, "m");
+      return p.tooLong(await p.complete({ system: "s", messages: [], tools: [] }).catch((e: unknown) => e));
+    };
+    expect(await tooLong("openrouter", recorded)).toBe(true);
+    expect(await tooLong("openrouter", "Invalid image")).toBe(false);
+    expect(await tooLong("openai", recorded)).toBe(false);
   });
 
   it("reports a timeout as a timeout", async () => {
