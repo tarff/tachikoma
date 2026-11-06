@@ -533,9 +533,13 @@ The files read or edited in this session, as they are now:
 --- <path> ---
 <content>
 --- <path> (over 5,000 tokens; read it again if needed) ---
+--- <path> (size not known yet; read it again if needed) ---
+--- <path> (could not be read) ---
 ```
 
-Each part appears only when it has something in it.
+Each part appears only when it has something in it. The last two file lines are for a file whose
+size cannot be estimated, as the lead has no ratio yet, and a file that cannot be read (Task 11,
+user, 2026-11-06, option chosen: "Two short notes").
 
 ---
 
