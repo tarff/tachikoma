@@ -234,9 +234,11 @@ export class Session {
 
     // Where the turn is, for a shortening: at its start until its first round of calls, during it after (release 8a
     // design, "How shortening works", step 4). `shortened`: this request was shortened for once, so a "too long" answer to
-    // it now ends the turn (plan, "Numbers in this plan": 1 request sent again).
+    // it now ends the turn (plan, "Numbers in this plan": 1 request sent again). `autoFailed`: a shortening for the
+    // /autocompact size failed in this turn, so the size waits for the next one (below).
     let when: When = "start";
     let shortened = false;
+    let autoFailed = false;
     for (;;) {
       const lead = this.#lead;
       // Not waited for when the lead has no window to look up. A test-timing constraint: app.test.tsx's "hands the lead a
@@ -246,7 +248,7 @@ export class Session {
       if (window === undefined) return; // stopped
       // The check before the request, against the window and the /autocompact size; with neither known there is none, and
       // the "too long" answer is the safety net (design, "When to shorten").
-      const limit = Math.min(window ?? Infinity, this.autoCompact ?? Infinity);
+      const limit = Math.min(window ?? Infinity, (autoFailed ? null : this.autoCompact) ?? Infinity);
       // A stop meanwhile ends the turn as any stop does, saying nothing (#execute).
       if (!shortened && limit < Infinity) {
         const over = await this.#over(lead, limit, signal);
@@ -257,11 +259,15 @@ export class Session {
           if (r === "done") shortened = true;
           else if (r !== "unsaved") {
             // Past the /autocompact size alone, a request that still fits the window, or whose fit cannot be told as the
-            // window is not known, is sent as it is after the line, and the next request tries again (plan, Task 13; user,
-            // 2026-11-06: "Show the line, send anyway"). Over the window, the turn ends with the line.
-            this.#say(lead, cannot(r.problem));
+            // window is not known, is sent as it is after the line, its event marked so (plan, Task 13; user, 2026-11-06:
+            // "Show the line, send anyway"), and the /autocompact size is not tried again until the next turn, so a summary
+            // that keeps failing costs one request and one line a prompt (user, 2026-11-06: "Retry next turn"); the
+            // window's check goes on. Over the window, the turn ends with the line.
             const still = limit === window || (window !== null && (await this.#over(lead, window, signal)));
-            if (still !== false) return; // over the window, or stopped
+            if (still === undefined) return; // stopped
+            this.#say(lead, cannot(r.problem), !still);
+            if (still) return;
+            autoFailed = true;
           } else if (limit === window) {
             // Not saved, it cannot be shortened: over the window it ends with the line. Past the /autocompact size alone,
             // or with its size not known now, it is sent as it is, the model's own answer deciding.
@@ -505,8 +511,10 @@ export class Session {
   }
 
   // A shortening's red line, which ends the turn, except past the /autocompact size alone (#turn) and for /compact.
-  #say(lead: Provider, message: string): void {
-    this.opts.bus.emit("error", { kind: "shortening", attempted: `request to ${lead.id}`, message, lead: this.#lead.id });
+  // `sent`: the request was sent as it is after it, so -p's run does not fail for it (cli.tsx).
+  #say(lead: Provider, message: string, sent = false): void {
+    const error = { kind: "shortening" as const, attempted: `request to ${lead.id}`, message, lead: this.#lead.id };
+    this.opts.bus.emit("error", sent ? { ...error, sent: true } : error);
   }
 
   async #runTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {

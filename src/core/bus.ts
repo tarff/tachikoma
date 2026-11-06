@@ -11,6 +11,8 @@ export interface ErrorEvent {
   message: string;
   lead: string;
   status?: number; // a provider's HTTP status, when its failure came with one (release 6 plan, choice 10)
+  // A shortening's line after which the request was sent as it is (release 8a plan, Task 13: "Show the line, send anyway")
+  sent?: true;
 }
 
 // How a tool call ended. "declined": the user said no, or the mode refused it. "cancelled": the turn

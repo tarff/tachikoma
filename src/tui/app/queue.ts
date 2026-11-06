@@ -244,6 +244,9 @@ export const queue = (ui: UI, fns: Fns) => {
   // typed waits in the queue, and Ctrl-C stops it, quietly, the lead staying as it was, as a stopped turn says nothing.
   const leadTo = async (spec: string) => {
     const provider = fns.make(spec);
+    // With nothing to shorten, or no window to look up, no check can be needed: the switch is made at once, so a prompt
+    // typed straight after /lead waits for it in the queue as one of its own (Task 13's spec review).
+    if (!ui.session.messages.length || !provider.contextWindow) return ui.session.setLead(provider);
     const { signal } = (ui.abort.current = new AbortController());
     ui.doing.current = { label: "Working", at: Date.now(), from: { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } };
     ui.setNow(ui.doing.current.at);

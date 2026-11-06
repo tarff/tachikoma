@@ -603,6 +603,42 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     "",
   ].join("\n");
 
+  // Release 8a plan, Task 13 (user, 2026-11-06: "Show the line, send anyway"): a summary for the /autocompact size that
+  // fails, the request then sent as it is and answered, fails no -p run. The first reply reports a million prompt tokens,
+  // so the next request is over the settings file's size; the summary request is refused; the window is not known.
+  it("with -p, says a failed shortening for the /autocompact size, sends the request as it is, and still succeeds", async () => {
+    const { proj, data } = place();
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const sent: string[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const { messages } = JSON.parse(body) as Sent;
+        const json = (code: number, o: unknown) => res.writeHead(code, { "content-type": "application/json" }).end(JSON.stringify(o));
+        const summary = JSON.stringify(messages.at(-1)).includes("Summarise this conversation");
+        const first = !messages.some((m) => m.role === "tool");
+        sent.push(summary ? "summary" : first ? "first" : "after the call");
+        if (summary) return json(400, { error: { message: "the stand-in refused", type: "invalid_request_error" } });
+        const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "notes.txt" }) } };
+        const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+        const usage = { prompt_tokens: first ? 1_000_000 : 1, completion_tokens: 1, total_tokens: 2 };
+        const choice = { index: 0, finish_reason: first ? "tool_calls" : "stop", message };
+        json(200, { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage });
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const r = await tachiLater("-p", "read the notes", { ...where(proj, data, url), ...homeWith('{"autoCompactWindow": 1000}') });
+    expect(sent).toEqual(["first", "summary", "after the call"]);
+    expect(r).toMatchObject({ code: 0, stdout: "done\n", stderr: "The conversation could not be shortened (400 the stand-in refused); it is unchanged.\n" });
+  });
+
   it("saves a -p run, named with -n, and -p -c carries it on with both prompts' history", { timeout: 30_000 }, async () => {
     const { url, sent } = await standIn();
     const { proj, data, dir } = place();

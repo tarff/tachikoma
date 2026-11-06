@@ -610,8 +610,9 @@ if (parsed.print !== undefined) {
   let failed = false;
   bus.on("error", (e) => {
     // A judge that cannot be reached refuses one action, as a no does, and fails no run (release 7 plan, choice 65); nor
-    // does a transcript that cannot be saved (release 8a plan, Task 5).
-    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge" && e.kind !== "saving") failed = true;
+    // does a transcript that cannot be saved (release 8a plan, Task 5), nor a shortening's line after which the request was
+    // sent as it is (Task 13): a later line that ends the turn has no mark, and still fails it.
+    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge" && e.kind !== "saving" && !(e.kind === "shortening" && e.sent)) failed = true;
   });
   if (parsed.json) {
     for (const event of ["message", "usage", "error", "lead"] as const) {

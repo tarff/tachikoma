@@ -1234,22 +1234,24 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
     expect(errors.map((e) => e.kind)).toEqual(["saving"]);
   });
 
-  // Task 13 (user, 2026-11-06: "Show the line, send anyway").
-  it("sends a request past the /autocompact size but within the window as it is when its summary fails, trying again next", async () => {
+  // Task 13 (user, 2026-11-06: "Show the line, send anyway", then "Retry next turn"): the line's event is marked as sent,
+  // so -p's run does not fail for it (cli.tsx); the rest of the turn sends without another summary, and the next turn
+  // tries once again.
+  it("sends a request past the /autocompact size but within the window as it is when its summary fails, trying again next turn", async () => {
     const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
-    const lead = new Lead("fake:a", [measured("noted"), refusal, measured("sent as it is"), summaryOf("S."), reply("after")], 1_000_000);
+    const call = measured("", { parts: callTool("c1", "echo", { text: "one" }).parts });
+    const lead = new Lead("fake:a", [measured("noted"), refusal, call, measured("rest of the turn"), summaryOf("S."), reply("after")], 1_000_000);
     const { session, errors, summaries } = await setup(lead);
     session.autoCompact = 700;
     await session.send(big);
     await session.send("now this");
-    expect(isSummary(lead.seen[1]!)).toBe(true);
+    expect(lead.seen.map(isSummary)).toEqual([false, true, false, false]);
     expect(texts(lead.seen[2]!.messages.at(-1)!)).toEqual(["now this"]);
-    expect(texts(session.messages.at(-1)!)).toEqual(["sent as it is"]);
-    expect(errors).toEqual([
-      { kind: "shortening", attempted: "request to fake:a", message: "The conversation could not be shortened (declined); it is unchanged.", lead: "fake:a" },
-    ]);
+    expect(texts(session.messages.at(-1)!)).toEqual(["rest of the turn"]);
+    const line = "The conversation could not be shortened (declined); it is unchanged.";
+    expect(errors).toEqual([{ kind: "shortening", attempted: "request to fake:a", message: line, lead: "fake:a", sent: true }]);
     await session.send("and this");
-    expect(isSummary(lead.seen[3]!)).toBe(true);
+    expect(lead.seen.map(isSummary)).toEqual([false, true, false, false, true, false]);
     expect([summaries, texts(session.messages.at(-1)!)]).toEqual([["S."], ["after"]]);
   });
 
@@ -1261,7 +1263,10 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
     await session.send(big);
     await session.send("now this");
     expect(lead.seen).toHaveLength(2);
-    expect(errors.map((e) => e.message)).toEqual(["The conversation could not be shortened (declined); it is unchanged."]);
+    // Not marked as sent: the turn ends with it, so -p's run fails (cli.tsx).
+    expect(errors).toEqual([
+      { kind: "shortening", attempted: "request to fake:a", message: "The conversation could not be shortened (declined); it is unchanged.", lead: "fake:a" },
+    ]);
   });
 
   // Task 13: /compact.

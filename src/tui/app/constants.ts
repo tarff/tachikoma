@@ -73,8 +73,8 @@ export const EXPORT_WORDS = {
   note: "Write the conversation to a file as text; alone, copy it",
   unwritten: (file: string, why: string) => `${file} could not be written (${why}).`,
 };
-// Release 8a plan, Task 13's words: the `/` menu's notes (for the user's approval), and the approved lines of /compact
-// and /autocompact ("Lines this plan adds"). `summary`: the heading over Ctrl+O's summary (for approval).
+// Release 8a plan, Task 13's words, approved by the user on 2026-11-06: the `/` menu's notes, the lines of /compact and
+// /autocompact ("Lines this plan adds"), and `summary`, the heading over Ctrl+O's summary.
 export const SHORTEN_WORDS = {
   compact: "Shorten the conversation into a summary now; words after it say what to focus on",
   autocompact: "Shorten once the conversation passes a number of tokens, such as 200k; off, only when it would not fit",
