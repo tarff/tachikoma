@@ -623,7 +623,7 @@ export function newSaved(dir: string, start: Omit<Extract<Line, { t: "start" }>,
   return { conversation, lines: [], lost: [], reported: () => {}, release: () => lock?.release() };
 }
 
-// The reason a copy is not made when its new id's lock is held. Task 6's draft, awaiting the user's approval.
+// The reason a copy is not made when its new id's lock is held. Approved by the user, 2026-11-06.
 const LOCK_HELD = "its lock could not be taken";
 
 // A saved session opened and read, before anything of the launch starts, so one that cannot be read starts nothing
