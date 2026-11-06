@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
 import { projectFile } from "../../src/core/datadir.js";
-import { copySession, findSession, listSessions, openSession, sessionsDir, sweep } from "../../src/core/sessions.js";
+import { copySession, findSession, listSessions, openSession, sessionPaths, sessionsDir, sweep } from "../../src/core/sessions.js";
 import { type Line, readTranscript, Transcript } from "../../src/core/transcript.js";
 import type { Message } from "../../src/core/types.js";
 import { removeTree } from "../helpers.js";
@@ -204,6 +204,26 @@ describe("sessions", { timeout: 15_000 }, () => {
       expect(existsSync(path.join(shared, linked))).toBe(false);
       expect(readdirSync(outside)).toEqual(["secret.txt"]);
     });
+
+    // Release 8a plan, Task 6: a copy that fails partway leaves nothing behind, its folder removed before its transcript,
+    // as the sweep removes them. The failure is a file standing where the copy's folder goes.
+    it("removes a copy that failed partway, and copies nothing from a source with no whole first line", () => {
+      session(shared, "partway", { prompt: "hi" });
+      mkdirSync(path.join(shared, "partway", "pictures"), { recursive: true });
+      writeFileSync(path.join(shared, "taken"), "in the copy's folder's place");
+      expect(() => copySession(shared, "partway", "taken")).toThrow(/EEXIST/);
+      expect(existsSync(path.join(shared, "taken.jsonl"))).toBe(false);
+      expect(existsSync(path.join(shared, "taken"))).toBe(false);
+      for (const [id, text] of [["torn", '{"t":"start","v":1,"id":"to'], ["damaged", "not a line\n"]]) {
+        writeFileSync(path.join(shared, `${id}.jsonl`), text!);
+        expect(() => copySession(shared, id!, `${id}-copy`)).toThrow(/^its first line is missing or damaged$/);
+        expect(existsSync(path.join(shared, `${id}-copy.jsonl`))).toBe(false);
+      }
+    });
+  });
+
+  it("names a session's transcript and pictures folder inside the sessions folder", () => {
+    expect(sessionPaths(shared, "s1")).toEqual({ file: path.join(shared, "s1.jsonl"), pictures: path.join(shared, "s1", "pictures") });
   });
 
   describe("the sweep", () => {

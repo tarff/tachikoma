@@ -1,10 +1,16 @@
 import { spawn } from "node:child_process";
-import { constants } from "node:os";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { constants, tmpdir } from "node:os";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import path from "node:path";
+import { privateDir } from "../src/auth/private.js";
+import { Bus } from "../src/core/bus.js";
 import { PermissionGate } from "../src/core/permissions.js";
+import { openSession, sessionsDir } from "../src/core/sessions.js";
+import type { Message, ToolSpec } from "../src/core/types.js";
 import {
   approvalQuestion,
+  chooseSession,
   exitOn,
   exitSignals,
   fullPossible,
@@ -16,14 +22,19 @@ import {
   instructionsLine,
   jsonLine,
   leadOf,
+  leadSession,
+  newSaved,
+  openSaved,
   prose,
   protectionOf,
   resolve,
+  resumeArgs,
   screenMode,
   scrollSpeed,
   statusSegments,
 } from "../src/clilib.js";
 import { SEGMENTS } from "../src/tui/StatusLine.js";
+import { FakeProvider, removeTree, tempContext } from "./helpers.js";
 
 describe("the instruction files on screen", () => {
   const home = path.resolve("/home/me");
@@ -417,5 +428,223 @@ describe("givenBy", () => {
     expect(givenBy({}, env)).toEqual({ lead: "TACHI_LEAD", worker: "TACHI_WORKER", screen: "TACHI_CLASSIC", scrollSpeed: "TACHI_SCROLL_SPEED" });
     expect(givenBy({}, { TACHI_LEAD: "", TACHI_WORKER: "", TACHI_CLASSIC: "0", TACHI_SCROLL_SPEED: "" })).toEqual({});
     expect(givenBy({}, {})).toEqual({});
+  });
+});
+
+// Release 8a plan, Task 6 and choice 11: parseArgs cannot take an optional value, so a -r or --resume with none, last or
+// before another option, is given an empty one, which means "show the list".
+describe("resumeArgs", () => {
+  it("gives -r and --resume an empty value when none follows, and leaves a given one alone", () => {
+    expect(resumeArgs(["-r"])).toEqual(["-r", ""]);
+    expect(resumeArgs(["--resume", "-p", "hi"])).toEqual(["--resume", "", "-p", "hi"]);
+    expect(resumeArgs(["-r", "abc", "-c"])).toEqual(["-r", "abc", "-c"]);
+    expect(resumeArgs(["--resume=abc", "-r", "my name"])).toEqual(["--resume=abc", "-r", "my name"]);
+  });
+});
+
+// Release 8a plan, Task 6 (choices 4, 8, 9 and 11-13). One sessions folder for the cases that open or start a session,
+// made private once, as privateDir starts PowerShell on Windows, each case's sessions with ids of their own; plain
+// folders, never made private, for choosing, which only reads.
+describe("saved sessions at launch", { timeout: 15_000 }, () => {
+  let top: string;
+  let dir: string;
+  let plain = 0;
+  beforeAll(() => {
+    top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-"));
+    dir = sessionsDir(top, path.join(top, "data", "tachikoma"));
+    privateDir(dir);
+  });
+  afterAll(() => removeTree(top));
+  const folder = () => {
+    const d = path.join(top, "plain", `p${++plain}`);
+    mkdirSync(d, { recursive: true });
+    return d;
+  };
+  const at = "2026-11-06T00:00:00.000Z";
+  const tools: ToolSpec[] = [{ name: "echo", description: "Says it back.", inputSchema: { type: "object" } }];
+  const start = (id: string, o: { print?: boolean; tools?: ToolSpec[] } = {}) => ({
+    t: "start",
+    at,
+    v: 1,
+    id,
+    project: top,
+    lead: "fake:a",
+    version: "0.8.0",
+    print: o.print ?? false,
+    system: "Saved prompt.",
+    tools: o.tools ?? tools,
+  });
+  const prompt = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+  const said = (text: string, native?: Message["native"]): Message => ({ role: "assistant", parts: [{ type: "text", text }], ...(native ? { native } : {}) });
+  const message = (m: Message) => ({ t: "message", at, message: m });
+  // A session's file as a Transcript writes it, its lines as given, last changed `ago` days before now.
+  const saved = (d: string, id: string, lines: object[], ago = 0) => {
+    const file = path.join(d, `${id}.jsonl`);
+    writeFileSync(file, lines.map((l) => `${JSON.stringify(l)}\n`).join(""));
+    const when = new Date(Date.now() - ago * 24 * 60 * 60 * 1000);
+    utimesSync(file, when, when);
+    return file;
+  };
+  const talk = (id: string, words: string, o: { print?: boolean; name?: string } = {}) => [
+    start(id, o),
+    message(prompt(words)),
+    message(said("Done.")),
+    ...(o.name ? [{ t: "name", at, name: o.name }] : []),
+  ];
+  const read = (file: string) => readFileSync(file, "utf8");
+
+  describe("chooseSession", () => {
+    const NONE = { fail: "No saved session to continue in this folder." };
+    const NEEDS = { fail: "tachi --resume needs a terminal to list sessions; give it a session's id or name." };
+
+    it("continues the newest session, and with -p the newest -p session", () => {
+      const d = folder();
+      expect(chooseSession(d, { continue: true, print: false, terminal: true })).toEqual(NONE);
+      saved(d, "older", talk("older", "one"), 3);
+      saved(d, "newer", talk("newer", "two"), 2);
+      saved(d, "printed", talk("printed", "three", { print: true }), 1);
+      expect(chooseSession(d, { continue: true, print: false, terminal: true })).toEqual({ id: "newer" });
+      expect(chooseSession(d, { continue: true, print: true, terminal: false })).toEqual({ id: "printed" });
+      const other = folder();
+      saved(other, "only", talk("only", "one"));
+      expect(chooseSession(other, { continue: true, print: true, terminal: false })).toEqual(NONE);
+    });
+
+    it("opens a session by id or name, lists the sessions a name belongs to, and names what it cannot find", () => {
+      const d = folder();
+      saved(d, "s1", talk("s1", "one", { name: "fix" }), 3);
+      saved(d, "s2", talk("s2", "two", { name: "twin" }), 2);
+      saved(d, "s3", talk("s3", "three", { name: "twin" }), 1);
+      saved(d, "p1", talk("p1", "four", { print: true }));
+      expect(chooseSession(d, { resume: "s2", print: false, terminal: true })).toEqual({ id: "s2" });
+      expect(chooseSession(d, { resume: "fix", print: true, terminal: false })).toEqual({ id: "s1" });
+      expect(chooseSession(d, { resume: "p1", print: false, terminal: true })).toEqual({ id: "p1" }); // an id finds a -p run too
+      expect(chooseSession(d, { resume: "twin", print: false, terminal: true })).toMatchObject({ list: [{ id: "s3" }, { id: "s2" }], name: "twin" });
+      const missing = "No session named or numbered nope in this folder; tachi --resume lists them.";
+      expect(chooseSession(d, { resume: "nope", print: false, terminal: true })).toEqual({ fail: missing });
+    });
+
+    it("lists the sessions but -p runs for -r alone, which needs a terminal, as a name more than one session has does", () => {
+      const d = folder();
+      expect(chooseSession(d, { resume: "", print: false, terminal: false })).toEqual(NEEDS);
+      expect(chooseSession(d, { resume: "", print: false, terminal: true })).toEqual({ fail: "No saved sessions in this folder." });
+      saved(d, "s1", talk("s1", "one", { name: "twin" }), 2);
+      saved(d, "s2", talk("s2", "two", { name: "twin" }), 1);
+      saved(d, "p1", talk("p1", "three", { print: true }));
+      const list = chooseSession(d, { resume: "", print: false, terminal: true });
+      expect(list).toMatchObject({ list: [{ id: "s2" }, { id: "s1" }] });
+      expect((list as { list: unknown[] }).list).toHaveLength(2);
+      expect(chooseSession(d, { resume: "", print: true, terminal: false })).toEqual(NEEDS);
+      expect(chooseSession(d, { resume: "twin", print: true, terminal: false })).toEqual(NEEDS);
+    });
+  });
+
+  describe("openSaved", () => {
+    const native = { provider: "anthropic", content: [{ type: "thinking", thinking: "hm", signature: "x" }] };
+    const open = (id: string, fork = false) => {
+      const o = openSaved(dir, id, { fork, tools });
+      if ("problem" in o) throw new Error(o.problem);
+      return o;
+    };
+
+    it("opens a session under its lock, mends a torn last line, and says what it skipped", () => {
+      const file = saved(dir, "torn", [...talk("torn", "first words"), { t: "message", at, message: "not a message" }]);
+      appendFileSync(file, '{"t":"message","at":"2026-11-06T00:00:00.000Z","mess');
+      const o = open("torn");
+      expect(read(path.join(dir, "torn.lock"))).toBe(String(process.pid));
+      expect(read(file).endsWith('"mess\n')).toBe(true);
+      expect(o.conversation).toMatchObject({ id: "torn", system: "Saved prompt.", messages: [prompt("first words"), said("Done.")], prompts: ["first words"] });
+      expect(o.conversation).toMatchObject({ nextPicture: 1, nextTask: 1 });
+      expect(o.lines).toEqual(["Resumed: first words.", "2 damaged lines of this session were skipped."]);
+      expect(o.lost).toEqual([]);
+      o.conversation.transcript!.write({ t: "message", message: prompt("next") });
+      expect(read(file).split("\n").at(-2)).toContain('"next"');
+    });
+
+    it("opens a copy of a session open in another window, saying so, and of any session with --fork-session, the originals unchanged", () => {
+      saved(dir, "held", talk("held", "one", { name: "held one" }));
+      saved(dir, "forked", talk("forked", "two"));
+      const before = [read(path.join(dir, "held.jsonl")), read(path.join(dir, "forked.jsonl"))];
+      const lock = openSession(dir, "held");
+      onTestFinished(() => lock?.release());
+      const copy = open("held");
+      const fork = open("forked", true);
+      expect(copy.conversation.id).not.toBe("held");
+      expect(fork.conversation.id).not.toBe("forked");
+      expect(copy.lines).toEqual(["Opened a copy: that session is open in another window.", "Resumed: held one."]);
+      expect(fork.lines).toEqual(["Resumed: two."]);
+      for (const o of [copy, fork]) {
+        expect(read(path.join(dir, `${o.conversation.id}.lock`))).toBe(String(process.pid));
+        expect(o.conversation.messages).toHaveLength(2);
+        o.conversation.transcript!.write({ t: "message", message: prompt("more") });
+      }
+      expect([read(path.join(dir, "held.jsonl")), read(path.join(dir, "forked.jsonl"))]).toEqual(before);
+    });
+
+    it("sends the replies without their thinking when the tools changed, saying so only when a reply had some", () => {
+      saved(dir, "thought", [start("thought", { tools: [] }), message(prompt("hi")), message(said("Done.", native))]);
+      saved(dir, "plain", [start("plain", { tools: [] }), message(prompt("hi")), message(said("Done."))]);
+      saved(dir, "same", [start("same"), message(prompt("hi")), message(said("Done.", native))]);
+      const thought = open("thought");
+      expect(thought.conversation.messages).toEqual([prompt("hi"), said("Done.")]);
+      const changed = "The tools have changed since this session was saved, so its earlier replies are sent without their thinking.";
+      expect(thought.lines).toEqual(["Resumed: hi.", changed]);
+      expect(open("plain").lines).toEqual(["Resumed: hi."]);
+      expect(open("same").conversation.messages).toEqual([prompt("hi"), said("Done.", native)]);
+    });
+
+    it("tells the model of each subagent that had not finished, and gives a crash's unanswered call its result", () => {
+      const call: Message = { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "delegate", input: { task: "look" } }] };
+      const subagent = { t: "subagent", at, id: "t1", description: "look around", file: "t1.jsonl" };
+      saved(dir, "crashed", [start("crashed"), message(prompt("go")), message(call), subagent]);
+      const o = open("crashed");
+      expect(o.lost).toEqual(["Subagent t1 (look around) had not finished when the session ended; its answer was lost."]);
+      const result = { type: "tool_result", callId: "c1", output: expect.stringMatching(/^Outcome unknown: /), isError: true };
+      expect(o.conversation.messages.at(-1)!.parts[0]).toMatchObject(result);
+      expect(o.conversation.nextTask).toBe(2);
+    });
+
+    it("refuses a session it cannot read, or cannot copy, in the approved line, leaving no lock or copy behind", () => {
+      const file = path.join(dir, "broken.jsonl");
+      writeFileSync(file, "not a start line\n");
+      const problem = `${file} could not be read as a session (its first line is missing or damaged).`;
+      const names = () => readdirSync(dir).sort();
+      const before = names();
+      expect(openSaved(dir, "broken", { fork: false, tools })).toEqual({ problem });
+      expect(openSaved(dir, "broken", { fork: true, tools })).toEqual({ problem });
+      expect(names()).toEqual(before);
+    });
+  });
+
+  describe("newSaved", () => {
+    const begin = { project: "p", lead: "fake:a", version: "0.8.0", system: "New prompt.", tools };
+
+    it("writes the start line and the name, then takes the lock", () => {
+      const o = newSaved(dir, { ...begin, id: "fresh", print: true }, "my name");
+      expect(o.conversation).toMatchObject({ id: "fresh", system: "New prompt.", messages: [], prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+      expect(o.conversation.transcript!.failed).toBeNull();
+      const lines = read(path.join(dir, "fresh.jsonl")).trim().split("\n").map((l) => JSON.parse(l));
+      expect(lines).toMatchObject([
+        { t: "start", v: 1, id: "fresh", lead: "fake:a", print: true, system: "New prompt.", tools },
+        { t: "name", name: "my name" },
+      ]);
+      expect(read(path.join(dir, "fresh.lock"))).toBe(String(process.pid));
+    });
+
+    it("goes on unsaved, taking no lock, when a file stands where the sessions folder should be", () => {
+      const blocked = path.join(folder(), "sessions");
+      writeFileSync(blocked, "not a folder");
+      const o = newSaved(blocked, { ...begin, id: "fresh", print: false });
+      expect(o.conversation.transcript!.failed).not.toBeNull();
+      expect(read(blocked)).toBe("not a folder");
+    });
+  });
+
+  // Release 8a plan, Task 6: the window's picture numbers are one counter, the session's and the screen's, so a picture
+  // made after a resume never takes a saved one's number.
+  it("makes the lead's session with the Pictures the screen is given, which a loaded conversation raises", async () => {
+    const { session, pictures } = leadSession({ lead: new FakeProvider("a", []), tools: [], system: "s", ctx: await tempContext(), bus: new Bus() });
+    session.load({ id: "x", messages: [], system: "s", prompts: [], calls: [], nextPicture: 4, nextTask: 1 });
+    expect(pictures.next()).toBe(4);
   });
 });

@@ -2,10 +2,14 @@ import type { EventEmitter } from "node:events";
 import { existsSync, readFileSync, realpathSync, renameSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
+import { privateDir } from "./auth/private.js";
 import type { Instructions, Reached } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
-import { errorText } from "./core/types.js";
+import { type Conversation, Session, type SessionOptions } from "./core/session.js";
+import { copySession, findSession, listSessions, openSession, type Row, sessionPaths } from "./core/sessions.js";
+import { type Line, readTranscript, Transcript } from "./core/transcript.js";
+import { errorText, type ToolSpec } from "./core/types.js";
 import type { Executor } from "./exec/executor.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { gitFolderOutside, type GitSettings, gitSettings, hasSubmodules, within } from "./safety/gitconfig.js";
@@ -22,6 +26,7 @@ import { shellToolOf } from "./tools/shell.js";
 import type { Tool } from "./tools/tool.js";
 import { screen } from "./tui/describe.js";
 import { gitBranch } from "./tui/git.js";
+import { Pictures } from "./tui/pictures.js";
 import { leftOut, notRemoved, removing } from "./tui/Review.js";
 import { k, type Segment, SEGMENTS } from "./tui/StatusLine.js";
 import { writeBestEffort } from "./tui/terminal.js";
@@ -557,4 +562,118 @@ export function approvalQuestion(reached: Reached[]): string {
 export function headlessLeftOut(reached: Reached[]): string {
   const n = reached.length;
   return `note: ${n} instruction file${n === 1 ? "" : "s"} from outside the project left out, since nobody can approve ${n === 1 ? "it" : "them"} in -p mode: ${reached.map((r) => `${visible(r.path)}, ${visible(r.how)}`).join("; ")}`;
+}
+
+// Release 8a plan, choice 11: parseArgs cannot take an optional value, so a -r or --resume that is last, or followed by
+// another option, is given an empty value, which means "show the list".
+export const resumeArgs = (args: string[]): string[] =>
+  args.flatMap((a, i) => ((a === "-r" || a === "--resume") && (args[i + 1] ?? "-").startsWith("-") ? [a, ""] : [a]));
+
+const NEEDS_TERMINAL = "tachi --resume needs a terminal to list sessions; give it a session's id or name.";
+
+// Which saved session a launch opens (release 8a design, "Resuming"; plan, choices 9, 11 and 12): `-c` the newest, with
+// -p the newest -p run; `-r <id or name>` that one, or the list of the sessions a name belongs to; `-r` alone the list,
+// which leaves -p runs out. The list needs a terminal; without one, or with -p, an id or a name is needed.
+export function chooseSession(
+  dir: string,
+  o: { continue?: boolean; resume?: string; print: boolean; terminal: boolean },
+): { id: string } | { list: Row[]; name?: string } | { fail: string } {
+  if (o.resume === "") {
+    if (!o.terminal) return { fail: NEEDS_TERMINAL };
+    const list = listSessions(dir, { print: false });
+    return list.length ? { list } : { fail: "No saved sessions in this folder." };
+  }
+  if (o.resume !== undefined) {
+    const found = findSession(dir, o.resume);
+    if (!found) return { fail: `No session named or numbered ${o.resume} in this folder; tachi --resume lists them.` };
+    if (!Array.isArray(found)) return { id: found.id };
+    return o.terminal ? { list: found, name: o.resume } : { fail: NEEDS_TERMINAL };
+  }
+  // listSessions with `print` lists every session, so the -p runs are picked out (choice 9).
+  const newest = listSessions(dir, { print: o.print }).find((r) => r.print === o.print);
+  return newest ? { id: newest.id } : { fail: "No saved session to continue in this folder." };
+}
+
+// A session opened for this window: the conversation for Session.load, the grey lines to say, and the lines for the
+// model about subagents whose answers were lost, which go into its next request as waiting text does.
+export interface Opened {
+  conversation: Conversation;
+  lines: string[];
+  lost: string[];
+}
+
+// A new session's transcript, its start line first, then its name, then its lock (release 8a plan, choices 4 and 8).
+// The start line makes the sessions folder private, so the folder is there before the lock's file is made in it. When it
+// cannot be written, the session goes on unsaved and takes no lock; Session.load says so in the "Saving fails" line.
+export function newSaved(dir: string, start: Omit<Extract<Line, { t: "start" }>, "t" | "at" | "v">, name?: string): Opened {
+  const { file, pictures } = sessionPaths(dir, start.id);
+  const transcript = new Transcript(file, pictures);
+  transcript.write({ t: "start", v: 1, ...start });
+  if (name) transcript.write({ t: "name", name });
+  if (!transcript.failed) openSession(dir, start.id); // held until the process exits (lock.ts)
+  const conversation = { id: start.id, messages: [], system: start.system, transcript, prompts: [], calls: [], nextPicture: 1, nextTask: 1 };
+  return { conversation, lines: [], lost: [] };
+}
+
+// A saved session opened under its lock, or a copy of it when another window holds it or `fork` asks for one, the copy's
+// lock taken too (release 8a design, "Resuming" and "Names, branches and export"; plan, choice 8). A torn last line is
+// mended under the lock before anything is added ("When something goes wrong"). The saved system prompt is kept; when
+// this launch's tools differ from the saved ones, the replies go without the provider's own content, as Anthropic refuses
+// a thinking block once the tools before it changed (design, "Before the build", check 2). A session that cannot be read,
+// or copied, is refused in the approved line, its lock let go.
+export function openSaved(dir: string, id: string, o: { fork: boolean; tools: ToolSpec[]; name?: string }): Opened | { problem: string } {
+  const lines: string[] = [];
+  let open = id;
+  let lock: { release: () => void } | null = null;
+  try {
+    privateDir(dir); // before the lock's file is made there
+    lock = o.fork ? null : openSession(dir, id);
+    if (!lock) {
+      open = copySession(dir, id);
+      if (!o.fork) lines.push("Opened a copy: that session is open in another window.");
+      lock = openSession(dir, open);
+    }
+  } catch (err) {
+    lock?.release();
+    return { problem: `${sessionPaths(dir, id).file} could not be read as a session (${errorText(err)}).` };
+  }
+  const { file, pictures } = sessionPaths(dir, open);
+  const transcript = new Transcript(file, pictures);
+  transcript.mend();
+  const read = readTranscript(file, pictures);
+  if ("problem" in read) {
+    lock?.release();
+    return read;
+  }
+  if (o.name) transcript.write({ t: "name", name: o.name });
+  const changed = JSON.stringify(read.start.tools) !== JSON.stringify(o.tools);
+  const messages = changed ? read.messages.map(({ native: _, ...m }) => m) : read.messages;
+  lines.push(`Resumed: ${o.name || read.name || read.firstPrompt || open}.`);
+  if (read.damaged) lines.push(`${read.damaged} damaged lines of this session were skipped.`);
+  // Said only when a reply had the provider's own content to leave out.
+  if (changed && read.messages.some((m) => m.native !== undefined)) {
+    lines.push("The tools have changed since this session was saved, so its earlier replies are sent without their thinking.");
+  }
+  return {
+    conversation: {
+      id: open,
+      messages,
+      system: read.system,
+      transcript,
+      prompts: read.prompts,
+      calls: read.calls,
+      nextPicture: read.nextPicture,
+      nextTask: read.nextTask,
+    },
+    lines,
+    lost: read.unfinished.map((u) => `Subagent ${u.id} (${u.description}) had not finished when the session ended; its answer was lost.`),
+  };
+}
+
+// The lead's session and the window's pictures, made together, so the session's loads raise the one counter the screen
+// numbers pictures by: with two, a picture made after a resume could take a saved one's number, and its line would then
+// point at the old picture's file (release 8a plan, choice 5).
+export function leadSession(opts: Omit<SessionOptions, "pictures">): { session: Session; pictures: Pictures } {
+  const pictures = new Pictures();
+  return { session: new Session({ ...opts, pictures }), pictures };
 }

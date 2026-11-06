@@ -17,6 +17,12 @@ export function sessionsDir(root: string, data?: string): string {
   return path.join(path.dirname(file), path.basename(file, ".jsonl"));
 }
 
+// A session's transcript and its pictures folder, <id>.jsonl and <id>/pictures. A subagent's file is found from the
+// pictures folder's parent (tasks.ts), which inherits the sessions folder's permission only while this layout holds.
+export function sessionPaths(dir: string, id: string): { file: string; pictures: string } {
+  return { file: path.join(dir, `${id}.jsonl`), pictures: path.join(dir, id, "pictures") };
+}
+
 export interface Row {
   id: string;
   name?: string;
@@ -79,16 +85,29 @@ export function openSession(dir: string, id: string): { release: () => void } | 
 // A copy under a new id, of everything saved so far: the transcript's whole lines, its start line naming the copy, and the
 // <id>/ folder, each subagent's file as its whole lines too, so a finished subagent still reads as finished (release 8a
 // plan, Task 4; design, "Names, branches and export"). A line the other window is still writing is left out (design,
-// "When something goes wrong").
-export function copySession(dir: string, id: string): string {
-  const copy = randomUUID();
+// "When something goes wrong"). A copy that fails partway is removed, its folder before its transcript, as the sweep
+// removes a session (release 8a plan, Task 6). `copy` is the new id, a test's own where given.
+export function copySession(dir: string, id: string, copy: string = randomUUID()): string {
   privateDir(dir);
   const text = wholeLines(path.join(dir, `${id}.jsonl`));
   const end = text.indexOf("\n") + 1; // after the start line, written first (choice 4)
-  const start = JSON.stringify({ ...JSON.parse(text.slice(0, end)), id: copy });
-  writeFileSync(path.join(dir, `${copy}.jsonl`), `${start}\n${text.slice(end)}`, { flag: "wx", mode: 0o600 });
-  const folder = entries(dir).find((e) => e.name === id);
-  if (folder?.isDirectory()) copyTree(path.join(dir, id), path.join(dir, copy));
+  let first: object;
+  try {
+    first = JSON.parse(text.slice(0, end));
+  } catch {
+    throw new Error("its first line is missing or damaged"); // readTranscript's reason (user, 2026-11-06)
+  }
+  const file = path.join(dir, `${copy}.jsonl`);
+  writeFileSync(file, `${JSON.stringify({ ...first, id: copy })}\n${text.slice(end)}`, { flag: "wx", mode: 0o600 });
+  try {
+    const folder = entries(dir).find((e) => e.name === id);
+    if (folder?.isDirectory()) copyTree(path.join(dir, id), path.join(dir, copy));
+  } catch (err) {
+    const made = entries(dir).find((e) => e.name === copy);
+    if (made) remove(path.join(dir, copy), made);
+    unlinkSync(file);
+    throw err;
+  }
   return copy;
 }
 
