@@ -641,22 +641,56 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
     expect(lines(p.file)).toEqual([{ t: "lead", at: expect.any(String), lead: "fake:b" }]);
   });
 
-  it("goes on with the turn when a write fails, saving stopped with its reason", async () => {
-    // A file where the sessions folder should be: the write fails with no permission changed (plan, Task 3).
+  // A transcript that cannot be written: a file where the sessions folder should be, with no permission changed (plan,
+  // Task 3). The write fails before any folder is made private.
+  async function unwritable(id = "s1") {
     const own = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
     onTestFinished(() => removeTree(own));
     mkdirSync(path.join(own, "data"));
     writeFileSync(path.join(own, "data", "sessions"), "not a folder");
     const dir = path.join(own, "data", "sessions", "project");
-    const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"));
+    return new Transcript(path.join(dir, `${id}.jsonl`), path.join(dir, id, "pictures"));
+  }
+  // The approved "Saving fails" line (plan, "Lines this plan adds").
+  const savingFails = (t: Transcript) =>
+    `Saving this session stopped: ${t.file} could not be written (${t.failed}). ` +
+    "It cannot be resumed, and a conversation too long for the model will end with an error.";
+
+  it("goes on with the turn when a write fails, saving stopped with its reason, said once in the approved words", async () => {
+    const transcript = await unwritable();
     const bus = new Bus();
+    const errors = collectErrors(bus);
     const events: Message[] = [];
     bus.on("message", (m) => events.push(m));
-    const session = new Session({ lead: new FakeProvider("a", [reply("still here")]), tools: [], system: "t", ctx: await tempContext(), bus, transcript });
+    const lead = new FakeProvider("a", [reply("still here"), reply("and here")]);
+    const session = new Session({ lead, tools: [], system: "t", ctx: await tempContext(), bus, transcript });
     await session.send("go");
     expect(events).toEqual([typed("go"), said("still here")]);
     expect(session.messages).toEqual(events);
-    expect(transcript.failed).toEqual(expect.any(String));
+    expect(transcript.failed).toEqual(expect.stringMatching(/\S/));
+    expect(errors).toEqual([{ kind: "saving", attempted: transcript.file, message: savingFails(transcript), lead: "fake:a" }]);
+    // Later writes, which saving no longer makes, say nothing more.
+    await session.send("again");
+    session.setLead(new FakeProvider("b", []));
+    expect(texts(session.messages.at(-1)!)).toEqual(["and here"]);
+    expect(errors).toHaveLength(1);
+  });
+
+  it("says saving stopped once per transcript at a load, for a write made elsewhere, such as Tasks' subagent line", async () => {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const session = new Session({ lead: new FakeProvider("a", []), tools: [], system: "t", ctx: await tempContext(), bus });
+    const first = await unwritable("s1");
+    first.write({ t: "name", name: "x" });
+    session.load(conversation({ transcript: first }));
+    session.load(conversation({ transcript: first })); // the same transcript again: said already
+    const second = await unwritable("s2");
+    second.write({ t: "name", name: "x" });
+    session.load(conversation({ transcript: second }));
+    expect(errors.map((e) => [e.kind, e.message])).toEqual([
+      ["saving", savingFails(first)],
+      ["saving", savingFails(second)],
+    ]);
   });
 
   it("loads a conversation in place, so an alias of its history sees it, with its prompts, calls, id and transcript", async () => {

@@ -3,8 +3,9 @@ import type { TodoItem } from "../tools/todo.js";
 import type { Message, Usage } from "./types.js";
 
 export interface ErrorEvent {
-  // "fallback": a refusal another model rescued; "judge": the judge's request failed (release 7 plan, Task 9)
-  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback" | "judge";
+  // "fallback": a refusal another model rescued; "judge": the judge's request failed (release 7 plan, Task 9); "saving":
+  // the session's transcript could not be written, which stops nothing else (release 8a plan, Task 5)
+  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback" | "judge" | "saving";
   attempted: string;
   message: string;
   lead: string;

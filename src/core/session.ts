@@ -78,6 +78,7 @@ export class Session {
   // choice 24).
   readonly onShorten: (() => void)[] = [];
   #transcript: Transcript | undefined;
+  #saidFailed = false; // whether this transcript's failure has been said: once per transcript
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -99,13 +100,16 @@ export class Session {
     this.#lead = provider;
     this.#transcript?.write({ t: "lead", lead: provider.id });
     this.opts.bus.emit("lead", provider.id);
+    this.#saving();
   }
 
   // Takes a saved or new conversation in place of this one, as the judge, the subagents' worker and the screen hold this
-  // object (release 8a plan, choice 1).
+  // object (release 8a plan, choice 1). The providers sent no pictures stay so, as the user's answer holds for the window
+  // (user, 2026-11-06: "Keep for the window").
   load(c: Conversation): void {
     this.id = c.id;
     this.system = c.system;
+    if (c.transcript !== this.#transcript) this.#saidFailed = false;
     this.#transcript = c.transcript;
     this.messages.splice(0, this.messages.length, ...c.messages);
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
@@ -114,6 +118,7 @@ export class Session {
     this.#shrunk.clear();
     this.opts.pictures?.from(c.nextPicture);
     this.opts.tasks?.from(c.nextTask);
+    this.#saving(); // a write made before the load, such as launch's start line or mend
   }
 
   get fallback(): Provider | undefined {
@@ -285,6 +290,20 @@ export class Session {
     this.messages.push(message);
     this.#transcript?.write({ t: "message", message });
     this.opts.bus.emit("message", message);
+    this.#saving();
+  }
+
+  // Says once that saving stopped, in the approved line, so the screen, `-p` and the error log have it. Checked after the
+  // session's own writes and at a load, which also catches a failed write the session did not make: Tasks' subagent line,
+  // launch's start line or mend (release 8a plan, Task 5).
+  #saving(): void {
+    const t = this.#transcript;
+    if (!t?.failed || this.#saidFailed) return;
+    this.#saidFailed = true;
+    const message =
+      `Saving this session stopped: ${t.file} could not be written (${t.failed}). ` +
+      "It cannot be resumed, and a conversation too long for the model will end with an error.";
+    this.opts.bus.emit("error", { kind: "saving", attempted: t.file, message, lead: this.#lead.id });
   }
 }
 

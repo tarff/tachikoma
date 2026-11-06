@@ -182,8 +182,9 @@ export class Tasks {
       this.#changed();
     });
     bus.on("error", (e) => {
-      // A judge that cannot be reached refuses one action, as a no does, and fails no subagent (release 7 plan, choice 65).
-      if (e.kind !== "fallback" && e.kind !== "tool" && e.kind !== "judge") failure = e;
+      // A judge that cannot be reached refuses one action, as a no does, and fails no subagent (release 7 plan, choice 65);
+      // nor does a file that cannot be saved (release 8a plan, Task 5).
+      if (e.kind !== "fallback" && e.kind !== "tool" && e.kind !== "judge" && e.kind !== "saving") failure = e;
       this.opts.bus.emit("error", { ...e, attempted: `${t.id}: ${e.attempted}` });
     });
     bus.on("tool-start", ({ name, input }) => {

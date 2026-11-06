@@ -1,5 +1,6 @@
-// The session's pictures, by number (release 6 design, "Pictures"; plan, choice 9): kept in memory until the session
-// ends, never on disk. A picture's number is taken when its read starts, so its marker goes into the prompt at once and
+// The session's pictures, by number (release 6 design, "Pictures"; plan, choice 9): kept in memory for the window; a
+// saved session also writes each one to its pictures folder (release 8a plan, choice 5). A picture's number is taken
+// when its read starts, so its marker goes into the prompt at once and
 // pictures keep the order they were asked for; the picture fills in under that number when the read ends ("While a read
 // runs").
 import { marker, type Part, type Picture } from "../core/types.js";

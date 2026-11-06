@@ -479,8 +479,9 @@ const session: Session = new Session({
 if (parsed.print !== undefined) {
   let failed = false;
   bus.on("error", (e) => {
-    // A judge that cannot be reached refuses one action, as a no does, and fails no run (release 7 plan, choice 65).
-    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge") failed = true;
+    // A judge that cannot be reached refuses one action, as a no does, and fails no run (release 7 plan, choice 65); nor
+    // does a transcript that cannot be saved (release 8a plan, Task 5).
+    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge" && e.kind !== "saving") failed = true;
   });
   if (parsed.json) {
     for (const event of ["message", "usage", "error", "lead"] as const) {
@@ -489,6 +490,7 @@ if (parsed.print !== undefined) {
   } else {
     bus.on("error", (e) => {
       if (e.kind === "fallback") console.error(prose(`note: ${e.message}`));
+      else if (e.kind === "saving") console.error(prose(e.message)); // the line alone, as the window shows it
       else if (e.kind !== "tool") console.error(prose(`${e.kind}: ${e.message}`));
     });
   }

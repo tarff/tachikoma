@@ -21,6 +21,7 @@ import { LocalWorkspace } from "../../src/exec/local.js";
 import type { Workspace } from "../../src/exec/workspace.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
+import { Transcript } from "../../src/core/transcript.js";
 import type { Provider, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
@@ -839,6 +840,31 @@ describe("App", () => {
     await until(app, "carried on");
     expect(app.lastFrame()).toContain("✗ judge: judge down");
     expect(existsSync(target)).toBe(false);
+  });
+
+  // Release 8a plan, Task 5: the "Saving fails" line in red after ✗, with no label (user, 2026-11-06, "✗ then the line").
+  it("shows saving stopped as ✗ and the line alone, in red", async () => {
+    await inColour(async () => {
+      const { app, session, bus } = await mount([reply("still here")]);
+      const errors: string[] = [];
+      bus.on("error", (e) => errors.push(e.message));
+      // A file where the sessions folder should be, so the first write fails, with no permission changed.
+      const own = await mkdtemp(path.join(tmpdir(), "tachi-"));
+      onTestFinished(() => removeTree(own));
+      writeFileSync(path.join(own, "sessions"), "not a folder");
+      const dir = path.join(own, "sessions", "project");
+      const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"));
+      session.load({ id: "s1", messages: [], system: "t", transcript, prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+      await type(app, "hi");
+      await until(app, "still here");
+      const frame = app.lastFrame()!;
+      expect(errors).toEqual([expect.stringMatching(/^Saving this session stopped: /)]);
+      expect(frame).toContain("\u001b[31m✗ Saving this session stopped:");
+      // The line wraps at the screen's width, so it is compared without its blanks and line breaks.
+      const bare = (s: string) => s.replace(/\s/g, "");
+      expect(bare(stripVTControlCharacters(frame))).toContain(bare(`✗ ${errors[0]}`));
+      expect(frame).not.toContain("saving:");
+    });
   });
 
   // Release 7 plan, Task 10: after 3 refusals in a row the next action that would go to the judge asks, with auto mode's
