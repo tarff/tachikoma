@@ -154,8 +154,9 @@ export class Tasks {
 
   async #run(t: Task, provider: Provider, fallback: Provider | undefined, signal: AbortSignal): Promise<Result> {
     // Its own file, <id>/subagents/<tN>.jsonl beside the lead's pictures folder, named by a line in the lead's (release 8a
-    // design, "Saving sessions"). Both are written before the first wait, so from start, before delegate says it started
-    // and while it waits for a place, a closed window's subagent is found lost, never its id handed out again. None once
+    // design, "Saving sessions"). The lead's line is written before the first wait; the subagent's own file only with its
+    // first message or its ended line, and a missing file reads as unfinished. So from start, before delegate says it
+    // started and while it waits for a place, a closed window's subagent is found lost, never its id handed out again. None once
     // the lead's saving has stopped, so no file is saved that no line names. A subagent is never sent pictures, so its
     // transcript never writes to that folder. The lead's write made the sessions folder private, so the subagents folder
     // inside it inherits that permission, as transcript.ts's pictures folder does.

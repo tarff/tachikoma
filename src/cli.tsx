@@ -157,9 +157,11 @@ function fail(message: string): never {
 }
 
 // The question at the start, before the screen is drawn (release 4 design, "Files that lead elsewhere
-// ask first"): y reads the files, any other key leaves them out, and Ctrl-C quits.
+// ask first"): y reads the files, any other key leaves them out, and Ctrl-C quits. Ink unrefs stdin when a screen drawn
+// before this one ends (`tachi -r`'s list), and Node would then exit instead of waiting for the key, so it is ref'd again.
 function askAtStart(question: string): Promise<boolean> {
   process.stdout.write(`${question} `);
+  process.stdin.ref();
   process.stdin.setRawMode(true);
   return new Promise((resolve) => {
     process.stdin.once("data", (data) => {
