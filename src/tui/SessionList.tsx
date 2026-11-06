@@ -1,7 +1,7 @@
 import { Box, Text, useInput, usePaste, useWindowSize } from "ink";
 import { useRef, useState } from "react";
 import type { Row } from "../core/sessions.js";
-import { DRAFTS } from "./app/constants.js";
+import { SESSION_WORDS } from "./app/constants.js";
 import { type Bindings, strokeOf } from "./bindings.js";
 import { screen } from "./describe.js";
 import { both, named, pieces } from "./keys.js";
@@ -13,7 +13,7 @@ import { k } from "./StatusLine.js";
 // Enter opens, Esc quits, as Select's keys are bound; Ctrl-C quits too. With `name`, only the sessions that name belongs
 // to are listed, for a name more than one session has. Names and prompts are the user's text, so they are escaped.
 
-// The header lines are Task 6's drafts, for the user's approval.
+// The header lines are Task 6's SESSION_WORDS, for the user's approval.
 const heading = (name: string | undefined) =>
   name === undefined ? "Saved sessions in this folder, newest first:" : `Saved sessions named ${name}, newest first:`;
 
@@ -90,7 +90,7 @@ export function SessionList({
   const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
   const moves = both(key("select:previous", "up"), key("select:next", "down"));
   const [enter, esc] = [key("select:accept", "enter"), key("select:cancel", "escape")];
-  const hint = [moves && `${moves} move`, enter && `${enter} opens`, esc && `${esc} ${keys ? DRAFTS.closes : "quits"}`].filter(Boolean).join(" · ");
+  const hint = [moves && `${moves} move`, enter && `${enter} opens`, esc && `${esc} ${keys ? SESSION_WORDS.closes : "quits"}`].filter(Boolean).join(" · ");
 
   // The list in the rows between the heading and the hint, its window moved only as far as keeps the chosen row in it.
   const room = Math.max(1, (maxRows ?? tall - 2) - 1); // the terminal's rows, less the one Ink ends on and the hint's

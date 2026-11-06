@@ -20,6 +20,7 @@ import type { Executor } from "../../src/exec/executor.js";
 import { LocalWorkspace } from "../../src/exec/local.js";
 import type { Workspace } from "../../src/exec/workspace.js";
 import { Session } from "../../src/core/session.js";
+import { attachErrorLog } from "../../src/core/errorlog.js";
 import { listSessions, openSession } from "../../src/core/sessions.js";
 import { Stats } from "../../src/core/stats.js";
 import { sessionPaths, Transcript } from "../../src/core/transcript.js";
@@ -8324,7 +8325,7 @@ describe("App's sessions", () => {
 
   it("lists the other saved sessions on /resume, and a pick draws its conversation, then its line, and carries it on", async () => {
     const first = await earlier("remember apple");
-    const lead = new FakeProvider("b", [reply("an apple")]);
+    const lead = new FakeProvider("a", [reply("an apple")]); // the saved session's lead, so the window keeps it
     const { app, session } = await saved([], { lead });
     const own = session.id;
     await type(app, "/resume");
@@ -8339,6 +8340,68 @@ describe("App's sessions", () => {
     await type(app, "which fruit?");
     await until(app, "an apple");
     expect(lead.seen[0]).toEqual([typed("remember apple"), { role: "assistant", parts: [{ type: "text", text: "noted" }] }, typed("which fruit?")]);
+  });
+
+  // User, 2026-11-06: "The session's saved lead", switched as /lead switches it, so the status line follows.
+  it("switches to a resumed session's saved lead, as /lead does", async () => {
+    const first = await earlier("lead a's session");
+    const saidAgain = new FakeProvider("a", [reply("a again")]);
+    const made: string[] = [];
+    const { app, session } = await saved([], { lead: new FakeProvider("b", []), newLead: saidAgain, made });
+    await type(app, "/resume");
+    await until(app, "lead a's session");
+    await press(app, "\r");
+    await until(app, "lead is now fake:a");
+    expect(made).toEqual(["fake:a"]);
+    expect(app.lastFrame()).toMatch(/Resumed: lead a's session\.\nlead is now fake:a\n/);
+    expect(app.lastFrame()).toMatch(/lead fake:a/); // the status line
+    expect(session.lead).toBe(saidAgain);
+    await type(app, "go on");
+    await until(app, "a again");
+    expect(rowOf(first.session.id)?.lead).toBe("fake:a");
+  });
+
+  it("keeps the window's lead when a resumed session's saved lead cannot be made, saying so", async () => {
+    const first = await earlier("lead a's other session");
+    const lead = new FakeProvider("b", [reply("b answers")]);
+    const { app, session } = await saved([], { lead, leadFails: "no key for fake" });
+    await type(app, "/resume");
+    await until(app, "lead a's other session");
+    await press(app, "\r");
+    await until(app, "Resumed: lead a's other session.");
+    expect(bare(app.lastFrame()!)).toContain(bare("The session's lead, fake:a, is not set up (no key for fake); fake:b leads instead."));
+    expect(session.lead).toBe(lead);
+    await type(app, "go on");
+    await until(app, "b answers");
+    expect(rowOf(first.session.id)?.lead).toBe("fake:b"); // written into it, as tachi -r writes it
+  });
+
+  // Release 8a plan, Task 7: the error log follows the open session, as cli.tsx attaches it.
+  it("logs an error after /clear under the new session's id", async () => {
+    const errors = path.join(path.dirname(dir), "errors", "log.jsonl"); // two levels inside the folder made for the sessions
+    const { app, session, bus } = await saved([new Error("provider down")]);
+    attachErrorLog(bus, errors, () => session.id);
+    const old = session.id;
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    await type(app, "hi");
+    await until(app, "provider down");
+    const rows = readFileSync(errors, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(rows).toMatchObject([{ session: session.id, message: "provider down" }]);
+    expect(session.id).not.toBe(old);
+  });
+
+  // Release 8a plan, Task 7: /clear says its line once the new conversation is loaded, so a saving failure comes first.
+  it("says /clear's line after the new session's saving failure", async () => {
+    const own = await mkdtemp(path.join(tmpdir(), "tachi-"));
+    onTestFinished(() => removeTree(own));
+    writeFileSync(path.join(own, "data"), "not a folder"); // a file where the sessions folder's parent should be
+    const { app } = await mount([], { sessions: path.join(own, "data", "sessions") });
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    const frame = app.lastFrame()!;
+    expect(frame.indexOf("✗ Saving this session stopped:")).toBeGreaterThan(-1);
+    expect(frame.indexOf("✗ Saving this session stopped:")).toBeLessThan(frame.indexOf("Started a new session"));
   });
 
   it("opens a copy on /resume of a session open in another window, saying so, and leaves that one's file as it was", async () => {
@@ -8398,7 +8461,7 @@ describe("App's sessions", () => {
     await until(first.app, "noted");
     first.session.transcript!.write({ t: "subagent", id: "t1", description: "find x", file: "t1.jsonl" }); // t1 ran as the window closed
     first.app.unmount();
-    const lead = new FakeProvider("b", [reply("ok")]);
+    const lead = new FakeProvider("a", [reply("ok")]);
     const { app } = await saved([], { lead });
     await type(app, "/resume");
     await until(app, "start a search");
@@ -8417,7 +8480,7 @@ describe("App's sessions", () => {
     await until(first.app, "noted");
     first.session.transcript!.write({ t: "subagent", id: "t1", description: "find y", file: "t1.jsonl" });
     first.app.unmount();
-    const lead = new FakeProvider("b", [reply("fresh")]);
+    const lead = new FakeProvider("a", [reply("fresh")]);
     const { app } = await saved([], { lead });
     await type(app, "/resume");
     await until(app, "search again");

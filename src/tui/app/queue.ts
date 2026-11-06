@@ -4,7 +4,7 @@ import { summarize } from "../../core/errorlog.js";
 import { type Protection, visible } from "../../core/permissions.js";
 import { listSessions } from "../../core/sessions.js";
 import type { Task } from "../../core/tasks.js";
-import { errorText } from "../../core/types.js";
+import { errorText, type Provider } from "../../core/types.js";
 import { KEYBINDINGS } from "../../keybindings.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
@@ -15,7 +15,7 @@ import { type Draft, joined, trimmed } from "../pictures.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
-import { COMMANDS, DRAFTS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened } from "./constants.js";
+import { COMMANDS, SESSION_WORDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened } from "./constants.js";
 import type { UI } from "./state.js";
 
 export const queue = (ui: UI, fns: Fns) => {
@@ -275,17 +275,19 @@ export const queue = (ui: UI, fns: Fns) => {
   // The window takes another session (release 8a plan, choice 15): the last one's shown calls, to-do list, answers and
   // tool line go, and the gauge's context, 0 until the next request. The subagents' waiting text is dropped: an answer
   // that wakes the lead was read in a turn of its own before this command ran (next), so what is left is a stopped
-  // subagent's note, which belongs to the last conversation. The session's conversation is drawn as the launch draws a
-  // resumed one, then its lines; once it is loaded, the last session is let go.
+  // subagent's note, which belongs to the last conversation. The conversation is loaded, and the last session let go;
+  // then its conversation is drawn as the launch draws a resumed one, and its lines said, so a saving failure the load
+  // reports comes first (Task 7). The window's sandbox carries on: a copy-mode box is not started afresh, so its review
+  // at exit covers both sessions' changes (Task 7).
   const switchTo = (next: Opened, lines: Line[]) => {
     ui.tasks.take();
     ui.calls.current = [];
     ui.todos.current = { items: [], hidden: false };
     ui.answered.current.clear();
     ui.stats.context = 0;
-    fns.say(...conversationLines(next.conversation.messages), ...lines);
     ui.session.load(next.conversation);
     ui.saved.switched(next);
+    fns.say(...conversationLines(next.conversation.messages), ...lines);
     ui.rerender((n) => n + 1);
   };
   // /clear: a new session, with the same lead and mode, its system prompt built afresh (design, "Resuming").
@@ -297,21 +299,41 @@ export const queue = (ui: UI, fns: Fns) => {
   // queue until a pick or Esc, as the model list does.
   const resume = (): boolean | void => {
     const rows = listSessions(ui.saved.dir, { print: false }).filter((r) => r.id !== ui.session.id);
-    if (!rows.length) return fns.say(gray(DRAFTS.noOther));
+    if (!rows.length) return fns.say(gray(SESSION_WORDS.noOther));
     ui.listOpen.current = true;
     ui.setSessions({ rows, now: Date.now() });
     return true;
   };
   // A pick opens the session as the launch opens it, a copy when another window holds it (Task 6); one that cannot be
-  // read or copied is said in red, and the window stays in its session (design, "When something goes wrong").
+  // read or copied is said in red, and the window stays in its session (design, "When something goes wrong"). It leads
+  // with its saved lead, switched to as /lead switches, once its conversation is loaded; one that cannot be made leaves
+  // the window's leading, with the launch's line (user, 2026-11-06: "The session's saved lead").
   const pickSession = (id: string) => {
     ui.listOpen.current = false;
     ui.setSessions(null);
     ui.view.current = FOLLOWING; // what it says is asked for, as the model list's pick says (pick, above)
     try {
-      const next = ui.saved.resume(id, ui.session.lead.id);
+      const now = ui.session.lead.id;
+      let made: Provider | undefined;
+      let gone: string | undefined;
+      const next = ui.saved.resume(id, (saved) => {
+        if (saved === now) return now;
+        try {
+          made = fns.make(saved);
+          return saved;
+        } catch (err) {
+          gone = `The session's lead, ${saved}, is not set up (${errorText(err)}); ${now} leads instead.`;
+          return now;
+        }
+      });
       if ("problem" in next) fns.say({ text: next.problem, color: "red" });
-      else switchTo(next, next.lines.map((l) => ({ ...l, color: "gray" })));
+      else {
+        switchTo(next, [...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "gray" })));
+        if (made) {
+          ui.waiting.current.lead = undefined; // it wins over a lead the settings file set meanwhile, as a /lead typed then would
+          ui.session.setLead(made);
+        }
+      }
     } catch (err) {
       fns.say({ text: errorText(err), color: "red" });
     }
@@ -327,8 +349,8 @@ export const queue = (ui: UI, fns: Fns) => {
   // prompt has nothing to copy, and one whose saving stopped would leave out what came after.
   const branch = (name: string) => {
     const first = ui.session.prompts[0]?.split(/\r?\n/)[0];
-    if (!first) return fns.say(gray(DRAFTS.nothingToBranch));
-    if (!ui.session.transcript || ui.session.transcript.failed !== null) return fns.say({ text: DRAFTS.unsaved("/branch"), color: "red" });
+    if (!first) return fns.say(gray(SESSION_WORDS.nothingToBranch));
+    if (!ui.session.transcript || ui.session.transcript.failed !== null) return fns.say({ text: SESSION_WORDS.unsaved("/branch"), color: "red" });
     const original = ui.session.id;
     const named = name || first;
     const next = ui.saved.branch(original, ui.session.lead.id, named);
@@ -340,7 +362,7 @@ export const queue = (ui: UI, fns: Fns) => {
     if (!name) return fns.say({ text: "Usage: /rename <name>", color: "red" });
     const t = ui.session.transcript;
     t?.write({ t: "name", name });
-    fns.say(!t || t.failed !== null ? { text: DRAFTS.unsaved("/rename"), color: "red" } : gray(`Session named ${name}.`));
+    fns.say(!t || t.failed !== null ? { text: SESSION_WORDS.unsaved("/rename"), color: "red" } : gray(`Session named ${name}.`));
   };
   return {
     submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave, subagentsRunning, switchTo, startFresh, resume,

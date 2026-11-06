@@ -23,7 +23,7 @@ describe("commandMenu", () => {
     expect(m!.entries[12]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
   });
 
-  // Release 8a plan, Task 7 (choice 25). The notes are drafts awaiting the user's approval (constants.ts, DRAFTS).
+  // Release 8a plan, Task 7 (choice 25); the notes approved by the user on 2026-11-06 (constants.ts, SESSION_WORDS).
   it("lists /clear, /resume, /branch and /rename, each saying what it does", () => {
     expect(commandMenu("/", 1)!.entries.slice(4, 8)).toEqual([
       { label: "/clear", note: "Start a new session in this window; the last one stays saved", fill: "/clear ", run: "/clear" },

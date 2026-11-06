@@ -755,11 +755,11 @@ export class WindowSessions {
   }
 
   // /resume's pick, opened as the launch opens it, a copy when another window holds it; and /branch's copy of the session
-  // open now, named, its lock taken before it is written. The window's lead stays: one that differs from the saved one
-  // is written into it, as `--lead` writes it at the launch.
-  resume(id: string, lead: string): Opened | { problem: string } {
+  // open now, named, its lock taken before it is written. `lead` is given the session's saved lead and says which leads
+  // it now: one that differs from the saved one is written into it, as the launch writes it.
+  resume(id: string, lead: (saved: string) => string): Opened | { problem: string } {
     const s = openSaved(this.dir, id, { fork: false });
-    return "problem" in s ? s : resumed(s, { tools: this.start.tools, lead });
+    return "problem" in s ? s : resumed(s, { tools: this.start.tools, lead: lead(s.read.lead) });
   }
   branch(id: string, lead: string, name: string): Opened | { problem: string } {
     const s = openSaved(this.dir, id, { fork: true });

@@ -54,11 +54,10 @@ export const isFile = (file: string) => {
 export const COMMANDS =
   "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /clear, /resume, /branch [name], /rename <name>, " +
   "/tasks, /errors, /screen, /settings, /keybindings, /vim, /exit";
-// Release 8a plan, Task 7: the words its table does not give, drafted at the build, awaiting the user's approval. The `/`
-// menu's notes; /resume with no other session saved; /branch before any prompt, or once saving has stopped (session.ts,
-// "Saving fails"), and /rename then, as nothing they wrote would be saved; and the in-window list's hint, whose Esc
-// closes the list where `tachi -r`'s quits.
-export const DRAFTS = {
+// Release 8a plan, Task 7's words, approved by the user on 2026-11-06: the `/` menu's notes; /resume with no other
+// session saved; /branch before any prompt, or once saving has stopped (session.ts, "Saving fails"), and /rename then, as
+// nothing they wrote would be saved; and the in-window list's hint, whose Esc closes the list where `tachi -r`'s quits.
+export const SESSION_WORDS = {
   clear: "Start a new session in this window; the last one stays saved",
   resume: "Pick a saved session and switch this window to it",
   branch: "Carry on in a copy of this session, named after its first prompt unless named",

@@ -581,7 +581,6 @@ const name = parsed.name?.trim() || undefined;
 const opened = saved
   ? resumed(saved, { tools: specs, lead: lead.id, ...(name ? { name } : {}) })
   : newSaved(sessions, { id: sessionId, project: root, lead: lead.id, version: VERSION, print: !interactive, system, tools: specs }, name);
-attachErrorLog(bus, errorFile, opened.conversation.id);
 const said = [...opened.lines, ...(leadLine ? [{ text: leadLine }] : [])].map((l) => ({ ...l, text: visible(l.text) }));
 // The subagents a crash cut short reach the model with its next request, as waiting answers do (release 8a design,
 // "Resuming"), and are marked reported once handed out: the window's session's, which /clear, /resume and /branch switch
@@ -599,6 +598,8 @@ const { session, pictures } = leadSession({
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
   tasks,
 });
+// The open session's id at each error, so after a switch its rows carry the new one's (release 8a plan, Task 7).
+attachErrorLog(bus, errorFile, () => session.id);
 
 if (parsed.print !== undefined) {
   let failed = false;
