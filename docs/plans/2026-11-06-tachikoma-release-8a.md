@@ -1052,6 +1052,7 @@ export type When = "between" | "start" | "during";   // design, "How shortening 
 export async function shorten(s: {
   lead: Provider; system: string; messages: Message[]; tools: ToolSpec[]; calls: { name: string; input: unknown }[];
   workspace: Workspace; sizes: Sizes; window: number; focus?: string; signal?: AbortSignal;
+  asked?: Message;   // "during": the message that started the turn (Task 11's quality review)
   onUsage: (u: { provider: string; usage: Usage; priceKnown?: boolean }) => void;   // each summary request's
 }, when: When): Promise<{ messages: Message[]; summary: string } | { problem: string }>;
 ```
@@ -1139,6 +1140,15 @@ Commit: `feat: shortening summarises everything before what must stay, and keeps
   fit, it shortens with the current lead first, and refuses with the line if that fails.
 - **A subagent's session and `-p`** shorten the same way.
 - **The judge's `prompts` and `calls` are never shortened.**
+- **Notes from Task 11's reviews:**
+  - During a turn, `shorten` is given `asked`: the message that started the turn, as the session
+    holds it. After a first shortening it is no longer in the history, so it cannot be found there.
+  - On `/lead`, `window` is the new lead's, while `fits` estimates with the current lead's ratio.
+  - After a between-turns shortening, the next prompt joins the new history's message, as
+    Anthropic refuses two user messages in a row.
+  - Summary requests pass the session's picture cache and its "send without pictures" setting
+    through, or it becomes a known limit: after "Send again without the pictures", a summary of a
+    history with pictures is refused again.
 - **Summary usage** goes on the bus as `usage` with a new `summary: true`. `Stats` counts its
   spend, as it does the judge's, but does not set the gauge's context from it: a summary request
   is not the conversation's (stats.ts:14-20).
