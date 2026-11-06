@@ -299,3 +299,93 @@ Each result is recorded in the plan.
 - Rewinding, with the files put back as they were: release 9 (user, 2026-11-06, option chosen:
   "Right after release 8"; every later release moves down one, to 15).
 - The README's release list and its later release numbers are brought up to date in 8a's docs task.
+
+## As built
+
+Where the build differs from the design above, or settles what it left open, and what was measured
+on the way. The plan (`2026-11-06-tachikoma-release-8a.md`) lists its 27 choices, each marked in its
+task, with every line the build added in its table "Lines this plan adds"; every number here is
+from the plan, from the code's comments, or from Task 1's live tests, as cited. "The user's choice"
+marks the user's answers, all given on 2026-11-06 from options offered. The README's known limits
+gather every rarer case the build left as a limit.
+
+- **The live tests (plan, Task 1, run by the user).** Anthropic's "too long" is a 400
+  `invalid_request_error` whose message starts `prompt is too long` ("prompt is too long: 1000050
+  tokens > 1000000 maximum"). Anthropic's count said 1,000,001 tokens for that request, 49 short
+  of the 1,000,050 the request was refused at, so no margin is added and the "too long" answer is
+  the safety net. The count refuses the fallback setting (`fallbacks: Extra inputs are not
+  permitted`) and takes a tool and a picture, so it is sent without `betas` and `fallbacks`
+  (choice 19, changed so). A changed system prompt with the thinking blocks kept was accepted on
+  the user's account, which predates the check's enforcement; the design's reuse of the saved
+  system prompt stands, for other accounts. OpenRouter's "too long" is a 400 whose `code` is the
+  status again and whose message starts `This endpoint's maximum context length is`. The ChatGPT
+  plan goes by Codex's source and the OpenAI API was not tested, by the user's choice ("codex for
+  chatgpt and lets test the api"), so "too long" is read from Anthropic, OpenRouter and the
+  ChatGPT plan only, and the OpenAI API's, Kimi's and Ollama's answer ends the turn as before
+  (choice 20, changed so: it had expected an OpenAI code).
+- **The system prompt at a shortening and at `/clear`** reads the instruction files again; a file
+  outside the project goes in only if the launch's question allowed it, and one the launch did not
+  ask about is left out without asking (choice 3; the user's choice, "Re-read, reuse launch's
+  answer").
+- **The transcript's lines (choice 4), as built:** a `subagent` line holds the subagent's
+  description, which the "had not finished" line names (Task 3). A subagent's own file ends with an
+  `ended` line when it fails or is stopped, so one the lead already heard about is not reported
+  lost (the user's choice, "Record how it ended"), and a resume that reports one lost writes `lost`
+  there, so it is reported once (the user's choice, "Report once"). A resume whose lead differs
+  writes a `lead` line, so the next resume opens with the lead last used; one whose tools differ
+  writes a `tools` line, and a reply keeps its thinking only under the tools it was saved under, so
+  a session resumed under other tools and then the first ones again never sends thinking made under
+  the wrong list (Task 6's spec review).
+- **Pictures (choice 5):** a picture numbered before `/resume` or `/branch` loaded another
+  conversation takes the next free number when it is sent, and the sent line shows it (Task 7; the
+  user's choice, "Renumber on send").
+- **Saving that fails (Task 5):** the line is a new error kind, `saving`, so the error log keeps
+  it, drawn as `✗ ` and the line (the user's choice, "✗ then the line"). It fails no `-p` run and
+  no subagent. A subagent's own file failing has its own line, the lead saving on (the user's
+  choice, "Its own line"). A load keeps the window's answer to "Send again without the pictures"
+  (the user's choice, "Keep for the window").
+- **Resuming (Task 6):** the conversation is drawn on screen above the resume lines (the user's
+  choice, "Show it"). The session is opened, mended and read before the instruction files' question
+  and the sandbox, so one that cannot be read starts nothing. "Opened a copy" is said only when
+  another window holds the session, not for `--fork-session`, where it would be false. The help
+  lines, the list's headings, hint, ages and sizes, `Resumed: <id>.`, the "could not be copied"
+  line and its reasons `its first line is missing or damaged` and `its lock could not be taken`
+  are the user's approved wording.
+- **In the window (Task 7):** `/resume` switches to the picked session's saved lead, falling back
+  to the window's with the "not set up" line (the user's choice, "The session's saved lead"). The
+  window's sandbox carries on across a switch, so copy mode's review at the end covers every
+  session the window had. The error log's rows carry the open session's id. The menu notes and the
+  lines for `/resume` with nothing else saved, `/branch` before any prompt, `/branch` and
+  `/rename` once saving has stopped, and the in-window list's hint are the user's approved wording.
+- **`/export` (Task 8, choice 27):** each reply is saved with the lead that wrote it, never sent to
+  a provider, and headed with it (the user's choice, "Record each reply's lead"); the notes the
+  session added for the lead, a background subagent's answer, failure or stop and a crash's "answer
+  was lost" line, are written where they arrived, under `Subagents:` (the user's choice, "Include,
+  headed Subagents:"). The file has LF line endings throughout, a message's own CRLF included.
+- **The size check (Task 10, choice 17):** a reply served by Anthropic's fallback model teaches the
+  model that answered, not the lead, so no ratio is borrowed from another model; while the fallback
+  serves every request, the lead is counted exactly each time (the user's choice, "The model that
+  answered"). A lead with no known window and no `/autocompact` size has no check ahead of a
+  request.
+- **Shortening (Task 11, choices 22-23):** a file in the new history whose size cannot be estimated
+  yet, or that cannot be read, is named with a short note (the user's choice, "Two short notes");
+  the kept round's results keep Ctrl+O's `⎿` mark (the user's choice, "Keep the ⎿ mark"). A part
+  too long to summarise is cut at the message nearest its middle, never between a call and its
+  results, rather than only between whole exchanges, so one long task can be cut inside; a later
+  half opens with "This is the later part of a conversation; the part before it is summarised
+  separately." and is sent without the replies' thinking, as Anthropic refuses a request that
+  opens with a reply and thinking moved from its place (choice 23, changed so; the user's choice,
+  "Cut anywhere, add a line"). The seven reasons a shortening fails are the user's approved wording
+  ("Approve all").
+- **Shortening in the session (Task 12):** when saving has stopped, `/lead`'s refusal gives the
+  reason `saving this session stopped` (the user's choice, "Approve"). A failed lookup of an
+  Anthropic model's window is kept as not known for the provider's life, as the session asks before
+  every request (Task 12's review; `src/providers/anthropic.ts`). Esc or Ctrl-C during `/lead`'s
+  shortening stops it quietly, the lead staying as it was (`src/tui/app/queue.ts`).
+- **`/compact` and `/autocompact` (Task 13):** a shortening for the `/autocompact` size that fails
+  while the request still fits the window shows the red line and sends the request as it is (the
+  user's choice, "Show the line, send anyway"), and the size is not tried again until the next
+  prompt (the user's choice, "Retry next turn"). Their menu notes, the heading over the summary on
+  Ctrl+O and the settings-edit lines are the user's approved wording ("Approve all"). `/lead`
+  switches at once when there is nothing to shorten or no window to look up, so a prompt typed
+  straight after it waits for the switch (Task 13's spec review).
