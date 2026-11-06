@@ -527,7 +527,7 @@ The request being worked on, word for word:
 
 The latest round of tool calls, and their results:
 ● <name> <input as JSON>
-  <result>
+  ⎿ <result>
 
 The files read or edited in this session, as they are now:
 --- <path> ---
@@ -539,7 +539,15 @@ The files read or edited in this session, as they are now:
 
 Each part appears only when it has something in it. The last two file lines are for a file whose
 size cannot be estimated, as the lead has no ratio yet, and a file that cannot be read (Task 11,
-user, 2026-11-06, option chosen: "Two short notes").
+user, 2026-11-06, option chosen: "Two short notes"). Each result has the `⎿` mark, as Ctrl+O and
+`/export` show it, from the same `callText` (Task 11, user, 2026-11-06, option chosen: "Keep the ⎿
+mark").
+
+**Why shortening failed** (the `<reason>` in the lines above; Task 11, user, 2026-11-06, option
+chosen: "Approve all"): `cancelled by the user`, `the summary came back empty`, `one exchange is
+too long to summarise`, `the summaries of its pieces are too long to combine`, `there is nothing
+to summarise`, `the request being worked on does not fit the window on its own`, `even shortened,
+it does not fit the window`. A provider's error and a refusal's own words are shown unchanged.
 
 ---
 
