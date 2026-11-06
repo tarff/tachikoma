@@ -321,7 +321,10 @@ Each is marked in its task. The user approves them with the plan.
      history, but their files stay, so the loaded history alone could hand out a used number. A
      file saved just before a crash, whose line never was, counts too.
    - `Pictures.from(n)` raises the window's next number to at least `n` and never lowers it, so
-     a picture read before a switch keeps its number, and no number is used twice in a window.
+     no number is used twice in a window. A picture numbered before `/resume` or `/branch` loaded
+     another conversation could still match a number that conversation saved, so it gets the next
+     free number when it is sent, and the sent line shows that number (Task 7, user, 2026-11-06,
+     option chosen: "Renumber on send").
    - **A picture already saved is not written again.** The transcript keeps the numbers it has
      saved or read; a `shortened` line holding the prompt in progress refers to that prompt's
      picture files as they are.
@@ -480,6 +483,11 @@ are notes; red ones are failures.
 | `/resume`, `/clear` or `/branch` while a subagent runs (red) | `<command> waits until no subagent is running: <ids> still running. /tasks stop stops them.` |
 | `/rename` alone (red) | `Usage: /rename <name>` |
 | `/rename <name>` (grey) | `Session named <name>.` |
+| Menu notes (user, 2026-11-06) | `/clear` "Start a new session in this window; the last one stays saved"; `/resume` "Pick a saved session and switch this window to it"; `/branch [name]` "Carry on in a copy of this session, named after its first prompt unless named"; `/rename <name>` "Name this session, as /resume and tachi --resume list it" |
+| `/resume`, nothing else saved (grey; user, 2026-11-06) | `No other saved sessions in this folder.` |
+| `/branch` before any prompt (grey; user, 2026-11-06) | `Nothing to branch yet: this session has no prompt.` |
+| `/branch` or `/rename` after saving stopped (red; user, 2026-11-06) | `<command> needs this session saved, and saving it stopped.` |
+| The in-window list's hint (user, 2026-11-06) | `↑↓ move · Enter opens · Esc closes` |
 | `/export <file>` (grey) | `Exported to <file>.` |
 | `/export` alone (grey) | `Copied the conversation (<n> characters).` |
 | `/export` onto a file (red) | `<file> already exists; nothing was written.` |
@@ -902,13 +910,20 @@ Commit: `feat: tachi -c, -r, -n and --fork-session reopen, name and copy saved s
 - **`/resume`:**
   - It opens `SessionList` as a picker phase (choice 14), leaving out this session.
   - A pick opens the session as Task 6 does, the copy rule included, then loads it and says its
-    line.
+    line. It switches to the session's saved lead, falling back to the window's lead with the
+    "saved lead is gone" line, as `tachi -r` does without `--lead` (user, 2026-11-06, option
+    chosen: "The session's saved lead").
+  - The window's sandbox carries on: a copy-mode box is not started afresh in the window, so its
+    review at exit covers both sessions' changes.
 - **`/branch [name]`:**
   - It copies this session (`copySession`) and names the copy: the given name, or the first
     prompt.
   - It switches to the copy and says its line.
 - **`/rename <name>`** writes a `name` line.
 - **Switching** clears the per-turn state (choice 15).
+- **The error log follows the open session:** after a switch its rows carry the new session's id
+  (Task 6: a resumed session's error rows carry the resumed id).
+- `/clear` says its line after the new conversation is loaded.
 
 **Tests** (each case in "App's sessions", run with `-t`):
 - Each command's line.
