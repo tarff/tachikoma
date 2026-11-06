@@ -445,13 +445,21 @@ Each is marked in its task. The user approves them with the plan.
 26. **`/autocompact` takes digits with an optional `k` or `m`.** `"autoCompactWindow"` is a whole
     number of tokens from 1, and is LIVE: an edit applies now.
 27. **`/export` writes:**
-    - a heading line per message, "You:" or "Tachikoma (<lead>):";
+    - a heading line per message, "You:" or "Tachikoma (<lead>):". The lead is the one that wrote
+      that reply: each reply is saved with its lead's id (a `lead` field on the assistant
+      `Message`), and a reply saved without one is headed with the lead leading now (Task 8,
+      user, 2026-11-06, option chosen: "Record each reply's lead");
+    - the notes the session adds for the lead (`from: "tasks"`: a background subagent's answer,
+      failure or stop, and a crash's "answer was lost" line) where they arrived, under the heading
+      line "Subagents:", as the lead got them (user, 2026-11-06, option chosen: "Include, headed
+      Subagents:");
     - the text;
     - each call as `● name {json}` with its result indented under it, as Ctrl+O shows them;
     - pictures as their markers.
 
     A relative path is from the project folder. The file is made with flag `wx`, so an existing
-    file is never overwritten.
+    file is never overwritten. It is UTF-8 with LF line endings throughout, a message's own CRLF
+    included.
 
 ## Lines this plan adds
 
@@ -491,6 +499,9 @@ are notes; red ones are failures.
 | `/export <file>` (grey) | `Exported to <file>.` |
 | `/export` alone (grey) | `Copied the conversation (<n> characters).` |
 | `/export` onto a file (red) | `<file> already exists; nothing was written.` |
+| `/export` that cannot write (red; user, 2026-11-06) | `<file> could not be written (<reason>).` |
+| `/export`'s menu note (user, 2026-11-06) | "Write the conversation to a file as text; alone, copy it" |
+| `/export`'s heading for the session's notes (user, 2026-11-06) | `Subagents:` |
 | `/autocompact <n>` (grey) | `Shortens once the conversation passes <n> tokens.` |
 | `/autocompact off` (grey) | `Shortens only when a request would not fit.` |
 | `/autocompact` wrong (red) | `Usage: /autocompact <tokens>, such as 200k, or /autocompact off` |
