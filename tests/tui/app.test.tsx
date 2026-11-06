@@ -22,10 +22,11 @@ import type { Workspace } from "../../src/exec/workspace.js";
 import { Session } from "../../src/core/session.js";
 import { attachErrorLog } from "../../src/core/errorlog.js";
 import { exportText } from "../../src/core/exportText.js";
+import { characters } from "../../src/core/fit.js";
 import { listSessions, openSession } from "../../src/core/sessions.js";
 import { Stats } from "../../src/core/stats.js";
 import { sessionPaths, Transcript } from "../../src/core/transcript.js";
-import type { Message, Provider, Turn } from "../../src/core/types.js";
+import type { CompletionRequest, Message, Provider, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { delegateTool } from "../../src/tools/delegate.js";
@@ -47,7 +48,7 @@ import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
-import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, texts, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 
@@ -395,8 +396,34 @@ describe("App", () => {
   it("switches the lead with /lead", async () => {
     const { app, session } = await mount([]);
     await type(app, "/lead fake:b");
-    expect(session.lead.id).toBe("fake:b");
+    await waitFor(() => session.lead.id === "fake:b");
     expect(app.lastFrame()).toContain("lead is now fake:b");
+  });
+
+  // Release 8a plan, Task 12: a conversation that will not fit the new lead's smaller window is shortened first, with the
+  // lead leading now; a summary that fails keeps that lead, with the approved line.
+  it("shortens before /lead switches to a smaller window, and refuses the switch when the summary fails", async () => {
+    let window = 0;
+    const turns: ((req: CompletionRequest) => Turn)[] = [
+      // One token a character, so the ratio is 1; the new lead's window then holds the tools and a summary, not the prompt.
+      (req) => {
+        window = characters(req.system, [], req.tools) + 1000;
+        return { ...reply("noted"), usage: { ...usage, input: characters(req.system, req.messages, req.tools) } };
+      },
+      () => ({ ...reply(""), cutOff: { kind: "refusal", detail: "declined" } }),
+      () => reply("The user sent many x."),
+    ];
+    const lead: Provider = { id: "fake:a", complete: async (req) => turns.shift()!(req) };
+    const newLead: Provider = { id: "fake:b", complete: async () => reply("hi"), contextWindow: async () => window };
+    const { app, session } = await mount([], { lead, newLead, save: true });
+    await session.send("x".repeat(2000));
+    const flat = () => app.lastFrame()!.replaceAll(/ *\n */g, " "); // a long line wraps
+    await type(app, "/lead fake:b");
+    await waitFor(() => flat().includes("fake:b was not made the lead: the conversation does not fit its window and could not be shortened (declined)."));
+    expect([session.lead.id, session.messages.length]).toEqual(["fake:a", 2]);
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    expect(session.messages.map(texts)).toEqual([["This conversation was shortened. A summary of everything before this point:\n\nThe user sent many x."]]);
   });
 
   // Release 6 plan, choice 34 (the user: "can we have lead list the models?"): /lead alone opens the model list, as
@@ -698,7 +725,7 @@ describe("App", () => {
     await type(app, "hi");
     await until(app, "there");
     await tick();
-    expect(asked).toBe(2);
+    expect(asked).toBe(3); // the launch's, the session's before its request (release 8a plan, Task 12), and the reply's
     expect(app.lastFrame()).toContain("% left");
   });
 
@@ -6839,6 +6866,9 @@ describe("App's live settings", () => {
     onTestFinished(() => void vi.unstubAllEnvs());
     const lookup = vi.spyOn(Models.prototype, "retrieve").mockResolvedValue({ max_input_tokens: 1_000 } as never); // no request leaves
     onTestFinished(() => lookup.mockRestore());
+    // Nor does the count the session asks for before a request with no ratio yet (release 8a plan, Task 12).
+    const count = vi.spyOn(Messages.prototype, "countTokens").mockResolvedValue({ input_tokens: 1 } as never);
+    onTestFinished(() => count.mockRestore());
     const answer = (content: unknown[], stop_reason: string) =>
       ({
         id: "msg_1",

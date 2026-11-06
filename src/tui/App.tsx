@@ -278,8 +278,9 @@ export function App(props: AppProps) {
     const onError = (e: ErrorEvent) => {
       if (e.kind === "tool") ui.rerender((n) => n + 1);
       else if (e.kind === "fallback") latest.current.say({ text: `↪ ${e.message}`, color: "magenta" });
-      // Its line names what failed, so it goes without a label (release 8a plan, Task 5; user, 2026-11-06).
-      else if (e.kind === "saving") latest.current.say({ text: `✗ ${e.message}`, color: "red" });
+      // Its line names what failed, so it goes without a label (release 8a plan, Task 5; user, 2026-11-06), as a
+      // shortening's does (Task 12).
+      else if (e.kind === "saving" || e.kind === "shortening") latest.current.say({ text: `✗ ${e.message}`, color: "red" });
       else latest.current.say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
     };
     const onUsage = () => {

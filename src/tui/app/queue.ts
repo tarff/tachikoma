@@ -116,11 +116,7 @@ export const queue = (ui: UI, fns: Fns) => {
         const t = fns.recordToOpen(text);
         return t ? fns.openDetail(fns.recordOf(t)) : fns.say(...fns.tasksCommand(words));
       }
-      if (command === "/lead" && !listing) {
-        const spec = words.join(" ");
-        ui.session.setLead(fns.make(spec)); // this window only, saving nothing (choice 26, the user's)
-        return;
-      }
+      if (command === "/lead" && !listing) return await leadTo(words.join(" "));
       // The window's saved sessions (release 8a plan, Task 7). A name is the rest of the first line as typed, and so is
       // /export's file, so none holds a line break.
       const rest = text.slice(first.length).trim().split(/\r?\n/)[0]!.trim();
@@ -228,12 +224,30 @@ export const queue = (ui: UI, fns: Fns) => {
     // The pick comes after any edit of the file's lead made while the list was open, so it wins, as a /lead typed
     // then would.
     ui.waiting.current.lead = undefined;
+    void leadTo(spec)
+      .catch((err) => fns.say({ text: errorText(err), color: "red" }))
+      .finally(fns.next);
+  };
+  // `/lead <provider:model>` and the model list's pick, this window only, saving nothing (choice 26, the user's). A
+  // conversation that will not fit the new lead's smaller window is shortened first, by the lead leading now, and the
+  // switch is refused if it cannot be (release 8a design, "When to shorten"). Meanwhile it works as a turn does: what is
+  // typed waits in the queue, and Ctrl-C stops the summary.
+  const leadTo = async (spec: string) => {
+    const provider = fns.make(spec);
+    ui.abort.current = new AbortController();
+    ui.doing.current = { label: "Working", at: Date.now(), from: { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } };
+    ui.setNow(ui.doing.current.at);
+    ui.setBusy(true);
+    ui.working.current = true;
+    let problem;
     try {
-      ui.session.setLead(fns.make(spec)); // this window only, as /lead (choice 26)
-    } catch (err) {
-      fns.say({ text: errorText(err), color: "red" });
+      problem = await ui.session.makeRoom(provider, ui.abort.current.signal);
+    } finally {
+      ui.setBusy(false);
+      ui.working.current = false;
     }
-    fns.next();
+    if (problem === undefined) return ui.session.setLead(provider);
+    fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "red" });
   };
   const closePicker = () => {
     ui.listOpen.current = false;

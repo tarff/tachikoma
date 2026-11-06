@@ -45,6 +45,19 @@ export function sent(m: Message): Message {
   return rest;
 }
 
+// A history as a request carries it: each message as sent() makes it, a user message right after another joining it as
+// more parts, as Anthropic refuses two user messages in a row. A prompt after a shortening between turns follows the new
+// history's message so (release 8a plan, Task 12).
+export function sentAll(messages: Message[]): Message[] {
+  const out: Message[] = [];
+  for (const m of messages.map(sent)) {
+    const last = out.at(-1);
+    if (m.role === "user" && last?.role === "user") out[out.length - 1] = { ...last, parts: [...last.parts, ...m.parts] };
+    else out.push(m);
+  }
+  return out;
+}
+
 export interface ToolSpec {
   name: string;
   description: string;

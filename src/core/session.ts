@@ -2,9 +2,26 @@ import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import type { Cache } from "../providers/pictures.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
+import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, Declined } from "./permissions.js";
+import { CANCELLED, shorten, type When } from "./shorten.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
-import { errorText, type Message, marker, type Part, type Provider, sent, type ToolCall, type ToolResult, type Turn } from "./types.js";
+import {
+  type CompletionRequest,
+  errorText,
+  type Message,
+  marker,
+  type Part,
+  type Provider,
+  sentAll,
+  type ToolCall,
+  type ToolResult,
+  type Turn,
+} from "./types.js";
+
+// Why /lead could not shorten the conversation when its transcript is not saved, for its refusal's line (release 8a
+// design, "How shortening works", step 1).
+export const UNSAVED = "saving this session stopped";
 
 export function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
@@ -77,6 +94,12 @@ export class Session {
   // Run before a shortening's summary request: empty in 8a; 8b's hooks and 8d's memory save join it (release 8a plan,
   // choice 24).
   readonly onShorten: (() => void)[] = [];
+  // The /autocompact size in tokens: a conversation past it is shortened before its next request, as one past the window
+  // is; null, the window alone (release 8a design, "When to shorten"). Task 13's /autocompact sets it (plan, choice 26).
+  autoCompact: number | null = null;
+  // Each model's tokens per character in this conversation (fit.ts). A loaded conversation starts afresh, so on Anthropic
+  // it is counted exactly (design, "When to shorten").
+  #sizes = new Sizes();
   #transcript: Transcript | undefined;
   #saidFailed = false; // whether this transcript's failure has been said: once per transcript
 
@@ -118,6 +141,7 @@ export class Session {
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();
+    this.#sizes = new Sizes();
     this.opts.pictures?.from(c.nextPicture);
     this.opts.tasks?.from(c.nextTask);
     this.#saving(); // a write made before the load, such as launch's start line or mend
@@ -127,6 +151,24 @@ export class Session {
   // systemNow the starting one.
   freshSystem(): Promise<string> {
     return this.opts.systemNow?.() ?? Promise.resolve(this.opts.system);
+  }
+
+  // Before /lead makes `next` the lead (release 8a design, "When to shorten"): a conversation that will not fit its smaller
+  // window is shortened between turns by the lead leading now, estimated with that lead's ratio, as `next` has none yet
+  // (plan, Task 12). The reason it could not be, for /lead's refusal; undefined when it fits, when that cannot be told, and
+  // when it was shortened.
+  async makeRoom(next: Provider, signal?: AbortSignal): Promise<string | undefined> {
+    if (!this.messages.length) return;
+    const lead = this.#lead;
+    const now = await this.#window(lead, signal);
+    const then = await this.#window(next, signal);
+    if (now === undefined || then === undefined) return CANCELLED;
+    if (then === null || (now !== null && then >= now)) return;
+    const over = await this.#over(lead, then, signal);
+    if (over === undefined) return CANCELLED;
+    if (!over) return;
+    const r = await this.#shorten(lead, "between", then, signal);
+    return r === "done" ? undefined : r === "unsaved" ? UNSAVED : r.problem;
   }
 
   get fallback(): Provider | undefined {
@@ -159,19 +201,65 @@ export class Session {
     if (words && !this.opts.subagent) this.prompts.push(words);
     const parts: Part[] = [...typed, ...this.#waiting()];
     if (!parts.length) return;
-    this.#push({ role: "user", parts });
+    // The turn's request, kept for a shortening during the turn: after a first one it is no longer in the history.
+    const asked: Message = { role: "user", parts };
+    this.#push(asked);
 
+    // Where the turn is, for a shortening: at its start until its first round of calls, during it after (release 8a
+    // design, "How shortening works", step 4). `shortened`: this request was shortened for once, so a "too long" answer to
+    // it now ends the turn (plan, "Numbers in this plan": 1 request sent again).
+    let when: When = "start";
+    let shortened = false;
     for (;;) {
       const lead = this.#lead;
+      // Not waited for when the lead has no window to look up, so its request goes as soon as before: a background
+      // subagent failing at once still reaches the lead's next request (app.test.tsx, "hands the lead a failure").
+      const window = lead.contextWindow ? await this.#window(lead, signal) : null;
+      if (window === undefined) return; // stopped
+      // The check before the request, against the window and the /autocompact size; with neither known there is none, and
+      // the "too long" answer is the safety net (design, "When to shorten").
+      const limit = Math.min(window ?? Infinity, this.autoCompact ?? Infinity);
+      if (!shortened && limit < Infinity) {
+        const over = await this.#over(lead, limit, signal);
+        if (over === undefined) return;
+        const r = over ? await this.#shorten(lead, when, window, signal, asked) : undefined;
+        if (r !== undefined && r !== "done" && r !== "unsaved") return this.#say(lead, cannot(r.problem));
+        // Not saved, it cannot be shortened: over the window it ends with the line, and past the /autocompact size alone it
+        // is sent as it is, the model's own answer deciding, as is one whose size cannot be told now.
+        const line = r === "unsaved" && limit === window ? await this.#tooLong(lead, window, signal) : null;
+        if (line) return this.#say(lead, line);
+        shortened = r === "done";
+      }
       let answeredBy = lead;
       let turn = await this.#request(lead, signal);
       if (!turn) return;
+      // A "too long" answer, or a reply that filled the window, is never stored: the history is shortened and the request
+      // sent once more (plan, choices 20 and 21). Too long again, or not saved so not shortened, the turn ends with the line,
+      // or with the answer as it came when the request's size or the window is not known.
+      if ("tooLong" in turn || turn.cutOff?.kind === "window") {
+        if (!shortened) {
+          const r = await this.#shorten(lead, when, window, signal, asked);
+          if (r === "done") {
+            shortened = true;
+            continue;
+          }
+          if (r !== "unsaved") return this.#say(lead, cannot(r.problem));
+        }
+        const line = await this.#tooLong(lead, window, signal);
+        if (line) this.#say(lead, line);
+        else if ("tooLong" in turn) this.#failed(lead, turn.tooLong);
+        else bus.emit("error", { kind: "max_tokens", attempted: `response from ${lead.id}`, message: turn.cutOff!.detail, lead: lead.id });
+        return;
+      }
       const rescue = this.#fallback;
       if (turn.cutOff?.kind === "refusal" && rescue) {
         // The refused reply is discarded, never stored, so the history stays append-only.
         const refused = { kind: "refusal", attempted: `response from ${lead.id}`, message: turn.cutOff.detail, lead: lead.id } as const;
         answeredBy = rescue;
-        turn = await this.#request(rescue, signal);
+        const rescued = await this.#request(rescue, signal);
+        // The rescue's "too long" answer is reported as it came: only the lead's request is shortened for.
+        if (rescued && "tooLong" in rescued) this.#failed(rescue, rescued.tooLong);
+        turn = rescued && !("tooLong" in rescued) ? rescued : undefined;
         // A rescued refusal is reported only as the rescue, so the status line does not count it as an error.
         if (!turn || turn.cutOff?.kind === "refusal") bus.emit("error", refused);
         else bus.emit("error", { kind: "fallback", attempted: `response from ${lead.id}`, message: `${lead.id} declined; ${rescue.id} answered instead`, lead: lead.id });
@@ -183,6 +271,11 @@ export class Session {
         bus.emit("error", { kind: "refusal", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
         return;
       }
+      if (turn.cutOff?.kind === "window") {
+        // Only the rescue's comes here, the lead's having been shortened for above: never stored either, it ends the turn.
+        bus.emit("error", { kind: "max_tokens", attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
+        return;
+      }
       // Reported only now, so a model that still refused is never shown as having answered.
       for (const f of turn.fallbacks ?? []) {
         bus.emit("error", { kind: "fallback", attempted: `response from ${answeredBy.id}`, message: `${f.from} declined; ${f.to} answered instead (Anthropic's fallback)`, lead: lead.id });
@@ -192,10 +285,7 @@ export class Session {
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
       if (turn.cutOff) {
-        // A reply that filled the window is reported as hitting a limit, as it was before "window" told them apart
-        // (release 8a plan, choice 21), until Task 12 shortens the history and sends it again.
-        const kind = turn.cutOff.kind === "window" ? "max_tokens" : turn.cutOff.kind;
-        bus.emit("error", { kind, attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
+        bus.emit("error", { kind: turn.cutOff.kind, attempted: `response from ${answeredBy.id}`, message: turn.cutOff.detail, lead: lead.id });
         // Every tool call needs a result before the next request, even ones we refuse to run.
         if (calls.length) {
           this.#push({ role: "user", parts: calls.map((c) => result(c, `${CUT_OFF}${turn.cutOff!.detail}).`, true)) });
@@ -215,41 +305,34 @@ export class Session {
       await Promise.all(together);
       this.#push({ role: "user", parts: [...results, ...this.#waiting()] });
       if (signal?.aborted) return;
+      when = "during";
+      shortened = false;
     }
   }
 
-  // One request. Its usage is reported even if the reply is then discarded, because it is billed.
-  async #request(provider: Provider, signal?: AbortSignal): Promise<Turn | undefined> {
-    const { bus, tools } = this.opts;
-    const { system } = this;
+  // One request. Its usage is reported even if the reply is then discarded, because it is billed. A "too long" answer is
+  // handed back as it came, with nothing said, for the turn to shorten the history (release 8a plan, choice 20).
+  async #request(provider: Provider, signal?: AbortSignal): Promise<Turn | { tooLong: unknown } | undefined> {
+    const { bus } = this.opts;
     const refused = this.#refusedPictures.has(provider.id);
+    const req = this.#req(provider, signal);
+    // Counted once, beside the request, from exactly what is sent, before the reply joins the history (plan, Task 12).
+    const chars = characters(req.system, req.messages, req.tools);
     try {
       // The line for pictures left out (release 6 design, "The whole request"); the conversation keeps them all.
       const leftOut = (n: number, over: string) =>
         bus.emit("note", `${n} ${n === 1 ? "picture was" : "pictures were"} left out of this request to fit ${over}.`);
-      const turn = await provider.complete({
-        system,
-        messages: this.messages.map(sent),
-        tools: tools.map((t) => t.spec),
-        signal,
-        shrunk: this.#shrunk,
-        leftOut,
-        ...(refused ? { refusedBy: provider.id } : {}),
-      });
+      const turn = await provider.complete({ ...req, leftOut });
+      // By the model that answered, so a fallback's numbers never become the lead's ratio (choice 17).
+      this.#sizes.learn(turn.servedBy ?? provider.id, chars, turn.usage);
       for (const d of turn.declined ?? []) bus.emit("usage", d);
       bus.emit("usage", { provider: turn.servedBy ?? provider.id, usage: turn.usage }); // last: it sets the context size
       return turn;
     } catch (err) {
       if (signal?.aborted) return undefined;
-      // The SDKs' `APIError` and chatgpt.ts's ProviderError carry the HTTP status; anything else has none.
-      const status: unknown = (err as { status?: unknown } | null | undefined)?.status;
-      const error = {
-        kind: "provider" as const,
-        attempted: `request to ${provider.id}`,
-        message: errorText(err),
-        lead: this.#lead.id,
-      };
-      bus.emit("error", typeof status === "number" ? { ...error, status } : error);
+      // Before the pictures question, so a too-long 400 never asks it (choice 20).
+      if (provider.tooLong?.(err)) return { tooLong: err };
+      const status = this.#failed(provider, err);
       // A 400 does not say whether the pictures caused it, so the user is asked, after seeing the provider's words; y
       // leaves them out for this provider from now on, the conversation keeping them (release 6 design, "When the
       // provider refuses"). It is whichever provider was sent the request, the fallback included, as its id is the one
@@ -263,6 +346,113 @@ export class Session {
       }
       return undefined;
     }
+  }
+
+  // A request's failure as the provider gave it; its HTTP status, for the pictures question.
+  #failed(provider: Provider, err: unknown): unknown {
+    // The SDKs' `APIError` and chatgpt.ts's ProviderError carry the HTTP status; anything else has none.
+    const status: unknown = (err as { status?: unknown } | null | undefined)?.status;
+    const error = {
+      kind: "provider" as const,
+      attempted: `request to ${provider.id}`,
+      message: errorText(err),
+      lead: this.#lead.id,
+    };
+    this.opts.bus.emit("error", typeof status === "number" ? { ...error, status } : error);
+    return status;
+  }
+
+  // The request the conversation makes now to `provider`, as it is sent, measured and counted.
+  #req(provider: Provider, signal?: AbortSignal): CompletionRequest {
+    return {
+      system: this.system,
+      messages: sentAll(this.messages),
+      tools: this.opts.tools.map((t) => t.spec),
+      signal,
+      shrunk: this.#shrunk,
+      ...(this.#refusedPictures.has(provider.id) ? { refusedBy: provider.id } : {}),
+    };
+  }
+
+  // A model's window, null when it is not known; undefined when the turn was stopped meanwhile.
+  async #window(provider: Provider, signal?: AbortSignal): Promise<number | null | undefined> {
+    try {
+      return (await provider.contextWindow?.(signal)) ?? null;
+    } catch {
+      return signal?.aborted ? undefined : null;
+    }
+  }
+
+  // Whether the conversation's next request to the lead will not fit `limit` (fit.ts): null, no way to tell, counts as
+  // fitting, as such a request has no advance check. Undefined when stopped, as only a stop gets through fits().
+  async #over(lead: Provider, limit: number, signal?: AbortSignal): Promise<boolean | undefined> {
+    try {
+      return (await fits(lead, this.#req(lead, signal), this.#sizes, limit)) === false;
+    } catch (err) {
+      if (!signal?.aborted) throw err;
+      return undefined;
+    }
+  }
+
+  // One shortening (release 8a design, "How shortening works"; plan, Task 12), by `lead`, into what fits `window`.
+  // "unsaved": the transcript is not on disk, so nothing is summarised (step 1), or its `shortened` line could not be
+  // written, which `write` records without throwing; either way nothing changes. The problem when it failed, as
+  // shorten.ts words it, nothing changed either.
+  async #shorten(lead: Provider, when: When, window: number | null, signal?: AbortSignal, asked?: Message): Promise<"done" | "unsaved" | { problem: string }> {
+    const { bus } = this.opts;
+    const t = this.#transcript;
+    if (!t || t.failed !== null) return "unsaved";
+    for (const f of this.onShorten) f();
+    const req = this.#req(lead, signal);
+    const r = await shorten(
+      {
+        lead,
+        system: this.system,
+        messages: this.messages,
+        ...(asked ? { asked } : {}),
+        tools: req.tools,
+        calls: this.calls,
+        workspace: this.opts.ctx.workspace,
+        sizes: this.#sizes,
+        window: window ?? Infinity, // not known: every fit passes, and the "too long" answer is the safety net
+        ...(signal ? { signal } : {}),
+        shrunk: this.#shrunk,
+        ...(req.refusedBy ? { refusedBy: req.refusedBy } : {}),
+        // Counted as the judge's is, apart from the conversation's context (stats.ts).
+        onUsage: (u) => bus.emit("usage", { ...u, summary: true }),
+      },
+      when,
+    );
+    if ("problem" in r) return r;
+    // The new history goes with a system prompt built afresh, both in one line, so the shortening is saved whole or not
+    // at all (choices 3 and 4).
+    const system = await this.freshSystem();
+    t.write({ t: "shortened", system, message: r.messages[0]! });
+    if (t.failed !== null) {
+      this.#saving();
+      return "unsaved";
+    }
+    this.system = system;
+    this.messages.splice(0, this.messages.length, ...r.messages);
+    bus.emit("shortened", r.summary);
+    return "done";
+  }
+
+  // The approved line for a request still too long for `lead`, with its size by the lead's ratio or its exact count; null
+  // when that or the window is not known, so the line cannot be given.
+  async #tooLong(lead: Provider, window: number | null, signal?: AbortSignal): Promise<string | null> {
+    if (window === null) return null;
+    const req = this.#req(lead, signal);
+    let size = this.#sizes.estimate(lead.id, characters(req.system, req.messages, req.tools));
+    if (size === null && lead.countTokens) size = await lead.countTokens(req).catch(() => null);
+    if (size === null) return null;
+    const n = (x: number) => Math.round(x).toLocaleString("en-US"); // as providers/pictures.ts writes a number
+    return `The request is too long for ${lead.id}: about ${n(size)} tokens, against a window of ${n(window)}.`;
+  }
+
+  // A shortening's red line, which ends the turn.
+  #say(lead: Provider, message: string): void {
+    this.opts.bus.emit("error", { kind: "shortening", attempted: `request to ${lead.id}`, message, lead: this.#lead.id });
   }
 
   async #runTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
@@ -321,6 +511,9 @@ export class Session {
     this.opts.bus.emit("error", { kind: "saving", attempted: t.file, message, lead: this.#lead.id });
   }
 }
+
+// The approved line for a shortening that failed (release 8a plan, "Lines this plan adds").
+const cannot = (reason: string) => `The conversation could not be shortened (${reason}); it is unchanged.`;
 
 function result(call: ToolCall, output: string, isError: boolean): ToolResult {
   return { type: "tool_result", callId: call.id, output, isError };

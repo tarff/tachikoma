@@ -617,7 +617,7 @@ if (parsed.print !== undefined) {
   } else {
     bus.on("error", (e) => {
       if (e.kind === "fallback") console.error(prose(`note: ${e.message}`));
-      else if (e.kind === "saving") console.error(prose(e.message)); // the line alone, as the window shows it
+      else if (e.kind === "saving" || e.kind === "shortening") console.error(prose(e.message)); // the line alone, as the window shows it
       else if (e.kind !== "tool") console.error(prose(`${e.kind}: ${e.message}`));
     });
   }

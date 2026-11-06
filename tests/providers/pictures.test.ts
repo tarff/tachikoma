@@ -216,6 +216,10 @@ describe("each request, from the session", () => {
   beforeEach(() => {
     vi.stubEnv("ANTHROPIC_API_KEY", "test-key");
     vi.stubEnv("MOONSHOT_API_KEY", "test-key");
+    // The session looks up the window and may count the request before each request (release 8a plan, Task 12): neither
+    // leaves the machine. Unknown unless a test gives a window; a count that fails leaves the request unchecked (fit.ts).
+    vi.spyOn(Models.prototype, "retrieve").mockRejectedValue(new Error("no network in tests"));
+    vi.spyOn(Messages.prototype, "countTokens").mockRejectedValue(new Error("no network in tests"));
   });
   afterEach(() => {
     vi.restoreAllMocks();

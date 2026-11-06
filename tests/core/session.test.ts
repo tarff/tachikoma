@@ -5,11 +5,15 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 import { privateDir } from "../../src/auth/private.js";
+import type { Events } from "../../src/core/bus.js";
+import { callText } from "../../src/core/exportText.js";
+import { characters } from "../../src/core/fit.js";
 import { type Ask, Declined, PermissionGate } from "../../src/core/permissions.js";
-import { type Conversation, Session } from "../../src/core/session.js";
+import { type Conversation, Session, UNSAVED } from "../../src/core/session.js";
+import { INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
 import { type Line, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
-import type { Message, Part, Provider, Turn } from "../../src/core/types.js";
+import { type CompletionRequest, type Message, type Part, type Provider, sentAll, type Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
 import { judgeOf } from "../../src/safety/judge.js";
@@ -259,12 +263,13 @@ describe("Session", () => {
     expect(errors).toEqual([expect.objectContaining({ kind: "max_tokens", message: "limit" })]);
   });
 
-  // Release 8a plan, choice 21: "window" changes nothing yet; Task 12 shortens the history and sends it again.
-  it("reports a reply cut off at the window as one that hit a limit", async () => {
+  // Release 8a plan, choice 21: a session that cannot shorten, here one saving nothing, never stores the reply, and reports
+  // it as one that hit a limit, its size and window not known.
+  it("never stores a reply cut off at the window, reporting it as one that hit a limit when it cannot be shortened", async () => {
     const cut = { ...callTool("c1", "echo", { text: "x" }), cutOff: { kind: "window" as const, detail: "The conversation filled the context window" } };
     const { session, errors } = await setup([cut]);
     await session.send("go");
-    expect(session.messages.at(-1)!.parts[0]).toMatchObject({ type: "tool_result", callId: "c1", isError: true });
+    expect(session.messages).toEqual([{ role: "user", parts: [{ type: "text", text: "go" }] }]);
     expect(errors).toEqual([expect.objectContaining({ kind: "max_tokens", message: "The conversation filled the context window" })]);
   });
 
@@ -814,10 +819,353 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
     session = new Session({ lead, tools: [writeFileTool], system: "t", ctx: { ...ctx, gate }, bus });
     session.load(loaded(read(p), new Transcript(p.file, p.pictures)));
     await session.send("write it");
-    expect(lead.seen[0]).toEqual([summary, typed("write it")]);
+    // The prompt joins the shortening's message, as Anthropic refuses two user messages in a row (Task 12).
+    expect(lead.seen[0]).toEqual([{ role: "user", parts: [...summary.parts, ...typed("write it").parts] }]);
     const asked = texts(judge.seen[0]![0]!)[0]!.split("\n"); // the prompts' block, then the calls' (judge.ts, request)
     expect(JSON.parse(asked[1]!)).toEqual(["ping it", "thanks", "write it"]);
     expect(JSON.parse(asked[4]!).map((c: { name: string }) => c.name)).toEqual(["echo", "write_file"]);
     expect(JSON.parse(asked[4]!)[0]).toEqual({ name: "echo", input: { text: "ping" } });
+  });
+});
+
+// Release 8a plan, Task 12: the session shortens a conversation that will not fit, before the request or after a "too
+// long" answer (design, "When to shorten" and "How shortening works").
+describe("Session, shortening", { timeout: 15_000 }, () => {
+  let top: string;
+  let n = 0;
+  beforeAll(async () => {
+    top = await mkdtemp(path.join(tmpdir(), "tachi-shorten-"));
+  });
+  afterAll(() => removeTree(top));
+  // Two levels inside the test's temp folder; `inherits`, as a subagent's file is made, so no PowerShell starts.
+  const saving = () => {
+    const dir = path.join(top, "sessions", "project");
+    const id = `s${++n}`;
+    return new Transcript(path.join(dir, `${id}.jsonl`), path.join(dir, id, "pictures"), { inherits: true });
+  };
+  const savedLines = (t: Transcript) =>
+    readFileSync(t.file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Line);
+
+  class TooLong extends Error {
+    status = 400;
+  }
+  type Script = Turn | Error | ((req: CompletionRequest) => Turn);
+  // A scripted lead with a window, which calls a TooLong error too long, and records each request as it was sent.
+  class Lead implements Provider {
+    readonly seen: Omit<CompletionRequest, "signal" | "shrunk" | "leftOut">[] = [];
+    readonly shrunk: unknown[] = [];
+    constructor(
+      readonly id: string,
+      private readonly turns: Script[],
+      private readonly window: number | null = null,
+    ) {}
+    async complete(req: CompletionRequest): Promise<Turn> {
+      const { signal: _, shrunk, leftOut: __, ...rest } = req;
+      this.seen.push(structuredClone(rest));
+      this.shrunk.push(shrunk);
+      const next = this.turns.shift();
+      if (!next) throw new Error(`${this.id} ran out of turns`);
+      if (next instanceof Error) throw next;
+      return typeof next === "function" ? next(req) : next;
+    }
+    tooLong(err: unknown): boolean {
+      return err instanceof TooLong;
+    }
+    async contextWindow(): Promise<number | null> {
+      return this.window;
+    }
+  }
+  // A reply whose usage reports one token a character of the request it answers, so the session's ratio is 1.
+  const measured =
+    (text: string, more: Partial<Turn> = {}) =>
+    (req: CompletionRequest): Turn => ({
+      ...reply(text),
+      ...more,
+      usage: { input: characters(req.system, req.messages, req.tools), output: 0, cacheRead: 0, cacheWrite: 0 },
+    });
+  const summaryOf = (text: string) => reply(text);
+  const isSummary = (req: { messages: Message[] }) => texts(req.messages.at(-1)!).at(-1) === INSTRUCTIONS;
+  const typed = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+  const shortened = (summary: string, request: string) =>
+    `This conversation was shortened. A summary of everything before this point:\n\n${summary}\n\nThe request being worked on, word for word:\n${request}`;
+  const big = "x".repeat(600);
+  const cutAtWindow = { ...reply("half a repl"), cutOff: { kind: "window" as const, detail: "The conversation filled the context window" } };
+
+  async function setup(lead: Provider, more: Partial<ConstructorParameters<typeof Session>[0]> = {}) {
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const summaries: string[] = [];
+    bus.on("shortened", (s) => summaries.push(s));
+    const usages: Events["usage"][0][] = [];
+    bus.on("usage", (u) => usages.push(u));
+    const transcript = saving();
+    const ctx = await tempContext();
+    const session = new Session({ lead, tools: [echo], system: "t", systemNow: async () => "t, read again", ctx, bus, transcript, ...more });
+    return { session, bus, errors, summaries, usages, transcript };
+  }
+  // The approved line for a request still too long (plan, "Lines this plan adds"), at the ratio of 1.
+  const tooLongLine = (session: Session, lead: string, window: number) =>
+    `The request is too long for ${lead}: about ${characters(session.system, sentAll(session.messages), [echo.spec]).toLocaleString("en-US")} tokens, ` +
+    `against a window of ${window.toLocaleString("en-US")}.`;
+
+  it("shortens before a request its estimate puts over the window, the request holding the new history and the prompt", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("The user sent many x."), reply("done")], 700);
+    const { session, errors, summaries, usages, transcript } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen).toHaveLength(3);
+    // The summary request: the whole history before the prompt, the instructions last, with the conversation's system prompt.
+    expect(isSummary(lead.seen[1]!)).toBe(true);
+    expect(lead.seen[1]!.system).toBe("t");
+    expect(lead.seen[1]!.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    const history: Message = typed(shortened("The user sent many x.", "now this"));
+    expect(lead.seen[2]!.messages).toEqual([history]);
+    expect(lead.seen[2]!.system).toBe("t, read again");
+    expect(session.messages).toEqual([history, { role: "assistant", parts: [{ type: "text", text: "done" }], lead: "fake:a" }]);
+    expect(session.system).toBe("t, read again");
+    expect(summaries).toEqual(["The user sent many x."]);
+    expect(errors).toEqual([]);
+    // One line, the new system prompt and the new history together (choice 4), before the reply's.
+    const saved = savedLines(transcript).map((l) => l.t);
+    expect(saved).toEqual(["message", "message", "message", "shortened", "message"]);
+    expect(savedLines(transcript)[3]).toEqual({ t: "shortened", at: expect.any(String), system: "t, read again", message: history });
+    // The summary's usage is marked so (stats.ts leaves the context alone for it).
+    expect(usages.map((u) => u.summary ?? false)).toEqual([false, true, false]);
+  });
+
+  it("shortens and sends once more after a reply cut off at the window, never storing that reply", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), cutAtWindow, summaryOf("Many x."), reply("whole")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen).toHaveLength(4);
+    expect(isSummary(lead.seen[2]!)).toBe(true);
+    expect(lead.seen[3]!.messages).toEqual([typed(shortened("Many x.", "now this"))]);
+    expect(JSON.stringify(session.messages)).not.toContain("half a repl");
+    expect(texts(session.messages.at(-1)!)).toEqual(["whole"]);
+    expect([summaries, errors]).toEqual([["Many x."], []]);
+  });
+
+  it("shortens after a too-long 400 with pictures in the history, without asking about the pictures", async () => {
+    const asked: unknown[] = [];
+    const lead = new Lead("fake:a", [measured("seen"), new TooLong("prompt is too long"), summaryOf("A picture was shown."), reply("ok")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead, { ask: async (...a) => (asked.push(a), true) });
+    await session.send([{ type: "text", text: "look " }, { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }]);
+    await session.send("and now");
+    expect(asked).toEqual([]);
+    expect(errors).toEqual([]);
+    expect(summaries).toEqual(["A picture was shown."]);
+    expect(lead.seen[3]!.messages).toEqual([typed(shortened("A picture was shown.", "and now"))]);
+    // The summary request carries the session's shrunk pictures, as the conversation's requests do (Task 11's reviews).
+    expect(lead.shrunk[2]).toBe(lead.shrunk[0]);
+    expect(lead.shrunk[2]).toBeInstanceOf(Map);
+  });
+
+  it("sends a summary without the pictures to a lead the user said to send none to", async () => {
+    const PNG = { type: "image" as const, id: 1, mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) };
+    const refused = Object.assign(new Error("bad image"), { status: 400 });
+    const lead = new Lead("fake:a", [refused, measured("seen"), new TooLong("prompt is too long"), summaryOf("A picture."), reply("ok")], 1_000_000);
+    const { session } = await setup(lead, { ask: async () => true });
+    await session.send([{ type: "text", text: "look " }, PNG]);
+    await session.send("and now");
+    expect(lead.seen.map((r) => r.refusedBy)).toEqual([undefined, "fake:a", "fake:a", "fake:a", "fake:a"]);
+    expect(isSummary(lead.seen[3]!)).toBe(true);
+  });
+
+  it("ends the turn with the line when the request is still too long once shortened", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), summaryOf("Many x."), new TooLong("prompt is too long")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen).toHaveLength(4);
+    expect(summaries).toEqual(["Many x."]);
+    expect(session.messages).toEqual([typed(shortened("Many x.", "now this"))]);
+    expect(errors).toEqual([{ kind: "shortening", attempted: "request to fake:a", message: tooLongLine(session, "fake:a", 1_000_000), lead: "fake:a" }]);
+  });
+
+  it("ends the turn with the provider's own error when the request's size or window is not known", async () => {
+    const lead = new Lead("fake:a", [reply("noted"), new TooLong("prompt is too long"), summaryOf("Many x."), new TooLong("prompt is too long: 9 > 8")]);
+    const { session, errors } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(errors).toEqual([{ kind: "provider", attempted: "request to fake:a", message: "prompt is too long: 9 > 8", lead: "fake:a", status: 400 }]);
+  });
+
+  it("refuses to shorten when saving has stopped, ending the turn with the line and the history unchanged", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long")], 1_000_000);
+    const own = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
+    onTestFinished(() => removeTree(own));
+    mkdirSync(path.join(own, "data"));
+    writeFileSync(path.join(own, "data", "sessions"), "not a folder"); // a file where the folder should be (Task 3)
+    const transcript = new Transcript(path.join(own, "data", "sessions", "project", "s.jsonl"), path.join(own, "data", "sessions", "project", "s", "pictures"));
+    const { session, errors, summaries } = await setup(lead, { transcript });
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen).toHaveLength(2); // no summary request
+    expect(summaries).toEqual([]);
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(errors.map((e) => e.kind)).toEqual(["saving", "shortening"]);
+    expect(errors[1]!.message).toBe(tooLongLine(session, "fake:a", 1_000_000));
+  });
+
+  it("changes nothing when saving first fails at the shortened line, and ends the turn with the line", async () => {
+    // A transcript whose write of the `shortened` line fails, as `write` records a failure: without throwing.
+    class FailsThere extends Transcript {
+      #broken: string | null = null;
+      override get failed(): string | null {
+        return this.#broken ?? super.failed;
+      }
+      override write(line: Parameters<Transcript["write"]>[0]): void {
+        if (line.t === "shortened") this.#broken = "the disk is full";
+        else super.write(line);
+      }
+    }
+    const t = saving();
+    const transcript = new FailsThere(t.file, t.pictures, { inherits: true });
+    const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), summaryOf("Many x.")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead, { transcript });
+    await session.send(big);
+    await session.send("now this");
+    const before = [typed(big), { role: "assistant", parts: [{ type: "text", text: "noted" }], lead: "fake:a" }, typed("now this")];
+    expect(session.messages).toEqual(before);
+    expect(session.system).toBe("t");
+    expect(summaries).toEqual([]);
+    expect(errors.map((e) => [e.kind, e.message])).toEqual([
+      [
+        "saving",
+        `Saving this session stopped: ${t.file} could not be written (the disk is full). ` +
+          "It cannot be resumed, and a conversation too long for the model will end with an error.",
+      ],
+      ["shortening", tooLongLine(session, "fake:a", 1_000_000)],
+    ]);
+  });
+
+  it("says why a summary failed, in the approved line, and leaves the conversation as it was", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "I can't summarise that." } };
+    const lead = new Lead("fake:a", [measured("noted"), new TooLong("prompt is too long"), refusal], 1_000_000);
+    const { session, errors } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect(session.messages).toHaveLength(3);
+    expect(errors).toEqual([
+      {
+        kind: "shortening",
+        attempted: "request to fake:a",
+        message: "The conversation could not be shortened (I can't summarise that.); it is unchanged.",
+        lead: "fake:a",
+      },
+    ]);
+  });
+
+  it("keeps the turn's own request through a second shortening in the same turn, never the first one's message", async () => {
+    const lead = new Lead(
+      "fake:a",
+      [
+        measured("noted"),
+        callTool("c1", "echo", { text: "one" }),
+        new TooLong("prompt is too long"),
+        summaryOf("First summary."),
+        callTool("c2", "echo", { text: "two" }),
+        new TooLong("prompt is too long"),
+        summaryOf("Second summary."),
+        reply("done"),
+      ],
+      1_000_000,
+    );
+    const { session, summaries, errors } = await setup(lead);
+    await session.send(big);
+    await session.send("do it");
+    expect([summaries, errors]).toEqual([["First summary.", "Second summary."], []]);
+    const last = texts(lead.seen[7]!.messages[0]!).join("");
+    const round = callText({ type: "tool_call", id: "c2", name: "echo", input: { text: "two" } }, "two");
+    expect(last).toBe(`${shortened("Second summary.", "do it")}\n\nThe latest round of tool calls, and their results:\n${round}`);
+    // The second summary was given the first shortening's message to summarise.
+    expect(texts(lead.seen[6]!.messages[0]!).join("")).toContain("First summary.");
+  });
+
+  it("joins the prompt after a shortening between turns to the new history's message", async () => {
+    const a = new Lead("fake:a", [measured("noted"), summaryOf("Many x.")], 10_000);
+    const b = new Lead("fake:b", [reply("hello")], 500);
+    const { session, summaries } = await setup(a);
+    await session.send(big);
+    expect(await session.makeRoom(b)).toBeUndefined();
+    session.setLead(b);
+    await session.send("next");
+    const history = "This conversation was shortened. A summary of everything before this point:\n\nMany x.";
+    expect(summaries).toEqual(["Many x."]);
+    expect(b.seen[0]!.messages).toEqual([{ role: "user", parts: [{ type: "text", text: history }, { type: "text", text: "next" }] }]);
+  });
+
+  it("shortens on a switch to a smaller window with the lead leading now, and keeps the conversation when that fails", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const a = new Lead("fake:a", [measured("noted"), refusal], 10_000);
+    const { session, summaries } = await setup(a);
+    await session.send(big);
+    expect(await session.makeRoom(new Lead("fake:b", [], 500))).toBe("declined");
+    expect([session.messages.length, summaries]).toEqual([2, []]);
+    // A window as large, or one not known, needs no check.
+    expect(await session.makeRoom(new Lead("fake:c", [], 10_000))).toBeUndefined();
+    expect(await session.makeRoom(new Lead("fake:d", []))).toBeUndefined();
+    expect(a.seen).toHaveLength(2);
+  });
+
+  it("refuses a switch that needs shortening when saving has stopped", async () => {
+    const a = new Lead("fake:a", [measured("noted")], 10_000);
+    const { session } = await setup(a, { transcript: undefined });
+    await session.send(big);
+    expect(await session.makeRoom(new Lead("fake:b", [], 500))).toBe(UNSAVED);
+  });
+
+  it("shortens a subagent's conversation the same way", async () => {
+    const turns = [measured("noted"), callTool("c1", "echo", { text: "one" }), new TooLong("prompt is too long"), summaryOf("Sub summary."), reply("done")];
+    const lead = new Lead("fake:w", turns, 1_000_000);
+    const { session, summaries } = await setup(lead, { subagent: true, id: "t1" });
+    await session.send(big);
+    await session.send("brief");
+    expect(summaries).toEqual(["Sub summary."]);
+    expect(texts(session.messages.at(-1)!)).toEqual(["done"]);
+  });
+
+  it("keeps the judge's prompts and calls whole through a shortening", async () => {
+    const turns = [callTool("c1", "echo", { text: "one" }), measured("noted"), new TooLong("prompt is too long"), summaryOf("S."), reply("ok")];
+    const lead = new Lead("fake:a", turns, 1_000_000);
+    const { session, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("then this");
+    expect(summaries).toEqual(["S."]);
+    expect(session.prompts).toEqual([big, "then this"]);
+    expect(session.calls).toEqual([{ name: "echo", input: { text: "one" } }]);
+  });
+
+  it("learns the ratio under the model that answered, so a lead with none has no advance check", async () => {
+    const lead = new Lead("fake:a", [measured("noted", { servedBy: "fake:other" }), reply("sent as it is")], 700);
+    const { session, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect([lead.seen.length, summaries]).toEqual([2, []]);
+  });
+
+  it("starts the ratios afresh on a load, so a loaded conversation has no estimate yet", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), reply("sent as it is")], 700);
+    const { session, summaries } = await setup(lead);
+    await session.send(big);
+    session.load({ id: "c", messages: [...session.messages], system: "t", transcript: saving(), prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+    await session.send("now this");
+    expect([lead.seen.length, summaries]).toEqual([2, []]);
+  });
+
+  it("has no advance check with no window known and no /autocompact size, and checks against the size when set", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), measured("sent as it is"), summaryOf("S."), reply("after")]);
+    const { session, summaries } = await setup(lead);
+    await session.send(big);
+    await session.send("now this");
+    expect([lead.seen.length, summaries]).toEqual([2, []]);
+    session.autoCompact = 700;
+    await session.send("and this");
+    expect(summaries).toEqual(["S."]);
+    expect(isSummary(lead.seen[2]!)).toBe(true);
   });
 });

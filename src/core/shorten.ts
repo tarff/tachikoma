@@ -1,7 +1,8 @@
 import type { Workspace } from "../exec/workspace.js";
+import type { Cache } from "../providers/pictures.js";
 import { callText } from "./exportText.js";
 import { characters, fits, type Sizes } from "./fit.js";
-import { errorText, type Message, type Part, type Provider, sent, type ToolSpec, type Usage } from "./types.js";
+import { errorText, type Message, type Part, type Provider, sentAll, type ToolSpec, type Usage } from "./types.js";
 
 // Shortening a conversation into one message (release 8a design, "How shortening works", steps 3-5; plan, choices 22-23).
 
@@ -48,6 +49,10 @@ interface Shortening {
   window: number;
   focus?: string;
   signal?: AbortSignal;
+  // The session's shrunk pictures and its "send without pictures" answer for the lead, so a summary of a history with
+  // pictures is sent as the conversation's requests are (Task 12's notes from Task 11's reviews).
+  shrunk?: Cache;
+  refusedBy?: string;
   onUsage: (u: { provider: string; usage: Usage; priceKnown?: boolean }) => void; // each summary request's usage, as soon as it ends
 }
 
@@ -100,8 +105,11 @@ export async function shorten(s: Shortening, when: When): Promise<{ messages: Me
 // (null: no ratio yet and no exact count) counts as fitting, as a request with no advance check is sent and the "too
 // long" safety net covers it (design, "When to shorten").
 async function fit(s: Shortening, message: Message): Promise<boolean> {
-  return (await fits(s.lead, { system: s.system, messages: [message], tools: s.tools, signal: s.signal }, s.sizes, s.window)) !== false;
+  return (await fits(s.lead, { ...pictures(s), system: s.system, messages: [message], tools: s.tools, signal: s.signal }, s.sizes, s.window)) !== false;
 }
+
+// The session's pictures, as each request carries them.
+const pictures = (s: Shortening) => ({ ...(s.shrunk ? { shrunk: s.shrunk } : {}), ...(s.refusedBy ? { refusedBy: s.refusedBy } : {}) });
 
 // One summary of `part`, in pieces only when needed (choice 23): the whole part first; if the lead says it is too long,
 // or the summary is cut off at the window or the output limit, the two halves either side of the message nearest its
@@ -133,7 +141,7 @@ async function ask(s: Shortening, part: Message[]): Promise<string | undefined> 
     last?.role === "user" ? [...part.slice(0, -1), { ...last, parts: [...last.parts, words] }] : [...part, { role: "user", parts: [words] }];
   let turn;
   try {
-    turn = await s.lead.complete({ system: s.system, messages: messages.map(sent), tools: s.tools, signal: s.signal });
+    turn = await s.lead.complete({ ...pictures(s), system: s.system, messages: sentAll(messages), tools: s.tools, signal: s.signal });
   } catch (err) {
     if (s.signal?.aborted) throw new Problem(CANCELLED);
     if (s.lead.tooLong?.(err)) return undefined;
