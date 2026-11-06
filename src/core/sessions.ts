@@ -86,9 +86,9 @@ export function openSession(dir: string, id: string): { release: () => void } | 
 // plan, Task 4; design, "Names, branches and export"). A line the other window is still writing is left out (design,
 // "When something goes wrong"). A copy that fails partway is removed, its folder before its transcript, as the sweep
 // removes a session (release 8a plan, Task 6), and only what it made: a cleanup that fails leaves the leftover to the
-// sweep, and the copy's own error is the one thrown. A source whose first line cannot be read throws Unreadable, so the caller
-// can tell a session it cannot read from a copy it cannot write. `copy` is the new id; the parameter exists for the
-// tests, which give their own to stand a file where the copy's folder goes.
+// sweep, and the copy's own error is the one thrown. A source whose first line cannot be read throws
+// Unreadable, so the caller can tell a session it cannot read from a copy it cannot write. `copy` is the
+// new id: openSaved gives the one whose lock it already holds.
 export function copySession(dir: string, id: string, copy: string = randomUUID()): string {
   privateDir(dir);
   const [from, to] = [sessionPaths(dir, id), sessionPaths(dir, copy)];

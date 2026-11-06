@@ -676,7 +676,7 @@ export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: st
     try {
       removeSession(dir, open);
     } catch {}
-    return { problem: read.problem.replace(file, source) }; // the session asked for, not the copy just removed
+    return { problem: read.problem.replace(file, () => source) }; // the session asked for, not the copy just removed
   }
   return { id: open, transcript, read, copied: open !== id && !o.fork, release: () => lock?.release() };
 }
