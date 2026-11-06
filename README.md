@@ -1,19 +1,21 @@
 # Tachikoma
 
-> **Work in progress.** Release 7 of 14 is done; the rest is being built. Expect missing
-> features and changes that break things, and don't rely on it for real work yet.
+> **Work in progress.** Release 8a of 15 is done (the first of release 8's four parts); the rest is
+> being built. Expect missing features and changes that break things, and don't rely on it for real
+> work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
 providers can lead a session. Later releases add handing work to other models and to the `claude`,
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, and
 lessons learned from its own error log.
 
-This is release 7 of 14: the core; signing in with ChatGPT; Claude Code's keys and screen;
+This is release 8a of 15: the core; signing in with ChatGPT; Claude Code's keys and screen;
 subagents that read, with a to-do list and your instruction files; a full screen with its own
 scrolling and mouse selection; a settings file, keys you can move, and Claude Code's external
-editor, stash, pictures and vim mode; and a Docker sandbox, auto mode (a second model judging
-actions) and a check on dangerous commands. The command is `tachi`. So far it has been tested on
-Windows 11 only; release 13 adds testing on Linux and macOS.
+editor, stash, pictures and vim mode; a Docker sandbox, auto mode (a second model judging
+actions) and a check on dangerous commands; and saved sessions you can reopen, with a conversation
+too long for the model shortened into a summary. The command is `tachi`. So far it has been tested
+on Windows 11 only; release 14 adds testing on Linux and macOS.
 
 ## What it does
 
@@ -41,6 +43,13 @@ Windows 11 only; release 13 adds testing on Linux and macOS.
 - **Protected paths** (release 7): files other programs run or read as settings, such as git's
   hooks and `.npmrc`, are never written without a check, and `project` mode now asks for them. See
   [Protected paths](#protected-paths).
+- **Saved sessions** (release 8a): every session is saved as it goes, in a private folder of
+  Tachikoma's own. `tachi -c` reopens the newest and `tachi -r` lists them; in a session, `/resume`,
+  `/clear`, `/branch` and `/rename` switch, start, copy and name them, and `/export` writes one out
+  as text. See [Saved sessions](#saved-sessions).
+- **Long conversations are shortened** (release 8a): one that will not fit the model's window is
+  summarised, instead of ending with an error; `/compact` does it now, and `/autocompact` at a size
+  you choose. See [Shortening long conversations](#shortening-long-conversations).
 - **Search tools:** `find_files` lists files by a pattern such as `src/**/*.ts`, and `search_files`
   searches their contents with a regular expression. Both skip `.git` and what the project's
   `.gitignore` files list, follow no links, and run no program.
@@ -154,6 +163,10 @@ tachi review [<name> [--discard]]                  list the copies kept for revi
 -p, --print <prompt>  run without the interface
 --json            with -p, print every event as one JSON line
 --raw             with -p, print the answer exactly as written, control codes and all
+-c, --continue    reopen the newest session saved in this folder (with -p, the newest -p run)
+-r, --resume [<id or name>]  reopen a saved session by its id or name, or pick one from a list
+-n, --name <name>  name this session, to reopen it with --resume <name>
+--fork-session    with -c or -r, open a copy of the session and leave the saved one as it was
 -h, --help        show this help
 Options --lead to --scroll-speed can also be set in ~/.tachikoma/settings.json; a flag or variable wins.
 ```
@@ -163,11 +176,14 @@ Options --lead to --scroll-speed can also be set in ~/.tachikoma/settings.json; 
 `~\.tachikoma\settings.json`.)
 
 In a session, `/lead <provider:model>` switches the lead model, `/lead` or `/model` alone lists the
-models to pick from, `/login chatgpt` and `/logout chatgpt` sign in and out, `/tasks` lists the
-subagents, `/errors` summarises the error log, `/screen` switches between full screen and classic,
-`/settings` and `/keybindings` open the settings and keys files in your editor, `/vim` switches vim
-mode, and `/exit` quits; commands ignore case. `/lead`, `/model`, `/screen` and `/vim` change only
-the window you type them in. Esc or Ctrl-C stops the current turn and the subagents it waits for;
+models to pick from, `/login chatgpt` and `/logout chatgpt` sign in and out, `/clear`, `/resume`,
+`/branch` and `/rename` start, switch, copy and name [saved sessions](#saved-sessions), `/export`
+writes the conversation out, `/compact` and `/autocompact`
+[shorten it](#shortening-long-conversations), `/tasks` lists the subagents, `/errors` summarises
+the error log, `/screen` switches between full screen and classic, `/settings` and `/keybindings`
+open the settings and keys files in your editor, `/vim` switches vim mode, and `/exit` quits;
+commands ignore case. `/lead`, `/model`, `/screen`, `/vim` and `/autocompact` change only the
+window you type them in. Esc or Ctrl-C stops the current turn and the subagents it waits for;
 background subagents go on until `/tasks stop` or you quit.
 When idle, Ctrl-C clears the prompt, and pressed twice on an empty prompt it quits. Ctrl+T hides or
 shows the to-do list. Esc and Ctrl+T can be moved in the keys file; Ctrl-C and Ctrl-D cannot. `?`
@@ -235,8 +251,9 @@ In `auto`, Tachikoma decides each action in this order, as Claude Code's auto mo
   never kept: the same action asked for again goes to the judge again.
 - **The judge can be wrong.** In Claude Code's words about its own: "Auto mode reduces permission
   prompts but does not guarantee safety." A limit you state in the conversation, such as "don't
-  push", counts, since the judge reads your prompts. But release 8 will shorten long conversations
-  to fit the model's window, and that can drop the line. A rule that must hold belongs in
+  push", counts, since the judge reads your prompts, which shortening never touches. The model at
+  work reads a shortened conversation's summary instead, which quotes your instructions word for
+  word, but a model can miss one. A rule that must hold belongs in
   `dangerousCommands` in the settings file instead: `{"dangerousCommands": {"add": ["git push"]}}`
   makes every `git push` ask, judge or no judge.
 
@@ -495,7 +512,7 @@ failed command's result gets one more line: `(The box's network is off, so nothi
 the internet. To allow it, launch with --network on.)` On, the box has Docker's ordinary network.
 Tachikoma's own requests to the model go from your machine either way. Without the sandbox,
 `--network` does nothing and says so: `--network acts only with the sandbox on; it was ignored`. A
-list of allowed sites is planned for release 8.
+list of allowed sites is planned for release 8c.
 
 ### The box's limits
 
@@ -527,6 +544,183 @@ changes them, each one optional:
 - Where Docker cannot apply a limit (some Linux setups), a grey launch line says so, and the box
   runs without it.
 - There is no disk limit: Docker Desktop accepted one but did not hold to it (measured).
+
+## Saved sessions
+
+Every session is saved as it goes, so it can be opened again later, in the same window or another.
+Each message is written the moment it joins the conversation, to a private file in Tachikoma's data
+folder (`%LOCALAPPDATA%\tachikoma` on Windows, `~/Library/Application Support/tachikoma` on macOS,
+`~/.local/share/tachikoma` on Linux): `sessions/<hash>/<id>.jsonl`, where `<hash>` is named after
+the project folder's real path, as the error log's file is. Its pictures are saved beside it, once
+each, in `<id>/pictures/`, and each subagent's work in `<id>/subagents/`. Only you can read the
+folder, and the file tools never touch it; as with the login, an approved shell command still can
+(see [Known limits](#known-limits)). Nothing is saved in the project, so a transcript, which holds
+everything the model read, cannot be committed by mistake.
+
+- **Reopening one:**
+  - `tachi -c` (`--continue`) reopens the newest session saved in this folder.
+  - `tachi -r` (`--resume`) lists this folder's sessions under `Saved sessions in this folder,
+    newest first:`, each row with the session's name or first prompt, how long ago it was last
+    used, its lead and its file's size. Up and Down move, Enter opens, and Esc or Ctrl-C quits.
+  - `tachi -r <id or name>` opens one directly. A name more than one session has opens the list of
+    those, under `Saved sessions named <name>, newest first:`. A name matches exactly, letter case
+    included.
+  - `-n <name>` (`--name`) names the session at the launch, a new one or one reopened.
+  - `--fork-session`, with `-c` or `-r`, opens a copy under a new id and leaves the saved one as it
+    was.
+
+  A session with no messages is not listed, and nor are `-p` runs (see
+  [Headless runs](#headless-runs)). With nothing to open, the launch stops with one line: `No saved
+  session to continue in this folder.`, `No saved sessions in this folder.`, or `No session named
+  or numbered <x> in this folder; tachi --resume lists them.` The list needs a terminal: without
+  one, `tachi --resume needs a terminal to list sessions; give it a session's id or name.`
+- **What comes back:** the conversation, drawn on screen as it was, from its last shortening on if
+  it was shortened, its pictures read back from their files; then a grey line, `Resumed: <name or
+  first prompt>.` Auto mode's judge gets back every prompt and tool call of the whole session. The
+  lead the session last used leads again, unless `--lead` is given (`TACHI_LEAD` and the settings
+  file's `"lead"` do not replace it). The launch still needs a lead set, by one of those three, and
+  that lead leads when the saved one is no longer set up, its key gone for example: `The session's
+  lead, <spec>, is not set up (<reason>); <spec> leads instead.`
+- **The system prompt is the one the session last sent,** as Claude Code reuses it, since
+  Anthropic's newer models refuse a reply's thinking once the system prompt or the tools before it
+  have changed. So an instruction file edited since counts from the next shortening or `/clear`.
+  The launch still asks about instruction files outside the project, as for a new session, and its
+  answers too count only from then; subagents get the files as this launch read them. When this
+  launch's tools differ from the ones the session was saved under, its earlier replies go without
+  their thinking: `The tools have changed since this session was saved, so its earlier replies are
+  sent without their thinking.`
+- **What does not come back:** the mode, the sandbox and the network, which come from this launch's
+  flags and settings, so resuming never brings back `auto` or `never` unasked; in copy mode the box
+  gets a fresh copy of the folder as it is now. Nor does the to-do list, or a subagent that had not
+  finished: the model is told, once, `Subagent <id> (<description>) had not finished when the
+  session ended; its answer was lost.`
+- **A tool call a crash left without a result is never run again.** The model gets this result for
+  it instead: `Outcome unknown: the session ended while this was running, or before its result was
+  saved. It may have run in full or in part. Check what it would have changed before running it
+  again.`
+- **After a crash,** a half-written last line is skipped, and the file gets a line break before
+  anything is added, so the next line starts on its own; nothing in the file is deleted. Skipped
+  lines are counted: `<n> damaged lines of this session were skipped.` A session that cannot be
+  read at all starts nothing: `<file> could not be read as a session (<reason>).`
+- **Open in another window:** a session is marked open while a window has it, and the mark goes when
+  that window ends, by a crash too. Opening it again opens a copy, under a new id, with everything
+  saved so far: `Opened a copy: that session is open in another window.` The two windows' files
+  are never mixed.
+- **When saving fails,** a red line says so once, and the session goes on unsaved: `Saving this
+  session stopped: <file> could not be written (<reason>). It cannot be resumed, and a conversation
+  too long for the model will end with an error.` It is never shortened then, since what a
+  shortening drops must be on disk, and `/branch` and `/rename` say `<command> needs this session
+  saved, and saving it stopped.` A subagent's own file has a line of its own: `Saving subagent <id>
+  stopped: <file> could not be written (<reason>). A resumed session will report its answer as
+  lost, and its conversation will end with an error if it grows too long for the model.`
+- **Kept for 30 days:** at each launch, every saved session, in any project, not written to for 30
+  days is deleted with its folder, except one open in another window. `"cleanupPeriodDays"` in the
+  [settings file](#settings) changes the number; it is Claude Code's setting of that name and
+  default. A session that cannot be deleted gets a grey line, `An old session could not be deleted:
+  <file> (<reason>).`, and the launch goes on.
+
+In a session:
+
+- **`/clear`** starts a new, empty session in this window, with the same lead and mode and the
+  instruction files read again: `Started a new session; the last one is kept (tachi --resume lists
+  it).`
+- **`/resume`** shows the same list in the prompt's place, without this session (`↑↓ move · Enter
+  opens · Esc closes`), and switches this window to the one picked, with that session's saved
+  lead. A session open in another window opens as a copy. With nothing else saved: `No other saved
+  sessions in this folder.`
+- **`/branch [name]`** copies this session under a new id and carries on in the copy, named as
+  given or after the first prompt: `Branched: this window is now <name>; the original is kept as
+  <id>.` Before any prompt: `Nothing to branch yet: this session has no prompt.`
+- **`/rename <name>`** names this session, as the lists show it and `tachi -r <name>` opens it:
+  `Session named <name>.`
+- **`/clear`, `/resume` and `/branch` wait in the queue while a turn runs,** as `/lead` does, and
+  are refused while a subagent runs, so no answer can land in the wrong session: `<command> waits
+  until no subagent is running: <ids> still running. /tasks stop stops them.`
+- **A switch leaves the earlier lines on screen.** The tool calls Ctrl+O shows, the to-do list and
+  the context gauge start afresh. The sandbox carries on: in copy mode, the review at the end
+  covers the changes of every session the window had.
+
+### Exporting a conversation
+
+`/export <file>` writes the conversation as text: a heading over each message, `You:` or
+`Tachikoma (<lead>):`, the lead being the one that wrote that reply; each tool call as `● <name>
+<input as JSON>`, with its result under it after `⎿`, as Ctrl+O shows it; each picture as its
+`[Image #1]` marker; and the notes about background subagents the model was given, under
+`Subagents:`. The file is UTF-8 with LF line endings throughout. After a shortening, it is the
+conversation from the summary on; the earlier messages are in the transcript only.
+
+- **Where:** a relative path is from the project folder. In copy mode that is your own folder, not
+  the copy, as the file is written by Tachikoma on your machine. A path in double quotes, as
+  Explorer's "Copy as path" gives it, is taken out of them.
+- **Never over a file:** `<file> already exists; nothing was written.` Otherwise `Exported to
+  <file>.`, or `<file> could not be written (<reason>).`
+- **`/export` alone** copies the same text, as a selection is copied ([Full screen](#full-screen)):
+  `Copied the conversation (<n> characters).`
+
+## Shortening long conversations
+
+A conversation that will not fit the model's context window is shortened into a summary, instead of
+ending with an error. The summary replaces the history the model is sent; the transcript keeps
+every message, and nothing leaves the screen. A grey line says so, `Conversation shortened (Ctrl+O
+shows the summary)`, and the status line's context gauge drops. Until the next turn, Ctrl+O opens
+the summary, under `The summary the conversation was shortened to:`, in place of the last turn's
+tool calls.
+
+- **When:**
+  - before each request whose size will not fit the lead's window, or passes the `/autocompact`
+    size;
+  - when the provider answers that a request is too long, or an Anthropic reply runs into the
+    window; that half-written reply is thrown away. The request is then sent once more, shortened,
+    and if it is still too long the turn ends, usually with `The request is too long for <model>:
+    about <n> tokens, against a window of <w>.` A reply that runs into the window a second time
+    ends with its own words, and where the window or the request's size is not known, the
+    provider's own error shows.
+  - on `/compact`;
+  - before `/lead` switches to a model with a smaller window, the lead leading now writing the
+    summary. If that fails, the lead stays: `<spec> was not made the lead: the conversation does
+    not fit its window and could not be shortened (<reason>).`
+- **How the size is known:** from the tokens the provider has reported in this session for each
+  character sent, so no fixed number is used. After a resume, `/clear` or `/branch`, and after a
+  switch to a lead not used since, there is no such figure yet: Anthropic then counts the request
+  exactly with its own counting call, and other providers are not checked until their first reply.
+  On Anthropic, an estimate that says a request will not fit is checked with an exact count before
+  anything is shortened. The window is known only for some models (see
+  [Known limits](#known-limits)).
+- **What the lead is asked for,** in these words, sent after the part to summarise:
+
+  > Summarise this conversation so work can carry on from the summary alone. First, under "Your
+  > instructions", copy word for word every instruction, limit or preference the user gave, such as
+  > "don't push". Then cover: what the user asked for; what has been done, with file paths;
+  > decisions made and why; errors met and how they were fixed; what is still to do; and what was
+  > being worked on at the end.
+
+- **What the new history holds,** as one message: the summary; the prompt being worked on, word for
+  word, with its pictures; during a turn, its latest round of tool calls and their results, as
+  text; and up to 5 of the files read or edited in the session, the most recently used first, each
+  with its content when it is 5,000 tokens or under, and named only when larger, when its size is
+  not known yet, or when it cannot be read (Claude Code's figures). Files outside the project are
+  left out. Pictures in the part summarised are not carried over; the transcript keeps them. A part
+  too long to summarise at once is summarised in halves, and the halves' summaries combined.
+- **What it costs:** each summary is a request to the lead, counted in the session's tokens and
+  cost, but not in the context gauge. Esc or Ctrl-C stops it, and the conversation stays as it was.
+- **A failed shortening changes nothing:** `The conversation could not be shortened (<reason>); it
+  is unchanged.`
+- **Auto mode's judge is untouched:** it keeps every prompt you typed and every tool call, whole.
+- **`-p` runs** shorten the same way. **Subagents** do too, each from its own transcript, but only
+  when a request will not fit their window: the `/autocompact` size is the lead's alone.
+- **`/compact [words]`** shortens now, between turns; words after it say what the summary should
+  focus on (`/compact the failing tests`). With nothing to shorten: `Nothing to shorten yet.`
+  Stopped with Esc or Ctrl-C, it says in red `✗ The conversation could not be shortened (cancelled
+  by the user); it is unchanged.`
+- **`/autocompact <tokens>`,** such as `/autocompact 200k` (`k` for a thousand, `m` for a million),
+  shortens once the conversation passes that many tokens, even with room left in the window:
+  `Shortens once the conversation passes 200,000 tokens.` `/autocompact off` goes back to shortening
+  only when a request would not fit: `Shortens only when a request would not fit.` Anything else
+  gets `Usage: /autocompact <tokens>, such as 200k, or /autocompact off`. It changes this window
+  only and saves nothing. `"autoCompactWindow"` in the settings file sets it for every session, as
+  a whole number of tokens (`{"autoCompactWindow": 200000}`); it is off unless set. When a
+  shortening for that size fails while the request still fits the window, the red line shows and
+  the request is sent as it is; the size is tried again at the next prompt.
 
 ## Full screen
 
@@ -625,6 +819,8 @@ Every entry is optional; one left out keeps its default.
 | `editorMode` | `"vim"` or `"normal"`: see [Vim mode](#vim-mode) | `"normal"` | at once, as `/vim` |
 | `vimInsertModeRemaps` | two characters that leave vim's INSERT mode, mapped to `"<Esc>"` | none | from the next key |
 | `editor` | the command for [the external editor](#the-external-editor) | Notepad on Windows, `vi` elsewhere | from the next Ctrl+G, `/settings` or `/keybindings` |
+| `cleanupPeriodDays` | the days a saved session is kept unchanged before a launch deletes it, a whole number from 1: see [Saved sessions](#saved-sessions) | 30 | at the next launch |
+| `autoCompactWindow` | the `/autocompact` size, a whole number of tokens from 1: see [Shortening long conversations](#shortening-long-conversations) | off | at once, as `/autocompact`, with `autoCompactWindow is now 200,000 (from settings.json)`; taken out, off |
 
 - **Which wins:** a flag, then its variable where it has one (`TACHI_LEAD`, `TACHI_WORKER`,
   `TACHI_CLASSIC`, `TACHI_SCROLL_SPEED`; an empty one counts as unset), then the file, then the
@@ -633,9 +829,9 @@ Every entry is optional; one left out keeps its default.
 - **Mistakes:** a value its flag would refuse stops Tachikoma at launch, in the flag's words, naming
   the entry: `settings.json: "mode" must be one of: ask, project, auto, never (got "x")`. An entry
   Tachikoma does not know gets a grey line, and the rest applies.
-- **Nothing is saved to the file.** `/lead`, a `/model` pick, `/screen`, `/vim` and Shift+Tab change
-  only the window you use them in, since every open window follows the file. To make a change last,
-  edit the file.
+- **Nothing is saved to the file.** `/lead`, a `/model` pick, `/screen`, `/vim`, `/autocompact` and
+  Shift+Tab change only the window you use them in, since every open window follows the file. To
+  make a change last, edit the file.
 - **Edits apply while Tachikoma runs,** in every open window, each with a grey line such as
   `lead is now ollama:qwen3:8b (from settings.json)`. An entry a flag or variable gave at launch
   stays as given for that session, and the line says so: `settings.json's "mode" was left as --mode
@@ -688,8 +884,9 @@ making it first if it is missing.
   one before. The keys pressed so far show in the hint row (`ctrl+x ...`).
 - **`null` unbinds** a key in its context, even where an outer context binds it: `"ctrl+t": null`
   under `Chat` stops Ctrl+T at the prompt, and Global's Ctrl+T still works elsewhere.
-- **`command:<name>`** runs `/exit`, `/errors`, `/model`, `/screen`, `/tasks`, `/vim`, `/settings`
-  or `/keybindings`; during a turn it waits its turn, as a typed command does.
+- **`command:<name>`** runs `/exit`, `/errors`, `/model`, `/screen`, `/tasks`, `/vim`, `/settings`,
+  `/keybindings`, `/clear`, `/resume`, `/branch`, `/rename`, `/export`, `/compact` or
+  `/autocompact`, as typed alone; during a turn it waits its turn, as a typed command does.
 - **Bindings come first.** The prompt's editing keys (Ctrl+A, Ctrl+E, Ctrl+K, Ctrl+U, Ctrl+W, Alt+B,
   Alt+F and the rest) act only on a key no binding takes, so binding Ctrl+E to
   `chat:externalEditor` replaces end-of-line. The editing keys themselves, and vim's, cannot be
@@ -815,8 +1012,12 @@ Pictures go to the model with your message.
   answer does not say whether the pictures caused it. y sends it again with a note in each picture's
   place, and that model gets notes instead of pictures for the rest of the session; n changes
   nothing.
-- **Pictures are kept in memory** until you quit, never on disk. Prompt history keeps a message's
-  words and markers, not its pictures.
+- **Pictures are kept in memory** while Tachikoma runs, and saved with the session, once each, in
+  its private folder ([Saved sessions](#saved-sessions)), so a session reopened has them. Prompt
+  history keeps a message's words and markers, not its pictures.
+- **A picture added before `/resume` or `/branch` and sent after,** from the stash for example, can
+  take a new number when it is sent, so no two pictures of one conversation share a number; the
+  line sent shows the new one.
 
 | Provider | Each picture | Each request |
 |---|---|---|
@@ -906,6 +1107,13 @@ subagent runs in the foreground, since there is no later turn to read its answer
   command is refused. With the sandbox, the launch lines go to stderr, the image must already be
   built (`tachi sandbox build`), and copy mode keeps its copy, saying on stderr after the answer
   `Changes kept for review: tachi review <name>`.
+- **Saved too:** a `-p` run is saved as a session, marked so, and left out of `tachi -c` and the
+  `tachi -r` list. `tachi -c -p "<prompt>"` carries on the newest `-p` run, and `tachi -r <id or
+  name> -p "<prompt>"` any saved session; the list itself needs the interface. Lines about the
+  session, such as `Resumed: <name or first prompt>.`, go to stderr, and so does the line of a
+  saving or a shortening that failed, alone, without a `kind:` label. A run whose saving fails
+  still finishes, its exit code unchanged by it, and so does one where a shortening for the
+  `/autocompact` size failed and the request was sent as it was.
 - **Exit codes:** 0 when the run finished; 1 when a request failed, the model refused or hit a limit,
   or an action that needed your answer was refused (a refusal by the judge, or in `never`, which
   nobody was asked about, leaves the code as it is); 130 when stopped with Ctrl-C; 143 on SIGTERM
@@ -965,10 +1173,16 @@ Each is fixed in a later release, unless it says otherwise.
   yet.
 - **A reply already streaming when you sign out** finishes. The next request is refused (not planned
   to change).
-- **The history is never shortened** (release 8). When the context window is full, the turn ends
-  with an error. Switching `/lead` to a model with a smaller window can make the next request fail.
-- **No budget limit** (release 11). An interactive session runs until you stop it.
-- **Shell commands have no time limit** (release 11). A command that keeps its output open runs
+- **Shortening needs the window, or a "too long" answer Tachikoma can read.** A request is checked
+  against the window ahead of time only where the window is known (above); an `/autocompact` size
+  is checked on any model once it has answered once (on Anthropic, from the first request). A "too
+  long" answer is read from Anthropic, OpenRouter and the ChatGPT plan only, and from OpenRouter
+  only in its own words, not in those of the model's provider passed on. From the OpenAI API, Kimi
+  and Ollama it ends the turn with their own error, unless the check ahead shortened first.
+  OpenRouter's window is not known, so a request still too long after shortening ends with
+  OpenRouter's own error, not the `too long for <model>` line (no release is set).
+- **No budget limit** (release 12). An interactive session runs until you stop it.
+- **Shell commands have no time limit** (release 12). A command that keeps its output open runs
   until you cancel it. Closing the terminal, SIGTERM, and Ctrl-C in headless mode stop running
   commands; a hard kill or a crash of Node does not, and on macOS and Linux the command then keeps
   going.
@@ -994,16 +1208,23 @@ Each is fixed in a later release, unless it says otherwise.
   Where only the terminal copies, a terminal that ignores the copy leaves the clipboard unchanged,
   and Tachikoma cannot tell (no release is set).
 - **Subagents only read.** Ones that edit or run commands come with the budget controller (release
-  11), each with its own copy of the project.
+  12), each with its own copy of the project.
 - **`find_files` patterns skip names that start with a dot** unless the pattern names the dot, as a
   shell's do: `**/*.yml` misses `.github/workflows/ci.yml`, and `.github/**/*.yml` finds it (not
   planned to change).
-- **Instruction files are read once, at the start.** A file edited during a session counts from the
-  next, and files in subfolders, which Claude Code reads as it works there, are not read: both need
-  the system prompt to change during a session, which prompt caching rules out (no release is set).
+- **Instruction files are read at the start, and again only at a shortening or `/clear`.** A file
+  edited during a session counts from then, and a reopened session keeps the system prompt it was
+  saved with until then. Files in subfolders, which Claude Code reads as it works there, are not
+  read. Reading files as they change, or as the work moves into a subfolder, would need the system
+  prompt to change during a session, which prompt caching rules out (no release is set). Read
+  again, a file outside the project counts only if you allowed it at the launch; one the launch did
+  not ask about is left out, without asking.
 - **Prompt history keeps a message's words, not its pictures.** Up or Ctrl+R brings back
   `[Image #1]` as plain text, which carries no picture; add the picture again to send it (no release
   is set).
+- **Ctrl+O and `/tasks t3` pair each tool call with its result by the call's id,** across the whole
+  turn or record, so where a provider gives two calls one id, both show the later one's result.
+  `/export` and shortening pair each call with the message right after it (no release is set).
 - **Windows Terminal keeps Ctrl+V** and pastes the clipboard's text itself, so Tachikoma never sees
   it: pictures are Alt+V there, under WSL too, and binding `ctrl+v` in the keys file does nothing in
   it (not planned to change).
@@ -1022,7 +1243,7 @@ Each is fixed in a later release, unless it says otherwise.
 - **Vim mode's text objects are the ones Claude Code's docs list** (`iw`, `aw`, `iW`, `aW`, and `i`
   or `a` with `"`, `'`, `(`, `[` or `{`). Claude Code's own code also takes `` ` ``, `b`, `B`, `<`,
   `>`, `)`, `]` and `}` after `i` or `a`; those are not built yet (no release is set).
-- **Tested on Windows 11 only.** Release 13's automatic tests will run the suite on Linux and macOS;
+- **Tested on Windows 11 only.** Release 14's automatic tests will run the suite on Linux and macOS;
   until then, those are untried. The sandbox was tried on Docker Desktop for Windows only: Docker
   Desktop on macOS and Linux, and Podman, have not been tried, and live link's full session, refused
   on the test PC's folders, waits for those tests too. On Linux the box runs as your own user and
@@ -1030,8 +1251,8 @@ Each is fixed in a later release, unless it says otherwise.
   Linux as mapping your user to root (user 0) in containers, so there the box may be unable to
   write the project or the copy.
 
-Release 7's limits follow, grouped by part. These are the rarer cases, left as limits rather than
-more code; none has a release set to change it, unless it says so.
+Release 7's and release 8a's limits follow, grouped by part. These are the rarer cases, left as
+limits rather than more code; none has a release set to change it, unless it says so.
 
 ### The dangerous-command check's limits
 
@@ -1262,6 +1483,85 @@ more code; none has a release set to change it, unless it says so.
 - **A key's report that arrives in two pieces more than 20 ms apart,** Ink's own wait, is not read
   as one key.
 
+### Saved sessions' limits
+
+- **A crashed window's session can stay marked open** when another program has since taken the
+  crashed window's process number: it then opens as a copy, and the 30-day sweep keeps it, until
+  the computer restarts.
+- **Two launches at the same moment** can both take over a crashed window's mark on one session,
+  and a copy being made can race another launch's sweep.
+- **A hard kill in the moment between marking a session open and writing its copy** leaves a stray
+  `<id>.lock` file, which the sweep never deletes.
+- **A copy made for a launch that then fails** for another reason, such as Docker not running for
+  the sandbox, stays in the list as a session of its own.
+- **Subagents across a crash:** a background subagent that finished just before the crash, whose
+  answer had not yet reached the model, reads as finished, so the model is not told its answer was
+  lost. When the line saying a subagent failed or was stopped cannot be written, nothing says so,
+  and a resume tells the model its answer was lost. The same goes for a subagent stopped while it
+  waited to start, when the first line of its file cannot be written. When the line saying it was
+  reported lost cannot be written, the next resume reports it again.
+- **A file standing where a project's sessions folder should be** makes `tachi -c` and `tachi -r`
+  end with Node's crash report, a stack trace naming `ENOTDIR`, and `/resume` give the same
+  error in a red line.
+- **When a shortening or `/clear` reads the instruction files again,** files outside the project
+  are judged in groups, as at the launch: a new one found in the same group as one you allowed
+  at the launch leaves both out.
+- **Ctrl-C twice** lets the session's mark go before the stopped turn's last lines are written, so a
+  window that opens the session in that moment opens it as its own, not as a copy.
+
+### `/export`'s limits
+
+- **Links in the folders above the file are followed;** only a link at the file's own name counts
+  as a file already there.
+- **On Windows, a path is taken as Windows takes it,** not as a shell would: `~` is a name in the
+  project, not your home folder; `out/` names a file `out`; and `C:foo`, `nul` and a name with a `:`
+  stream in it (`notes.txt:part`) mean what they mean to Windows.
+- **The file gets ordinary permissions,** as any new file in its folder does, unlike the private
+  transcript it comes from.
+- **A very large copy can be lost:** a terminal can refuse a copy (OSC 52) that big, which matters
+  where only the terminal copies, as over SSH, and Tachikoma cannot tell.
+- **After a shortening, `/export` writes the conversation as the model has it now,** starting from
+  the summary; the earlier messages are in the transcript only.
+
+### Shortening's limits
+
+- **Claude models before 4.5** refuse a request when it and the room kept for the reply
+  (64,000 tokens) pass the window together, in words Tachikoma has not recorded, so that error ends
+  the turn.
+- **The size estimate can be off:**
+  - it leaves out the newest reply's thinking, so it can run low; the "too long" answer then
+    shortens;
+  - Anthropic's exact count ran 49 tokens short of the real request at a window of 1,000,000 tokens
+    (measured), so a request counted just under the window can still be refused, and is then
+    shortened;
+  - when Anthropic's count fails and the estimate says the request will not fit, the summary may
+    not have been needed;
+  - while Anthropic's own fallback model keeps answering for the lead, every request is counted
+    exactly, one more call each;
+  - after a shortening, the new history is checked with the system prompt before it, so instruction
+    files that have grown can make the check low.
+- **A failed lookup of an Anthropic model's window is not tried again until the lead is switched.**
+  Meanwhile the status line shows no "% left", no request is checked against the window, and a
+  request holds at most 100 pictures.
+- **What a shortening keeps can stop it fitting:** the files read back can alone take the new
+  history over the window, and the shortening then fails (`even shortened, it does not fit the
+  window`). The latest round of tool calls, kept as text, does not say which calls failed. The
+  summaries of two halves are not split again when combining them is too long (`the summaries of
+  its pieces are too long to combine`).
+- **`--fallback`'s retry of a refused turn is not checked or shortened;** a "too long" answer to it
+  ends the turn with its own error.
+- **A lead the settings file sets, or `/resume` or a launch with `-c` or `-r` brings back, is
+  used without the check `/lead` makes,** so a conversation too big for its window is shortened
+  only by the next request's check or its "too long" answer.
+- **`/autocompact` set below what a shortened conversation keeps** (its summary, prompt and files)
+  summarises again at every prompt.
+- **A failed `/autocompact` shortening sends the request anyway,** also where the window is not
+  known, so the request can still be too long for the model.
+- **`/autocompact` stays as set across `/clear` and `/resume`** in a window, and the settings file's
+  `"autoCompactWindow"` and a typed `/autocompact` replace each other, the later one winning.
+- **`tachi -p` says nothing when it shortens,** and `-p --json` has no line for the shortening
+  itself, only the summary request's `usage` line, marked `"summary":true`.
+
 ## What comes next
 
 1. Core (done): the agent loop, local file and shell tools, Anthropic and OpenAI-format providers
@@ -1280,18 +1580,25 @@ more code; none has a release set to change it, unless it says so.
 7. Docker sandbox, in two modes (a live link to your folder, or a copy you review before it is
    applied); auto mode, where a second model judges each action instead of asking you; a check on
    dangerous commands of every kind, and protected paths; `never` mode back, in copy mode only;
-   Shift+Enter in Windows Terminal (this release).
-8. MCP tools and long-term memory (MemPalace); the sandbox's list of allowed sites; transcripts
-   saved to disk; shortening the history;
-   lessons learned from the error log, recalled when the same error comes back.
-9. Skills: the loader, the bundled superpowers skills, and Tachikoma's own; Tachikoma offers to
-   turn what it has learned into new skills, saved only on your yes.
-10. Search of the codebase by meaning, with EmbeddingGemma 2.
-11. A budget controller, then handing work to the `claude`, `codex` and `kimi` command-line tools.
-12. Loops: on a timer, and until a task is done.
-13. `tachi setup` and `tachi doctor`, with a first-run import of settings, skills, MCP servers and
+   Shift+Enter in Windows Terminal (done).
+8. In four parts:
+   - 8a: sessions saved to disk and reopened (`tachi -c`, `tachi -r`, `/resume`, `/clear`), names
+     and copies, `/export`, and shortening the history (by itself, `/compact` and `/autocompact`)
+     (this release);
+   - 8b: hooks, in Claude Code's format, from your settings file only;
+   - 8c: MCP tools, and the sandbox's list of allowed sites;
+   - 8d: long-term memory (MemPalace), with a save before each shortening; lessons learned from the
+     error log, recalled when the same error comes back.
+9. Rewinding: going back to an earlier message, with the files put back as they were then.
+10. Skills: the loader, the bundled superpowers skills, and Tachikoma's own; Tachikoma offers to
+    turn what it has learned into new skills, saved only on your yes.
+11. Search of the codebase by meaning, with EmbeddingGemma 2.
+12. A budget controller, then handing work to the `claude`, `codex` and `kimi` command-line tools.
+13. Loops: on a timer, and until a task is done; then workflows, saved routes of steps joined by
+    checks.
+14. `tachi setup` and `tachi doctor`, with a first-run import of settings, skills, MCP servers and
     key bindings from the tools you already use; testing a fresh install in CI.
-14. More providers, and bring-your-own keys.
+15. More providers, and bring-your-own keys.
 
 ## Licence
 
