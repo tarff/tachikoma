@@ -37,6 +37,14 @@ export interface Message {
   lead?: string;
 }
 
+// A message as a request carries it: without the reply's lead, which is the session's own (release 8a plan, choice 27),
+// so no provider can send it on.
+export function sent(m: Message): Message {
+  if (m.lead === undefined) return m;
+  const { lead: _, ...rest } = m;
+  return rest;
+}
+
 export interface ToolSpec {
   name: string;
   description: string;

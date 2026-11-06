@@ -4,7 +4,7 @@ import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { type Ask, Declined } from "./permissions.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
-import { errorText, type Message, marker, type Part, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
+import { errorText, type Message, marker, type Part, type Provider, sent, type ToolCall, type ToolResult, type Turn } from "./types.js";
 
 export function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
@@ -321,12 +321,4 @@ export class Session {
 
 function result(call: ToolCall, output: string, isError: boolean): ToolResult {
   return { type: "tool_result", callId: call.id, output, isError };
-}
-
-// A message as a request carries it: without the reply's lead, which is the session's own (release 8a plan, choice 27),
-// so no provider can send it on.
-function sent(m: Message): Message {
-  if (m.lead === undefined) return m;
-  const { lead: _, ...rest } = m;
-  return rest;
 }

@@ -193,7 +193,7 @@ const WINDOWS_WORD = new RegExp(String.raw`(?:"[^"]*"|[^ ]|${NO_SPLIT})+`, "g");
 export function imagePaths(paste: string, platform: NodeJS.Platform = process.platform): string[] | null {
   const windows = platform === "win32";
   const path = (word: string) => {
-    const p = /^(["'])(.*)\1$/.exec(word.trim())?.[2] ?? word.trim();
+    const p = unquoted(word.trim());
     return windows || /^(?:[A-Za-z]:\\|\\\\)/.test(p) ? p : p.replace(/\\(.)/g, "$1");
   };
   const picture = (p: string) => /\.(png|jpe?g|gif|webp)$/i.test(p);
@@ -209,6 +209,10 @@ export function imagePaths(paste: string, platform: NodeJS.Platform = process.pl
   // reach, handing it the user's Windows login, or wait on when it does not answer; \\?\ and \\.\ too.
   return paths.length && !paths.some((p) => /^[\\/]{2}/.test(p)) ? paths : null;
 }
+
+// A word without one pair of matching quotes around it, as a dropped path comes: " or ', or with `doubleOnly` " alone, as
+// on Windows an apostrophe is part of a name (WINDOWS_WORD, above). /export's file name too (release 8a plan, Task 8).
+export const unquoted = (word: string, doubleOnly = false) => (doubleOnly ? /^(")(.*)\1$/ : /^(["'])(.*)\1$/).exec(word)?.[2] ?? word;
 
 const startsWith = (data: Buffer, at: number, bytes: number[] | string) => {
   const b = Buffer.from(bytes);

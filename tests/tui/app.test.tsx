@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8731,13 +8731,43 @@ describe("App's /export", () => {
 
   // A file where a folder should be makes the write fail. The line was approved by the user on 2026-11-06 (constants.ts,
   // EXPORT_WORDS).
+  // The reason is Node's code and words, without the path they end with, so the file is named once (quality review). Windows
+  // reports a path through a file as missing.
   it("says in red when the file cannot be written", async () => {
     await inColour(async () => {
       const { app, ctx } = await talk();
       writeFileSync(path.join(ctx.root, "notes"), "a file, not a folder");
       await type(app, "/export notes/talk.txt");
       await until(app, "could not be written");
-      said(app, `${path.join(ctx.root, "notes", "talk.txt")} could not be written (`, true);
+      const why = process.platform === "win32" ? "ENOENT: no such file or directory" : "ENOTDIR: not a directory";
+      said(app, `${path.join(ctx.root, "notes", "talk.txt")} could not be written (${why}).`, true);
+      expect(bare(stripVTControlCharacters(app.lastFrame()!))).not.toContain(bare(`open '${path.join(ctx.root, "notes")}`));
+    });
+  });
+
+  // Quality review: a path in matching quotes, as a dropped one comes; on Windows only ", as an apostrophe is part of a name.
+  it("takes a file's name out of the quotes around it", async () => {
+    const { app, ctx } = await talk();
+    await type(app, '/export "my notes.txt"');
+    await until(app, "Exported to");
+    said(app, `Exported to ${path.join(ctx.root, "my notes.txt")}.`);
+    expect(existsSync(path.join(ctx.root, "my notes.txt"))).toBe(true);
+  });
+
+  // Quality review: `wx` follows a link at the name on Windows, a junction to a missing folder making that folder. Any link
+  // there counts as a file already there. The junction is this test's own, in the mount's own folder, and is unlinked,
+  // never followed. Links in the folders above are a known limit.
+  it("refuses a link standing at the file's name, writing nothing where it points", async () => {
+    await inColour(async () => {
+      const { app, ctx } = await talk();
+      const link = path.join(ctx.root, "planted.txt");
+      const target = path.join(ctx.root, "elsewhere");
+      symlinkSync(target, link, "junction");
+      onTestFinished(() => unlinkSync(link));
+      await type(app, "/export planted.txt");
+      await until(app, "already exists");
+      said(app, `${link} already exists; nothing was written.`, true);
+      expect(existsSync(target)).toBe(false);
     });
   });
 

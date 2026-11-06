@@ -95,6 +95,15 @@ describe("exportText", () => {
     expect(exportText(messages, "fake:a")).toBe('You:\na\nb\n\nTachikoma (fake:a):\nc\nd\n● shell {\n  "command": "x"\n}\n  ⎿ e\nf\n');
   });
 
+  // Task 8's quality review: a provider may give a call an id an earlier turn's call had, so a call's result is the one
+  // in the message right after its reply.
+  it("gives each call the result in the message after its reply, though an earlier turn's call had its id", () => {
+    const call = (command: string): Message => ({ role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "shell", input: { command } }] });
+    const result = (output: string): Message => ({ role: "user", parts: [{ type: "tool_result", callId: "c1", output, isError: false }] });
+    const text = exportText([call("one"), result("first"), call("two"), result("second"), call("three")], "fake:a");
+    expect(text.match(/⎿ .*/g)).toEqual(["⎿ first", "⎿ second", "⎿ (not finished)"]);
+  });
+
   it("is empty for a conversation with nothing in it", () => {
     expect(exportText([], "fake:a")).toBe("");
   });

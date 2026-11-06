@@ -77,8 +77,13 @@ export const EXPORT_WORDS = {
 export const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 export const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
 export const gray = (text: string): Line => ({ text, color: "gray" });
-// Characters as a person sees them, as the prompt counts them (release 5 plan, choice 7).
-export const characters = (text: string) => [...segmenter.segment(text)].length;
+// Characters as a person sees them, as the prompt counts them (release 5 plan, choice 7), counted without an array of
+// them, as /export's copy is the whole conversation (release 8a plan, Task 8).
+export const characters = (text: string) => {
+  let n = 0;
+  for (const _ of segmenter.segment(text)) n++;
+  return n;
+};
 
 // What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
 // is a message).

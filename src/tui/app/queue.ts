@@ -1,4 +1,5 @@
-import { writeFileSync } from "node:fs";
+import { lstatSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { withLock } from "../../auth/lock.js";
 import { leadGone, type Opened } from "../../clilib.js";
@@ -16,6 +17,7 @@ import type { Fns } from "../App.js";
 import { callLines, conversationLines, type Line } from "../describe.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
 import { kept, type ReviewEnd } from "../Review.js";
+import { unquoted } from "../clipboard.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
 import { characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened, SESSION_WORDS } from "./constants.js";
@@ -120,11 +122,19 @@ export const queue = (ui: UI, fns: Fns) => {
         ui.session.setLead(fns.make(spec)); // this window only, saving nothing (choice 26, the user's)
         return;
       }
-      // The window's saved sessions (release 8a plan, Task 7). A name is the rest of the first line as typed, so none
-      // holds a line break.
+      // The window's saved sessions (release 8a plan, Task 7). A name is the rest of the first line as typed, and so is
+      // /export's file, so none holds a line break.
       const rest = text.slice(first.length).trim().split(/\r?\n/)[0]!.trim();
       if (command === "/rename") return fns.rename(rest);
-      if (command === "/export") return fns.exportTo(rest);
+      // /export's write may be slow, as to a network share: what is typed meanwhile waits in the queue, as during a turn.
+      if (command === "/export") {
+        ui.working.current = true;
+        try {
+          return await fns.exportTo(rest);
+        } finally {
+          ui.working.current = false;
+        }
+      }
       if (alone("/clear") || alone("/resume") || command === "/branch") {
         const refused = fns.subagentsRunning(command);
         if (refused) return fns.say(refused);
@@ -380,18 +390,27 @@ export const queue = (ui: UI, fns: Fns) => {
   // now. To a file, from the project folder, made with `wx` so one already there is never written over (release 8a plan,
   // choice 27); alone, to the clipboard, whose own failure line follows in the hint row as a selection's copy's does
   // (clipboard.ts).
-  const exportTo = (file: string) => {
+  const exportTo = async (file: string) => {
     const text = exportText(ui.session.messages, ui.session.lead.id);
     if (!file) {
       ui.board.current!.copy(text);
       return fns.say(gray(`Copied the conversation (${characters(text)} characters).`));
     }
-    const to = path.resolve(ui.root, file);
+    // A name in matching quotes, as a dropped path comes, is taken out of them: on Windows only ", as an apostrophe is
+    // part of a name there (clipboard.ts, unquoted).
+    const to = path.resolve(ui.root, unquoted(file, process.platform === "win32"));
+    const there = () => fns.say({ text: `${to} already exists; nothing was written.`, color: "red" });
     try {
-      writeFileSync(to, text, { flag: "wx" });
+      // A link at the name counts as a file there: on Windows `wx` follows one, a junction to a missing folder making
+      // that folder (Task 8's quality review). Links in the folders above are a known limit.
+      if (lstatSync(to, { throwIfNoEntry: false })) return there();
+      await writeFile(to, text, { flag: "wx" });
     } catch (err) {
-      const there = (err as NodeJS.ErrnoException).code === "EEXIST";
-      return fns.say({ text: there ? `${to} already exists; nothing was written.` : EXPORT_WORDS.unwritten(to, errorText(err)), color: "red" });
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === "EEXIST") return there();
+      // Node's code and words, without the path they end with, as the line names the file already.
+      const why = e.syscall && e.path ? e.message.replace(`, ${e.syscall} '${e.path}'`, "") : errorText(err);
+      return fns.say({ text: EXPORT_WORDS.unwritten(to, why), color: "red" });
     }
     fns.say(gray(`Exported to ${to}.`));
   };

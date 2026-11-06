@@ -16,6 +16,7 @@ import {
   runTool,
   systemTool,
   type Tool,
+  unquoted,
 } from "../../src/tui/clipboard.js";
 import { system32 } from "../../src/exec/env.js";
 
@@ -381,6 +382,20 @@ describe("readImage", () => {
 });
 
 // Release 6 design, "From pasted paths".
+// Release 8a plan, Task 8's quality review: one pair of matching quotes around a word, as a dropped path has; with
+// doubleOnly, " alone, as on Windows an apostrophe is part of a name.
+describe("unquoted", () => {
+  it("takes off one pair of matching quotes, and only \" with doubleOnly", () => {
+    expect(unquoted('"my notes.txt"')).toBe("my notes.txt");
+    expect(unquoted("'my notes.txt'")).toBe("my notes.txt");
+    expect(unquoted('""a""')).toBe('"a"');
+    expect(unquoted("'my notes.txt'", true)).toBe("'my notes.txt'");
+    expect(unquoted('"my notes.txt"', true)).toBe("my notes.txt");
+    expect(unquoted("\"a'")).toBe("\"a'");
+    expect(unquoted("plain")).toBe("plain");
+  });
+});
+
 describe("imagePaths", () => {
   it("takes a path with or without quotes, a Windows one with spaces included", () => {
     expect(imagePaths(`"C:\\Users\\me\\My Pictures\\shot one.png"`)).toEqual(["C:\\Users\\me\\My Pictures\\shot one.png"]);
