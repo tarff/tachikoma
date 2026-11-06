@@ -447,6 +447,7 @@ are notes; red ones are failures.
 | Where | Line |
 |---|---|
 | Saving fails (red) | `Saving this session stopped: <file> could not be written (<reason>). It cannot be resumed, and a conversation too long for the model will end with an error.` |
+| A subagent's saving fails (red; user, 2026-11-06) | `Saving subagent <id> stopped: <file> could not be written (<reason>). A resumed session will report its answer as lost, and its conversation will end with an error if it grows too long for the model.` |
 | The sweep cannot delete (grey) | `An old session could not be deleted: <file> (<reason>).` |
 | `tachi -c`, nothing saved | `No saved session to continue in this folder.` |
 | `tachi -r`, nothing saved | `No saved sessions in this folder.` |
@@ -762,7 +763,9 @@ class Session {
   a new kind, `saving`, holding the approved "Saving fails" line, so the error log keeps it. The
   window draws it as `✗ ` and the line, with no `saving:` label (user, 2026-11-06, option
   chosen: "✗ then the line"); `-p` prints the line alone. It fails no `-p` run and no subagent,
-  as "nothing else stops" (design, "When something goes wrong").
+  as "nothing else stops" (design, "When something goes wrong"). When only a subagent's own file
+  fails, the lead keeps saving and the line is "A subagent's saving fails" instead (user,
+  2026-11-06, option chosen: "Its own line"), drawn and kept the same way.
 - **`load` keeps the "no pictures to this provider" answer** for the window (user, 2026-11-06,
   option chosen: "Keep for the window").
 
@@ -845,6 +848,9 @@ local fake OpenAI server already in that file, :468-506):
 - `SessionList`: rows show name or first prompt, time, lead and size; Up/Down/Enter/Esc work;
   filtering by a name works.
 - `-r` without a terminal fails with the line.
+- A `-p` run whose transcript cannot be written (a file where the sessions folder should be,
+  inside the test's own data folder) prints the "Saving fails" line alone on stderr and exits 0
+  (moved here from Task 5: no launch path wrote a transcript before this task).
 
 Commit: `feat: tachi -c, -r, -n and --fork-session reopen, name and copy saved sessions`.
 
