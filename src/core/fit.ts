@@ -19,15 +19,20 @@ export function characters(system: string, messages: Message[], tools: ToolSpec[
 export class Sizes {
   #ratios = new Map<string, number>();
 
-  // From a lead request that succeeded (the caller's to make sure of): its reported prompt over its characters, the
-  // latest replacing any earlier one. A prompt reported as 0 is no measurement, as openai.ts reports a reply without
-  // usage that way, so it teaches nothing and an earlier ratio stays.
+  // From a lead request that succeeded, as the session calls it (Task 12): its reported prompt over its characters, the
+  // latest replacing any earlier one. `provider` is the model that answered, `turn.servedBy ?? lead.id`, so a fallback's
+  // numbers never become the lead's ratio (choice 17; user, 2026-11-06, option chosen: "The model that answered"). A
+  // prompt reported as 0 is no measurement, as openai.ts reports a reply without usage that way, so it teaches nothing
+  // and an earlier ratio stays.
   learn(provider: string, chars: number, usage: Usage): void {
     const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
     if (prompt > 0) this.#ratios.set(provider, prompt / chars);
   }
 
-  // The request's tokens by that ratio; null before the provider has one (after a lead switch, a resume or /clear).
+  // The request's tokens by that ratio; null when this provider has none yet: a lead not used since this Sizes was made.
+  // A ratio is never forgotten, so a lead switched back to keeps its own (choice 17). Task 12 starts a new Sizes in
+  // Session.load() (a resume, /clear, /branch), so a loaded conversation is counted exactly, as the design's "When to
+  // shorten" says.
   estimate(provider: string, chars: number): number | null {
     const ratio = this.#ratios.get(provider);
     return ratio === undefined ? null : chars * ratio;

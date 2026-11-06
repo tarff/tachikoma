@@ -83,8 +83,12 @@ describe("Sizes", () => {
 });
 
 describe("fits", () => {
-  it("is true under the limit and false over it on a provider that cannot count", async () => {
+  // The fixture the tests below rely on: 100 characters, 25 tokens at the known ratio.
+  it("has a request of exactly 100 characters to work with", () => {
     expect(chars).toBe(100);
+  });
+
+  it("is true under the limit and false over it on a provider that cannot count", async () => {
     expect(await fits(lead(), req, known(), 30)).toBe(true);
     expect(await fits(lead(), req, known(), 20)).toBe(false);
   });
