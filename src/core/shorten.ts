@@ -14,7 +14,7 @@ export const CANCELLED = "cancelled by the user";
 export const EMPTY_SUMMARY = "the summary came back empty";
 export const ONE_EXCHANGE = "one exchange is too long to summarise";
 export const COMBINED_TOO_LONG = "the summaries of its pieces are too long to combine";
-export const NOTHING ="there is nothing to summarise";
+export const NOTHING = "there is nothing to summarise";
 export const PROMPT_TOO_BIG = "the request being worked on does not fit the window on its own";
 export const STILL_TOO_BIG = "even shortened, it does not fit the window";
 
@@ -24,6 +24,10 @@ export const INSTRUCTIONS =
   'for word every instruction, limit or preference the user gave, such as "don\'t push". Then cover: what the user asked ' +
   "for; what has been done, with file paths; decisions made and why; errors met and how they were fixed; what is still to " +
   "do; and what was being worked on at the end.";
+
+// What a later piece of a split part opens with, to the model (user, 2026-11-06, option chosen: "Cut anywhere, add a
+// line"): Anthropic refuses a request whose first message is a reply.
+export const LATER_PART = "This is the later part of a conversation; the part before it is summarised separately.";
 
 // Claude Code's figures (design, step 5; choice 22).
 const FILES = 5;
@@ -97,14 +101,15 @@ async function fit(s: Shortening, message: Message): Promise<boolean> {
 
 // One summary of `part`, in pieces only when needed (choice 23): the whole part first; if the lead says it is too long,
 // or the summary is cut off at the window or the output limit, the two halves either side of the whole exchange nearest
-// its middle, each the same way, then their summaries summarised together with the same instructions.
-async function summarise(s: Shortening, part: Message[]): Promise<string> {
-  const whole = await ask(s, part);
+// its middle, each the same way, then their summaries summarised together with the same instructions. `later`: this
+// piece does not start where the whole part does, so it is sent as laterPiece() makes it, and so are both its halves.
+async function summarise(s: Shortening, part: Message[], later = false): Promise<string> {
+  const whole = await ask(s, later ? laterPiece(part) : part);
   if (whole !== undefined) return whole;
   const at = middle(part);
   if (at === undefined) throw new Problem(ONE_EXCHANGE);
-  const first = await summarise(s, part.slice(0, at));
-  const second = await summarise(s, part.slice(at));
+  const first = await summarise(s, part.slice(0, at), later);
+  const second = await summarise(s, part.slice(at), true);
   const both = await ask(s, [{ role: "user", parts: [{ type: "text", text: `${first}\n\n${second}` }] }]);
   if (both === undefined) throw new Problem(COMBINED_TOO_LONG);
   return both;
@@ -137,6 +142,18 @@ async function ask(s: Shortening, part: Message[]): Promise<string | undefined> 
   const summary = turn.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("").trim();
   if (!summary) throw new Problem(EMPTY_SUMMARY);
   return summary;
+}
+
+// A later piece as it is sent: opening with LATER_PART, as its own user message before a reply, or as the first text
+// part of a user message, so no two user messages come in a row; and without any message's `native`, so the provider
+// rebuilds each reply from its parts: Anthropic refuses a reply's thinking once the conversation before it has changed.
+// A results message never opens a piece, as middle() never cuts between calls and their results.
+function laterPiece(part: Message[]): Message[] {
+  const plain = part.map(({ native: _, ...m }) => m);
+  const line: Part = { type: "text", text: LATER_PART };
+  const [head, ...rest] = plain;
+  if (head?.role === "user") return [{ ...head, parts: [line, ...head.parts] }, ...rest];
+  return [{ role: "user", parts: [line] }, ...plain];
 }
 
 // Where to split a part: before the message whose start is nearest the middle by characters (choice 16), never between
@@ -221,7 +238,7 @@ async function recentFiles(s: Shortening): Promise<string | undefined> {
     const tokens = s.sizes.estimate(s.lead.id, JSON.stringify(text).length);
     if (tokens === null) lines.push(`--- ${p} (size not known yet; read it again if needed) ---`);
     else if (tokens > FILE_TOKENS) lines.push(`--- ${p} (over 5,000 tokens; read it again if needed) ---`);
-    else lines.push(`--- ${p} ---\n${text.endsWith("\n") ? text.slice(0, -1) : text}`);
+    else lines.push(`--- ${p} ---\n${text.replace(/\r?\n$/, "")}`);
   }
   return lines.length ? lines.join("\n") : undefined;
 }

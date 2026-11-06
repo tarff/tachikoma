@@ -3,8 +3,11 @@ import { callText } from "../../src/core/exportText.js";
 import { Sizes } from "../../src/core/fit.js";
 import {
   CANCELLED,
+  COMBINED_TOO_LONG,
   EMPTY_SUMMARY,
   INSTRUCTIONS,
+  LATER_PART,
+  NOTHING,
   ONE_EXCHANGE,
   PROMPT_TOO_BIG,
   STILL_TOO_BIG,
@@ -151,6 +154,18 @@ describe("at the start of a turn", () => {
     });
   });
 
+  it("keeps a note the session added for the lead as its own part", async () => {
+    const note = { type: "text", text: "t1 finished", from: "tasks" } as const;
+    const done = await run(new Lead([reply("S")]), [user("p1"), said("r1"), { role: "user", parts: [{ type: "text", text: "go" }, note] }], "start").result;
+    expect(done).toEqual({ messages: [{ role: "user", parts: [{ type: "text", text: `${SHORTENED}S\n\n${REQUEST}go` }, note] }], summary: "S" });
+  });
+
+  it("returns the problem when there is nothing before the prompt, and sends nothing", async () => {
+    const lead = new Lead([]);
+    expect(await run(lead, [user("the first prompt")], "start").result).toEqual({ problem: NOTHING });
+    expect(lead.seen).toEqual([]);
+  });
+
   it("returns the problem when the prompt alone does not fit, and sends nothing", async () => {
     const lead = new Lead([]);
     const { result } = run(lead, [user("p1"), said("r1"), user("p".repeat(5000))], "start", { sizes: counted(), window: 3000 });
@@ -239,21 +254,37 @@ describe("files", () => {
   it("names a file that cannot be read", async () => {
     expect(await filesPart([read("gone.txt"), read("a.txt")])).toBe("--- a.txt ---\nA\n--- gone.txt (could not be read) ---");
   });
+
+  it("names a path the file tools refuse as one that cannot be read, among the 5", async () => {
+    const base = workspace(files);
+    const refusing: Workspace = { ...base, resolve: (p) => (p === "secret" ? Promise.reject(new Error("refused")) : base.resolve(p)) };
+    const calls = [read("a.txt"), read("b.txt"), read("c.txt"), read("d.txt"), read("e.txt"), read("secret")];
+    expect(await filesPart(calls, { workspace: refusing })).toBe(
+      "--- secret (could not be read) ---\n--- e.txt ---\nE\n--- d.txt ---\nD\n--- c.txt ---\nC\n--- b.txt ---\nB",
+    );
+  });
+
+  it("trims a CRLF file's last line ending whole", async () => {
+    expect(await filesPart([read("crlf.txt")], { workspace: workspace({ "crlf.txt": "A\r\nB\r\n" }) })).toBe("--- crlf.txt ---\nA\r\nB");
+  });
 });
 
 describe("pieces", () => {
   const history = [user("p1"), said("r1"), user("p2"), said("r2")];
   const combined = (first: string, second: string) => [{ role: "user", parts: [{ type: "text", text: `${first}\n\n${second}` }, instructions] }];
+  const line = { type: "text", text: LATER_PART } as const;
+  // A later half as it is sent: the line first, in the typed prompt that opens it.
+  const later = (prompt: string) => ({ role: "user", parts: [line, { type: "text", text: prompt }] });
+  const lineAlone = { role: "user", parts: [line] };
+  const ask = { role: "user", parts: [instructions] };
 
   it("sends two halves split at an exchange when the whole is too long, then combines their summaries", async () => {
+    const thought = (m: Message, n: string): Message => ({ ...m, native: { provider: "anthropic", content: [{ type: "thinking", thinking: n }] } });
     const lead = new Lead([new TooLong("prompt is too long"), reply("S1"), reply("S2"), reply("BOTH")]);
-    const { used, result } = run(lead, history, "between");
+    const { used, result } = run(lead, [user("p1"), thought(said("r1"), "t1"), user("p2"), thought(said("r2"), "t2")], "between");
     expect(await result).toEqual({ messages: [{ role: "user", parts: [{ type: "text", text: `${SHORTENED}BOTH` }] }], summary: "BOTH" });
-    expect(lead.seen.slice(1)).toEqual([
-      [user("p1"), said("r1"), { role: "user", parts: [instructions] }],
-      [user("p2"), said("r2"), { role: "user", parts: [instructions] }],
-      combined("S1", "S2"),
-    ]);
+    // The first half keeps its stored thinking; the later one opens with the line, in its prompt, and goes without it.
+    expect(lead.seen.slice(1)).toEqual([[user("p1"), thought(said("r1"), "t1"), ask], [later("p2"), said("r2"), ask], combined("S1", "S2")]);
     // Nothing for the refused whole: it has no usage.
     expect(used).toEqual([
       { provider: "fake:lead", usage },
@@ -266,19 +297,36 @@ describe("pieces", () => {
     const cut: Turn = { ...reply("half a summ"), cutOff: { kind: "window", detail: "The conversation filled the context window" } };
     const lead = new Lead([cut, reply("S1"), reply("S2"), reply("BOTH")]);
     const { used, result } = run(lead, history, "between");
-    expect(await result).toMatchObject({ summary: "BOTH" });
-    expect(lead.seen.slice(1).map((m) => m.length)).toEqual([3, 3, 1]);
-    expect(used).toHaveLength(4);
+    expect(await result).toEqual({ messages: [{ role: "user", parts: [{ type: "text", text: `${SHORTENED}BOTH` }] }], summary: "BOTH" });
+    expect(lead.seen).toEqual([[...history, ask], [user("p1"), said("r1"), ask], [later("p2"), said("r2"), ask], combined("S1", "S2")]);
+    expect(used).toEqual(Array.from({ length: 4 }, () => ({ provider: "fake:lead", usage })));
   });
 
-  it("splits again when a half is cut off at the output limit", async () => {
+  it("splits again when a half is cut off at the output limit, putting the line on every later half", async () => {
     const cut: Turn = { ...reply("half"), cutOff: { kind: "max_tokens", detail: "The response hit the output limit" } };
-    const lead = new Lead([new TooLong(), cut, reply("S1a"), reply("S1b"), reply("S1"), reply("S2"), reply("BOTH")]);
+    const lead = new Lead([new TooLong(), cut, reply("S1a"), reply("S1b"), reply("S1"), cut, reply("S2a"), reply("S2b"), reply("S2"), reply("BOTH")]);
     expect(await run(lead, history, "between").result).toMatchObject({ summary: "BOTH" });
-    expect(lead.seen[2]).toEqual([{ role: "user", parts: [{ type: "text", text: "p1" }, instructions] }]);
-    expect(lead.seen[3]).toEqual([said("r1"), { role: "user", parts: [instructions] }]);
-    expect(lead.seen[4]).toEqual(combined("S1a", "S1b"));
-    expect(lead.seen[6]).toEqual(combined("S1", "S2"));
+    expect(lead.seen).toEqual([
+      [...history, ask],
+      [user("p1"), said("r1"), ask],
+      [{ role: "user", parts: [{ type: "text", text: "p1" }, instructions] }], // the very start: no line
+      [lineAlone, said("r1"), ask], // a later half that starts with a reply: the line as its own message
+      combined("S1a", "S1b"),
+      [later("p2"), said("r2"), ask],
+      [{ role: "user", parts: [line, { type: "text", text: "p2" }, instructions] }], // the first half of a later half
+      [lineAlone, said("r2"), ask],
+      combined("S2a", "S2b"),
+      combined("S1", "S2"),
+    ]);
+  });
+
+  it("returns the problem when the summaries are too long to combine, answered too long or cut off", async () => {
+    const cut: Turn = { ...reply("half"), cutOff: { kind: "max_tokens", detail: "The response hit the output limit" } };
+    for (const last of [new TooLong(), cut]) {
+      const lead = new Lead([new TooLong(), reply("S1"), reply("S2"), last]);
+      expect(await run(lead, history, "between").result).toEqual({ problem: COMBINED_TOO_LONG });
+      expect(lead.seen[3]).toEqual(combined("S1", "S2"));
+    }
   });
 
   it("never splits a call from its result, and returns the problem for one exchange still too long", async () => {
@@ -286,7 +334,7 @@ describe("pieces", () => {
     const lead = new Lead([new TooLong(), reply("S1"), new TooLong()]);
     const { used, result } = run(lead, [user("p1"), asks(c1), results("c1", "x".repeat(5000))], "between");
     expect(await result).toEqual({ problem: ONE_EXCHANGE });
-    expect(lead.seen[2]).toEqual([asks(c1), { role: "user", parts: [...results("c1", "x".repeat(5000)).parts, instructions] }]);
+    expect(lead.seen[2]).toEqual([lineAlone, asks(c1), { role: "user", parts: [...results("c1", "x".repeat(5000)).parts, instructions] }]);
     expect(used).toHaveLength(1);
   });
 });
@@ -319,6 +367,12 @@ describe("problems", () => {
 });
 
 describe("usage", () => {
+  it("reports one summary's usage exactly once", async () => {
+    const { used, result } = run(new Lead([reply("S")]), [user("hi"), said("hello")], "between");
+    await result;
+    expect(used).toEqual([{ provider: "fake:lead", usage }]);
+  });
+
   it("reports one summary's usage once, declined attempts first, with the provider that served it", async () => {
     const declined = { provider: "fake:first", usage: { ...usage, input: 3 }, priceKnown: false };
     const lead = new Lead([{ ...reply("S"), declined: [declined], servedBy: "fake:other" }]);
