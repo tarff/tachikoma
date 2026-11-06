@@ -208,6 +208,7 @@ export class Tasks {
       ctx: { ...ctx, gate: ctx.gate.for(owner, { calls: () => session.calls, bus }) },
       bus,
       subagent: true,
+      id: t.id, // names it in its saving line
       ...(own ? { transcript: own } : {}),
     });
     t.messages = session.messages;

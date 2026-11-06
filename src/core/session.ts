@@ -17,7 +17,7 @@ export interface SessionOptions {
   system: string; // the starting value: Session.system is the conversation's (release 8a plan, choice 3)
   // The system prompt built afresh, the instruction files read again, for a shortening (release 8a plan, choice 3).
   systemNow?: () => string;
-  id?: string; // the session's, as its transcript is named
+  id?: string; // the session's, as its transcript is named: a subagent's is its own, t1 and so on
   // Where each message is saved as it joins the history (release 8a design, "Saving sessions"); none, nothing is saved.
   transcript?: Transcript;
   // The window's picture numbers and subagent ids, which a loaded conversation's must not be handed out again (release
@@ -295,14 +295,17 @@ export class Session {
 
   // Says once that saving stopped, in the approved line, so the screen, `-p` and the error log have it. Checked after the
   // session's own writes and at a load, which also catches a failed write the session did not make: Tasks' subagent line,
-  // launch's start line or mend (release 8a plan, Task 5).
+  // launch's start line or mend (release 8a plan, Task 5). A subagent's own file failing leaves the lead saving, so it has
+  // its own line (user, 2026-11-06: "Its own line").
   #saving(): void {
     const t = this.#transcript;
     if (!t?.failed || this.#saidFailed) return;
     this.#saidFailed = true;
-    const message =
-      `Saving this session stopped: ${t.file} could not be written (${t.failed}). ` +
-      "It cannot be resumed, and a conversation too long for the model will end with an error.";
+    const message = this.opts.subagent
+      ? `Saving subagent ${this.id} stopped: ${t.file} could not be written (${t.failed}). ` +
+        "A resumed session will report its answer as lost, and its conversation will end with an error if it grows too long for the model."
+      : `Saving this session stopped: ${t.file} could not be written (${t.failed}). ` +
+        "It cannot be resumed, and a conversation too long for the model will end with an error.";
     this.opts.bus.emit("error", { kind: "saving", attempted: t.file, message, lead: this.#lead.id });
   }
 }

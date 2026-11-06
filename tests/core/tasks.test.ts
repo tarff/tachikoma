@@ -272,7 +272,7 @@ describe("Tasks, saved", { timeout: 15_000 }, () => {
     ]);
   });
 
-  it("finishes a subagent whose own file cannot be written, saying saving stopped, never failing it", async () => {
+  it("finishes a subagent whose own file cannot be written, saying so in its own line, never failing it, the lead saving on", async () => {
     const p = place();
     // A file where its subagents folder should be, so only the subagent's own writes fail, with no permission changed.
     mkdirSync(path.dirname(p.subagents));
@@ -281,18 +281,18 @@ describe("Tasks, saved", { timeout: 15_000 }, () => {
     const { tasks, errors } = await setup(new FakeProvider("w", [reply("found it")]), { transcript: () => lead });
     expect(await tasks.start("find x", { description: "find", background: false }).done).toEqual({ state: "done", text: "found it" });
     const file = path.join(p.subagents, "t1.jsonl");
-    expect(errors).toEqual([
-      {
-        kind: "saving",
-        attempted: `t1: ${file}`,
-        message: expect.stringMatching(/^Saving this session stopped: .+ could not be written \(.+\)\. /),
-        lead: "fake:w",
-      },
-    ]);
-    // The approved line, its reason being the subagent's own failed write.
-    expect(errors[0]!.message.startsWith(`Saving this session stopped: ${file} could not be written (`)).toBe(true);
-    expect(errors[0]!.message.endsWith("). It cannot be resumed, and a conversation too long for the model will end with an error.")).toBe(true);
+    // The reason its own write gave: a write to the same file fails the same way.
+    const probe = new Transcript(file, p.pictures);
+    probe.write({ t: "name", name: "x" });
+    expect(probe.failed).toEqual(expect.stringMatching(/\S/));
+    // The approved line for a subagent's saving (plan, "Lines this plan adds"; user, 2026-11-06, "Its own line"), and no
+    // lead's line, as the lead saves on.
+    const message =
+      `Saving subagent t1 stopped: ${file} could not be written (${probe.failed}). ` +
+      "A resumed session will report its answer as lost, and its conversation will end with an error if it grows too long for the model.";
+    expect(errors).toEqual([{ kind: "saving", attempted: `t1: ${file}`, message, lead: "fake:w" }]);
     expect(lead.failed).toBeNull();
+    expect(lines(p.file).map((l) => l.t)).toEqual(["subagent"]);
   });
 
   it("ends the file of a subagent that failed, and of one that was stopped, with how it ended, so neither reads as unfinished", async () => {
