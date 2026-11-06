@@ -23,6 +23,12 @@ export class Pictures {
     return id;
   }
 
+  // The next number becomes at least `n`, never less, so a loaded conversation's pictures, and any read before the
+  // switch, keep numbers no other picture in the window takes (release 8a plan, choice 5).
+  from(n: number): void {
+    this.#last = Math.max(this.#last, n - 1);
+  }
+
   // A read's result, wherever its marker is. Every read ends in one of these, never left "reading". The first ending
   // stays: a reader that answers after Esc stopped its read (plan, Task 14) brings nothing back.
   set(id: number, read: Read): void {

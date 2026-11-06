@@ -38,6 +38,17 @@ describe("Pictures", () => {
     p.markSent(id);
     expect(p.sent(id)).toBe(true);
   });
+
+  // Release 8a plan, choice 5: a loaded conversation's pictures are never numbered again in the window.
+  it("raises the next number to follow a loaded conversation's pictures, and never lowers it", () => {
+    const p = new Pictures();
+    p.from(4);
+    expect(p.next()).toBe(4);
+    p.from(2); // a conversation with fewer pictures, loaded after
+    expect(p.next()).toBe(5);
+    p.from(5);
+    expect(p.next()).toBe(6);
+  });
 });
 
 describe("messageParts", () => {

@@ -1,19 +1,33 @@
+import { readFileSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { privateDir } from "../../src/auth/private.js";
 import { type Ask, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
 import { Tasks } from "../../src/core/tasks.js";
-import type { Provider } from "../../src/core/types.js";
+import { type Line, readTranscript, Transcript } from "../../src/core/transcript.js";
+import type { Provider, Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
+import { delegateTool } from "../../src/tools/delegate.js";
 import { readFileTool } from "../../src/tools/files.js";
-import { Bus, FakeProvider, Held, callTool, collectErrors, reply, tempContext, texts } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts } from "../helpers.js";
 
-async function setup(worker: Provider | (() => Provider), opts: { max?: number; ask?: Ask } = {}) {
+async function setup(worker: Provider | (() => Provider), opts: { max?: number; ask?: Ask; transcript?: () => Transcript | undefined } = {}) {
   const bus = new Bus();
   const ctx = await tempContext();
   const gate = new PermissionGate("project", opts.ask ?? (async () => false));
-  const tasks = new Tasks({ bus, max: opts.max ?? 8, worker: typeof worker === "function" ? worker : () => worker, system: "sub", tools: [readFileTool], ctx: { ...ctx, gate } });
+  const tasks = new Tasks({
+    bus,
+    max: opts.max ?? 8,
+    worker: typeof worker === "function" ? worker : () => worker,
+    system: "sub",
+    tools: [readFileTool],
+    ctx: { ...ctx, gate },
+    ...(opts.transcript ? { transcript: opts.transcript } : {}),
+  });
   return { bus, tasks, ctx, errors: collectErrors(bus) };
 }
 
@@ -50,6 +64,18 @@ describe("Tasks", () => {
     const { tasks } = await setup(new FakeProvider("w", [reply("a"), reply("b"), reply("c")]));
     for (const task of ["a", "b", "c"]) await tasks.start(task, { background: false }).done;
     expect(tasks.all.map((t) => t.id)).toEqual(["t1", "t2", "t3"]);
+  });
+
+  // Release 8a plan, choice 4: a loaded conversation's subagents keep their names, so no id is handed out twice.
+  it("numbers subagents on from a loaded conversation's next number, and never lowers it", async () => {
+    const { tasks } = await setup(new FakeProvider("w", [reply("a"), reply("b"), reply("c")]));
+    tasks.from(5);
+    await tasks.start("a", { background: false }).done;
+    tasks.from(2); // a conversation with fewer subagents, loaded after
+    await tasks.start("b", { background: false }).done;
+    tasks.from(6);
+    await tasks.start("c", { background: false }).done;
+    expect(tasks.all.map((t) => t.id)).toEqual(["t5", "t6", "t7"]);
   });
 
   it("keeps a background subagent's answer for the lead, handed over once, and says when anything changed", async () => {
@@ -183,5 +209,139 @@ describe("Tasks", () => {
     tasks.clearFinished();
     expect(tasks.all.map((t) => t.shown)).toEqual([false, true]);
     expect(tasks.running).toBe(1);
+  });
+});
+
+// Release 8a plan, Task 5: each subagent saves its own transcript beside the lead's. The sessions folder is inside a fresh
+// temporary folder and made private once, as tests/core/transcript.test.ts does, each case with its own session in it.
+describe("Tasks, saved", { timeout: 15_000 }, () => {
+  let top: string;
+  let shared: string;
+  let sessions = 0;
+  beforeAll(async () => {
+    top = await mkdtemp(path.join(tmpdir(), "tachi-tasks-"));
+    shared = path.join(top, "sessions", "project");
+    privateDir(shared);
+  });
+  afterAll(() => removeTree(top));
+  function place() {
+    const id = `s${++sessions}`;
+    return { id, file: path.join(shared, `${id}.jsonl`), pictures: path.join(shared, id, "pictures"), subagents: path.join(shared, id, "subagents") };
+  }
+  const start = (id: string): Omit<Extract<Line, { t: "start" }>, "at"> => ({
+    t: "start",
+    v: 1,
+    id,
+    project: "C:\\a project",
+    lead: "fake:lead",
+    version: "0.8.0",
+    print: false,
+    system: "t",
+    tools: [],
+  });
+  const lines = (file: string) =>
+    readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Line);
+  const read = (p: { file: string; pictures: string }) => {
+    const r = readTranscript(p.file, p.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    return r;
+  };
+
+  it("writes a subagent's turn to its own file, after a line in the lead's naming it with its description", async () => {
+    const p = place();
+    const lead = new Transcript(p.file, p.pictures);
+    let before = "";
+    const worker: Provider = {
+      id: "fake:w",
+      complete: async () => {
+        before = readFileSync(p.file, "utf8");
+        return reply("It is in src/auth.ts:12");
+      },
+    };
+    const { tasks } = await setup(worker, { transcript: () => lead });
+    await tasks.start("find the login code", { description: "find login", background: false }).done;
+    const line = { t: "subagent", id: "t1", description: "find login", file: "t1.jsonl" };
+    expect(lines(p.file)).toEqual([{ ...line, at: expect.any(String) }]);
+    expect(JSON.parse(before)).toMatchObject(line); // there before the subagent's first request
+    expect(lines(path.join(p.subagents, "t1.jsonl"))).toEqual([
+      { t: "message", at: expect.any(String), message: { role: "user", parts: [{ type: "text", text: "find the login code" }] } },
+      { t: "message", at: expect.any(String), message: { role: "assistant", parts: [{ type: "text", text: "It is in src/auth.ts:12" }] } },
+    ]);
+  });
+
+  it("ends the file of a subagent that failed, and of one that was stopped, with how it ended, so neither reads as unfinished", async () => {
+    const p = place();
+    const lead = new Transcript(p.file, p.pictures);
+    lead.write(start(p.id));
+    const held = new Held();
+    const failing = new FakeProvider("w", [new Error("rate limited")]);
+    const { tasks } = await setup(() => (tasks.all.length ? held : failing), { transcript: () => lead });
+    expect((await tasks.start("find x", { description: "fails", background: true }).done).state).toBe("failed");
+    const stopped = tasks.start("find y", { description: "stopped", background: true });
+    const running = tasks.start("find z", { description: "still going", background: true });
+    await settle();
+    tasks.stop("t2");
+    expect((await stopped.done).state).toBe("stopped");
+    expect(lines(path.join(p.subagents, "t1.jsonl")).at(-1)).toEqual({ t: "ended", at: expect.any(String), state: "failed" });
+    expect(lines(path.join(p.subagents, "t2.jsonl")).at(-1)).toEqual({ t: "ended", at: expect.any(String), state: "stopped" });
+    // Only the one still running when the file was read had not finished.
+    expect(read(p).unfinished).toEqual([{ id: "t3", description: "still going" }]);
+    tasks.stop("t3");
+    await running.done;
+  });
+
+  it("numbers a resumed session's next subagent after the saved ones, in a file of its own", async () => {
+    const p = place();
+    // One window, as cli.tsx makes it: the subagents save beside the session's transcript, read at each start.
+    async function window(turns: Turn[], answer: string, saved?: Transcript) {
+      const bus = new Bus();
+      const ctx = await tempContext();
+      const gate = new PermissionGate("project", async () => false);
+      let session: Session | undefined;
+      const tasks = new Tasks({
+        bus,
+        max: 8,
+        worker: () => new FakeProvider("w", [reply(answer)]),
+        system: "sub",
+        tools: [readFileTool],
+        ctx: { ...ctx, gate },
+        transcript: () => session?.transcript,
+      });
+      session = new Session({
+        lead: new FakeProvider("lead", turns),
+        tools: [delegateTool(tasks, { headless: false })],
+        system: "t",
+        ctx: { ...ctx, gate },
+        bus,
+        inbox: () => tasks.take(),
+        tasks,
+        ...(saved ? { transcript: saved } : {}),
+      });
+      return { session, tasks };
+    }
+    const first = new Transcript(p.file, p.pictures);
+    first.write(start(p.id));
+    const one = await window([callTool("c1", "delegate", { description: "first", task: "find a" }), reply("a found")], "a is here", first);
+    await one.session.send("find a");
+    const t1 = readFileSync(path.join(p.subagents, "t1.jsonl"), "utf8");
+
+    // A new process: the transcript read back and loaded into a new window's session.
+    const r = read(p);
+    expect(r.nextTask).toBe(2);
+    const two = await window([callTool("c2", "delegate", { description: "second", task: "find b" }), reply("b found")], "b is here");
+    const { messages, system, prompts, calls, nextPicture, nextTask } = r;
+    two.session.load({ id: p.id, messages, system, transcript: new Transcript(p.file, p.pictures), prompts, calls, nextPicture, nextTask });
+    await two.session.send("find b");
+    expect(two.tasks.all.map((t) => t.id)).toEqual(["t2"]);
+    expect(readFileSync(path.join(p.subagents, "t1.jsonl"), "utf8")).toBe(t1);
+    expect(lines(path.join(p.subagents, "t2.jsonl"))[0]).toMatchObject({ t: "message", message: { role: "user", parts: [{ type: "text", text: "find b" }] } });
+    expect(lines(p.file).flatMap((l) => (l.t === "subagent" ? [[l.id, l.description]] : []))).toEqual([
+      ["t1", "first"],
+      ["t2", "second"],
+    ]);
+    expect(read(p).unfinished).toEqual([]);
   });
 });

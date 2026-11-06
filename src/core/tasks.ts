@@ -1,8 +1,10 @@
+import path from "node:path";
 import { cost } from "../providers/pricing.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import { Bus, type ErrorEvent } from "./bus.js";
 import type { Owner, PermissionGate } from "./permissions.js";
 import { Session, truncate } from "./session.js";
+import { Transcript } from "./transcript.js";
 import type { Message, Provider } from "./types.js";
 
 export type TaskState = "waiting" | "running" | "done" | "failed" | "stopped";
@@ -43,6 +45,9 @@ export interface TasksOptions {
   system: string; // the subagents' system prompt, instructions included
   tools: Tool[];
   ctx: Omit<ToolContext, "signal" | "gate"> & { gate: PermissionGate }; // the lead's; each subagent asks through gate.for(itself)
+  // The lead session's transcript, read at each start, as loading a conversation swaps it; each subagent saves beside it
+  // (release 8a plan, Task 5).
+  transcript?: () => Transcript | undefined;
 }
 
 // The task manager (release 4 design, "How it is built"): starts subagents, each its own Session,
@@ -57,6 +62,7 @@ export class Tasks {
   #fallback: Provider | undefined;
   #line: (() => void)[] = []; // subagents waiting for a free place, in order
   #stops = new Map<string, { stop: AbortController; byUser: boolean }>();
+  #next = 1; // the next id's number: from(n) raises it past a loaded conversation's subagents (release 8a plan, choice 4)
 
   constructor(private readonly opts: TasksOptions) {
     this.#max = opts.max;
@@ -91,10 +97,16 @@ export class Tasks {
     return this.all.filter((t) => t.state === "running" || t.state === "waiting").length;
   }
 
+  // The next id's number becomes at least `n`, never less, so a resumed session's next subagent never adds to a saved
+  // one's file (release 8a plan, choice 4).
+  from(n: number): void {
+    this.#next = Math.max(this.#next, n);
+  }
+
   // `signal` is the lead's turn, for a subagent it waits for: stopping the turn stops it too.
   start(task: string, opts: { description?: string; background: boolean; signal?: AbortSignal }): Task {
     const provider = this.#worker();
-    const id = `t${this.all.length + 1}`;
+    const id = `t${this.#next++}`;
     const stop = new AbortController();
     opts.signal?.addEventListener("abort", () => stop.abort(), { once: true });
     this.#stops.set(id, { stop, byUser: false });
@@ -180,6 +192,12 @@ export class Tasks {
     });
     const owner: Owner = { name: `${t.id} (${t.description})`, signal, stop: () => this.stop(t.id) };
     const { ctx } = this.opts;
+    // Its own file, <id>/subagents/<tN>.jsonl beside the lead's pictures folder, named by a line in the lead's written
+    // before its first message (release 8a design, "Saving sessions"). None once the lead's saving has stopped, so no file
+    // is saved that no line names. A subagent is never sent pictures, so its transcript never writes to that folder.
+    const lead = this.opts.transcript?.();
+    lead?.write({ t: "subagent", id: t.id, description: t.description, file: `${t.id}.jsonl` });
+    const own = lead && !lead.failed ? new Transcript(path.join(path.dirname(lead.pictures), "subagents", `${t.id}.jsonl`), lead.pictures) : undefined;
     // The judge sees the subagent's own calls after the lead's, and reports to its bus (release 7 plan, Task 10).
     const session: Session = new Session({
       lead: provider,
@@ -189,6 +207,7 @@ export class Tasks {
       ctx: { ...ctx, gate: ctx.gate.for(owner, { calls: () => session.calls, bus }) },
       bus,
       subagent: true,
+      ...(own ? { transcript: own } : {}),
     });
     t.messages = session.messages;
     t.state = "running";
@@ -198,10 +217,16 @@ export class Tasks {
     } finally {
       this.#release();
     }
-    if (signal.aborted) return null;
+    // How it ended, when the lead was told it failed or was stopped, so a resumed session never reports it lost (release
+    // 8a plan, choice 4). A finished one's answer, its last reply, says so already.
+    if (signal.aborted) {
+      own?.write({ t: "ended", state: "stopped" });
+      return null;
+    }
     const last = session.messages.at(-1);
     const text = last?.role === "assistant" ? last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n") : "";
     if (text.trim() && !failure) return { state: "done", text };
+    own?.write({ t: "ended", state: "failed" });
     return { state: "failed", text: failure?.message ?? "it ended without an answer" };
   }
 

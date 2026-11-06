@@ -3,7 +3,7 @@ import type { Cache } from "../providers/pictures.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { type Ask, Declined } from "./permissions.js";
-import { CUT_OFF } from "./transcript.js";
+import { CUT_OFF, type Transcript } from "./transcript.js";
 import { errorText, type Message, marker, type Part, type Provider, type ToolCall, type ToolResult, type Turn } from "./types.js";
 
 export function truncate(s: string): string {
@@ -14,7 +14,16 @@ export interface SessionOptions {
   lead: Provider;
   fallback?: Provider; // retries a turn the lead refused; chosen by the user, never by default
   tools: Tool[];
-  system: string; // fixed for the whole session: prompt caching and Anthropic thinking blocks need it unchanged
+  system: string; // the starting value: Session.system is the conversation's (release 8a plan, choice 3)
+  // The system prompt built afresh, the instruction files read again, for a shortening (release 8a plan, choice 3).
+  systemNow?: () => string;
+  id?: string; // the session's, as its transcript is named
+  // Where each message is saved as it joins the history (release 8a design, "Saving sessions"); none, nothing is saved.
+  transcript?: Transcript;
+  // The window's picture numbers and subagent ids, which a loaded conversation's must not be handed out again (release
+  // 8a plan, choices 4 and 5): tui/pictures.ts's Pictures and tasks.ts's Tasks.
+  pictures?: { from(n: number): void };
+  tasks?: { from(n: number): void };
   ctx: Omit<ToolContext, "signal">;
   bus: Bus;
   // Takes the text waiting for the lead, such as background subagents' answers, so each goes into
@@ -28,8 +37,28 @@ export interface SessionOptions {
   subagent?: boolean;
 }
 
+// A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
+// transcript's whole record, before and after its shortenings (choice 6); `nextPicture` and `nextTask` are the numbers
+// its pictures and subagents leave free (choices 4 and 5).
+export interface Conversation {
+  id: string;
+  messages: Message[];
+  system: string;
+  transcript?: Transcript;
+  prompts: string[];
+  calls: { name: string; input: unknown }[];
+  nextPicture: number;
+  nextTask: number;
+}
+
 export class Session {
-  // Append-only. Earlier messages are never edited, for the same reason the system prompt is fixed.
+  id: string;
+  // The conversation's: kept unchanged, as prompt caching and Anthropic thinking blocks need it, and rebuilt only at a
+  // shortening, /clear or a new session (release 8a plan, choice 3).
+  system: string;
+  // Earlier messages are never edited, for the same reason the system prompt is kept. The history only grows, except
+  // when it is shortened or a conversation is loaded, which empty and refill this array in place, so a subagent's alias
+  // of it (tasks.ts) stays its history (release 8a plan, choice 2).
   readonly messages: Message[] = [];
   // For the judge (release 7 plan, Task 9 and choice 6), in order: the user's own prompts, the text given to `send` with
   // each picture as its marker, never the tool results or waiting text that also travel in user messages; and each call
@@ -45,19 +74,46 @@ export class Session {
   // The providers the user said to send no pictures to, by id, for the session (release 6 design, "When the provider
   // refuses").
   readonly #refusedPictures = new Set<string>();
+  // Run before a shortening's summary request: empty in 8a; 8b's hooks and 8d's memory save join it (release 8a plan,
+  // choice 24).
+  readonly onShorten: (() => void)[] = [];
+  #transcript: Transcript | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
     this.#fallback = opts.fallback;
+    this.id = opts.id ?? "";
+    this.system = opts.system;
+    this.#transcript = opts.transcript;
   }
 
   get lead(): Provider {
     return this.#lead;
   }
 
+  get transcript(): Transcript | undefined {
+    return this.#transcript;
+  }
+
   setLead(provider: Provider): void {
     this.#lead = provider;
+    this.#transcript?.write({ t: "lead", lead: provider.id });
     this.opts.bus.emit("lead", provider.id);
+  }
+
+  // Takes a saved or new conversation in place of this one, as the judge, the subagents' worker and the screen hold this
+  // object (release 8a plan, choice 1).
+  load(c: Conversation): void {
+    this.id = c.id;
+    this.system = c.system;
+    this.#transcript = c.transcript;
+    this.messages.splice(0, this.messages.length, ...c.messages);
+    this.prompts.splice(0, this.prompts.length, ...c.prompts);
+    this.calls.splice(0, this.calls.length, ...c.calls);
+    // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
+    this.#shrunk.clear();
+    this.opts.pictures?.from(c.nextPicture);
+    this.opts.tasks?.from(c.nextTask);
   }
 
   get fallback(): Provider | undefined {
@@ -147,7 +203,8 @@ export class Session {
 
   // One request. Its usage is reported even if the reply is then discarded, because it is billed.
   async #request(provider: Provider, signal?: AbortSignal): Promise<Turn | undefined> {
-    const { bus, tools, system } = this.opts;
+    const { bus, tools } = this.opts;
+    const { system } = this;
     const refused = this.#refusedPictures.has(provider.id);
     try {
       // The line for pictures left out (release 6 design, "The whole request"); the conversation keeps them all.
@@ -222,8 +279,11 @@ export class Session {
     return (this.opts.inbox?.() ?? []).map((text) => ({ type: "text", text, from: "tasks" }));
   }
 
+  // The line is written before the event, so every message is on disk before anything else sees it (release 8a plan,
+  // choice 4). A failed write stops saving and never the turn (transcript.ts).
   #push(message: Message): void {
     this.messages.push(message);
+    this.#transcript?.write({ t: "message", message });
     this.opts.bus.emit("message", message);
   }
 }

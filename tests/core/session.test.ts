@@ -1,13 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
-import { type Ask, Declined } from "../../src/core/permissions.js";
-import { Session } from "../../src/core/session.js";
+import { privateDir } from "../../src/auth/private.js";
+import { type Ask, Declined, PermissionGate } from "../../src/core/permissions.js";
+import { type Conversation, Session } from "../../src/core/session.js";
 import { Stats } from "../../src/core/stats.js";
-import type { Part, Provider, Turn } from "../../src/core/types.js";
+import { type Line, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
+import type { Message, Part, Provider, Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
+import { judgeOf } from "../../src/safety/judge.js";
+import { writeFileTool } from "../../src/tools/files.js";
 import { defineTool } from "../../src/tools/tool.js";
-import { Bus, FakeProvider, callTool, collectErrors, reply, tempContext, usage } from "../helpers.js";
+import { Pictures } from "../../src/tui/pictures.js";
+import { Bus, FakeProvider, callTool, collectErrors, removeTree, reply, tempContext, texts, usage } from "../helpers.js";
 
 const echo = defineTool("echo", "Echo text back", z.object({ text: z.string() }), async ({ text }) => text);
 const boom = defineTool("boom", "Always fails", z.object({}), async () => {
@@ -537,5 +546,207 @@ describe("Session, when a request with pictures is refused", () => {
       expect(box).toEqual(["t3 finished: found it"]);
       expect(session.messages[0]).toEqual({ role: "user", parts: look });
     }
+  });
+});
+
+// Release 8a plan, Task 5: the session saves each message as it joins the history, and takes a saved or new conversation in
+// place. The sessions folder is inside a fresh temporary folder and made private once, as tests/core/transcript.test.ts
+// does, each case with its own session in it.
+describe("Session, saved and loaded", { timeout: 15_000 }, () => {
+  let top: string;
+  let shared: string;
+  let sessions = 0;
+  beforeAll(async () => {
+    top = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
+    shared = path.join(top, "sessions", "project");
+    privateDir(shared);
+  });
+  afterAll(() => removeTree(top));
+  function place() {
+    const id = `s${++sessions}`;
+    return { id, file: path.join(shared, `${id}.jsonl`), pictures: path.join(shared, id, "pictures") };
+  }
+  const start = (id: string): Omit<Extract<Line, { t: "start" }>, "at"> => ({
+    t: "start",
+    v: 1,
+    id,
+    project: "C:\\a project",
+    lead: "fake:a",
+    version: "0.8.0",
+    print: false,
+    system: "test",
+    tools: [],
+  });
+  const lines = (file: string) =>
+    readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => JSON.parse(l) as Line);
+  const read = (p: { file: string; pictures: string }) => {
+    const r = readTranscript(p.file, p.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    return r;
+  };
+  const conversation = (over: Partial<Conversation> = {}): Conversation => ({
+    id: "c",
+    messages: [],
+    system: "t",
+    prompts: [],
+    calls: [],
+    nextPicture: 1,
+    nextTask: 1,
+    ...over,
+  });
+  // A transcript read back, as a new process would load it.
+  const loaded = (r: Read, transcript: Transcript): Conversation => ({
+    id: r.start.id,
+    messages: r.messages,
+    system: r.system,
+    transcript,
+    prompts: r.prompts,
+    calls: r.calls,
+    nextPicture: r.nextPicture,
+    nextTask: r.nextTask,
+  });
+  const said = (text: string): Message => ({ role: "assistant", parts: [{ type: "text", text }] });
+  const typed = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+
+  it("writes the user's message, the reply and the result in order, each line on disk before its message event", async () => {
+    const p = place();
+    const bus = new Bus();
+    const seen: [Line | undefined, Message][] = [];
+    bus.on("message", (m) => seen.push([lines(p.file).at(-1), m]));
+    const lead = new FakeProvider("a", [callTool("c1", "echo", { text: "ping" }), reply("done")]);
+    const session = new Session({ lead, tools: [echo], system: "test", ctx: await tempContext(), bus, transcript: new Transcript(p.file, p.pictures) });
+    await session.send("go");
+    expect(session.messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(seen).toEqual(session.messages.map((m) => [{ t: "message", at: expect.any(String), message: m }, m]));
+    expect(lines(p.file).map((l) => (l.t === "message" ? l.message : l))).toEqual(session.messages);
+  });
+
+  it("writes nothing for a refused reply", async () => {
+    const p = place();
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const transcript = new Transcript(p.file, p.pictures);
+    const session = new Session({ lead: new FakeProvider("a", [refused]), tools: [], system: "t", ctx: await tempContext(), bus: new Bus(), transcript });
+    await session.send("go");
+    expect(lines(p.file)).toEqual([{ t: "message", at: expect.any(String), message: typed("go") }]);
+  });
+
+  it("writes a line for a new lead", async () => {
+    const p = place();
+    const transcript = new Transcript(p.file, p.pictures);
+    const session = new Session({ lead: new FakeProvider("a", []), tools: [], system: "t", ctx: await tempContext(), bus: new Bus(), transcript });
+    session.setLead(new FakeProvider("b", []));
+    expect(lines(p.file)).toEqual([{ t: "lead", at: expect.any(String), lead: "fake:b" }]);
+  });
+
+  it("goes on with the turn when a write fails, saving stopped with its reason", async () => {
+    // A file where the sessions folder should be: the write fails with no permission changed (plan, Task 3).
+    const own = await mkdtemp(path.join(tmpdir(), "tachi-session-"));
+    onTestFinished(() => removeTree(own));
+    mkdirSync(path.join(own, "data"));
+    writeFileSync(path.join(own, "data", "sessions"), "not a folder");
+    const dir = path.join(own, "data", "sessions", "project");
+    const transcript = new Transcript(path.join(dir, "s1.jsonl"), path.join(dir, "s1", "pictures"));
+    const bus = new Bus();
+    const events: Message[] = [];
+    bus.on("message", (m) => events.push(m));
+    const session = new Session({ lead: new FakeProvider("a", [reply("still here")]), tools: [], system: "t", ctx: await tempContext(), bus, transcript });
+    await session.send("go");
+    expect(events).toEqual([typed("go"), said("still here")]);
+    expect(session.messages).toEqual(events);
+    expect(transcript.failed).toEqual(expect.any(String));
+  });
+
+  it("loads a conversation in place, so an alias of its history sees it, with its prompts, calls, id and transcript", async () => {
+    const p = place();
+    const pictures = new Pictures();
+    const tasks: number[] = [];
+    const lead = new FakeProvider("a", [reply("one"), reply("three")]);
+    const session = new Session({ lead, tools: [], system: "t", ctx: await tempContext(), bus: new Bus(), pictures, tasks: { from: (n) => tasks.push(n) } });
+    await session.send("first");
+    const alias = session.messages; // as tasks.ts holds a subagent's
+    const history = [typed("before"), said("two")];
+    const calls = [{ name: "read_file", input: { path: "a.txt" } }];
+    const transcript = new Transcript(p.file, p.pictures);
+    session.load(conversation({ id: p.id, messages: history, transcript, prompts: ["before"], calls, nextPicture: 7, nextTask: 4 }));
+    expect(alias).toBe(session.messages);
+    expect(alias).toEqual(history);
+    expect([session.id, session.prompts, session.calls]).toEqual([p.id, ["before"], calls]);
+    expect([pictures.next(), tasks]).toEqual([7, [4]]);
+    await session.send("again");
+    expect(lead.seen[1]).toEqual([...history, typed("again")]);
+    expect(lines(p.file).map((l) => l.t === "message" && texts(l.message as Message))).toEqual([["again"], ["three"]]);
+    // A new conversation's records are empty.
+    session.load(conversation());
+    expect([session.messages, session.prompts, session.calls]).toEqual([[], [], []]);
+  });
+
+  it("sends the loaded conversation's system prompt in the next turn", async () => {
+    const systems: string[] = [];
+    const lead: Provider = { id: "fake:a", complete: async (req) => (systems.push(req.system), reply("ok")) };
+    const session = new Session({ lead, tools: [], system: "the first", ctx: await tempContext(), bus: new Bus() });
+    await session.send("hi");
+    session.load(conversation({ system: "the saved one" }));
+    await session.send("hi again");
+    expect(systems).toEqual(["the first", "the saved one"]);
+    expect(session.system).toBe("the saved one");
+  });
+
+  it("sends the loaded conversation's own picture 1, not the last conversation's", async () => {
+    // Stand-ins sharp cannot read, so each goes as it is (providers/pictures.ts, shrink), and the copy kept is its bytes.
+    const a = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]);
+    const b = Buffer.from([0x89, 0x50, 0x4e, 0x47, 2]);
+    const sent: (Buffer | string)[] = [];
+    const lead: Provider = {
+      id: "fake:a",
+      complete: async (req) => {
+        const one = (await fitted(req, LIMITS.ollama, (p) => p)).get(1)!;
+        sent.push(typeof one === "string" ? one : one.data);
+        return reply("seen");
+      },
+    };
+    const session = new Session({ lead, tools: [], system: "t", ctx: await tempContext(), bus: new Bus() });
+    await session.send([{ type: "text", text: "look " }, { type: "image", id: 1, mediaType: "image/png", data: a }]);
+    const other: Message = { role: "user", parts: [{ type: "text", text: "see " }, { type: "image", id: 1, mediaType: "image/png", data: b }] };
+    session.load(conversation({ messages: [other, said("seen")] }));
+    await session.send("again");
+    expect(sent).toEqual([a, b]);
+  });
+
+  it("gives auto mode's judge the prompts and calls from before a shortening once read back and loaded, never the summary", async () => {
+    const p = place();
+    const saved = new Transcript(p.file, p.pictures);
+    saved.write(start(p.id));
+    const first = new Session({
+      lead: new FakeProvider("a", [callTool("c1", "echo", { text: "ping" }), reply("pinged"), reply("ok")]),
+      tools: [echo],
+      system: "test",
+      ctx: await tempContext(),
+      bus: new Bus(),
+      transcript: saved,
+    });
+    await first.send("ping it");
+    await first.send("thanks");
+    // The line a shortening writes (plan, choice 4), its summary standing in for the history.
+    const summary = typed("This conversation was shortened. A summary of everything before this point:\n\nThe user had ping echoed.");
+    saved.write({ t: "shortened", system: "test, rebuilt", message: summary });
+
+    // A new window, in auto mode, as cli.tsx makes its judge.
+    const bus = new Bus();
+    const judge = new FakeProvider("judge", [reply(JSON.stringify({ allow: false, reason: "It was not asked for." }))]);
+    const ctx = await tempContext();
+    let session: Session | undefined;
+    const gate = new PermissionGate("auto", async () => false, undefined, { root: ctx.root, headless: false, judge: judgeOf(judge, () => session!, "", bus) });
+    const lead = new FakeProvider("a", [callTool("c2", "write_file", { path: path.join(top, "elsewhere", "a.txt"), content: "x" }), reply("done")]);
+    session = new Session({ lead, tools: [writeFileTool], system: "t", ctx: { ...ctx, gate }, bus });
+    session.load(loaded(read(p), new Transcript(p.file, p.pictures)));
+    await session.send("write it");
+    expect(lead.seen[0]).toEqual([summary, typed("write it")]);
+    const asked = texts(judge.seen[0]![0]!)[0]!.split("\n"); // the prompts' block, then the calls' (judge.ts, request)
+    expect(JSON.parse(asked[1]!)).toEqual(["ping it", "thanks", "write it"]);
+    expect(JSON.parse(asked[4]!).map((c: { name: string }) => c.name)).toEqual(["echo", "write_file"]);
+    expect(JSON.parse(asked[4]!)[0]).toEqual({ name: "echo", input: { text: "ping" } });
   });
 });
