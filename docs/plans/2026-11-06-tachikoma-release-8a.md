@@ -548,6 +548,8 @@ chosen: "Approve all"): `cancelled by the user`, `the summary came back empty`, 
 too long to summarise`, `the summaries of its pieces are too long to combine`, `there is nothing
 to summarise`, `the request being worked on does not fit the window on its own`, `even shortened,
 it does not fit the window`. A provider's error and a refusal's own words are shown unchanged.
+When saving has already stopped, the `/lead` refused line's reason is `saving this session
+stopped` (Task 12, user, 2026-11-06, option chosen: "Approve").
 
 ---
 
