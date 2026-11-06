@@ -1,3 +1,4 @@
+import { callText } from "../core/exportText.js";
 import { visible } from "../core/permissions.js";
 import type { Message } from "../core/types.js";
 import { marker } from "./pictures.js";
@@ -78,5 +79,5 @@ export function lastTurn(messages: Message[]): Line[] {
 export function callLines(messages: Message[]): Line[] {
   const parts = messages.flatMap((m) => m.parts);
   const results = new Map(parts.flatMap((p) => (p.type === "tool_result" ? [[p.callId, p.output] as const] : [])));
-  return parts.flatMap((c) => (c.type === "tool_call" ? [{ text: `● ${c.name} ${JSON.stringify(c.input, null, 2)}\n  ⎿ ${results.get(c.id) ?? "(not finished)"}`, color: "gray" }] : []));
+  return parts.flatMap((c) => (c.type === "tool_call" ? [{ text: callText(c, results.get(c.id)), color: "gray" }] : []));
 }

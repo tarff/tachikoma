@@ -141,7 +141,7 @@ export interface Fns {
   pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"]; subagentsRunning: QueueArea["subagentsRunning"];
   startFresh: QueueArea["startFresh"]; resume: QueueArea["resume"];
   pickSession: QueueArea["pickSession"]; closeSessions: QueueArea["closeSessions"]; branch: QueueArea["branch"];
-  rename: QueueArea["rename"];
+  rename: QueueArea["rename"]; exportTo: QueueArea["exportTo"];
   readsEnded: PictureReadsArea["readsEnded"]; stopReads: PictureReadsArea["stopReads"];
   settle: PictureReadsArea["settle"]; newPicture: PictureReadsArea["newPicture"];
   imagePaste: PictureReadsArea["imagePaste"]; pastePictures: PictureReadsArea["pastePictures"];

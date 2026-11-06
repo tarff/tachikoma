@@ -53,7 +53,7 @@ export const isFile = (file: string) => {
 
 export const COMMANDS =
   "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /clear, /resume, /branch [name], /rename <name>, " +
-  "/tasks, /errors, /screen, /settings, /keybindings, /vim, /exit";
+  "/export [file], /tasks, /errors, /screen, /settings, /keybindings, /vim, /exit";
 // Release 8a plan, Task 7's words, approved by the user on 2026-11-06: the `/` menu's notes; /resume with no other
 // session saved; /branch before any prompt, or once saving has stopped (session.ts, "Saving fails"), and /rename then, as
 // nothing they wrote would be saved; and the in-window list's hint, whose Esc closes the list where `tachi -r`'s quits.
@@ -67,6 +67,12 @@ export const SESSION_WORDS = {
   unsaved: (command: string) => `${command} needs this session saved, and saving it stopped.`,
   closes: "closes",
 };
+// Release 8a plan, Task 8: the words its table does not give, drafted at the build, awaiting the user's approval. The `/`
+// menu's note, and a file that cannot be written for another reason than being there already.
+export const EXPORT_WORDS = {
+  note: "Write the conversation to a file as text; alone, copy it",
+  unwritten: (file: string, why: string) => `${file} could not be written (${why}).`,
+};
 // "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
 export const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 export const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
@@ -78,7 +84,7 @@ export const characters = (text: string) => [...segmenter.segment(text)].length;
 // is a message).
 export const NAMES = [
   "/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen", "/settings", "/keybindings", "/vim",
-  "/clear", "/resume", "/branch", "/rename",
+  "/clear", "/resume", "/branch", "/rename", "/export",
 ];
 export const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 

@@ -1,6 +1,9 @@
+import { writeFileSync } from "node:fs";
+import path from "node:path";
 import { withLock } from "../../auth/lock.js";
 import { leadGone, type Opened } from "../../clilib.js";
 import { summarize } from "../../core/errorlog.js";
+import { exportText } from "../../core/exportText.js";
 import { type Protection, visible } from "../../core/permissions.js";
 import { listSessions } from "../../core/sessions.js";
 import type { Task } from "../../core/tasks.js";
@@ -15,7 +18,7 @@ import { type Draft, joined, trimmed } from "../pictures.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
-import { COMMANDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened, SESSION_WORDS } from "./constants.js";
+import { characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened, SESSION_WORDS } from "./constants.js";
 import type { UI } from "./state.js";
 
 export const queue = (ui: UI, fns: Fns) => {
@@ -121,6 +124,7 @@ export const queue = (ui: UI, fns: Fns) => {
       // holds a line break.
       const rest = text.slice(first.length).trim().split(/\r?\n/)[0]!.trim();
       if (command === "/rename") return fns.rename(rest);
+      if (command === "/export") return fns.exportTo(rest);
       if (alone("/clear") || alone("/resume") || command === "/branch") {
         const refused = fns.subagentsRunning(command);
         if (refused) return fns.say(refused);
@@ -372,8 +376,26 @@ export const queue = (ui: UI, fns: Fns) => {
     t?.write({ t: "name", name });
     fns.say(!t || t.failed !== null ? { text: SESSION_WORDS.unsaved("/rename"), color: "red" } : gray(`Session named ${name}.`));
   };
+  // /export [file]: the conversation as text (core/exportText.ts), its replies headed by the lead leading now. To a file,
+  // from the project folder, made with `wx` so one already there is never written over (release 8a plan, choice 27);
+  // alone, to the clipboard, whose own failure line follows in the hint row as a selection's copy's does (clipboard.ts).
+  const exportTo = (file: string) => {
+    const text = exportText(ui.session.messages, ui.session.lead.id);
+    if (!file) {
+      ui.board.current!.copy(text);
+      return fns.say(gray(`Copied the conversation (${characters(text)} characters).`));
+    }
+    const to = path.resolve(ui.root, file);
+    try {
+      writeFileSync(to, text, { flag: "wx" });
+    } catch (err) {
+      const there = (err as NodeJS.ErrnoException).code === "EEXIST";
+      return fns.say({ text: there ? `${to} already exists; nothing was written.` : EXPORT_WORDS.unwritten(to, errorText(err)), color: "red" });
+    }
+    fns.say(gray(`Exported to ${to}.`));
+  };
   return {
     submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave, subagentsRunning, startFresh, resume,
-    pickSession, closeSessions, branch, rename,
+    pickSession, closeSessions, branch, rename, exportTo,
   };
 };

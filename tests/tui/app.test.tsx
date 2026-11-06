@@ -21,6 +21,7 @@ import { LocalWorkspace } from "../../src/exec/local.js";
 import type { Workspace } from "../../src/exec/workspace.js";
 import { Session } from "../../src/core/session.js";
 import { attachErrorLog } from "../../src/core/errorlog.js";
+import { exportText } from "../../src/core/exportText.js";
 import { listSessions, openSession } from "../../src/core/sessions.js";
 import { Stats } from "../../src/core/stats.js";
 import { sessionPaths, Transcript } from "../../src/core/transcript.js";
@@ -2069,13 +2070,15 @@ describe("App's menus", () => {
     expect(app.lastFrame()).toContain("› /\n  /lead <provider:model>  Switch the lead model; alone, pick it from a list\n  /model  Pick the lead model from a list\n");
     expect(app.lastFrame()).toContain("↑↓ choose · Tab fill · Enter run · Esc close");
     await press(app, "e");
-    expect(app.lastFrame()).toContain("› /e\n  /errors  Summarise the error log\n  /exit  Quit\n");
+    expect(app.lastFrame()).toContain(
+      "› /e\n  /export [file]  Write the conversation to a file as text; alone, copy it\n  /errors  Summarise the error log\n  /exit  Quit\n",
+    );
     expect(app.lastFrame()).not.toContain("/model");
   });
 
   it("runs the chosen command on Enter, Down choosing the next", async () => {
     const { app } = await mount([]);
-    await press(app, "/", "e", "\u001b[B", "\r");
+    await press(app, "/", "e", "x", "\u001b[B", "\r"); // /export, then /exit
     await expectExited(app);
   });
 
@@ -8683,5 +8686,82 @@ describe("App's sessions", () => {
     await type(app, "new");
     await waitFor(() => lead.asked.length === 4);
     expect(lead.asked[3]!.messages).toEqual([typed("new")]);
+  });
+});
+
+// Release 8a plan, Task 8: /export writes the conversation as text to a file, from the project folder, never over one
+// that exists, or alone copies it through the clipboard's stand-in.
+describe("App's /export", () => {
+  const bare = (s: string) => s.replace(/\s/g, "");
+  // A line that may wrap at the screen's width: its start in red when it is red, and its words whole.
+  const said = (app: ReturnType<typeof render>, line: string, red = false) => {
+    if (red) expect(app.lastFrame()).toContain(`\u001b[31m${line.slice(0, 10)}`);
+    expect(bare(stripVTControlCharacters(app.lastFrame()!))).toContain(bare(line));
+  };
+  const talk = async (opts: Parameters<typeof mount>[1] = {}) => {
+    const m = await mount([callTool("c1", "find_files", { pattern: "*.none" }), reply("looked")], opts);
+    await type(m.app, "go");
+    await until(m.app, "looked");
+    return m;
+  };
+
+  it("writes the conversation to a file in the project folder on /export <file>, with its call and result", async () => {
+    const { app, ctx, session } = await talk();
+    await type(app, "/export talk.txt");
+    await until(app, "Exported to");
+    const file = path.join(ctx.root, "talk.txt");
+    said(app, `Exported to ${file}.`);
+    const text = readFileSync(file, "utf8");
+    expect(text).toBe(exportText(session.messages, "fake:a"));
+    expect(text).toMatch(/^You:\ngo\n\nTachikoma \(fake:a\):\n● find_files \{\n {2}"pattern": "\*\.none"\n\}\n {2}⎿ .+\n\n/);
+    expect(text.endsWith("\n\nTachikoma (fake:a):\nlooked\n")).toBe(true);
+  });
+
+  it("refuses a file that already exists, in red, and leaves it as it was", async () => {
+    await inColour(async () => {
+      const { app, ctx } = await talk();
+      const file = path.join(ctx.root, "talk.txt");
+      writeFileSync(file, "mine");
+      await type(app, "/export talk.txt");
+      await until(app, "already exists");
+      said(app, `${file} already exists; nothing was written.`, true);
+      expect(readFileSync(file, "utf8")).toBe("mine");
+    });
+  });
+
+  // A file where a folder should be makes the write fail. The line is a draft awaiting the user's approval (constants.ts,
+  // EXPORT_WORDS).
+  it("says in red when the file cannot be written", async () => {
+    await inColour(async () => {
+      const { app, ctx } = await talk();
+      writeFileSync(path.join(ctx.root, "notes"), "a file, not a folder");
+      await type(app, "/export notes/talk.txt");
+      await until(app, "could not be written");
+      said(app, `${path.join(ctx.root, "notes", "talk.txt")} could not be written (`, true);
+    });
+  });
+
+  it("takes the file's name from the first line of what follows /export", async () => {
+    const { app, ctx } = await talk();
+    await press(app, "/export one.txt", "\n", "and more", "\r");
+    await until(app, "Exported to");
+    expect(existsSync(path.join(ctx.root, "one.txt"))).toBe(true);
+  });
+
+  it("copies the conversation on /export alone through the clipboard, saying how many characters", async () => {
+    const ran: string[] = [];
+    const { app, copies, session } = await talk({ run: async (text) => void ran.push(text) });
+    await type(app, "/export");
+    await until(app, "Copied the conversation");
+    const text = exportText(session.messages, "fake:a");
+    expect(copies).toEqual([text]);
+    expect(ran).toEqual([text]);
+    said(app, `Copied the conversation (${[...text].length} characters).`);
+  });
+
+  it("says when the clipboard tool fails that the terminal alone copied, as a selection's copy says", async () => {
+    const { app } = await talk({ run: async () => Promise.reject(new Error("xclip not found")) });
+    await type(app, "/export");
+    await until(app, "Copied with the terminal only; xclip not found");
   });
 });
