@@ -24,6 +24,7 @@ import { attachErrorLog } from "../../src/core/errorlog.js";
 import { exportText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
 import { listSessions, openSession } from "../../src/core/sessions.js";
+import { INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
 import { sessionPaths, Transcript } from "../../src/core/transcript.js";
 import type { CompletionRequest, Message, Provider, Turn } from "../../src/core/types.js";
@@ -6818,6 +6819,20 @@ describe("App's live settings", () => {
     for (const key of ["sandbox", "network", "judge"]) await sees(c.app, `settings.json's "${key}" was left as --${key} set it for this session`);
   });
 
+  // Release 8a plan, choice 26: "autoCompactWindow" is LIVE, set as /autocompact sets it; a bad one keeps the last good.
+  it("sets the /autocompact size from a live autoCompactWindow, off when removed, and says a bad one", async () => {
+    const { app, session, write } = await watching([], {});
+    write({ autoCompactWindow: 200000 });
+    await sees(app, `autoCompactWindow is now 200,000 ${FROM}`);
+    expect(session.autoCompact).toBe(200_000);
+    write({ autoCompactWindow: 0 });
+    await sees(app, 'settings.json: "autoCompactWindow" must be a whole number from 1 (got "0"); the last good settings still apply');
+    expect(session.autoCompact).toBe(200_000);
+    write({});
+    await sees(app, `autoCompactWindow is now off ${FROM}`);
+    expect(session.autoCompact).toBeNull();
+  });
+
   // Release 7 plan, Task 4 (design, "Configurable"): an edit that loosens the dangerous-command check gets a red warning
   // and waits for the next launch, so a command the user allowed cannot loosen it in the session; one that tightens it
   // gets a grey notice and applies at once.
@@ -8887,5 +8902,149 @@ describe("App's /export", () => {
     const { app } = await talk({ run: async () => Promise.reject(new Error("xclip not found")) });
     await type(app, "/export");
     await until(app, "Copied with the terminal only; xclip not found");
+  });
+});
+
+// Release 8a plan, Task 13: /compact, /autocompact, and the shortened line. A mount with `save`, as shortening needs the
+// session saved.
+describe("App's /compact and /autocompact", () => {
+  const LINE = "Conversation shortened (Ctrl+O shows the summary)";
+  const HISTORY = "This conversation was shortened. A summary of everything before this point:\n\n";
+  // A line that may wrap at the screen's width.
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
+  const isSummary = (messages: Message[]) => texts(messages.at(-1)!).at(-1)!.startsWith(INSTRUCTIONS);
+  const talked = async (turns: ConstructorParameters<typeof FakeProvider>[1], opts: Parameters<typeof mount>[1] = {}) => {
+    const m = await mount([reply("noted"), ...turns], { save: true, ...opts });
+    await type(m.app, "hi");
+    await until(m.app, "noted");
+    return m;
+  };
+
+  it("sends a summary request on /compact, shows the line, and Ctrl+O then shows the summary until the next turn", async () => {
+    const lead = new FakeProvider("a", [reply("noted"), reply("Compacted."), reply("again")]);
+    const { app, session } = await talked([], { lead });
+    await type(app, "/compact");
+    await until(app, LINE);
+    expect(isSummary(lead.seen[1]!)).toBe(true);
+    expect(texts(lead.seen[1]!.at(-1)!).at(-1)).toBe(INSTRUCTIONS);
+    expect(session.messages.map(texts)).toEqual([[`${HISTORY}Compacted.`]]);
+    await press(app, "\u000f");
+    expect(app.lastFrame()).toContain(`${LINE}\nThe summary the conversation was shortened to:\nCompacted.\n`);
+    await type(app, "more");
+    await until(app, "again");
+    await press(app, "\u000f");
+    expect(app.lastFrame()).toContain("Last turn: 0 tool calls");
+  });
+
+  it("opens the summary in the detail view on Ctrl+O in full screen", async () => {
+    const { app } = await talked([reply("Compacted.")], { full: true });
+    await type(app, "/compact");
+    await until(app, LINE);
+    await press(app, "\u000f");
+    expect(shown(app).slice(0, 2)).toEqual(["The summary the conversation was shortened to:", "Compacted."]);
+  });
+
+  it("puts /compact's words in the summary request as its focus", async () => {
+    const lead = new FakeProvider("a", [reply("noted"), reply("Compacted.")]);
+    const { app } = await talked([], { lead });
+    await type(app, "/compact focus on tests");
+    await until(app, LINE);
+    expect(texts(lead.seen[1]!.at(-1)!).at(-1)).toBe(`${INSTRUCTIONS}\n\nFocus on: focus on tests`);
+  });
+
+  it("says there is nothing to shorten on /compact before any message, sending nothing", async () => {
+    const lead = new FakeProvider("a", []);
+    const { app } = await mount([], { lead, save: true });
+    await type(app, "/compact");
+    await until(app, "Nothing to shorten yet.");
+    expect(lead.seen).toEqual([]);
+  });
+
+  it("says a failed /compact in red, the conversation unchanged", async () => {
+    await inColour(async () => {
+      const { app, session } = await talked([new Error("overloaded")]);
+      await type(app, "/compact");
+      await waitFor(() => flat(app).includes("✗ The conversation could not be shortened (overloaded); it is unchanged."));
+      expect(app.lastFrame()).toContain("\u001b[31m✗ The conversation");
+      expect(session.messages).toHaveLength(2);
+    });
+  });
+
+  it("stops /compact on Ctrl-C with the line, the conversation unchanged, and goes on after", async () => {
+    const lead = new Held("fake:a");
+    const { app, session } = await mount([], { lead, save: true });
+    await type(app, "hi");
+    lead.answer("noted");
+    await until(app, "noted");
+    await type(app, "/compact");
+    await waitFor(() => lead.asked.length === 2);
+    app.stdin.write("\u0003"); // Ctrl-C
+    await waitFor(() => flat(app).includes("✗ The conversation could not be shortened (cancelled by the user); it is unchanged."));
+    expect(session.messages).toHaveLength(2);
+    await type(app, "and now");
+    await waitFor(() => lead.asked.length === 3);
+    lead.answer("stale"); // the stopped summary request's, still first in Held's line, answered to no one
+    lead.answer("still here");
+    await until(app, "still here");
+    expect(app.lastFrame()).not.toContain("stale");
+  });
+
+  it("reads the gauge's context as 0 after a shortening, until the next request reports", async () => {
+    const { app } = await talked([reply("Compacted."), reply("again")], { segments: ["context"] });
+    await until(app, "ctx 15");
+    await type(app, "/compact");
+    await until(app, LINE);
+    expect(app.lastFrame()).toContain("ctx 0");
+    await type(app, "more");
+    await until(app, "ctx 15");
+  });
+
+  it("shortens a turn over the /autocompact size first, stops on /autocompact off, and says each", async () => {
+    const seen: Message[][] = [];
+    const answers = ["one", "two", "S.", "three", "four", "five"];
+    // A thousand tokens a character, so each request is estimated at millions of tokens.
+    const lead: Provider = {
+      id: "fake:a",
+      complete: async (req) => {
+        seen.push(structuredClone(req.messages));
+        return { ...reply(answers.shift()!), usage: { ...usage, input: 1000 * characters(req.system, req.messages, req.tools) } };
+      },
+    };
+    const { app, session } = await mount([], { lead, save: true });
+    await type(app, "a");
+    await until(app, "one");
+    await type(app, "b"); // no window known and no /autocompact size: no check
+    await until(app, "two");
+    await type(app, "/autocompact 200k");
+    await until(app, "Shortens once the conversation passes 200,000 tokens.");
+    expect(session.autoCompact).toBe(200_000);
+    await type(app, "c");
+    await until(app, "three");
+    expect(seen.map(isSummary)).toEqual([false, false, true, false]);
+    expect(app.lastFrame()).toContain(LINE);
+    await type(app, "/autocompact off");
+    await until(app, "Shortens only when a request would not fit.");
+    expect(session.autoCompact).toBeNull();
+    await type(app, "d");
+    await until(app, "four");
+    await type(app, "/autocompact 200M"); // more than the estimate
+    await until(app, "Shortens once the conversation passes 200,000,000 tokens.");
+    await type(app, "e");
+    await until(app, "five");
+    expect(seen.map(isSummary)).toEqual([false, false, true, false, false, false]);
+  });
+
+  it("gives the usage line in red for a wrong /autocompact, leaving the size as it was", async () => {
+    await inColour(async () => {
+      const { app, session } = await mount([]);
+      session.autoCompact = 5;
+      for (const wrong of ["/autocompact", "/autocompact 0", "/autocompact 2g", "/autocompact 1.5k", "/autocompact 200k more"]) {
+        await type(app, wrong);
+      }
+      const usageLine = "Usage: /autocompact <tokens>, such as 200k, or /autocompact off";
+      expect(flat(app).split(usageLine)).toHaveLength(6);
+      expect(app.lastFrame()).toContain("\u001b[31mUsage: /autocompact");
+      expect(session.autoCompact).toBe(5);
+    });
   });
 });

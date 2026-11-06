@@ -15,12 +15,30 @@ describe("commandMenu", () => {
     const m = commandMenu("/", 1);
     expect(labels(m)).toEqual([
       ...["/lead <provider:model>", "/model", "/login chatgpt", "/logout chatgpt"],
-      ...["/clear", "/resume", "/branch [name]", "/rename <name>", "/export [file]"],
+      ...["/clear", "/resume", "/branch [name]", "/rename <name>", "/export [file]", "/compact [words]", "/autocompact <tokens>"],
       ...["/tasks", "/errors", "/screen", "/settings", "/keybindings", "/vim", "/exit"],
     ]);
     expect(m!.entries[0]).toMatchObject({ note: "Switch the lead model; alone, pick it from a list", fill: "/lead ", run: "/lead" });
-    expect(m!.entries[12]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
-    expect(m!.entries[13]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
+    expect(m!.entries[14]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
+    expect(m!.entries[15]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
+  });
+
+  // Release 8a plan, Task 13 (choice 25; constants.ts, SHORTEN_WORDS).
+  it("lists /compact and /autocompact, each saying what it does", () => {
+    expect(commandMenu("/", 1)!.entries.slice(9, 11)).toEqual([
+      {
+        label: "/compact [words]",
+        note: "Shorten the conversation into a summary now; words after it say what to focus on",
+        fill: "/compact ",
+        run: "/compact",
+      },
+      {
+        label: "/autocompact <tokens>",
+        note: "Shorten once the conversation passes a number of tokens, such as 200k; off, only when it would not fit",
+        fill: "/autocompact ",
+        run: "/autocompact",
+      },
+    ]);
   });
 
   // Release 8a plan, Task 7 (choice 25); the notes approved by the user on 2026-11-06 (constants.ts, SESSION_WORDS).

@@ -184,6 +184,9 @@ export function useAppState({
   // kept after it until the next turn starts.
   const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
   const calls = useRef<Call[]>([]);
+  // The last shortening's summary, which Ctrl+O shows in place of the last turn's calls until the next turn starts
+  // (release 8a plan, Task 13).
+  const summary = useRef<string | null>(null);
   // The call whose tool line is the conversation's last line, so a question it asks is answered in a line under it; and
   // the lead's calls a question was declined for, each with the short row in its result row's place, or null for none
   // when its answer is under its tool line (release 7 plan, choices 66 and 67; describe.ts).
@@ -282,7 +285,7 @@ export function useAppState({
     table, setTable, chordTimer, keyOf, pickerKey, step, search, stash, chosen, closed, listed, columns, height, full,
     setFull, switching, setSwitching, kept, unkept, view, detail, pane, printed, dropping, waitingList, ended, owner,
     fullNow, frame, promptTop, menuTop, wheel, grab, selection, held, lastPress, copied, busy, setBusy, working, queue,
-    pictures, reading, reads, doing, calls, todos, perm, cycle, questions, question, contextWindow, setContextWindow,
+    pictures, reading, reads, doing, calls, summary, todos, perm, cycle, questions, question, contextWindow, setContextWindow,
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,

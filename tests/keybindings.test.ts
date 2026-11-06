@@ -137,17 +137,20 @@ describe("readKeybindings", () => {
   });
 
   it("takes command: with the commands that take nothing after them, and no other", () => {
-    // /clear, /resume, /branch, /rename and /export too (release 8a plan, choice 25).
-    const names = ["exit", "errors", "model", "screen", "tasks", "vim", "settings", "keybindings", "clear", "resume", "branch", "rename", "export"];
+    // /clear, /resume, /branch, /rename, /export, /compact and /autocompact too (release 8a plan, choice 25).
+    const names = [
+      "exit", "errors", "model", "screen", "tasks", "vim", "settings", "keybindings", "clear", "resume", "branch", "rename", "export", "compact", "autocompact",
+    ];
     const { table, problems } = read(chat(Object.fromEntries(names.map((n, i) => [`${i < 10 ? "" : "ctrl+"}alt+${i % 10}`, `command:${n}`]))));
     expect(problems).toEqual([]);
     expect(table.press(stroke("alt+3"), [...CHAT], 0)).toEqual({ action: "command:screen" });
     expect(table.press(stroke("alt+9"), [...CHAT], 0)).toEqual({ action: "command:resume" });
     expect(table.press(stroke("ctrl+alt+1"), [...CHAT], 0)).toEqual({ action: "command:rename" });
     expect(table.press(stroke("ctrl+alt+2"), [...CHAT], 0)).toEqual({ action: "command:export" });
-    const list = "(exit, errors, model, screen, tasks, vim, settings, keybindings, clear, resume, branch, rename, export)";
-    expect(problemsOf(chat({ "meta+g": "command:compact", "meta+l": "command:lead" }))).toEqual([
-      `keybindings.json: Chat "meta+g": "command:compact" is not a command a key can run ${list}; it was left out`,
+    expect(table.press(stroke("ctrl+alt+4"), [...CHAT], 0)).toEqual({ action: "command:autocompact" });
+    const list = "(exit, errors, model, screen, tasks, vim, settings, keybindings, clear, resume, branch, rename, export, compact, autocompact)";
+    expect(problemsOf(chat({ "meta+g": "command:login", "meta+l": "command:lead" }))).toEqual([
+      `keybindings.json: Chat "meta+g": "command:login" is not a command a key can run ${list}; it was left out`,
       `keybindings.json: Chat "meta+l": "command:lead" is not a command a key can run ${list}; it was left out`,
     ]);
   });

@@ -179,6 +179,25 @@ export class Session {
     }
   }
 
+  // /compact [words] (release 8a plan, Task 13): the whole history shortened between turns by the lead, the words as the
+  // summary's focus. The reason it could not be, for its red line, said here on the bus as a turn's is, except a stop,
+  // which gives CANCELLED for the caller to say, as a user's stop is no failure to log or count; undefined when shortened.
+  async compact(focus: string, signal?: AbortSignal): Promise<string | undefined> {
+    // As makeRoom: a turn running would go on with the history shortened under it.
+    if (this.#running) throw new Error("A turn is already running");
+    this.#running = true;
+    try {
+      const lead = this.#lead;
+      const window = await this.#window(lead, signal);
+      const r = window === undefined ? { problem: CANCELLED } : await this.#shorten(lead, "between", window, signal, undefined, focus);
+      const problem = r === "done" ? undefined : r === "unsaved" ? UNSAVED : r.problem;
+      if (problem !== undefined && problem !== CANCELLED) this.#say(lead, cannot(problem));
+      return problem;
+    } finally {
+      this.#running = false;
+    }
+  }
+
   get fallback(): Provider | undefined {
     return this.#fallback;
   }
@@ -236,8 +255,14 @@ export class Session {
           const r = await this.#shorten(lead, when, window, signal, asked);
           if (signal?.aborted) return;
           if (r === "done") shortened = true;
-          else if (r !== "unsaved") return this.#say(lead, cannot(r.problem));
-          else if (limit === window) {
+          else if (r !== "unsaved") {
+            // Past the /autocompact size alone, a request that still fits the window, or whose fit cannot be told as the
+            // window is not known, is sent as it is after the line, and the next request tries again (plan, Task 13; user,
+            // 2026-11-06: "Show the line, send anyway"). Over the window, the turn ends with the line.
+            this.#say(lead, cannot(r.problem));
+            const still = limit === window || (window !== null && (await this.#over(lead, window, signal)));
+            if (still !== false) return; // over the window, or stopped
+          } else if (limit === window) {
             // Not saved, it cannot be shortened: over the window it ends with the line. Past the /autocompact size alone,
             // or with its size not known now, it is sent as it is, the model's own answer deciding.
             const line = await this.#tooLong(lead, window, signal);
@@ -420,7 +445,14 @@ export class Session {
   // "unsaved": the transcript is not on disk, so nothing is summarised (step 1), or its `shortened` line could not be
   // written, which `write` records without throwing; either way nothing changes. The problem when it failed, as
   // shorten.ts words it, nothing changed either.
-  async #shorten(lead: Provider, when: When, window: number | null, signal?: AbortSignal, asked?: Message): Promise<"done" | "unsaved" | { problem: string }> {
+  async #shorten(
+    lead: Provider,
+    when: When,
+    window: number | null,
+    signal?: AbortSignal,
+    asked?: Message,
+    focus?: string,
+  ): Promise<"done" | "unsaved" | { problem: string }> {
     const { bus } = this.opts;
     const t = this.#transcript;
     if (!t || t.failed !== null) return "unsaved";
@@ -431,6 +463,7 @@ export class Session {
         system: this.system,
         messages: this.messages,
         ...(asked ? { asked } : {}),
+        ...(focus ? { focus } : {}),
         tools: this.opts.tools.map((t) => t.spec),
         calls: this.calls,
         workspace: this.opts.ctx.workspace,
@@ -471,7 +504,7 @@ export class Session {
     return `The request is too long for ${lead.id}: about ${n(size)} tokens, against a window of ${n(window)}.`;
   }
 
-  // A shortening's red line, which ends the turn.
+  // A shortening's red line, which ends the turn, except past the /autocompact size alone (#turn) and for /compact.
   #say(lead: Provider, message: string): void {
     this.opts.bus.emit("error", { kind: "shortening", attempted: `request to ${lead.id}`, message, lead: this.#lead.id });
   }
@@ -533,8 +566,8 @@ export class Session {
   }
 }
 
-// The approved line for a shortening that failed (release 8a plan, "Lines this plan adds").
-const cannot = (reason: string) => `The conversation could not be shortened (${reason}); it is unchanged.`;
+// The approved line for a shortening that failed (release 8a plan, "Lines this plan adds"); /compact's stop says it too.
+export const cannot = (reason: string) => `The conversation could not be shortened (${reason}); it is unchanged.`;
 
 function result(call: ToolCall, output: string, isError: boolean): ToolResult {
   return { type: "tool_result", callId: call.id, output, isError };

@@ -5,7 +5,9 @@ import { leadGone, type Opened } from "../../clilib.js";
 import { summarize } from "../../core/errorlog.js";
 import { exportText } from "../../core/exportText.js";
 import { type Protection, visible } from "../../core/permissions.js";
+import { cannot } from "../../core/session.js";
 import { listSessions } from "../../core/sessions.js";
+import { CANCELLED } from "../../core/shorten.js";
 import type { Task } from "../../core/tasks.js";
 import { errorText, type Provider } from "../../core/types.js";
 import { KEYBINDINGS } from "../../keybindings.js";
@@ -19,7 +21,9 @@ import { type Draft, joined, trimmed } from "../pictures.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
-import { characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened, SESSION_WORDS } from "./constants.js";
+import {
+  characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened, SESSION_WORDS, SHORTEN_WORDS,
+} from "./constants.js";
 import type { UI } from "./state.js";
 
 export const queue = (ui: UI, fns: Fns) => {
@@ -130,6 +134,9 @@ export const queue = (ui: UI, fns: Fns) => {
           ui.working.current = false;
         }
       }
+      // Release 8a plan, Task 13: /compact's words are all that follows it, line breaks and all.
+      if (command === "/compact") return await compact(text.slice(first.length).trim());
+      if (command === "/autocompact") return autoCompact(words);
       if (alone("/clear") || alone("/resume") || command === "/branch") {
         const refused = fns.subagentsRunning(command);
         if (refused) return fns.say(refused);
@@ -153,7 +160,10 @@ export const queue = (ui: UI, fns: Fns) => {
       const turn = !account && !listing;
       const label = account === "login" ? "Waiting for the browser" : account ? "Signing out" : answers ? `Reading ${names(ui.tasks.answering())}` : turn ? "Working" : "Reading the model lists";
       ui.doing.current = { label, at: Date.now(), from: turn ? { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } : null };
-      if (turn) ui.calls.current = [];
+      if (turn) {
+        ui.calls.current = [];
+        ui.summary.current = null; // Ctrl+O shows this turn's calls (App.tsx, onShortened)
+      }
       ui.setNow(ui.doing.current.at);
       ui.setBusy(true);
       ui.working.current = true;
@@ -250,6 +260,36 @@ export const queue = (ui: UI, fns: Fns) => {
     if (problem === undefined) return ui.session.setLead(provider);
     fns.say({ text: `${spec} was not made the lead: the conversation does not fit its window and could not be shortened (${problem}).`, color: "red" });
   };
+  // /compact [words]: the whole conversation shortened now, the words its summary's focus (release 8a plan, Task 13). It
+  // works as leadTo does: what is typed waits in the queue, and Ctrl-C stops it. A failure's red line comes from the
+  // session (session.ts, compact); a stop's is said here, as the user asked for the shortening, drawn as onError draws
+  // the session's (App.tsx).
+  const compact = async (focus: string) => {
+    if (!ui.session.messages.length) return fns.say(gray(SHORTEN_WORDS.nothing));
+    const { signal } = (ui.abort.current = new AbortController());
+    ui.doing.current = { label: "Working", at: Date.now(), from: { output: ui.stats.output, cost: ui.stats.cost, unpriced: ui.stats.unpriced } };
+    ui.setNow(ui.doing.current.at);
+    ui.setBusy(true);
+    ui.working.current = true;
+    let problem;
+    try {
+      problem = await ui.session.compact(focus, signal);
+    } finally {
+      ui.setBusy(false);
+      ui.working.current = false;
+    }
+    if (problem === CANCELLED) fns.say({ text: `✗ ${cannot(CANCELLED)}`, color: "red" });
+  };
+  // /autocompact <tokens> or off (choice 26): digits with an optional k or m, k 1,000 and m 1,000,000 as Claude Code's
+  // `/autocompact 500k` (plan, "Numbers in this plan"); this window only, saving nothing, as /vim.
+  const autoCompact = (words: string[]) => {
+    const [word = "", ...more] = words.map((w) => w.toLowerCase());
+    const m = /^(\d+)([km]?)$/.exec(word);
+    const n = m ? Number(m[1]) * (m[2] === "k" ? 1_000 : m[2] === "m" ? 1_000_000 : 1) : NaN;
+    if (more.length || (word !== "off" && !(Number.isSafeInteger(n) && n >= 1))) return fns.say({ text: SHORTEN_WORDS.usage, color: "red" });
+    ui.session.autoCompact = word === "off" ? null : n;
+    fns.say(gray(word === "off" ? SHORTEN_WORDS.off : SHORTEN_WORDS.passes(n)));
+  };
   const closePicker = () => {
     ui.listOpen.current = false;
     ui.setPicker(null);
@@ -320,6 +360,7 @@ export const queue = (ui: UI, fns: Fns) => {
     ui.saved.switched(next);
     ui.tasks.take();
     ui.calls.current = [];
+    ui.summary.current = null;
     ui.todos.current = { items: [], hidden: false };
     ui.answered.current.clear();
     ui.stats.context = 0;

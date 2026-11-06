@@ -10,7 +10,7 @@ import { callText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
 import { type Ask, Declined, PermissionGate } from "../../src/core/permissions.js";
 import { type Conversation, Session, UNSAVED } from "../../src/core/session.js";
-import { INSTRUCTIONS } from "../../src/core/shorten.js";
+import { CANCELLED, INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
@@ -1232,6 +1232,77 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
     expect([lead.seen.length, summaries]).toEqual([2, []]);
     expect(texts(session.messages.at(-1)!)).toEqual(["sent as it is"]);
     expect(errors.map((e) => e.kind)).toEqual(["saving"]);
+  });
+
+  // Task 13 (user, 2026-11-06: "Show the line, send anyway").
+  it("sends a request past the /autocompact size but within the window as it is when its summary fails, trying again next", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const lead = new Lead("fake:a", [measured("noted"), refusal, measured("sent as it is"), summaryOf("S."), reply("after")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    session.autoCompact = 700;
+    await session.send(big);
+    await session.send("now this");
+    expect(isSummary(lead.seen[1]!)).toBe(true);
+    expect(texts(lead.seen[2]!.messages.at(-1)!)).toEqual(["now this"]);
+    expect(texts(session.messages.at(-1)!)).toEqual(["sent as it is"]);
+    expect(errors).toEqual([
+      { kind: "shortening", attempted: "request to fake:a", message: "The conversation could not be shortened (declined); it is unchanged.", lead: "fake:a" },
+    ]);
+    await session.send("and this");
+    expect(isSummary(lead.seen[3]!)).toBe(true);
+    expect([summaries, texts(session.messages.at(-1)!)]).toEqual([["S."], ["after"]]);
+  });
+
+  it("ends the turn with the line when a summary for the /autocompact size fails and the request does not fit the window either", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const lead = new Lead("fake:a", [measured("noted"), refusal], 700);
+    const { session, errors } = await setup(lead);
+    session.autoCompact = 600;
+    await session.send(big);
+    await session.send("now this");
+    expect(lead.seen).toHaveLength(2);
+    expect(errors.map((e) => e.message)).toEqual(["The conversation could not be shortened (declined); it is unchanged."]);
+  });
+
+  // Task 13: /compact.
+  it("shortens the whole conversation on /compact, with its words as the focus", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted."), reply("next")], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    expect(await session.compact("focus on tests")).toBeUndefined();
+    expect(texts(lead.seen[1]!.messages.at(-1)!).at(-1)).toBe(`${INSTRUCTIONS}\n\nFocus on: focus on tests`);
+    expect(lead.seen[1]!.messages.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(session.messages).toEqual([typed("This conversation was shortened. A summary of everything before this point:\n\nCompacted.")]);
+    expect([summaries, errors]).toEqual([["Compacted."], []]);
+  });
+
+  it("says a failed /compact in the line, the conversation unchanged; a stop is the caller's to say", async () => {
+    const refusal = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const stop = new AbortController();
+    const stopped = () => {
+      stop.abort();
+      throw new Error("Request was aborted.");
+    };
+    const lead = new Lead("fake:a", [measured("noted"), refusal, stopped], 1_000_000);
+    const { session, errors, summaries } = await setup(lead);
+    await session.send(big);
+    expect(await session.compact("")).toBe("declined");
+    expect(texts(lead.seen[1]!.messages.at(-1)!).at(-1)).toBe(INSTRUCTIONS);
+    expect(await session.compact("", stop.signal)).toBe(CANCELLED);
+    expect(session.messages).toHaveLength(2);
+    expect(summaries).toEqual([]);
+    expect(errors).toEqual([
+      { kind: "shortening", attempted: "request to fake:a", message: "The conversation could not be shortened (declined); it is unchanged.", lead: "fake:a" },
+    ]);
+  });
+
+  it("refuses /compact when saving has stopped, saying why in the line", async () => {
+    const lead = new Lead("fake:a", [measured("noted")], 1_000_000);
+    const { session, errors } = await setup(lead, { transcript: await unsavable() });
+    await session.send(big);
+    expect(await session.compact("")).toBe(UNSAVED);
+    expect(lead.seen).toHaveLength(1);
+    expect(errors.map((e) => e.message).at(-1)).toBe("The conversation could not be shortened (saving this session stopped); it is unchanged.");
   });
 
   // Task 12's review: a stop ends the turn as any stop does, saying nothing (session.ts, #execute).

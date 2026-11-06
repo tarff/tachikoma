@@ -15,7 +15,7 @@ import type { UserRules } from "../safety/rules.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
-import { characters, FROM, gray, isFile, type Question, STOPPING, visualSelection } from "./app/constants.js";
+import { characters, FROM, gray, isFile, type Question, SHORTEN_WORDS, STOPPING, visualSelection } from "./app/constants.js";
 import { handover } from "./app/handover.js";
 import { keyRouting } from "./app/keyRouting.js";
 import { liveEdits } from "./app/liveEdits.js";
@@ -316,6 +316,13 @@ export function App(props: AppProps) {
       ui.rerender((n) => n + 1);
     };
     const onNote = (text: string) => latest.current.say(gray(text));
+    // A shortening (release 8a plan, Task 13): its line; its summary, for Ctrl+O until the next turn; and the gauge's
+    // context, 0 until the next request reports, as the summary request's usage leaves it alone (stats.ts).
+    const onShortened = (summary: string) => {
+      ui.summary.current = summary;
+      ui.stats.context = 0;
+      latest.current.say(gray(SHORTEN_WORDS.shortened));
+    };
     ui.bus.on("message", onMessage);
     ui.bus.on("error", onError);
     ui.bus.on("usage", onUsage);
@@ -325,6 +332,7 @@ export function App(props: AppProps) {
     ui.bus.on("todo", onTodo);
     ui.bus.on("tasks", onTasks);
     ui.bus.on("note", onNote);
+    ui.bus.on("shortened", onShortened);
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
     // stderr is seen, and they are not said twice. So does the line naming the kinds of the dangerous-command check that
@@ -382,6 +390,7 @@ export function App(props: AppProps) {
       ui.bus.off("todo", onTodo);
       ui.bus.off("tasks", onTasks);
       ui.bus.off("note", onNote);
+      ui.bus.off("shortened", onShortened);
       // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
       // Ink ending on a drawing error would leave with nothing on screen.
       ui.tasks.stop();

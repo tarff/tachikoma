@@ -72,9 +72,11 @@ export function parseKeys(text: string): Stroke[] | { problem: string } {
 }
 
 // The slash commands that take nothing after them, which a key bound to `command:<name>` runs (release 6 plan,
-// Task 11); and /clear, /resume, /branch, /rename and /export (release 8a plan, choice 25), /branch then named after the
-// first prompt, /rename saying how it is used, /export copying.
-export const KEY_COMMANDS = ["exit", "errors", "model", "screen", "tasks", "vim", "settings", "keybindings", "clear", "resume", "branch", "rename", "export"];
+// Task 11); and /clear, /resume, /branch, /rename, /export, /compact and /autocompact (release 8a plan, choice 25),
+// /branch then named after the first prompt, /rename and /autocompact saying how they are used, /export copying.
+export const KEY_COMMANDS = [
+  "exit", "errors", "model", "screen", "tasks", "vim", "settings", "keybindings", "clear", "resume", "branch", "rename", "export", "compact", "autocompact",
+];
 
 // One spelling of a key, the table's and the help's: "ctrl+alt+shift+k", strokes joined by a space.
 export const keyText = (strokes: Stroke[]): string =>

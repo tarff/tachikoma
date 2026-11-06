@@ -53,7 +53,7 @@ export const isFile = (file: string) => {
 
 export const COMMANDS =
   "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /clear, /resume, /branch [name], /rename <name>, " +
-  "/export [file], /tasks, /errors, /screen, /settings, /keybindings, /vim, /exit";
+  "/export [file], /compact [words], /autocompact <tokens>, /tasks, /errors, /screen, /settings, /keybindings, /vim, /exit";
 // Release 8a plan, Task 7's words, approved by the user on 2026-11-06: the `/` menu's notes; /resume with no other
 // session saved; /branch before any prompt, or once saving has stopped (session.ts, "Saving fails"), and /rename then, as
 // nothing they wrote would be saved; and the in-window list's hint, whose Esc closes the list where `tachi -r`'s quits.
@@ -73,6 +73,20 @@ export const EXPORT_WORDS = {
   note: "Write the conversation to a file as text; alone, copy it",
   unwritten: (file: string, why: string) => `${file} could not be written (${why}).`,
 };
+// Release 8a plan, Task 13's words: the `/` menu's notes (for the user's approval), and the approved lines of /compact
+// and /autocompact ("Lines this plan adds"). `summary`: the heading over Ctrl+O's summary (for approval).
+export const SHORTEN_WORDS = {
+  compact: "Shorten the conversation into a summary now; words after it say what to focus on",
+  autocompact: "Shorten once the conversation passes a number of tokens, such as 200k; off, only when it would not fit",
+  nothing: "Nothing to shorten yet.",
+  shortened: "Conversation shortened (Ctrl+O shows the summary)",
+  summary: "The summary the conversation was shortened to:",
+  passes: (n: number) => `Shortens once the conversation passes ${tokens(n)} tokens.`,
+  off: "Shortens only when a request would not fit.",
+  usage: "Usage: /autocompact <tokens>, such as 200k, or /autocompact off",
+};
+// A number of tokens as the session's too-long line writes it, as providers/pictures.ts writes a number (session.ts).
+export const tokens = (n: number) => n.toLocaleString("en-US");
 // "t3's answer", "t2 and t3's answers", "t2, t3 and t4's answers".
 export const names = (ids: string[]) => `${ids.length > 1 ? `${ids.slice(0, -1).join(", ")} and ${ids.at(-1)}` : ids[0]}'s answer${ids.length > 1 ? "s" : ""}`;
 export const DOUBLE_PRESS_MS = 800; // Claude Code's window for pressing Ctrl+D twice (interactive-mode.md)
@@ -89,17 +103,18 @@ export const characters = (text: string) => {
 // is a message).
 export const NAMES = [
   "/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen", "/settings", "/keybindings", "/vim",
-  "/clear", "/resume", "/branch", "/rename", "/export",
+  "/clear", "/resume", "/branch", "/rename", "/export", "/compact", "/autocompact",
 ];
 export const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
 
 // The settings file's entries a live edit applies here, in the design's table's order ("When a live change applies").
 // vimInsertModeRemaps is read at each key (vimTakes), and the editor at each Ctrl+G, /settings and /keybindings; both
 // are here for their lines (plan, Tasks 12 and 21). dangerousCommands is release 7's (release 7 plan, Task 4), and so are
-// sandbox, network and judge, here for their lines too, as each waits for the next launch (Task 7).
+// sandbox, network and judge, here for their lines too, as each waits for the next launch (Task 7). autoCompactWindow is
+// release 8a's (release 8a plan, choice 26).
 export const LIVE = [
   "lead", "mode", "sandbox", "network", "judge", "effort", "fallback", "worker", "maxTasks",
-  "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor", "dangerousCommands",
+  "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor", "dangerousCommands", "autoCompactWindow",
 ] as const;
 export const FROM = ` (from ${SETTINGS})`;
 

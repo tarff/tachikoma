@@ -600,6 +600,9 @@ const { session, pictures } = leadSession({
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
   tasks,
 });
+// The settings file's /autocompact size, for -p too; a live edit or /autocompact changes it for the window (release 8a
+// plan, choice 26).
+session.autoCompact = loaded.settings.autoCompactWindow ?? null;
 // The open session's id at each error, so after a switch its rows carry the new one's (release 8a plan, Task 7).
 attachErrorLog(bus, errorFile, () => session.id);
 

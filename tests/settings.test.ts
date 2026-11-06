@@ -45,6 +45,14 @@ describe("readSettings", () => {
     expect(problem({ cleanupPeriodDays: "30" })).toBe('settings.json: "cleanupPeriodDays" must be a number, without quotes (got "30")');
   });
 
+  // Release 8a plan, choice 26: a whole number of tokens from 1, read as cleanupPeriodDays is.
+  it("reads autoCompactWindow as a whole number from 1", () => {
+    expect(read({ autoCompactWindow: 200000 })).toEqual({ settings: { autoCompactWindow: 200000 }, warnings: [] });
+    expect(problem({ autoCompactWindow: 0 })).toBe('settings.json: "autoCompactWindow" must be a whole number from 1 (got "0")');
+    expect(problem({ autoCompactWindow: 1.5 })).toBe('settings.json: "autoCompactWindow" must be a whole number from 1 (got "1.5")');
+    expect(problem({ autoCompactWindow: "200k" })).toBe('settings.json: "autoCompactWindow" must be a number, without quotes (got "200k")');
+  });
+
   it("has every entry optional", () => {
     expect(readSettings("{}")).toEqual({ settings: {}, warnings: [] });
   });
