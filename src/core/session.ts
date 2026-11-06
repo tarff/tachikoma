@@ -107,6 +107,8 @@ export class Session {
   // object (release 8a plan, choice 1). The providers sent no pictures stay so, as the user's answer holds for the window
   // (user, 2026-11-06: "Keep for the window").
   load(c: Conversation): void {
+    // A turn running would go on adding its messages and results to the conversation loaded.
+    if (this.#running) throw new Error("A turn is already running");
     this.id = c.id;
     this.system = c.system;
     if (c.transcript !== this.#transcript) this.#saidFailed = false;

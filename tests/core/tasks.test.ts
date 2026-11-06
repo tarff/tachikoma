@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -295,6 +295,46 @@ describe("Tasks, saved", { timeout: 15_000 }, () => {
     expect(lines(p.file).map((l) => l.t)).toEqual(["subagent"]);
   });
 
+  it("records a background subagent when it starts, so one stopped while it waited for a place reads as ended", async () => {
+    const p = place();
+    const lead = new Transcript(p.file, p.pictures);
+    lead.write(start(p.id));
+    const { tasks } = await setup(new Held(), { max: 1, transcript: () => lead });
+    const first = tasks.start("find a", { description: "first", background: true });
+    const second = tasks.start("find b", { description: "waits", background: true });
+    // On disk before start returns, so before delegate answers "Started t2 in the background".
+    expect(lines(p.file).flatMap((l) => (l.t === "subagent" ? [l.id] : []))).toEqual(["t1", "t2"]);
+    await settle();
+    expect(tasks.all.map((t) => t.state)).toEqual(["running", "waiting"]);
+    tasks.stop("t2");
+    expect((await second.done).state).toBe("stopped");
+    expect(lines(path.join(p.subagents, "t2.jsonl"))).toEqual([{ t: "ended", at: expect.any(String), state: "stopped" }]);
+    expect(read(p).unfinished).toEqual([{ id: "t1", description: "first" }]);
+    tasks.stop("t1");
+    await first.done;
+  });
+
+  it("saves no subagent file once the lead's saving has stopped, and the subagent still finishes", async () => {
+    const p = place();
+    // A folder where the lead's transcript should be, so its writes fail while its session folder could still be made.
+    mkdirSync(p.file);
+    const bus = new Bus();
+    const errors = collectErrors(bus);
+    const ctx = await tempContext();
+    const gate = new PermissionGate("project", async () => false);
+    let session: Session | undefined;
+    const worker = new FakeProvider("w", [reply("a is here")]);
+    const transcript = () => session?.transcript;
+    const tasks = new Tasks({ bus, max: 8, worker: () => worker, system: "sub", tools: [readFileTool], ctx: { ...ctx, gate }, transcript });
+    const lead = new FakeProvider("lead", [callTool("c1", "delegate", { description: "first", task: "find a" }), reply("a found")]);
+    const tools = [delegateTool(tasks, { headless: false })];
+    session = new Session({ lead, tools, system: "t", ctx: { ...ctx, gate }, bus, inbox: () => tasks.take(), transcript: new Transcript(p.file, p.pictures) });
+    await session.send("find a");
+    expect(tasks.all.map((t) => [t.id, t.state, t.answer])).toEqual([["t1", "done", "a is here"]]);
+    expect(existsSync(path.join(shared, p.id))).toBe(false); // no subagents folder, nor the session's own
+    expect(errors.map((e) => [e.kind, e.message.split(":")[0]])).toEqual([["saving", "Saving this session stopped"]]);
+  });
+
   it("ends the file of a subagent that failed, and of one that was stopped, with how it ended, so neither reads as unfinished", async () => {
     const p = place();
     const lead = new Transcript(p.file, p.pictures);
@@ -310,6 +350,7 @@ describe("Tasks, saved", { timeout: 15_000 }, () => {
     expect((await stopped.done).state).toBe("stopped");
     expect(lines(path.join(p.subagents, "t1.jsonl")).at(-1)).toEqual({ t: "ended", at: expect.any(String), state: "failed" });
     expect(lines(path.join(p.subagents, "t2.jsonl")).at(-1)).toEqual({ t: "ended", at: expect.any(String), state: "stopped" });
+    for (const id of ["t1", "t2"]) expect(lines(path.join(p.subagents, `${id}.jsonl`)).filter((l) => l.t === "ended")).toHaveLength(1);
     // Only the one still running when the file was read had not finished.
     expect(read(p).unfinished).toEqual([{ id: "t3", description: "still going" }]);
     tasks.stop("t3");

@@ -16,7 +16,7 @@ import { judgeOf } from "../../src/safety/judge.js";
 import { writeFileTool } from "../../src/tools/files.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
-import { Bus, FakeProvider, callTool, collectErrors, removeTree, reply, tempContext, texts, usage } from "../helpers.js";
+import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts, usage } from "../helpers.js";
 
 const echo = defineTool("echo", "Echo text back", z.object({ text: z.string() }), async ({ text }) => text);
 const boom = defineTool("boom", "Always fails", z.object({}), async () => {
@@ -715,6 +715,17 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
     // A new conversation's records are empty.
     session.load(conversation());
     expect([session.messages, session.prompts, session.calls]).toEqual([[], [], []]);
+  });
+
+  it("refuses to load while a turn runs, leaving the turn's history as it is", async () => {
+    const lead = new Held("fake:a");
+    const session = new Session({ lead, tools: [], system: "t", ctx: await tempContext(), bus: new Bus() });
+    const turn = session.send("hi");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(() => session.load(conversation({ messages: [said("other")] }))).toThrow("A turn is already running");
+    lead.answer("ok");
+    await turn;
+    expect(session.messages).toEqual([typed("hi"), said("ok")]);
   });
 
   it("sends the loaded conversation's system prompt in the next turn", async () => {

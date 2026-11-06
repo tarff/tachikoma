@@ -32,10 +32,13 @@ const EXT: Record<Image["mediaType"], string> = { "image/png": "png", "image/jpe
 export class Transcript {
   #failed: string | null = null;
 
-  // `file` is <id>.jsonl, `pictures` <id>/pictures.
+  // `file` is <id>.jsonl, `pictures` <id>/pictures. `inherits`: the file's folder is made inside a folder already made
+  // private, whose permission it inherits, as the pictures folder does, so it is made plainly: privateDir would start
+  // PowerShell again on Windows, which holds the window still (a subagent's file, tasks.ts).
   constructor(
     readonly file: string,
     readonly pictures: string,
+    private readonly opts: { inherits?: boolean } = {},
   ) {}
 
   // The reason saving stopped, or null while it goes on.
@@ -48,7 +51,8 @@ export class Transcript {
   write(line: DistributiveOmit<Line<Message>, "at">): void {
     if (this.#failed !== null) return;
     try {
-      privateDir(path.dirname(this.file));
+      if (this.opts.inherits) mkdirSync(path.dirname(this.file), { recursive: true, mode: 0o700 });
+      else privateDir(path.dirname(this.file));
       const { t, ...rest } = "message" in line ? { ...line, message: this.#save(line.message) } : line;
       appendFileSync(this.file, `${JSON.stringify({ t, at: new Date().toISOString(), ...rest })}\n`, { encoding: "utf8", mode: 0o600 });
     } catch (err) {

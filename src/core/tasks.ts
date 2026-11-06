@@ -153,9 +153,22 @@ export class Tasks {
   }
 
   async #run(t: Task, provider: Provider, fallback: Provider | undefined, signal: AbortSignal): Promise<Result> {
-    const result = (await this.#place(signal)) ? await this.#work(t, provider, fallback, signal) : null;
+    // Its own file, <id>/subagents/<tN>.jsonl beside the lead's pictures folder, named by a line in the lead's (release 8a
+    // design, "Saving sessions"). Both are written before the first wait, so from start, before delegate says it started
+    // and while it waits for a place, a closed window's subagent is found lost, never its id handed out again. None once
+    // the lead's saving has stopped, so no file is saved that no line names. A subagent is never sent pictures, so its
+    // transcript never writes to that folder. The lead's write made the sessions folder private, so the subagents folder
+    // inside it inherits that permission, as transcript.ts's pictures folder does.
+    const lead = this.opts.transcript?.();
+    lead?.write({ t: "subagent", id: t.id, description: t.description, file: `${t.id}.jsonl` });
+    const file = (l: Transcript) => path.join(path.dirname(l.pictures), "subagents", `${t.id}.jsonl`);
+    const own = lead && !lead.failed ? new Transcript(file(lead), lead.pictures, { inherits: true }) : undefined;
+    const result = (await this.#place(signal)) ? await this.#work(t, provider, fallback, signal, own) : null;
     const stopped = this.#stops.get(t.id)!;
     const r: Result = result ?? { state: "stopped", text: "" };
+    // How it ended, when the lead was told it failed or was stopped, waiting or running, so a resumed session never
+    // reports it lost (release 8a plan, choice 4). A finished one's answer, its last reply, says so already.
+    if (r.state !== "done") own?.write({ t: "ended", state: r.state });
     if (r.state === "stopped") r.text = `${t.id} was stopped${stopped.byUser ? " by the user before it finished" : ""}.`;
     t.state = r.state;
     t.answer = r.text;
@@ -170,7 +183,7 @@ export class Tasks {
   }
 
   // Null when it was stopped.
-  async #work(t: Task, provider: Provider, fallback: Provider | undefined, signal: AbortSignal): Promise<Result | null> {
+  async #work(t: Task, provider: Provider, fallback: Provider | undefined, signal: AbortSignal, own: Transcript | undefined): Promise<Result | null> {
     const bus = new Bus();
     let failure: ErrorEvent | undefined;
     bus.on("usage", (u) => {
@@ -193,12 +206,6 @@ export class Tasks {
     });
     const owner: Owner = { name: `${t.id} (${t.description})`, signal, stop: () => this.stop(t.id) };
     const { ctx } = this.opts;
-    // Its own file, <id>/subagents/<tN>.jsonl beside the lead's pictures folder, named by a line in the lead's written
-    // before its first message (release 8a design, "Saving sessions"). None once the lead's saving has stopped, so no file
-    // is saved that no line names. A subagent is never sent pictures, so its transcript never writes to that folder.
-    const lead = this.opts.transcript?.();
-    lead?.write({ t: "subagent", id: t.id, description: t.description, file: `${t.id}.jsonl` });
-    const own = lead && !lead.failed ? new Transcript(path.join(path.dirname(lead.pictures), "subagents", `${t.id}.jsonl`), lead.pictures) : undefined;
     // The judge sees the subagent's own calls after the lead's, and reports to its bus (release 7 plan, Task 10).
     const session: Session = new Session({
       lead: provider,
@@ -219,16 +226,10 @@ export class Tasks {
     } finally {
       this.#release();
     }
-    // How it ended, when the lead was told it failed or was stopped, so a resumed session never reports it lost (release
-    // 8a plan, choice 4). A finished one's answer, its last reply, says so already.
-    if (signal.aborted) {
-      own?.write({ t: "ended", state: "stopped" });
-      return null;
-    }
+    if (signal.aborted) return null;
     const last = session.messages.at(-1);
     const text = last?.role === "assistant" ? last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n") : "";
     if (text.trim() && !failure) return { state: "done", text };
-    own?.write({ t: "ended", state: "failed" });
     return { state: "failed", text: failure?.message ?? "it ended without an answer" };
   }
 
