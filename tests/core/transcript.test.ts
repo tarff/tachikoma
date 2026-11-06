@@ -400,11 +400,47 @@ describe("transcript", { timeout: 15_000 }, () => {
     const r = read(p);
     expect(r.tools).toEqual(other);
     expect(r.messages[1]!.native).toBeDefined();
-    const first = r.withTools(start.tools);
-    expect(first.dropped).toBe(true);
+    const first = r.withTools(start.tools, start.system);
+    expect(first).toMatchObject({ dropped: true, otherTools: true });
     expect(first.messages.map((m) => m.native !== undefined)).toEqual([false, true, false, false]);
-    expect(r.withTools(other).messages.map((m) => m.native !== undefined)).toEqual([false, false, false, true]);
-    expect(r.withTools(other).dropped).toBe(true);
+    expect(r.withTools(other, start.system).messages.map((m) => m.native !== undefined)).toEqual([false, false, false, true]);
+    expect(r.withTools(other, start.system).dropped).toBe(true);
+  });
+
+  // Release 8a final review (user, 2026-11-07: "Rebuild it", "Save the setting"): a system line, as a resume under another
+  // sandbox setting writes, is the prompt and setting from then on, and a reply keeps its own content only under the
+  // prompt it was saved under too.
+  it("keeps a reply's own content only for the system prompt it was saved under, the last start or system line", async () => {
+    const p = place();
+    const thought = (text: string): Message => ({ ...said(text), native: { provider: "anthropic", content: [{ type: "thinking", thinking: text }] } });
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "message", message: prompt("one") });
+    t.write({ t: "message", message: thought("under the first") });
+    expect(read(p).box).toBe(false); // a start line without the setting: off
+    t.write({ t: "system", system: "In the box.", box: true });
+    t.write({ t: "message", message: prompt("two") });
+    t.write({ t: "message", message: thought("under the box's") });
+    const r = read(p);
+    expect(r).toMatchObject({ system: "In the box.", box: true });
+    const box = r.withTools(start.tools, "In the box.");
+    expect(box).toMatchObject({ dropped: true, otherTools: false });
+    expect(box.messages.map((m) => m.native !== undefined)).toEqual([false, false, false, true]);
+    expect(r.withTools(start.tools, start.system)).toMatchObject({ dropped: true, otherTools: false });
+    expect(r.withTools(start.tools, start.system).messages.map((m) => m.native !== undefined)).toEqual([false, true, false, false]);
+  });
+
+  // Release 8a final review (user, 2026-11-07: "Becomes normal"): a -p run opened in the window is a session as any other.
+  it("reads a -p run as one no longer once an interactive line follows", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write({ ...start, print: true });
+    t.write({ t: "message", message: prompt("one") });
+    expect(read(p).print).toBe(true);
+    expect(readOutline(p.file)!.print).toBe(true);
+    t.write({ t: "interactive" });
+    expect(read(p).print).toBe(false);
+    expect(readOutline(p.file)!.print).toBe(false);
   });
 
   it("writes no picture file again for a kept prompt's picture in a shortening line, and reads it back", async () => {
@@ -479,7 +515,7 @@ describe("transcript", { timeout: 15_000 }, () => {
     const full = read(p);
     const outline = readOutline(p.file)!;
     expect(full.damaged).toBe(1);
-    expect(outline).toEqual({ start: full.start, name: full.name, lead: full.lead, firstPrompt: full.firstPrompt, said: true });
+    expect(outline).toEqual({ start: full.start, print: full.print, name: full.name, lead: full.lead, firstPrompt: full.firstPrompt, said: true });
     expect(outline).toMatchObject({ name: "the fix", lead: "fake:b", firstPrompt: "the real prompt" });
   });
 });

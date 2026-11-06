@@ -567,13 +567,16 @@ everything the model read, cannot be committed by mistake.
     included.
   - `-n <name>` (`--name`) names the session at the launch, a new one or one reopened.
   - `--fork-session`, with `-c` or `-r`, opens a copy under a new id and leaves the saved one as it
-    was.
+    was. Without either, the launch stops: `--fork-session works only with -c or -r`.
 
   A session with no messages is not listed, and nor are `-p` runs (see
-  [Headless runs](#headless-runs)). With nothing to open, the launch stops with one line: `No saved
-  session to continue in this folder.`, `No saved sessions in this folder.`, or `No session named
-  or numbered <x> in this folder; tachi --resume lists them.` The list needs a terminal: without
-  one, `tachi --resume needs a terminal to list sessions; give it a session's id or name.`
+  [Headless runs](#headless-runs)), until one is opened in the window, which makes it a session
+  like any other. With nothing to open, the launch stops with one line: `No saved session to
+  continue in this folder.`, `No saved sessions in this folder.`, or `No session named or numbered
+  <x> in this folder; tachi --resume lists them.` The list needs a terminal: without one,
+  `tachi --resume needs a terminal to list sessions; give it a session's id or name.`, and for a
+  name more than one session has, `<n> sessions are named <name>; give one's id instead (tachi
+  --resume lists them in a terminal).`
 - **What comes back:** the conversation, drawn on screen as it was, from its last shortening on if
   it was shortened, its pictures read back from their files; then a grey line, `Resumed: <name or
   first prompt>.` Auto mode's judge gets back every prompt and tool call of the whole session. The
@@ -589,6 +592,13 @@ everything the model read, cannot be committed by mistake.
   launch's tools differ from the ones the session was saved under, its earlier replies go without
   their thinking: `The tools have changed since this session was saved, so its earlier replies are
   sent without their thinking.`
+- **Unless the sandbox setting has changed:** a prompt saved with the sandbox on names bash and
+  `/work`, and one saved with it off names this computer's shell and project folder. When this
+  launch's setting differs, the model gets this launch's prompt instead, and keeps it from then on,
+  and the earlier replies go without their thinking: `The sandbox setting has changed since this
+  session was saved, so the model is told this launch's shell and project folder, and its earlier
+  replies are sent without their thinking.` The part after `folder` is said only when a reply had
+  thinking to leave out, and the line only at the launch that changed the setting.
 - **What does not come back:** the mode, the sandbox and the network, which come from this launch's
   flags and settings, so resuming never brings back `auto` or `never` unasked; in copy mode the box
   gets a fresh copy of the folder as it is now. Nor does the to-do list, or a subagent that had not
@@ -630,14 +640,17 @@ In a session:
   sessions in this folder.`
 - **`/branch [name]`** copies this session under a new id and carries on in the copy, named as
   given or after the first prompt: `Branched: this window is now <name>; the original is kept as
-  <id>.` Before any prompt: `Nothing to branch yet: this session has no prompt.`
+  <id>.` The copy holds the conversation already on screen, so it is not drawn again. Before any
+  prompt: `Nothing to branch yet: this session has no prompt.`
 - **`/rename <name>`** names this session, as the lists show it and `tachi -r <name>` opens it:
   `Session named <name>.`
 - **`/clear`, `/resume` and `/branch` wait in the queue while a turn runs,** as `/lead` does, and
   are refused while a subagent runs, so no answer can land in the wrong session: `<command> waits
   until no subagent is running: <ids> still running. /tasks stop stops them.`
-- **A switch leaves the earlier lines on screen.** The tool calls Ctrl+O shows, the to-do list and
-  the context gauge start afresh. The sandbox carries on: in copy mode, the review at the end
+- **A switch leaves the earlier lines on screen.** After `/clear` and `/resume`, the tool calls
+  Ctrl+O shows, the to-do list, the context gauge and `/tasks`, with the side panel, start afresh:
+  the earlier conversation's finished subagents leave them. `/branch` keeps them all, as the copy
+  is the same conversation. The sandbox carries on: in copy mode, the review at the end
   covers the changes of every session the window had.
 
 ### Exporting a conversation
@@ -1108,12 +1121,12 @@ subagent runs in the foreground, since there is no later turn to read its answer
   built (`tachi sandbox build`), and copy mode keeps its copy, saying on stderr after the answer
   `Changes kept for review: tachi review <name>`.
 - **Saved too:** a `-p` run is saved as a session, marked so, and left out of `tachi -c` and the
-  `tachi -r` list. `tachi -c -p "<prompt>"` carries on the newest `-p` run, and `tachi -r <id or
-  name> -p "<prompt>"` any saved session; the list itself needs the interface. Lines about the
-  session, such as `Resumed: <name or first prompt>.`, go to stderr, and so does the line of a
-  saving or a shortening that failed, alone, without a `kind:` label. A run whose saving fails
-  still finishes, its exit code unchanged by it, and so does one where a shortening for the
-  `/autocompact` size failed and the request was sent as it was.
+  `tachi -r` list until it is opened in the window. `tachi -c -p "<prompt>"` carries on the newest
+  `-p` run, and `tachi -r <id or name> -p "<prompt>"` any saved session; the list itself needs the
+  interface. Lines about the session, such as `Resumed: <name or first prompt>.`, go to stderr, and
+  so does the line of a saving or a shortening that failed, alone, without a `kind:` label. A run
+  whose saving fails still finishes, its exit code unchanged by it, and so does one where a
+  shortening for the `/autocompact` size failed and the request was sent as it was.
 - **Exit codes:** 0 when the run finished; 1 when a request failed, the model refused or hit a limit,
   or an action that needed your answer was refused (a refusal by the judge, or in `never`, which
   nobody was asked about, leaves the code as it is); 130 when stopped with Ctrl-C; 143 on SIGTERM
@@ -1214,9 +1227,10 @@ Each is fixed in a later release, unless it says otherwise.
   planned to change).
 - **Instruction files are read at the start, and again only at a shortening or `/clear`.** A file
   edited during a session counts from then, and a reopened session keeps the system prompt it was
-  saved with until then. Files in subfolders, which Claude Code reads as it works there, are not
-  read. Reading files as they change, or as the work moves into a subfolder, would need the system
-  prompt to change during a session, which prompt caching rules out (no release is set). Read
+  saved with until then, unless the sandbox setting has changed (see [Saved
+  sessions](#saved-sessions)). Files in subfolders, which Claude Code reads as it works there, are
+  not read. Reading files as they change, or as the work moves into a subfolder, would need the
+  system prompt to change during a session, which prompt caching rules out (no release is set). Read
   again, a file outside the project counts only if you allowed it at the launch; one the launch did
   not ask about is left out, without asking.
 - **Prompt history keeps a message's words, not its pictures.** Up or Ctrl+R brings back
@@ -1508,6 +1522,8 @@ limits rather than more code; none has a release set to change it, unless it say
   at the launch leaves both out.
 - **Ctrl-C twice** lets the session's mark go before the stopped turn's last lines are written, so a
   window that opens the session in that moment opens it as its own, not as a copy.
+- **Reopening reads every saved session in the folder,** for `tachi -c`, `tachi -r` and `/resume`,
+  so hundreds of large ones can take a second or more, and the first read longer.
 
 ### `/export`'s limits
 

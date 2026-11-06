@@ -112,7 +112,7 @@ const sharedHome = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
 // or /branch runs, into one folder of this file's own, two levels inside a fresh temp folder, removed at the end.
 const unsavedTop = mkdtempSync(path.join(tmpdir(), "tachi-app-data-"));
 afterAll(() => removeTree(unsavedTop));
-const unsaved = () => new WindowSessions(path.join(unsavedTop, "data", "sessions"), { project: "", version: "test", tools: [] });
+const unsaved = () => new WindowSessions(path.join(unsavedTop, "data", "sessions"), { project: "", version: "test", tools: [] }, { box: false, full: "" });
 
 async function mount(
   turns: ConstructorParameters<typeof FakeProvider>[1],
@@ -181,8 +181,8 @@ async function mount(
   const pictures = opts.pictures ?? new Pictures();
   const tools = [...TOOLS, delegateTool(tasks, { headless: false })];
   const start = { project: ctx.root, version: "test", tools: tools.map((t) => t.spec) };
-  const opened = opts.save ? newSaved(sessions, { id: randomUUID(), ...start, lead: lead.id, print: false, system: "t" }) : undefined;
-  const windowSessions = new WindowSessions(sessions, start, opened);
+  const opened = opts.save ? newSaved(sessions, { id: randomUUID(), ...start, lead: lead.id, print: false, system: "t", box: false }) : undefined;
+  const windowSessions = new WindowSessions(sessions, start, { box: false, full: "t" }, opened);
   const session = new Session({
     lead,
     tools,
@@ -8634,7 +8634,9 @@ describe("App's sessions", () => {
     const before = readFileSync(fileOf(original), "utf8");
     await type(app, "/branch side road");
     await until(app, "Branched:");
-    expect(bare(app.lastFrame()!)).toContain(bare(`one\n> first\none\nBranched: this window is now side road; the original is kept as ${original}.`));
+    // The same conversation, so it is not drawn again (release 8a final review, user, 2026-11-07: "Drop the reprint").
+    expect(bare(app.lastFrame()!)).toContain(bare(`> first\none\nBranched: this window is now side road; the original is kept as ${original}.`));
+    expect(app.lastFrame()!.split("> first")).toHaveLength(2);
     expect(session.id).not.toBe(original);
     expect(free(original)).toBe(true);
     await type(app, "second");
@@ -8642,6 +8644,36 @@ describe("App's sessions", () => {
     expect(readFileSync(fileOf(original), "utf8")).toBe(before);
     expect(rowOf(session.id)).toMatchObject({ name: "side road", firstPrompt: "first" });
     expect(readFileSync(fileOf(session.id), "utf8")).toContain('"text":"second"');
+  });
+
+  // Release 8a final review (user, 2026-11-07: "Clear them"): /clear and /resume share the switch that lets them go.
+  it("lets the last conversation's finished subagents go from /tasks on /clear, and keeps them on /branch", async () => {
+    const lead = new FakeProvider("a", [callTool("c1", "delegate", { description: "find x", task: "find x" }), reply("done")]);
+    const { app, tasks } = await saved([], { lead, worker: new FakeProvider("w", [reply("found")]) });
+    await type(app, "go");
+    await until(app, "done");
+    await type(app, "/branch");
+    await until(app, "Branched:");
+    expect(tasks.all.map((t) => t.id)).toEqual(["t1"]);
+    await type(app, "/clear");
+    await until(app, "Started a new session");
+    expect(tasks.all).toEqual([]);
+    await type(app, "/tasks");
+    await until(app, "No subagents yet.");
+  });
+
+  it("lets the last conversation's finished subagents go from /tasks on /resume", async () => {
+    await earlier("an earlier one");
+    const lead = new FakeProvider("a", [callTool("c1", "delegate", { description: "find y", task: "find y" }), reply("done")]);
+    const { app, tasks } = await saved([], { lead, worker: new FakeProvider("w", [reply("found")]) });
+    await type(app, "go");
+    await until(app, "done");
+    expect(tasks.all.map((t) => t.id)).toEqual(["t1"]);
+    await type(app, "/resume");
+    await until(app, "an earlier one");
+    await press(app, "\r");
+    await until(app, "Resumed: an earlier one.");
+    expect(tasks.all).toEqual([]);
   });
 
   it("names a branch after the first prompt when /branch is given no name", async () => {

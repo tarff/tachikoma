@@ -125,6 +125,13 @@ describe("tachi", { timeout: 15_000 }, () => {
     }
   });
 
+  // Release 8a final review (user, 2026-11-07): it would otherwise be ignored without a word.
+  it("allows --fork-session only with -c or -r", () => {
+    const r = tachi("--lead", "ollama:none", "-p", "hi", "--fork-session");
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("--fork-session works only with -c or -r");
+  });
+
   it("warns that --raw output is not made safe for a terminal", () => {
     const r = tachi("--lead", "ollama:none", "-p", "hi", "--raw");
     expect(r.stderr).toContain("warning: --raw prints the answer exactly as the model wrote it");

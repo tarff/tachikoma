@@ -345,8 +345,10 @@ export const queue = (ui: UI, fns: Fns) => {
   // next session go and leaves the turn's state as it was. Then the last session is let go, and the conversation drawn
   // as the launch draws a resumed one, and its lines said, so a saving failure the load reports comes first (Task 7). The
   // window's sandbox carries on: a copy-mode box is not started afresh, so its review at exit covers both sessions'
-  // changes (Task 7).
-  const switchTo = (next: Opened, lines: Line[]) => {
+  // changes (Task 7). Another conversation's finished subagents leave /tasks and the panel. A branch is the same
+  // conversation, so it keeps them, its waiting text, shown calls, to-do list, answers and gauge, and is not drawn again
+  // (release 8a final review, user, 2026-11-07: "Clear them", "Drop the reprint", "Keep them too").
+  const switchTo = (next: Opened, lines: Line[], branched = false) => {
     try {
       ui.session.load(next.conversation);
     } catch (err) {
@@ -354,13 +356,16 @@ export const queue = (ui: UI, fns: Fns) => {
       throw err;
     }
     ui.saved.switched(next);
-    ui.tasks.take();
-    ui.calls.current = [];
-    ui.summary.current = null;
-    ui.todos.current = { items: [], hidden: false };
-    ui.answered.current.clear();
-    ui.stats.context = 0;
-    fns.say(...conversationLines(next.conversation.messages), ...lines);
+    if (!branched) {
+      ui.tasks.take();
+      ui.tasks.forgetFinished();
+      ui.calls.current = [];
+      ui.summary.current = null;
+      ui.todos.current = { items: [], hidden: false };
+      ui.answered.current.clear();
+      ui.stats.context = 0;
+    }
+    fns.say(...(branched ? [] : conversationLines(next.conversation.messages)), ...lines);
     ui.rerender((n) => n + 1);
   };
   // /clear: a new session, with the same lead and mode, its system prompt built afresh (design, "Resuming").
@@ -428,7 +433,7 @@ export const queue = (ui: UI, fns: Fns) => {
     const named = name || first;
     const next = ui.saved.branch(original, ui.session.lead.id, named);
     if ("problem" in next) return fns.say({ text: next.problem, color: "red" });
-    switchTo(next, [gray(`Branched: this window is now ${named}; the original is kept as ${original}.`)]);
+    switchTo(next, [gray(`Branched: this window is now ${named}; the original is kept as ${original}.`)], true);
   };
   // /rename <name> names this session in its transcript, as the lists then show it (design, "Names, branches and export").
   const rename = (name: string) => {

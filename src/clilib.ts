@@ -571,6 +571,10 @@ export const resumeArgs = (args: string[]): string[] =>
   args.flatMap((a, i) => ((a === "-r" || a === "--resume") && (args[i + 1] ?? "-").startsWith("-") ? [a, ""] : [a]));
 
 const NEEDS_TERMINAL = "tachi --resume needs a terminal to list sessions; give it a session's id or name.";
+// Approved by the user, 2026-11-07 (release 8a final review): a resume's line when the saved system prompt was made under
+// another sandbox setting (resumed), and -r's when more than one session has the name it was given.
+const SANDBOX_CHANGED = "The sandbox setting has changed since this session was saved, so the model is told this launch's shell and project folder";
+const SHARED_NAME = (n: number, name: string) => `${n} sessions are named ${name}; give one's id instead (tachi --resume lists them in a terminal).`;
 
 // Which saved session a launch opens (release 8a design, "Resuming"; plan, choices 9, 11 and 12): `-c` the newest, with
 // -p the newest -p run; `-r <id or name>` that one, or the list of the sessions a name belongs to; `-r` alone the list,
@@ -592,7 +596,7 @@ export function chooseSession(
     if (!found && entryOf(dir, `${o.resume}.jsonl`)?.isFile()) return { id: o.resume };
     if (!found) return { fail: `No session named or numbered ${o.resume} in this folder; tachi --resume lists them.` };
     if (!Array.isArray(found)) return { id: found.id };
-    return o.terminal ? { list: found, name: o.resume } : { fail: NEEDS_TERMINAL };
+    return o.terminal ? { list: found, name: o.resume } : { fail: SHARED_NAME(found.length, o.resume) };
   }
   // listSessions with `print` lists every session, so the -p runs are picked out (choice 9).
   const newest = listSessions(dir, { print: o.print }).find((r) => r.print === o.print);
@@ -613,7 +617,7 @@ export interface Opened {
 // A new session's transcript, its start line first, then its name, then its lock (release 8a plan, choices 4 and 8).
 // The start line makes the sessions folder private, so the folder is there before the lock's file is made in it. When it
 // cannot be written, the session goes on unsaved and takes no lock; Session.load says so in the "Saving fails" line.
-export function newSaved(dir: string, start: Omit<Extract<Line, { t: "start" }>, "t" | "at" | "v">, name?: string): Opened {
+export function newSaved(dir: string, start: Omit<Extract<Line, { t: "start" }>, "t" | "at" | "v" | "box"> & { box: boolean }, name?: string): Opened {
   const { file, pictures } = sessionPaths(dir, start.id);
   const transcript = new Transcript(file, pictures);
   transcript.write({ t: "start", v: 1, ...start });
@@ -685,12 +689,24 @@ export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: st
 // choice 4). It writes `-n`'s name; a `lead` line when this launch leads with another model, so the next resume opens
 // with it; a `tools` line when the tools differ from those the history was last saved under, so a reply is sent with its
 // thinking only under its own tools. Once the lost lines have been handed to the model (`reported`), `lost` goes into
-// each unfinished subagent's file, so it is reported once (user, 2026-11-06: "Report once").
-export function resumed(s: Saved, o: { tools: ToolSpec[]; lead: string; name?: string }): Opened {
+// each unfinished subagent's file, so it is reported once (user, 2026-11-06: "Report once"). A session saved under
+// another sandbox setting than this launch's, `prompt.box`, has a system prompt naming another shell and project root,
+// so this launch's, `prompt.full`, takes its place and is written in a `system` line, the replies keeping their
+// thinking only under it (release 8a final review, user, 2026-11-07: "Rebuild it", "Save the setting"). The setting is
+// compared, not the prompt, whose root is the folder as typed. A -p run opened in the window becomes a session as any
+// other, in -c and the list (same: "Becomes normal").
+export function resumed(
+  s: Saved,
+  o: { tools: ToolSpec[]; lead: string; name?: string; prompt: { box: boolean; full: string }; interactive: boolean },
+): Opened {
   const { read, transcript } = s;
   if (o.name) transcript.write({ t: "name", name: o.name });
   if (o.lead !== read.lead) transcript.write({ t: "lead", lead: o.lead });
   if (JSON.stringify(read.tools) !== JSON.stringify(o.tools)) transcript.write({ t: "tools", tools: o.tools });
+  const rebuilt = read.box !== o.prompt.box;
+  if (rebuilt) transcript.write({ t: "system", system: o.prompt.full, box: o.prompt.box });
+  if (o.interactive && read.print) transcript.write({ t: "interactive" });
+  const system = rebuilt ? o.prompt.full : read.system;
   // Each in the subagents folder, as tasks.ts names a subagent's file, made inside the private sessions folder; an id
   // from the file is used only when it is one Tasks gives, so no line can lead the write elsewhere.
   const reported = () => {
@@ -699,19 +715,25 @@ export function resumed(s: Saved, o: { tools: ToolSpec[]; lead: string; name?: s
       new Transcript(file, transcript.pictures, { inherits: true }).write({ t: "ended", state: "lost" });
     }
   };
-  const { messages, dropped } = read.withTools(o.tools);
+  const { messages, dropped, otherTools } = read.withTools(o.tools, system);
   const lines = [
     ...(s.copied ? [{ text: "Opened a copy: that session is open in another window." }] : []),
     { text: `Resumed: ${o.name || read.name || read.firstPrompt?.split(/\r?\n/)[0] || s.id}.`, oneLine: true },
     ...(read.damaged ? [{ text: `${read.damaged} damaged lines of this session were skipped.` }] : []),
-    // Said only when a reply had the provider's own content to leave out.
-    ...(dropped ? [{ text: "The tools have changed since this session was saved, so its earlier replies are sent without their thinking." }] : []),
+    // Said at the resume that changed the setting, its thinking part only when a reply had the provider's own content to
+    // leave out; a later resume leaves out the same replies' thinking without a word (user, 2026-11-07: "Only at the
+    // change").
+    ...(rebuilt
+      ? [{ text: SANDBOX_CHANGED + (dropped ? ", and its earlier replies are sent without their thinking." : ".") }]
+      : otherTools
+        ? [{ text: "The tools have changed since this session was saved, so its earlier replies are sent without their thinking." }]
+        : []),
   ];
   return {
     conversation: {
       id: s.id,
       messages,
-      system: read.system,
+      system,
       transcript,
       prompts: read.prompts,
       calls: read.calls,
@@ -731,9 +753,10 @@ export const leadGone = (saved: string, err: unknown, instead: string) =>
   `The session's lead, ${saved}, is not set up (${errorText(err)}); ${instead} leads instead.`;
 
 // The saved sessions a window opens (release 8a plan, Task 7): its sessions folder, what a new session's start line holds
-// besides its id, lead and system prompt, and the session open now, with its lock and the lines about its lost subagents
-// still to hand the model. /clear, /resume and /branch open the next session as the launch does, and once the window has
-// switched to it, the last one's lock is let go and its lost lines dropped, so they never reach the new conversation.
+// besides its id, lead and system prompt, the launch's system prompt for a resumed one (resumed), and the session open
+// now, with its lock and the lines about its lost subagents still to hand the model. /clear, /resume and /branch open
+// the next session as the launch does, and once the window has switched to it, the last one's lock is let go and its
+// lost lines dropped, so they never reach the new conversation.
 export class WindowSessions {
   #open: Opened | undefined;
   #lost: string[];
@@ -741,6 +764,7 @@ export class WindowSessions {
   constructor(
     readonly dir: string,
     readonly start: { project: string; version: string; tools: ToolSpec[] },
+    readonly prompt: { box: boolean; full: string },
     open?: Opened,
   ) {
     this.#open = open;
@@ -756,7 +780,7 @@ export class WindowSessions {
 
   // /clear's session: a new one under a fresh id, as the launch starts one.
   fresh(lead: string, system: string): Opened {
-    return newSaved(this.dir, { id: randomUUID(), ...this.start, lead, print: false, system });
+    return newSaved(this.dir, { id: randomUUID(), ...this.start, lead, print: false, system, box: this.prompt.box });
   }
 
   // /resume's pick, opened as the launch opens it, a copy when another window holds it. `lead` is given the session's
@@ -764,13 +788,13 @@ export class WindowSessions {
   // it.
   resume(id: string, lead: (saved: string) => string): Opened | { problem: string } {
     const s = openSaved(this.dir, id, { fork: false });
-    return "problem" in s ? s : resumed(s, { tools: this.start.tools, lead: lead(s.read.lead) });
+    return "problem" in s ? s : resumed(s, { tools: this.start.tools, lead: lead(s.read.lead), prompt: this.prompt, interactive: true });
   }
 
   // /branch's copy of the session open now, named, its lock taken before it is written, as --fork-session's is.
   branch(id: string, lead: string, name: string): Opened | { problem: string } {
     const s = openSaved(this.dir, id, { fork: true });
-    return "problem" in s ? s : resumed(s, { tools: this.start.tools, lead, name });
+    return "problem" in s ? s : resumed(s, { tools: this.start.tools, lead, name, prompt: this.prompt, interactive: true });
   }
 
   // The window has switched to `next`: the last session's lock is let go (release 8a plan, choice 8).

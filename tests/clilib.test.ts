@@ -7,7 +7,7 @@ import { privateDir } from "../src/auth/private.js";
 import { Bus } from "../src/core/bus.js";
 import { readInstructions } from "../src/core/instructions.js";
 import { PermissionGate } from "../src/core/permissions.js";
-import { openSession, sessionsDir } from "../src/core/sessions.js";
+import { listSessions, openSession, sessionsDir } from "../src/core/sessions.js";
 import type { Message, ToolSpec } from "../src/core/types.js";
 import {
   approvalQuestion,
@@ -478,6 +478,8 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     system: "Saved prompt.",
     tools: o.tools ?? tools,
   });
+  // This launch's system prompt when it is the one the sessions were saved under: the same sandbox setting.
+  const SAVED = { box: false, full: "Saved prompt." };
   const prompt = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
   const said = (text: string, native?: Message["native"]): Message => ({ role: "assistant", parts: [{ type: "text", text }], ...(native ? { native } : {}) });
   const message = (m: Message) => ({ t: "message", at, message: m });
@@ -535,7 +537,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(chooseSession(d, { resume: "linked", print: false, terminal: true })).toEqual({ fail: missing.replace("nope", "linked") });
     });
 
-    it("lists the sessions but -p runs for -r alone, which needs a terminal, as a name more than one session has does", () => {
+    it("lists the sessions but -p runs for -r alone, which needs a terminal, as a name more than one session has does, saying how many", () => {
       const d = folder();
       expect(chooseSession(d, { resume: "", print: false, terminal: false })).toEqual(NEEDS);
       expect(chooseSession(d, { resume: "", print: false, terminal: true })).toEqual({ fail: "No saved sessions in this folder." });
@@ -546,18 +548,21 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(list).toMatchObject({ list: [{ id: "s2" }, { id: "s1" }] });
       expect((list as { list: unknown[] }).list).toHaveLength(2);
       expect(chooseSession(d, { resume: "", print: true, terminal: false })).toEqual(NEEDS);
-      expect(chooseSession(d, { resume: "twin", print: true, terminal: false })).toEqual(NEEDS);
+      const shared = "2 sessions are named twin; give one's id instead (tachi --resume lists them in a terminal).";
+      expect(chooseSession(d, { resume: "twin", print: true, terminal: false })).toEqual({ fail: shared });
     });
   });
 
   describe("openSaved and resumed", () => {
     const native = { provider: "anthropic", content: [{ type: "thinking", thinking: "hm", signature: "x" }] };
     const other: ToolSpec[] = [{ name: "write_file", description: "Writes a file.", inputSchema: { type: "object" } }];
-    // Opened, and made this window's under `as` tools and lead `lead`; let go once the case ends, as the process's exit would.
-    const open = (id: string, o: { fork?: boolean; as?: ToolSpec[]; lead?: string } = {}) => {
+    // Opened, and made this window's under `as` tools, lead `lead` and system prompt `prompt`, in the window unless
+    // `interactive` says not; let go once the case ends, as the process's exit would.
+    type As = { fork?: boolean; as?: ToolSpec[]; lead?: string; prompt?: { box: boolean; full: string }; interactive?: boolean };
+    const open = (id: string, o: As = {}) => {
       const s = openSaved(dir, id, { fork: o.fork ?? false });
       if ("problem" in s) throw new Error(s.problem);
-      const r = resumed(s, { tools: o.as ?? tools, lead: o.lead ?? "fake:a" });
+      const r = resumed(s, { tools: o.as ?? tools, lead: o.lead ?? "fake:a", prompt: o.prompt ?? SAVED, interactive: o.interactive ?? true });
       onTestFinished(r.release);
       return r;
     };
@@ -634,6 +639,58 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(a.conversation.messages).toEqual([prompt("hi"), said("Done.", native), prompt("again"), said("Done again.")]);
       expect(a.lines.map((l) => l.text)).toEqual(["Resumed: hi.", changed]);
       expect(open("plain", { as: other }).lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+    });
+
+    // Release 8a final review (user, 2026-11-07: "Rebuild it", "Save the setting", "Only at the change"): a session saved
+    // under another sandbox setting gets this launch's prompt from then on, saved so with the setting, a reply keeping its
+    // thinking only under the prompt it was made under. The setting is compared, never the prompt's text.
+    it("gives a session saved under another sandbox setting this launch's system prompt, saving it, and says so once", () => {
+      const file = saved(dir, "boxed", [start("boxed"), message(prompt("hi")), message(said("Done.", native))]);
+      saved(dir, "unthought", [start("unthought"), message(prompt("hi")), message(said("Done."))]);
+      const box = { box: true, full: "Box prompt.\n\nRules, read again." };
+      const changed = "The sandbox setting has changed since this session was saved, so the model is told this launch's shell and project folder";
+      const b = open("boxed", { prompt: box, as: other }); // the box's shell tool is another
+      expect(b.conversation.system).toBe(box.full);
+      expect(b.conversation.messages).toEqual([prompt("hi"), said("Done.")]);
+      expect(b.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${changed}, and its earlier replies are sent without their thinking.`]);
+      expect(lines(file).at(-1)).toMatchObject({ t: "system", system: box.full, box: true });
+      b.conversation.transcript!.write({ t: "message", message: prompt("again") });
+      b.conversation.transcript!.write({ t: "message", message: said("Done again.", native) });
+      b.release();
+      // In the box again, its prompt worded otherwise, the folder typed in other letters for one: nothing more is written
+      // or said, the tools line neither, and only the first reply goes without its thinking.
+      const again = open("boxed", { prompt: { box: true, full: "Box prompt for C:\\OTHER\\CASE." }, as: other });
+      expect(again.conversation.system).toBe(box.full);
+      expect(again.conversation.messages).toEqual([prompt("hi"), said("Done."), prompt("again"), said("Done again.", native)]);
+      expect(again.lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+      again.release();
+      expect(lines(file).filter((l) => l.t === "system")).toHaveLength(1);
+      // The same setting as saved, its prompt worded otherwise, keeps the saved prompt; a reply without thinking loses none.
+      const same = open("unthought", { prompt: { box: false, full: "Other words." } });
+      expect(same.conversation.system).toBe("Saved prompt.");
+      same.release();
+      const plain = open("unthought", { prompt: box });
+      expect(plain.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${changed}.`]);
+      expect(plain.conversation.system).toBe(box.full);
+    });
+
+    // Release 8a final review (user, 2026-11-07: "Becomes normal"): a -p run opened in the window leaves no mark when
+    // opened with -p again, and becomes a session as any other in the window, marked once.
+    it("makes a -p run opened in the window a session as any other, in -c and the list", () => {
+      const d = folder();
+      const file = saved(d, "p1", talk("p1", "one", { print: true }));
+      const s = openSaved(d, "p1", { fork: false });
+      if ("problem" in s) throw new Error(s.problem);
+      resumed(s, { tools, lead: "fake:a", prompt: SAVED, interactive: false }).release();
+      expect(listSessions(d, { print: false })).toEqual([]);
+      for (const _ of [1, 2]) {
+        const w = openSaved(d, "p1", { fork: false });
+        if ("problem" in w) throw new Error(w.problem);
+        resumed(w, { tools, lead: "fake:a", prompt: SAVED, interactive: true }).release();
+      }
+      expect(lines(file).filter((l) => l.t === "interactive")).toHaveLength(1);
+      expect(listSessions(d, { print: false })).toMatchObject([{ id: "p1", print: false }]);
+      expect(chooseSession(d, { continue: true, print: false, terminal: true })).toEqual({ id: "p1" });
     });
 
     it("tells the model once of each subagent that had not finished, and gives a crash's unanswered call its result", () => {
@@ -738,7 +795,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
   });
 
   describe("newSaved", () => {
-    const begin = { project: "p", lead: "fake:a", version: "0.8.0", system: "New prompt.", tools };
+    const begin = { project: "p", lead: "fake:a", version: "0.8.0", system: "New prompt.", box: false, tools };
 
     it("writes the start line and the name, then takes the lock", () => {
       const o = newSaved(dir, { ...begin, id: "fresh", print: true }, "my name");
@@ -747,7 +804,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(o.conversation.transcript!.failed).toBeNull();
       const lines = read(path.join(dir, "fresh.jsonl")).trim().split("\n").map((l) => JSON.parse(l));
       expect(lines).toMatchObject([
-        { t: "start", v: 1, id: "fresh", lead: "fake:a", print: true, system: "New prompt.", tools },
+        { t: "start", v: 1, id: "fresh", lead: "fake:a", print: true, system: "New prompt.", box: false, tools },
         { t: "name", name: "my name" },
       ]);
       expect(read(path.join(dir, "fresh.lock"))).toBe(String(process.pid));
@@ -771,12 +828,12 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
     const opened = (id: string) => {
       const s = openSaved(dir, id, { fork: false });
       if ("problem" in s) throw new Error(s.problem);
-      return resumed(s, { tools, lead: "fake:a" });
+      return resumed(s, { tools, lead: "fake:a", prompt: SAVED, interactive: true });
     };
 
     it("hands out the open session's lost lines once, then marks them reported", () => {
       saved(dir, "w1", lost("w1"));
-      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, opened("w1"));
+      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, SAVED, opened("w1"));
       onTestFinished(() => w.release());
       expect(w.lost()).toEqual(["Subagent t1 (find x) had not finished when the session ended; its answer was lost."]);
       expect(marked("w1")).toBe(true);
@@ -785,7 +842,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
 
     it("lets the last session go on a switch, its lost lines dropped and never marked, and starts a fresh one", () => {
       saved(dir, "w2", lost("w2"));
-      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, opened("w2"));
+      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, SAVED, opened("w2"));
       onTestFinished(() => w.release());
       const next = w.fresh("fake:b", "Fresh prompt.");
       w.switched(next);
@@ -799,9 +856,22 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(lines(next.conversation.transcript!.file)).toMatchObject([fresh]);
     });
 
+    it("opens /resume's pick under the launch's sandbox setting and prompt, as the launch opens one", () => {
+      const file = saved(dir, "w4", talk("w4", "one"));
+      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, { box: true, full: "Box prompt." });
+      const next = w.resume("w4", (saved) => saved);
+      if ("problem" in next) throw new Error(next.problem);
+      onTestFinished(next.release);
+      expect(next.conversation.system).toBe("Box prompt.");
+      expect(lines(file).at(-1)).toMatchObject({ t: "system", system: "Box prompt.", box: true });
+      const fresh = w.fresh("fake:a", "Fresh prompt.");
+      onTestFinished(fresh.release);
+      expect(lines(fresh.conversation.transcript!.file)[0]).toMatchObject({ t: "start", system: "Fresh prompt.", box: true });
+    });
+
     it("branches a copy of a session under its name, leaving the original as it was", () => {
       const file = saved(dir, "w3", talk("w3", "one"));
-      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools });
+      const w = new WindowSessions(dir, { project: top, version: "0.8.0", tools }, SAVED);
       const copy = w.branch("w3", "fake:a", "side");
       if ("problem" in copy) throw new Error(copy.problem);
       onTestFinished(copy.release);

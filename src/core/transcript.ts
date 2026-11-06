@@ -12,14 +12,32 @@ type SavedImage = Omit<Image, "data"> & { file: string };
 export type SavedMessage = Omit<Message, "parts"> & { parts: (Exclude<Part, Image> | SavedImage)[] };
 
 // The line kinds of release 8a plan, choice 4; `ended` is written only in a subagent's own file, `lost` by a resume that
-// told the model its answer was lost (user, 2026-11-06: "Report once"). `tools`: the tool specs from that line on. `M`
-// is the message as given to `write`, its pictures' data in it; the file holds SavedMessage. A shortening is one line,
-// so it is saved whole or not at all.
+// told the model its answer was lost (user, 2026-11-06: "Report once"). `tools`: the tool specs from that line on;
+// `system`: the system prompt and sandbox setting from that line on, written by a resume under another setting; `box`,
+// in it and the start line, whether the sandbox was on, absent in a line written before it was recorded (off);
+// `interactive`: a -p run opened in the window, a session as any other from then on (release 8a final review, user,
+// 2026-11-07).
+// `M` is the message as given to `write`, its pictures' data in it; the file holds SavedMessage. A shortening is one
+// line, so it is saved whole or not at all.
 export type Line<M = SavedMessage> =
-  | { t: "start"; at: string; v: 1; id: string; project: string; lead: string; version: string; print: boolean; system: string; tools: ToolSpec[] }
+  | {
+      t: "start";
+      at: string;
+      v: 1;
+      id: string;
+      project: string;
+      lead: string;
+      version: string;
+      print: boolean;
+      system: string;
+      box?: boolean;
+      tools: ToolSpec[];
+    }
   | { t: "message"; at: string; message: M }
   | { t: "lead"; at: string; lead: string }
   | { t: "tools"; at: string; tools: ToolSpec[] }
+  | { t: "system"; at: string; system: string; box: boolean }
+  | { t: "interactive"; at: string }
   | { t: "name"; at: string; name: string }
   | { t: "shortened"; at: string; system: string; message: M }
   | { t: "subagent"; at: string; id: string; description: string; file: string }
@@ -128,10 +146,13 @@ export interface Read {
   nextPicture: number; // choice 5
   nextTask: number; // choice 4
   tools: ToolSpec[]; // the tools the history was last saved under: the last start or tools line
-  // The history for a launch with these tools: a reply keeps its provider's own content only when the tools it was saved
-  // under are these, as Anthropic refuses a thinking block once the tools before it changed (release 8a design, "Before
-  // the build", check 2; plan, choice 4). `dropped`: whether any reply's was left out.
-  withTools(tools: ToolSpec[]): { messages: Message[]; dropped: boolean };
+  print: boolean; // a -p run not opened in the window since, as the session list reads it (readOutline)
+  box: boolean; // whether the sandbox was on: the last start or system line's setting
+  // The history for a launch with these tools and system prompt: a reply keeps its provider's own content only when the
+  // tools and system prompt it was saved under are these, as Anthropic refuses a thinking block once either changed
+  // before it (release 8a design, "Before the build", check 2; plan, choice 4). `dropped`: whether any reply's was left
+  // out; `otherTools`: whether any of those was saved under other tools and this system prompt.
+  withTools(tools: ToolSpec[], system: string): { messages: Message[]; dropped: boolean; otherTools: boolean };
 }
 
 // The result given to a call left without one (release 8a design, "Resuming"; approved as worded).
@@ -166,9 +187,10 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     // The start line is written first, once (choice 4); without it there is no system prompt or tool list to go on.
     const start = rows[0];
     if (start?.t !== "start") return { problem: `${file} could not be read as a session (its first line is missing or damaged).` };
-    let { system, lead, tools } = start;
+    let { system, lead, tools, print } = start;
+    let box = start.box === true;
     let name: string | undefined;
-    let history: { m: SavedMessage; tools: ToolSpec[] }[] = [];
+    let history: { m: SavedMessage; tools: ToolSpec[]; system: string }[] = [];
     const prompts: string[] = [];
     const calls: { name: string; input: unknown }[] = [];
     const subagents: Extract<Line, { t: "subagent" }>[] = [];
@@ -185,11 +207,13 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     }
     for (const l of lines) {
       if (l.t === "tools") tools = l.tools;
-      if (l.t === "message") history.push({ m: l.message, tools });
+      if (l.t === "system") ({ system, box } = l);
+      if (l.t === "interactive") print = false;
+      if (l.t === "message") history.push({ m: l.message, tools, system });
       // The history starts at the last whole shortening, as Claude Code resumes "the last compaction's summary".
       if (l.t === "shortened") {
         system = l.system;
-        history = [{ m: l.message, tools }];
+        history = [{ m: l.message, tools, system }];
       }
       if (l.t === "lead") lead = l.lead;
       if (l.t === "name") name = l.name;
@@ -200,19 +224,23 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     // The numbers to hand out next follow every one used, in a line or by a file whose line a crash lost (choices 4, 5).
     const nextPicture = Math.max(0, ...used, ...numbered(pictures, /^(\d+)\.(png|jpg|gif|webp)$/)) + 1;
     const nextTask = Math.max(0, ...subagents.map((s) => Number(/^t(\d+)$/.exec(s.id)?.[1] ?? 0)), ...numbered(subagentsDir, /^t(\d+)\.jsonl$/)) + 1;
-    // Each reply with the tools it was saved under; pair() keeps a reply as the same object.
-    const restored = history.map((h) => ({ m: restore(h.m, pictures), tools: h.tools }));
-    const savedUnder = new Map(restored.map((h) => [h.m, JSON.stringify(h.tools)]));
+    // Each reply with the tools and system prompt it was saved under; pair() keeps a reply as the same object.
+    const restored = history.map((h) => ({ m: restore(h.m, pictures), tools: JSON.stringify(h.tools), system: h.system }));
+    const savedUnder = new Map(restored.map((h) => [h.m, h]));
     const messages = pair(restored.map((h) => h.m));
-    const withTools = (now: ToolSpec[]) => {
+    const withTools = (now: ToolSpec[], nowSystem: string) => {
       let dropped = false;
+      let otherTools = false;
       const kept = messages.map((m) => {
-        if (m.native === undefined || savedUnder.get(m) === JSON.stringify(now)) return m;
+        const under = savedUnder.get(m);
+        if (m.native === undefined || (under?.tools === JSON.stringify(now) && under.system === nowSystem)) return m;
         dropped = true;
+        // Under an older system prompt, the resume that changed it said so; a sandbox switch changes the shell tool too.
+        if (under?.system === nowSystem && under.tools !== JSON.stringify(now)) otherTools = true;
         const { native: _, ...rest } = m;
         return rest;
       });
-      return { messages: kept, dropped };
+      return { messages: kept, dropped, otherTools };
     };
     return {
       start,
@@ -229,6 +257,8 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       nextPicture,
       nextTask,
       tools,
+      print,
+      box,
       withTools,
     };
   } catch (err) {
@@ -237,9 +267,11 @@ export function readTranscript(file: string, pictures: string): Read | { problem
 }
 
 // What the session list shows of a transcript (release 8a plan, choice 9): its start line, last name, last lead and first
-// prompt, and whether it holds any conversation, read from its lines alone: no pictures, pairing or subagents' files.
+// prompt, whether it holds any conversation, and whether it is a -p run not opened in the window since, read from its
+// lines alone: no pictures, pairing or subagents' files.
 export interface Outline {
   start: Extract<Line, { t: "start" }>;
+  print: boolean;
   name?: string;
   lead: string;
   firstPrompt?: string;
@@ -256,8 +288,9 @@ export function readOutline(file: string): Outline | null {
   }
   const start = rows[0];
   if (start?.t !== "start") return null;
-  const outline: Outline = { start, lead: start.lead, said: false };
+  const outline: Outline = { start, print: start.print, lead: start.lead, said: false };
   for (const l of rows) {
+    if (l?.t === "interactive") outline.print = false;
     if (l?.t === "name") outline.name = l.name;
     if (l?.t === "lead") outline.lead = l.lead;
     if (l?.t === "message" || l?.t === "shortened") outline.said = true;
@@ -297,10 +330,15 @@ function valid(l: unknown): l is Line {
   const r = (l ?? {}) as Record<string, unknown>;
   const strings = (...keys: string[]) => keys.every((k) => typeof r[k] === "string");
   if (!strings("at")) return false;
-  if (r.t === "start") return r.v === 1 && strings("id", "project", "lead", "version", "system") && typeof r.print === "boolean" && Array.isArray(r.tools);
+  if (r.t === "start") {
+    const box = r.box === undefined || typeof r.box === "boolean";
+    return r.v === 1 && strings("id", "project", "lead", "version", "system") && typeof r.print === "boolean" && box && Array.isArray(r.tools);
+  }
   if (r.t === "message") return isMessage(r.message);
   if (r.t === "lead") return strings("lead");
   if (r.t === "tools") return Array.isArray(r.tools);
+  if (r.t === "system") return strings("system") && typeof r.box === "boolean";
+  if (r.t === "interactive") return true;
   if (r.t === "name") return strings("name");
   if (r.t === "shortened") return strings("system") && isMessage(r.message);
   if (r.t === "subagent") return strings("id", "description", "file");

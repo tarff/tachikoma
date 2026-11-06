@@ -152,6 +152,12 @@ export class Tasks {
     this.#changed();
   }
 
+  // The finished ones leave the list, as the window takes another conversation; running ones stay until they end.
+  forgetFinished(): void {
+    this.all.splice(0, this.all.length, ...this.all.filter((t) => t.state === "running" || t.state === "waiting"));
+    this.#changed();
+  }
+
   async #run(t: Task, provider: Provider, fallback: Provider | undefined, signal: AbortSignal): Promise<Result> {
     // Its own file, <id>/subagents/<tN>.jsonl beside the lead's pictures folder, named by a line in the lead's (release 8a
     // design, "Saving sessions"). The lead's line is written before the first wait; the subagent's own file only with its

@@ -349,6 +349,8 @@ const leadSpec = leadOf(parsed, process.env, loaded.settings);
 if (!leadSpec) fail(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${shownFile()}.\n\n${HELP}`);
 if (parsed.print !== undefined && !parsed.print.trim()) fail("-p needs a prompt"); // a blank one would still be a paid request
 if (parsed.raw && (parsed.print === undefined || parsed.json)) fail("--raw works only with -p, and not with --json, which is already exact");
+// Approved by the user, 2026-11-07 (release 8a final review).
+if (parsed["fork-session"] && !parsed.continue && parsed.resume === undefined) fail("--fork-session works only with -c or -r");
 if (parsed.raw) console.error("warning: --raw prints the answer exactly as the model wrote it; control codes in it can act on a terminal that shows it");
 let options;
 try {
@@ -587,13 +589,17 @@ const tools = [
 const specs = tools.map((t) => t.spec);
 const name = parsed.name?.trim() || undefined;
 const opened = saved
-  ? resumed(saved, { tools: specs, lead: lead.id, ...(name ? { name } : {}) })
-  : newSaved(sessions, { id: sessionId, project: root, lead: lead.id, version: VERSION, print: !interactive, system, tools: specs }, name);
+  ? resumed(saved, { tools: specs, lead: lead.id, ...(name ? { name } : {}), prompt: { box: box !== undefined, full: system }, interactive })
+  : newSaved(
+      sessions,
+      { id: sessionId, project: root, lead: lead.id, version: VERSION, print: !interactive, system, box: box !== undefined, tools: specs },
+      name,
+    );
 const said = [...opened.lines, ...(leadLine ? [{ text: leadLine }] : [])].map((l) => ({ ...l, text: visible(l.text) }));
 // The subagents a crash cut short reach the model with its next request, as waiting answers do (release 8a design,
 // "Resuming"), and are marked reported once handed out: the window's session's, which /clear, /resume and /branch switch
 // (release 8a plan, Task 7).
-const windowSessions = new WindowSessions(sessions, { project: root, version: VERSION, tools: specs }, opened);
+const windowSessions = new WindowSessions(sessions, { project: root, version: VERSION, tools: specs }, { box: box !== undefined, full: system }, opened);
 const { session, pictures } = leadSession({
   lead,
   fallback,
