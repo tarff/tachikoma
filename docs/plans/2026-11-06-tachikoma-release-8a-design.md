@@ -348,9 +348,9 @@ gather every rarer case the build left as a limit.
   choice, "Show it"). The session is opened, mended and read before the instruction files' question
   and the sandbox, so one that cannot be read starts nothing. "Opened a copy" is said only when
   another window holds the session, not for `--fork-session`, where it would be false. The help
-  lines, the list's headings, hint, ages and sizes, `Resumed: <id>.`, the "could not be copied"
-  line and its reasons `its first line is missing or damaged` and `its lock could not be taken`
-  are the user's approved wording.
+  lines, the list's headings, hint, ages and sizes, `Resumed: <id>.`, the "could not be read as a
+  session" line's reason `its first line is missing or damaged`, and the "could not be copied" line
+  with its reason `its lock could not be taken` are the user's approved wording.
 - **In the window (Task 7):** `/resume` switches to the picked session's saved lead, falling back
   to the window's with the "not set up" line (the user's choice, "The session's saved lead"). The
   window's sandbox carries on across a switch, so copy mode's review at the end covers every
