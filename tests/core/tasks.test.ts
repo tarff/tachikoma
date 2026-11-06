@@ -268,7 +268,7 @@ describe("Tasks, saved", { timeout: 15_000 }, () => {
     expect(JSON.parse(before)).toMatchObject(line); // there before the subagent's first request
     expect(lines(path.join(p.subagents, "t1.jsonl"))).toEqual([
       { t: "message", at: expect.any(String), message: { role: "user", parts: [{ type: "text", text: "find the login code" }] } },
-      { t: "message", at: expect.any(String), message: { role: "assistant", parts: [{ type: "text", text: "It is in src/auth.ts:12" }] } },
+      { t: "message", at: expect.any(String), message: { role: "assistant", parts: [{ type: "text", text: "It is in src/auth.ts:12" }], lead: "fake:w" } },
     ]);
   });
 

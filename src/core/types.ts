@@ -32,6 +32,9 @@ export interface Message {
   // The provider's own content for this turn, replayed unchanged when the same kind of provider leads
   // again. Anthropic needs this: thinking blocks must come back byte-identical.
   native?: { provider: string; content: unknown };
+  // A reply's: the id of the lead that answered it, for /export, and saved with it (release 8a plan, choice 27). The
+  // session never sends it to a provider.
+  lead?: string;
 }
 
 export interface ToolSpec {

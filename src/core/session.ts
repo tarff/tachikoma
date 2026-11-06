@@ -187,7 +187,8 @@ export class Session {
       for (const f of turn.fallbacks ?? []) {
         bus.emit("error", { kind: "fallback", attempted: `response from ${answeredBy.id}`, message: `${f.from} declined; ${f.to} answered instead (Anthropic's fallback)`, lead: lead.id });
       }
-      this.#push({ role: "assistant", parts: turn.parts, native: turn.native });
+      // With the lead that answered: the fallback that rescued a refusal, or the model the provider says served it.
+      this.#push({ role: "assistant", parts: turn.parts, native: turn.native, lead: turn.servedBy ?? answeredBy.id });
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
       if (turn.cutOff) {
@@ -225,7 +226,7 @@ export class Session {
         bus.emit("note", `${n} ${n === 1 ? "picture was" : "pictures were"} left out of this request to fit ${over}.`);
       const turn = await provider.complete({
         system,
-        messages: this.messages,
+        messages: this.messages.map(sent),
         tools: tools.map((t) => t.spec),
         signal,
         shrunk: this.#shrunk,
@@ -320,4 +321,12 @@ export class Session {
 
 function result(call: ToolCall, output: string, isError: boolean): ToolResult {
   return { type: "tool_result", callId: call.id, output, isError };
+}
+
+// A message as a request carries it: without the reply's lead, which is the session's own (release 8a plan, choice 27),
+// so no provider can send it on.
+function sent(m: Message): Message {
+  if (m.lead === undefined) return m;
+  const { lead: _, ...rest } = m;
+  return rest;
 }

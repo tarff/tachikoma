@@ -33,7 +33,7 @@ describe("commandMenu", () => {
     ]);
   });
 
-  // Release 8a plan, Task 8 (choice 25). The note is a draft awaiting the user's approval (constants.ts, EXPORT_WORDS).
+  // Release 8a plan, Task 8 (choice 25); the note approved by the user on 2026-11-06 (constants.ts, EXPORT_WORDS).
   it("lists /export, saying what it does", () => {
     expect(commandMenu("/", 1)!.entries[8]).toEqual({
       label: "/export [file]", note: "Write the conversation to a file as text; alone, copy it", fill: "/export ", run: "/export",

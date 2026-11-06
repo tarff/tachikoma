@@ -33,14 +33,66 @@ describe("exportText", () => {
     );
   });
 
-  // As the scrollback leaves it out (describe.ts): the text the session added for the lead, such as a background
-  // subagent's answer, is not the user's; a message with nothing else has no heading.
-  it("leaves out the text the session added for the lead, and a call not finished says so", () => {
+  // User, 2026-11-06: "Include, headed Subagents:". The session's notes for the lead, as the lead got them, where they
+  // arrived: after a prompt, after the results they came with, or alone.
+  it("puts the session's notes for the lead where they arrived, under Subagents:, and a call not finished says so", () => {
     const messages: Message[] = [
-      { role: "user", parts: [{ type: "text", text: "t1 finished: found it", from: "tasks" }] },
-      { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "shell", input: { command: "npm test" } }] },
+      { role: "user", parts: [{ type: "text", text: "go" }, { type: "text", text: "Background task t1 (find x) finished:\nfound", from: "tasks" }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "echo", input: {} }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "ok", isError: false }, { type: "text", text: "t2 failed", from: "tasks" }] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c2", name: "shell", input: { command: "npm test" } }] },
+      { role: "user", parts: [{ type: "text", text: "t3 stopped", from: "tasks" }, { type: "text", text: "t4 lost", from: "tasks" }] },
     ];
-    expect(exportText(messages, "fake:a")).toBe('Tachikoma (fake:a):\n● shell {\n  "command": "npm test"\n}\n  ⎿ (not finished)\n');
+    expect(exportText(messages, "fake:a")).toBe(
+      [
+        "You:",
+        "go",
+        "",
+        "Subagents:",
+        "Background task t1 (find x) finished:",
+        "found",
+        "",
+        "Tachikoma (fake:a):",
+        "● echo {}",
+        "  ⎿ ok",
+        "",
+        "Subagents:",
+        "t2 failed",
+        "",
+        "Tachikoma (fake:a):",
+        "● shell {",
+        '  "command": "npm test"',
+        "}",
+        "  ⎿ (not finished)",
+        "",
+        "Subagents:",
+        "t3 stopped",
+        "t4 lost",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  // User, 2026-11-06: "Record each reply's lead". A reply saved before replies kept their lead is headed with the lead
+  // leading now.
+  it("heads each reply with the lead that wrote it, or without one the lead leading now", () => {
+    const messages: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "one" }] },
+      { role: "assistant", parts: [{ type: "text", text: "from a" }], lead: "fake:a" },
+      { role: "user", parts: [{ type: "text", text: "two" }] },
+      { role: "assistant", parts: [{ type: "text", text: "from whoever" }] },
+    ];
+    expect(exportText(messages, "fake:b")).toBe("You:\none\n\nTachikoma (fake:a):\nfrom a\n\nYou:\ntwo\n\nTachikoma (fake:b):\nfrom whoever\n");
+  });
+
+  // Choice 27: LF throughout, a message's own CRLF and lone CR included; a CR ending a result ends its line.
+  it("ends every line with LF alone, whatever a message's own line breaks were", () => {
+    const messages: Message[] = [
+      { role: "user", parts: [{ type: "text", text: "a\r\nb" }] },
+      { role: "assistant", parts: [{ type: "text", text: "c\rd" }, { type: "tool_call", id: "c1", name: "shell", input: { command: "x" } }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "e\r\nf\r", isError: false }] },
+    ];
+    expect(exportText(messages, "fake:a")).toBe('You:\na\nb\n\nTachikoma (fake:a):\nc\nd\n● shell {\n  "command": "x"\n}\n  ⎿ e\nf\n');
   });
 
   it("is empty for a conversation with nothing in it", () => {

@@ -376,9 +376,10 @@ export const queue = (ui: UI, fns: Fns) => {
     t?.write({ t: "name", name });
     fns.say(!t || t.failed !== null ? { text: SESSION_WORDS.unsaved("/rename"), color: "red" } : gray(`Session named ${name}.`));
   };
-  // /export [file]: the conversation as text (core/exportText.ts), its replies headed by the lead leading now. To a file,
-  // from the project folder, made with `wx` so one already there is never written over (release 8a plan, choice 27);
-  // alone, to the clipboard, whose own failure line follows in the hint row as a selection's copy's does (clipboard.ts).
+  // /export [file]: the conversation as text (core/exportText.ts), a reply saved without its lead headed by the one leading
+  // now. To a file, from the project folder, made with `wx` so one already there is never written over (release 8a plan,
+  // choice 27); alone, to the clipboard, whose own failure line follows in the hint row as a selection's copy's does
+  // (clipboard.ts).
   const exportTo = (file: string) => {
     const text = exportText(ui.session.messages, ui.session.lead.id);
     if (!file) {

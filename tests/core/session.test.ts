@@ -42,6 +42,23 @@ describe("Session", () => {
     expect(session.messages[1]!.parts).toEqual([{ type: "text", text: "hello" }]);
   });
 
+  // Release 8a plan, choice 27 (user, 2026-11-06: "Record each reply's lead"): the lead that answered, the fallback that
+  // rescued a refusal, or the model the provider says served it; never sent to a provider.
+  it("keeps on each reply the lead that answered it, and sends none to the provider", async () => {
+    const { session, lead } = await setup([reply("one"), { ...reply("two"), servedBy: "anthropic:claude-opus-4-8" }]);
+    await session.send("hi");
+    expect(session.messages[1]).toEqual({ role: "assistant", parts: [{ type: "text", text: "one" }], lead: "fake:a" });
+    await session.send("again");
+    expect(session.messages[3]!.lead).toBe("anthropic:claude-opus-4-8");
+    expect(lead.seen[1]![1]).toEqual({ role: "assistant", parts: [{ type: "text", text: "one" }] });
+    expect(lead.seen[1]![1]).not.toHaveProperty("lead");
+    const refused = { ...reply(""), cutOff: { kind: "refusal" as const, detail: "declined" } };
+    const rescue = new FakeProvider("b", [reply("b")]);
+    const rescued = new Session({ lead: new FakeProvider("a", [refused]), fallback: rescue, tools: [], system: "t", ctx: await tempContext(), bus: new Bus() });
+    await rescued.send("go");
+    expect(rescued.messages[1]!.lead).toBe("fake:b");
+  });
+
   it("runs a tool and sends its result back before the final reply", async () => {
     const { session, lead } = await setup([callTool("c1", "echo", { text: "ping" }), reply("done")]);
     await session.send("go");
@@ -456,7 +473,7 @@ describe("Session, when a request with pictures is refused", () => {
     // The conversation is never changed (release 6 design, "When the provider refuses"): the pictures stay in it.
     expect(session.messages).toEqual([
       { role: "user", parts: look },
-      { role: "assistant", parts: [{ type: "text", text: "seen" }] },
+      { role: "assistant", parts: [{ type: "text", text: "seen" }], lead: "fake:a" },
     ]);
   });
 
@@ -665,7 +682,7 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
     const lead = new FakeProvider("a", [reply("still here"), reply("and here")]);
     const session = new Session({ lead, tools: [], system: "t", ctx: await tempContext(), bus, transcript });
     await session.send("go");
-    expect(events).toEqual([typed("go"), said("still here")]);
+    expect(events).toEqual([typed("go"), { ...said("still here"), lead: "fake:a" }]);
     expect(session.messages).toEqual(events);
     expect(transcript.failed).toEqual(expect.stringMatching(/\S/));
     expect(errors).toEqual([{ kind: "saving", attempted: transcript.file, message: savingFails(transcript), lead: "fake:a" }]);
@@ -725,7 +742,7 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
     expect(() => session.load(conversation({ messages: [said("other")] }))).toThrow("A turn is already running");
     lead.answer("ok");
     await turn;
-    expect(session.messages).toEqual([typed("hi"), said("ok")]);
+    expect(session.messages).toEqual([typed("hi"), { ...said("ok"), lead: "fake:a" }]);
   });
 
   it("sends the loaded conversation's system prompt in the next turn", async () => {

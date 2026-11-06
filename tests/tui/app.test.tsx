@@ -8729,7 +8729,7 @@ describe("App's /export", () => {
     });
   });
 
-  // A file where a folder should be makes the write fail. The line is a draft awaiting the user's approval (constants.ts,
+  // A file where a folder should be makes the write fail. The line was approved by the user on 2026-11-06 (constants.ts,
   // EXPORT_WORDS).
   it("says in red when the file cannot be written", async () => {
     await inColour(async () => {
@@ -8757,6 +8757,37 @@ describe("App's /export", () => {
     expect(copies).toEqual([text]);
     expect(ran).toEqual([text]);
     said(app, `Copied the conversation (${[...text].length} characters).`);
+  });
+
+  // User, 2026-11-06: "Record each reply's lead".
+  it("heads each reply with the lead that wrote it, across a /lead switch", async () => {
+    const { app, copies } = await mount([reply("from a")], { newLead: new FakeProvider("b", [reply("from b")]) });
+    await type(app, "one");
+    await until(app, "from a");
+    await type(app, "/lead fake:b");
+    await until(app, "lead is now fake:b");
+    await type(app, "two");
+    await until(app, "from b");
+    await type(app, "/export");
+    await until(app, "Copied the conversation");
+    expect(copies).toEqual(["You:\none\n\nTachikoma (fake:a):\nfrom a\n\nYou:\ntwo\n\nTachikoma (fake:b):\nfrom b\n"]);
+  });
+
+  // User, 2026-11-06: "Include, headed Subagents:". The answer as the lead got it, in the turn of its own it woke.
+  it("puts a background subagent's answer under Subagents:, where it arrived", async () => {
+    const bg = callTool("c1", "delegate", { description: "find x", task: "find x", background: true });
+    const lead = new FakeProvider("a", [bg, reply("started it"), reply("read it")]);
+    const worker = new Held("fake:w");
+    const { app, copies } = await mount([], { lead, worker });
+    await type(app, "go");
+    await until(app, "started it");
+    worker.answer("found it");
+    await until(app, "read it");
+    await type(app, "/export");
+    await until(app, "Copied the conversation");
+    expect(copies[0]).toContain(
+      "Tachikoma (fake:a):\nstarted it\n\nSubagents:\nBackground task t1 (find x) finished:\nfound it\n\nTachikoma (fake:a):\nread it\n",
+    );
   });
 
   it("says when the clipboard tool fails that the terminal alone copied, as a selection's copy says", async () => {

@@ -67,8 +67,8 @@ export const SESSION_WORDS = {
   unsaved: (command: string) => `${command} needs this session saved, and saving it stopped.`,
   closes: "closes",
 };
-// Release 8a plan, Task 8: the words its table does not give, drafted at the build, awaiting the user's approval. The `/`
-// menu's note, and a file that cannot be written for another reason than being there already.
+// Release 8a plan, Task 8's words, approved by the user on 2026-11-06: the `/` menu's note, and a file that cannot be
+// written for another reason than being there already.
 export const EXPORT_WORDS = {
   note: "Write the conversation to a file as text; alone, copy it",
   unwritten: (file: string, why: string) => `${file} could not be written (${why}).`,

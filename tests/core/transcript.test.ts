@@ -74,7 +74,8 @@ describe("transcript", { timeout: 15_000 }, () => {
     "Outcome unknown: the session ended while this was running, or before its result was saved. It may have run in full or in part. " +
     "Check what it would have changed before running it again.";
 
-  it("reads back every kind of line, a reply's provider content included", async () => {
+  // A reply's lead too (release 8a plan, choice 27; user, 2026-11-06: "Record each reply's lead").
+  it("reads back every kind of line, a reply's provider content and lead included", async () => {
     const p = place();
     const t = new Transcript(p.file, p.pictures);
     const reply: Message = {
@@ -84,6 +85,7 @@ describe("transcript", { timeout: 15_000 }, () => {
         { type: "tool_call", id: "c1", name: "read_file", input: { path: "a.txt" } },
       ],
       native: { provider: "anthropic", content: [{ type: "thinking", thinking: "hm", signature: "sig==" }] },
+      lead: "anthropic:claude-opus-5-5",
     };
     const history: Message[] = [
       { role: "user", parts: [{ type: "text", text: "what is in a.txt?" }] },
