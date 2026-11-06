@@ -205,15 +205,16 @@ describe("sessions", { timeout: 15_000 }, () => {
       expect(readdirSync(outside)).toEqual(["secret.txt"]);
     });
 
-    // Release 8a plan, Task 6: a copy that fails partway leaves nothing behind, its folder removed before its transcript,
-    // as the sweep removes them. The failure is a file standing where the copy's folder goes.
-    it("removes a copy that failed partway, and copies nothing from a source with no whole first line", () => {
+    // Release 8a plan, Task 6: a copy that fails partway leaves nothing of its own behind, its folder removed before its
+    // transcript, as the sweep removes them, and nothing it did not make. The failure is a file standing where the
+    // copy's folder goes, which survives.
+    it("removes what a copy that failed partway made, and copies nothing from a source with no whole first line", () => {
       session(shared, "partway", { prompt: "hi" });
       mkdirSync(path.join(shared, "partway", "pictures"), { recursive: true });
       writeFileSync(path.join(shared, "taken"), "in the copy's folder's place");
       expect(() => copySession(shared, "partway", "taken")).toThrow(/EEXIST/);
       expect(existsSync(path.join(shared, "taken.jsonl"))).toBe(false);
-      expect(existsSync(path.join(shared, "taken"))).toBe(false);
+      expect(readFileSync(path.join(shared, "taken"), "utf8")).toBe("in the copy's folder's place");
       for (const [id, text] of [["torn", '{"t":"start","v":1,"id":"to'], ["damaged", "not a line\n"]]) {
         writeFileSync(path.join(shared, `${id}.jsonl`), text!);
         expect(() => copySession(shared, id!, `${id}-copy`)).toThrow(/^its first line is missing or damaged$/);
@@ -222,8 +223,10 @@ describe("sessions", { timeout: 15_000 }, () => {
     });
   });
 
-  it("names a session's transcript and pictures folder inside the sessions folder", () => {
-    expect(sessionPaths(shared, "s1")).toEqual({ file: path.join(shared, "s1.jsonl"), pictures: path.join(shared, "s1", "pictures") });
+  it("names a session's transcript, pictures folder and subagents folder inside the sessions folder", () => {
+    const folder = path.join(shared, "s1");
+    const [pictures, subagents] = [path.join(folder, "pictures"), path.join(folder, "subagents")];
+    expect(sessionPaths(shared, "s1")).toEqual({ file: path.join(shared, "s1.jsonl"), pictures, subagents });
   });
 
   describe("the sweep", () => {

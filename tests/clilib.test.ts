@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import path from "node:path";
@@ -528,6 +528,10 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       // A file the list leaves out, as it cannot be read, is opened by its id, so the launch can say why.
       writeFileSync(path.join(d, "broken.jsonl"), "not a start line\n");
       expect(chooseSession(d, { resume: "broken", print: false, terminal: true })).toEqual({ id: "broken" });
+      // A link of that name is not one: a junction, to a folder of the test's own.
+      mkdirSync(path.join(d, "elsewhere"));
+      symlinkSync(path.join(d, "elsewhere"), path.join(d, "linked.jsonl"), "junction");
+      expect(chooseSession(d, { resume: "linked", print: false, terminal: true })).toEqual({ fail: missing.replace("nope", "linked") });
     });
 
     it("lists the sessions but -p runs for -r alone, which needs a terminal, as a name more than one session has does", () => {
@@ -566,7 +570,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(read(file).endsWith('"mess\n')).toBe(true);
       expect(o.conversation).toMatchObject({ id: "torn", system: "Saved prompt.", messages: [prompt("first words"), said("Done.")], prompts: ["first words"] });
       expect(o.conversation).toMatchObject({ nextPicture: 1, nextTask: 1 });
-      expect(o.lines).toEqual(["Resumed: first words.", "2 damaged lines of this session were skipped."]);
+      expect(o.lines.map((l) => l.text)).toEqual(["Resumed: first words.", "2 damaged lines of this session were skipped."]);
       expect(o.lost).toEqual([]);
       o.conversation.transcript!.write({ t: "message", message: prompt("next") });
       expect(read(file).split("\n").at(-2)).toContain('"next"');
@@ -574,9 +578,14 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(readdirSync(dir)).not.toContain("torn.lock");
     });
 
+    it("names a session by its first prompt's first line, as one screen line", () => {
+      saved(dir, "multi", talk("multi", "the first line\nand the second"));
+      expect(open("multi").lines[0]).toEqual({ text: "Resumed: the first line.", oneLine: true });
+    });
+
     it("names a session with neither name nor prompt by its id", () => {
       saved(dir, "bare", [start("bare"), { t: "shortened", at, system: "Short.", message: said("A summary.") }]);
-      expect(open("bare").lines).toEqual(["Resumed: bare."]);
+      expect(open("bare").lines.map((l) => l.text)).toEqual(["Resumed: bare."]);
     });
 
     it("opens a copy of a session open in another window, saying so, and of any session with --fork-session, the originals unchanged", () => {
@@ -589,8 +598,8 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       const fork = open("forked", { fork: true });
       expect(copy.conversation.id).not.toBe("held");
       expect(fork.conversation.id).not.toBe("forked");
-      expect(copy.lines).toEqual(["Opened a copy: that session is open in another window.", "Resumed: held one."]);
-      expect(fork.lines).toEqual(["Resumed: two."]);
+      expect(copy.lines.map((l) => l.text)).toEqual(["Opened a copy: that session is open in another window.", "Resumed: held one."]);
+      expect(fork.lines.map((l) => l.text)).toEqual(["Resumed: two."]);
       for (const o of [copy, fork]) {
         expect(read(path.join(dir, `${o.conversation.id}.lock`))).toBe(String(process.pid));
         expect(o.conversation.messages).toHaveLength(2);
@@ -615,15 +624,15 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       // Under other tools: the first reply's thinking is left out, and a reply made then keeps its own.
       const b = open("thought", { as: other });
       expect(b.conversation.messages).toEqual([prompt("hi"), said("Done.")]);
-      expect(b.lines).toEqual(["Resumed: hi.", changed]);
+      expect(b.lines.map((l) => l.text)).toEqual(["Resumed: hi.", changed]);
       b.conversation.transcript!.write({ t: "message", message: prompt("again") });
       b.conversation.transcript!.write({ t: "message", message: said("Done again.", native) });
       b.release();
       // Back under the first tools: the first reply's thinking goes again, and the other tools' does not.
       const a = open("thought");
       expect(a.conversation.messages).toEqual([prompt("hi"), said("Done.", native), prompt("again"), said("Done again.")]);
-      expect(a.lines).toEqual(["Resumed: hi.", changed]);
-      expect(open("plain", { as: other }).lines).toEqual(["Resumed: hi."]);
+      expect(a.lines.map((l) => l.text)).toEqual(["Resumed: hi.", changed]);
+      expect(open("plain", { as: other }).lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
     });
 
     it("tells the model once of each subagent that had not finished, and gives a crash's unanswered call its result", () => {
@@ -635,9 +644,24 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       const result = { type: "tool_result", callId: "c1", output: expect.stringMatching(/^Outcome unknown: /), isError: true };
       expect(o.conversation.messages.at(-1)!.parts[0]).toMatchObject(result);
       expect(o.conversation.nextTask).toBe(2);
-      expect(lines(path.join(dir, "crashed", "subagents", "t1.jsonl"))).toMatchObject([{ t: "ended", state: "lost" }]);
+      // Not told yet: a resume left before the next request reports it again.
       o.release();
+      const again = open("crashed");
+      expect(again.lost).toHaveLength(1);
+      again.reported();
+      expect(lines(path.join(dir, "crashed", "subagents", "t1.jsonl"))).toMatchObject([{ t: "ended", state: "lost" }]);
+      again.release();
       expect(open("crashed").lost).toEqual([]);
+    });
+
+    // A subagent's id from the file names its file only when it is one Tasks gives, t and a number.
+    it("writes the lost line into no file outside the subagents folder", () => {
+      const subagent = { t: "subagent", at, id: "../planted", description: "not one", file: "x.jsonl" };
+      saved(dir, "strange", [start("strange"), message(prompt("go")), message(said("Done.")), subagent]);
+      const o = open("strange");
+      o.reported();
+      expect(readdirSync(dir)).not.toContain("strange");
+      expect(readdirSync(dir).filter((n) => n.startsWith("planted"))).toEqual([]);
     });
 
     it("refuses a session it cannot read, in the approved line, leaving no lock or copy behind, a copy it made removed", () => {
@@ -656,6 +680,15 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       }
     });
 
+    it("takes the copy's lock before writing it, a copy whose lock is held being no copy", () => {
+      const file = saved(dir, "lockfirst", talk("lockfirst", "hi"));
+      const held = openSession(dir, "lockfirst-copy");
+      onTestFinished(() => held?.release());
+      const problem = `${file} could not be copied (its lock could not be taken).`;
+      expect(openSaved(dir, "lockfirst", { fork: true, copy: "lockfirst-copy" })).toEqual({ problem });
+      expect(readdirSync(dir)).not.toContain("lockfirst-copy.jsonl");
+    });
+
     // The failure is a file standing where the copy's folder goes, under the copy's id the test gives.
     it("says a copy it cannot make could not be copied, leaving none of it behind", () => {
       const file = saved(dir, "pics", talk("pics", "hi"));
@@ -665,6 +698,8 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(got).toEqual({ problem: expect.stringMatching(/ could not be copied \(EEXIST: .+\)\.$/) });
       expect((got as { problem: string }).problem.startsWith(`${file} could not be copied (`)).toBe(true);
       expect(names()).not.toContain("pics-copy.jsonl");
+      expect(read(path.join(dir, "pics-copy"))).toBe("in the copy's folder's place"); // not the copy's own, so kept
+      expect(names()).not.toContain("pics-copy.lock");
       function names() {
         return readdirSync(dir);
       }
@@ -706,6 +741,7 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
 
     it("writes the start line and the name, then takes the lock", () => {
       const o = newSaved(dir, { ...begin, id: "fresh", print: true }, "my name");
+      onTestFinished(o.release);
       expect(o.conversation).toMatchObject({ id: "fresh", system: "New prompt.", messages: [], prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
       expect(o.conversation.transcript!.failed).toBeNull();
       const lines = read(path.join(dir, "fresh.jsonl")).trim().split("\n").map((l) => JSON.parse(l));
@@ -728,7 +764,9 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
   // Release 8a plan, Task 6: the window's picture numbers are one counter, the session's and the screen's, so a picture
   // made after a resume never takes a saved one's number.
   it("makes the lead's session with the Pictures the screen is given, which a loaded conversation raises", async () => {
-    const { session, pictures } = leadSession({ lead: new FakeProvider("a", []), tools: [], system: "s", ctx: await tempContext(), bus: new Bus() });
+    const ctx = await tempContext();
+    onTestFinished(() => removeTree(ctx.root));
+    const { session, pictures } = leadSession({ lead: new FakeProvider("a", []), tools: [], system: "s", ctx, bus: new Bus() });
     session.load({ id: "x", messages: [], system: "s", prompts: [], calls: [], nextPicture: 4, nextTask: 1 });
     expect(pictures.next()).toBe(4);
   });

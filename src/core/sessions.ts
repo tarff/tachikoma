@@ -4,7 +4,7 @@ import path from "node:path";
 import { tryLock } from "../auth/lock.js";
 import { privateDir } from "../auth/private.js";
 import { projectFile } from "./datadir.js";
-import { readOutline, wholeLines } from "./transcript.js";
+import { readOutline, sessionPaths, wholeLines } from "./transcript.js";
 import { errorText } from "./types.js";
 
 // The saved sessions of each project (release 8a design, "Saving sessions"): <data>/sessions/<project>/ holds each
@@ -17,11 +17,7 @@ export function sessionsDir(root: string, data?: string): string {
   return path.join(path.dirname(file), path.basename(file, ".jsonl"));
 }
 
-// A session's transcript and its pictures folder, <id>.jsonl and <id>/pictures. A subagent's file is found from the
-// pictures folder's parent (tasks.ts), which inherits the sessions folder's permission only while this layout holds.
-export function sessionPaths(dir: string, id: string): { file: string; pictures: string } {
-  return { file: path.join(dir, `${id}.jsonl`), pictures: path.join(dir, id, "pictures") };
-}
+export { sessionPaths } from "./transcript.js"; // kept beside the transcript, which sessions.ts reads, so no import cycles
 
 export interface Row {
   id: string;
@@ -44,6 +40,9 @@ function entries(dir: string): Dirent[] {
     throw err;
   }
 }
+
+// The folder's entry of that name, with its own type, or none.
+export const entryOf = (dir: string, name: string): Dirent | undefined => entries(dir).find((e) => e.name === name);
 
 // Newest first, leaving out sessions with no messages, ones that cannot be read, and -p runs unless `print` asks for them,
 // as `tachi -p --continue` does (release 8a plan, choice 9).
@@ -86,7 +85,8 @@ export function openSession(dir: string, id: string): { release: () => void } | 
 // <id>/ folder, each subagent's file as its whole lines too, so a finished subagent still reads as finished (release 8a
 // plan, Task 4; design, "Names, branches and export"). A line the other window is still writing is left out (design,
 // "When something goes wrong"). A copy that fails partway is removed, its folder before its transcript, as the sweep
-// removes a session (release 8a plan, Task 6). A source whose first line cannot be read throws Unreadable, so the caller
+// removes a session (release 8a plan, Task 6), and only what it made: a cleanup that fails leaves the leftover to the
+// sweep, and the copy's own error is the one thrown. A source whose first line cannot be read throws Unreadable, so the caller
 // can tell a session it cannot read from a copy it cannot write. `copy` is the new id; the parameter exists for the
 // tests, which give their own to stand a file where the copy's folder goes.
 export function copySession(dir: string, id: string, copy: string = randomUUID()): string {
@@ -101,11 +101,18 @@ export function copySession(dir: string, id: string, copy: string = randomUUID()
     throw new Unreadable("its first line is missing or damaged"); // readTranscript's reason (user, 2026-11-06)
   }
   writeFileSync(to.file, `${JSON.stringify({ ...first, id: copy })}\n${text.slice(end)}`, { flag: "wx", mode: 0o600 });
+  let made = false; // the copy's folder, once this made it
   try {
-    const folder = entries(dir).find((e) => e.name === id);
-    if (folder?.isDirectory()) copyTree(path.dirname(from.pictures), path.dirname(to.pictures));
+    if (entryOf(dir, id)?.isDirectory()) {
+      mkdirSync(path.dirname(to.pictures), { mode: 0o700 });
+      made = true;
+      copyInto(path.dirname(from.pictures), path.dirname(to.pictures));
+    }
   } catch (err) {
-    removeSession(dir, copy);
+    try {
+      if (made) removeSession(dir, copy);
+      else unlinkSync(to.file);
+    } catch {}
     throw err;
   }
   return copy;
@@ -116,17 +123,19 @@ export class Unreadable extends Error {}
 // A session's folder, then its transcript, as the sweep removes them: the folder read with file types, a link in it
 // unlinked, never entered (release 8a plan, "Rules for every task"). For a copy Tachikoma made and cannot use.
 export function removeSession(dir: string, id: string): void {
-  const folder = entries(dir).find((e) => e.name === id);
+  const folder = entryOf(dir, id);
   if (folder) remove(path.join(dir, id), folder);
   unlinkSync(sessionPaths(dir, id).file);
 }
 
 // Links are left out, never followed, so a copy holds only what Tachikoma saved there (release 8a plan, Task 4).
-function copyTree(from: string, to: string): void {
-  mkdirSync(to, { mode: 0o700 });
+function copyInto(from: string, to: string): void {
   for (const e of entries(from)) {
     const [a, b] = [path.join(from, e.name), path.join(to, e.name)];
-    if (e.isDirectory()) copyTree(a, b);
+    if (e.isDirectory()) {
+      mkdirSync(b, { mode: 0o700 });
+      copyInto(a, b);
+    }
     else if (e.isFile() && e.name.endsWith(".jsonl")) writeFileSync(b, wholeLines(a), { flag: "wx", mode: 0o600 });
     else if (e.isFile()) copyFileSync(a, b, constants.COPYFILE_EXCL);
   }
@@ -171,9 +180,7 @@ export function sweep(data: string, days: number, now: Date): string[] {
       let release: (() => void) | null = null;
       try {
         if (!old() || !(release = tryLock(path.join(dir, `${id}.lock`))) || !old()) continue;
-        const folder = inside.find((f) => f.name === id);
-        if (folder) remove(path.join(dir, id), folder);
-        unlinkSync(file);
+        removeSession(dir, id);
       } catch (err) {
         failed(file, err);
       } finally {

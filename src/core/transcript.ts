@@ -12,9 +12,9 @@ type SavedImage = Omit<Image, "data"> & { file: string };
 export type SavedMessage = Omit<Message, "parts"> & { parts: (Exclude<Part, Image> | SavedImage)[] };
 
 // The line kinds of release 8a plan, choice 4; `ended` is written only in a subagent's own file, `lost` by a resume that
-// told the model its answer was lost (user, 2026-11-06: "Report once"). `tools`: the tool specs from that line on. `M` is the message as
-// given to `write`, its pictures' data in it; the file holds SavedMessage. A shortening is one line, so it is saved whole
-// or not at all.
+// told the model its answer was lost (user, 2026-11-06: "Report once"). `tools`: the tool specs from that line on. `M`
+// is the message as given to `write`, its pictures' data in it; the file holds SavedMessage. A shortening is one line,
+// so it is saved whole or not at all.
 export type Line<M = SavedMessage> =
   | { t: "start"; at: string; v: 1; id: string; project: string; lead: string; version: string; print: boolean; system: string; tools: ToolSpec[] }
   | { t: "message"; at: string; message: M }
@@ -27,6 +27,16 @@ export type Line<M = SavedMessage> =
 
 // Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+// A session's transcript, its pictures folder and its subagents folder: <id>.jsonl, <id>/pictures and <id>/subagents in
+// the sessions folder (release 8a design, "Saving sessions"). The subagents folder inherits the sessions folder's
+// permission only while this layout holds (tasks.ts).
+export function sessionPaths(dir: string, id: string): { file: string; pictures: string; subagents: string } {
+  return { file: path.join(dir, `${id}.jsonl`), pictures: path.join(dir, id, "pictures"), subagents: path.join(dir, id, "subagents") };
+}
+
+// The same paths, from the session's transcript.
+export const pathsOf = (file: string) => sessionPaths(path.dirname(file), path.basename(file, ".jsonl"));
 
 // The file name a picture is saved under, by its format (release 8a plan, choice 5).
 const EXT: Record<Image["mediaType"], string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
@@ -186,8 +196,7 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       if (l.t === "subagent") subagents.push(l);
       if ("message" in l) for (const p of l.message.parts) if (p.type === "image") used.push(p.id);
     }
-    // The session's folder, which holds the pictures and subagents folders (release 8a design, "Saving sessions").
-    const subagentsDir = path.join(path.dirname(pictures), "subagents");
+    const subagentsDir = pathsOf(file).subagents;
     // The numbers to hand out next follow every one used, in a line or by a file whose line a crash lost (choices 4, 5).
     const nextPicture = Math.max(0, ...used, ...numbered(pictures, /^(\d+)\.(png|jpg|gif|webp)$/)) + 1;
     const nextTask = Math.max(0, ...subagents.map((s) => Number(/^t(\d+)$/.exec(s.id)?.[1] ?? 0)), ...numbered(subagentsDir, /^t(\d+)\.jsonl$/)) + 1;
@@ -349,9 +358,9 @@ function numbered(dir: string, name: RegExp): number[] {
   }
 }
 
-// Whether a subagent's file shows it finished: an `ended` line, as the lead was told it failed, was stopped or was lost (choice 4),
-// or its answer last, a reply with words and no calls, as tasks.ts takes the last reply's text for its answer. A file
-// that is gone or cannot be read shows neither.
+// Whether a subagent's file shows it finished: an `ended` line, as the lead was told it failed, was stopped or was lost
+// (choice 4), or its answer last, a reply with words and no calls, as tasks.ts takes the last reply's text for its
+// answer. A file that is gone or cannot be read shows neither.
 function finished(file: string): boolean {
   let text: string;
   try {

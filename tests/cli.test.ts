@@ -720,6 +720,8 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     const request = texts(sent[0]!);
     expect(request).toContain("Outcome unknown: the session ended while this was running, or before its result was saved.");
     expect(request).toContain("Subagent t1 (look around) had not finished when the session ended; its answer was lost.");
+    // Told now, so marked in its file, and not told again (user, 2026-11-06: "Report once").
+    expect(readFileSync(path.join(dir, "crashed", "subagents", "t1.jsonl"), "utf8")).toContain('"state":"lost"');
   });
 
   // Release 8a plan, choice 4 (Task 6 spec review): a resume with another lead records it, so the next one opens with it.
@@ -730,6 +732,19 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     expect((await tachiLater("-p", "next", "-r", "s1", "--lead", "openai:other", where(proj, data, url))).code).toBe(0);
     expect((await tachiLater("-p", "again", "-c", where(proj, data, url))).code).toBe(0);
     expect(sent.map((s) => (s as Sent & { model: string }).model)).toEqual(["other", "other"]);
+  });
+
+  // Task 6's quality review: a window cannot start without a terminal, so it is refused before a held session is copied.
+  // The lock is this test process's own, as above.
+  it("refuses -c without a terminal before copying a session another window has open", () => {
+    const { proj, data, dir } = place();
+    write(dir, "held", [start("held"), message("user", "first"), message("assistant", "one")]);
+    const lock = openSession(dir, "held");
+    onTestFinished(() => lock?.release());
+    const r = tachi("--lead", "ollama:none", "-c", { cwd: proj, TACHI_DATA_DIR: data });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toBe('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.\n');
+    expect(readdirSync(dir).filter((n) => n.endsWith(".jsonl"))).toEqual(["held.jsonl"]);
   });
 
   // Release 8a design, "When something goes wrong": a session that cannot be read starts nothing. PATH is an empty folder

@@ -1,5 +1,6 @@
 import type { EventEmitter } from "node:events";
-import { existsSync, readdirSync, readFileSync, realpathSync, renameSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, realpathSync, renameSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
 import { privateDir } from "./auth/private.js";
@@ -7,8 +8,8 @@ import { type Instructions, type Reached, readInstructions, type Where } from ".
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
 import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { type Conversation, Session, type SessionOptions } from "./core/session.js";
-import { copySession, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
-import { type Line, type Read, readTranscript, Transcript } from "./core/transcript.js";
+import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
+import { type Line, pathsOf, type Read, readTranscript, Transcript } from "./core/transcript.js";
 import { errorText, type ToolSpec } from "./core/types.js";
 import type { Executor } from "./exec/executor.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
@@ -586,8 +587,9 @@ export function chooseSession(
   if (o.resume !== undefined) {
     const found = findSession(dir, o.resume);
     // An id whose file the list leaves out, as it cannot be read, is opened, so the launch says why (release 8a design,
-    // "When something goes wrong"). It is found among the folder's own names, so no path can lead elsewhere.
-    if (!found && holds(dir, `${o.resume}.jsonl`)) return { id: o.resume };
+    // "When something goes wrong"). It is found among the folder's own names, as a file, so no path or link can lead
+    // elsewhere.
+    if (!found && entryOf(dir, `${o.resume}.jsonl`)?.isFile()) return { id: o.resume };
     if (!found) return { fail: `No session named or numbered ${o.resume} in this folder; tachi --resume lists them.` };
     if (!Array.isArray(found)) return { id: found.id };
     return o.terminal ? { list: found, name: o.resume } : { fail: NEEDS_TERMINAL };
@@ -597,21 +599,14 @@ export function chooseSession(
   return newest ? { id: newest.id } : { fail: "No saved session to continue in this folder." };
 }
 
-// Whether a folder holds an entry of this name; a folder that is not there holds none.
-function holds(dir: string, name: string): boolean {
-  try {
-    return readdirSync(dir).includes(name);
-  } catch {
-    return false;
-  }
-}
-
-// A session opened for this window: the conversation for Session.load, the grey lines to say, the lines for the model
-// about subagents whose answers were lost, which go into its next request as waiting text does, and its lock's release.
+// A session opened for this window: the conversation for Session.load; the grey lines to say, one that names the session
+// cut to the screen's width; the lines for the model about subagents whose answers were lost, which go into its next
+// request as waiting text does, with `reported` to call once they have been handed out; and its lock's release.
 export interface Opened {
   conversation: Conversation;
-  lines: string[];
+  lines: { text: string; oneLine?: boolean }[];
   lost: string[];
+  reported: () => void;
   release: () => void;
 }
 
@@ -625,8 +620,11 @@ export function newSaved(dir: string, start: Omit<Extract<Line, { t: "start" }>,
   if (name) transcript.write({ t: "name", name });
   const lock = transcript.failed ? null : openSession(dir, start.id);
   const conversation = { id: start.id, messages: [], system: start.system, transcript, prompts: [], calls: [], nextPicture: 1, nextTask: 1 };
-  return { conversation, lines: [], lost: [], release: () => lock?.release() };
+  return { conversation, lines: [], lost: [], reported: () => {}, release: () => lock?.release() };
 }
+
+// The reason a copy is not made when its new id's lock is held. Task 6's draft, awaiting the user's approval.
+const LOCK_HELD = "its lock could not be taken";
 
 // A saved session opened and read, before anything of the launch starts, so one that cannot be read starts nothing
 // (release 8a design, "When something goes wrong"; plan, Task 6). `copied`: a copy was opened as another window holds it.
@@ -642,8 +640,9 @@ export interface Saved {
 // lock taken too (release 8a design, "Resuming" and "Names, branches and export"; plan, choice 8). A torn last line is
 // mended under the lock before anything is added ("When something goes wrong"). A session that cannot be read is
 // refused in the "could not be read" line, a copy that cannot be made in the "could not be copied" one (user,
-// 2026-11-06), the lock let go and a copy made for it removed. `copy` is the copy's id; it exists for the tests, as
-// copySession's does.
+// 2026-11-06), the lock let go and a copy made for it removed. The copy's lock is taken before anything of it is
+// written. A cleanup that fails leaves the leftover to the sweep and the problem as it was. `copy` is the copy's id; it
+// exists for the tests, as copySession's does.
 export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: string }): Saved | { problem: string } {
   const source = sessionPaths(dir, id).file;
   const unread = (why: string) => ({ problem: `${source} could not be read as a session (${why}).` });
@@ -656,13 +655,15 @@ export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: st
   }
   let open = id;
   if (!lock) {
+    open = o.copy ?? randomUUID();
+    const copied = (why: string) => ({ problem: `${source} could not be copied (${why}).` });
     try {
-      open = copySession(dir, id, o.copy);
       lock = openSession(dir, open);
+      if (!lock) return copied(LOCK_HELD);
+      copySession(dir, id, open);
     } catch (err) {
-      if (err instanceof Unreadable) return unread(err.message);
-      if (open !== id) removeSession(dir, open); // copied, but its lock could not be taken
-      return { problem: `${source} could not be copied (${errorText(err)}).` };
+      lock?.release();
+      return err instanceof Unreadable ? unread(err.message) : copied(errorText(err));
     }
   }
   const { file, pictures } = sessionPaths(dir, open);
@@ -672,8 +673,10 @@ export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: st
   if ("problem" in read) {
     lock?.release();
     if (open === id) return read;
-    removeSession(dir, open);
-    return { problem: source + read.problem.slice(file.length) }; // the session asked for, not the copy just removed
+    try {
+      removeSession(dir, open);
+    } catch {}
+    return { problem: read.problem.replace(file, source) }; // the session asked for, not the copy just removed
   }
   return { id: open, transcript, read, copied: open !== id && !o.fork, release: () => lock?.release() };
 }
@@ -681,25 +684,28 @@ export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: st
 // A saved session made this window's, once the launch's lead and tools are known (release 8a design, "Resuming"; plan,
 // choice 4). It writes `-n`'s name; a `lead` line when this launch leads with another model, so the next resume opens
 // with it; a `tools` line when the tools differ from those the history was last saved under, so a reply is sent with its
-// thinking only under its own tools; and `lost` into each unfinished subagent's file, so it is reported once (user,
-// 2026-11-06: "Report once").
+// thinking only under its own tools. Once the lost lines have been handed to the model (`reported`), `lost` goes into
+// each unfinished subagent's file, so it is reported once (user, 2026-11-06: "Report once").
 export function resumed(s: Saved, o: { tools: ToolSpec[]; lead: string; name?: string }): Opened {
   const { read, transcript } = s;
   if (o.name) transcript.write({ t: "name", name: o.name });
   if (o.lead !== read.lead) transcript.write({ t: "lead", lead: o.lead });
   if (JSON.stringify(read.tools) !== JSON.stringify(o.tools)) transcript.write({ t: "tools", tools: o.tools });
-  // Beside the lead's pictures folder, as tasks.ts names a subagent's file; made inside the private sessions folder.
-  const subagents = path.join(path.dirname(transcript.pictures), "subagents");
-  for (const u of read.unfinished) {
-    new Transcript(path.join(subagents, `${u.id}.jsonl`), transcript.pictures, { inherits: true }).write({ t: "ended", state: "lost" });
-  }
+  // Each in the subagents folder, as tasks.ts names a subagent's file, made inside the private sessions folder; an id
+  // from the file is used only when it is one Tasks gives, so no line can lead the write elsewhere.
+  const reported = () => {
+    for (const u of read.unfinished.filter((u) => /^t\d+$/.test(u.id))) {
+      const file = path.join(pathsOf(transcript.file).subagents, `${u.id}.jsonl`);
+      new Transcript(file, transcript.pictures, { inherits: true }).write({ t: "ended", state: "lost" });
+    }
+  };
   const { messages, dropped } = read.withTools(o.tools);
   const lines = [
-    ...(s.copied ? ["Opened a copy: that session is open in another window."] : []),
-    `Resumed: ${o.name || read.name || read.firstPrompt || s.id}.`,
-    ...(read.damaged ? [`${read.damaged} damaged lines of this session were skipped.`] : []),
+    ...(s.copied ? [{ text: "Opened a copy: that session is open in another window." }] : []),
+    { text: `Resumed: ${o.name || read.name || read.firstPrompt?.split(/\r?\n/)[0] || s.id}.`, oneLine: true },
+    ...(read.damaged ? [{ text: `${read.damaged} damaged lines of this session were skipped.` }] : []),
     // Said only when a reply had the provider's own content to leave out.
-    ...(dropped ? ["The tools have changed since this session was saved, so its earlier replies are sent without their thinking."] : []),
+    ...(dropped ? [{ text: "The tools have changed since this session was saved, so its earlier replies are sent without their thinking." }] : []),
   ];
   return {
     conversation: {
@@ -714,6 +720,7 @@ export function resumed(s: Saved, o: { tools: ToolSpec[]; lead: string; name?: s
     },
     lines,
     lost: read.unfinished.map((u) => `Subagent ${u.id} (${u.description}) had not finished when the session ended; its answer was lost.`),
+    reported,
     release: s.release,
   };
 }

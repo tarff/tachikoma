@@ -5,6 +5,7 @@ import os, { constants } from "node:os";
 import path from "node:path";
 import { parseArgs, styleText } from "node:util";
 import { type Instance, render } from "ink";
+import type { ReactElement } from "react";
 import { accountCommand } from "./auth/chatgpt.js";
 import { withLock } from "./auth/lock.js";
 import {
@@ -142,6 +143,8 @@ const KEEP_DAYS = 30;
 // src/ and dist/.
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
+const NO_TERMINAL = 'Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.';
+
 function fail(message: string): never {
   console.error(message);
   process.exit(1);
@@ -165,46 +168,54 @@ function askAtStart(question: string): Promise<boolean> {
   });
 }
 
-// `tachi review <name>`'s screen: the review alone, in full screen where it can draw, with the keys file's bindings as it
-// reads at this moment (its problems said first, on the normal screen); the mouse stays off, as nothing reads its reports.
-// Resolves once Ink has ended and the terminal is back, so the review's lines print after.
-async function drawReview(copy: ReviewCopy, protection: Protection): Promise<ReviewEnd> {
+// A screen drawn alone before the session (`tachi review <name>`'s review, `tachi -r`'s list): in full screen where it can
+// draw, with the keys file's bindings as it reads at this moment (its problems said first, on the normal screen); the
+// mouse stays off, as nothing reads its reports. `draw` is given the bindings and the screen's close. Resolves once Ink
+// has ended and the terminal is back, so the lines printed after it come after.
+async function drawAlone(draw: (bindings: Bindings, close: () => void) => ReactElement): Promise<void> {
   const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
   let ink: Instance | undefined;
   restoreOnExit(screen, () => ink?.unmount());
   const bindings = keysNow();
   if (fullPossible(process.env, process.stdout.isTTY === true)) screen.setSecond(true);
-  let end: ReviewEnd | undefined;
-  const ended = (e: ReviewEnd) => {
-    end = e;
-    ink?.unmount();
-  };
-  ink = render(<Review copy={copy} bindings={bindings} protection={protection} onEnd={ended} />, { exitOnCtrlC: false });
+  ink = render(draw(bindings, () => ink?.unmount()), { exitOnCtrlC: false });
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   await exited;
+}
+
+async function drawReview(copy: ReviewCopy, protection: Protection): Promise<ReviewEnd> {
+  let end: ReviewEnd | undefined;
+  await drawAlone((bindings, close) => (
+    <Review
+      copy={copy}
+      bindings={bindings}
+      protection={protection}
+      onEnd={(e) => {
+        end = e;
+        close();
+      }}
+    />
+  ));
   return end!;
 }
 
-// `tachi -r`'s list, drawn before the session as drawReview draws the review (release 8a plan, choice 12): the session
-// picked, or none when the list was closed.
+// The session picked from the list (release 8a plan, choice 12), or none when it was closed.
 async function drawSessions(rows: Row[], name: string | undefined): Promise<string | undefined> {
-  const screen = new Screen((s) => process.stdout.write(s), (s) => writeBestEffort(1, s));
-  let ink: Instance | undefined;
-  restoreOnExit(screen, () => ink?.unmount());
-  const bindings = keysNow();
-  if (fullPossible(process.env, process.stdout.isTTY === true)) screen.setSecond(true);
   let picked: string | undefined;
-  const end = (id?: string) => {
-    picked = id;
-    ink?.unmount();
-  };
-  ink = render(<SessionList rows={rows} {...(name === undefined ? {} : { name })} now={Date.now()} bindings={bindings} onPick={end} onClose={() => end()} />, {
-    exitOnCtrlC: false,
-  });
-  const exited = ink.waitUntilExit();
-  restoreWhenInkEnds(screen, exited);
-  await exited;
+  await drawAlone((bindings, close) => (
+    <SessionList
+      rows={rows}
+      {...(name === undefined ? {} : { name })}
+      now={Date.now()}
+      bindings={bindings}
+      onPick={(id) => {
+        picked = id;
+        close();
+      }}
+      onClose={close}
+    />
+  ));
   return picked;
 }
 
@@ -369,6 +380,7 @@ if (parsed.continue || parsed.resume !== undefined) {
   const terminal = interactive && process.stdin.isTTY === true;
   const c = chooseSession(sessions, { continue: parsed.continue, resume: parsed.resume, print: !interactive, terminal });
   if ("fail" in c) fail(visible(c.fail));
+  if (interactive && !terminal) fail(NO_TERMINAL); // before a held session is copied for a window that cannot start
   chosen = "id" in c ? c.id : await drawSessions(c.list, c.name);
   if (chosen === undefined) process.exit(0); // the list closed: nothing to open
 }
@@ -430,7 +442,7 @@ try {
 }
 
 // Before the instruction files are read, so nothing is asked with no terminal to answer.
-if (interactive && !process.stdin.isTTY) fail('Interactive mode needs a terminal; use -p "<prompt>" to run one prompt.');
+if (interactive && !process.stdin.isTTY) fail(NO_TERMINAL);
 // Git's settings files, hooks folders and git folders are read once at launch and protected for the whole session
 // (release 7 plan, Task 8; choices 57 and 59). Without git, only the fixed list applies (choice 11). If git's run fails,
 // only the fixed list applies, and the launch says so here and again in full screen (App.tsx).
@@ -564,13 +576,14 @@ const tools = [
 // The session's transcript (release 8a plan, Task 6): a new one's start line, with -p marked so, or the saved session
 // opened above, or its copy. Its lines are said before the conversation is loaded, and the error log's rows carry its id.
 const specs = tools.map((t) => t.spec);
-const name = parsed.name?.trim() ? parsed.name : undefined;
+const name = parsed.name?.trim() || undefined;
 const opened = saved
   ? resumed(saved, { tools: specs, lead: lead.id, ...(name ? { name } : {}) })
   : newSaved(sessions, { id: sessionId, project: root, lead: lead.id, version: VERSION, print: !interactive, system, tools: specs }, name);
 attachErrorLog(bus, errorFile, opened.conversation.id);
-const said = [...opened.lines, ...(leadLine ? [leadLine] : [])].map((l) => visible(l));
-// The subagents a crash cut short reach the model with its next request, as waiting answers do (release 8a design, "Resuming").
+const said = [...opened.lines, ...(leadLine ? [{ text: leadLine }] : [])].map((l) => ({ ...l, text: visible(l.text) }));
+// The subagents a crash cut short reach the model with its next request, as waiting answers do (release 8a design,
+// "Resuming"), and are marked reported once handed out.
 const lost = [...opened.lost];
 const { session, pictures } = leadSession({
   lead,
@@ -580,7 +593,11 @@ const { session, pictures } = leadSession({
   systemNow: systemAgain(first, instructionsAt, mode === "never" ? "all" : asked), // a shortening's prompt (release 8a plan, choice 3)
   ctx: { root: where.root, executor, workspace, gate },
   bus,
-  inbox: () => [...lost.splice(0), ...tasks.take()],
+  inbox: () => {
+    const now = lost.splice(0);
+    if (now.length) opened.reported();
+    return [...now, ...tasks.take()];
+  },
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
   tasks,
 });
@@ -604,7 +621,7 @@ if (parsed.print !== undefined) {
     });
   }
   // Loaded once the error listeners are on, so a start line or mend that failed is said now, not at the first write.
-  for (const line of said) console.error(gray(line));
+  for (const line of said) console.error(gray(line.text));
   session.load(opened.conversation);
   // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us.
   // A second Ctrl-C gets Node's default and ends at once.
@@ -692,11 +709,12 @@ if (parsed.print !== undefined) {
       // end the launch; the tools say what failed when used (Task 14's review).
       branch={await workspace.branch().catch(() => null)}
       historyFile={historyFile(root)}
-      // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan, Task 6).
+      // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan,
+      // Task 6).
       intro={[
         ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
         ...conversationLines(opened.conversation.messages),
-        ...said.map((text) => ({ text, color: "gray" as const })),
+        ...said.map((l) => ({ ...l, color: "gray" as const })),
       ]}
       pictures={pictures}
       errorFile={errorFile}

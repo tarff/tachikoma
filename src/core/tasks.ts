@@ -4,7 +4,7 @@ import type { Tool, ToolContext } from "../tools/tool.js";
 import { Bus, type ErrorEvent } from "./bus.js";
 import type { Owner, PermissionGate } from "./permissions.js";
 import { Session, truncate } from "./session.js";
-import { Transcript } from "./transcript.js";
+import { pathsOf, Transcript } from "./transcript.js";
 import type { Message, Provider } from "./types.js";
 
 export type TaskState = "waiting" | "running" | "done" | "failed" | "stopped";
@@ -161,7 +161,7 @@ export class Tasks {
     // inside it inherits that permission, as transcript.ts's pictures folder does.
     const lead = this.opts.transcript?.();
     lead?.write({ t: "subagent", id: t.id, description: t.description, file: `${t.id}.jsonl` });
-    const file = (l: Transcript) => path.join(path.dirname(l.pictures), "subagents", `${t.id}.jsonl`);
+    const file = (l: Transcript) => path.join(pathsOf(l.file).subagents, `${t.id}.jsonl`);
     const own = lead && !lead.failed ? new Transcript(file(lead), lead.pictures, { inherits: true }) : undefined;
     const result = (await this.#place(signal)) ? await this.#work(t, provider, fallback, signal, own) : null;
     const stopped = this.#stops.get(t.id)!;
