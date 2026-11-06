@@ -487,6 +487,7 @@ export class Session {
     // The new history goes with a system prompt built afresh, both in one line, so the shortening is saved whole or not
     // at all (choices 3 and 4).
     const system = await this.freshSystem();
+    if (signal?.aborted) return { problem: CANCELLED }; // a stop while the files were read changes nothing either
     t.write({ t: "shortened", system, message: r.messages[0]! });
     if (t.failed !== null) {
       this.#saving();

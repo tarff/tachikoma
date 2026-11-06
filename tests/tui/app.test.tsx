@@ -5391,6 +5391,16 @@ describe("App's keys from the table of actions", () => {
     expect(app.lastFrame()).not.toContain("write the fix");
   });
 
+  // PR #10's review: a letter bound in Select still goes into the model list's filter, as /resume's list takes it instead.
+  it("types a letter bound in Select into the model list's filter", async () => {
+    const { app } = await mount([], { bindings: table("Select", { j: "select:next" }), models: [{ provider: "fake", models: ["just", "slow"] }] });
+    await type(app, "/model");
+    await until(app, "fake:just");
+    await tick(); // the picker starts reading keys just after it first appears
+    await press(app, "j");
+    expect(app.lastFrame()).toContain("Filter: j ·");
+  });
+
   it("completes a chord ending in a letter in the model list's filter, and types a letter that does not complete it or comes after 3 s", async () => {
     const { app, bus } = await mount([], { bindings: chord(), models: [{ provider: "fake", models: ["quick", "slow"] }] });
     bus.emit("todo", todo);
@@ -8522,6 +8532,19 @@ describe("App's sessions", () => {
     expect(free(first.session.id)).toBe(true);
     lead.answer("done");
     await until(app, "done");
+  });
+
+  // PR #10's review: a letter bound in Select moves and opens in /resume's list, as in tachi -r's; only the model list's
+  // filter takes typed letters.
+  it("takes letters bound in Select in /resume's list", async () => {
+    await earlier("the older one");
+    await earlier("the newer one");
+    const bindings = new Bindings(tableOf({ ...DEFAULTS, Select: { ...DEFAULTS.Select, j: "select:next", o: "select:accept" } }));
+    const { app } = await saved([], { bindings });
+    await type(app, "/resume");
+    await until(app, "the older one");
+    await press(app, "j", "o");
+    await until(app, "Resumed: the older one.");
   });
 
   it("closes /resume's list on Esc, the window staying in its session", async () => {

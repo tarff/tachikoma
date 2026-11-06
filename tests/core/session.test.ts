@@ -1315,6 +1315,21 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
     ]);
   });
 
+  // PR #10's review: a stop while the instruction files are read again, after the summary came, saves and changes nothing.
+  it("changes nothing when /compact is stopped while the instruction files are read again", async () => {
+    const stop = new AbortController();
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
+    const systemNow = async () => {
+      stop.abort();
+      return "t, read again";
+    };
+    const { session, summaries, transcript } = await setup(lead, { systemNow });
+    await session.send(big);
+    expect(await session.compact("", stop.signal)).toBe(CANCELLED);
+    expect([session.messages.length, session.system, summaries]).toEqual([2, "t", []]);
+    expect(savedLines(transcript).some((l) => l.t === "shortened")).toBe(false);
+  });
+
   it("refuses /compact when saving has stopped, saying why in the line", async () => {
     const lead = new Lead("fake:a", [measured("noted")], 1_000_000);
     const { session, errors } = await setup(lead, { transcript: await unsavable() });
