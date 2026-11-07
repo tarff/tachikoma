@@ -12,15 +12,18 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...fs, fsyncSync: vi.fn(fs.fsyncSync) };
 });
 
-// The owner tachi's permissions script reports, when a test sets one: giving a file another owner takes rights a test
-// does not take, so the report is changed instead.
-const reported = vi.hoisted(() => ({ owner: undefined as string | undefined }));
+// The owner and entries tachi's permissions script reports, and an icacls /reset that fails, when a test sets them:
+// giving a file another owner, or taking the right to change its permissions, takes rights a test does not take, so the
+// report is changed instead.
+const reported = vi.hoisted(() => ({ owner: undefined as string | undefined, access: undefined as object[] | undefined, resetFails: false }));
 vi.mock("node:child_process", async (importOriginal) => {
   const cp = await importOriginal<typeof import("node:child_process")>();
   const execFileSync = (file: string, args: readonly string[], options: object) => {
+    if (reported.resetFails && args.includes("/reset")) throw new Error(`Command failed: ${file} ${args.join(" ")}`);
     const out = cp.execFileSync(file, args, options as never);
-    if (!reported.owner || !args.at(-1)?.includes("GetOwner")) return out;
-    return JSON.stringify(JSON.parse(String(out)).map((acl: object) => ({ ...acl, owner: reported.owner })));
+    if (!(reported.owner || reported.access) || !args.at(-1)?.includes("GetOwner")) return out;
+    const changed = { ...(reported.owner && { owner: reported.owner }), ...(reported.access && { access: reported.access }) };
+    return JSON.stringify(JSON.parse(String(out)).map((acl: object) => ({ ...acl, ...changed })));
   };
   return { ...cp, execFileSync: vi.fn(execFileSync) };
 });
@@ -28,8 +31,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 const windows = process.platform === "win32";
 const temp = () => path.join(mkdtempSync(path.join(tmpdir(), "tachi-private-")), "data");
 
-// Every SID in a path's permissions, read as SIDs, so none is left out. Windows PowerShell starts here, as below, with the
-// environment tachi gives it (commandEnv), so under PowerShell 7 it loads its own modules (the CI trial).
+// Every SID in a path's permissions, read as SIDs, so none is left out. Windows PowerShell starts here, as below, with
+// the environment tachi gives it (commandEnv), so under PowerShell 7 it loads its own modules (the CI trial).
 function sids(p: string): string[] {
   const script = "$ErrorActionPreference = 'Stop'; (Get-Acl -LiteralPath $env:P).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value }";
   return execFileSync(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", env: { ...commandEnv(), P: p } })
@@ -176,6 +179,22 @@ describe("private files", () => {
     }
   });
 
+  // A file an administrator owns, which others can read, may not let the user change its permissions (the review of the
+  // CI trial's fixes): it is refused in tachi's words, not icacls's.
+  it.runIf(windows)("on Windows, refuses a file others can read whose permissions cannot be reset, saying so", () => {
+    const dir = temp();
+    privateDir(dir);
+    const file = path.join(dir, "chatgpt.json");
+    writeFileSync(file, "x");
+    try {
+      Object.assign(reported, { owner: "S-1-5-32-544", access: [{ sid: "S-1-1-0", allow: true, inherit: 0 }], resetFails: true }); // Everyone
+      const refused = `${file} could be read by others and could not be made private, so it was not used`;
+      expect(() => readPrivate(file, () => {})).toThrow(new PrivateFileError(refused));
+    } finally {
+      Object.assign(reported, { owner: undefined, access: undefined, resetFails: false });
+    }
+  });
+
   it.runIf(windows)("on Windows, makes a folder private that lets another account in", () => {
     const dir = temp();
     mkdirSync(dir);
@@ -198,7 +217,8 @@ describe("private files", () => {
     mkdirSync(dir);
     // icacls cannot name such an account, so the entry is added through .NET.
     const script = "$a = Get-Acl -LiteralPath $env:P; $a.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-21-1-2-3-1000'), 'Read', 'Allow')); Set-Acl -LiteralPath $env:P -AclObject $a";
-    execFileSync(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { env: { ...commandEnv(), P: dir } });
+    const powershell = system32("WindowsPowerShell/v1.0/powershell.exe");
+    execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", script], { env: { ...commandEnv(), P: dir } });
     expect(() => privateDir(dir)).toThrow(new PrivateFileError(`Could not make ${dir} private to you`));
   });
 
