@@ -11,9 +11,24 @@ export const API_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_
 // project's `sub`, does not follow it (release 7 plan, Task 3's known limits; Task 8).
 const DROPPED = [...API_KEYS, "CDPATH"];
 
-// Windows treats variable names without regard to case, so `openai_api_key` is the same variable.
-export function commandEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(env).filter(([name]) => !DROPPED.includes(name.toUpperCase())));
+// PowerShell 7's own module folders: the user's (Documents\PowerShell\Modules), all users' (Program Files\PowerShell\
+// Modules), and its $PSHOME's (PowerShell\7\Modules, or the Store's Microsoft.PowerShell_<version>_..\Modules).
+const PS7_MODULES = /\\PowerShell(\\7[^\\]*)?\\Modules\\?$|\\Microsoft\.PowerShell(Preview)?_[^\\]+\\Modules\\?$/i;
+
+// Windows treats variable names without regard to case, so `openai_api_key` is the same variable. On Windows, PowerShell
+// 7's folders leave PSModulePath, as PowerShell 7 itself leaves them out when it starts Windows PowerShell: started from
+// tachi under PowerShell 7, Windows PowerShell would take 7's modules first and fail to load its own, so Get-Acl and the
+// like were not found (Microsoft's about_PSModulePath, "Starting Windows PowerShell from PowerShell 7"; the CI trial).
+export function commandEnv(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  const kept = Object.entries(env).filter(([name]) => !DROPPED.includes(name.toUpperCase()));
+  if (platform !== "win32") return Object.fromEntries(kept);
+  return Object.fromEntries(
+    kept.flatMap(([name, value]) => {
+      if (name.toUpperCase() !== "PSMODULEPATH" || value === undefined) return [[name, value]];
+      const left = value.split(";").filter((dir) => dir && !PS7_MODULES.test(dir));
+      return left.length ? [[name, left.join(";")]] : []; // none left: Windows PowerShell builds its own
+    }),
+  );
 }
 
 // A Windows program by its full path, so a program of the same name earlier on PATH (Git Bash has its
