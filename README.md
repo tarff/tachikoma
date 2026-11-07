@@ -1370,9 +1370,10 @@ limits rather than more code; none has a release set to change it, unless it say
   0`; with two calls at once, a kill by the memory limit can be blamed on the wrong one.
 - **A `/work` link or a `C:\work` junction on your machine** stops protected names matching in the
   box.
-- **A data folder not made yet, reached through a link that leads nowhere,** is not seen as inside
-  the project when the link's missing target is in it, so the sandbox starts. Logins saved later
-  would then be in the project, where the box can see them. It needs such a link on your machine.
+- **A data or settings folder not made yet, reached through a link that leads nowhere,** is not seen
+  as inside the project when the link's missing target is in it, so the sandbox starts. Once
+  something makes that folder, for example a command in the box, logins, settings and keys saved
+  later are in the project, where the box can see them. It needs such a link on your machine.
 
 ### Live link's limits
 
