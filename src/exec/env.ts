@@ -11,10 +11,11 @@ export const API_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_
 // project's `sub`, does not follow it (release 7 plan, Task 3's known limits; Task 8).
 const DROPPED = [...API_KEYS, "CDPATH"];
 
-// A sign of PowerShell 7 in PSModulePath, one of the folders it puts first: the user's (Documents\PowerShell\Modules),
-// all users' (Program Files\PowerShell\Modules), or its $PSHOME's (PowerShell\7\Modules, or the Store's
-// Microsoft.PowerShell_<version>_..\Modules). SQL Server's ...\Tools\PowerShell\Modules matches too.
-const PS7_MODULES = /\\PowerShell(\\7[^\\]*)?\\Modules\\?$|\\Microsoft\.PowerShell(Preview)?_[^\\]+\\Modules\\?$/i;
+// A sign of PowerShell 7 in PSModulePath: the Modules folder of its own install ($PSHOME), which it always lists,
+// beside its program, pwsh.exe, however it was installed (an installer, the Store, a zip, scoop). A folder's name is
+// not enough: SQL Server's ...\Tools\PowerShell\Modules ends as 7's folder for the user's own modules does (the
+// outside review of PR #11; the user's choice, "PowerShell 7's own folder").
+const ps7Home = (dir: string) => path.isAbsolute(dir) && /[\\/]Modules[\\/]?$/i.test(dir) && runnable(path.join(path.dirname(dir), "pwsh.exe"), true);
 
 // Windows treats variable names without regard to case, so `openai_api_key` is the same variable. On Windows, a
 // PSModulePath showing PowerShell 7 is left out: started from tachi under PowerShell 7, Windows PowerShell took 7's
@@ -24,7 +25,7 @@ const PS7_MODULES = /\\PowerShell(\\7[^\\]*)?\\Modules\\?$|\\Microsoft\.PowerShe
 // 2026-11-07: "Only under PowerShell 7").
 export function commandEnv(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
   const ps7 = (name: string, value: string | undefined) =>
-    platform === "win32" && name.toUpperCase() === "PSMODULEPATH" && (value ?? "").split(";").some((dir) => PS7_MODULES.test(dir));
+    platform === "win32" && name.toUpperCase() === "PSMODULEPATH" && (value ?? "").split(";").some(ps7Home);
   return Object.fromEntries(Object.entries(env).filter(([name, value]) => !DROPPED.includes(name.toUpperCase()) && !ps7(name, value)));
 }
 
