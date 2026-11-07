@@ -12,10 +12,20 @@ export const API_KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_
 const DROPPED = [...API_KEYS, "CDPATH"];
 
 // A sign of PowerShell 7 in PSModulePath: the Modules folder of its own install ($PSHOME), which it always lists,
-// beside its program, pwsh.exe, however it was installed (an installer, the Store, a zip, scoop). A folder's name is
-// not enough: SQL Server's ...\Tools\PowerShell\Modules ends as 7's folder for the user's own modules does (the
-// outside review of PR #11; the user's choice, "PowerShell 7's own folder").
-const ps7Home = (dir: string) => path.isAbsolute(dir) && /[\\/]Modules[\\/]?$/i.test(dir) && runnable(path.join(path.dirname(dir), "pwsh.exe"), true);
+// beside its program, pwsh.exe (an installer, the Store, a zip, scoop), or pwsh.dll (which the .NET global tool's
+// folder may hold instead; not measured). A folder's name is not enough: SQL Server's ...\Tools\PowerShell\Modules ends
+// as 7's folder for the user's own modules does (the outside review of PR #11; the user's choice, "PowerShell 7's own
+// folder"). A network path (\\server\share, and the rare \\?\ form) is not looked at, as one that cannot be reached
+// took 42 s (PR #11's review, measured) and PowerShell 7 is not installed there.
+const ps7Home = (dir: string) =>
+  !/^[\\/]{2}/.test(dir) &&
+  path.isAbsolute(dir) &&
+  /[\\/]Modules[\\/]?$/i.test(dir) &&
+  ["pwsh.exe", "pwsh.dll"].some((file) => runnable(path.join(path.dirname(dir), file), true));
+
+// The last PSModulePath looked at, and whether it showed PowerShell 7, so each value costs its looks on disk once (the
+// user's choice, "Remember + skip shares"): a command, a git run and a Docker call each take commandEnv.
+let seen: { value: string; ps7: boolean } | undefined;
 
 // Windows treats variable names without regard to case, so `openai_api_key` is the same variable. On Windows, a
 // PSModulePath showing PowerShell 7 is left out: started from tachi under PowerShell 7, Windows PowerShell took 7's
@@ -24,8 +34,11 @@ const ps7Home = (dir: string) => path.isAbsolute(dir) && /[\\/]Modules[\\/]?$/i.
 // ("Starting Windows PowerShell from PowerShell 7"). Any other value is passed on untouched (the user's choice,
 // 2026-11-07: "Only under PowerShell 7").
 export function commandEnv(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
-  const ps7 = (name: string, value: string | undefined) =>
-    platform === "win32" && name.toUpperCase() === "PSMODULEPATH" && (value ?? "").split(";").some(ps7Home);
+  const ps7 = (name: string, value = "") => {
+    if (platform !== "win32" || name.toUpperCase() !== "PSMODULEPATH") return false;
+    if (seen?.value !== value) seen = { value, ps7: value.split(";").some(ps7Home) };
+    return seen.ps7;
+  };
   return Object.fromEntries(Object.entries(env).filter(([name, value]) => !DROPPED.includes(name.toUpperCase()) && !ps7(name, value)));
 }
 
