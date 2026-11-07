@@ -12,6 +12,19 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...fs, fsyncSync: vi.fn(fs.fsyncSync) };
 });
 
+// The owner tachi's permissions script reports, when a test sets one: giving a file another owner takes rights a test
+// does not take, so the report is changed instead.
+const reported = vi.hoisted(() => ({ owner: undefined as string | undefined }));
+vi.mock("node:child_process", async (importOriginal) => {
+  const cp = await importOriginal<typeof import("node:child_process")>();
+  const execFileSync = (file: string, args: readonly string[], options: object) => {
+    const out = cp.execFileSync(file, args, options as never);
+    if (!reported.owner || !args.at(-1)?.includes("GetOwner")) return out;
+    return JSON.stringify(JSON.parse(String(out)).map((acl: object) => ({ ...acl, owner: reported.owner })));
+  };
+  return { ...cp, execFileSync: vi.fn(execFileSync) };
+});
+
 const windows = process.platform === "win32";
 const temp = () => path.join(mkdtempSync(path.join(tmpdir(), "tachi-private-")), "data");
 
@@ -143,6 +156,24 @@ describe("private files", () => {
     expect(readPrivate(file, (w) => warnings.push(w))).toBe("x");
     expect(warnings).toHaveLength(1);
     expect(sids(file)).toEqual([me()]);
+  });
+
+  // The CI trial: on Windows Server what an administrator makes is owned by the Administrators group.
+  it.runIf(windows)("on Windows, reads a file the Administrators group owns, and refuses one another account owns", () => {
+    const dir = temp();
+    privateDir(dir);
+    const file = path.join(dir, "chatgpt.json");
+    const other = path.join(dir, "other.json");
+    writeFileSync(file, "x");
+    writeFileSync(other, "y");
+    try {
+      reported.owner = "S-1-5-32-544";
+      expect(readPrivate(file, () => {})).toBe("x");
+      reported.owner = "S-1-5-21-1-2-3-1000";
+      expect(() => readPrivate(other, () => {})).toThrow(new PrivateFileError(`${other} belongs to another account, so it was not used`));
+    } finally {
+      reported.owner = undefined;
+    }
   });
 
   it.runIf(windows)("on Windows, makes a folder private that lets another account in", () => {
