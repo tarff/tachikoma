@@ -34,5 +34,15 @@ jobs:
           if (-not (Test-Path node_modules\typescript)) { throw "sfw npm ci installed nothing" }
       - run: npm run typecheck
       - run: npm run build
+      # The trial: who owns a file made here, whether this account runs as an administrator, and Windows' setting for the
+      # owner of what an administrator makes (NoDefaultAdminOwner), to say why run 4 found tachi's files owned by another.
+      - run: |
+          (Get-CimInstance Win32_OperatingSystem).Caption
+          $f = Join-Path $env:RUNNER_TEMP owner-check.txt
+          Set-Content $f x
+          "owner: " + (Get-Acl $f).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+          whoami /user /fo csv /nh
+          whoami /groups /fo csv /nh | Select-String "S-1-5-32-544|S-1-16-"
+          Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\Lsa | Select-Object NoDefaultAdminOwner
       # external.test.ts is left out, as on the user's PC.
       - run: node node_modules/vitest/vitest.mjs run --exclude tests/tui/external.test.ts
