@@ -21,6 +21,25 @@ describe("commandEnv", () => {
   it("drops CDPATH, in any case", () => {
     expect(commandEnv({ PATH: "/bin", CDPATH: "/elsewhere", cdpath: "/other", CDPATHS: "kept" })).toEqual({ PATH: "/bin", CDPATHS: "kept" });
   });
+
+  // The CI trial: under PowerShell 7, Windows PowerShell started from tachi took 7's modules and could not load Get-Acl.
+  it("takes PowerShell 7's module folders out of PSModulePath on Windows, as PowerShell 7 does, keeping the rest", () => {
+    const seven = [
+      "C:\\Users\\me\\OneDrive\\Documents\\PowerShell\\Modules",
+      "C:\\Program Files\\PowerShell\\Modules",
+      "c:\\program files\\powershell\\7\\Modules",
+      "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.5.4.0_x64__8wekyb3d8bbwe\\Modules\\",
+    ];
+    const own = [
+      "C:\\Users\\me\\Documents\\WindowsPowerShell\\Modules",
+      "C:\\Program Files\\WindowsPowerShell\\Modules",
+      "C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\Modules",
+      "D:\\mine\\Modules",
+    ];
+    expect(commandEnv({ PSModulePath: [...seven, ...own].join(";") }, "win32")).toEqual({ PSModulePath: own.join(";") });
+    expect(commandEnv({ PSModulePath: seven.join(";") }, "win32")).toEqual({}); // Windows PowerShell builds its own
+    expect(commandEnv({ PSModulePath: seven.join(";") }, "linux")).toEqual({ PSModulePath: seven.join(";") });
+  });
 });
 
 // The programs here are empty files the test made, looked for and never run.
