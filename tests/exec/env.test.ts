@@ -23,21 +23,24 @@ describe("commandEnv", () => {
   });
 
   // The CI trial: under PowerShell 7, Windows PowerShell started from tachi took 7's modules and could not load Get-Acl.
-  it("leaves out on Windows a PSModulePath showing PowerShell 7, in any case, and passes any other on untouched", () => {
-    const own = "C:\\Program Files\\WindowsPowerShell\\Modules;C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\Modules;D:\\mine\\Modules;;";
-    for (const seven of [
-      "C:\\Users\\me\\OneDrive\\Documents\\PowerShell\\Modules",
-      "C:\\Program Files\\PowerShell\\Modules",
-      "c:\\program files\\powershell\\7\\Modules",
-      "C:\\Program Files\\PowerShell\\7-preview\\Modules\\",
-      "C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.5.4.0_x64__8wekyb3d8bbwe\\Modules",
-      "C:\\Program Files\\WindowsApps\\Microsoft.PowerShellPreview_7.6.0.0_arm64__8wekyb3d8bbwe\\Modules",
-    ]) {
-      expect(commandEnv({ PATH: "C:\\bin", PSModulePath: `${seven};${own}` }, "win32")).toEqual({ PATH: "C:\\bin" });
-      expect(commandEnv({ psmodulepath: `${own};${seven}` }, "win32")).toEqual({});
-      expect(commandEnv({ PSModulePath: seven }, "linux")).toEqual({ PSModulePath: seven });
+  // PowerShell 7 shows by its own folder's Modules, beside pwsh.exe (an empty file the test made, never run); folders
+  // with no pwsh.exe beside them, SQL Server's Tools\PowerShell\Modules among them, do not (PR #11's outside review).
+  it("leaves out on Windows a PSModulePath listing PowerShell 7's own folder, in any case, and passes any other on untouched", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-psmodules-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    const seven = path.join(dir, "PowerShell", "7");
+    mkdirSync(seven, { recursive: true });
+    writeFileSync(path.join(seven, "pwsh.exe"), "");
+    const at = (...parts: string[]) => path.join(dir, ...parts);
+    const sql = at("Microsoft SQL Server", "160", "Tools", "PowerShell", "Modules");
+    const own = [at("WindowsPowerShell", "v1.0", "Modules"), sql, at("Documents", "PowerShell", "Modules"), "Modules", "", ""].join(";");
+    for (const listed of [path.join(seven, "Modules"), path.join(seven, "modules") + path.sep]) {
+      expect(commandEnv({ PATH: "C:\\bin", PSModulePath: `${listed};${own}` }, "win32")).toEqual({ PATH: "C:\\bin" });
+      expect(commandEnv({ psmodulepath: `${own};${listed}` }, "win32")).toEqual({});
+      expect(commandEnv({ PSModulePath: listed }, "linux")).toEqual({ PSModulePath: listed });
     }
     expect(commandEnv({ PSModulePath: own }, "win32")).toEqual({ PSModulePath: own });
+    expect(commandEnv({ PSModulePath: sql }, "win32")).toEqual({ PSModulePath: sql });
   });
 });
 
