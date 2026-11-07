@@ -15,8 +15,8 @@ const DROPPED = [...API_KEYS, "CDPATH"];
 // beside its program, pwsh.exe (an installer, the Store, a zip, scoop), or pwsh.dll (which the .NET global tool's
 // folder may hold instead; not measured). A folder's name is not enough: SQL Server's ...\Tools\PowerShell\Modules ends
 // as 7's folder for the user's own modules does (the outside review of PR #11; the user's choice, "PowerShell 7's own
-// folder"). A network path (\\server\share, and the rare \\?\ form) is not looked at, as one that cannot be reached
-// took 42 s (PR #11's review, measured) and PowerShell 7 is not installed there.
+// folder"). A path starting \\server\share (or the rare \\?\ form) is not looked at, as one that cannot be reached took
+// 42 s (PR #11's review, measured) and PowerShell 7 is rarely installed there; a mapped drive letter still is, once.
 const ps7Home = (dir: string) =>
   !/^[\\/]{2}/.test(dir) &&
   path.isAbsolute(dir) &&
