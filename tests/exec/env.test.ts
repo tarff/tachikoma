@@ -21,6 +21,45 @@ describe("commandEnv", () => {
   it("drops CDPATH, in any case", () => {
     expect(commandEnv({ PATH: "/bin", CDPATH: "/elsewhere", cdpath: "/other", CDPATHS: "kept" })).toEqual({ PATH: "/bin", CDPATHS: "kept" });
   });
+
+  // A folder of the test's own, with the files named (empty, never run) in the folder `parts` names.
+  function machine(parts: string[], files: string[]) {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-psmodules-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    mkdirSync(path.join(dir, ...parts), { recursive: true });
+    for (const file of files) writeFileSync(path.join(dir, ...parts, file), "");
+    return (...at: string[]) => path.join(dir, ...at);
+  }
+
+  // The CI trial: under PowerShell 7, Windows PowerShell started from tachi took 7's modules and could not load Get-Acl.
+  // PowerShell 7 shows by its own folder's Modules, beside pwsh.exe or pwsh.dll, whatever the folders are named; folders
+  // with neither beside them, SQL Server's Tools\PowerShell\Modules and a PowerShell\7 among them, do not, nor does a
+  // network path, which is not looked at (PR #11's outside review and its re-check).
+  it("leaves out on Windows a PSModulePath listing PowerShell 7's own folder, in any case, and passes any other on untouched", () => {
+    const at = machine(["scoop", "apps", "pwsh", "current"], ["pwsh.exe"]);
+    mkdirSync(at("tool"));
+    writeFileSync(at("tool", "pwsh.dll"), "");
+    const sql = at("Microsoft SQL Server", "160", "Tools", "PowerShell", "Modules");
+    const named = [at("WindowsPowerShell", "v1.0", "Modules"), sql, at("Documents", "PowerShell", "Modules"), at("PowerShell", "7", "Modules")];
+    const own = [...named, "Modules", "", ""].join(";");
+    const scoop = at("scoop", "apps", "pwsh", "current", "Modules");
+    for (const listed of [scoop, at("scoop", "apps", "pwsh", "current", "modules") + path.sep, at("tool", "Modules")]) {
+      expect(commandEnv({ PATH: "C:\\bin", PSModulePath: `${listed};${own}` }, "win32")).toEqual({ PATH: "C:\\bin" });
+      expect(commandEnv({ psmodulepath: `${own};${listed}` }, "win32")).toEqual({});
+      expect(commandEnv({ PSModulePath: listed }, "linux")).toEqual({ PSModulePath: listed });
+    }
+    for (const value of [own, sql, `\\\\?\\${scoop}`]) expect(commandEnv({ PSModulePath: value }, "win32")).toEqual({ PSModulePath: value });
+  });
+
+  // The user's choice, "Remember + skip shares": each look stats the disk.
+  it("looks at a PSModulePath's folders once for each value, remembering the answer", () => {
+    const at = machine(["pwsh"], ["pwsh.exe"]);
+    const value = at("pwsh", "Modules");
+    expect(commandEnv({ PSModulePath: value }, "win32")).toEqual({});
+    rmSync(at("pwsh", "pwsh.exe"));
+    expect(commandEnv({ PSModulePath: value }, "win32")).toEqual({});
+    expect(commandEnv({ PSModulePath: `${value};` }, "win32")).toEqual({ PSModulePath: `${value};` });
+  });
 });
 
 // The programs here are empty files the test made, looked for and never run.
