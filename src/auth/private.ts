@@ -61,7 +61,8 @@ function icacls(...args: string[]): void {
 
 // The Administrators group, owner of what an administrator makes on Windows Server (measured on GitHub's Windows Server
 // 2025, the CI trial). A file's owner counts as the user's when it is this too (the user's choice, "Accept
-// Administrators"): only an administrator can give a file this owner, and one can give a file any owner, the user too.
+// Administrators"): only an administrator, or an account that can give a file any owner, can give a file this one, and
+// an administrator can give a file any owner, the user too.
 const ADMINISTRATORS = "S-1-5-32-544";
 
 // Paths already checked by this process; each Windows check starts PowerShell, which takes a moment.
@@ -106,7 +107,11 @@ export function readPrivate(file: string, warn: (message: string) => void): stri
       const acl = windowsAcl([file])[0]!;
       if (acl.owner !== sid() && acl.owner !== ADMINISTRATORS) throw new PrivateFileError(`${file} belongs to another account, so it was not used`);
       if (!onlyUser(acl)) {
-        icacls(file, "/reset"); // back to what it inherits from the private folder
+        try {
+          icacls(file, "/reset"); // back to what it inherits from the private folder
+        } catch {
+          // without the right to change its permissions, as for a file an administrator owns; the check below says so
+        }
         if (!onlyUser(windowsAcl([file])[0]!)) throw new PrivateFileError(`${file} could be read by others and could not be made private, so it was not used`);
         warn(`${file} could be read by others; it is now private to you.`);
       }
