@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
@@ -462,6 +462,16 @@ describe("tachi sandbox build", () => {
     expect(sandboxHeld(top, home, path.join(tmpdir(), "elsewhere-data"))).toBe("Tachikoma's settings folder");
     mkdirSync(path.join(home, "project"));
     expect(sandboxHeld(path.join(home, "project"), home, data)).toBeUndefined();
+  });
+
+  // The CI trial: a data folder not made yet, written through another name for a folder on the way (a link here, a short
+  // name such as RUNNER~1 there), is found where it would really be. A junction on Windows needs no special rights.
+  it("finds a data folder not made yet in the project, written through a link to it", () => {
+    const top = realpathSync.native(project());
+    const root = path.join(top, "project");
+    mkdirSync(root);
+    symlinkSync(root, path.join(top, "via"), "junction");
+    expect(sandboxHeld(root, path.join(top, "home"), path.join(top, "via", "data", "tachikoma"))).toBe("Tachikoma's data folder");
   });
 
   it("explains its usage for anything but build", async () => {

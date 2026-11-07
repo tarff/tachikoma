@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { PrivateFileError, privateDir, readPrivate, writePrivate } from "../../src/auth/private.js";
-import { system32 } from "../../src/exec/env.js";
+import { commandEnv, system32 } from "../../src/exec/env.js";
 
 // A write that fails part way (a full disk) is made to fail by flushing.
 vi.mock("node:fs", async (importOriginal) => {
@@ -15,10 +15,11 @@ vi.mock("node:fs", async (importOriginal) => {
 const windows = process.platform === "win32";
 const temp = () => path.join(mkdtempSync(path.join(tmpdir(), "tachi-private-")), "data");
 
-// Every SID in a path's permissions, read as SIDs, so none is left out.
+// Every SID in a path's permissions, read as SIDs, so none is left out. Windows PowerShell starts here, as below, with the
+// environment tachi gives it (commandEnv), so under PowerShell 7 it loads its own modules (the CI trial).
 function sids(p: string): string[] {
   const script = "$ErrorActionPreference = 'Stop'; (Get-Acl -LiteralPath $env:P).GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value }";
-  return execFileSync(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", env: { ...process.env, P: p } })
+  return execFileSync(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", env: { ...commandEnv(), P: p } })
     .trim()
     .split(/\r?\n/);
 }
@@ -85,7 +86,7 @@ describe("private files", () => {
   // that is open. The save waits for it, for up to 1 s. Resolves once the file is open.
   async function holdOpen(file: string, ms: number): Promise<void> {
     const script = `$ErrorActionPreference = 'Stop'; $f = [IO.File]::Open($env:P, 'Open', 'Read', 'ReadWrite'); 'open'; Start-Sleep -Milliseconds ${ms}; $f.Close()`;
-    const holder = spawn(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, P: file } });
+    const holder = spawn(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { env: { ...commandEnv(), P: file } });
     let out = "";
     holder.stdout.on("data", (d) => (out += d));
     while (!out.includes("open")) await new Promise((r) => setTimeout(r, 20));
@@ -166,7 +167,7 @@ describe("private files", () => {
     mkdirSync(dir);
     // icacls cannot name such an account, so the entry is added through .NET.
     const script = "$a = Get-Acl -LiteralPath $env:P; $a.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-21-1-2-3-1000'), 'Read', 'Allow')); Set-Acl -LiteralPath $env:P -AclObject $a";
-    execFileSync(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { env: { ...process.env, P: dir } });
+    execFileSync(system32("WindowsPowerShell/v1.0/powershell.exe"), ["-NoProfile", "-NonInteractive", "-Command", script], { env: { ...commandEnv(), P: dir } });
     expect(() => privateDir(dir)).toThrow(new PrivateFileError(`Could not make ${dir} private to you`));
   });
 
