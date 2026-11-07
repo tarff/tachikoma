@@ -36,11 +36,13 @@ describe("onPath", () => {
     });
   }
 
-  it("takes the first folder on PATH holding the program, passing over empty and relative entries", () => {
+  it("takes the first folder on PATH holding the program, passing over empty and relative entries", (ctx) => {
     const [rel, none, first, second] = folders("rel", "none", "first", "second");
     for (const dir of [rel!, first!, second!]) writeFileSync(path.join(dir, exe("tool")), "");
     // `rel` holds the program too, but is written relative to the working folder.
-    const PATH = ["", path.relative(process.cwd(), rel!), none, first, second].join(path.delimiter);
+    const relative = path.relative(process.cwd(), rel!);
+    if (path.isAbsolute(relative)) return ctx.skip("the temporary folder is on another drive than the working folder, as on GitHub's Windows machines");
+    const PATH = ["", relative, none, first, second].join(path.delimiter);
     expect(onPath("tool", { PATH })).toBe(path.join(first!, exe("tool")));
   });
 
