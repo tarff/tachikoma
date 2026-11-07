@@ -24,7 +24,13 @@ jobs:
       - uses: SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f # v1.3.2
         with:
           mode: firewall-free
-      - run: sfw npm ci
+      # Trial diagnostics: the first run's `sfw npm ci` printed nothing, installed nothing and passed.
+      - run: |
+          Get-Command sfw | Format-List
+          sfw --version
+          sfw npm ci --loglevel=http
+          "exit code: $LASTEXITCODE"
+          if (-not (Test-Path node_modules\typescript)) { throw "sfw npm ci installed nothing" }
       - run: npm run typecheck
       - run: npm run build
       # external.test.ts is left out, as on the user's PC.
