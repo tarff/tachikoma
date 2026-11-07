@@ -16,7 +16,10 @@ vi.mock("node:child_process", async (importOriginal) => {
   const cp = await importOriginal<typeof import("node:child_process")>();
   const path = await import("node:path");
   const { tmpdir } = await import("node:os");
-  const inTest = (p: string) => /^tachi-gitconfig-[^\\/]+([\\/]|$)/.test(path.relative(tmpdir(), path.resolve(p)));
+  const { realpathSync } = await import("node:fs");
+  // Under the temporary folder as written or by its real path, which the tests' folders are (world, below).
+  const inTest = (p: string) =>
+    [tmpdir(), realpathSync.native(tmpdir())].some((top) => /^tachi-gitconfig-[^\\/]+([\\/]|$)/.test(path.relative(top, path.resolve(p))));
   const guarded = (file: string, args: string[], options: { env?: NodeJS.ProcessEnv }, callback: unknown) => {
     const env = options.env ?? process.env;
     const homes = [env.HOME, ...(env.HOMEDRIVE || env.HOMEPATH ? [`${env.HOMEDRIVE ?? ""}${env.HOMEPATH ?? ""}`] : [])];
@@ -33,8 +36,10 @@ vi.mock("node:child_process", async (importOriginal) => {
 const OWN = /^(path|home|homedrive|homepath|userprofile|xdg_config_home|git_.*)$/i;
 
 // A test's own folder holding a home folder, a project folder, and empty system and user settings files.
+// By its real path, so git's settings name each file once: the temporary folder can be written with a short name
+// (RUNNER~1, the CI trial), and gitSettings gives a file's real path as well as the written one when they differ.
 function world() {
-  const dir = mkdtempSync(path.join(tmpdir(), "tachi-gitconfig-"));
+  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "tachi-gitconfig-")));
   onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
   const at = (rel: string) => path.join(dir, rel);
   const home = at("home");

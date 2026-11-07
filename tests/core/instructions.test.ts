@@ -12,7 +12,8 @@ afterEach(() => {
 // A pretend machine in a fresh temporary folder, so no test reads the user's own files: `top` stands
 // for the top of the drive, `home` for the user's folder, and the project is top/work/proj.
 async function machine(tree: Record<string, string> = {}) {
-  const top = await mkdtemp(path.join(tmpdir(), "tachi-"));
+  // Its real path, as the paths found are: the temporary folder can have a short name (RUNNER~1, the CI trial).
+  const top = realpathSync.native(await mkdtemp(path.join(tmpdir(), "tachi-")));
   const at = (p: string) => path.join(top, ...p.split("/"));
   await mkdir(at("home"), { recursive: true });
   await mkdir(at("work/proj"), { recursive: true });

@@ -194,11 +194,15 @@ export async function sandboxCommand(args: string[], root: string, io: ImageIo):
 // (choice 107), else the first the project folder holds of the data folder's logins, the settings folder's settings and
 // keys, and the home folder. The launch (clilib.ts, sandboxReady) and `tachi sandbox build` (choice 71) refuse it.
 export function sandboxHeld(root: string, home = os.homedir(), data = dataDir()): string | undefined {
-  const real = (p: string) => {
+  // Not made yet: where it would be, in the real place of the folder it would be made in, so another name for a folder on
+  // the way (a link, or a short name such as RUNNER~1, the CI trial) cannot hide it.
+  const real = (p: string): string => {
+    const abs = path.resolve(p);
     try {
-      return realpathSync.native(p);
+      return realpathSync.native(abs);
     } catch {
-      return path.resolve(p); // not made yet: where it would be
+      const parent = path.dirname(abs);
+      return parent === abs ? abs : path.join(real(parent), path.basename(abs));
     }
   };
   const at = real(root);
