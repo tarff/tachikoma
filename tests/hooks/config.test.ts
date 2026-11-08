@@ -16,6 +16,7 @@ const command = (more: Record<string, unknown> = {}) => ({ type: "command", comm
 // One PreToolUse group holding the hooks given, as Claude Code's file has them.
 const pre = (...hooks: unknown[]) => ({ PreToolUse: [{ matcher: "Bash", hooks }] });
 const hooksOf = (hooks: unknown) => readHooks('settings.json: "hooks"', hooks, []);
+const TIMEOUT = "a number of seconds above 0 and no more than 2147483, such as 30";
 
 describe("readHooks", () => {
   // Release 8b design, "The settings entry": Claude Code's shape, each command hook's fields kept as written.
@@ -191,9 +192,10 @@ describe("readHooks", () => {
       ["args", "a b", "a list of text in quotes"],
       ["args", ["a", 5], "a list of text in quotes"],
       ["shell", "zsh", '"bash" or "powershell"'],
-      ["timeout", 0, "a number of seconds above 0, such as 30"],
-      ["timeout", -1, "a number of seconds above 0, such as 30"],
-      ["timeout", "30", "a number of seconds above 0, such as 30"],
+      ["timeout", 0, TIMEOUT],
+      ["timeout", -1, TIMEOUT],
+      ["timeout", "30", TIMEOUT],
+      ["timeout", 2147484, TIMEOUT],
       ["async", "yes", "true or false, without quotes"],
       ["asyncRewake", 1, "true or false, without quotes"],
       ["onFailure", "stop", '"continue" or "block"'],
@@ -203,8 +205,16 @@ describe("readHooks", () => {
       expect(problem({ hooks: pre(command({ [field]: value })) })).toBe(`${at} "${field}" must be ${what} (got ${JSON.stringify(value)})`);
     }
     expect(readSettings('{"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": "a", "timeout": 1e999}]}]}}')).toEqual({
-      problem: `${at} "timeout" must be a number of seconds above 0, such as 30 (got null)`,
+      problem: `${at} "timeout" must be ${TIMEOUT} (got null)`,
     });
+  });
+
+  // Node's setTimeout waits at most 2,147,483,647 ms and fires after 1 ms past it, so a longer timeout would kill the
+  // hook at once.
+  it("takes a timeout up to 2147483 seconds and refuses one past it", () => {
+    const at = 'settings.json: "hooks": "PreToolUse": a hook\'s';
+    expect(problem({ hooks: pre(command({ timeout: 2147484 })) })).toBe(`${at} "timeout" must be ${TIMEOUT} (got 2147484)`);
+    expect(read({ hooks: pre(command({ timeout: 2147483 })) })).toMatchObject({ settings: { hooks: [{ timeout: 2147483 }] } });
   });
 });
 

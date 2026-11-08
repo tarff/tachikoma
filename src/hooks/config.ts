@@ -29,6 +29,11 @@ const wrongType = (entry: string, what: string, value: unknown) => new Error(`${
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === "string");
 
+// Node's setTimeout waits at most 2,147,483,647 ms, and past that fires after 1 ms (Node's docs for setTimeout), so a
+// longer timeout would kill its hook at once (the user's choice at Task 2).
+const MAX_TIMER_MS = 2_147_483_647;
+const TIMEOUT = `a number of seconds above 0 and no more than ${Math.floor(MAX_TIMER_MS / 1000)}, such as 30`;
+
 const EXAMPLE = '{"type": "command", "command": "check.sh"}';
 const GROUP = `{"matcher": "Bash", "hooks": [${EXAMPLE}]}`;
 // Claude Code's events that take no matcher; one written there is ignored, as Claude Code ignores it.
@@ -106,7 +111,7 @@ function hookOf(place: string, h: unknown, warnings: string[]): Omit<Hook, "even
       if (v !== "bash" && v !== "powershell") throw wrongType(field(name), '"bash" or "powershell"', v);
       hook.shell = v;
     } else if (name === "timeout") {
-      if (typeof v !== "number" || !Number.isFinite(v) || !(v > 0)) throw wrongType(field(name), "a number of seconds above 0, such as 30", v);
+      if (typeof v !== "number" || !Number.isFinite(v) || !(v > 0) || v * 1000 > MAX_TIMER_MS) throw wrongType(field(name), TIMEOUT, v);
       hook.timeout = v;
     } else if (name === "async" || name === "asyncRewake") {
       if (typeof v !== "boolean") throw wrongType(field(name), "true or false, without quotes", v);
