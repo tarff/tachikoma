@@ -7084,6 +7084,20 @@ describe("App's live settings", () => {
     expect(top()).toBe(from - 3);
   });
 
+  // Release 8b plan, Task 1: hooks and disableAllHooks are LIVE, and until Task 12 applies them an edit of either does
+  // nothing and says nothing; it once fell through to scrollSpeed's branch, setting the speed and saying "hooks is now 3".
+  it("leaves the scroll speed as it is on a live edit of hooks or disableAllHooks, and says no line for them", async () => {
+    const { app, mouse, write } = await watching([], {}, { full: true, intro: said(80), scrollSpeed: 1 }, { scrollSpeed: "--scroll-speed" });
+    const top = () => Number(/^said (\d+)\.$/.exec(shown(app)[0]!)![1]);
+    write({ mode: "project", hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "check.sh" }] }] }, disableAllHooks: true });
+    await sees(app, PINNED("ask")); // the edit was read, its entries in LIVE's order, hooks after mode
+    expect(flat(app)).not.toContain("hooks is now");
+    expect(flat(app)).not.toContain("disableAllHooks is now");
+    const from = top();
+    await wheel(mouse, "up");
+    expect(top()).toBe(from - 1);
+  });
+
   // Review fixes plan, fix 6: 0.99 leaves 99 hundredths over, which speed 3 once read as 99 rows.
   it("starts a new scrollSpeed's first notch with nothing left over from the old one", async () => {
     const { app, mouse, write } = await watching([], { scrollSpeed: 0.99 }, { full: true, intro: said(80), scrollSpeed: 0.99 });

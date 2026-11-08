@@ -127,6 +127,8 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       for (const kind of r.off) if (!after.off.includes(kind)) fns.note(gray(`${check} "${kind}" switched back on; it applies now.`));
       ui.rules.current = { add: [...new Set([...r.add, ...after.add])], off: r.off.filter((kind) => after.off.includes(kind)) };
       ui.onRules(ui.rules.current);
+    } else if (key === "hooks" || key === "disableAllHooks") {
+      // Nothing yet: release 8b plan, Task 12 applies them.
     } else {
       // scrollSpeed. The wheel's carried fraction is in the old speed's units, so the new one starts with none (review
       // fixes plan, fix 6).
