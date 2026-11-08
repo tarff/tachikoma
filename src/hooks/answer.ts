@@ -13,7 +13,7 @@ export type Outcome =
 
 export interface Combined {
   stop?: string; // continue:false, its stopReason ("" when none)
-  block?: string; // the strongest block's reason (exit 2, decision "block", or a deny)
+  block?: string; // the first block's reason in the file (exit 2 or decision "block"); at PreToolUse, the deny's
   decision?: "allow" | "ask" | "deny";
   reason?: string; // PreToolUse, deny over ask over allow
   rewrite?: { input: unknown; from: Hook; ignored: Hook[] }; // the first in the file (design, "Tool hooks")
@@ -68,7 +68,7 @@ export function outcomeOf(event: Event, hook: Hook, ran: Ran, platform: NodeJS.P
   const answer = read(event, ran.stdout);
   const json = "json" in answer ? { json: answer.json } : {};
   if (ran.code === 2) {
-    if (BLOCKING.includes(event) || AFTER.includes(event)) return { kind: "block", reason: ran.stderr.trim(), ...json };
+    if (BLOCKING.includes(event) || AFTER.includes(event)) return { kind: "block", reason: ran.stderr.trim().replace(/\r\n/g, "\n"), ...json };
     return exited("exited with code 2");
   }
   if ("error" in answer) return failure(`printed JSON that could not be read (${answer.error})`);
@@ -89,10 +89,10 @@ function read(event: Event, stdout: string): { json: Record<string, unknown> } |
   try {
     json = JSON.parse(text) as Record<string, unknown>;
   } catch (err) {
-    // The two common cases in plain words, the same on the Node versions package.json allows (>=22.20), whose parser
-    // messages for them start alike; the parser's own words for the rest.
+    // The two common cases in plain words, matched by how the parser's message starts. Seen on Node 24.22.1 only; Node 22
+    // (package.json allows >=22.20) was not checked, and a message worded otherwise falls back to the parser's own words.
     const words = errorText(err);
-    if (words.startsWith("Unexpected end of JSON input")) return { error: "it is cut short" };
+    if (words.startsWith("Unexpected end of JSON input") || words.startsWith("Unterminated string")) return { error: "it is cut short" };
     if (words.startsWith("Unexpected non-whitespace character after JSON")) return { error: "there is text after the object" };
     return { error: words };
   }

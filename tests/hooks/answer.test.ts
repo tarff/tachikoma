@@ -31,6 +31,7 @@ describe("outcomeOf: Claude Code's table, at PreToolUse", () => {
     ["nothing, exit 0: success", { code: 0 }, { kind: "ok" }],
     ["plain text, exit 2: a block", { code: 2, stdout: "hello", stderr: "Blocked: .env\nsecond line\n" }, {
       kind: "block", reason: "Blocked: .env\nsecond line" }],
+    ["exit 2, Windows line endings: the reason's lines end in \\n", { code: 2, stderr: "a\r\nb\r\n" }, { kind: "block", reason: "a\nb" }],
     ["plain text, exit 1: a failure, the first line of the error output", { code: 1, stdout: "hello", stderr: "\nboom\nmore\n" }, {
       kind: "failed", line: "node check.js exited with code 1: boom" }],
   ])("%s", (_, ran, outcome) => {
@@ -63,6 +64,9 @@ describe("outcomeOf: Claude Code's table, at PreToolUse", () => {
     expect(answer("PreToolUse", ranOf({ code: 0, stdout: READABLE }), hook)).toEqual({ kind: "ok", json: JSON.parse(READABLE) });
     expect(combine("PreToolUse", [{ hook, outcome: answer("PreToolUse", ranOf({ code: 1, stdout, stderr: "oops" }), hook) }])).toMatchObject({
       decision: "deny", block: "oops", failures: [] });
+    // Exit 2 wins over unreadable JSON: a block, its reason the error output.
+    expect(answer("PreToolUse", ranOf({ code: 2, stdout: UNREADABLE, stderr: "Not that.\nat line 2\n" }), hook)).toEqual({
+      kind: "block", reason: "Not that.\nat line 2" });
   });
 
   it("on Windows without Git Bash, a PreToolUse hook run by a shell counts only from exit 0 or 2", () => {
@@ -91,6 +95,14 @@ describe("outcomeOf: Claude Code's table, at PreToolUse", () => {
       decision: "deny", reason: "no", block: "no" });
   });
 
+  it("takes hookSpecificOutput's permissionDecision over the old decision, with its own reason", () => {
+    const stdout = JSON.stringify({ decision: "block", reason: "old", hookSpecificOutput: {
+      hookEventName: "PreToolUse", permissionDecision: "allow", permissionDecisionReason: "new" } });
+    const c = one("PreToolUse", ranOf({ stdout }));
+    expect(c).toMatchObject({ decision: "allow", reason: "new" });
+    expect(c.block).toBeUndefined();
+  });
+
   it("an exit 2 is a deny that the fields cannot undo", () => {
     expect(one("PreToolUse", ranOf({ code: 2, stdout: READABLE, stderr: "No." }))).toMatchObject({ decision: "deny", reason: "No.", block: "No." });
   });
@@ -108,11 +120,18 @@ describe("outcomeOf: what makes JSON unreadable", () => {
   it("an object cut short, or text after it, on exit 0, and with onFailure \"block\" they block", () => {
     expect(line("PreToolUse", '{"hookSpecificOutput":')).toEqual(failed("it is cut short"));
     expect(line("PreToolUse", '{"a": 1} trailing')).toEqual(failed("there is text after the object"));
+    // A string cut short is the object cut short too.
+    expect(line("PreToolUse", '{"systemMessage": "Hel')).toEqual(failed("it is cut short"));
     const hook = hookOf({ onFailure: "block" });
     expect(answer("PreToolUse", ranOf({ stdout: '{"hookSpecificOutput":' }), hook)).toEqual({
       kind: "block", reason: "node check.js printed JSON that could not be read (it is cut short)" });
     expect(answer("PreToolUse", ranOf({ stdout: '{"a": 1} trailing' }), hook)).toEqual({
       kind: "block", reason: "node check.js printed JSON that could not be read (there is text after the object)" });
+  });
+
+  it("takes a JSON array as plain text, as only an object is JSON", () => {
+    expect(line("SessionStart", "[1, 2]")).toEqual({ kind: "ok", text: "[1, 2]" });
+    expect(line("PreToolUse", '[{"hookSpecificOutput": 1}]')).toEqual({ kind: "ok" });
   });
 
   it("other broken JSON gives the parser's own words", () => {
@@ -252,6 +271,17 @@ describe("combine", () => {
     expect(c).toMatchObject({ stop: "", messages: ["Stopping"] });
     expect(c.decision).toBeUndefined();
     expect(c.block).toBeUndefined();
+    // It clears a rewrite, and PostToolUse's new output: the call keeps its own result (design).
+    const rewritten = one("PreToolUse", ranOf({
+      stdout: JSON.stringify({ continue: false, hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "ls" } } }),
+    }));
+    expect(rewritten.stop).toBe("");
+    expect(rewritten.rewrite).toBeUndefined();
+    const output = one("PostToolUse", ranOf({
+      stdout: JSON.stringify({ continue: false, hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: "x" } }),
+    }));
+    expect(output.stop).toBe("");
+    expect(output.output).toBeUndefined();
   });
 
   it("gives PostToolUse's block as text for the model, next to the result, and no block", () => {
@@ -300,6 +330,14 @@ describe("combine", () => {
   it("takes PostToolUse's updatedToolOutput", () => {
     const stdout = JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: "short" } });
     expect(one("PostToolUse", ranOf({ stdout })).output).toBe("short");
+  });
+
+  it("of two updatedToolOutputs, takes the first in the file", () => {
+    const replace = (text: string) => ({
+      hook: hookOf({ args: [text] }),
+      outcome: answer("PostToolUse", ranOf({ stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: text } }) })),
+    });
+    expect(combine("PostToolUse", [replace("first"), replace("second")]).output).toBe("first");
   });
 
   it("keeps every context, message and failure, in the order given", () => {

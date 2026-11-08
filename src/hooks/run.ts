@@ -4,7 +4,7 @@ import { commandEnv, gitBash, onPath } from "../exec/env.js";
 import { collect, killTree, running, shellFor } from "../exec/local.js";
 import type { Hook } from "./config.js";
 
-// What one hook did: its exit code and what it printed, each stream cut as a command's is (collect, local.ts). `failed`
+// What one hook did: its exit code and what it printed, its stdout whole and its stderr cut as a command's is. `failed`
 // says it never started, or was killed at its time limit; Task 3 (answer.ts) reads the rest. `limit` is the limit in
 // force, kept with "time", and `signal` what ended a hook that left no exit code, both for the failure's line.
 export interface Ran {
@@ -73,7 +73,10 @@ export function runHook(hook: Hook, input: object, opts: { cwd: string; env: Nod
       return;
     }
     running.add(child);
-    const stdout = collect(child.stdout);
+    // Its stdout is read whole, so a long JSON answer is never cut into one that cannot be read; answer.ts cuts each text
+    // it hands on (the user's choice, 2026-11-09). A known limit: a runaway hook's output is held in memory until its
+    // time limit. Its error output is cut as a command's is.
+    const stdout = collect(child.stdout, Infinity);
     const stderr = collect(child.stderr);
     const ran = (more: Partial<Ran>): Ran => ({ code: null, stdout: stdout(), stderr: stderr(), ms: ms(), ...more });
     const done = () => {

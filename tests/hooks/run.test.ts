@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { gitBash } from "../../src/exec/env.js";
 import type { Hook } from "../../src/hooks/config.js";
+import { combine, outcomeOf } from "../../src/hooks/answer.js";
 import { closeOf, program, runHook } from "../../src/hooks/run.js";
 import { removeTree } from "../helpers.js";
 
@@ -71,6 +72,20 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(ran).toMatchObject({ code: 3, stdout: "PreToolUse 200000\n", stderr: "to stderr\n" });
     expect(ran.failed).toBeUndefined();
     expect(ran.ms).toBeGreaterThan(0);
+  }, 15_000);
+
+  // The user's choice, 2026-11-09: a hook's stdout is read whole, so a long JSON answer can be read; combine still cuts
+  // each text at 10,000 characters. 40,000 is past the 30,000 a command's output is cut at (MAX_TOOL_OUTPUT).
+  it("reads a hook's output whole, and its long context is cut only by combine", async () => {
+    const { hook, root } = await nodeHook(
+      `process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "x".repeat(40000) } }));`,
+    );
+    const ran = await runHook(hook, {}, { cwd: root, env: process.env, limit: 30 });
+    expect(JSON.parse(ran.stdout).hookSpecificOutput.additionalContext).toHaveLength(40_000);
+    const outcome = outcomeOf("SessionStart", { ...hook, event: "SessionStart" }, ran, "linux", true);
+    expect(combine("SessionStart", [{ hook, outcome }]).context).toEqual([
+      { event: "SessionStart", text: `${"x".repeat(10_000)}\n[cut: 30000 more characters]` },
+    ]);
   }, 15_000);
 
   it("does not fail when the hook exits without reading its input", async () => {

@@ -189,7 +189,7 @@ present, `bash` on PATH is WSL's, `jq` on PATH from winget, `CLAUDE_CODE_GIT_BAS
 | 1.5 s, up to 60 s | SessionEnd's hooks share 1.5 s; a hook's own longer `timeout` raises it, to 60 s at most | the same |
 | 10,000 characters | each piece of text a hook hands the model or the user | the hooks reference, "JSON output" |
 | 8 | Stop or SubagentStop blocks in a row, with no tool call between, before the turn ends anyway | the hooks reference, "Stop input" |
-| 30,000 characters | how much of a hook's output and error output is read (`MAX_TOOL_OUTPUT`) | executor.ts:3, as every command's output is read |
+| 30,000 characters | how much of a hook's error output is read (`MAX_TOOL_OUTPUT`); its output is read whole (the user's choice, 2026-11-09) | executor.ts:3, as every command's output is read |
 
 No other number is set. Anywhere a builder feels a number is needed, they stop and ask the
 controller, who asks the user.
@@ -407,8 +407,9 @@ export function shellOf(hook: Hook): { file: string; args: string[] } | { exec: 
 - **The environment** is `commandEnv()` plus `CLAUDE_PROJECT_DIR`, the real project folder; the
   folder is the project's root (choice 3).
 - **Its input** is the JSON written whole to its standard input, which is then closed (choice 4).
-- **Output** is read with `collect` (local.ts), so the first 30,000 characters of each stream are
-  kept, and the rest read and dropped.
+- **Output** is read with `collect` (local.ts): the output whole, so a long JSON answer can still
+  be read, and answer.ts cuts each text it hands on (the user's choice, 2026-11-09); the first
+  30,000 characters of the error output, the rest read and dropped.
 - **Time limit:** at `limit` seconds the hook is killed with `killTree` and `failed: "time"`. A
   stop (`signal`) kills it the same way and rejects with `Cancelled`, as a command does.
 - **A hook that cannot start** (`spawn`'s `error`) gives `failed: "start"` and its reason.
@@ -860,7 +861,9 @@ section).
   does, the tools' names, the sandbox, what you see, `/hooks`); the known limits from the design and
   choice 19, and two from Task 2's review: a bare `npx` (or any `.cmd`) is "not found on PATH", as
   only `.exe` is looked for; a hook that leaves a background program holding its output is
-  reported as out of time, so redirect that program's output; the release list with 8 in five
+  reported as out of time, so redirect that program's output; and one from Task 3's review: a
+  hook's output is read whole, so a runaway hook's output is held in memory until its time limit
+  ends it; the release list with 8 in five
   parts, 8e added; `/hooks` in the commands list.
 - **The design** gets an "As built" section listing this plan's choices as the user settled them.
 
