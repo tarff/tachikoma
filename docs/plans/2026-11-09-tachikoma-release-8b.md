@@ -314,6 +314,8 @@ command with its `args` after it, escaped as the question escapes a command.
 | PreCompact blocked (the 8a line's reason) | `a PreCompact hook blocked it: <reason>`, in `The conversation could not be shortened (<reason>); it is unchanged.` |
 | A hook's `systemMessage` (grey) | `<Event> hook: <message>` |
 | Text for the model's heading | `<Event> hook:` |
+| SessionStart text left out after a shortening (grey) | `SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.` |
+| A subagent's hook lines | each of the lines above said in a subagent's session starts `<id>: `, as its errors do: `t1: A PreToolUse hook refused shell: <reason>` |
 | Hooks changed (grey) | `Hooks changed: <n> hooks at <m> events.`; none left: `Hooks changed: none in force.`; turned off: `Hooks changed: all off (disableAllHooks).` |
 | No Git Bash, at the launch (grey) | `Git Bash was not found, so hooks run by a shell use Windows PowerShell; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe to change that.` |
 | A left-out event (launch warning) | `settings.json: "hooks": "<Event>" is not an event Tachikoma runs hooks at; its hooks were left out` |
@@ -527,12 +529,17 @@ export const MODE_NAMES: Record<Mode, string> = { ask: "default", project: "acce
   a done subagent with a timed-out hook into a failed one; `hook` joins that list (plan review,
   2026-11-09, finding 1). A hook that stops a subagent does so through `continue: false` (Task 9),
   never through this event.
+- **A subagent's hook lines reach the user** (second round, finding 3). A subagent's `Hooks` (from
+  `for`) says its lines on the subagent's own bus, and `Tasks.#work` passes on only its usage and
+  errors (tasks.ts:196-209). It now passes on each `hook-note` too, starting `<id>: `, as its
+  errors' `attempted` does, so the window and `-p` show them through the lead's bus (Task 12).
 
 **Tests:** matching, the same entry twice runs once, two alike but for `args` both run (finding 3);
 the common fields for the lead and a subagent; `permission_mode` for each mode; a new prompt id
 after `newPrompt` and none before; a failure's bus event and its words; `set` during a `fire`; hooks
 off run nothing; an `async` hook is not waited for; a subagent whose hook times out still finishes
-`done` with its answer (`tests/core/tasks.test.ts`; plan review, finding 1).
+`done` with its answer (`tests/core/tasks.test.ts`; plan review, finding 1); a `hook-note` said on
+a subagent's bus reaches the lead's bus starting `t1: ` (second round, finding 3).
 
 Commit: `feat: the Hooks object: matching, running at once, the common fields, and a hook's lines`.
 
@@ -756,13 +763,22 @@ Commit: `feat: SessionStart and SessionEnd at the launch, the window's commands 
   they are saved with the shortening and go with the very next request, which inside a turn is
   sent at once. They never wait in Task 8's queue. If the `shortened` line then cannot be written,
   nothing changes, as in 8a, though those hooks have run: a known limit for the README.
+- **The shortened message is checked again with the hook text in it** (second round, finding 2):
+  `shorten()` checked the message against the window without it (shorten.ts:104-108, `fit`), and a
+  turn has one shortening only, so text that pushed the request over would end the turn. `fit` is
+  exported, and `#shorten` checks the message with the text added. If it no longer fits, the text
+  is left out, the shortening is saved without it, and the grey line `SessionStart hook text was
+  left out: with it, the shortened conversation would not fit the model's window.` says so; the
+  text is never cut to fit, as no part of a hook's text is safe to drop.
 - `onShorten` stays for 8d's memory save.
 
 **Tests:** a block leaves the history unchanged with the 8a line and its reason, for `/compact` and
 for a turn's shortening; plain text reaches the summary request; PostCompact gets the summary;
 SessionStart `compact` follows it; in a turn that shortens before its request, the stand-in model's
 very next request holds SessionStart's context, and a resume reads it back in the shortened
-message (finding 2).
+message (finding 2); with a stand-in model whose window fits the summary but not the summary and
+the hook's text, the shortening is saved without the text, the line is said, and the turn's
+request is sent (second round, finding 2).
 
 Commit: `feat: PreCompact and PostCompact around each shortening`.
 
@@ -780,6 +796,11 @@ Commit: `feat: PreCompact and PostCompact around each shortening`.
 **Behaviour** (choices 22-25; design, "What the user sees"):
 - A failure is red with the line alone; a `hook-note` grey; in `-p` a failure goes to the error
   output as `hook: <line>`, a note as `note: <line>`.
+- **A hook's failure never fails a `-p` run** (plan review, 2026-11-09, second round, finding 1):
+  `-p`'s error listener (cli.tsx:624-629) counts every kind but `tool`, `fallback`, `judge`,
+  `saving` and a sent `shortening` as failing the run; `hook` joins that list, as it joins the
+  subagents' (Task 4). What does end a run with code 1 is said where it happens: a blocked prompt
+  (Task 8) and a hook's `continue: false` (choice 9).
 - While a hook with a `statusMessage` runs, the waiting line's label is its message, then back.
 - Ctrl+O lists `hooks.runs` after the calls.
 - `/hooks` prints the list, its left-out rows, or its empty and off lines.
@@ -788,7 +809,10 @@ Commit: `feat: PreCompact and PostCompact around each shortening`.
 - At the launch, the warnings print as other settings warnings do, and the Git Bash line once when
   a hook run by a shell is in force and none is found.
 
-**Tests:** each line in the window and in `-p`; Ctrl+O after a turn with a hook run and a rewrite;
+**Tests:** each line in the window and in `-p`; a `-p` run whose PreToolUse hook fails, then
+answers, exits 0 with the hook's line on its error output (second round, finding 1); a subagent's
+`systemMessage`, its SubagentStop block and its `continue: false` line reach the window and `-p`'s
+error output, each starting with its id (finding 3); Ctrl+O after a turn with a hook run and a rewrite;
 `/hooks` with hooks, with left-out ones, with none, and off; a live edit adding a hook makes the
 next call fire it, with the line; the waiting line shows a `statusMessage`.
 
