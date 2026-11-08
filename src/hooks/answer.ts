@@ -56,23 +56,25 @@ export function outcomeOf(event: Event, hook: Hook, ran: Ran, platform: NodeJS.P
   // Windows without Git Bash a PreToolUse hook run by a shell with onFailure not set (Claude Code's rule; design).
   const strict = BLOCKING.includes(event) && (hook.onFailure === "block"
     || (event === "PreToolUse" && hook.onFailure === undefined && !hook.args && platform === "win32" && !(bash ?? gitBash() !== null)));
-  const failure = (words: string): Outcome => {
-    const line = `${command} ${words}`;
-    return strict ? { kind: "block", reason: firstLine(ran.stderr) || line } : { kind: "failed", line };
+  // A block's reason is the failure's own words, so a timeout's block says it ran out of time; only a hook that exited
+  // (or was ended by a signal) with error output gives that output's first line (the user's choice at Task 3's review).
+  const failure = (words: string, error = ""): Outcome => {
+    const line = `${command} ${words}${error ? `: ${error}` : ""}`;
+    return strict ? { kind: "block", reason: error || line } : { kind: "failed", line };
   };
-  const withError = (words: string) => (firstLine(ran.stderr) ? `${words}: ${firstLine(ran.stderr)}` : words);
+  const exited = (words: string) => failure(words, firstLine(ran.stderr));
   if (ran.failed === "start") return failure(`could not start (${ran.startError})`);
   if (ran.failed === "time") return failure(`ran out of time after ${ran.limit} s`);
   const answer = read(event, ran.stdout);
   const json = "json" in answer ? { json: answer.json } : {};
   if (ran.code === 2) {
     if (BLOCKING.includes(event) || AFTER.includes(event)) return { kind: "block", reason: ran.stderr.trim(), ...json };
-    return failure(withError("exited with code 2"));
+    return exited("exited with code 2");
   }
   if ("error" in answer) return failure(`printed JSON that could not be read (${answer.error})`);
   if (ran.code !== 0 && (strict || "text" in answer)) {
-    if (ran.code !== null) return failure(withError(`exited with code ${ran.code}`));
-    return failure(withError(ran.signal ? `was ended by signal ${ran.signal}` : "was ended by an unknown signal"));
+    if (ran.code !== null) return exited(`exited with code ${ran.code}`);
+    return exited(ran.signal ? `was ended by signal ${ran.signal}` : "was ended by an unknown signal");
   }
   if ("text" in answer) return answer.text && PLAIN.includes(event) ? { kind: "ok", text: answer.text } : { kind: "ok" };
   return { kind: "ok", ...json };
@@ -98,11 +100,11 @@ function read(event: Event, stdout: string): { json: Record<string, unknown> } |
 }
 
 // What is wrong with the fields this event reads, in plain words, or undefined. A field the event does not read is not
-// looked at.
+// looked at. A field printed as null is taken as left out, here and in combine (the user's choice, 2026-11-09).
 function check(event: Event, json: Record<string, unknown>): string | undefined {
   const TEXT = "text in quotes";
   const field = (o: Record<string, unknown>, name: string, ok: (v: unknown) => boolean, what: string) =>
-    name in o && !ok(o[name]) ? `${JSON.stringify(name)} must be ${what}` : undefined;
+    o[name] != null && !ok(o[name]) ? `${JSON.stringify(name)} must be ${what}` : undefined;
   const text = (v: unknown) => typeof v === "string";
   const wrong = [
     field(json, "systemMessage", text, TEXT),
@@ -114,7 +116,7 @@ function check(event: Event, json: Record<string, unknown>): string | undefined 
   ].find(Boolean);
   if (wrong || !isObject(json.hookSpecificOutput)) return wrong;
   const specific = json.hookSpecificOutput;
-  if (!("hookEventName" in specific)) return '"hookSpecificOutput" has no "hookEventName"';
+  if (specific.hookEventName == null) return '"hookSpecificOutput" has no "hookEventName"';
   if (typeof specific.hookEventName !== "string") return '"hookEventName" must be text in quotes';
   if (specific.hookEventName !== event) return `"hookSpecificOutput" names ${specific.hookEventName}`;
   return [
@@ -153,7 +155,7 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
       const why = outcome.kind === "block" ? outcome.reason : said ? ((specific.permissionDecisionReason as string | undefined) ?? "") : reason;
       if (decision === "defer") c.deferred = true;
       else if (decision && decided[decision] === undefined) decided[decision] = cut(why);
-      if (specific.updatedInput !== undefined) {
+      if (specific.updatedInput != null) {
         if (c.rewrite) c.rewrite.ignored.push(hook);
         else c.rewrite = { input: specific.updatedInput, from: hook, ignored: [] };
       }
@@ -163,7 +165,7 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
       else if (blocked !== undefined && BLOCKING.includes(event) && c.block === undefined) c.block = cut(blocked);
     }
     if (!NO_CONTEXT.includes(event) && typeof specific.additionalContext === "string") toModel(specific.additionalContext);
-    if (event === "PostToolUse" && specific.updatedToolOutput !== undefined && !("output" in c)) c.output = specific.updatedToolOutput;
+    if (event === "PostToolUse" && specific.updatedToolOutput != null &&!("output" in c)) c.output = specific.updatedToolOutput;
     if (outcome.kind === "ok" && outcome.text) {
       if (event === "PreCompact") c.instructions.push(cut(outcome.text));
       else toModel(outcome.text);

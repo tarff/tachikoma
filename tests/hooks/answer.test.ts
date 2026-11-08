@@ -48,11 +48,17 @@ describe("outcomeOf: Claude Code's table, at PreToolUse", () => {
     expect(answer("PreToolUse", ranOf({ code: 1, stdout, stderr: "oops\nmore\n" }), hook)).toEqual({ kind: "block", reason: "oops" });
     // Without error output, the failure's words.
     expect(answer("PreToolUse", ranOf({ code: 1, stdout }), hook)).toEqual({ kind: "block", reason: "node check.js exited with code 1" });
-    expect(answer("PreToolUse", ranOf({ code: 0, stdout: UNREADABLE }), hook)).toEqual({ kind: "block", reason: BAD });
-    expect(answer("PreToolUse", ranOf({ code: null, failed: "time", limit: 600 }), hook)).toEqual({
+    // Out of time, could not start, unreadable JSON, or a signal without error output: the failure's own words, whatever
+    // the error output says (the user's choice at Task 3's review).
+    expect(answer("PreToolUse", ranOf({ code: 0, stdout: UNREADABLE, stderr: "note\n" }), hook)).toEqual({ kind: "block", reason: BAD });
+    expect(answer("PreToolUse", ranOf({ code: null, failed: "time", limit: 600, stderr: "still working\n" }), hook)).toEqual({
       kind: "block", reason: "node check.js ran out of time after 600 s" });
     expect(answer("PreToolUse", ranOf({ code: null, failed: "start", startError: "spawn x ENOENT" }), hook)).toEqual({
       kind: "block", reason: "node check.js could not start (spawn x ENOENT)" });
+    expect(answer("PreToolUse", ranOf({ code: null, signal: "SIGKILL" }), hook)).toEqual({
+      kind: "block", reason: "node check.js was ended by signal SIGKILL" });
+    // A signal with error output, as an exit code with it: the first line.
+    expect(answer("PreToolUse", ranOf({ code: null, signal: "SIGTERM", stderr: "dying\n" }), hook)).toEqual({ kind: "block", reason: "dying" });
     // A success stays one.
     expect(answer("PreToolUse", ranOf({ code: 0, stdout: READABLE }), hook)).toEqual({ kind: "ok", json: JSON.parse(READABLE) });
     expect(combine("PreToolUse", [{ hook, outcome: answer("PreToolUse", ranOf({ code: 1, stdout, stderr: "oops" }), hook) }])).toMatchObject({
@@ -123,7 +129,7 @@ describe("outcomeOf: what makes JSON unreadable", () => {
     const cases: [Event, object, string][] = [
       ["Stop", { continue: "no" }, '"continue" must be true or false'],
       ["Stop", { stopReason: 3 }, '"stopReason" must be text in quotes'],
-      ["SessionEnd", { systemMessage: null }, '"systemMessage" must be text in quotes'],
+      ["SessionEnd", { systemMessage: 1 }, '"systemMessage" must be text in quotes'],
       ["Stop", { decision: "stop" }, '"decision" must be "approve" or "block"'],
       ["Stop", { reason: ["a"] }, '"reason" must be text in quotes'],
       ["Stop", { hookSpecificOutput: "Stop" }, '"hookSpecificOutput" must be an object'],
@@ -135,6 +141,21 @@ describe("outcomeOf: what makes JSON unreadable", () => {
       ["PreToolUse", { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: "ls" } }, '"updatedInput" must be an object'],
     ];
     for (const [event, json, reason] of cases) expect(line(event, JSON.stringify(json)), reason).toEqual(failed(reason));
+  });
+
+  // The user's choice, 2026-11-09: null means left out.
+  it("takes a field printed as null as left out", () => {
+    const nulls = { systemMessage: null, continue: null, stopReason: null, decision: null, reason: null };
+    const specific = { hookEventName: "PreToolUse", additionalContext: null, permissionDecision: null, permissionDecisionReason: null, updatedInput: null };
+    const outcome = answer("PreToolUse", ranOf({ stdout: JSON.stringify({ ...nulls, hookSpecificOutput: specific }) }));
+    expect(outcome.kind).toBe("ok");
+    expect(combine("PreToolUse", [{ hook: hookOf(), outcome }])).toEqual({ context: [], messages: [], instructions: [], deferred: false, failures: [] });
+    // "reason": null is no reason.
+    expect(one("Stop", ranOf({ stdout: JSON.stringify({ decision: "block", reason: null }) })).block).toBe("");
+    expect(one("PostToolUse", ranOf({ stdout: JSON.stringify({ hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: null } }) })).output)
+      .toBeUndefined();
+    expect(one("Stop", ranOf({ stdout: JSON.stringify({ hookSpecificOutput: null }) })).failures).toEqual([]);
+    expect(line("Stop", JSON.stringify({ hookSpecificOutput: { hookEventName: null } }))).toEqual(failed('"hookSpecificOutput" has no "hookEventName"'));
   });
 
   it("does not check a field the event does not read", () => {

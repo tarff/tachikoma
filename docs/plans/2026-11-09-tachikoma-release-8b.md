@@ -469,12 +469,17 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
   name, makes it "JSON that could not be read". Output whose first character after white space is
   `{` is JSON, and an object cut short (`{"hookSpecificOutput":`) or with text after it is JSON
   that could not be read, a failure with its line, so `onFailure: "block"` still holds (design;
-  plan review, 2026-11-09, finding 4). Any other output is plain text.
+  plan review, 2026-11-09, finding 4). Any other output is plain text. A field printed as `null`
+  is taken as left out, never as the wrong type, so `"reason": null` is no reason (the user's
+  choice, 2026-11-09).
 - **The table**, row by row, as the design gives it: exit 0, exit 2, any other code, against JSON
   that can be read, JSON that cannot, and plain text. With `onFailure: "block"`, or on Windows
   without Git Bash for a PreToolUse hook run by a shell with `onFailure` not set (`bash` false),
-  every failure, any code but 0 and 2 included, is a block, its reason the error output's first
-  line or the failure's words.
+  every failure, any code but 0 and 2 included, is a block. Its reason is the failure's own
+  words (the line after `hook failed: `) when the hook ran out of time, could not start, printed
+  JSON that could not be read, or was ended by a signal with no error output; when it exited, or
+  was ended by a signal, with error output, the reason is that output's first line, so a
+  timeout's block says it ran out of time (the user's choice at Task 3's review).
 - **The events that cannot block** (the user's choice at Task 3, following the design's table row
   "Cannot block; a failure's error output is shown to the user"): at SessionStart, SessionEnd,
   SubagentStart and PostCompact, exit 2 is a failure, `exited with code 2`, whatever was printed.
