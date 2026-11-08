@@ -55,6 +55,7 @@ learn from experience. The command is `tachi`.
 | Release 7, as built | Live link is refused where the project folder ignores letter case, Windows' and macOS's default, as the box reached `.git` as `.GIT` and `GIT~1` on Docker Desktop for Windows (measured), so copy mode is the sandbox there; the box's default limits (4 GB, 4 CPUs, 1,024 processes) scale with Docker's size, always leaving 1 GiB free, and 1 CPU when it has more than one; the `@` menu and pasted paths stay on the host, a box call taking a median 360 ms; changes in git-ignored paths are counted in the review, never applied; changes to protected paths start as skipped; deletes are applied first; the box's repository takes the host's branch; a hard link counts as a protected write; the judge sees earlier writes by their length, and a judge that cannot be reached fails no `-p` run; Shift+Enter in Windows Terminal through its win32 input mode, as kitty's query got no answer; in full screen the prompt takes at most half the rows; tested on Windows 11 only until release 14's CI | User, 2026-10-31 to 2026-11-05, at the build and its reviews ([release 7 plan](2026-10-31-tachikoma-release-7.md), its 122 choices; [release 7 design](2026-10-30-tachikoma-release-7-design.md), "As built") |
 | Release 8, in four parts | 8a transcripts, resuming and shortening; 8b hooks; 8c the MCP client and the list of allowed sites; 8d memory and lessons. Each part has its own design and pull request; the release keeps its number | User, 2026-11-06 (options chosen: "Three parts", then "Own part, after 8a" for hooks) |
 | Hooks | Claude Code's hooks, in its format and with its event names, so scripts written for it work unchanged; read from `~/.tachikoma/settings.json` only, never a project's file. 8d's memory save before shortening is built in, not a hook | User, 2026-11-06 ("do a built in save but also we need hooks in general"; options chosen: "Claude Code's format", "Your settings file only") |
+| Hooks in 8b | Command hooks only, at 11 events; Claude Code's tool names and inputs; a hook's allow skips only the question and the judge, never the dangerous-command check, protected paths or never mode; in the sandbox hooks run on the host, with real paths in live link and the box's in copy mode; live edits; quiet unless a hook blocks or fails, with Ctrl+O and a read-only `/hooks`. The rest gets homes: 8c, 10, 14, and a new part 8e after 8d | User, 2026-11-09 (options chosen: "Core 11, commands", "Claude Code's", "Allow skips only the ask", "Real in live, box's in copy", "Live, with a line", "As Claude Code"); [release 8b design](2026-11-09-tachikoma-release-8b-design.md) |
 | Rewinding | Release 9: going back to an earlier message, with the files put back as they were then; every later release moves down one, to 15 | User, 2026-11-06 (option chosen: "Right after release 8"), after asking when the features left out of 8a would come |
 
 ## 1. Overall shape
@@ -917,14 +918,17 @@ Each release works on its own and can be shown.
    model judging each action; a check on dangerous commands of every kind, and protected paths.
    `never` mode, switched off in release 6, returns only with these three, in copy mode only;
    Shift+Enter in Windows Terminal ([release 7 design](2026-10-30-tachikoma-release-7-design.md))
-8. In four parts, each with its own design and pull request:
+8. In five parts, each with its own design and pull request:
    - 8a: transcripts on disk, resuming (`--continue`, `--resume`, `/resume`, `/clear`), names and
      branches, shortening the history (automatic, `/compact`, `/autocompact`), and `/export`
      ([release 8a design](2026-11-06-tachikoma-release-8a-design.md))
-   - 8b: hooks, in Claude Code's format, from the user's settings file only
+   - 8b: hooks, in Claude Code's format, from the user's settings file only: command hooks at 11
+     events ([release 8b design](2026-11-09-tachikoma-release-8b-design.md))
    - 8c: MCP client, and the sandbox's list of allowed sites, which shares its address check
    - 8d: MemPalace in the uv environment behind the shared supervisor, with a save before each
      shortening; lessons from the error log, stored in the palace and recalled
+   - 8e: the ten hook events 8b leaves out that have a place in Tachikoma already
+     ([release 8b design](2026-11-09-tachikoma-release-8b-design.md), "Not in this release")
 9. Rewinding: going back to an earlier message, with the files put back as they were then
 10. Skills: the loader, vendored superpowers, Tachikoma's own skills, and skills drafted from
     experience, saved on the user's yes
