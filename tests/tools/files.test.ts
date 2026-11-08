@@ -432,7 +432,8 @@ describe("file tools", () => {
     const elsewhere = await mkdtemp(path.join(tmpdir(), "tachi-outside-"));
     await symlink(elsewhere, path.join(ctx.root, "linked"), "junction");
     await expect(writeFileTool.run({ path: "linked/x.txt", content: "x" }, ctx)).rejects.toThrow("The user declined");
-    expect(ctx.asked[0]).toContain(`(really ${path.join(realpathSync(elsewhere), "x.txt")})`);
+    // Windows' own realpath, as the tool's: the JavaScript one keeps a short name (RUNNER~1, the CI trial).
+    expect(ctx.asked[0]).toContain(`(really ${path.join(realpathSync.native(elsewhere), "x.txt")})`);
   });
 
   it("treats a link that leads nowhere as outside", async () => {
@@ -644,19 +645,22 @@ describe("protected writes", () => {
 
   it("include the hooks folders and settings files git's settings name, which the gate holds for the session", async () => {
     const ctx = await tempContext("project", [false, false]);
-    const hooks = path.join(ctx.root, "githooks");
-    const config = path.join(ctx.root, "team.gitconfig");
+    // By their real paths, which git's settings give too (gitSettings): the temporary folder can be written with a short
+    // name (RUNNER~1, the CI trial), and the questions show the path as typed.
+    const hooks = path.join(realpathSync.native(ctx.root), "githooks");
+    const config = path.join(realpathSync.native(ctx.root), "team.gitconfig");
     ctx.gate.protection = { hooks: [hooks], files: [config] };
-    const checkout = path.join(hooks, "post-checkout");
+    const checkout = path.join(ctx.root, "githooks", "post-checkout");
+    const team = path.join(ctx.root, "team.gitconfig");
     await expect(writeFileTool.run({ path: "githooks/post-checkout", content: "x" }, ctx)).rejects.toThrow(`The user declined: write ${checkout}`);
-    await expect(writeFileTool.run({ path: "team.gitconfig", content: "x" }, ctx)).rejects.toThrow(`The user declined: write ${config}`);
+    await expect(writeFileTool.run({ path: "team.gitconfig", content: "x" }, ctx)).rejects.toThrow(`The user declined: write ${team}`);
     ctx.gate.mode = "never";
     await expect(writeFileTool.run({ path: "githooks/post-checkout", content: "x" }, ctx)).rejects.toThrow(notAllowed(checkout, hooks));
-    await expect(writeFileTool.run({ path: "team.gitconfig", content: "x" }, ctx)).rejects.toThrow(notAllowed(config, config));
+    await expect(writeFileTool.run({ path: "team.gitconfig", content: "x" }, ctx)).rejects.toThrow(notAllowed(team, config));
     expect(readdirSync(ctx.root)).toEqual([]);
     // A subagent's gate reads the lead's.
     const child = ctx.gate.for({ name: "t2", signal: new AbortController().signal, stop: () => {} });
-    await expect(writeFileTool.run({ path: "team.gitconfig", content: "x" }, { ...ctx, gate: child })).rejects.toThrow(notAllowed(config, config));
+    await expect(writeFileTool.run({ path: "team.gitconfig", content: "x" }, { ...ctx, gate: child })).rejects.toThrow(notAllowed(team, config));
   });
 
   it("ignore letter case on any system when the gate holds that the project's folder does, as WSL's /mnt/c does", async () => {
