@@ -280,7 +280,7 @@ describe("readSettings", () => {
       const r = read({ disableAllHooks: true, hooks });
       expect(r).toEqual({
         settings: { disableAllHooks: true, hooks: [{ event: "PreToolUse", matcher: { all: true }, command: "b", async: false, where: '"PreToolUse"' }] },
-        warnings: ['settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out'],
+        warnings: ['settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: a'],
       });
       expect(read({ disableAllHooks: false })).toEqual({ settings: { disableAllHooks: false }, warnings: [] });
       for (const bad of ["true", 1, null]) {

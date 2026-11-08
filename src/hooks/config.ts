@@ -27,6 +27,7 @@ export interface HooksConfig { hooks: Hook[]; off: boolean; leftOut: string[] } 
 // As settings.ts's, whose words every entry's problems use; that module imports this one.
 const wrongType = (entry: string, what: string, value: unknown) => new Error(`${entry} must be ${what} (got ${JSON.stringify(value)})`);
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === "string");
 
 const EXAMPLE = '{"type": "command", "command": "check.sh"}';
 const GROUP = `{"matcher": "Bash", "hooks": [${EXAMPLE}]}`;
@@ -48,6 +49,11 @@ export function readHooks(entry: string, value: unknown, warnings: string[]): Ho
     if (!Array.isArray(groups)) throw wrongType(place, `a list, such as [${GROUP}]`, groups);
     for (const group of groups) {
       if (!isObject(group) || !Array.isArray(group.hooks)) throw wrongType(`${place}: each entry`, `an object with a list of "hooks", such as ${GROUP}`, group);
+      // A misspelled key is dropped and the rest of the entry applies (the user's words at Task 1's review).
+      for (const key of Object.keys(group)) {
+        if (key === "matcher" || key === "hooks") continue;
+        warnings.push(`${place} has an entry with ${JSON.stringify(key)}, which is not "matcher" or "hooks"; it was left out`);
+      }
       const matcher = NO_MATCHER.includes(event) ? { all: true as const } : groupMatcher(place, group.matcher);
       for (const h of group.hooks) {
         const hook = hookOf(place, h, warnings);
@@ -72,25 +78,31 @@ function groupMatcher(place: string, text: unknown): Matcher {
 function hookOf(place: string, h: unknown, warnings: string[]): Omit<Hook, "event" | "matcher" | "where"> | undefined {
   if (!isObject(h)) throw wrongType(`${place}: each hook`, `an object, such as ${EXAMPLE}`, h);
   const field = (name: string) => `${place}: a hook's ${JSON.stringify(name)}`;
+  const missing = (name: string) => new Error(`${place}: a hook must have ${JSON.stringify(name)}, such as ${EXAMPLE}`);
+  if (h.type === undefined) throw missing("type");
   if (typeof h.type !== "string") throw wrongType(field("type"), 'text in quotes, such as "command"', h.type);
   if (h.type !== "command") {
     warnings.push(`${place} has a ${JSON.stringify(h.type)} hook; only "command" hooks run, so it was left out`);
     return undefined;
   }
+  // The command and its args come before the warnings below, which end with them so that two alike can be told apart
+  // (the user's words at Task 1's review).
+  if (h.command === undefined) throw missing("command");
+  if (typeof h.command !== "string") throw wrongType(field("command"), "text in quotes", h.command);
+  const args = h.args;
+  if (args !== undefined && !texts(args)) throw wrongType(field("args"), "a list of text in quotes", args);
+  const named = (words: string) => warnings.push(`${place} ${words}: ${[h.command, ...(args ?? [])].join(" ")}`);
   // Claude Code runs a hook with `if` only when its permission rule matches, which Tachikoma cannot check, and running it
   // every time would be wrong (release 8b design, "The settings entry").
   if ("if" in h) {
-    warnings.push(`${place} has a hook with "if", which Tachikoma cannot check, so it was left out`);
+    named('has a hook with "if", which Tachikoma cannot check, so it was left out');
     return undefined;
   }
-  if (typeof h.command !== "string") throw wrongType(field("command"), "text in quotes", h.command);
   const hook: Omit<Hook, "event" | "matcher" | "where"> = { command: h.command, async: false };
+  if (args !== undefined) hook.args = args;
   for (const [name, v] of Object.entries(h)) {
-    if (name === "type" || name === "command") continue;
-    else if (name === "args") {
-      if (!Array.isArray(v) || !v.every((a) => typeof a === "string")) throw wrongType(field(name), "a list of text in quotes", v);
-      hook.args = v;
-    } else if (name === "shell") {
+    if (name === "type" || name === "command" || name === "args") continue;
+    else if (name === "shell") {
       if (v !== "bash" && v !== "powershell") throw wrongType(field(name), '"bash" or "powershell"', v);
       hook.shell = v;
     } else if (name === "timeout") {
@@ -98,7 +110,7 @@ function hookOf(place: string, h: unknown, warnings: string[]): Omit<Hook, "even
       hook.timeout = v;
     } else if (name === "async" || name === "asyncRewake") {
       if (typeof v !== "boolean") throw wrongType(field(name), "true or false, without quotes", v);
-      if (name === "asyncRewake" && v) warnings.push(`${place} has a hook with "asyncRewake"; it runs as plain "async"`);
+      if (name === "asyncRewake" && v) named('has a hook with "asyncRewake"; it runs as plain "async"');
       hook.async ||= v;
     } else if (name === "onFailure") {
       if (v !== "continue" && v !== "block") throw wrongType(field(name), '"continue" or "block"', v);
@@ -107,7 +119,7 @@ function hookOf(place: string, h: unknown, warnings: string[]): Omit<Hook, "even
       if (typeof v !== "string") throw wrongType(field(name), "text in quotes", v);
       hook.statusMessage = v;
     } else if (name === "once") continue; // Claude Code ignores it in settings files (release 8b design, "The settings entry")
-    else warnings.push(`${place} has a hook with ${JSON.stringify(name)}, which is not a hook field; it was left out`);
+    else named(`has a hook with ${JSON.stringify(name)}, which is not a hook field; it was left out`);
   }
   return hook;
 }

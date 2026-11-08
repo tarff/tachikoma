@@ -75,24 +75,26 @@ describe("readHooks", () => {
     expect(hooksOf(hooks)).toHaveLength(1);
   });
 
-  it("leaves out a hook with if, with a warning", () => {
-    const hooks = pre(command({ if: "Bash(git *)" }), command({ command: "other.sh" }));
+  // The coordinator's fix 3 at Task 1's review (the user's words): a hook's own warnings end with its command and args,
+  // so two alike can be told apart.
+  it("leaves out a hook with if, with a warning naming its command", () => {
+    const hooks = pre(command({ command: "node", args: ["audit.js"], if: "Bash(git *)" }), command({ command: "other.sh" }));
     expect(warnings(hooks)).toEqual([
-      'settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out',
+      'settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: node audit.js',
     ]);
     expect(hooksOf(hooks).map((h) => h.command)).toEqual(["other.sh"]);
   });
 
-  it("runs a hook with asyncRewake as plain async, with a warning", () => {
+  it("runs a hook with asyncRewake as plain async, with a warning naming its command", () => {
     const hooks = pre(command({ asyncRewake: true }));
-    expect(warnings(hooks)).toEqual(['settings.json: "hooks": "PreToolUse" has a hook with "asyncRewake"; it runs as plain "async"']);
+    expect(warnings(hooks)).toEqual(['settings.json: "hooks": "PreToolUse" has a hook with "asyncRewake"; it runs as plain "async": check.sh']);
     expect(hooksOf(hooks)[0]!.async).toBe(true);
   });
 
-  it("drops a field that is not a hook field, with a warning, and keeps the hook", () => {
+  it("drops a field that is not a hook field, with a warning naming its command, and keeps the hook", () => {
     const hooks = pre(command({ comment: "mine", timeout: 5 }));
     expect(warnings(hooks)).toEqual([
-      'settings.json: "hooks": "PreToolUse" has a hook with "comment", which is not a hook field; it was left out',
+      'settings.json: "hooks": "PreToolUse" has a hook with "comment", which is not a hook field; it was left out: check.sh',
     ]);
     expect(hooksOf(hooks)).toEqual([
       { event: "PreToolUse", matcher: { names: ["Bash"] }, command: "check.sh", timeout: 5, async: false, where: '"PreToolUse"' },
@@ -104,6 +106,15 @@ describe("readHooks", () => {
     const hooks = pre(command({ once: true }));
     expect(warnings(hooks)).toEqual([]);
     expect(hooksOf(hooks)).toEqual([{ event: "PreToolUse", matcher: { names: ["Bash"] }, command: "check.sh", async: false, where: '"PreToolUse"' }]);
+  });
+
+  // The coordinator's fix 1 at Task 1's review (the user's words): a misspelled key is dropped, the rest of its entry kept.
+  it("drops a key of an entry that is not matcher or hooks, with a warning, and reads the entry's hooks", () => {
+    const hooks = { PreToolUse: [{ matchers: "Bash", hooks: [command()] }] };
+    expect(warnings(hooks)).toEqual([
+      'settings.json: "hooks": "PreToolUse" has an entry with "matchers", which is not "matcher" or "hooks"; it was left out',
+    ]);
+    expect(hooksOf(hooks)).toEqual([{ event: "PreToolUse", matcher: { all: true }, command: "check.sh", async: false, where: '"PreToolUse"' }]);
   });
 
   it("ignores a matcher on UserPromptSubmit and Stop, which take none", () => {
@@ -142,17 +153,39 @@ describe("readHooks", () => {
     );
   });
 
-  it("refuses a matcher that is not a regular expression that compiles", () => {
+  it("refuses a matcher that is not a regular expression that compiles, in the engine's words", () => {
+    let words = "";
+    try {
+      new RegExp("Bash(");
+    } catch (err) {
+      words = (err as Error).message;
+    }
     expect(problem({ hooks: { PreToolUse: [{ matcher: "Bash(", hooks: [] }] } })).toBe(
-      'settings.json: "hooks": "PreToolUse": "matcher" "Bash(" is not a regular expression that can be read ' +
-        "(Invalid regular expression: /Bash(/: Unterminated group)",
+      `settings.json: "hooks": "PreToolUse": "matcher" "Bash(" is not a regular expression that can be read (${words})`,
     );
   });
 
-  it("refuses a command hook without a command, and each field of the wrong type", () => {
+  // The coordinator's fix 2 at Task 1's review (the user's words): a missing field is said to be missing.
+  it("refuses a hook without a type or a command, saying which is missing", () => {
+    const missing = (field: string) =>
+      `settings.json: "hooks": "PreToolUse": a hook must have "${field}", such as {"type": "command", "command": "check.sh"}`;
+    expect(problem({ hooks: pre({ type: "command" }) })).toBe(missing("command"));
+    expect(problem({ hooks: pre({ command: "check.sh" }) })).toBe(missing("type"));
+    expect(problem({ hooks: pre({ type: "command", if: "Bash(*)" }) })).toBe(missing("command")); // before the warning that names it
+  });
+
+  // Fix 3: the command is checked before the warnings that name it.
+  it("refuses a command of the wrong type before a warning would name it", () => {
+    expect(problem({ hooks: pre({ type: "command", command: 5, if: "Bash(*)" }) })).toBe(
+      'settings.json: "hooks": "PreToolUse": a hook\'s "command" must be text in quotes (got 5)',
+    );
+    expect(problem({ hooks: pre(command({ args: "a b", asyncRewake: true })) })).toBe(
+      'settings.json: "hooks": "PreToolUse": a hook\'s "args" must be a list of text in quotes (got "a b")',
+    );
+  });
+
+  it("refuses each field of the wrong type", () => {
     const at = 'settings.json: "hooks": "PreToolUse": a hook\'s';
-    expect(problem({ hooks: pre({ type: "command" }) })).toBe(`${at} "command" must be text in quotes (got undefined)`);
-    expect(problem({ hooks: pre({ command: "check.sh" }) })).toBe(`${at} "type" must be text in quotes, such as "command" (got undefined)`);
     const bad: [string, unknown, string][] = [
       ["command", 5, "text in quotes"],
       ["args", "a b", "a list of text in quotes"],
