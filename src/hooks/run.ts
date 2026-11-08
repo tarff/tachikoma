@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { errorText } from "../core/types.js";
-import { commandEnv, gitBash } from "../exec/env.js";
+import { commandEnv, gitBash, onPath } from "../exec/env.js";
 import { collect, killTree, running, shellFor } from "../exec/local.js";
 import type { Hook } from "./config.js";
 
@@ -30,20 +30,31 @@ export function shellOf(hook: Hook): { file: string; args: string[] } | { exec: 
   return { file: hook.shell === "bash" ? "bash" : "/bin/sh", args: ["-c", hook.command] };
 }
 
+// An exec-form command without a folder in it, by its full path from the hook's PATH (onPath), or undefined when it is
+// not there. Started by its bare name, Windows would look in the project folder, where the hook runs, first (the user's
+// choice, 2026-11-09; review fixes plan, fix 1). As onPath does, only `<name>.exe` is looked for on Windows, so `node`
+// and `node.exe` are the same. onPath serves every system, as it does for git and docker; a command with a folder in it
+// is used as written.
+function program(command: string, env: NodeJS.ProcessEnv): string | undefined {
+  if (process.platform !== "win32") return command.includes("/") ? command : onPath(command, env);
+  return /[\\/]|^[a-z]:/i.test(command) ? command : onPath(command.replace(/\.exe$/i, ""), env);
+}
+
 // Runs one hook on the user's machine, never in the box, in `cwd`, the real project folder, which CLAUDE_PROJECT_DIR
 // names under Claude Code's name, with the commands' environment (commandEnv), so it never sees the API keys (release
 // 8b plan, choice 3). Its input is written whole to its stdin, which is then closed (choice 4). At `limit` seconds it is
 // killed with all it started; a stop kills it the same way and rejects with Cancelled, as a command does (local.ts).
 export function runHook(hook: Hook, input: object, opts: { cwd: string; env: NodeJS.ProcessEnv; limit: number; signal?: AbortSignal }): Promise<Ran> {
   if (opts.signal?.aborted) return Promise.reject(new Error("Cancelled"));
-  const how = shellOf(hook);
-  const [file, args] = "exec" in how ? [hook.command, hook.args!] : [how.file, how.args];
   const start = Date.now();
   const ms = () => Date.now() - start;
+  const env = { ...commandEnv(opts.env), CLAUDE_PROJECT_DIR: opts.cwd };
+  const how = shellOf(hook);
+  const [file, args] = "exec" in how ? [program(hook.command, env), hook.args!] : [how.file, how.args];
+  if (file === undefined) return Promise.resolve({ code: null, stdout: "", stderr: "", ms: ms(), failed: "start", startError: "not found on PATH" });
   return new Promise((resolve, reject) => {
     let child: ChildProcessWithoutNullStreams;
     try {
-      const env = { ...commandEnv(opts.env), CLAUDE_PROJECT_DIR: opts.cwd };
       child = spawn(file, args, { cwd: opts.cwd, env, windowsHide: true, detached: process.platform !== "win32", stdio: "pipe" });
     } catch (err) {
       // spawn throws at once for a command it cannot take at all, such as an empty one.

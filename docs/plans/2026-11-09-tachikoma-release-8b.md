@@ -367,7 +367,8 @@ export function matches(m: Matcher, value: string): boolean;
   anything else is `new RegExp(text)`, unanchored. A regex that does not compile is a problem.
   Matching minds letter case. A matcher on UserPromptSubmit or Stop is ignored, as those take
   none.
-- `timeout` must be a positive number of seconds.
+- `timeout` must be a number of seconds above 0 and no more than 2147483 (`timeout * 1000` at most
+  2,147,483,647 ms, the longest wait Node's `setTimeout` takes; the user's choice, 2026-11-09).
 - **Both names are LIVE** (design, "What the user sees"; Task 12 applies them).
 
 **Tests:** each warning's words, triggered; a file with only unknown events still applies its other
@@ -392,7 +393,10 @@ export function shellOf(hook: Hook): { file: string; args: string[] } | { exec: 
 
 **Behaviour:**
 - **Exec form** (`args` given): `spawn(command, args)` with no shell, on every system (Claude Code's
-  rule). On Windows a `.cmd` or `.bat` cannot be started so (a known limit).
+  rule). On Windows a `.cmd` or `.bat` cannot be started so (a known limit). A command without a
+  folder in it is found on PATH with `onPath` and started by its full path, so the project folder
+  is never searched for it; one not there gives `failed: "start"`, `not found on PATH` (the user's
+  choice, 2026-11-09).
 - **Shell form:** on Windows, `shell: "bash"`, or no `shell` with Git Bash found, runs
   `<git bash> -c <command>`; `shell: "powershell"`, or no Git Bash, runs Windows PowerShell as
   `shellFor` does. Elsewhere, `/bin/sh -c`, and `shell: "bash"` runs `bash -c` (choices 1, 2).

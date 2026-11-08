@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { gitBash } from "../../src/exec/env.js";
 import type { Hook } from "../../src/hooks/config.js";
 import { runHook } from "../../src/hooks/run.js";
@@ -119,6 +119,31 @@ setTimeout(() => {}, 60000);`);
     const ran = await runHook(hookOf({ command: path.join(root, "no-such-program"), args: [] }), {}, { cwd: root, env: process.env, limit: 30 });
     expect(ran).toMatchObject({ code: null, failed: "start" });
     expect(ran.startError).toMatch(/ENOENT/);
+  }, 15_000);
+
+  // The user's choice, 2026-11-09: a command without a folder is found on PATH and started by its full path, so the
+  // project folder, where the hook runs, is never searched for it first (review fixes plan, fix 1).
+  // NoDefaultCurrentDirectoryInExePath, which Claude Code's own shell sets, stops Windows searching the working folder;
+  // a user's terminal does not set it, so it is cleared here, or the test could not fail (seen 2026-11-09).
+  it("starts a bare command found on PATH, never a program of that name in the project folder", async () => {
+    vi.stubEnv("NoDefaultCurrentDirectoryInExePath", undefined);
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
+    const root = await folder();
+    writeFileSync(path.join(root, process.platform === "win32" ? "node.exe" : "node"), ""); // looked up, never run
+    const env = { SystemRoot: process.env.SystemRoot, PATH: path.dirname(process.execPath) };
+    for (const command of process.platform === "win32" ? ["node", "node.exe"] : ["node"]) {
+      const ran = await runHook(hookOf({ command, args: ["-e", "console.log(process.execPath)"] }), {}, { cwd: root, env, limit: 30 });
+      expect(ran).toMatchObject({ code: 0, stdout: `${process.execPath}\n` });
+    }
+  }, 15_000);
+
+  it("reports a bare command that is not on PATH as not found there", async () => {
+    const root = await folder();
+    const env = { SystemRoot: process.env.SystemRoot, PATH: root };
+    const ran = await runHook(hookOf({ command: "tachi-no-such-program", args: [] }), {}, { cwd: root, env, limit: 30 });
+    expect(ran).toMatchObject({ code: null, failed: "start", startError: "not found on PATH" });
   }, 15_000);
 
   // The one test that uses the real Git Bash, found as Tachikoma finds it, never a bare `bash`, which on Windows can be
