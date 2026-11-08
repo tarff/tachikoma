@@ -73,10 +73,14 @@ takes none is ignored, as in Claude Code.
 - **The shell, as Claude Code's:** on Windows, Git Bash, found where Git for Windows installs it or
   at `CLAUDE_CODE_GIT_BASH_PATH`, and Windows PowerShell when there is none; elsewhere `sh -c`. A
   hook's `shell` overrides it; `args` skips the shell. On Windows without Git Bash, a PreToolUse
-  hook's answer counts only from exit code 0 or 2, as in Claude Code. The shell tool keeps
-  PowerShell.
-- **Several at once:** every hook that matches an event runs at the same time; a command written
-  the same twice runs once. Tachikoma waits for them all, then acts on their answers.
+  hook's answer counts only from exit code 0 or 2, as in Claude Code ("What a hook's answer
+  does"). The shell tool keeps PowerShell.
+- **Several at once:** every hook that matches an event runs at the same time. A hook entry that is
+  the same as another in every field (`command`, `args`, `shell`, `timeout`, `async`, `onFailure`,
+  `statusMessage`), the same hook listed under two matchers say, runs once; two that differ in any
+  field, such as `node` with `args: ["audit.js"]` and `node` with `args: ["protect-paths.js"]`, both
+  run (review, 2026-11-09, finding 3: Claude Code's docs say only that "the same handler" runs
+  once). Tachikoma waits for them all, then acts on their answers.
 - **Time limits, Claude Code's:** 600 s by default; 30 s at UserPromptSubmit; at SessionEnd, 1.5 s
   shared by all its hooks. A hook still running at its limit, or when the user stops the turn, is
   killed with everything it started, as the shell tool's commands are (`killTree`).
@@ -115,15 +119,42 @@ works. The tool events' fields are under "Tool hooks".
 
 ## What a hook's answer does
 
-Claude Code's rules:
-- **Exit 0:** success. Its output is JSON only when it is one object with nothing but white space
-  around it; otherwise plain text.
-- **Exit 2:** a block, on the events that can block, its error output the reason.
-- **Any other exit code, a hook that cannot start, one out of time, or JSON that cannot be read:**
-  a failure that blocks nothing, with a red line; with `"onFailure": "block"`, it acts as exit 2.
+Claude Code's table, from its hooks reference ("Exit code output"; review, 2026-11-09, finding 2).
+A hook's output is JSON only when it is one object with nothing but white space around it, and
+that object passes the event's checks (the right types, `hookSpecificOutput.hookEventName` naming
+the event); anything else that starts as JSON is JSON that cannot be read.
 
-On every event, `"continue": false` ends the turn, its `stopReason` shown to the user, and
-`systemMessage` is shown to the user as a line.
+| Output | Exit 0 | Exit 2 | Any other exit code |
+|---|---|---|---|
+| JSON that can be read | Success: the fields apply | A block: the fields are read but cannot undo it | Success: the exit code is ignored and the fields alone decide (a PreToolUse deny on exit 1 still refuses) |
+| JSON that cannot be read | A failure, its line naming what is wrong | A block, the error output the reason | A failure, its line naming what is wrong |
+| Plain text, or nothing | Success | A block, the error output the reason | A failure, its line the first line of the error output |
+
+A failure blocks nothing and gets a red line; so does a hook that cannot start or runs out of
+time. A block happens only on the events that can block. Two cases turn a failure into a block,
+as exit 2, and there the exit code is not ignored, so any code but 0 or 2 is a failure even with
+JSON that can be read:
+- `"onFailure": "block"`;
+- on Windows without Git Bash, a PreToolUse hook run by a shell with `onFailure` not set (Claude
+  Code's rule; `"onFailure": "continue"` turns it off).
+
+On the events with a turn to end, `"continue": false` ends it, its `stopReason` shown to the user:
+- at PreToolUse, PostToolUse or PostToolUseFailure, the turn stops as a user's stop does, so the
+  history stays one the providers take and a resume can load (review, 2026-11-09, finding 1).
+  Every call of the reply gets exactly one result before the turn ends: the call whose
+  PreToolUse said it is not run; one whose PostToolUse said it keeps its own result; calls not
+  started get "Not run: a hook stopped the turn."; a `delegate` already running is stopped, as Esc
+  stops it, with the result a stopped one gets now. All of them go into the one message of
+  results, saved as now, then the turn ends. Claude Code's docs do not say what happens to the
+  other calls of the reply;
+- at UserPromptSubmit the prompt is not sent, as with a block; at Stop the turn ends, no block
+  keeping it going;
+- in a subagent's session it ends that subagent, as `/tasks` stopping it does, never the lead's
+  turn; at SubagentStop likewise;
+- at SessionStart, SessionEnd, SubagentStart, PreCompact and PostCompact it is ignored: the first
+  three have no turn to end, and Claude Code discards it at the last two and at SessionEnd.
+
+`systemMessage` is shown to the user as a line, on every event.
 
 **Text for the model** (`additionalContext`, or plain output at SessionStart and UserPromptSubmit)
 goes with the next request, marked as a hook's, as a background subagent's answer travels now. The
@@ -179,6 +210,15 @@ line names the one ignored (Claude Code's docs say which wins is not guaranteed)
 tool cannot take, a field missing or of the wrong type, refuses the call, with a line naming the
 hook.
 
+**What a rewrite leaves in the record** (review, 2026-11-09, finding 4). The model's reply is kept
+as it sent it, as the history is never edited and the providers are sent it so. What the session
+records as run is the input that ran: the list of calls the judge reads and shortening's recent
+files come from (`Session.calls`) takes the rewritten input, in Tachikoma's fields, before the call
+runs, so a hook that turns a read of A into B leaves B there. The rewrite is saved in the session's
+file with the call's id, before the call runs, and a resume rebuilds the list from the reply with
+each saved rewrite in its call's place, so the record survives a resume. PostToolUse and
+PostToolUseFailure are sent the input that ran.
+
 **PostToolUse and PostToolUseFailure** are sent the call and its result (`tool_response`) or its
 error. Their answer can add to what the model reads (a block's reason, `additionalContext`, error
 output on exit 2), or replace the result the model reads (`updatedToolOutput`). Claude Code's
@@ -229,12 +269,16 @@ file, which is no more than such a command can already do. The README says both 
 
 ## Testing
 
-- Unit tests for the rules: matchers, the exit-code and JSON table, the tool names and fields both
-  ways, deny over ask over allow, the caps.
+- Unit tests for the rules: matchers, the exit-code and JSON table (a deny on exit 1 refuses; with
+  `onFailure: "block"` it is a failure that blocks), the tool names and fields both ways, deny over
+  ask over allow, the caps, and two entries alike but for `args` both running.
 - Real hook programs: small Node scripts started directly (`args`, no shell), quick on any system;
   the Git Bash tests are skipped where it is not installed.
 - Session tests with a stand-in model, no network: each event fires at its moment; PreToolUse
-  against Tachikoma's check in all four modes and in `-p`; the sandbox's path rule; a live edit.
+  against Tachikoma's check in all four modes and in `-p`; the sandbox's path rule; a live edit;
+  `"continue": false` from the first of three calls while a `delegate` runs, leaving one result
+  per call, the next request taken and the session resumed; a rewritten read whose new path is
+  in the record of calls, and still there after a resume.
 - The user's three real hooks in the terminal checklist: the `sfw` rewrite, the protected-paths
   block, the MemPalace text at session start.
 - CI runs it all on Windows for the pull request.
