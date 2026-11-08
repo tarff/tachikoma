@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { gitBash } from "../../src/exec/env.js";
 import type { Hook } from "../../src/hooks/config.js";
-import { runHook } from "../../src/hooks/run.js";
+import { program, runHook } from "../../src/hooks/run.js";
 import { removeTree } from "../helpers.js";
 
 const alive = (pid: number) => {
@@ -18,7 +18,8 @@ const alive = (pid: number) => {
 };
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Waits for a script to record a pid. An empty file reads as 0, which would mean our own process group.
+// Waits for a script to record a pid, up to 5 s (100 looks, 50 ms apart): a Node start under load, well inside each
+// test's own 15 s. An empty file reads as 0, which would mean our own process group.
 async function readPid(file: string): Promise<number> {
   let pid = 0;
   for (let i = 0; i < 100 && !(pid > 0); i++) {
@@ -30,7 +31,7 @@ async function readPid(file: string): Promise<number> {
 
 // A folder of the test's own, removed when the test finishes. Windows keeps the folder a killed program worked in for a
 // moment after it is gone (about 170 ms, measured 2026-10-31 for the shell tool's test), so the removal is tried every
-// 50 ms, up to 2 s.
+// 50 ms, up to 2 s: that measurement with room to spare under load, inside the test's own 15 s.
 async function folder(): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), "tachi-hook-"));
   onTestFinished(async () => {
@@ -63,7 +64,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   console.error("to stderr");
   process.exit(3);
 });`);
-    // More than a pipe holds at once, so a part write would show.
+    // Chosen larger than a pipe's buffer, 64 KiB on Linux (man 7 pipe), so a part write would show; Windows' size was
+    // not measured.
     const input = { hook_event_name: "PreToolUse", tool_input: { command: "x".repeat(200_000) } };
     const ran = await runHook(hook, input, { cwd: root, env: process.env, limit: 30 });
     expect(ran).toMatchObject({ code: 3, stdout: "PreToolUse 200000\n", stderr: "to stderr\n" });
@@ -73,6 +75,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   it("does not fail when the hook exits without reading its input", async () => {
     const { hook, root } = await nodeHook(`process.exit(0);`);
+    // Chosen larger than a pipe's buffer, 64 KiB on Linux (man 7 pipe), so the write is still going when the hook exits;
+    // Windows' size was not measured.
     const ran = await runHook(hook, { big: "x".repeat(1_000_000) }, { cwd: root, env: process.env, limit: 30 });
     expect(ran).toMatchObject({ code: 0, stdout: "" });
   }, 15_000);
@@ -90,8 +94,12 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const { hook, root } = await nodeHook(`require("fs").writeFileSync(__dirname + "/pid", String(process.pid)); setTimeout(() => {}, 60000);`);
     const ran = await runHook(hook, {}, { cwd: root, env: process.env, limit: 1 });
     expect(ran).toMatchObject({ code: null, failed: "time" });
-    expect(ran.ms).toBeGreaterThanOrEqual(1000);
+    // Not "at least 1000": Node counts a timer from the event loop's time, read when the loop last woke, which can be
+    // before runHook's own start, so ms may come out a little short of the limit.
+    expect(ran.ms).toBeGreaterThan(0);
     const pid = await readPid(path.join(root, "pid"));
+    expect(pid).toBeGreaterThan(0);
+    // Up to 2 s for the killed hook to be gone, as for its folder (folder, above).
     for (let i = 0; i < 40 && alive(pid); i++) await pause(50);
     expect(alive(pid)).toBe(false);
   }, 15_000);
@@ -110,8 +118,18 @@ setTimeout(() => {}, 60000);`);
     expect(alive(pid)).toBe(true);
     stop.abort();
     await expect(run).rejects.toThrow("Cancelled");
+    // Up to 2 s for the killed program to be gone, as for its folder (folder, above).
     for (let i = 0; i < 40 && alive(pid); i++) await pause(50);
     expect(alive(pid)).toBe(false);
+  }, 15_000);
+
+  // Node refuses to start a .cmd or .bat without a shell (EINVAL), at once, inside spawn.
+  it.skipIf(process.platform !== "win32")("reports a .cmd given by its full path as not started, without failing", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "hook.cmd"), "@echo hi\r\n");
+    const ran = await runHook(hookOf({ command: path.join(root, "hook.cmd"), args: [] }), {}, { cwd: root, env: process.env, limit: 30 });
+    expect(ran).toMatchObject({ code: null, failed: "start" });
+    expect(ran.startError).toMatch(/EINVAL/);
   }, 15_000);
 
   it("reports a hook that cannot start, with the reason", async () => {
@@ -147,17 +165,30 @@ setTimeout(() => {}, 60000);`);
   }, 15_000);
 
   // The one test that uses the real Git Bash, found as Tachikoma finds it, never a bare `bash`, which on Windows can be
-  // WSL's (release 8b plan, choice 1).
+  // WSL's (release 8b plan, choice 1). Git Bash's uname names MINGW or MSYS; WSL's says Linux.
   const bash = process.platform === "win32" ? gitBash() : null;
   it.skipIf(!bash)("runs a hook without args in Git Bash on Windows, never WSL's bash", async () => {
     const root = await folder();
-    const ran = await runHook(hookOf({ command: "echo $0; command -v bash" }), {}, { cwd: root, env: process.env, limit: 30 });
-    const [zero, found] = ran.stdout.trim().split("\n");
+    const ran = await runHook(hookOf({ command: "uname -s" }), {}, { cwd: root, env: process.env, limit: 30 });
     expect(ran.code).toBe(0);
-    expect(zero).toMatch(/bash/i);
-    expect(found).toMatch(/bash/);
-    expect(found!.toLowerCase()).not.toBe("/c/windows/system32/bash");
+    expect(ran.stdout).toMatch(/^(MINGW|MSYS)/);
   }, 15_000);
+});
+
+// The review of Task 2: a shell named without a folder, `bash` outside Windows, is found on PATH as an exec-form
+// command is, so a PATH entry naming the project folder (empty or ".") is never used.
+describe("program", () => {
+  it("finds a bare name on PATH by its full path, passing over empty and relative entries", () => {
+    const dir = path.dirname(process.execPath);
+    const env = { PATH: ["", ".", dir].join(path.delimiter) };
+    expect(program("node", env)).toBe(path.join(dir, process.platform === "win32" ? "node.exe" : "node"));
+    expect(program("node", { PATH: ["", "."].join(path.delimiter) })).toBeUndefined();
+  });
+
+  it("takes a name with a folder in it as written", () => {
+    expect(program("/bin/sh", { PATH: "" })).toBe("/bin/sh");
+    expect(program(path.join("tools", "check"), { PATH: "" })).toBe(path.join("tools", "check"));
+  });
 });
 
 describe("gitBash", () => {

@@ -195,7 +195,6 @@ describe("readHooks", () => {
       ["timeout", 0, TIMEOUT],
       ["timeout", -1, TIMEOUT],
       ["timeout", "30", TIMEOUT],
-      ["timeout", 2147484, TIMEOUT],
       ["async", "yes", "true or false, without quotes"],
       ["asyncRewake", 1, "true or false, without quotes"],
       ["onFailure", "stop", '"continue" or "block"'],
@@ -213,7 +212,9 @@ describe("readHooks", () => {
   // hook at once.
   it("takes a timeout up to 2147483 seconds and refuses one past it", () => {
     const at = 'settings.json: "hooks": "PreToolUse": a hook\'s';
-    expect(problem({ hooks: pre(command({ timeout: 2147484 })) })).toBe(`${at} "timeout" must be ${TIMEOUT} (got 2147484)`);
+    for (const timeout of [2147484, 2147483.5]) {
+      expect(problem({ hooks: pre(command({ timeout })) })).toBe(`${at} "timeout" must be ${TIMEOUT} (got ${timeout})`);
+    }
     expect(read({ hooks: pre(command({ timeout: 2147483 })) })).toMatchObject({ settings: { hooks: [{ timeout: 2147483 }] } });
   });
 });

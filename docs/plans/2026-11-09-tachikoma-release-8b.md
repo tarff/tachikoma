@@ -400,6 +400,8 @@ export function shellOf(hook: Hook): { file: string; args: string[] } | { exec: 
 - **Shell form:** on Windows, `shell: "bash"`, or no `shell` with Git Bash found, runs
   `<git bash> -c <command>`; `shell: "powershell"`, or no Git Bash, runs Windows PowerShell as
   `shellFor` does. Elsewhere, `/bin/sh -c`, and `shell: "bash"` runs `bash -c` (choices 1, 2).
+  A shell named without a folder (`bash` outside Windows) is found on PATH the same way, so an
+  empty or `.` entry never leads to the project folder (Task 2's review).
 - **The environment** is `commandEnv()` plus `CLAUDE_PROJECT_DIR`, the real project folder; the
   folder is the project's root (choice 3).
 - **Its input** is the JSON written whole to its standard input, which is then closed (choice 4).
@@ -417,12 +419,18 @@ export function shellOf(hook: Hook): { file: string; args: string[] } | { exec: 
   through `limit`, not a number in the code).
 - Stopping it rejects with `Cancelled`, and its child is gone.
 - A command that does not exist reports `start`.
+- A bare command is found on PATH: a `node.exe` in the hook's folder is not the one started, the
+  real Node on the test's PATH is; a bare name not on a made-up PATH reports `start` with
+  `not found on PATH`; `program` passes over empty and `.` PATH entries and takes a name with a
+  folder as written.
+- On Windows, a `hook.cmd` given by its full path reports `start` (EINVAL) and does not crash.
+- `timeout`: 2147483 s is taken; 2147484 s and 2147483.5 s are refused with the one wording.
 - `gitBash`: a temp `bash.exe` named by `CLAUDE_CODE_GIT_BASH_PATH` is taken; one named `zsh.exe`
   is not; a temp `Git\cmd\git.exe` on a test PATH gives its `Git\bin\bash.exe`; with none it
   gives null. Each case uses a made-up `env` and folders the test made; none reads the real
   Program Files.
-- On Windows with Git Bash found (skipped without): a shell-form hook `echo $0` runs in Git
-  Bash's shell, and `command -v bash` inside it is not `/c/WINDOWS/system32/bash`.
+- On Windows with Git Bash found (skipped without): a shell-form hook `uname -s` prints a name
+  starting `MINGW` or `MSYS`, which WSL's bash (`Linux`) would not.
 
 Commit: `feat: running a hook as Claude Code does: Git Bash or PowerShell on Windows, sh elsewhere, its input on stdin, a time limit`.
 
@@ -833,7 +841,10 @@ section).
 **What changes:**
 - **The README:** a "Hooks" section (the entry, the events, what a hook is sent, what its answer
   does, the tools' names, the sandbox, what you see, `/hooks`); the known limits from the design and
-  choice 19; the release list with 8 in five parts, 8e added; `/hooks` in the commands list.
+  choice 19, and two from Task 2's review: a bare `npx` (or any `.cmd`) is "not found on PATH", as
+  only `.exe` is looked for; a hook that leaves a background program holding its output is
+  reported as out of time, so redirect that program's output; the release list with 8 in five
+  parts, 8e added; `/hooks` in the commands list.
 - **The design** gets an "As built" section listing this plan's choices as the user settled them.
 
 **All README wording goes to the user before it is committed.**
