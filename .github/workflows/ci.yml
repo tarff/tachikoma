@@ -1,0 +1,48 @@
+# The type check, the build and the tests on a clean Windows machine, for each pull request and each push to main. A
+# trial (user, 2026-11-07): Windows only, as the tests have passed only there; Linux, macOS and the fresh-install check
+# come with release 14. Packages install through Socket Firewall (sfw), as every registry install does here.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    # The suite takes about 6 minutes on the user's PC; this stops a hung run well short of GitHub's 6-hour default.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24" # the major version the tests pass on locally
+      - uses: SocketDev/action@ba6de6cc0565af1f42295590380973573297e31f # v1.3.2
+        with:
+          mode: firewall-free
+      # On Windows the action (v1.3.2) installs sfw with no .exe, so Windows never starts it: `sfw npm ci` printed
+      # nothing, installed nothing and passed (the trial's first two runs). It runs here as a copy named sfw.exe.
+      - run: |
+          $sfw = (Get-Command sfw).Path
+          Copy-Item $sfw "$sfw.exe"
+          & "$sfw.exe" npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path node_modules\typescript)) { throw "sfw npm ci installed nothing" }
+      - run: npm run typecheck
+      - run: npm run build
+      # The trial: who owns a file made here, whether this account runs as an administrator, and Windows' setting for the
+      # owner of what an administrator makes (NoDefaultAdminOwner), to say why run 4 found tachi's files owned by another.
+      - run: |
+          (Get-CimInstance Win32_OperatingSystem).Caption
+          $f = Join-Path $env:RUNNER_TEMP owner-check.txt
+          Set-Content $f x
+          "owner: " + (Get-Acl $f).GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+          whoami /user /fo csv /nh
+          whoami /groups /fo csv /nh | Select-String "S-1-5-32-544|S-1-16-"
+          Get-ItemProperty HKLM:\SYSTEM\CurrentControlSet\Control\Lsa | Select-Object NoDefaultAdminOwner
+      # external.test.ts is left out, as on the user's PC.
+      - run: node node_modules/vitest/vitest.mjs run --exclude tests/tui/external.test.ts
