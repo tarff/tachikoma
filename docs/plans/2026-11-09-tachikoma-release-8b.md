@@ -268,8 +268,8 @@ Each is marked in its task. The user approves them with the plan.
 19. **A signal (Ctrl-C at the terminal outside the window, a kill) runs no SessionEnd,** as
     `exitOn` ends the process at once; this is a known limit.
 20. **PreCompact and PostCompact are `manual` for `/compact` only;** `/lead`'s shortening, like
-    the turn's, is `auto`. SessionStart `compact` fires after each shortening, once PostCompact's
-    hooks have answered.
+    the turn's, is `auto`. SessionStart `compact` fires once PostCompact's hooks have answered,
+    before the shortening is saved, and its text is saved in the shortened message (Task 11).
 21. **`background_tasks` entries** are `{ id, type: "agent", status: "running", description,
     agent_type: "Explore" }` for each background subagent running or waiting; Claude Code's docs
     show `type` only for a shell task.
@@ -444,18 +444,24 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
 - **JSON** is one object with only white space around it (design, "What a hook's answer does"). It
   passes the event's checks when every field Tachikoma reads has the right JSON type, and
   `hookSpecificOutput`, if given, names this event; a field of the wrong type, or the wrong event
-  name, makes it "JSON that could not be read". Output that does not start with `{` and end with
-  `}` is plain text.
+  name, makes it "JSON that could not be read". Output whose first character after white space is
+  `{` is JSON, and an object cut short (`{"hookSpecificOutput":`) or with text after it is JSON
+  that could not be read, a failure with its line, so `onFailure: "block"` still holds (design;
+  plan review, 2026-11-09, finding 4). Any other output is plain text.
 - **The table**, row by row, as the design gives it: exit 0, exit 2, any other code, against JSON
   that can be read, JSON that cannot, and plain text. With `onFailure: "block"`, or on Windows
   without Git Bash for a PreToolUse hook run by a shell with `onFailure` not set (`bash` false),
   every failure, any code but 0 and 2 included, is a block, its reason the error output's first
   line or the failure's words.
 - **Which events can block:** UserPromptSubmit, PreToolUse, Stop, SubagentStop, PreCompact. A block
-  on another is ignored, except that PostToolUse and PostToolUseFailure take exit 2's error output
-  as text for the model (Claude Code's table).
-- **Per event, the fields read:** `continue`, `stopReason`, `systemMessage` everywhere (ignored on
-  SessionStart, SessionEnd, SubagentStart, PreCompact, PostCompact: design); `decision: "block"` and
+  on another is ignored, except at PostToolUse and PostToolUseFailure, where the call has already
+  run: there a block's reason (`decision: "block"` and `reason`, or exit 2's error output) becomes
+  text for the model, next to the result, and the call's outcome is unchanged (Claude Code's
+  PostToolUse contract; plan review, 2026-11-09, finding 3).
+- **Per event, the fields read:** `systemMessage` on every event (design, "What a hook's answer
+  does"; plan review, finding 5); `continue` and `stopReason` on every event but SessionStart,
+  SessionEnd, SubagentStart, PreCompact and PostCompact, where they are ignored (design);
+  `decision: "block"` and
   `reason` on UserPromptSubmit, PostToolUse, PostToolUseFailure, Stop, SubagentStop, PreCompact;
   `hookSpecificOutput.additionalContext` on every event but SessionEnd, PreCompact and PostCompact;
   PreToolUse's `permissionDecision`, `permissionDecisionReason`, `updatedInput`, and the old
@@ -470,14 +476,20 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
 "block"` the same is a failure that blocks; the Windows-without-Git-Bash rule; a top-level
 `permissionDecision` is ignored, as Claude Code ignores it; `hookEventName` of another event makes
 the JSON unreadable; deny over ask over allow in both orders; two rewrites; a 10,001-character
-context is cut with `[cut: 1 more characters]`; `continue: false` with and without `stopReason`.
+context is cut with `[cut: 1 more characters]`; `continue: false` with and without `stopReason`;
+`{"hookSpecificOutput":` and `{"a": 1} trailing` on exit 0 are failures with their line, and with
+`onFailure: "block"` they block (plan review, finding 4); PostToolUse's `{"decision": "block",
+"reason": "Fix the lint errors"}` on exit 0 gives that reason as text for the model and no block
+(finding 3); a SessionStart `systemMessage` is kept while its `continue: false` is ignored (finding
+5).
 
 Commit: `feat: a hook's answer read by Claude Code's table, and several hooks' answers combined`.
 
 ## Task 4: The Hooks object
 
 **Files:** create `src/hooks/hooks.ts`, `tests/hooks/hooks.test.ts`; modify `src/core/bus.ts`
-(error kind `hook`, event `hook-note`).
+(error kind `hook`, event `hook-note`), `src/core/tasks.ts:207` (the kinds that do not fail a
+subagent), `tests/core/tasks.test.ts`.
 
 ```ts
 export interface Where { sessionId: () => string; transcript: () => string | undefined; root: string;
@@ -510,11 +522,17 @@ export const MODE_NAMES: Record<Mode, string> = { ask: "default", project: "acce
   a `hook-note` with its line. The other lines are said by the callers that act on the answer.
 - **`set`** takes effect for the next `fire`; a `fire` under way finishes with the hooks it began
   with.
+- **A hook's failure never fails a subagent.** `Tasks.#work` counts every error on the subagent's
+  bus but `fallback`, `tool`, `judge` and `saving` as its failure (tasks.ts:207), which would turn
+  a done subagent with a timed-out hook into a failed one; `hook` joins that list (plan review,
+  2026-11-09, finding 1). A hook that stops a subagent does so through `continue: false` (Task 9),
+  never through this event.
 
 **Tests:** matching, the same entry twice runs once, two alike but for `args` both run (finding 3);
 the common fields for the lead and a subagent; `permission_mode` for each mode; a new prompt id
 after `newPrompt` and none before; a failure's bus event and its words; `set` during a `fire`; hooks
-off run nothing; an `async` hook is not waited for.
+off run nothing; an `async` hook is not waited for; a subagent whose hook times out still finishes
+`done` with its answer (`tests/core/tasks.test.ts`; plan review, finding 1).
 
 Commit: `feat: the Hooks object: matching, running at once, the common fields, and a hook's lines`.
 
@@ -706,7 +724,8 @@ Commit: `feat: Stop, SubagentStart and SubagentStop, with Claude Code's limit of
 - **SessionStart** fires once the conversation is loaded (cli.tsx:643 and 764): `startup` for a new
   session, `resume` for `-c` and `-r`, `fork` for `--fork-session`; and in `switchTo` after the
   load: `clear`, `resume`, `fork` for `/branch`; and after a shortening, `compact` (Task 11). Its
-  fields are `source` and `model`. Its context and plain text wait for the next request (Task 8).
+  fields are `source` and `model`. Its context and plain text wait for the next request (Task 8),
+  except after a shortening, where they join the shortened message (Task 11).
 - **SessionEnd** fires with `reason`: `prompt_input_exit` when the user leaves the window (after the
   copy-mode review, before Ink's exit), `other` at the end of a `-p` run and before `/branch`'s
   switch, `clear` and `resume` before those switches. Its hooks share 1.5 s, raised by a hook's own
@@ -730,13 +749,20 @@ Commit: `feat: SessionStart and SessionEnd at the launch, the window's commands 
   (`manual` from `compact`, `auto` otherwise) and `custom_instructions` (the focus, or null). A
   block returns `{ problem: "a PreCompact hook blocked it: <reason>" }`, so 8a's line says it and
   nothing changes. Plain text on exit 0 joins the focus.
-- **PostCompact** fires after a shortening that was done, with `trigger` and `compact_summary`;
-  then SessionStart `compact`.
+- **PostCompact, then SessionStart `compact`,** fire once the summary is made and before it is saved
+  (plan review, 2026-11-09, finding 2): PostCompact with `trigger` and `compact_summary`, then
+  SessionStart with `source: "compact"`. SessionStart's context and plain text join the shortened
+  history's one message (`r.messages[0]`, the message the `shortened` line saves) as hook text, so
+  they are saved with the shortening and go with the very next request, which inside a turn is
+  sent at once. They never wait in Task 8's queue. If the `shortened` line then cannot be written,
+  nothing changes, as in 8a, though those hooks have run: a known limit for the README.
 - `onShorten` stays for 8d's memory save.
 
 **Tests:** a block leaves the history unchanged with the 8a line and its reason, for `/compact` and
 for a turn's shortening; plain text reaches the summary request; PostCompact gets the summary;
-SessionStart `compact` follows it.
+SessionStart `compact` follows it; in a turn that shortens before its request, the stand-in model's
+very next request holds SessionStart's context, and a resume reads it back in the shortened
+message (finding 2).
 
 Commit: `feat: PreCompact and PostCompact around each shortening`.
 
