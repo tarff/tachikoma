@@ -11,6 +11,8 @@ import { Tasks } from "../../src/core/tasks.js";
 import { type Line, readTranscript, Transcript } from "../../src/core/transcript.js";
 import type { Provider, Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
+import type { Hook } from "../../src/hooks/config.js";
+import { Hooks, type Where } from "../../src/hooks/hooks.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { readFileTool } from "../../src/tools/files.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts } from "../helpers.js";
@@ -209,6 +211,62 @@ describe("Tasks", () => {
     tasks.clearFinished();
     expect(tasks.all.map((t) => t.shown)).toEqual([false, true]);
     expect(tasks.running).toBe(1);
+  });
+
+  // The subagent's own bus, which #work hands its gate. Its session fires no hooks yet (release 8b plan, Tasks 6-12 wire
+  // them), so a test says a hook's lines there as its Hooks (from `for`) will.
+  function ownBus() {
+    const made = vi.spyOn(PermissionGate.prototype, "for");
+    onTestFinished(() => made.mockRestore());
+    return () => made.mock.calls[0]![1]!.bus;
+  }
+
+  // Release 8b plan review, 2026-11-09, finding 1: a hook's failure never fails a subagent.
+  it("finishes a subagent done with its answer when its hook times out, the failure on the lead's bus starting with its id", { timeout: 15_000 }, async () => {
+    const own = ownBus();
+    const root = await mkdtemp(path.join(tmpdir(), "tachi-tasks-hook-"));
+    onTestFinished(async () => {
+      // Windows keeps the folder a killed program worked in for about 170 ms (measured 2026-10-31), so the removal is
+      // tried every 50 ms up to 2 s, as tests/hooks/run.test.ts does.
+      for (let i = 0; ; i++) {
+        try {
+          return await removeTree(root);
+        } catch (err) {
+          if (i === 40) throw err;
+          await new Promise((r) => setTimeout(r, 50));
+        }
+      }
+    });
+    const script = path.join(root, "slow.cjs");
+    writeFileSync(script, "setInterval(() => {}, 1000);"); // never ends by itself
+    // Half a second keeps the test quick; the line is the same whether or not Node had started by then.
+    const slow: Hook = { event: "PreToolUse", matcher: { all: true }, command: process.execPath, args: [script], timeout: 0.5, async: false, where: "" };
+    const worker = new Held();
+    const { tasks, bus, errors } = await setup(worker);
+    const t = tasks.start("find x", { background: false });
+    await settle();
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => "project", effort: () => undefined, lead: () => "fake:lead" };
+    const hooks = new Hooks({ hooks: [slow], off: false, leftOut: [] }, where, bus).for({ id: "t1" }, own());
+    await hooks.fire("PreToolUse", { tool_name: "Read" }, { match: "Read" });
+    worker.answer("found it");
+    expect(await t.done).toEqual({ state: "done", text: "found it" });
+    const line = `PreToolUse hook failed: ${process.execPath} ${script} ran out of time after 0.5 s`;
+    expect(errors).toEqual([{ kind: "hook", attempted: "t1: PreToolUse hook", message: `t1: ${line}`, lead: "fake:lead" }]);
+  });
+
+  // Release 8b plan review, 2026-11-09, second round, finding 3: a subagent's hook lines reach the user.
+  it("passes on a hook note said on a subagent's bus to the lead's, starting with its id", async () => {
+    const own = ownBus();
+    const worker = new Held();
+    const { tasks, bus } = await setup(worker);
+    const notes: string[] = [];
+    bus.on("hook-note", (line) => notes.push(line));
+    const t = tasks.start("find x", { background: false });
+    await settle();
+    own().emit("hook-note", "PreToolUse hook: checked");
+    worker.answer("found it");
+    await t.done;
+    expect(notes).toEqual(["t1: PreToolUse hook: checked"]);
   });
 });
 
