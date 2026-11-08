@@ -183,8 +183,6 @@ setTimeout(() => {}, 60000);`);
   }, 15_000);
 });
 
-// The review of Task 2: a shell named without a folder, `bash` outside Windows, is found on PATH as an exec-form
-// command is, so a PATH entry naming the project folder (empty or ".") is never used.
 // The mapping alone, as the real signal test above cannot run on Windows.
 describe("closeOf", () => {
   it("keeps the exit code, or the signal when there is none", () => {
@@ -194,6 +192,8 @@ describe("closeOf", () => {
   });
 });
 
+// The review of Task 2: a shell named without a folder, `bash` outside Windows, is found on PATH as an exec-form
+// command is, so a PATH entry naming the project folder (empty or ".") is never used.
 describe("program", () => {
   it("finds a bare name on PATH by its full path, passing over empty and relative entries", () => {
     const dir = path.dirname(process.execPath);

@@ -89,7 +89,8 @@ function read(event: Event, stdout: string): { json: Record<string, unknown> } |
   try {
     json = JSON.parse(text) as Record<string, unknown>;
   } catch (err) {
-    // The two common cases in plain words, the same on every Node; the parser's own words for the rest.
+    // The two common cases in plain words, the same on the Node versions package.json allows (>=22.20), whose parser
+    // messages for them start alike; the parser's own words for the rest.
     const words = errorText(err);
     if (words.startsWith("Unexpected end of JSON input")) return { error: "it is cut short" };
     if (words.startsWith("Unexpected non-whitespace character after JSON")) return { error: "there is text after the object" };
@@ -165,7 +166,7 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
       else if (blocked !== undefined && BLOCKING.includes(event) && c.block === undefined) c.block = cut(blocked);
     }
     if (!NO_CONTEXT.includes(event) && typeof specific.additionalContext === "string") toModel(specific.additionalContext);
-    if (event === "PostToolUse" && specific.updatedToolOutput != null &&!("output" in c)) c.output = specific.updatedToolOutput;
+    if (event === "PostToolUse" && specific.updatedToolOutput != null && !("output" in c)) c.output = specific.updatedToolOutput;
     if (outcome.kind === "ok" && outcome.text) {
       if (event === "PreCompact") c.instructions.push(cut(outcome.text));
       else toModel(outcome.text);
