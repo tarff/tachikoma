@@ -111,10 +111,12 @@ export const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.
 // vimInsertModeRemaps is read at each key (vimTakes), and the editor at each Ctrl+G, /settings and /keybindings; both
 // are here for their lines (plan, Tasks 12 and 21). dangerousCommands is release 7's (release 7 plan, Task 4), and so are
 // sandbox, network and judge, here for their lines too, as each waits for the next launch (Task 7). autoCompactWindow is
-// release 8a's (release 8a plan, choice 26).
+// release 8a's (release 8a plan, choice 26). hooks and disableAllHooks are release 8b's (release 8b design, "What the
+// user sees"; its plan's Task 12 applies them).
 export const LIVE = [
   "lead", "mode", "sandbox", "network", "judge", "effort", "fallback", "worker", "maxTasks",
   "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor", "dangerousCommands", "autoCompactWindow",
+  "hooks", "disableAllHooks",
 ] as const;
 export const FROM = ` (from ${SETTINGS})`;
 

@@ -257,6 +257,38 @@ describe("readSettings", () => {
     });
   });
 
+  // Release 8b plan, Task 1: the hooks themselves are read in src/hooks/config.ts (tests/hooks/config.test.ts).
+  describe("hooks and disableAllHooks", () => {
+    it("applies the other entries when hooks holds only events Tachikoma does not run", () => {
+      expect(read({ mode: "ask", hooks: { Setup: [{ hooks: [{ type: "command", command: "a" }] }] }, disableAllHooks: true })).toEqual({
+        settings: { mode: "ask", hooks: [], disableAllHooks: true },
+        warnings: ['settings.json: "hooks": "Setup" is not an event Tachikoma runs hooks at; its hooks were left out'],
+      });
+    });
+
+    it("refuses hooks of the wrong type, so nothing in the file applies", () => {
+      expect(read({ mode: "ask", hooks: [] })).toEqual({
+        problem:
+          'settings.json: "hooks" must be an object of events, each a list, such as ' +
+          '{"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "check.sh"}]}]} (got [])',
+      });
+    });
+
+    // Release 8b plan, Task 1: turned off, the hooks are still read and warned about, so /hooks can say what is off.
+    it("reads disableAllHooks as true or false, and still reads the hooks", () => {
+      const hooks = { PreToolUse: [{ hooks: [{ type: "command", command: "a", if: "Bash(*)" }, { type: "command", command: "b" }] }] };
+      const r = read({ disableAllHooks: true, hooks });
+      expect(r).toEqual({
+        settings: { disableAllHooks: true, hooks: [{ event: "PreToolUse", matcher: { all: true }, command: "b", async: false, where: '"PreToolUse"' }] },
+        warnings: ['settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out'],
+      });
+      expect(read({ disableAllHooks: false })).toEqual({ settings: { disableAllHooks: false }, warnings: [] });
+      for (const bad of ["true", 1, null]) {
+        expect(problem({ disableAllHooks: bad })).toBe(`settings.json: "disableAllHooks" must be true or false, without quotes (got ${JSON.stringify(bad)})`);
+      }
+    });
+  });
+
   it("says when the file is not valid JSON, in the parser's words", () => {
     let words = "";
     try {

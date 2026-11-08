@@ -5,6 +5,7 @@ import { type Network, NETWORKS, oneOf, SANDBOXES, type Sandbox, speedValue, sta
 import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode, OFFERED } from "./core/permissions.js";
 import { errorText } from "./core/types.js";
+import { type Hook, readHooks } from "./hooks/config.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { type Kind, KINDS, type UserRules } from "./safety/rules.js";
 import type { Segment } from "./tui/StatusLine.js";
@@ -43,6 +44,10 @@ export interface Settings {
   network?: Network;
   judge?: string;
   sandboxLimits?: SandboxLimits;
+  // The user's hooks, in Claude Code's shape (release 8b design, "The settings entry"); disableAllHooks turns them off,
+  // and they are still read, so /hooks can say what is off (release 8b plan, Task 1). Both are LIVE.
+  hooks?: Hook[];
+  disableAllHooks?: boolean;
 }
 
 // The box's limits as the user wrote them (release 7 plan, Task 12): memory in Docker's own units, g or m. Each one
@@ -89,7 +94,11 @@ export function readSettings(text: string): Loaded {
       } else if (name === "vimInsertModeRemaps") settings.vimInsertModeRemaps = remaps(entry, value, warnings);
       else if (name === "dangerousCommands") settings.dangerousCommands = userRules(entry, value, warnings);
       else if (name === "sandboxLimits") settings.sandboxLimits = sandboxLimits(entry, value, warnings);
-      else warnings.push(`${entry} is not a setting; it was left out`);
+      else if (name === "hooks") settings.hooks = readHooks(entry, value, warnings);
+      else if (name === "disableAllHooks") {
+        if (typeof value !== "boolean") throw wrongType(entry, "true or false, without quotes", value);
+        settings.disableAllHooks = value;
+      } else warnings.push(`${entry} is not a setting; it was left out`);
     }
   } catch (err) {
     return { problem: errorText(err) };
