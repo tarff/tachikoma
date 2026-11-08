@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { gitBash } from "../../src/exec/env.js";
 import type { Hook } from "../../src/hooks/config.js";
-import { program, runHook } from "../../src/hooks/run.js";
+import { closeOf, program, runHook } from "../../src/hooks/run.js";
 import { removeTree } from "../helpers.js";
 
 const alive = (pid: number) => {
@@ -93,7 +93,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   it("kills a hook still running at its limit and reports the time", async () => {
     const { hook, root } = await nodeHook(`require("fs").writeFileSync(__dirname + "/pid", String(process.pid)); setTimeout(() => {}, 60000);`);
     const ran = await runHook(hook, {}, { cwd: root, env: process.env, limit: 1 });
-    expect(ran).toMatchObject({ code: null, failed: "time" });
+    // The limit in force, for the failure's line (answer.ts).
+    expect(ran).toMatchObject({ code: null, failed: "time", limit: 1 });
     // Not "at least 1000": Node counts a timer from the event loop's time, read when the loop last woke, which can be
     // before runHook's own start, so ms may come out a little short of the limit.
     expect(ran.ms).toBeGreaterThan(0);
@@ -121,6 +122,13 @@ setTimeout(() => {}, 60000);`);
     // Up to 2 s for the killed program to be gone, as for its folder (folder, above).
     for (let i = 0; i < 40 && alive(pid); i++) await pause(50);
     expect(alive(pid)).toBe(false);
+  }, 15_000);
+
+  // Windows reports a program that killed itself as exit code 1, with no signal (seen 2026-11-09), so this runs elsewhere.
+  it.skipIf(process.platform === "win32")("reports the signal that ended a hook", async () => {
+    const { hook, root } = await nodeHook(`process.kill(process.pid, "SIGKILL");`);
+    const ran = await runHook(hook, {}, { cwd: root, env: process.env, limit: 30 });
+    expect(ran).toMatchObject({ code: null, signal: "SIGKILL" });
   }, 15_000);
 
   // Node refuses to start a .cmd or .bat without a shell (EINVAL), at once, inside spawn.
@@ -177,6 +185,15 @@ setTimeout(() => {}, 60000);`);
 
 // The review of Task 2: a shell named without a folder, `bash` outside Windows, is found on PATH as an exec-form
 // command is, so a PATH entry naming the project folder (empty or ".") is never used.
+// The mapping alone, as the real signal test above cannot run on Windows.
+describe("closeOf", () => {
+  it("keeps the exit code, or the signal when there is none", () => {
+    expect(closeOf(3, null)).toEqual({ code: 3 });
+    expect(closeOf(null, "SIGKILL")).toEqual({ code: null, signal: "SIGKILL" });
+    expect(closeOf(null, null)).toEqual({ code: null });
+  });
+});
+
 describe("program", () => {
   it("finds a bare name on PATH by its full path, passing over empty and relative entries", () => {
     const dir = path.dirname(process.execPath);

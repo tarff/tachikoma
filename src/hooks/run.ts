@@ -5,7 +5,8 @@ import { collect, killTree, running, shellFor } from "../exec/local.js";
 import type { Hook } from "./config.js";
 
 // What one hook did: its exit code and what it printed, each stream cut as a command's is (collect, local.ts). `failed`
-// says it never started, or was killed at its time limit; Task 3 (answer.ts) reads the rest.
+// says it never started, or was killed at its time limit; Task 3 (answer.ts) reads the rest. `limit` is the limit in
+// force, kept with "time", and `signal` what ended a hook that left no exit code, both for the failure's line.
 export interface Ran {
   code: number | null;
   stdout: string;
@@ -13,6 +14,13 @@ export interface Ran {
   ms: number;
   failed?: "start" | "time";
   startError?: string;
+  limit?: number;
+  signal?: string;
+}
+
+// The exit code, or the signal when there is none (the user's choice at Task 3: a failure names its signal).
+export function closeOf(code: number | null, signal: NodeJS.Signals | null): Pick<Ran, "code" | "signal"> {
+  return code === null && signal ? { code, signal } : { code };
 }
 
 // How a hook is started, as Claude Code starts it (release 8b design, "Running a hook"). With `args`, the command
@@ -84,15 +92,15 @@ export function runHook(hook: Hook, input: object, opts: { cwd: string; env: Nod
     };
     const timer = setTimeout(() => {
       kill();
-      resolve(ran({ failed: "time" }));
+      resolve(ran({ failed: "time", limit: opts.limit }));
     }, opts.limit * 1000);
     const onAbort = () => {
       kill();
       reject(new Error("Cancelled"));
     };
-    const onClose = (code: number | null) => {
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
       done();
-      resolve(ran({ code }));
+      resolve(ran(closeOf(code, signal)));
     };
     opts.signal?.addEventListener("abort", onAbort, { once: true });
     child.on("error", (err) => {

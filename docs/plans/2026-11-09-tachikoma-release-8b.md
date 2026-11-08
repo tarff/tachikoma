@@ -295,7 +295,9 @@ command with its `args` after it, escaped as the question escapes a command.
 | A hook failed: another exit code (red) | `<Event> hook failed: <command> exited with code <n>: <first line of its error output>` (without error output, it ends at `<n>`) |
 | A hook could not start (red) | `<Event> hook failed: <command> could not start (<reason>)` |
 | A hook ran out of time (red) | `<Event> hook failed: <command> ran out of time after <n> s` |
+| A hook ended by a signal (red) | `<Event> hook failed: <command> was ended by signal <SIGNAME>: <first line of its error output>` (without error output, it ends at `<SIGNAME>`; with no signal known, `was ended by an unknown signal`) |
 | A hook's JSON could not be read (red) | `<Event> hook failed: <command> printed JSON that could not be read (<reason>)` |
+| The JSON's `<reason>` | `it is cut short`; `there is text after the object`; any other broken JSON, the parser's own words; `"<field>" must be text in quotes` (`systemMessage`, `stopReason`, `reason`, `additionalContext`, `permissionDecisionReason`, `hookEventName`); `"continue" must be true or false`; `"decision" must be "approve" or "block"`; `"permissionDecision" must be "allow", "deny", "ask" or "defer"`; `"hookSpecificOutput" must be an object`; `"updatedInput" must be an object`; `"hookSpecificOutput" has no "hookEventName"`; `"hookSpecificOutput" names <OtherEvent>` |
 | PreToolUse refused a call (grey) | `A PreToolUse hook refused <tool>: <reason>` |
 | A rewrite that cannot be used (grey; the call refused) | `A PreToolUse hook's rewrite of <tool> could not be used (<reason>): <command>` |
 | Two rewrites of one call (grey) | `Two PreToolUse hooks rewrote <tool>'s input; the first in the settings file was used, and <command> was ignored.` |
@@ -443,6 +445,8 @@ export type Outcome =
   | { kind: "ok"; json?: Record<string, unknown>; text?: string }
   | { kind: "block"; reason: string; json?: Record<string, unknown> }
   | { kind: "failed"; line: string };   // the red line's words after "<Event> hook failed: "
+// Ran (run.ts) gains two fields for the failure lines: limit?: number, the limit in force, kept with failed: "time";
+// signal?: string, what ended a hook that left no exit code (the user's choices at Task 3).
 export function outcomeOf(event: Event, hook: Hook, ran: Ran, platform?: NodeJS.Platform, bash?: boolean): Outcome;
 export interface Combined {
   stop?: string;              // continue:false, its stopReason ("" when none)
@@ -451,6 +455,7 @@ export interface Combined {
   rewrite?: { input: unknown; from: Hook; ignored: Hook[] };  // the first in the file (design, "Tool hooks")
   context: { event: Event; text: string }[];                  // for the model, in file order, each cut (choice 7)
   messages: string[];          // systemMessage, each cut
+  instructions: string[];      // PreCompact's plain output on exit 0, in file order, each cut (Task 11)
   output?: unknown;            // PostToolUse's updatedToolOutput
   deferred: boolean; failures: string[];
 }
@@ -470,6 +475,13 @@ export function combine(event: Event, results: { hook: Hook; outcome: Outcome }[
   without Git Bash for a PreToolUse hook run by a shell with `onFailure` not set (`bash` false),
   every failure, any code but 0 and 2 included, is a block, its reason the error output's first
   line or the failure's words.
+- **The events that cannot block** (the user's choice at Task 3, following the design's table row
+  "Cannot block; a failure's error output is shown to the user"): at SessionStart, SessionEnd,
+  SubagentStart and PostCompact, exit 2 is a failure, `exited with code 2`, whatever was printed.
+  `onFailure: "block"` and the Windows rule turn a failure into a block only at the five events
+  that can block; elsewhere, PostToolUse and PostToolUseFailure included, it stays a red failure.
+- **A hook ended by a signal** (no exit code) counts as any other exit code; its line names the
+  signal (the user's choice at Task 3).
 - **Which events can block:** UserPromptSubmit, PreToolUse, Stop, SubagentStop, PreCompact. A block
   on another is ignored, except at PostToolUse and PostToolUseFailure, where the call has already
   run: there a block's reason (`decision: "block"` and `reason`, or exit 2's error output) becomes
