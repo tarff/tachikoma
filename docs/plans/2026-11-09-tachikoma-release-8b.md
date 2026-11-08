@@ -812,9 +812,9 @@ Commit: `feat: PreCompact and PostCompact around each shortening`.
 **Tests:** each line in the window and in `-p`; a `-p` run whose PreToolUse hook fails, then
 answers, exits 0 with the hook's line on its error output (second round, finding 1); a subagent's
 `systemMessage`, its SubagentStop block and its `continue: false` line reach the window and `-p`'s
-error output, each starting with its id (finding 3); Ctrl+O after a turn with a hook run and a rewrite;
-`/hooks` with hooks, with left-out ones, with none, and off; a live edit adding a hook makes the
-next call fire it, with the line; the waiting line shows a `statusMessage`.
+error output, each starting with its id (finding 3); Ctrl+O after a turn with a hook run and a
+rewrite; `/hooks` with hooks, with left-out ones, with none, and off; a live edit adding a hook
+makes the next call fire it, with the line; the waiting line shows a `statusMessage`.
 
 Commit: `feat: hooks on the screen: their lines, Ctrl+O, /hooks, and live edits`.
 
