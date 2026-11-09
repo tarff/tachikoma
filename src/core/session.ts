@@ -67,6 +67,18 @@ const keptGoing = (id: string | undefined, reason: string) =>
 const keptTooOften = (id: string | undefined) =>
   `${id ? `SubagentStop hooks kept ${id} going` : "Stop hooks kept the turn going"} ${MAX_BLOCKS} times in a row; it ends here.`;
 
+// True once `p` has settled, false when `signal` stops the wait first: a turn waiting for SessionStart's hooks (Task 10).
+const settled = (p: Promise<void>, signal?: AbortSignal) =>
+  new Promise<boolean>((resolve) => {
+    if (signal?.aborted) return resolve(false);
+    const stop = () => resolve(false);
+    signal?.addEventListener("abort", stop, { once: true });
+    void p.then(() => {
+      signal?.removeEventListener("abort", stop);
+      resolve(true);
+    });
+  });
+
 // How a turn ended, when a hook ended it (Session.send).
 export type Ended = { blocked: string } | { stopped: string; unsent?: true };
 
@@ -163,6 +175,8 @@ export class Session {
   // The hooks' text waiting for the next request, SessionStart's (Task 10), sent at the start of the next user message
   // (Task 8).
   readonly #nextText: { event: Event; text: string }[] = [];
+  // SessionStart's hooks still running (Task 10): the next turn waits for them, so their text reaches its request.
+  #starting: Promise<void> | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -201,6 +215,7 @@ export class Session {
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
     this.#hookText.splice(0); // the last conversation's hook text, not yet sent, is not this one's (Task 6's code review)
     this.#nextText.splice(0); // nor is the text waiting for its next request: SessionStart fires after the load (Task 10)
+    this.#starting = undefined; // nor the text of SessionStart's hooks still running for it
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();
@@ -220,6 +235,33 @@ export class Session {
   // 8b plan, Tasks 8 and 10).
   waitForNext(context: { event: Event; text: string }[]): void {
     this.#nextText.push(...context);
+  }
+
+  // SessionStart, once a conversation is loaded (release 8b plan, Task 10), matched on its source, with the lead as its
+  // model (design, "What a hook is sent"). Not waited for here: the next turn waits for its hooks, so their text goes with
+  // its request; a load meanwhile drops it, as it was the last conversation's. A shortening's (Task 11) is not fired here.
+  start(source: "startup" | "resume" | "clear" | "fork"): void {
+    const { hooks } = this.opts;
+    if (!hooks) return;
+    const fired: Promise<void> = hooks.fire("SessionStart", { source, model: this.#lead.id }, { match: source }).then(
+      (c) => {
+        if (this.#starting !== fired) return;
+        this.#starting = undefined;
+        this.waitForNext(c.context);
+      },
+      // Only a listener of its lines that throws can reject it, and unheard that would end Tachikoma (hooks.ts).
+      () => {
+        if (this.#starting === fired) this.#starting = undefined;
+      },
+    );
+    this.#starting = fired;
+  }
+
+  // SessionEnd, as the session ends (Task 10), matched on its reason; its hooks share 1.5 s (hooks.ts). Refused while a turn
+  // runs, as a load is, so a switch that cannot be made ends nothing.
+  async end(reason: "prompt_input_exit" | "clear" | "resume" | "other"): Promise<void> {
+    if (this.#running) throw new Error("A turn is already running");
+    await this.opts.hooks?.fire("SessionEnd", { reason }, { match: reason });
   }
 
   // Before /lead makes `next` the lead (release 8a design, "When to shorten"): a conversation that will not fit its smaller
@@ -294,6 +336,9 @@ export class Session {
 
   async #turn(typed: Part[], signal?: AbortSignal): Promise<Ended | void> {
     const { bus, hooks } = this.opts;
+    // SessionStart's hooks answer first, so their text goes with this request; a stop meanwhile sends and saves nothing and
+    // says nothing, as a stop during UserPromptSubmit's does, and their text waits for the next one (Task 10).
+    if (this.#starting && !(await settled(this.#starting, signal))) return;
     // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept.
     const words = typed.flatMap((p) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
     // The user's own prompt only: a subagent's brief is the lead's (release 8b design, "The events"). Before anything is

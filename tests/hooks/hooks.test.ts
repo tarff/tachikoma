@@ -440,4 +440,19 @@ describe("Hooks", { timeout: 15_000 }, () => {
     await hooks.fire("PreToolUse", {});
     expect(errors.map((e) => e.message)).toEqual([`PreToolUse hook failed: ${commandOf(slow)} ran out of time after 0.5 s`]);
   });
+
+  // Claude Code's hooks reference, "Common fields" (release 8b plan, "Numbers in this plan"; Task 10).
+  it("shares 1.5 s between SessionEnd's hooks, raised by a hook's own longer timeout, to 60 s at most", async () => {
+    const p = await place();
+    const end = (name: string, timeout?: number) => p.hook(name, { event: "SessionEnd", ...(timeout === undefined ? {} : { timeout }) });
+    for (const [given, limit] of [
+      [[end("a"), end("b", 0.5)], 1.5],
+      [[end("a"), end("b", 10)], 10],
+      [[end("a", 100)], 60],
+    ] as const) {
+      vi.mocked(runHook).mockClear();
+      await setup(p, [...given]).hooks.fire("SessionEnd", {});
+      expect(vi.mocked(runHook).mock.calls.map((c) => c[2].limit)).toEqual(given.map(() => limit));
+    }
+  });
 });

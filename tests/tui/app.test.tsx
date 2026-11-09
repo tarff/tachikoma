@@ -9368,4 +9368,63 @@ process.stdin.resume().on("end", () => {
     const user = session.messages.filter((m) => m.role === "user").map((m) => m.parts);
     expect(user).toEqual([[{ type: "image", id: 1, ...PNG }], [{ type: "text", text: "[Image #1] again" }]]);
   });
+
+  // Release 8b plan, Task 10 and choice 18: each switch ends the session it leaves, then starts the one it opens, and
+  // SessionStart's context goes with the next request. The hook writes its input to a file in the test's folder.
+  it("fires SessionEnd then SessionStart at /branch (other, fork), /clear (clear, clear) and /resume (resume, resume)", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-hook-"));
+    onTestFinished(() => removeTree(dir));
+    const out = path.join(dir, "inputs.jsonl");
+    const script = path.join(dir, "hook.cjs");
+    writeFileSync(
+      script,
+      `const fs = require("fs");
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.appendFileSync(${JSON.stringify(out)}, text + "\\n");
+  const input = JSON.parse(text);
+  if (input.hook_event_name === "SessionStart")
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "started by " + input.source } }));
+});`,
+    );
+    const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
+    const sessions = path.join(dir, "data", "sessions");
+    const earlier = await mount([reply("noted")], { save: true, sessions });
+    await type(earlier.app, "remember apple");
+    await untilSlow(earlier.app, "noted");
+    earlier.app.unmount();
+    const hooks: Hook[] = (["SessionStart", "SessionEnd"] as const).map((event) => ({
+      event, matcher: { all: true }, command: process.execPath, args: [script], async: false, where: "",
+    }));
+    const lead = new FakeProvider("a", [reply("one"), reply("two")]);
+    const { app, session } = await mount([], { lead, save: true, sessions, hooks });
+    await type(app, "first");
+    await untilSlow(app, "one");
+    const ids = [session.id];
+    // Each step's SessionStart has answered before the next command, so the file's lines come in the order fired.
+    for (const [command, line, n] of [["/branch", "Branched:", 2], ["/clear", "Started a new session", 4], ["/resume", "Resumed:", 6]] as const) {
+      await type(app, command);
+      if (command === "/resume") {
+        await untilSlow(app, "Saved sessions in this folder, newest first:");
+        await press(app, "\r");
+      }
+      await untilSlow(app, line);
+      await untilSlowly(() => inputs().length === n);
+      ids.push(session.id);
+    }
+    expect(inputs().map((i) => [i.hook_event_name, i.reason ?? i.source, i.session_id])).toEqual([
+      ["SessionEnd", "other", ids[0]],
+      ["SessionStart", "fork", ids[1]],
+      ["SessionEnd", "clear", ids[1]],
+      ["SessionStart", "clear", ids[2]],
+      ["SessionEnd", "resume", ids[2]],
+      ["SessionStart", "resume", ids[3]],
+    ]);
+    await type(app, "last");
+    await untilSlow(app, "two");
+    expect(lead.seen.at(-1)!.at(-1)!.parts).toEqual([
+      { type: "text", text: "SessionStart hook:\nstarted by resume", from: "hooks" },
+      { type: "text", text: "last" },
+    ]);
+  });
 });

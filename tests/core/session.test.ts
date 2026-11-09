@@ -2446,4 +2446,80 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect([s.lead.seen.length, s.errors]).toEqual([2, []]);
     expect(s.notes).toEqual([`t1: A ${event} hook stopped the turn${reason ? `: ${reason}` : "."}`]);
   });
+
+  // Release 8b plan, Task 10: SessionStart once a conversation is loaded, matched on its source, its text waiting for the
+  // next request (Task 8), which waits for its hooks so the text reaches it; SessionEnd as the session ends.
+  const started = async (s: Awaited<ReturnType<typeof setup>>, n: number) => {
+    for (let i = 0; s.inputs().length < n; i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+  };
+
+  it("fires SessionStart with its source and the lead as model, matched on the source, and the next request waits for its text", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const says: Says[] = [
+      { event: "SessionStart", names: ["resume"], stdout: after("SessionStart", { additionalContext: "from the hook" }), go },
+      { event: "SessionStart", names: ["startup"], stdout: "not this one" },
+    ];
+    const s = await setup({ mode: "never", root, says, turns: [reply("ok")] });
+    s.session.start("resume");
+    const sent = s.session.send("go");
+    await started(s, 1);
+    await pause(100);
+    expect(s.lead.seen).toEqual([]);
+    writeFileSync(go, "");
+    expect(await sent).toBeUndefined();
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([hookText("SessionStart", "from the hook"), { type: "text", text: "go" }]);
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "SessionStart", source: "resume", model: "fake:a" })]);
+  });
+
+  it("drops SessionStart's text when another conversation is loaded before its hooks answer", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const s = await setup({ mode: "never", root, says: [{ event: "SessionStart", stdout: "the last one's", go }], turns: [reply("ok")] });
+    s.session.start("startup");
+    await started(s, 1);
+    s.session.load({ id: "s2", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+    writeFileSync(go, "");
+    while (s.given.runs.length < 1) await pause(20);
+    await s.session.send("next");
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([{ type: "text", text: "next" }]);
+  });
+
+  it("sends nothing when the user stops a turn waiting for SessionStart's hooks, and their text goes with the next one", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const s = await setup({ mode: "never", root, says: [{ event: "SessionStart", stdout: "from the start", go }], turns: [reply("ok")] });
+    const abort = new AbortController();
+    s.session.start("startup");
+    const sent = s.session.send("go", abort.signal);
+    await started(s, 1);
+    abort.abort();
+    expect(await sent).toBeUndefined();
+    expect([s.session.messages, s.session.prompts, s.lead.seen]).toEqual([[], [], []]);
+    writeFileSync(go, "");
+    await s.session.send("again");
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([hookText("SessionStart", "from the start"), { type: "text", text: "again" }]);
+  });
+
+  it("fires SessionEnd with its reason, matched on it, and refuses to while a turn runs, as a load does", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const says: Says[] = [
+      { event: "SessionEnd", names: ["clear"], stdout: "" },
+      { event: "SessionEnd", names: ["other"], stdout: "" },
+      { event: "UserPromptSubmit", stdout: "", go },
+    ];
+    const s = await setup({ mode: "never", root, says, turns: [reply("ok")] });
+    await s.session.end("clear");
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "SessionEnd", reason: "clear", session_id: "s1" })]);
+    const sent = s.session.send("go");
+    await started(s, 2);
+    await expect(s.session.end("other")).rejects.toThrow("A turn is already running");
+    writeFileSync(go, "");
+    await sent;
+    expect(s.inputs()).toHaveLength(2);
+  });
 });

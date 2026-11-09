@@ -141,11 +141,11 @@ export const queue = (ui: UI, fns: Fns) => {
         const refused = fns.subagentsRunning(command);
         if (refused) return fns.say(refused);
         if (command === "/resume") return fns.resume();
-        if (command === "/branch") return fns.branch(rest);
-        // The instruction files are read again meanwhile: what is typed waits in the queue, as during a turn.
+        // The instruction files are read again meanwhile (/clear), and SessionEnd's hooks run (both; release 8b plan, Task
+        // 10): what is typed waits in the queue, as during a turn.
         ui.working.current = true;
         try {
-          return await fns.startFresh();
+          return await (command === "/branch" ? fns.branch(rest) : fns.startFresh());
         } finally {
           ui.working.current = false;
         }
@@ -355,9 +355,14 @@ export const queue = (ui: UI, fns: Fns) => {
   // window's sandbox carries on: a copy-mode box is not started afresh, so its review at exit covers both sessions'
   // changes (Task 7). Another conversation's finished subagents leave /tasks and the panel. A branch is the same
   // conversation, so it keeps them, its waiting text, shown calls, to-do list, answers and gauge, and is not drawn again
-  // (release 8a final review, user, 2026-11-07: "Clear them", "Drop the reprint", "Keep them too").
-  const switchTo = (next: Opened, lines: Line[], branched = false) => {
+  // (release 8a final review, user, 2026-11-07: "Clear them", "Drop the reprint", "Keep them too"). The session left ends
+  // first, with SessionEnd's `end` reason, and the one opened starts last, with SessionStart's `start` source, once its saved
+  // lead leads (release 8b plan, Task 10 and choice 18). Meanwhile what is typed waits in the queue (`working`, set by the
+  // callers), as during a turn.
+  const switchTo = async (next: Opened, lines: Line[], how: { end: "clear" | "resume" | "other"; start: "clear" | "resume" | "fork"; lead?: Provider }) => {
+    const branched = how.start === "fork";
     try {
+      await ui.session.end(how.end);
       ui.session.load(next.conversation);
     } catch (err) {
       next.release();
@@ -375,11 +380,19 @@ export const queue = (ui: UI, fns: Fns) => {
     }
     fns.say(...(branched ? [] : conversationLines(next.conversation.messages)), ...lines);
     ui.rerender((n) => n + 1);
+    if (how.lead) {
+      ui.waiting.current.lead = undefined; // it wins over a lead the settings file set meanwhile, as a /lead typed then would
+      ui.session.setLead(how.lead);
+    }
+    ui.session.start(how.start);
   };
   // /clear: a new session, with the same lead and mode, its system prompt built afresh (design, "Resuming").
   const startFresh = async () => {
     const system = await ui.session.freshSystem();
-    switchTo(ui.saved.fresh(ui.session.lead.id, system), [gray("Started a new session; the last one is kept (tachi --resume lists it).")]);
+    await switchTo(ui.saved.fresh(ui.session.lead.id, system), [gray("Started a new session; the last one is kept (tachi --resume lists it).")], {
+      end: "clear",
+      start: "clear",
+    });
   };
   // /resume: the folder's other saved sessions, in the list `tachi -r` shows (choice 14). True when it opened, holding the
   // queue until a pick or Esc, as the model list does.
@@ -394,10 +407,14 @@ export const queue = (ui: UI, fns: Fns) => {
   // read or copied is said in red, and the window stays in its session (design, "When something goes wrong"). It leads
   // with its saved lead, switched to as /lead switches, once its conversation is loaded; one that cannot be made leaves
   // the window's leading, with the launch's line (user, 2026-11-06: "The session's saved lead").
-  const pickSession = (id: string) => {
+  const pickSession = async (id: string) => {
     ui.listOpen.current = false;
     ui.setSessions(null);
     ui.view.current = FOLLOWING; // what it says is asked for, as the model list's pick says (pick, above)
+    // While SessionEnd's hooks run (switchTo), what is typed waits in the queue. A turn started under the list holds it
+    // already, and is left alone: the switch is refused (Session.end).
+    const hold = !ui.working.current;
+    if (hold) ui.working.current = true;
     try {
       const now = ui.session.lead.id;
       let made: Provider | undefined;
@@ -414,14 +431,13 @@ export const queue = (ui: UI, fns: Fns) => {
       });
       if ("problem" in next) fns.say({ text: next.problem, color: "red" });
       else {
-        switchTo(next, [...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "gray" })));
-        if (made) {
-          ui.waiting.current.lead = undefined; // it wins over a lead the settings file set meanwhile, as a /lead typed then would
-          ui.session.setLead(made);
-        }
+        const lines = [...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "gray" as const }));
+        await switchTo(next, lines, { end: "resume", start: "resume", ...(made ? { lead: made } : {}) });
       }
     } catch (err) {
       fns.say({ text: errorText(err), color: "red" });
+    } finally {
+      if (hold) ui.working.current = false;
     }
     fns.next();
   };
@@ -433,7 +449,7 @@ export const queue = (ui: UI, fns: Fns) => {
   // /branch [name]: a copy of this session, named, which the window carries on in (design, "Names, branches and export").
   // Without a name it takes the first prompt's first line, as the resume line names a session. A session with no
   // prompt has nothing to copy, and one whose saving stopped would leave out what came after.
-  const branch = (name: string) => {
+  const branch = async (name: string) => {
     const first = ui.session.prompts[0]?.split(/\r?\n/)[0];
     if (!first) return fns.say(gray(SESSION_WORDS.nothingToBranch));
     if (!ui.session.transcript || ui.session.transcript.failed !== null) return fns.say({ text: SESSION_WORDS.unsaved("/branch"), color: "red" });
@@ -441,7 +457,7 @@ export const queue = (ui: UI, fns: Fns) => {
     const named = name || first;
     const next = ui.saved.branch(original, ui.session.lead.id, named);
     if ("problem" in next) return fns.say({ text: next.problem, color: "red" });
-    switchTo(next, [gray(`Branched: this window is now ${named}; the original is kept as ${original}.`)], true);
+    await switchTo(next, [gray(`Branched: this window is now ${named}; the original is kept as ${original}.`)], { end: "other", start: "fork" });
   };
   // /rename <name> names this session in its transcript, as the lists then show it (design, "Names, branches and export").
   const rename = (name: string) => {

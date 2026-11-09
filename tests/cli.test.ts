@@ -927,6 +927,58 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     expect(sent).toEqual([]);
   });
 
+  // Release 8b plan, Task 10: SessionStart once the conversation is loaded, by how the launch opened it, its context in the
+  // first request; SessionEnd "other" at the run's end. The hook writes its input to a file in the case's folder.
+  it("with -p, fires SessionStart startup, resume or fork, its context in the first request, and SessionEnd other at the end", { timeout: 60_000 }, async () => {
+    const { url, sent } = await standIn();
+    const { proj, data } = place();
+    const out = path.join(path.dirname(proj), "inputs.jsonl");
+    const script = path.join(path.dirname(proj), "hook.cjs");
+    writeFileSync(
+      script,
+      `const fs = require("fs");
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.appendFileSync(${JSON.stringify(out)}, text + "\\n");
+  const input = JSON.parse(text);
+  if (input.hook_event_name === "SessionStart")
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "started by " + input.source } }));
+});`,
+    );
+    const hook = { hooks: [{ type: "command", command: process.execPath, args: [script] }] };
+    const env = { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks: { SessionStart: [hook], SessionEnd: [hook] } })) };
+    for (const args of [["-p", "hi"], ["-p", "again", "-c"], ["-p", "more", "-c", "--fork-session"]]) {
+      expect(await tachiLater(...args, env)).toMatchObject({ code: 0, stdout: "done\n" });
+    }
+    const inputs = readFileSync(out, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(inputs.map((i) => [i.hook_event_name, i.source ?? i.reason])).toEqual([
+      ["SessionStart", "startup"],
+      ["SessionEnd", "other"],
+      ["SessionStart", "resume"],
+      ["SessionEnd", "other"],
+      ["SessionStart", "fork"],
+      ["SessionEnd", "other"],
+    ]);
+    expect(inputs.filter((i) => i.hook_event_name === "SessionStart").map((i) => i.model)).toEqual(["openai:lead", "openai:lead", "openai:lead"]);
+    // Each run's request holds its own SessionStart's text, before its prompt; a saved one's is sent again on a resume.
+    expect(sent.map((s) => (s.messages.at(-1)!.content as string))).toEqual([
+      "SessionStart hook:\nstarted by startup\nhi",
+      "SessionStart hook:\nstarted by resume\nagain",
+      "SessionStart hook:\nstarted by fork\nmore",
+    ]);
+  });
+
+  // Claude Code's hooks reference, "Common fields": SessionEnd's hooks share 1.5 s (release 8b plan, Task 10).
+  it("with -p, kills a SessionEnd hook still running at 1.5 s, says so, and the run ends as it would", async () => {
+    const { url } = await standIn();
+    const { proj, data } = place();
+    const script = path.join(path.dirname(proj), "hook.cjs");
+    writeFileSync(script, "process.stdin.resume(); setInterval(() => {}, 1000);");
+    const hooks = { SessionEnd: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const r = await tachiLater("-p", "hi", { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) });
+    expect(r).toEqual({ code: 0, stdout: "done\n", stderr: `hook: SessionEnd hook failed: ${process.execPath} ${script} ran out of time after 1.5 s\n` });
+  });
+
   // Task 6's quality review: a window cannot start without a terminal, so it is refused before a held session is copied.
   // The lock is this test process's own, as above.
   it("refuses -c without a terminal before copying a session another window has open", () => {

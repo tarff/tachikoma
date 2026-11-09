@@ -28,6 +28,9 @@ export const MODE_NAMES: Record<Mode, string> = { ask: "default", project: "acce
 // Claude Code's hooks reference, "Common fields": a hook's time limit is its timeout, or 600 s, or 30 s at UserPromptSubmit.
 const LIMIT = 600;
 const PROMPT_LIMIT = 30;
+// The same: SessionEnd's hooks share 1.5 s, which a hook's own longer timeout raises, to 60 s at most.
+const END_LIMIT = 1.5;
+const END_MOST = 60;
 
 // Two entries are the same hook when every field of the entry is (release 8b design, "Running a hook"; review,
 // 2026-11-09, finding 3); its event, matcher and place are not fields of the entry.
@@ -110,8 +113,10 @@ export class Hooks {
     // Read once, so a late async hook's failure names the model that led when it started, not one a /lead switch
     // put in since (Task 4's code review).
     const lead = this.#where.lead();
+    // One limit for all of SessionEnd's hooks, which run at once, so it is the time they share (release 8b plan, Task 10).
+    const shared = event === "SessionEnd" ? Math.min(END_MOST, Math.max(END_LIMIT, ...picked.map((h) => h.timeout ?? 0))) : undefined;
     const run = async (hook: Hook, signal?: AbortSignal) => {
-      const limit = hook.timeout ?? (event === "UserPromptSubmit" ? PROMPT_LIMIT : LIMIT);
+      const limit = shared ?? hook.timeout ?? (event === "UserPromptSubmit" ? PROMPT_LIMIT : LIMIT);
       // runHook adds commandEnv and CLAUDE_PROJECT_DIR; the folder is the project's root (release 8b plan, choice 3).
       const ran = await runHook(hook, input, { cwd: this.#where.root, env: process.env, limit, signal });
       // An async hook blocks nothing, so its failure stays a failure, to be said: onFailure "continue" turns off both ways

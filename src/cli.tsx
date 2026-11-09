@@ -642,6 +642,9 @@ const { session, pictures } = leadSession({
   hooks,
   paths,
 });
+// SessionStart's source, by how the launch opened the conversation (release 8b plan, Task 10): a copy opened as another
+// window holds the session is still a resume, as -c or -r asked for one.
+const source = saved ? (parsed["fork-session"] ? "fork" : "resume") : "startup";
 // The settings file's /autocompact size, for -p too; a live edit or /autocompact changes it for the window (release 8a
 // plan, choice 26).
 session.autoCompact = loaded.settings.autoCompactWindow ?? null;
@@ -676,6 +679,7 @@ if (parsed.print !== undefined) {
   // Loaded once the error listeners are on, so a start line or mend that failed is said now, not at the first write.
   for (const line of said) console.error(gray(line.text));
   session.load(opened.conversation);
+  session.start(source);
   // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us.
   // A second Ctrl-C gets Node's default and ends at once.
   const stop = new AbortController();
@@ -694,6 +698,8 @@ if (parsed.print !== undefined) {
       if (note) console.error(note);
     }
   }
+  // The run's session ends here, after its answer, however its turn ended, a stop by Ctrl-C too (release 8b plan, Task 10).
+  await session.end("other");
   // Nobody can review here, so the copy is kept (choice 29), unless it has nothing to review: then, as at the session's
   // end in the interface (queue.ts, leave), once the box is gone and under the copy's lock, it is removed (choice 121).
   if (box?.copy) {
@@ -799,8 +805,10 @@ if (parsed.print !== undefined) {
     { stdin: keys as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" }, maxFps: 60 },
   );
   // Ink's first render, in its legacy mode, runs the App's effects before render() returns (measured 2026-11-06), so its
-  // listeners are on: a start line or mend that failed is said on screen now, not at the first write.
+  // listeners are on: a start line or mend that failed is said on screen now, not at the first write. So are SessionStart's
+  // lines (release 8b plan, Task 10).
   session.load(opened.conversation);
+  session.start(source);
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   // After the terminal is back, as restoreWhenInkEnds waits on the same promise first; an error is its to report. The

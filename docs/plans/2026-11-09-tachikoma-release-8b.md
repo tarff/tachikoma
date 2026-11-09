@@ -968,6 +968,40 @@ Commit: `feat: Stop, SubagentStart and SubagentStop, with Claude Code's limit of
 folder; SessionStart's context reaches the first request; a SessionEnd hook that sleeps is killed at
 1.5 s and the window still closes; `/branch` gives `other` then `fork`.
 
+**Decided at the build** (2026-11-09):
+- **`Session.start(source)` and `Session.end(reason)`** fire the two events, for the launch and the
+  window's commands alike. SessionStart is matched on its source and SessionEnd on its reason, as
+  Claude Code matches them. SessionStart's `model` is the lead's id, `<provider>:<model>`, as
+  every line names the lead (design: "`model` (the lead)"); a fallback is never sent.
+- **SessionStart is not waited for where it fires; the next turn waits for its hooks,** so their
+  text reaches its request (in the window the working line shows meanwhile, as for any turn). A
+  stop meanwhile sends, saves and says nothing, as a stop during UserPromptSubmit does, and the
+  text waits for the turn after. A load before the hooks answer drops their text, as `load()`
+  empties the queue.
+- **SessionStart cannot block:** in `-p` a failing one is its red line, and the run goes on, its
+  exit code unchanged (a `hook` error fails no run). Under `--json` its lines are the `error` and
+  `hook-note` JSON lines every hook's are.
+- **SessionEnd's limit is one for all its hooks,** as they run at once: 1.5 s, or the longest
+  `timeout` among them when longer, 60 s at most (hooks.ts), `async` ones too. Its failure is the
+  approved line, `ran out of time after 1.5 s`.
+- **`-p`'s SessionEnd `other`** fires after the answer is printed and before copy mode's step, so
+  the copy's line stays the last. It fires after a Ctrl-C stop too: `-p`'s first Ctrl-C stops the
+  turn and the run ends as usual, not through `exitOn`, which choice 19 is about.
+- **A copy opened because another window holds the session is still `resume`,** at the launch and
+  at `/resume`'s pick, as a resume was asked for; only `--fork-session` and `/branch` are `fork`.
+- **The window's switches:** the session to open is made first (`/clear`'s new one, `/resume`'s
+  pick, `/branch`'s copy), then SessionEnd fires for the one left, then the load, the lines, the
+  resumed session's saved lead, and SessionStart, so its `model` is the lead it opens with. A switch
+  that cannot open its session ends nothing. `Session.end` is refused while a turn runs, as `load`
+  is, so a pick made under a turn started under the list ends nothing either. `/branch` and
+  `/resume`'s pick now hold the queue while SessionEnd runs, as `/clear` already did.
+
+**Carry-over for Tasks 11 and 13:** SessionStart `compact` fires in `#shorten` itself, not through
+`Session.start`, as its text joins the shortened message and never waits in the queue (Task 11).
+The README says the first prompt waits for SessionStart's hooks, that SessionEnd's hooks share
+1.5 s (raised by a hook's own `timeout`, to 60 s), and that a signal runs no SessionEnd while `-p`'s
+Ctrl-C still does (Task 13).
+
 Commit: `feat: SessionStart and SessionEnd at the launch, the window's commands and the end`.
 
 ## Task 11: PreCompact and PostCompact
