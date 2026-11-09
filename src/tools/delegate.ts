@@ -15,6 +15,8 @@ export function delegateTool(tasks: Tasks, opts: { headless: boolean }): Tool {
       const r = await t.done;
       // A failure is the answer too, so the lead knows; the error itself is logged as the subagent's.
       const answer = r.state === "failed" ? `${t.id} failed: ${r.text}` : r.text;
+      // A background start has no answer yet, so it reports nothing and hooks get its text (release 8b plan, choice 11).
+      ctx.report?.({ id: t.id, text: answer });
       return background ? `${t.id} ran in the foreground, since -p has no later turn to read a background answer in.\n\n${answer}` : answer;
     },
   );

@@ -10,6 +10,8 @@ export interface ToolContext {
   workspace: Workspace; // the project's files, which the file tools read, write and search (release 7 plan, Task 14)
   gate: PermissionGate;
   signal?: AbortSignal;
+  // The parts of a result, for the shape hooks are sent (release 8b plan, choice 12): shell, write_file and delegate call it.
+  report?: (parts: unknown) => void;
 }
 
 export interface Tool {
