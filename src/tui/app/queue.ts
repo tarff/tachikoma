@@ -390,14 +390,26 @@ export const queue = (ui: UI, fns: Fns) => {
   // first, with SessionEnd's `end` reason, and the one opened starts last, with SessionStart's `start` source, once its saved
   // lead leads (release 8b plan, Task 10 and choice 18). Meanwhile what is typed waits in the queue (`working`, set by the
   // callers), as during a turn.
+  // While SessionEnd's hooks run the working line shows, and Esc, or Ctrl-C, stops them through its own signal, as it stops
+  // a turn, and the switch goes ahead (the user's choice, 2026-11-09: "Esc stops it").
   const switchTo = async (next: Opened, lines: Line[], how: { end: "clear" | "resume" | "other"; start: "clear" | "resume" | "fork"; lead?: Provider }) => {
     const branched = how.start === "fork";
+    const shown = ui.session.ends(how.end);
+    let signal: AbortSignal | undefined;
+    if (shown) {
+      signal = (ui.abort.current = new AbortController()).signal;
+      ui.doing.current = { label: "Working", at: Date.now(), from: null };
+      ui.setNow(ui.doing.current.at);
+      ui.setBusy(true);
+    }
     try {
-      await ui.session.end(how.end);
+      await ui.session.end(how.end, signal);
       ui.session.load(next.conversation);
     } catch (err) {
       next.release();
       throw err;
+    } finally {
+      if (shown) ui.setBusy(false);
     }
     ui.saved.switched(next);
     if (!branched) {

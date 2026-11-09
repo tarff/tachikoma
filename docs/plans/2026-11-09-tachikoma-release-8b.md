@@ -995,8 +995,13 @@ folder; SessionStart's context reaches the first request; a SessionEnd hook that
   mode's step, after the run's work, does not turn a finished run into a stopped one (Task 10's
   code review). Not tested: on Windows Node cannot hand a child process a Ctrl-C, it kills it
   instead (Node's docs for `subprocess.kill`), and CI runs on Windows only.
-- **A switch's SessionEnd shows no working line:** the line says Esc stops what runs, which it
-  cannot here (Task 10's code review; left for the user).
+- **A switch's SessionEnd shows the working line, and Esc stops it** (the user's choice,
+  2026-11-09: "Esc stops it"): while the old session's SessionEnd hooks run at `/clear`, `/branch`
+  or `/resume`'s pick, the usual working line shows, and Esc, or Ctrl-C as during a turn, stops
+  them through the switch's own signal, `async` ones too, as SessionEnd waits for them. A stopped
+  hook says nothing, as one stopped during a turn says nothing, and the switch goes ahead: the new
+  session opens and SessionStart fires. The line shows only when a SessionEnd hook matches. The
+  exit's SessionEnd, the window's and `-p`'s, has no such stop and waits up to its shared limit.
 - **`-p`'s SessionEnd `other`** fires after the answer is printed and before copy mode's step, so
   the copy's line stays the last. It fires after a Ctrl-C stop too: `-p`'s first Ctrl-C stops the
   turn and the run ends as usual, not through `exitOn`, which choice 19 is about.

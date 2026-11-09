@@ -657,10 +657,10 @@ export function App(props: AppProps) {
     picker: picking,
     question: ui.question !== null,
   };
-  // Where vim takes Esc first (vimFirst) the line names it twice; a key chat:cancel has with Ctrl or Alt never goes to
-  // vim (choice 31).
   // A pick from /resume's list, called without await, so nothing may escape, as the model list's pick (queue.ts, pick).
   const pickSession = (id: string) => void fns.pickSession(id).catch((err) => fns.say({ text: errorText(err), color: "red" }));
+  // Where vim takes Esc first (vimFirst) the line names it twice; a key chat:cancel has with Ctrl or Alt never goes to
+  // vim (choice 31).
   const stop = ui.keyOf("chat:cancel", "Chat", "escape");
   const escFirst = fns.vimFirst() && ui.table.keysFor("chat:cancel", "Chat").includes("escape");
   const workingLine = ui.busy && (

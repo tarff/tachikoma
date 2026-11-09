@@ -176,7 +176,8 @@ export class Session {
   // (Task 8).
   readonly #nextText: { event: Event; text: string }[] = [];
   // SessionStart's hooks still running (Task 10): the next turn waits for them, so their text reaches its request. `#stopStart`
-  // stops them at a load or the session's end, never at a turn's stop, after which their text waits for the next turn.
+  // stops them at a load or the session's end, never at a turn's stop, after which their text waits for the next turn. Only
+  // its sync hooks take the stop: async ones are left running, as every event's are but SessionEnd's (hooks.ts).
   #starting: Promise<void> | undefined;
   #stopStart: AbortController | undefined;
 
@@ -267,11 +268,23 @@ export class Session {
   // still running are stopped first (Task 10's code review). Refused while a turn runs, as a load is, so a switch that
   // cannot be made ends nothing: /resume's pick under a turn started under its list. The window's exit is let through
   // only as a guard: no exit happens during a turn, as /exit waits for it in the queue and the exit keys do nothing then
-  // (keyRouting.ts), and were one to, the window would close all the same (queue.ts, leave).
-  async end(reason: "prompt_input_exit" | "clear" | "resume" | "other"): Promise<void> {
+  // (keyRouting.ts), and were one to, the window would close all the same (queue.ts, leave). `signal`, a switch's Esc,
+  // stops its hooks, saying nothing of them, as a stop during a turn says nothing, and the session ends all the same (the
+  // user's choice, 2026-11-09: "Esc stops it"); the exit's SessionEnd has none.
+  async end(reason: "prompt_input_exit" | "clear" | "resume" | "other", signal?: AbortSignal): Promise<void> {
     if (this.#running && reason !== "prompt_input_exit") throw new Error("A turn is already running");
     this.#stopStarting();
-    await this.opts.hooks?.fire("SessionEnd", { reason }, { match: reason });
+    try {
+      await this.opts.hooks?.fire("SessionEnd", { reason }, { match: reason, signal });
+    } catch (err) {
+      if (!signal?.aborted) throw err;
+    }
+  }
+
+  // Whether end(reason) would run a hook now, for a switch's working line (queue.ts, switchTo): never while a turn runs, as
+  // end is refused then.
+  ends(reason: "clear" | "resume" | "other"): boolean {
+    return !this.#running && (this.opts.hooks?.has("SessionEnd", reason) ?? false);
   }
 
   #stopStarting(): void {

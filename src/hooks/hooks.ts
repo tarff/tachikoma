@@ -128,10 +128,12 @@ export class Hooks {
     // (release 8b plan, choice 5), or that it asked to stop or to block, which it cannot: whatever combine would take as a
     // sync hook's stop or block, the stop winning as there (the user's choices, 2026-11-09). SessionEnd alone waits for its
     // async hooks too, within its shared limit, as Tachikoma is ending: none is left running then, and no failure line is
-    // lost (Task 10's code review, following the user's choices for the window's exit).
+    // lost (Task 10's code review, following the user's choices for the window's exit); being waited for, they are stopped
+    // with the rest, as a switch's Esc stops them (the user's choice, 2026-11-09: "Esc stops it").
+    const end = event === "SessionEnd";
     const left: Promise<void>[] = [];
     for (const hook of picked.filter((h) => h.async)) {
-      const done = run(hook).then((r) => {
+      const done = run(hook, end ? opts.signal : undefined).then((r) => {
         runs.push(r);
         const c = combine(event, [r]);
         const command = commandOf(hook);
@@ -145,9 +147,10 @@ export class Hooks {
       });
       left.push(done);
     }
-    // A stop ends every hook given the signal and rejects with Cancelled, as a command does (run.ts).
-    const results = await Promise.all(picked.filter((h) => !h.async).map((h) => run(h, opts.signal)));
-    if (event === "SessionEnd") await Promise.all(left);
+    // A stop ends every hook given the signal and rejects with Cancelled, as a command does (run.ts). At SessionEnd one wait
+    // takes both kinds, so a stop's Cancelled from either is heard, never an unhandled rejection.
+    const sync = Promise.all(picked.filter((h) => !h.async).map((h) => run(h, opts.signal)));
+    const [results] = await Promise.all([sync, end ? Promise.all(left) : undefined]);
     runs.push(...results);
     const combined = combine(event, results);
     this.#say(event, lead, combined.failures, combined.messages);

@@ -9445,6 +9445,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       `const fs = require("fs");
 let text = "";
 process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.writeFileSync(${JSON.stringify(at("pid"))}, String(process.pid));
   fs.appendFileSync(${JSON.stringify(at("inputs.jsonl"))}, text + "\\n");
   const poll = () => (fs.existsSync(${JSON.stringify(at(held))}) ? process.stdout.write(${JSON.stringify(stdout)}) : setTimeout(poll, 20));
   poll();
@@ -9452,7 +9453,17 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     );
     const hooks: Hook[] = [{ event: "SessionEnd", matcher: { all: true }, command: process.execPath, args: [script], async: false, where: "" }];
     const inputs = () => (existsSync(at("inputs.jsonl")) ? readFileSync(at("inputs.jsonl"), "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l)) : []);
-    return { hooks, script, inputs, go: () => writeFileSync(at("go"), "") };
+    // Whether the hook's process is still running, once it has started.
+    const alive = () => {
+      try {
+        process.kill(Number(readFileSync(at("pid"), "utf8")), 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    onTestFinished(() => void (existsSync(at("pid")) && alive() && process.kill(Number(readFileSync(at("pid"), "utf8")))));
+    return { hooks, script, inputs, alive, go: () => writeFileSync(at("go"), "") };
   }
   const closed = (sessions: string, id: string) => {
     const lock = openSession(sessions, id);
@@ -9475,6 +9486,26 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     hook.go();
     await untilSlowly(() => closed(sessions, session.id));
     expect(left).toEqual([["SessionEnd hook: bye\tnow\\u0007"]]);
+  });
+
+  // Task 10's code review, point 5 (the user's choice, 2026-11-09: "Esc stops it"): a switch's SessionEnd shows the working
+  // line, and Esc stops its hooks, saying nothing of them, and the switch goes ahead.
+  it("shows the working line while /clear's SessionEnd hooks run, and Esc stops them and the switch goes ahead", async () => {
+    const hook = endHook("", "never");
+    const { app, session } = await mount([reply("one")], { save: true, hooks: hook.hooks });
+    await type(app, "first");
+    await untilSlow(app, "one");
+    const old = session.id;
+    await type(app, "/clear");
+    await untilSlowly(() => hook.inputs().length === 1);
+    await untilSlow(app, "Esc to stop");
+    expect(app.lastFrame()).toMatch(/\n. Working · \d+s · Esc to stop\n/);
+    await press(app, "\u001b");
+    await untilSlow(app, "Started a new session; the last one is kept (tachi --resume lists it).");
+    expect(session.id).not.toBe(old);
+    await untilSlowly(() => !hook.alive(), 600); // a tree kill on Windows takes 2-4 s (taskkill /T)
+    expect(app.lastFrame()).not.toContain("Esc to stop");
+    expect(app.lastFrame()).not.toContain("✗");
   });
 
   // Task 10's code review: what is typed while a switch's SessionEnd runs waits in the queue, then goes to the new session.

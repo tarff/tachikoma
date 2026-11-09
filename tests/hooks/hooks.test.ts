@@ -471,4 +471,17 @@ describe("Hooks", { timeout: 15_000 }, () => {
     ]);
     expect(hooks.runs).toHaveLength(2);
   });
+
+  // The user's choice, 2026-11-09 ("Esc stops it"): a switch's stop ends SessionEnd's async hooks too, as it waits for them.
+  it("stops SessionEnd's async hooks with the rest, and rejects with Cancelled", async () => {
+    const p = await place();
+    const stop = new AbortController();
+    const never = path.join(p.root, "never");
+    const { hooks, errors } = setup(p, [p.hook("a", { event: "SessionEnd", async: true }, { go: never })]);
+    const firing = hooks.fire("SessionEnd", {}, { signal: stop.signal });
+    while (p.inputs("a").length < 1) await pause(20);
+    stop.abort();
+    await expect(firing).rejects.toThrow("Cancelled");
+    expect(errors).toEqual([]);
+  });
 });
