@@ -102,7 +102,7 @@ function runLine(r: Run): Line {
   const under = [
     ...(c.block && (r.event === "Stop" || r.event === "SubagentStop") ? [c.block] : []),
     ...c.context.map((x) => x.text),
-    // As combine reads them, which drops both beside a continue: false, as the call never runs (Task 12's code review).
+    // As combine reads them, which drops both beside a continue: false, as a stop ends the turn (Task 12's code review).
     ...(c.rewrite ? [JSON.stringify(c.rewrite.input, null, 2)] : []),
     ...("output" in c && outputFrom(tool, c.output) === null
       ? [`its updatedToolOutput was not used: it does not match ${visible(tool)}'s result`]

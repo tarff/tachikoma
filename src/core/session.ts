@@ -209,8 +209,9 @@ export class Session {
 
   // Takes a saved or new conversation in place of this one, as the judge, the subagents' worker and the screen hold this
   // object (release 8a plan, choice 1). The providers sent no pictures stay so, as the user's answer holds for the window
-  // (user, 2026-11-06: "Keep for the window").
-  load(c: Conversation): void {
+  // (user, 2026-11-06: "Keep for the window"). `keepRuns`: /branch's, the same conversation, whose last turn Ctrl+O still
+  // shows with its hook runs (the user's choice, 2026-11-10).
+  load(c: Conversation, opts: { keepRuns?: boolean } = {}): void {
     // A turn running would go on adding its messages and results to the conversation loaded.
     if (this.#running) throw new Error("A turn is already running");
     this.id = c.id;
@@ -224,7 +225,7 @@ export class Session {
     this.#stopStarting(); // nor the text of SessionStart's hooks still running for it, which are stopped (Task 10's code review)
     // Nor its hook runs, a switch's SessionEnd among them, which Ctrl+O would list under this conversation's last turn; the
     // SessionStart fired after the load begins the new list (Task 12's code review).
-    if (!this.opts.subagent) this.opts.hooks?.newTurn();
+    if (!this.opts.subagent && !opts.keepRuns) this.opts.hooks?.newTurn();
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();

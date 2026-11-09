@@ -424,7 +424,7 @@ export const queue = (ui: UI, fns: Fns) => {
     }
     try {
       await ui.session.end(how.end, signal);
-      ui.session.load(next.conversation);
+      ui.session.load(next.conversation, { keepRuns: branched }); // a branch keeps its hook runs too (the user, 2026-11-10)
     } catch (err) {
       next.release();
       throw err;

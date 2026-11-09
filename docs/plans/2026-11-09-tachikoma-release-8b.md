@@ -1195,7 +1195,9 @@ makes the next call fire it, with the line; the waiting line shows a `statusMess
   the list; `newPrompt()` now sets the prompt id alone. After a switch the old session's runs, its
   SessionEnd's among them, are gone, and the new session's SessionStart runs begin the list,
   shown under the conversation's last turn until the next turn starts its own (the builder's
-  choice).
+  choice). `/branch` keeps the list, as it keeps the last turn's messages and calls: Ctrl+O shows
+  that turn's runs, then the branch's own SessionEnd (`other`) and SessionStart (`fork`) runs
+  (`Session.load`'s `keepRuns`; the user's choice, 2026-11-10).
 
 Commit: `feat: hooks on the screen: their lines, Ctrl+O, /hooks, and live edits`.
 
@@ -1236,7 +1238,10 @@ section).
   that ends the window runs no SessionEnd, as a signal runs none; and one from Task 11's build: when
   the `shortened` line cannot be written, the conversation is unchanged, though its PreCompact,
   PostCompact and SessionStart `compact` hooks have run; and one from Task 12's build: a subagent's
-  hook `statusMessage` is not shown on the waiting line, nor an async hook's; the release list with
+  hook `statusMessage` is not shown on the waiting line, nor an async hook's; and one from Task 12's
+  code review: Ctrl+O reads each run on its own, so when one hook rewrites a call and another says
+  `continue: false` at the same event, it still shows the first one's rewrite, though the call was
+  not run with it; the release list with
   8 in five parts, 8e added; `/hooks` in the commands list; and, in "Headless runs", the
   `--json` bullet (README.md:1116, "prints one line per event: `message`, `usage`, `error` and
   `lead`") gains `hook-note`, each hook's grey line (Task 8, the user's choice, 2026-11-09).

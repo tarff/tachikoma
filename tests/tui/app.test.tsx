@@ -9953,6 +9953,25 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(shown).not.toContain("◆");
   });
 
+  // The user's choice, 2026-11-10: /branch keeps the last turn on screen and in Ctrl+O, so its hook runs stay, the branch's
+  // own SessionEnd (other) and SessionStart (fork) runs after them.
+  it("keeps the last turn's hook runs on Ctrl+O after /branch, with the branch's SessionEnd and SessionStart runs after them", async () => {
+    const h = nodeHook("");
+    const { app, hooks } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], {
+      save: true,
+      hooks: [h.hook("PreToolUse"), h.hook("SessionEnd"), h.hook("SessionStart")],
+    });
+    await type(app, "go");
+    await untilSlow(app, "done");
+    await type(app, "/branch");
+    await untilSlow(app, "Branched:");
+    await untilSlowly(() => hooks!.runs.length === 3);
+    await press(app, "\u000f");
+    const frame = app.lastFrame()!;
+    const shown = squashed(frame.slice(frame.lastIndexOf("Last turn:")));
+    expect(shown).toMatch(/^Lastturn:1toolcall●read_file.*◆PreToolUsehook[^◆]*forread_file[^◆]*◆SessionEndhook[^◆]*◆SessionStarthook/);
+  });
+
   // Task 12's spec review: /hooks's left-out rows follow a live edit too.
   it("lists on /hooks the hooks a live edit left out", async () => {
     const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
