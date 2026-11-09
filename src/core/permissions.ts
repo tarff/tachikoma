@@ -197,16 +197,19 @@ export class PermissionGate {
     return gate;
   }
 
-  // A PreToolUse hook's ask (release 8b plan, choice 15; design, "Tool hooks"): one question, the call named by `summary`,
-  // with the hook's reason as its grey note; a no declines as any no does. In never and headless nobody can answer, so
-  // the call is refused. A yes returns, and the call runs with withHook({ asked: true }).
+  // Where a PreToolUse hook's ask cannot be put, in never and headless, where nobody can answer it, the words of the
+  // call's refusal (release 8b plan, choice 15; design, "Tool hooks"), which the session says and tells the model; else
+  // undefined, and the question is put (hookAsks).
+  hookCannotAsk(reason: string): string | undefined {
+    if (this.mode === "never") return hookNeverRefusal(reason);
+    if (this.options.headless) return hookHeadlessRefusal(reason);
+    return undefined;
+  }
+
+  // A PreToolUse hook's ask, where it can be put (hookCannotAsk): one question, the call named by `summary`, with the
+  // hook's reason as its grey note; a no declines as any no does. A yes returns, and the call runs with
+  // withHook({ asked: true }).
   async hookAsks(summary: string, reason: string): Promise<void> {
-    const refuse = (message: string) => {
-      this.hookRefused();
-      return new Declined(message);
-    };
-    if (this.mode === "never") throw refuse(hookNeverRefusal(reason));
-    if (this.options.headless) throw refuse(hookHeadlessRefusal(reason));
     const shown = visible(summary);
     if (!(await this.ask(shown, undefined, undefined, undefined, [], hookNote(reason)))) throw new Declined(`${this.refusal}: ${shown}`);
   }

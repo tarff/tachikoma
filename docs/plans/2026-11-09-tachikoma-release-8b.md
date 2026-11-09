@@ -308,8 +308,8 @@ command with its `args` after it, escaped as the question escapes a command.
 | Two rewrites of one call (grey) | `Two PreToolUse hooks rewrote <tool>'s input; the first in the settings file was used, and <command> was ignored.` |
 | `defer` (grey) | `A PreToolUse hook answered "defer", which Tachikoma takes as no opinion.` |
 | A hook's ask, the question's note (grey) | `A hook asks: <reason>` (no reason: `A hook asks.`) |
-| A hook's ask in `never` (to the model) | `Not allowed in never mode: a PreToolUse hook asked for this call to be approved (<reason>).` (no reason: `Not allowed in never mode: a PreToolUse hook asked for this call to be approved.`; approved by the user, 2026-11-09) |
-| A hook's ask in `-p` (to the model) | `Not allowed: a PreToolUse hook asked for this call to be approved (<reason>), and -p cannot ask.` (no reason: `Not allowed: a PreToolUse hook asked for this call to be approved, and -p cannot ask.`; approved by the user, 2026-11-09) |
+| A hook's ask in `never` (to the model) | `Not allowed in never mode: a PreToolUse hook asked for this call to be approved (<reason>).` (no reason: `Not allowed in never mode: a PreToolUse hook asked for this call to be approved.`; approved by the user, 2026-11-09); also a grey line (the user, 2026-11-09) |
+| A hook's ask in `-p` (to the model) | `Not allowed: a PreToolUse hook asked for this call to be approved (<reason>), and -p cannot ask.` (no reason: `Not allowed: a PreToolUse hook asked for this call to be approved, and -p cannot ask.`; approved by the user, 2026-11-09); also a grey line (the user, 2026-11-09) |
 | A no to a hook's question (to the model) | the gate's own refusal, `The user declined: <tool> <its input as JSON>`, the call named as the question names it (approved by the user, 2026-11-09) |
 | A hook stopped the turn (grey) | `A <Event> hook stopped the turn: <stopReason>` (no reason: `A <Event> hook stopped the turn.`) |
 | A call not run after a stop (to the model) | `Not run: a hook stopped the turn.` |
@@ -699,6 +699,9 @@ withHook(h: { allow: true } | { asked: true }): PermissionGate;   // for one cal
 - **In `-p` a call a PreToolUse hook refused fails the run** (exit code 1), as a refusal the
   gate's ask reports does: a deny, a block, an ask `-p` cannot put, and a rewrite that cannot be
   used. The gate is told through `GateOptions.hookRefused`, which `cli.tsx` sets in `-p` only.
+- **A hook's ask that nobody can answer, in `-p` and in `never`, is also a grey line,** in the
+  same words the model gets, with or without a reason, as a deny, a block and a rewrite that
+  cannot be used are (`gate.hookCannotAsk` gives the words; the session says them).
 - **The hooks' `effort` field follows a live change of effort:** it reads the lead's own effort
   in force (`Provider.effort`, Anthropic's), as `lead` is read, not the launch's value.
 

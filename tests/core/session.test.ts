@@ -1578,13 +1578,28 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect([s.ran, s.outcomes]).toEqual([[], ["declined"]]);
   });
 
+  // The model's line is also the grey line (the user's choice, 2026-11-09), as a deny's is.
   it.each([
-    ["never", "Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?)."],
-    ["-p", "Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask."],
-  ] as const)("in %s, an ask refuses the call with its line to the model", async (mode, line) => {
-    const s = await setup({ mode, says: [{ stdout: decide("ask", "Sure?") }], turns: shellCall("echo hi") });
+    ["never", "Sure?", "Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?)."],
+    ["never", undefined, "Not allowed in never mode: a PreToolUse hook asked for this call to be approved."],
+    ["-p", "Sure?", "Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask."],
+    ["-p", undefined, "Not allowed: a PreToolUse hook asked for this call to be approved, and -p cannot ask."],
+  ] as const)("in %s, an ask (reason %s) refuses the call with its line to the model, and says it grey", async (mode, reason, line) => {
+    const s = await setup({ mode, says: [{ stdout: decide("ask", reason) }], turns: shellCall("echo hi") });
     await s.session.send("go");
-    expect([s.results(), s.asked, s.ran, s.outcomes]).toEqual([[{ output: line, isError: true }], [], [], ["declined"]]);
+    expect([s.results(), s.notes, s.asked, s.ran, s.outcomes]).toEqual([[{ output: line, isError: true }], [line], [], [], ["declined"]]);
+  });
+
+  // The question names the call with its whole input, a write's content included, so its refusal is cut as a tool's
+  // long output is (session.ts, truncate).
+  it("cuts the refusal the model gets for a no to a hook's question on a large write", async () => {
+    const content = "x".repeat(MAX_TOOL_OUTPUT);
+    const s = await setup({ mode: "ask", says: [{ stdout: decide("ask") }], turns: oneCall("write_file", { path: "big.txt", content }), answers: [false] });
+    await s.session.send("go");
+    const whole = `The user declined: write_file ${JSON.stringify({ path: "big.txt", content })}`;
+    const cut = `${whole.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${whole.length - MAX_TOOL_OUTPUT} more characters]`;
+    expect([s.results(), s.outcomes]).toEqual([[{ output: cut, isError: true }], ["declined"]]);
+    expect(existsSync(path.join(s.root, "big.txt"))).toBe(false);
   });
 
   // The user's own hook: it puts sfw before an install, which the stand-in shell records and never runs.

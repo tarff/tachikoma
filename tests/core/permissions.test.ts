@@ -426,15 +426,13 @@ describe("a hook's question", () => {
     expect(asked).toEqual([{ summary: "shell a\\u001b[8m", note: "A hook asks: b\\u202e" }]);
   });
 
-  it("refuses in never and headless without asking, each in its own words", async () => {
-    const never = gateIn("never", true);
-    await expect(never.gate.hookAsks("shell {}", "Sure?")).rejects.toThrow(
-      new Declined("Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?)."),
-    );
-    const headless = gateIn("project", true, { headless: true });
-    await expect(headless.gate.hookAsks("shell {}", "Sure?")).rejects.toThrow(
-      new Declined("Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask."),
-    );
-    expect([...never.asked, ...headless.asked]).toEqual([]);
+  it("gives the refusal's words in never and headless, where nobody can be asked, with and without a reason", () => {
+    const never = gateIn("never", true).gate;
+    expect(never.hookCannotAsk("Sure?")).toBe("Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).");
+    expect(never.hookCannotAsk("")).toBe("Not allowed in never mode: a PreToolUse hook asked for this call to be approved.");
+    const headless = gateIn("project", true, { headless: true }).gate;
+    expect(headless.hookCannotAsk("Sure?")).toBe("Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask.");
+    expect(headless.hookCannotAsk("")).toBe("Not allowed: a PreToolUse hook asked for this call to be approved, and -p cannot ask.");
+    expect(gateIn("project", true).gate.hookCannotAsk("Sure?")).toBeUndefined();
   });
 });

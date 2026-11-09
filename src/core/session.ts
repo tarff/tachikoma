@@ -558,7 +558,8 @@ export class Session {
       return [result(call, truncate(await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal })), false), "ok"];
     } catch (err) {
       // Ctrl-C at a question declines it and stops the turn: the call was cancelled, not declined.
-      if (err instanceof Declined) return [result(call, err.message, true), signal?.aborted ? "cancelled" : "declined"];
+      // Cut as a failure's is: a hook's question names the call with its whole input, a write's content included.
+      if (err instanceof Declined) return [result(call, truncate(err.message), true), signal?.aborted ? "cancelled" : "declined"];
       if (signal?.aborted) return [result(call, "Cancelled by the user.", true), "cancelled"]; // not a failure, so not logged
       return fail(truncate(errorText(err)));
     }
@@ -601,6 +602,10 @@ export class Session {
     // The question names the call that would run, by its name and input, as Ctrl+O does (choice 15).
     let gate = this.opts.ctx.gate;
     if (c.decision === "ask") {
+      // Where nobody can be asked, in never and -p, the refusal is a grey line too, as a deny's is (the user's choice,
+      // 2026-11-09).
+      const cannot = gate.hookCannotAsk(c.reason ?? "");
+      if (cannot !== undefined) return refused(cannot);
       await gate.hookAsks(`${call.name} ${JSON.stringify(input)}`, c.reason ?? "");
       gate = gate.withHook({ asked: true });
     } else if (c.decision === "allow") gate = gate.withHook({ allow: true });
