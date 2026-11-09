@@ -22,8 +22,8 @@ export interface Menu {
   entries: Entry[];
 }
 
-// The commands, as the README lists them, with what each does; /hooks has no words for it yet (release 8b plan, Task 12).
-const COMMANDS: { label: string; run: string; note?: string }[] = [
+// The commands, as the README lists them, with what each does.
+const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/lead <provider:model>", run: "/lead", note: "Switch the lead model; alone, pick it from a list" },
   { label: "/model", run: "/model", note: "Pick the lead model from a list" },
   { label: "/login chatgpt", run: "/login chatgpt", note: "Sign in to ChatGPT" },
@@ -36,7 +36,7 @@ const COMMANDS: { label: string; run: string; note?: string }[] = [
   { label: "/compact [words]", run: "/compact", note: SHORTEN_WORDS.compact },
   { label: "/autocompact <tokens>", run: "/autocompact", note: SHORTEN_WORDS.autocompact },
   { label: "/tasks", run: "/tasks", note: "List the subagents; /tasks t1 shows one, /tasks stop stops them" },
-  { label: "/hooks", run: "/hooks" },
+  { label: "/hooks", run: "/hooks", note: "List the hooks in force" }, // the user's words, 2026-11-10 (release 8b plan, Task 12)
   { label: "/errors", run: "/errors", note: "Summarise the error log" },
   { label: "/screen", run: "/screen", note: "Switch between full screen and classic" },
   { label: "/settings", run: "/settings", note: "Open the settings file in your editor" },

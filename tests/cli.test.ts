@@ -1145,6 +1145,13 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   it("lists -c, -r, -n and --fork-session in the help", () => {
     expect(tachi("--help").stdout).toContain(HELP_SESSIONS);
   });
+
+  // Release 8b plan, Task 12: /hooks among the commands, in the user's words (2026-11-10), after the /tasks part.
+  it("lists /hooks in the help, after /tasks", () => {
+    expect(tachi("--help").stdout).toContain(
+      "subagents (/tasks t1 shows one, /tasks stop stops them), /hooks lists the hooks in force,\n/errors summarises the error log,",
+    );
+  });
 });
 
 // Release 7 plan, Task 16: live link's launch, in-process, with Docker a stand-in that records its calls and answers by

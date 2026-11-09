@@ -9649,7 +9649,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(frame).toContain('Last turn: 1 tool call\n● read_file {\n  "path": "a.txt"\n}\n  ⎿ ');
     expect(frame).toMatch(/⎿ [^\n]*from b/);
     const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const run = (event: string) => `${literal(`◆${event}hook${squashed(h.command)}·exit0·`)}\\d+ms`;
+    const run = (event: string) => `${literal(`◆${event}hook${squashed(h.command)}forread_file·exit0·`)}\\d+ms`;
     const shown = squashed(frame.slice(frame.lastIndexOf("Last turn:")));
     const rewrite = literal('⎿checked⎿{"file_path":"b.txt"}');
     const unused = literal("⎿itsupdatedToolOutputwasnotused:itdoesnotmatchread_file'sresult");
@@ -9739,6 +9739,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     write({});
     await untilSlow(app, "Hooks changed: none in force.");
     expect(hooks!.config).toEqual({ hooks: [], off: false, leftOut: [] });
+    write({ hooks: { ...entry("Read"), Stop: entry("Read").PreToolUse.map(({ hooks: h }) => ({ hooks: [...h, { type: "command", command: "x" }] })) } });
+    await untilSlow(app, "Hooks changed: 3 hooks at 2 events."); // the plural, approved by the user, 2026-11-10
   });
 
   it("shows a running hook's statusMessage on the waiting line, escaped, then the line's own words again", async () => {
@@ -9780,5 +9782,142 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       expect(app.lastFrame()).toContain("\u001b[90mGit Bash was not found");
       expect(squashed(app.lastFrame()!)).toContain(squashed(line));
     });
+  });
+
+  // Task 12's spec review (the user's words, 2026-11-10): each run names its own tool, by Tachikoma's name.
+  it("names each tool hook run's tool on Ctrl+O, two calls in a turn", async () => {
+    const h = nodeHook("");
+    const calls = { parts: [...callTool("c1", "read_file", { path: "a.txt" }).parts, ...callTool("c2", "find_files", { pattern: "*.txt" }).parts], usage };
+    const { app } = await mount([calls, reply("done")], { hooks: [h.hook("PreToolUse")] });
+    await type(app, "go");
+    await untilSlow(app, "done");
+    await press(app, "\u000f");
+    const shown = squashed(app.lastFrame()!);
+    expect(shown).toMatch(new RegExp(`◆PreToolUsehook[^◆]*forread_file·exit0·\\d+ms◆PreToolUsehook[^◆]*forfind_files·exit0·\\d+ms`));
+  });
+
+  // Task 12's spec review: each line in the window, triggered for real ("Lines this plan adds"). A read of a.txt, which
+  // ask mode runs unasked, with PreToolUse hooks answering as given; `line` gets the hooks' commands.
+  const pre = (answer: object) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...answer } });
+  it.each([
+    [
+      "a refusal with its reason",
+      [pre({ permissionDecision: "deny", permissionDecisionReason: "not the notes" })],
+      () => "A PreToolUse hook refused read_file: not the notes",
+    ],
+    ["a refusal with no reason", [pre({ permissionDecision: "deny" })], () => "A PreToolUse hook refused read_file."],
+    [
+      "a rewrite that cannot be used",
+      [pre({ updatedInput: { file_path: 5 } })],
+      (c: string[]) => `A PreToolUse hook's rewrite of read_file could not be used ("file_path" must be text in quotes): ${c[0]}`,
+    ],
+    [
+      "two rewrites",
+      [pre({ updatedInput: { file_path: "a.txt" } }), pre({ updatedInput: { file_path: "b.txt" } })],
+      (c: string[]) => `Two PreToolUse hooks rewrote read_file's input; the first in the settings file was used, and ${c[1]} was ignored.`,
+    ],
+    ["defer", [pre({ permissionDecision: "defer" })], () => 'A PreToolUse hook answered "defer", which Tachikoma takes as no opinion.'],
+  ] as [string, string[], (commands: string[]) => string][])("shows a PreToolUse hook's line in the window: %s", async (_name, answers, line) => {
+    const made = answers.map((a) => nodeHook(`process.stdout.write(${JSON.stringify(a)});`));
+    const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { hooks: made.map((m) => m.hook("PreToolUse")) });
+    await type(app, "go");
+    await untilSlow(app, "done");
+    expect(squashed(app.lastFrame()!)).toContain(squashed(line(made.map((m) => m.command))));
+  });
+
+  it("shows in grey that never mode cannot put a PreToolUse hook's question", async () => {
+    await inColour(async () => {
+      const h = nodeHook(`process.stdout.write(${JSON.stringify(pre({ permissionDecision: "ask", permissionDecisionReason: "Sure?" }))});`);
+      const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { mode: "never", hooks: [h.hook("PreToolUse")] });
+      await type(app, "go");
+      await untilSlow(app, "done");
+      expect(app.lastFrame()).toContain("\u001b[90mNot allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).");
+    });
+  });
+
+  it("puts a PreToolUse hook's question with its reason as the question's grey note", async () => {
+    const h = nodeHook(`process.stdout.write(${JSON.stringify(pre({ permissionDecision: "ask", permissionDecisionReason: "Sure?" }))});`);
+    const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { hooks: [h.hook("PreToolUse")] });
+    await type(app, "go");
+    await untilSlow(app, "Allow");
+    expect(app.lastFrame()).toMatch(/A hook asks: Sure\?\nAllow read_file/);
+    await press(app, "n");
+    await untilSlow(app, "done");
+  });
+
+  it.each([
+    ["once", 'process.stdout.write(n === 1 ? JSON.stringify({ decision: "block", reason: "again" }) : "");', 2, "A Stop hook kept the turn going: again"],
+    [
+      "8 times in a row",
+      'process.stdout.write(JSON.stringify({ decision: "block", reason: "again" }));',
+      9,
+      "Stop hooks kept the turn going 8 times in a row; it ends here.",
+    ],
+  ])("shows a Stop hook keeping the turn going %s", async (_name, body, replies, line) => {
+    const h = nodeHook(body);
+    const { app } = await mount(Array.from({ length: replies }, (_, i) => reply(`reply ${i + 1}`)), { hooks: [h.hook("Stop")] });
+    await type(app, "go");
+    await untilSlowly(() => app.lastFrame()!.includes(line), 600); // nine Node starts for the eight
+    expect(app.lastFrame()).toContain(`reply ${replies}`);
+  });
+
+  it.each([
+    ["block", 'process.stderr.write("no\\n"); process.exitCode = 2;', "asked to block, but an \"async\" hook cannot block"],
+    ["stop", 'process.stdout.write(JSON.stringify({ continue: false, stopReason: "enough" }));', "asked to stop, but an \"async\" hook cannot stop"],
+  ])("shows in red that an async hook cannot %s", async (_name, body, words) => {
+    await inColour(async () => {
+      const h = nodeHook(body);
+      const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { hooks: [h.hook("PreToolUse", { async: true })] });
+      await type(app, "go");
+      await untilSlowly(() => squashed(app.lastFrame()!).includes(squashed(`✗ PreToolUse hook failed: ${h.command} ${words}`)));
+      expect(app.lastFrame()).toContain("\u001b[31m✗ PreToolUse hook failed: ");
+    });
+  });
+
+  // Nothing runs: no program of that name is on PATH, and exec form needs no shell.
+  it("shows in red a hook that could not start", async () => {
+    const hook: Hook = { event: "PreToolUse", matcher: { all: true }, command: "tachi-no-such-program", args: [], async: false, where: '"PreToolUse"' };
+    const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { hooks: [hook] });
+    await type(app, "go");
+    await untilSlow(app, "done");
+    expect(app.lastFrame()).toContain("✗ PreToolUse hook failed: tachi-no-such-program could not start (not found on PATH)");
+  });
+
+  // On Windows a Node process that kills itself so exits with code 1, no signal reported (measured 2026-11-10), so the line
+  // can be seen only elsewhere.
+  it.skipIf(process.platform === "win32")("shows in red a hook ended by a signal", async () => {
+    const h = nodeHook('process.kill(process.pid, "SIGTERM");');
+    const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { hooks: [h.hook("PreToolUse")] });
+    await type(app, "go");
+    await untilSlow(app, "done");
+    expect(squashed(app.lastFrame()!)).toContain(squashed(`✗ PreToolUse hook failed: ${h.command} was ended by signal SIGTERM`));
+  });
+
+  // Task 11's line, through /compact: the shortened conversation fits the lead's window, but not with SessionStart's text.
+  it("says SessionStart's text was left out of a shortening it would not let fit", async () => {
+    const h = nodeHook('process.stdout.write("y".repeat(9000));');
+    const first = { parts: [{ type: "text" as const, text: "noted" }], usage: { ...usage, input: 600 } }; // the window nearly full
+    const lead = Object.assign(new FakeProvider("a", [first, reply("Compacted.")]), { contextWindow: async () => 700 });
+    const { app } = await mount([], { lead, save: true, hooks: [h.hook("SessionStart", { matcher: { names: ["compact"] } })] });
+    await type(app, "hi");
+    await untilSlow(app, "noted");
+    await type(app, "/compact");
+    const line = "SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.";
+    await untilSlowly(() => squashed(app.lastFrame()!).includes(squashed(line)));
+  });
+
+  // Task 12's spec review: /hooks's left-out rows follow a live edit too.
+  it("lists on /hooks the hooks a live edit left out", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    onTestFinished(() => removeTree(home));
+    const where = path.join(settingsDir(home), "settings.json");
+    mkdirSync(settingsDir(home), { recursive: true });
+    writeFileSync(where, "{}");
+    const { app } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} }, hooks: [] });
+    writeFileSync(where, JSON.stringify({ hooks: { Notification: [{ hooks: [{ type: "command", command: "x" }] }] } }));
+    const warning = '"Notification" is not an event Tachikoma runs hooks at; its hooks were left out';
+    await untilSlowly(() => squashed(app.lastFrame()!).includes(squashed(`settings.json: "hooks": ${warning}`)));
+    await type(app, "/hooks");
+    expect(app.lastFrame()).toContain(`No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  ${warning}\n`);
   });
 });

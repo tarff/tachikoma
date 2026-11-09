@@ -58,6 +58,11 @@ describe("commandMenu", () => {
     });
   });
 
+  // Release 8b plan, Task 12; the note in the user's words, 2026-11-10.
+  it("lists /hooks after /tasks, saying what it does", () => {
+    expect(commandMenu("/", 1)!.entries[12]).toEqual({ label: "/hooks", note: "List the hooks in force", fill: "/hooks ", run: "/hooks" });
+  });
+
   it("narrows as the command is typed, in any case", () => {
     expect(labels(commandMenu("/lo", 3))).toEqual(["/login chatgpt", "/logout chatgpt"]);
     expect(labels(commandMenu("/LOGO", 5))).toEqual(["/logout chatgpt"]);

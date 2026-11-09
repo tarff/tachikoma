@@ -334,7 +334,7 @@ command with its `args` after it, escaped as the question escapes a command.
 | Text for the model's heading | `<Event> hook:` |
 | SessionStart text left out after a shortening (grey) | `SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.` |
 | A subagent's hook lines | each of the lines above said in a subagent's session starts `<id>: `, as its errors do: `t1: A PreToolUse hook refused shell: <reason>`; the lines that name the subagent already do not (`A SubagentStop hook kept t1 going: <reason>`, `A SubagentStop hook kept t1 going.`, `SubagentStop hooks kept t1 going 8 times in a row; it ends here.`; approved by the user, 2026-11-09) |
-| Hooks changed (grey) | `Hooks changed: <n> hooks at <m> events.`; none left: `Hooks changed: none in force.`; turned off: `Hooks changed: all off (disableAllHooks).` |
+| Hooks changed (grey) | `Hooks changed: <n> hooks at <m> events.`, singular for 1 (`Hooks changed: 1 hook at 1 event.`; the user, 2026-11-10); none left: `Hooks changed: none in force.`; turned off: `Hooks changed: all off (disableAllHooks).` |
 | No Git Bash, at the launch (grey) | `Git Bash was not found, so hooks run by a shell use Windows PowerShell; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe to change that.` |
 | A left-out event (launch warning) | `settings.json: "hooks": "<Event>" is not an event Tachikoma runs hooks at; its hooks were left out` |
 | A left-out kind (launch warning) | `settings.json: "hooks": "<Event>" has a "<type>" hook; only "command" hooks run, so it was left out` |
@@ -344,8 +344,10 @@ command with its `args` after it, escaped as the question escapes a command.
 | An unknown key in an entry (launch warning) | `settings.json: "hooks": "<Event>" has an entry with "<key>", which is not "matcher" or "hooks"; it was left out` (the key; the entry's hooks are read) |
 | A hook without `command` or `type` (problem: the file is not applied) | `settings.json: "hooks": "<Event>": a hook must have "command", such as {"type": "command", "command": "check.sh"}`, and the same with `"type"` |
 | A value of the wrong type in `hooks` or `disableAllHooks` (problem: the file is not applied) | `<place> must be <what> (got <the value as JSON>)`, as every entry's are, `<place>` one of `settings.json: "hooks"`, `settings.json: "hooks": "<Event>"`, then `: each entry`, `: each hook`, `: "matcher"` or `: a hook's "<field>"` after it, or `settings.json: "disableAllHooks"`; for example `settings.json: "hooks": "PreToolUse": a hook's "timeout" must be a number of seconds above 0 and no more than 2147483, such as 30 (got -1)`. A matcher that does not compile: `settings.json: "hooks": "<Event>": "matcher" "<text>" is not a regular expression that can be read (<the engine's words>)` |
-| `/hooks` | Heading `Hooks in force, from ~/.tachikoma/settings.json:`; per event `<Event>`, then a row each `  <matcher, or *> · <command> · <n> s` (an `async` one adds ` · async`); then `Left out:` and a row each `  <the warning's words after "hooks": >`; with none, `No hooks in force. They go in "hooks" in ~/.tachikoma/settings.json.`; turned off, `Hooks are off: "disableAllHooks" is true in ~/.tachikoma/settings.json.` |
-| Ctrl+O, a hook run (grey) | `◆ <Event> hook <command> · exit <n> · <ms> ms` (out of time: `· out of time`; could not start: `· could not start`), and under it after `⎿` what it handed the model, its rewrite as JSON, or `its updatedToolOutput was not used: it does not match <tool>'s result` |
+| `/hooks` | Heading `Hooks in force, from ~/.tachikoma/settings.json:`; per event `<Event>`, then a row each `  <matcher, or *> · <command> · <n> s` (an `async` one adds ` · async`); then `Left out:` and a row each `  <the warning's words after "hooks": >`; with none, `No hooks in force. They go in "hooks" in ~/.tachikoma/settings.json.`; turned off, `Hooks are off: "disableAllHooks" is true in ~/.tachikoma/settings.json.`; the file is named as the other lines name it, `~\.tachikoma\settings.json` on Windows (the user, 2026-11-10) |
+| The `/` menu's note for `/hooks` | `List the hooks in force` (the user, 2026-11-10) |
+| HELP, "In a session:" | `/hooks lists the hooks in force`, after the `/tasks` part (the user, 2026-11-10) |
+| Ctrl+O, a hook run (grey) | `◆ <Event> hook <command> · exit <n> · <ms> ms` (out of time: `· out of time`; could not start: `· could not start`; ended by a signal: `· ended by signal <SIGNAME>`, or with none known `· ended by an unknown signal`; at PreToolUse, PostToolUse and PostToolUseFailure the run names its tool by Tachikoma's name, `◆ PreToolUse hook check.sh for shell · exit 0 · 12 ms`; the user, 2026-11-10), and under it after `⎿` what it handed the model, its rewrite as JSON, or `its updatedToolOutput was not used: it does not match <tool>'s result` |
 
 ## Task 1: The hooks entry in the settings file
 
@@ -1174,6 +1176,20 @@ error output, each starting with its id (finding 3); Ctrl+O after a turn with a 
 rewrite; `/hooks` with hooks, with left-out ones, with none, and off; a live edit adding a hook
 makes the next call fire it, with the line; the waiting line shows a `statusMessage`.
 
+**Decided at the build** (2026-11-10, the user's words at Task 12's spec review):
+- The `/` menu's note for `/hooks` is `List the hooks in force`; HELP says `/hooks lists the
+  hooks in force` after the `/tasks` part.
+- Ctrl+O: a run a signal ended says `· ended by signal <SIGNAME>`, or `· ended by an unknown
+  signal`; a run at a tool event names its tool by Tachikoma's name, `for <tool>`, after its
+  command.
+- `Hooks changed` is singular for 1 (`1 hook at 1 event`).
+- `/hooks` names the file as the other lines do (`shownFile()`), `~\.tachikoma\settings.json` on
+  Windows.
+- The waiting line shows the statusMessage of the lead's sync hooks only: a subagent's hook's,
+  and an async hook's, does not reach it (a known limit, Task 13).
+- The Git Bash line is worked out by `gitBashLine` (clilib.ts) and tested there: Windows sets
+  `ProgramFiles` for each child process, so a launch in a test cannot hide Git for Windows' install.
+
 Commit: `feat: hooks on the screen: their lines, Ctrl+O, /hooks, and live edits`.
 
 ## Task 13: Documents and the terminal checklist
@@ -1212,10 +1228,11 @@ section).
   of tool calls, and their results:" in the shortened message; and one from Task 10's build: a crash
   that ends the window runs no SessionEnd, as a signal runs none; and one from Task 11's build: when
   the `shortened` line cannot be written, the conversation is unchanged, though its PreCompact,
-  PostCompact and SessionStart `compact` hooks have run; the release list with 8 in five
-  parts, 8e added; `/hooks` in the commands list; and, in "Headless runs", the `--json` bullet
-  (README.md:1116, "prints one line per event: `message`, `usage`, `error` and `lead`") gains
-  `hook-note`, each hook's grey line (Task 8, the user's choice, 2026-11-09).
+  PostCompact and SessionStart `compact` hooks have run; and one from Task 12's build: a subagent's
+  hook `statusMessage` is not shown on the waiting line, nor an async hook's; the release list with
+  8 in five parts, 8e added; `/hooks` in the commands list; and, in "Headless runs", the
+  `--json` bullet (README.md:1116, "prints one line per event: `message`, `usage`, `error` and
+  `lead`") gains `hook-note`, each hook's grey line (Task 8, the user's choice, 2026-11-09).
 - **The design** gets an "As built" section listing this plan's choices as the user settled them.
 
 **All README wording goes to the user before it is committed.**
