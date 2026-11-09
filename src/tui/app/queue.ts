@@ -2,6 +2,7 @@ import { lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { withLock } from "../../auth/lock.js";
 import { leadGone, type Opened } from "../../clilib.js";
+import type { ErrorEvent } from "../../core/bus.js";
 import { summarize } from "../../core/errorlog.js";
 import { exportText } from "../../core/exportText.js";
 import { type Protection, visible } from "../../core/permissions.js";
@@ -305,15 +306,46 @@ export const queue = (ui: UI, fns: Fns) => {
   // handed back, to print once Ink has ended (release 7 plan, Task 21). From the first step the App's own keys, pastes
   // and mouse are off (phase.ts, review), and nothing more starts. A view printed out comes back first, so the review
   // can draw. A copy with nothing to review is removed instead, its line printed (choice 121; copies.ts, dropIfNothing).
+  // Then, in every mode, SessionEnd fires (endSession, below) before Ink ends (release 8b plan, Task 10).
   const leave = () => {
-    const c = ui.copy;
-    if (!c) return ui.exit();
     if (ui.leaving.current) return;
     ui.leaving.current = true;
     ui.tasks.stop();
     ui.abort.current?.abort();
     ui.rerender((n) => n + 1);
-    void (async () => {
+    const c = ui.copy;
+    void (c ? review(c) : Promise.resolve())
+      .then(endSession)
+      .finally(() => ui.exit());
+  };
+  // SessionEnd as the user leaves, once copy mode's review is done: the screen stays as it is meanwhile, its keys off
+  // (phase.ts, review), and its hooks have 1.5 s, or a hook's own longer timeout up to 60 s (hooks.ts). Its lines are said
+  // in the window as any hook's are; in full screen they go with the second screen, so they are handed back too, the
+  // same words escaped, to print once Ink has ended (approved by the user, 2026-11-09). A turn stopped just now may still be
+  // ending, which Session.end allows for this reason alone.
+  const endSession = async () => {
+    const said: string[] = [];
+    // As App.tsx's onError draws a hook's failure; the window shows a hook's note as the line alone (Task 12).
+    const onError = (e: ErrorEvent) => void (e.kind === "hook" && e.attempted === "SessionEnd hook" && said.push(`✗ hook: ${e.message}`));
+    const onNote = (line: string) => void (line.startsWith("SessionEnd hook: ") && said.push(line));
+    ui.bus.on("error", onError);
+    ui.bus.on("hook-note", onNote);
+    try {
+      await ui.session.end("prompt_input_exit");
+    } catch {
+      // Only a listener of its lines that throws gets here; the window closes all the same.
+    } finally {
+      ui.bus.off("error", onError);
+      ui.bus.off("hook-note", onNote);
+    }
+    if (!said.length) return;
+    if (ui.fullNow.current) ui.leftLines?.(said.map((l) => visible(l)));
+    // In classic mode they stay in the terminal: React commits them before Ink ends, as /screen waits for it (handover.tsx).
+    else await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  // Copy mode's part of leaving (leave, above). Its failures are its own lines, so it never rejects.
+  const review = (c: NonNullable<UI["copy"]>) =>
+    (async () => {
       await fns.comeBack();
       if (!(await c.stop())) return c.ended([NOT_GONE, kept(c.copy.session)]);
       await withLock(copyLock(c.copy.folder), async () => {
@@ -335,10 +367,7 @@ export const queue = (ui: UI, fns: Fns) => {
         const end = await new Promise<ReviewEnd>((onEnd) => ui.setReviewing({ protection, onEnd, read }));
         c.ended(end.lines);
       });
-    })()
-      .catch((err) => c.ended([visible(errorText(err)), kept(c.copy.session)]))
-      .finally(() => ui.exit());
-  };
+    })().catch((err) => c.ended([visible(errorText(err)), kept(c.copy.session)]));
   // /clear, /resume and /branch are refused while a subagent runs, so no answer can arrive in the wrong session (release 8a
   // design, "Resuming"); during a turn they wait in the queue, as every command does. Null when none runs.
   const subagentsRunning = (command: string): Line | null => {

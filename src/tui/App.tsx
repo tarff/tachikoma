@@ -120,6 +120,9 @@ export interface AppProps {
   // The window's saved sessions (clilib.ts, WindowSessions), which /clear, /resume and /branch switch between and /rename
   // names (release 8a plan, Task 7).
   saved: WindowSessions;
+  // Takes the lines SessionEnd's hooks said as the user left in full screen, escaped, to print once Ink has ended, as the
+  // second screen takes them away (queue.ts, leave; release 8b plan, Task 10).
+  leftLines?: (lines: string[]) => void;
 }
 
 type OutputArea = ReturnType<typeof output>;
@@ -455,7 +458,8 @@ export function App(props: AppProps) {
     const { protection, onEnd, read } = ui.reviewing;
     return <Review copy={ui.copy.copy} bindings={ui.table} protection={protection} onEnd={onEnd} read={read} />;
   }
-  if (ui.leaving.current) return <Text color="gray">{ui.leavingLine.current ?? STOPPING}</Text>;
+  // Leaving without copy mode, the screen stays as it is while SessionEnd's hooks run, its keys off (queue.ts, leave).
+  if (ui.leaving.current && ui.copy) return <Text color="gray">{ui.leavingLine.current ?? STOPPING}</Text>;
 
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).
   const d = ui.detail.current;

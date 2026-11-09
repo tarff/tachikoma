@@ -740,6 +740,9 @@ if (parsed.print !== undefined) {
   // Copy mode's review at the end (App.tsx, copy; release 7 plan, Task 21): its lines, printed once Ink has ended, and the
   // protection worked out on the host when it opens, never the gate's view of the box; without it, no review.
   const reviewed: string[] = [];
+  // SessionEnd's lines as the user left in full screen, escaped, printed to stderr after the review's (queue.ts, leave;
+  // approved by the user, 2026-11-09).
+  const left: string[] = [];
   const copied = box?.copy;
   const copy = box && copied && {
     copy: { session: sessionId, folder: copied.folder, manifest: copied.manifest },
@@ -798,6 +801,7 @@ if (parsed.print !== undefined) {
       live={{ loaded, given: givenBy(parsed, process.env), ...(netLine ? { networkLine: netLine } : {}), ...(gitLine ? { gitLine } : {}) }}
       {...(copy ? { copy } : {})}
       saved={windowSessions}
+      leftLines={(lines) => left.push(...lines)}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
@@ -816,6 +820,7 @@ if (parsed.print !== undefined) {
   exited.then(
     () => {
       for (const line of reviewed) console.log(line);
+      for (const line of left) console.error(line);
     },
     () => {},
   );

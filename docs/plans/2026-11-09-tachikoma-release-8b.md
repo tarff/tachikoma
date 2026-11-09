@@ -995,6 +995,25 @@ folder; SessionStart's context reaches the first request; a SessionEnd hook that
   that cannot open its session ends nothing. `Session.end` is refused while a turn runs, as `load`
   is, so a pick made under a turn started under the list ends nothing either. `/branch` and
   `/resume`'s pick now hold the queue while SessionEnd runs, as `/clear` already did.
+- **SessionStart's `model` is the lead's full id,** such as `anthropic:claude-opus-5-5` (approved
+  by the user, 2026-11-09).
+- **Leaving the window** (`/exit`, Ctrl-C or Ctrl-D twice) stops the turn and the subagents first,
+  as copy mode's leaving does, then, after copy mode's review, fires SessionEnd
+  `prompt_input_exit`, then Ink ends. While its hooks run the keys are off and the screen stays as
+  it is, with no new line (approved by the user, 2026-11-09). It fires even while the stopped turn
+  is still ending, which `Session.end` allows for this reason alone.
+- **SessionEnd's lines as the user leaves** (a failure's red line, a hook's `systemMessage`) are
+  said in the window as any hook's; in full screen, which takes them away with the second screen,
+  they are also written to stderr once Ink has ended, the same words escaped, after copy mode's
+  review lines; in classic mode they stay in the terminal as shown, the window waiting for React to
+  draw them before Ink ends (approved by the user, 2026-11-09). A failure is written as the window
+  draws it, `✗ hook: <the line>`, a note as the line alone.
+- **A crash that ends the window runs no SessionEnd,** as a signal runs none (a known limit, Task
+  13).
+
+**Carry-over for Task 12:** the window shows no `hook-note` lines yet, so in classic mode a
+SessionEnd `systemMessage` at the exit is not drawn until Task 12's listener; in full screen it is
+written to stderr already.
 
 **Carry-over for Tasks 11 and 13:** SessionStart `compact` fires in `#shorten` itself, not through
 `Session.start`, as its text joins the shortened message and never waits in the queue (Task 11).
@@ -1116,7 +1135,8 @@ section).
   and two from Task 9's code review: the limit of 8 counts Stop blocks in a row, so a model that
   calls a tool between blocks can be kept going without end (Esc stops it in the window, Ctrl-C in
   `-p`); a turn shortened while Stop hooks keep it going puts their feedback under "The latest round
-  of tool calls, and their results:" in the shortened message; the release list with 8 in five
+  of tool calls, and their results:" in the shortened message; and one from Task 10's build: a crash
+  that ends the window runs no SessionEnd, as a signal runs none; the release list with 8 in five
   parts, 8e added; `/hooks` in the commands list; and, in "Headless runs", the `--json` bullet
   (README.md:1116, "prints one line per event: `message`, `usage`, `error` and `lead`") gains
   `hook-note`, each hook's grey line (Task 8, the user's choice, 2026-11-09).

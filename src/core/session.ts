@@ -258,9 +258,10 @@ export class Session {
   }
 
   // SessionEnd, as the session ends (Task 10), matched on its reason; its hooks share 1.5 s (hooks.ts). Refused while a turn
-  // runs, as a load is, so a switch that cannot be made ends nothing.
+  // runs, as a load is, so a switch that cannot be made ends nothing; but not as the user leaves the window, where a turn
+  // stopped just now may still be ending, and the window closes either way (queue.ts, leave).
   async end(reason: "prompt_input_exit" | "clear" | "resume" | "other"): Promise<void> {
-    if (this.#running) throw new Error("A turn is already running");
+    if (this.#running && reason !== "prompt_input_exit") throw new Error("A turn is already running");
     await this.opts.hooks?.fire("SessionEnd", { reason }, { match: reason });
   }
 

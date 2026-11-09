@@ -154,6 +154,7 @@ async function mount(
     sessions?: string; // the sessions folder, as sessionsDir gives it; a fresh one for this mount when not given
     save?: boolean; // the session saves there from the start, as cli.tsx starts one (App's sessions); unsaved otherwise
     hooks?: Hook[]; // the user's hooks, as cli.tsx hands them to the session; none when not given (release 8b plan, Task 8)
+    leftLines?: AppProps["leftLines"]; // takes SessionEnd's lines at the window's exit in full screen (release 8b plan, Task 10)
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
@@ -269,6 +270,7 @@ async function mount(
       // test ends it through the session's Pictures.
       readPicture={opts.readPicture === undefined ? () => new Promise(() => {}) : opts.readPicture}
       copy={opts.copy}
+      leftLines={opts.leftLines}
     />,
   );
   mounted.push(app);
@@ -9426,5 +9428,70 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       { type: "text", text: "SessionStart hook:\nstarted by resume", from: "hooks" },
       { type: "text", text: "last" },
     ]);
+  });
+
+  // Release 8b plan, Task 10 (approved by the user, 2026-11-09): SessionEnd as the user leaves, its keys off meanwhile and
+  // the screen as it was; in full screen its lines are handed back, to print once the window has closed. The window has
+  // closed once its session's lock is let go (App's unmount). The hook writes its input to a file in the test's folder,
+  // waits for the file `go` when one is given, and prints `stdout`; without `go` given it never ends.
+  function endHook(stdout: string, held: "go" | "never") {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-hook-"));
+    onTestFinished(() => removeTree(dir));
+    const at = (name: string) => path.join(dir, name);
+    const script = at("hook.cjs");
+    writeFileSync(
+      script,
+      `const fs = require("fs");
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.appendFileSync(${JSON.stringify(at("inputs.jsonl"))}, text + "\\n");
+  const poll = () => (fs.existsSync(${JSON.stringify(at(held))}) ? process.stdout.write(${JSON.stringify(stdout)}) : setTimeout(poll, 20));
+  poll();
+});`,
+    );
+    const hooks: Hook[] = [{ event: "SessionEnd", matcher: { all: true }, command: process.execPath, args: [script], async: false, where: "" }];
+    const inputs = () => (existsSync(at("inputs.jsonl")) ? readFileSync(at("inputs.jsonl"), "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l)) : []);
+    return { hooks, script, inputs, go: () => writeFileSync(at("go"), "") };
+  }
+  const closed = (sessions: string, id: string) => {
+    const lock = openSession(sessions, id);
+    lock?.release();
+    return lock !== null;
+  };
+
+  it("fires SessionEnd prompt_input_exit at /exit, its keys off and the screen as it was while its hooks run, then closes", async () => {
+    const hook = endHook(JSON.stringify({ systemMessage: "bye" }), "go");
+    const left: string[][] = [];
+    const { app, session, sessions } = await mount([], { save: true, hooks: hook.hooks, full: true, leftLines: (l) => left.push(l) });
+    await type(app, "/exit");
+    await untilSlowly(() => hook.inputs().length === 1);
+    expect(hook.inputs()[0]).toMatchObject({ hook_event_name: "SessionEnd", reason: "prompt_input_exit", session_id: session.id });
+    const before = app.lastFrame();
+    await press(app, "x");
+    expect(app.lastFrame()).toBe(before);
+    expect(before).toContain("›");
+    expect(closed(sessions, session.id)).toBe(false);
+    hook.go();
+    await untilSlowly(() => closed(sessions, session.id));
+    expect(left).toEqual([["SessionEnd hook: bye"]]);
+  });
+
+  it.each([
+    ["full screen", true],
+    ["classic", false],
+  ])("kills a SessionEnd hook that sleeps at 1.5 s, says so, and the window still closes, in %s", async (_name, full) => {
+    const hook = endHook("", "never");
+    const left: string[][] = [];
+    const { app, session, sessions } = await mount([], { save: true, hooks: hook.hooks, full, leftLines: (l) => left.push(l) });
+    await press(app, "\u0003", "\u0003");
+    await untilSlowly(() => hook.inputs().length === 1);
+    await untilSlowly(() => closed(sessions, session.id));
+    const line = `SessionEnd hook failed: ${process.execPath} ${hook.script} ran out of time after 1.5 s`;
+    // In classic mode the line stays in the terminal as the window showed it; in full screen it is printed once closed.
+    if (full) expect(left).toEqual([[`✗ hook: ${line}`]]);
+    else {
+      expect(left).toEqual([]);
+      expect(stripVTControlCharacters(app.frames.join("\n")).replace(/\s/g, "")).toContain(`✗hook:${line}`.replace(/\s/g, "")); // drawn before Ink ended
+    }
   });
 });

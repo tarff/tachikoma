@@ -59,6 +59,7 @@ export function useAppState({
   readPicture,
   copy,
   saved,
+  leftLines,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -293,7 +294,7 @@ export function useAppState({
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
     happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
-    editingBack,
+    editingBack, leftLines,
   } as const;
 }
 
