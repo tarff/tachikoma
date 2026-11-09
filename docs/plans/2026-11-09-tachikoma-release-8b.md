@@ -799,6 +799,34 @@ hook.
 **Note from Task 7's build** (2026-11-09): until this task, a `continue: false` in `-p` exits 0;
 this task adds choice 9's exit code 1. The export still shows hook text under "You:".
 
+**Decided at the build** (2026-11-09):
+- **`hooks.newPrompt()` and UserPromptSubmit are for a turn with the user's own words,** not one that
+  only reads background answers (an empty `send`), as that is no prompt: such a turn keeps the last
+  prompt's `prompt_id`, and `Hooks.runs` is not emptied for it.
+- **The prompt's message, in order:** the text waiting for the next request (SessionStart's), the
+  prompt's own parts, UserPromptSubmit's text, then the subagents' waiting text. The queue is
+  `Session.waitForNext(context)`, which Task 10 calls; `load()` empties it, as SessionStart fires
+  after the load.
+- **A block or a stop at UserPromptSubmit takes nothing:** the subagents' waiting text and the text
+  waiting for the next request stay for the next prompt, and the judge's prompts do not get the
+  prompt.
+- **A user's stop while a UserPromptSubmit hook runs** sends and saves nothing, says nothing, and
+  `send` returns nothing, as a stopped turn does; the words are not put back in the box (they are
+  in the prompt history, as every sent prompt is).
+- **The export** shows hook text as the subagents' notes are shown, where it arrived, in a block of
+  its own headed by its first line, `<Event> hook:`. **Ctrl+O** shows no waiting text of either
+  kind, as before; Task 12 adds the hook runs.
+- **`-p` writes each `hook-note` as `note: <line>`** now, through `prose` (so made safe for a
+  terminal), not in `--json`; Task 12 checks it rather than adds it. After a blocked prompt `-p`
+  prints no answer, so a resumed session's last answer is not printed as this run's.
+- **The window:** `readsEnded` hands back the message its parts were made from, and the blocked
+  words go back after what is in the box, with their pictures' spans; `Pictures.unmarkSent` lets
+  the pictures that message marked sent go again with it.
+
+**Carry-over for Task 12:** the window's `hook-note` listener will show `A UserPromptSubmit hook
+blocked the prompt: <reason>` before `Your words are back in the prompt box.`, as the session says
+it during `send`; until then the window shows only the second line.
+
 Commit: `feat: UserPromptSubmit, and hook text sent to the model where Claude Code puts it`.
 
 ## Task 9: Stop, SubagentStart and SubagentStop

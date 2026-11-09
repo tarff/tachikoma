@@ -186,7 +186,14 @@ export const queue = (ui: UI, fns: Fns) => {
             else ui.setPicker(groups);
             return true;
           }
-        } else await ui.session.send(await fns.readsEnded(message, ui.abort.current.signal), ui.abort.current.signal);
+        } else {
+          const { signal } = ui.abort.current;
+          // The message's pictures sent before it, which a blocked prompt's words do not take back (promptKeys.ts, giveBack).
+          const before = new Set(message.spans.flatMap((s) => (ui.pictures.sent(s.id) ? [s.id] : [])));
+          const read = await fns.readsEnded(message, signal);
+          const ended = await ui.session.send(read.parts, signal);
+          if (ended && "blocked" in ended) fns.giveBack(read.draft, before);
+        }
       } finally {
         ui.setBusy(false);
         ui.working.current = false;

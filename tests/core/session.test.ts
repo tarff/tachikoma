@@ -1447,7 +1447,10 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // An answer may be a promise, for a question the test answers later.
   type Answers = (boolean | Promise<boolean>)[];
   // `judge` is auto mode's, which says no at once unless given.
-  async function setup(o: { mode: Mode5; says: Says[]; turns: Turn[]; answers?: Answers; transcript?: Transcript; root?: string; tools?: Tool[]; judge?: Judge }) {
+  async function setup(o: {
+    mode: Mode5; says: Says[]; turns: Turn[]; answers?: Answers; transcript?: Transcript; root?: string; tools?: Tool[]; judge?: Judge;
+    inbox?: () => string[];
+  }) {
     const root = o.root ?? (await folder());
     const { script, out } = await hookFolder();
     const hooks: Hook[] = o.says.map((s) => ({
@@ -1507,6 +1510,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       bus,
       hooks: new Hooks({ hooks, off: false, leftOut: [] }, where, bus),
       ...(o.transcript ? { transcript: o.transcript } : {}),
+      ...(o.inbox ? { inbox: o.inbox } : {}),
     });
     // Whole lines only: the last piece is empty once the hook has written its line, or the part of it written so far.
     const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
@@ -2048,5 +2052,116 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([["hook", "PostToolUse hook", "PostToolUse hook failed: listener broke"]]);
     await s.session.send("more");
     expect(s.lead.seen[2]!.at(-1)!.parts).toEqual([{ type: "text", text: "more" }]);
+  });
+
+  // Release 8b plan, Task 8 (choices 6 and 17): UserPromptSubmit before a prompt goes, and the hooks' text for the model
+  // in the prompt's message, saved with it.
+  const prompted = (fields: object, top: object = {}) => after("UserPromptSubmit", fields, top);
+  const own = (text: string, on: Says = { stdout: "" }): Says => ({ ...on, event: "UserPromptSubmit", stdout: text });
+
+  it("fires UserPromptSubmit with the prompt, each picture its marker, and sends its context and plain text with the prompt, headed", async () => {
+    const says = [own(prompted({ additionalContext: "the tests are in tests/" })), own("plain words")];
+    const s = await setup({ mode: "never", says, turns: [reply("ok"), reply("again")] });
+    const png = { type: "image", id: 3, mediaType: "image/png", data: Buffer.from("png") } as const;
+    await s.session.send([{ type: "text", text: "what is in " }, png, { type: "text", text: "?" }]);
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([
+      { type: "text", text: "what is in " },
+      { ...png, data: expect.anything() }, // the stand-in keeps a copy of each request, its Buffer a Uint8Array
+      { type: "text", text: "?" },
+      hookText("UserPromptSubmit", "the tests are in tests/"),
+      hookText("UserPromptSubmit", "plain words"),
+    ]);
+    const first = { hook_event_name: "UserPromptSubmit", prompt: "what is in [Image #3]?", prompt_id: expect.any(String) };
+    expect(s.inputs()).toEqual([expect.objectContaining(first), expect.objectContaining(first)]);
+    // The judge's prompts hold the user's own words alone (choice 6).
+    expect(s.session.prompts).toEqual(["what is in [Image #3]?"]);
+    // Each prompt gets a prompt id of its own (Hooks.newPrompt).
+    await s.session.send("more");
+    const ids = s.inputs().map((i) => i.prompt_id);
+    expect([ids[0] === ids[1], ids[2] === ids[0], ids[2] === ids[3]]).toEqual([true, false, true]);
+  });
+
+  it.each([
+    ["a block", JSON.stringify({ decision: "block", reason: "not today" }), { blocked: "not today" }, "A UserPromptSubmit hook blocked the prompt: not today"],
+    ["exit 2", "", { blocked: "" }, null],
+    ["a continue: false", stops("halt"), { stopped: "halt" }, "A UserPromptSubmit hook stopped the turn: halt"],
+  ] as const)("sends nothing and saves nothing at a UserPromptSubmit hook's %s, leaving the waiting text for the next prompt", async (_name, stdout, ended, line) => {
+    const top = await folder();
+    const file = path.join(top, "s1.jsonl");
+    const transcript = new Transcript(file, path.join(top, "s1", "pictures"));
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const waiting = ["t1 finished"];
+    const says = [own(stdout, { stdout, code: stdout ? 0 : 2 })];
+    const s = await setup({ mode: "never", says, turns: [reply("ok")], transcript, inbox: () => waiting.splice(0) });
+    expect(await s.session.send("go")).toEqual(ended);
+    expect([s.session.messages, s.session.prompts, s.lead.seen, waiting]).toEqual([[], [], [], ["t1 finished"]]);
+    expect(readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => (JSON.parse(l) as Line).t)).toEqual(["start"]);
+    if (line) expect(s.notes).toEqual([line]);
+  });
+
+  it("sends nothing and saves nothing when the user stops the turn while a UserPromptSubmit hook runs", async () => {
+    const root = await folder();
+    const abort = new AbortController();
+    const s = await setup({ mode: "never", root, says: [own("", { stdout: "", go: path.join(root, "never-made") })], turns: [reply("ok")] });
+    const sent = s.session.send("go", abort.signal);
+    while (!s.inputs().length) await pause(20);
+    abort.abort();
+    expect(await sent).toBeUndefined();
+    expect([s.session.messages, s.session.prompts, s.lead.seen]).toEqual([[], [], []]);
+  });
+
+  it("fires no UserPromptSubmit for a subagent's brief, which the lead wrote", async () => {
+    const root = await folder();
+    const { script, out } = await hookFolder();
+    const hook: Hook = { event: "UserPromptSubmit", matcher: { all: true }, command: process.execPath, args: [script, out, "", "0"], async: false, where: "" };
+    const bus = new Bus();
+    const gate = new PermissionGate("never", async () => false);
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const tasks = new Tasks({
+      bus,
+      max: 8,
+      worker: () => new FakeProvider("w", [reply("found it")]),
+      system: "sub",
+      tools: [readFileTool],
+      ctx: { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate },
+      hooks: new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, bus),
+    });
+    expect(await tasks.start("look", { background: false }).done).toEqual({ state: "done", text: "found it" });
+    expect(existsSync(out)).toBe(false);
+  });
+
+  // Task 10 fills it with SessionStart's text; a load empties it, as that text was the last conversation's.
+  it("sends the text waiting for the next request at the start of the next prompt's message, once, and a load empties it", async () => {
+    const s = await setup({ mode: "never", says: [], turns: [reply("ok"), reply("again"), reply("three")] });
+    s.session.waitForNext([{ event: "SessionStart", text: "from the start" }]);
+    await s.session.send("go");
+    await s.session.send("more");
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([hookText("SessionStart", "from the start"), { type: "text", text: "go" }]);
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([{ type: "text", text: "more" }]);
+    s.session.waitForNext([{ event: "SessionStart", text: "the last one's" }]);
+    s.session.load({ id: "s2", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+    await s.session.send("three");
+    expect(s.lead.seen[2]!.at(-1)!.parts).toEqual([{ type: "text", text: "three" }]);
+  });
+
+  it("keeps a UserPromptSubmit hook's text in the saved message, so a resumed session sends it again without running the hook", async () => {
+    const top = await folder();
+    const file = path.join(top, "s1.jsonl");
+    const pictures = path.join(top, "s1", "pictures");
+    const transcript = new Transcript(file, pictures);
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const says = [own(prompted({ additionalContext: "remember the tests" }))];
+    const s = await setup({ mode: "never", says, turns: [reply("ok"), reply("again")], transcript });
+    await s.session.send("go");
+    const r = readTranscript(file, pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    const message = [{ type: "text", text: "go" }, hookText("UserPromptSubmit", "remember the tests")];
+    expect(r.messages[0]!.parts).toEqual(message);
+    expect(r.prompts).toEqual(["go"]);
+    s.session.load({ id: "s1", messages: r.messages, system: r.system, transcript, prompts: r.prompts, calls: r.calls, nextPicture: r.nextPicture, nextTask: r.nextTask });
+    expect(s.inputs()).toHaveLength(1);
+    await s.session.send("more");
+    expect(s.lead.seen[1]![0]!.parts).toEqual(message);
+    expect(s.inputs().map((i) => i.prompt)).toEqual(["go", "more"]);
   });
 });

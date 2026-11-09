@@ -587,6 +587,43 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: told });
   });
 
+  // Release 8b plan, Task 8 and choice 9: a prompt a UserPromptSubmit hook blocked, and any hook's continue: false, end a
+  // -p run with exit code 1 and the grey line as a note on its error output. The lead is the stand-in above, which asks to
+  // read a file, then answers.
+  it.each([
+    ["a UserPromptSubmit hook blocks the prompt", "UserPromptSubmit", { decision: "block", reason: "not today" }, 0, "A UserPromptSubmit hook blocked the prompt: not today"],
+    ["a PreToolUse hook stops the turn", "PreToolUse", { continue: false, stopReason: "enough" }, 1, "A PreToolUse hook stopped the turn: enough"],
+  ])("with -p, fails the run with exit code 1 when %s, with its line", async (_name, event, said, requests, line) => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const script = path.join(top, "hook.cjs");
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify(said))});`);
+    const hooks = { [event]: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    let asked = 0;
+    const server = http.createServer((req, res) => {
+      req.resume().on("end", () => {
+        const call = { id: `c${++asked}`, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "notes.txt" }) } };
+        const message = { role: "assistant", content: null, tool_calls: [call] };
+        const choice = { index: 0, finish_reason: "tool_calls", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
+    expect(r).toEqual({ code: 1, stdout: "", stderr: `note: ${line}\n` });
+    expect(asked).toBe(requests);
+  });
+
   // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.
   it("with -p, runs on the settings file's lead", () => {
     const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });

@@ -35,6 +35,8 @@ export function truncate(s: string): string {
 // plan, "Lines this plan adds").
 const NOT_RUN = "Not run: a hook stopped the turn.";
 const STOPPED = "Stopped: a hook stopped the turn.";
+// The grey line for a hook's continue: false, with its stopReason when it gave one (the same).
+const stoppedTurn = (event: Event, reason: string) => (reason ? `A ${event} hook stopped the turn: ${reason}` : `A ${event} hook stopped the turn.`);
 
 // One reply's calls (release 8b plan, Task 7): they run under `signal`, the reply's own, joined to the turn's; `stop` is a
 // hook's continue: false, which stops them as a user's stop does, and `stopped` the first hook that said it.
@@ -126,6 +128,9 @@ export class Session {
   #saidFailed = false; // whether this transcript's failure has been said: once per transcript
   // The text the tool hooks handed the model during a reply, held until its results go back (release 8b plan, Tasks 6, 7).
   readonly #hookText: { event: Event; text: string }[] = [];
+  // The hooks' text waiting for the next request, SessionStart's (Task 10), sent at the start of the next user message
+  // (Task 8).
+  readonly #nextText: { event: Event; text: string }[] = [];
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -163,6 +168,7 @@ export class Session {
     this.messages.splice(0, this.messages.length, ...c.messages);
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
     this.#hookText.splice(0); // the last conversation's hook text, not yet sent, is not this one's (Task 6's code review)
+    this.#nextText.splice(0); // nor is the text waiting for its next request: SessionStart fires after the load (Task 10)
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();
@@ -176,6 +182,12 @@ export class Session {
   // systemNow the starting one.
   freshSystem(): Promise<string> {
     return this.opts.systemNow?.() ?? Promise.resolve(this.opts.system);
+  }
+
+  // Hooks' text for the model to go with the next request, at the start of the next user message: SessionStart's (release
+  // 8b plan, Tasks 8 and 10).
+  waitForNext(context: { event: Event; text: string }[]): void {
+    this.#nextText.push(...context);
   }
 
   // Before /lead makes `next` the lead (release 8a design, "When to shorten"): a conversation that will not fit its smaller
@@ -234,9 +246,10 @@ export class Session {
   }
 
   // An empty `text` starts a turn with only the waiting text, when there is any. The prompt sends its parts, pictures
-  // among its text (release 6 plan, Task 14). How the turn ended: `stopped`, a hook's continue: false, with its stopReason
-  // ("" when none); nothing otherwise (release 8b plan, choice 17).
-  async send(text: string | Part[], signal?: AbortSignal): Promise<{ stopped: string } | void> {
+  // among its text (release 6 plan, Task 14). How the turn ended: `blocked`, a UserPromptSubmit hook's block, with its
+  // reason, nothing sent or saved; `stopped`, a hook's continue: false, with its stopReason ("" when none); nothing
+  // otherwise (release 8b plan, choice 17).
+  async send(text: string | Part[], signal?: AbortSignal): Promise<{ blocked: string } | { stopped: string } | void> {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
@@ -247,13 +260,19 @@ export class Session {
     }
   }
 
-  async #turn(typed: Part[], signal?: AbortSignal): Promise<{ stopped: string } | void> {
-    const { bus } = this.opts;
+  async #turn(typed: Part[], signal?: AbortSignal): Promise<{ blocked: string } | { stopped: string } | void> {
+    const { bus, hooks } = this.opts;
     // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept.
     const words = typed.flatMap((p) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
+    // The user's own prompt only: a subagent's brief is the lead's (release 8b design, "The events"). Before anything is
+    // kept, pushed or taken, so a block or a stop sends and saves nothing, and the waiting text stays for the next prompt.
+    const prompted = words && !this.opts.subagent && hooks ? await this.#userPromptSubmit(hooks, words, signal) : [];
+    if (!Array.isArray(prompted)) return prompted;
     if (words && !this.opts.subagent) this.prompts.push(words);
-    const parts: Part[] = [...typed, ...this.#waiting()];
-    if (!parts.length) return;
+    const own: Part[] = [...typed, ...prompted, ...this.#waiting()];
+    if (!own.length) return;
+    // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message.
+    const parts: Part[] = [...this.#hookParts(this.#nextText), ...own];
     // The turn's request, kept for a shortening during the turn: after a first one it is no longer in the history.
     const asked: Message = { role: "user", parts };
     this.#push(asked);
@@ -413,7 +432,7 @@ export class Session {
       // Every call has its one result, saved, before the turn ends (design, review finding 1).
       if (round.stopped) {
         const { event, reason } = round.stopped;
-        bus.emit("hook-note", reason ? `A ${event} hook stopped the turn: ${reason}` : `A ${event} hook stopped the turn.`);
+        bus.emit("hook-note", stoppedTurn(event, reason));
         return { stopped: reason };
       }
       if (signal?.aborted) return;
@@ -682,10 +701,35 @@ export class Session {
     return this.opts.paths ?? pathsFor(this.opts.ctx.root, null);
   }
 
-  // The text the tool hooks handed the model during the reply, one part each, headed by its event (release 8b plan,
-  // choice 6), taken so it goes into exactly one message.
-  #hookParts(): Part[] {
-    return this.#hookText.splice(0).map(({ event, text }) => ({ type: "text", text: `${event} hook:\n${text}`, from: "hooks" }));
+  // The text the tool hooks handed the model during the reply, or the text in `held`, one part each, headed by its event
+  // (release 8b plan, choice 6), taken so it goes into exactly one message.
+  #hookParts(held = this.#hookText): Part[] {
+    return held.splice(0).map(({ event, text }) => ({ type: "text", text: `${event} hook:\n${text}`, from: "hooks" }));
+  }
+
+  // UserPromptSubmit before the prompt goes (release 8b plan, Task 8; design, "What a hook's answer does"), each prompt with
+  // a prompt id of its own, sent the prompt with each picture as its marker, under the turn's signal and the event's 30 s
+  // limit (hooks.ts). Its text for the model, to join the prompt's message; how the turn ended, at a block or a continue:
+  // false, with its grey line; or undefined when the user's stop ended its hooks (run.ts).
+  async #userPromptSubmit(hooks: Hooks, prompt: string, signal?: AbortSignal): Promise<Part[] | { blocked: string } | { stopped: string } | undefined> {
+    hooks.newPrompt();
+    let c: Combined;
+    try {
+      c = await hooks.fire("UserPromptSubmit", { prompt }, { signal });
+    } catch (err) {
+      if (signal?.aborted) return undefined;
+      throw err;
+    }
+    // A stop wins over a block (combine).
+    if (c.stop !== undefined) {
+      this.opts.bus.emit("hook-note", stoppedTurn("UserPromptSubmit", c.stop));
+      return { stopped: c.stop };
+    }
+    if (c.block !== undefined) {
+      this.opts.bus.emit("hook-note", `A UserPromptSubmit hook blocked the prompt: ${c.block}`);
+      return { blocked: c.block };
+    }
+    return this.#hookParts([...c.context]);
   }
 
   // PreToolUse before a call (release 8b plan, Task 6; design, "Tool hooks"), matched on the tool's Claude Code name, under

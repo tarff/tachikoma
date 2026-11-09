@@ -65,6 +65,12 @@ export class Pictures {
   markSent(id: number): void {
     this.#sent.add(id);
   }
+
+  // A picture marked sent with a message that never went, a prompt a UserPromptSubmit hook blocked, so it goes with that
+  // message when it is sent again (release 8b plan, Task 8).
+  unmarkSent(id: number): void {
+    this.#sent.delete(id);
+  }
 }
 
 // A message before it is sent: its text and the spans of the pictures in it (editor.ts), as the queue keeps it.

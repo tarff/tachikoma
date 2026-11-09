@@ -32,6 +32,8 @@ import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
+import type { Hook } from "../../src/hooks/config.js";
+import { Hooks } from "../../src/hooks/hooks.js";
 import { History } from "../../src/tui/history.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import type { ModelGroup } from "../../src/providers/models.js";
@@ -151,6 +153,7 @@ async function mount(
     copy?: AppProps["copy"]; // copy mode's copy, and what leave() does with it (release 7 plan, Task 21)
     sessions?: string; // the sessions folder, as sessionsDir gives it; a fresh one for this mount when not given
     save?: boolean; // the session saves there from the start, as cli.tsx starts one (App's sessions); unsaved otherwise
+    hooks?: Hook[]; // the user's hooks, as cli.tsx hands them to the session; none when not given (release 8b plan, Task 8)
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
@@ -194,6 +197,15 @@ async function mount(
     tasks,
     inbox: () => [...windowSessions.lost(), ...tasks.take()],
     ask: (...a) => ask(...a), // as cli.tsx gives it
+    ...(opts.hooks
+      ? {
+          hooks: new Hooks(
+            { hooks: opts.hooks, off: false, leftOut: [] },
+            { sessionId: () => session.id, transcript: () => session.transcript?.file, root: ctx.root, mode: () => gate.mode, effort: () => undefined, lead: () => session.lead.id },
+            bus,
+          ),
+        }
+      : {}),
   });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
   if (opts.past) writeFileSync(historyFile, opts.past.map((p) => `${JSON.stringify(p)}\n`).join(""));
@@ -9114,5 +9126,49 @@ describe("App's /compact and /autocompact", () => {
       expect(app.lastFrame()).toContain("\u001b[31mUsage: /autocompact");
       expect(session.autoCompact).toBe(5);
     });
+  });
+});
+
+// Release 8b plan, Task 8: the user's hooks, as cli.tsx hands them to the session. Each hook is a Node script in a folder
+// of the test's own, run in exec form, so no shell runs it.
+describe("App's hooks", { timeout: 15_000 }, () => {
+  const PICTURE = process.platform === "win32" ? "\u001bv" : "\u0016"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
+  const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
+  // A hook's Node process may take a few seconds to start while other tests run.
+  async function untilSlow(app: ReturnType<typeof render>, text: string) {
+    for (let i = 0; i < 200 && !app.lastFrame()?.includes(text); i++) await tick();
+    expect(app.lastFrame()).toContain(text);
+  }
+  // A UserPromptSubmit hook that blocks the first prompt it is sent, with "not yet", and lets each later one through.
+  function blocksOnce(): Hook[] {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-hook-"));
+    onTestFinished(() => removeTree(dir));
+    const script = path.join(dir, "hook.cjs");
+    const once = path.join(dir, "blocked");
+    writeFileSync(
+      script,
+      `const fs = require("fs");
+process.stdin.resume().on("end", () => {
+  if (fs.existsSync(${JSON.stringify(once)})) return;
+  fs.writeFileSync(${JSON.stringify(once)}, "");
+  process.stdout.write(JSON.stringify({ decision: "block", reason: "not yet" }));
+});`,
+    );
+    return [{ event: "UserPromptSubmit", matcher: { all: true }, command: process.execPath, args: [script], async: false, where: "" }];
+  }
+
+  it("puts a blocked prompt's words back into the prompt box, its picture too, saving nothing, and the picture goes with it when sent again", async () => {
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("seen")], { pictures, hooks: blocksOnce() });
+    await press(app, "look at ", PICTURE);
+    pictures.set(1, PNG);
+    await press(app, "\r");
+    await untilSlow(app, "Your words are back in the prompt box.");
+    expect(app.lastFrame()).toContain("› look at [Image #1]");
+    expect(app.lastFrame()).not.toContain("> look at");
+    expect(session.messages).toEqual([]);
+    await press(app, "\r");
+    await untilSlow(app, "seen");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "look at " }, { type: "image", id: 1, ...PNG }]);
   });
 });

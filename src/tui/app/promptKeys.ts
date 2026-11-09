@@ -7,7 +7,7 @@ import { type Command, commands, isScroll, keyList } from "../keys.js";
 import { vertical } from "../layout.js";
 import { commandMenu, listFolder, type Menu as MenuData, pathMenu } from "../menus.js";
 import type { Now } from "../phase.js";
-import { joined, trimmed } from "../pictures.js";
+import { type Draft, joined, trimmed } from "../pictures.js";
 import { promptWidth } from "../Prompt.js";
 import { FOLLOWING } from "../view.js";
 import { contextsOf, type Got, gray, SHORTEN_WORDS } from "./constants.js";
@@ -84,6 +84,16 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     ui.editor.current = { ...load(ui.editor.current, back.text), spans: back.spans };
     ui.queue.current = [];
     fns.freshText();
+  };
+  // A prompt a UserPromptSubmit hook blocked (release 8b plan, Task 8; design, "What a hook's answer does"): its words come
+  // back into the prompt, after what is there, as the queue does, with its pictures' spans; the pictures it marked sent go
+  // with it again, those sent `before` it staying sent.
+  const giveBack = (d: Draft, before: ReadonlySet<number>) => {
+    for (const s of d.spans) if (!before.has(s.id)) ui.pictures.unmarkSent(s.id);
+    const back = joined([ui.editor.current, d].filter((x) => x.text), "\n");
+    ui.editor.current = { ...load(ui.editor.current, back.text), spans: back.spans };
+    fns.freshText();
+    fns.say(gray("Your words are back in the prompt box."));
   };
   const clear = (e: Editor) => {
     fns.keep(e.text);
@@ -193,7 +203,7 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     }
   };
   return {
-    run, command, send, restore, clear, swapStash, keep, recall, menuFor, list, chosenIn, fill, shown, endSearch,
+    run, command, send, restore, giveBack, clear, swapStash, keep, recall, menuFor, list, chosenIn, fill, shown, endSearch,
     searchKey,
   };
 };

@@ -669,6 +669,8 @@ if (parsed.print !== undefined) {
       else if (e.kind === "saving" || e.kind === "shortening") console.error(prose(e.message)); // the line alone, as the window shows it
       else if (e.kind !== "tool") console.error(prose(`${e.kind}: ${e.message}`));
     });
+    // A hook's grey lines, as a fallback's note is written (release 8b plan, choice 23), made safe for a terminal.
+    bus.on("hook-note", (line) => console.error(prose(`note: ${line}`)));
   }
   // Loaded once the error listeners are on, so a start line or mend that failed is said now, not at the first write.
   for (const line of said) console.error(gray(line.text));
@@ -677,8 +679,11 @@ if (parsed.print !== undefined) {
   // A second Ctrl-C gets Node's default and ends at once.
   const stop = new AbortController();
   process.once("SIGINT", () => stop.abort());
-  await session.send(parsed.print, stop.signal);
-  if (!parsed.json) {
+  // A prompt a UserPromptSubmit hook blocked, and a hook's continue: false, end the run with exit code 1, as its work was
+  // cut short (release 8b plan, Task 8 and choice 9). A blocked prompt leaves the history as it was, so a resumed
+  // session's last answer is not printed as this run's.
+  const ended = await session.send(parsed.print, stop.signal);
+  if (!parsed.json && !ended) {
     const last = session.messages.at(-1);
     if (last?.role === "assistant") {
       const text = last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
@@ -703,7 +708,7 @@ if (parsed.print !== undefined) {
     }
     console.error(line ?? keptForReview(sessionId));
   }
-  process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
+  process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed: failed || ended !== undefined, declined });
 } else {
   // Ctrl-C reaches the interface as a key, as raw mode is on, so a SIGINT here came from outside (`kill -INT`), or from
   // Ctrl-C typed while the editor has the terminal, with raw mode off: that one is ignored, as Git ignores it, and the
