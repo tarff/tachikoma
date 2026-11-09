@@ -864,7 +864,9 @@ section).
   only `.exe` is looked for; a hook that leaves a background program holding its output is
   reported as out of time, so redirect that program's output; and one from Task 3's review: a
   hook's output is read whole, so a runaway hook's output is held in memory until its time limit
-  ends it; the release list with 8 in five
+  ends it; and two from Task 4's review: a turn stopped while hooks run shows no line for a hook
+  that had already failed, and Ctrl+O lists none of that turn's runs; a subagent's runs are kept
+  for its whole life, each hook's output held in memory; the release list with 8 in five
   parts, 8e added; `/hooks` in the commands list.
 - **The design** gets an "As built" section listing this plan's choices as the user settled them.
 

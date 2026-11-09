@@ -96,6 +96,9 @@ export class Hooks {
     if (opts.signal?.aborted) throw new Error("Cancelled");
     const input = this.#input(event, fields);
     const runs = this.#runs;
+    // Read once, so a late async hook's failure names the model that led when it started, not one a /lead switch
+    // put in since (Task 4's code review).
+    const lead = this.#where.lead();
     const run = async (hook: Hook, signal?: AbortSignal) => {
       const limit = hook.timeout ?? (event === "UserPromptSubmit" ? PROMPT_LIMIT : LIMIT);
       // runHook adds commandEnv and CLAUDE_PROJECT_DIR; the folder is the project's root (release 8b plan, choice 3).
@@ -107,16 +110,20 @@ export class Hooks {
     // An async hook is started and left, and a stop of the turn does not end it; its answer is read only to say a failure
     // (release 8b plan, choice 5).
     for (const hook of picked.filter((h) => h.async)) {
-      void run(hook).then((r) => {
-        runs.push(r);
-        this.#say(event, combine(event, [r]).failures, []);
-      });
+      // Its line may be said after the turn; a listener that throws then must not become an unhandled rejection, which
+      // would end Tachikoma.
+      void run(hook)
+        .then((r) => {
+          runs.push(r);
+          this.#say(event, lead, combine(event, [r]).failures, []);
+        })
+        .catch(() => {});
     }
     // A stop ends every hook given the signal and rejects with Cancelled, as a command does (run.ts).
     const results = await Promise.all(picked.filter((h) => !h.async).map((h) => run(h, opts.signal)));
     runs.push(...results);
     const combined = combine(event, results);
-    this.#say(event, combined.failures, combined.messages);
+    this.#say(event, lead, combined.failures, combined.messages);
     return combined;
   }
 
@@ -140,8 +147,7 @@ export class Hooks {
   }
 
   // The approved lines (release 8b plan, "Lines this plan adds"; choices 22 and 23).
-  #say(event: Event, failures: string[], messages: string[]): void {
-    const lead = this.#where.lead();
+  #say(event: Event, lead: string, failures: string[], messages: string[]): void {
     for (const line of failures) this.#bus.emit("error", { kind: "hook", attempted: `${event} hook`, message: `${event} hook failed: ${line}`, lead });
     for (const message of messages) this.#bus.emit("hook-note", `${event} hook: ${message}`);
   }

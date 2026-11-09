@@ -317,6 +317,19 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(hooks.runs.map((r) => [r.hook.async, r.ran.code]).sort()).toEqual([[true, 0], [true, 1]]);
   });
 
+  // Task 4's code review: a /lead switch while an async hook runs does not change the model its failure names.
+  it("names in a late async hook's failure the model that led when it started", async () => {
+    const p = await place();
+    const go = path.join(p.root, "go");
+    let lead = "fake:first";
+    const { hooks, errors } = setup(p, [p.hook("h", { async: true }, { go, code: 1 })], { lead: () => lead });
+    await hooks.fire("PreToolUse", {});
+    lead = "fake:second";
+    writeFileSync(go, "");
+    while (hooks.runs.length < 1) await pause(20);
+    expect(errors.map((e) => e.lead)).toEqual(["fake:first"]);
+  });
+
   // Task 4's spec review: a failure that onFailure "block" would make a block is still said for an async hook, which blocks
   // nothing.
   it("says an async hook's failure with onFailure block", async () => {
@@ -335,6 +348,10 @@ describe("Hooks", { timeout: 15_000 }, () => {
     const real = vi.mocked(gitBash).getMockImplementation()!;
     vi.mocked(gitBash).mockImplementation(() => null);
     onTestFinished(() => void vi.mocked(gitBash).mockImplementation(real));
+    // mockReset drops the answer below if the test ends before runHook takes it, and with it the real runHook wrapped above,
+    // which is put back.
+    const realRun = vi.mocked(runHook).getMockImplementation()!;
+    onTestFinished(() => void vi.mocked(runHook).mockReset().mockImplementation(realRun));
     vi.mocked(runHook).mockResolvedValueOnce({ code: 1, stdout: "", stderr: "bad thing", ms: 1 });
     const { hooks, errors } = setup(p, [{ ...p.hook("h", { async: true }), command: "check.sh", args: undefined }]);
     await hooks.fire("PreToolUse", {});
