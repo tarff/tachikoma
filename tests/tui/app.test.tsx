@@ -9131,39 +9131,60 @@ describe("App's /compact and /autocompact", () => {
 
 // Release 8b plan, Task 8: the user's hooks, as cli.tsx hands them to the session. Each hook is a Node script in a folder
 // of the test's own, run in exec form, so no shell runs it.
-describe("App's hooks", { timeout: 15_000 }, () => {
+// The waits for a hook's process are long, so each case has a minute (Task 8's code review).
+describe("App's hooks", { timeout: 60_000 }, () => {
   const PICTURE = process.platform === "win32" ? "\u001bv" : "\u0016"; // chat:imagePaste: Alt+V on Windows, else Ctrl+V
   const PNG = { mediaType: "image/png" as const, data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) }; // a stand-in, never read from disk
-  // A hook's Node process may take a few seconds to start while other tests run.
+  const BLOCK = { decision: "block", reason: "not yet" };
+  const BACK = "Your words are back in the prompt box.";
+  // A hook's Node process may take a few seconds to start while other tests run: up to 10 s each.
   async function untilSlow(app: ReturnType<typeof render>, text: string) {
     for (let i = 0; i < 200 && !app.lastFrame()?.includes(text); i++) await tick();
     expect(app.lastFrame()).toContain(text);
   }
-  // A UserPromptSubmit hook that gives `answer` to the first prompt it is sent, and lets each later one through.
-  function answersOnce(answer: object): Hook[] {
+  async function untilSlowly(check: () => boolean) {
+    for (let i = 0; i < 200 && !check(); i++) await tick();
+    expect(check()).toBe(true);
+  }
+  // A UserPromptSubmit hook that gives `answer` to the `at`th prompt it is sent (the first unless given), once go() is
+  // called when `held`, and lets the others through. `started()`: it has been sent that prompt; `answered()`: it has
+  // printed its answer.
+  function hookFor(answer: object, o: { at?: number; held?: boolean } = {}) {
     const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-hook-"));
     onTestFinished(() => removeTree(dir));
-    const script = path.join(dir, "hook.cjs");
-    const once = path.join(dir, "blocked");
+    const at = (name: string) => path.join(dir, name);
+    const script = at("hook.cjs");
     writeFileSync(
       script,
       `const fs = require("fs");
+const at = (name) => require("path").join(${JSON.stringify(dir)}, name);
 process.stdin.resume().on("end", () => {
-  if (fs.existsSync(${JSON.stringify(once)})) return;
-  fs.writeFileSync(${JSON.stringify(once)}, "");
-  process.stdout.write(${JSON.stringify(JSON.stringify(answer))});
+  const n = (fs.existsSync(at("count")) ? Number(fs.readFileSync(at("count"), "utf8")) : 0) + 1;
+  fs.writeFileSync(at("count"), String(n));
+  if (n !== ${o.at ?? 1}) return;
+  fs.writeFileSync(at("started"), "");
+  const finish = () => (process.stdout.write(${JSON.stringify(JSON.stringify(answer))}), fs.writeFileSync(at("answered"), ""));
+  const poll = () => (${o.held ? "true" : "false"} && !fs.existsSync(at("go")) ? setTimeout(poll, 20) : finish());
+  poll();
 });`,
     );
-    return [{ event: "UserPromptSubmit", matcher: { all: true }, command: process.execPath, args: [script], async: false, where: "" }];
+    const hooks: Hook[] = [{ event: "UserPromptSubmit", matcher: { all: true }, command: process.execPath, args: [script], async: false, where: "" }];
+    return {
+      hooks,
+      started: () => existsSync(at("started")),
+      answered: () => existsSync(at("answered")),
+      go: () => writeFileSync(at("go"), ""),
+      count: () => (existsSync(at("count")) ? Number(readFileSync(at("count"), "utf8")) : 0),
+    };
   }
 
   // A stop gives the words back as a block does (approved by the user, 2026-11-09).
   it.each([
-    ["blocked", { decision: "block", reason: "not yet" }],
+    ["blocked", BLOCK],
     ["stopped", { continue: false, stopReason: "not yet" }],
   ])("puts a %s prompt's words back into the prompt box, its picture too, saving nothing, and the picture goes with it when sent again", async (_name, answer) => {
     const pictures = new Pictures();
-    const { app, session } = await mount([reply("seen")], { pictures, hooks: answersOnce(answer) });
+    const { app, session } = await mount([reply("seen")], { pictures, hooks: hookFor(answer).hooks });
     await press(app, "look at ", PICTURE);
     pictures.set(1, PNG);
     await press(app, "\r");
@@ -9174,5 +9195,90 @@ process.stdin.resume().on("end", () => {
     await press(app, "\r");
     await untilSlow(app, "seen");
     expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "look at " }, { type: "image", id: 1, ...PNG }]);
+  });
+
+  // The user's choice, 2026-11-09: as Ctrl-C brings the queue back.
+  it("gives back the prompts queued behind a blocked one with it, in one line, sending none of them", async () => {
+    const hook = hookFor(BLOCK, { held: true });
+    const { app, session } = await mount([reply("never")], { hooks: hook.hooks });
+    await press(app, "first", "\r");
+    await untilSlowly(hook.started);
+    await press(app, "second", "\r", "third", "\r");
+    hook.go();
+    await untilSlow(app, BACK);
+    await tick();
+    expect(app.lastFrame()).toMatch(/› first\n\s*second\n\s*third/);
+    expect(app.lastFrame()!.split(BACK)).toHaveLength(2);
+    expect([session.messages, hook.count()]).toEqual([[], 1]);
+  });
+
+  // Task 8's code review: the words land in the prompt as its text really is.
+  it("ends Ctrl+R's search to give the words back, so its match cannot take their place", async () => {
+    const hook = hookFor(BLOCK, { held: true });
+    const { app } = await mount([], { hooks: hook.hooks, past: ["older"] });
+    await press(app, "first", "\r");
+    await untilSlowly(hook.started);
+    await press(app, "\u0012", "old");
+    expect(app.lastFrame()).toContain("search: old");
+    hook.go();
+    await untilSlow(app, BACK);
+    expect(app.lastFrame()).not.toContain("search: old");
+    expect(app.lastFrame()).toContain("› first\n");
+  });
+
+  it("ends a walk through the history to give the words back, with the draft it kept", async () => {
+    const hook = hookFor(BLOCK, { held: true });
+    const { app } = await mount([], { hooks: hook.hooks, past: ["older"] });
+    await press(app, "first", "\r");
+    await untilSlowly(hook.started);
+    await press(app, "\u001b[A", "\u001b[A"); // past the prompt just sent, which the history keeps
+    expect(app.lastFrame()).toContain("› older\n");
+    hook.go();
+    await untilSlow(app, BACK);
+    expect(app.lastFrame()).toContain("› first\n");
+    expect(app.lastFrame()).not.toContain("older");
+    await press(app, "\u001b[B"); // the walk has ended, so Down brings back no draft in their place
+    expect(app.lastFrame()).toContain("› first\n");
+  });
+
+  it("gives the words back after the external editor returns, after what it saved, with their pictures", async () => {
+    const editor = standInEditor();
+    editor.next("edited\n");
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const pictures = new Pictures();
+    const hook = hookFor(BLOCK, { held: true });
+    const { app, session } = await mount([reply("seen")], { pictures, hooks: hook.hooks });
+    await press(app, "see ", PICTURE);
+    pictures.set(1, PNG);
+    await press(app, "\r");
+    await untilSlowly(hook.started);
+    await press(app, "draft", "\u0007"); // Ctrl+G
+    await untilSlowly(editor.started);
+    hook.go();
+    await untilSlowly(hook.answered);
+    for (let i = 0; i < 10; i++) await tick(); // the block reaches the App while the editor is open
+    editor.go();
+    await untilSlow(app, BACK);
+    expect(app.lastFrame()).toMatch(/› edited\n\s*see \[Image #1\]/);
+    await press(app, "\r");
+    await untilSlow(app, "seen");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "edited\nsee " }, { type: "image", id: 1, ...PNG }]);
+  });
+
+  // giveBack's `before`: a picture an earlier message sent stays sent, so a copy of its marker goes as text.
+  it("does not send twice a picture a blocked prompt held a copy of, sent with an earlier message", async () => {
+    const pictures = new Pictures();
+    const hook = hookFor(BLOCK, { at: 2 });
+    const { app, session } = await mount([reply("one"), reply("two")], { pictures, hooks: hook.hooks });
+    await press(app, PICTURE);
+    pictures.set(1, PNG);
+    await press(app, "\u0015", "\u0019", "\r"); // Ctrl+U takes the marker, Ctrl+Y puts it back, its picture kept
+    await untilSlow(app, "one");
+    await press(app, "\u0019", " again", "\r"); // the same marker again, its picture sent already
+    await untilSlow(app, BACK);
+    await press(app, "\r");
+    await untilSlow(app, "two");
+    const user = session.messages.filter((m) => m.role === "user").map((m) => m.parts);
+    expect(user).toEqual([[{ type: "image", id: 1, ...PNG }], [{ type: "text", text: "[Image #1] again" }]]);
   });
 });

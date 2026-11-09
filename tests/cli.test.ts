@@ -869,6 +869,22 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     expect(sent.map((s) => (s as Sent & { model: string }).model)).toEqual(["other", "other"]);
   });
 
+  // Release 8b plan, Task 8's code review: a blocked prompt leaves the history as it was, so the saved session's last
+  // answer is not printed as this run's. The hook is a Node script of the test's own, in exec form.
+  it("prints no answer for a prompt a UserPromptSubmit hook blocked in a -c run, though the saved session ends with one", async () => {
+    const { url, sent } = await standIn();
+    const { proj, data, dir } = place();
+    write(dir, "s1", [{ ...start("s1"), print: true }, message("user", "first"), message("assistant", "the earlier answer")]);
+    const script = path.join(path.dirname(proj), "hook.cjs");
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify({ decision: "block", reason: "not today" }))});`);
+    const hooks = { UserPromptSubmit: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const r = await tachiLater("-p", "again", "-c", { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) });
+    expect(r.code).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toContain("note: A UserPromptSubmit hook blocked the prompt: not today\n");
+    expect(sent).toEqual([]);
+  });
+
   // Task 6's quality review: a window cannot start without a terminal, so it is refused before a held session is copied.
   // The lock is this test process's own, as above.
   it("refuses -c without a terminal before copying a session another window has open", () => {

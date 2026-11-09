@@ -161,8 +161,8 @@ export interface Fns {
   cellAt: MouseArea["cellAt"]; textRows: MouseArea["textRows"]; pressAt: MouseArea["pressAt"];
   clickAt: MouseArea["clickAt"]; dragTo: MouseArea["dragTo"];
   run: PromptKeysArea["run"]; command: PromptKeysArea["command"]; send: PromptKeysArea["send"];
-  restore: PromptKeysArea["restore"]; giveBack: PromptKeysArea["giveBack"]; clear: PromptKeysArea["clear"];
-  swapStash: PromptKeysArea["swapStash"];
+  restore: PromptKeysArea["restore"]; giveBack: PromptKeysArea["giveBack"]; putBack: PromptKeysArea["putBack"];
+  clear: PromptKeysArea["clear"]; swapStash: PromptKeysArea["swapStash"];
   keep: PromptKeysArea["keep"]; recall: PromptKeysArea["recall"]; menuFor: PromptKeysArea["menuFor"];
   list: PromptKeysArea["list"]; chosenIn: PromptKeysArea["chosenIn"]; fill: PromptKeysArea["fill"];
   shown: PromptKeysArea["shown"]; endSearch: PromptKeysArea["endSearch"]; searchKey: PromptKeysArea["searchKey"];

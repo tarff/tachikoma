@@ -828,6 +828,17 @@ this task adds choice 9's exit code 1. The export still shows hook text under "Y
   prompt was sent, gives nothing back.
 - **A block with no reason** says `A UserPromptSubmit hook blocked the prompt.` (approved by the
   user, 2026-11-09).
+- **The prompts queued behind a blocked one, or one a stop left unsent, come back with it**
+  (approved by the user, 2026-11-09): its words, then the queued ones, go back into the box
+  together, nothing sent, as Ctrl-C brings the queue back, with one `Your words are back in the
+  prompt box.`
+- **Given-back words land where the box's text really is** (Task 8's code review): an open Ctrl+R
+  search ends first, as Esc ends it, so a match it gives cannot take their place; a walk through
+  the history ends with the draft it kept, as Down past the newest brings it back; while the
+  external editor has the prompt they wait, and go in after what it saved once it returns, with
+  their pictures' spans (`ui.editingBack`, handover.tsx).
+- **Esc while a UserPromptSubmit hook runs** leaves that prompt's pictures marked sent, so they do
+  not go again; its words are in the Up history as text only (a known limit, Task 13).
 - **In `-p --json`, each grey hook line is a JSON line too,** `{"event":"hook-note","data":"<line>"}`,
   written as the other events are (`jsonLine`), beside `message`, `usage`, `error` and `lead`
   (approved by the user, 2026-11-09).
@@ -866,6 +877,11 @@ in a subagent stops it with its result and leaves the lead's turn going.
 **Note from Task 7's build** (2026-11-09): a subagent that a hook stops (PreToolUse, PostToolUse or
 PostToolUseFailure) now ends as failed ("it ended without an answer"), as its turn ends on results
 with no reply. This task must give it the `<id> was stopped by a hook` result.
+
+**Note from Task 8's code review** (2026-11-09): `-p` skips printing the answer whenever `send`
+returns how a hook ended the turn (cli.tsx, `!ended`). A Stop hook's `continue: false` after a final
+text answer would then hide a real answer. This task must print the answer when the stop came after
+it: only a block, or a stop marked `unsent`, skips it.
 
 Commit: `feat: Stop, SubagentStart and SubagentStop, with Claude Code's limit of eight blocks`.
 
@@ -997,7 +1013,9 @@ section).
   mode's judge, as the gate runs inside the tool; a question still open when a hook stops the turn
   stays on screen until answered, and the call is not run whatever the answer; and one from Task
   8's spec review: a blocked prompt holding a picture numbered before a `/resume` takes a new number
-  when sent again, leaving a gap in the numbers, which is harmless; the release list with 8 in five
+  when sent again, leaving a gap in the numbers, which is harmless; and one from Task 8's code
+  review: Esc while a UserPromptSubmit hook runs leaves that prompt's pictures marked sent, its
+  words in the Up history as text only, so a picture in it must be added again; the release list with 8 in five
   parts, 8e added; `/hooks` in the commands list; and, in "Headless runs", the `--json` bullet
   (README.md:1116, "prints one line per event: `message`, `usage`, `error` and `lead`") gains
   `hook-note`, each hook's grey line (Task 8, the user's choice, 2026-11-09).

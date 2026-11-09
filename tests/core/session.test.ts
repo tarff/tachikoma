@@ -1502,13 +1502,14 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
     const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate };
     const lead = new FakeProvider("a", o.turns);
+    const given = new Hooks({ hooks, off: false, leftOut: [] }, where, bus); // a test may set others in their place
     const session = new Session({
       lead,
       tools: [shell, readFileTool, writeFileTool, editFileTool, ...(o.tools ?? [])],
       system: "t",
       ctx,
       bus,
-      hooks: new Hooks({ hooks, off: false, leftOut: [] }, where, bus),
+      hooks: given,
       ...(o.transcript ? { transcript: o.transcript } : {}),
       ...(o.inbox ? { inbox: o.inbox } : {}),
     });
@@ -1517,7 +1518,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const errors = collectErrors(bus);
     const results = () => session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [{ output: p.output, isError: p.isError }] : [])));
     const command = (h: Hook) => [h.command, ...(h.args ?? [])].join(" ");
-    return { root, session, lead, bus, asked, judged, refusals, ran, reported, notes, outcomes, inputs, results, errors, hooks, command };
+    return { root, session, lead, bus, asked, judged, refusals, ran, reported, notes, outcomes, inputs, results, errors, hooks, given, command };
   }
   const oneCall = (name: string, input: object) => [callTool("c1", name, input), reply("ok")];
   const shellCall = (command: string) => oneCall("shell", { command });
@@ -2094,10 +2095,16 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const waiting = ["t1 finished"];
     const says = [own(stdout, { stdout, code: stdout ? 0 : 2 })];
     const s = await setup({ mode: "never", says, turns: [reply("ok")], transcript, inbox: () => waiting.splice(0) });
+    s.session.waitForNext([{ event: "SessionStart", text: "from the start" }]);
     expect(await s.session.send("go")).toEqual(ended);
     expect([s.session.messages, s.session.prompts, s.lead.seen, waiting]).toEqual([[], [], [], ["t1 finished"]]);
     expect(readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => (JSON.parse(l) as Line).t)).toEqual(["start"]);
     expect(s.notes).toEqual([line]);
+    // Both kinds of waiting text go with the next prompt that is sent (Task 8's code review).
+    s.given.set({ hooks: [], off: false, leftOut: [] });
+    await s.session.send("again");
+    const next = [hookText("SessionStart", "from the start"), { type: "text", text: "again" }, { type: "text", text: "t1 finished", from: "tasks" }];
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual(next);
   });
 
   it("sends nothing and saves nothing when the user stops the turn while a UserPromptSubmit hook runs", async () => {
@@ -2105,10 +2112,14 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const abort = new AbortController();
     const s = await setup({ mode: "never", root, says: [own("", { stdout: "", go: path.join(root, "never-made") })], turns: [reply("ok")] });
     const sent = s.session.send("go", abort.signal);
-    while (!s.inputs().length) await pause(20);
+    // Up to 10 s for the hook's process to start (Task 8's code review), then the test fails here, not at its timeout.
+    for (let i = 0; !s.inputs().length; i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
     abort.abort();
     expect(await sent).toBeUndefined();
-    expect([s.session.messages, s.session.prompts, s.lead.seen]).toEqual([[], [], []]);
+    expect([s.session.messages, s.session.prompts, s.lead.seen, s.notes, s.errors]).toEqual([[], [], [], [], []]);
   });
 
   it("fires no UserPromptSubmit for a subagent's brief, which the lead wrote", async () => {

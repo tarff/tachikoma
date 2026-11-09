@@ -232,11 +232,21 @@ export const handover = (ui: UI, fns: Fns) => {
   };
   // Ctrl+G and Ctrl+X Ctrl+E: the prompt as it is when the editor starts goes to it, and what it saved becomes the
   // prompt, the cursor at the end, as one step Ctrl+Z takes back; on failure the prompt stays (design, "On return").
-  // Then the queue goes on: a /screen, /settings or /keybindings may have waited for the editor (next, queue.ts).
+  // Then the queue goes on: a /screen, /settings or /keybindings may have waited for the editor (next, queue.ts). Prompts
+  // a UserPromptSubmit hook gave back while it was open go in after what it saved (promptKeys.ts, giveBack).
   const externalEditor = async () => {
     const ids = ui.editor.current.spans.map((s) => s.id); // the pictures the prompt holds as the editor opens
-    const ran = await fns.away((command) => editText(ui.editor.current.text, command));
-    if (!ran) return; // Ink ended meanwhile
+    ui.editingBack.current = [];
+    const backAfter = () => {
+      const back = ui.editingBack.current ?? [];
+      ui.editingBack.current = null;
+      if (back.length) fns.putBack(back);
+    };
+    const ran = await fns.away((command) => editText(ui.editor.current.text, command)).catch((err: unknown) => {
+      backAfter();
+      throw err;
+    });
+    if (!ran) return void (ui.editingBack.current = null); // Ink ended meanwhile
     if ("failed" in ran.got) fns.editorFailed(ran.command, ran.got.failed);
     else {
       const e = ui.editor.current;
@@ -248,6 +258,7 @@ export const handover = (ui: UI, fns: Fns) => {
       fns.freshText();
       ui.rerender((n) => n + 1);
     }
+    backAfter();
     fns.next();
   };
   // /settings and /keybindings open the real file, so each save reaches the watcher while the editor is still open

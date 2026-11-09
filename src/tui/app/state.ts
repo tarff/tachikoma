@@ -179,6 +179,9 @@ export function useAppState({
   const [pictures] = useState(() => picturesGiven ?? new Pictures());
   // The message waiting for its pictures' reads to end before it is sent, as the reads leave it (perform, queue.ts).
   const reading = useRef<Draft | null>(null);
+  // While the external editor has the prompt, the prompts a UserPromptSubmit hook gave back meanwhile, put in once it
+  // returns, as its saved file takes the prompt's place; null while it is not open (release 8b plan, Task 8's code review).
+  const editingBack = useRef<Draft[] | null>(null);
   const reads = useRef(0); // the pictures' reads running, for the hint row's "Reading picture..." (newPicture, pictureReads.ts)
   // What is running, since when, and for a turn the totals it started from; and the turn's tool calls,
   // kept after it until the next turn starts.
@@ -290,6 +293,7 @@ export function useAppState({
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
     happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
+    editingBack,
   } as const;
 }
 
