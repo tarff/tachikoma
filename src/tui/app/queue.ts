@@ -192,7 +192,8 @@ export const queue = (ui: UI, fns: Fns) => {
           const before = new Set(message.spans.flatMap((s) => (ui.pictures.sent(s.id) ? [s.id] : [])));
           const read = await fns.readsEnded(message, signal);
           const ended = await ui.session.send(read.parts, signal);
-          if (ended && "blocked" in ended) fns.giveBack(read.draft, before);
+          // A prompt a UserPromptSubmit hook blocked or stopped was not sent (approved by the user, 2026-11-09).
+          if (ended && ("blocked" in ended || ended.unsent)) fns.giveBack(read.draft, before);
         }
       } finally {
         ui.setBusy(false);

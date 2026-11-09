@@ -38,6 +38,9 @@ const STOPPED = "Stopped: a hook stopped the turn.";
 // The grey line for a hook's continue: false, with its stopReason when it gave one (the same).
 const stoppedTurn = (event: Event, reason: string) => (reason ? `A ${event} hook stopped the turn: ${reason}` : `A ${event} hook stopped the turn.`);
 
+// How a turn ended, when a hook ended it (Session.send).
+export type Ended = { blocked: string } | { stopped: string; unsent?: true };
+
 // One reply's calls (release 8b plan, Task 7): they run under `signal`, the reply's own, joined to the turn's; `stop` is a
 // hook's continue: false, which stops them as a user's stop does, and `stopped` the first hook that said it.
 interface Round {
@@ -247,9 +250,9 @@ export class Session {
 
   // An empty `text` starts a turn with only the waiting text, when there is any. The prompt sends its parts, pictures
   // among its text (release 6 plan, Task 14). How the turn ended: `blocked`, a UserPromptSubmit hook's block, with its
-  // reason, nothing sent or saved; `stopped`, a hook's continue: false, with its stopReason ("" when none); nothing
-  // otherwise (release 8b plan, choice 17).
-  async send(text: string | Part[], signal?: AbortSignal): Promise<{ blocked: string } | { stopped: string } | void> {
+  // reason, nothing sent or saved; `stopped`, a hook's continue: false, with its stopReason ("" when none), and `unsent`
+  // when it came at UserPromptSubmit, nothing sent or saved either; nothing otherwise (release 8b plan, choice 17).
+  async send(text: string | Part[], signal?: AbortSignal): Promise<Ended | void> {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
@@ -260,7 +263,7 @@ export class Session {
     }
   }
 
-  async #turn(typed: Part[], signal?: AbortSignal): Promise<{ blocked: string } | { stopped: string } | void> {
+  async #turn(typed: Part[], signal?: AbortSignal): Promise<Ended | void> {
     const { bus, hooks } = this.opts;
     // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept.
     const words = typed.flatMap((p) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
@@ -711,7 +714,7 @@ export class Session {
   // a prompt id of its own, sent the prompt with each picture as its marker, under the turn's signal and the event's 30 s
   // limit (hooks.ts). Its text for the model, to join the prompt's message; how the turn ended, at a block or a continue:
   // false, with its grey line; or undefined when the user's stop ended its hooks (run.ts).
-  async #userPromptSubmit(hooks: Hooks, prompt: string, signal?: AbortSignal): Promise<Part[] | { blocked: string } | { stopped: string } | undefined> {
+  async #userPromptSubmit(hooks: Hooks, prompt: string, signal?: AbortSignal): Promise<Part[] | Ended | undefined> {
     hooks.newPrompt();
     let c: Combined;
     try {
@@ -721,12 +724,15 @@ export class Session {
       throw err;
     }
     // A stop wins over a block (combine).
+    // `unsent`: the prompt was not sent, so the window gives its words back, as for a block (approved by the user,
+    // 2026-11-09).
     if (c.stop !== undefined) {
       this.opts.bus.emit("hook-note", stoppedTurn("UserPromptSubmit", c.stop));
-      return { stopped: c.stop };
+      return { stopped: c.stop, unsent: true };
     }
+    // No reason: its own words (approved by the user, 2026-11-09).
     if (c.block !== undefined) {
-      this.opts.bus.emit("hook-note", `A UserPromptSubmit hook blocked the prompt: ${c.block}`);
+      this.opts.bus.emit("hook-note", c.block ? `A UserPromptSubmit hook blocked the prompt: ${c.block}` : "A UserPromptSubmit hook blocked the prompt.");
       return { blocked: c.block };
     }
     return this.#hookParts([...c.context]);

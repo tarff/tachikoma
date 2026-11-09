@@ -85,9 +85,9 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     ui.queue.current = [];
     fns.freshText();
   };
-  // A prompt a UserPromptSubmit hook blocked (release 8b plan, Task 8; design, "What a hook's answer does"): its words come
-  // back into the prompt, after what is there, as the queue does, with its pictures' spans; the pictures it marked sent go
-  // with it again, those sent `before` it staying sent.
+  // A prompt a UserPromptSubmit hook blocked or stopped (release 8b plan, Task 8; design, "What a hook's answer does"; the
+  // stop approved by the user, 2026-11-09): its words come back into the prompt, after what is there, as the queue does,
+  // with its pictures' spans; the pictures it marked sent go with it again, those sent `before` it staying sent.
   const giveBack = (d: Draft, before: ReadonlySet<number>) => {
     for (const s of d.spans) if (!before.has(s.id)) ui.pictures.unmarkSent(s.id);
     const back = joined([ui.editor.current, d].filter((x) => x.text), "\n");

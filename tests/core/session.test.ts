@@ -2083,8 +2083,9 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   it.each([
     ["a block", JSON.stringify({ decision: "block", reason: "not today" }), { blocked: "not today" }, "A UserPromptSubmit hook blocked the prompt: not today"],
-    ["exit 2", "", { blocked: "" }, null],
-    ["a continue: false", stops("halt"), { stopped: "halt" }, "A UserPromptSubmit hook stopped the turn: halt"],
+    // No reason: its own words (approved by the user, 2026-11-09).
+    ["exit 2 with no error output", "", { blocked: "" }, "A UserPromptSubmit hook blocked the prompt."],
+    ["a continue: false", stops("halt"), { stopped: "halt", unsent: true }, "A UserPromptSubmit hook stopped the turn: halt"],
   ] as const)("sends nothing and saves nothing at a UserPromptSubmit hook's %s, leaving the waiting text for the next prompt", async (_name, stdout, ended, line) => {
     const top = await folder();
     const file = path.join(top, "s1.jsonl");
@@ -2096,7 +2097,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(await s.session.send("go")).toEqual(ended);
     expect([s.session.messages, s.session.prompts, s.lead.seen, waiting]).toEqual([[], [], [], ["t1 finished"]]);
     expect(readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => (JSON.parse(l) as Line).t)).toEqual(["start"]);
-    if (line) expect(s.notes).toEqual([line]);
+    expect(s.notes).toEqual([line]);
   });
 
   it("sends nothing and saves nothing when the user stops the turn while a UserPromptSubmit hook runs", async () => {

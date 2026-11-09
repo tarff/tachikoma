@@ -321,7 +321,7 @@ command with its `args` after it, escaped as the question escapes a command.
 | A call not run after a stop (to the model) | `Not run: a hook stopped the turn.` |
 | A call running when a hook stopped the turn (to the model) | `Stopped: a hook stopped the turn.` (approved by the user, 2026-11-09) |
 | A subagent stopped by a hook (its result) | `<id> was stopped by a hook: <stopReason>` (no reason: `<id> was stopped by a hook.`) |
-| UserPromptSubmit blocked (grey) | `A UserPromptSubmit hook blocked the prompt: <reason>` then, in the window, `Your words are back in the prompt box.` |
+| UserPromptSubmit blocked (grey) | `A UserPromptSubmit hook blocked the prompt: <reason>` (no reason: `A UserPromptSubmit hook blocked the prompt.`; approved by the user, 2026-11-09) then, in the window, `Your words are back in the prompt box.`; a stop at UserPromptSubmit also puts the words back, its own line (`A UserPromptSubmit hook stopped the turn: <stopReason>`) then this one (approved by the user, 2026-11-09) |
 | Stop kept the turn going (grey) | `A Stop hook kept the turn going: <reason>` |
 | SubagentStop kept a subagent going (grey) | `A SubagentStop hook kept <id> going: <reason>` |
 | The 8 blocks reached (grey) | `Stop hooks kept the turn going 8 times in a row; it ends here.` (for a subagent: `SubagentStop hooks kept <id> going 8 times in a row; it ends here.`) |
@@ -822,6 +822,12 @@ this task adds choice 9's exit code 1. The export still shows hook text under "Y
 - **The window:** `readsEnded` hands back the message its parts were made from, and the blocked
   words go back after what is in the box, with their pictures' spans; `Pictures.unmarkSent` lets
   the pictures that message marked sent go again with it.
+- **A stop at UserPromptSubmit also puts the words back** (approved by the user, 2026-11-09): the
+  stop's line, then `Your words are back in the prompt box.`, the pictures too, as for a block.
+  `send` marks such a stop `{ stopped, unsent: true }`, so a stop later in the turn, after the
+  prompt was sent, gives nothing back.
+- **A block with no reason** says `A UserPromptSubmit hook blocked the prompt.` (approved by the
+  user, 2026-11-09).
 
 **Carry-over for Task 12:** the window's `hook-note` listener will show `A UserPromptSubmit hook
 blocked the prompt: <reason>` before `Your words are back in the prompt box.`, as the session says

@@ -9139,8 +9139,8 @@ describe("App's hooks", { timeout: 15_000 }, () => {
     for (let i = 0; i < 200 && !app.lastFrame()?.includes(text); i++) await tick();
     expect(app.lastFrame()).toContain(text);
   }
-  // A UserPromptSubmit hook that blocks the first prompt it is sent, with "not yet", and lets each later one through.
-  function blocksOnce(): Hook[] {
+  // A UserPromptSubmit hook that gives `answer` to the first prompt it is sent, and lets each later one through.
+  function answersOnce(answer: object): Hook[] {
     const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-hook-"));
     onTestFinished(() => removeTree(dir));
     const script = path.join(dir, "hook.cjs");
@@ -9151,15 +9151,19 @@ describe("App's hooks", { timeout: 15_000 }, () => {
 process.stdin.resume().on("end", () => {
   if (fs.existsSync(${JSON.stringify(once)})) return;
   fs.writeFileSync(${JSON.stringify(once)}, "");
-  process.stdout.write(JSON.stringify({ decision: "block", reason: "not yet" }));
+  process.stdout.write(${JSON.stringify(JSON.stringify(answer))});
 });`,
     );
     return [{ event: "UserPromptSubmit", matcher: { all: true }, command: process.execPath, args: [script], async: false, where: "" }];
   }
 
-  it("puts a blocked prompt's words back into the prompt box, its picture too, saving nothing, and the picture goes with it when sent again", async () => {
+  // A stop gives the words back as a block does (approved by the user, 2026-11-09).
+  it.each([
+    ["blocked", { decision: "block", reason: "not yet" }],
+    ["stopped", { continue: false, stopReason: "not yet" }],
+  ])("puts a %s prompt's words back into the prompt box, its picture too, saving nothing, and the picture goes with it when sent again", async (_name, answer) => {
     const pictures = new Pictures();
-    const { app, session } = await mount([reply("seen")], { pictures, hooks: blocksOnce() });
+    const { app, session } = await mount([reply("seen")], { pictures, hooks: answersOnce(answer) });
     await press(app, "look at ", PICTURE);
     pictures.set(1, PNG);
     await press(app, "\r");
