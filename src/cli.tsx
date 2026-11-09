@@ -660,7 +660,8 @@ if (parsed.print !== undefined) {
     }
   });
   if (parsed.json) {
-    for (const event of ["message", "usage", "error", "lead"] as const) {
+    // A hook's grey lines too, each a line of its own (release 8b plan, Task 8; the user's choice, 2026-11-09).
+    for (const event of ["message", "usage", "error", "lead", "hook-note"] as const) {
       bus.on(event, (data: unknown) => console.log(jsonLine(event, data)));
     }
   } else {

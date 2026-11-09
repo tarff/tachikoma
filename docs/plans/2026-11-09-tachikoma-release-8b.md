@@ -828,6 +828,9 @@ this task adds choice 9's exit code 1. The export still shows hook text under "Y
   prompt was sent, gives nothing back.
 - **A block with no reason** says `A UserPromptSubmit hook blocked the prompt.` (approved by the
   user, 2026-11-09).
+- **In `-p --json`, each grey hook line is a JSON line too,** `{"event":"hook-note","data":"<line>"}`,
+  written as the other events are (`jsonLine`), beside `message`, `usage`, `error` and `lead`
+  (approved by the user, 2026-11-09).
 
 **Carry-over for Task 12:** the window's `hook-note` listener will show `A UserPromptSubmit hook
 blocked the prompt: <reason>` before `Your words are back in the prompt box.`, as the session says
@@ -992,8 +995,12 @@ section).
   from Task 6's review: a subagent's hooks are sent the lead's effort, not its own model's; and two
   from Task 7's review: `duration_ms` counts the time a permission question was open, and auto
   mode's judge, as the gate runs inside the tool; a question still open when a hook stops the turn
-  stays on screen until answered, and the call is not run whatever the answer; the release list
-  with 8 in five parts, 8e added; `/hooks` in the commands list.
+  stays on screen until answered, and the call is not run whatever the answer; and one from Task
+  8's spec review: a blocked prompt holding a picture numbered before a `/resume` takes a new number
+  when sent again, leaving a gap in the numbers, which is harmless; the release list with 8 in five
+  parts, 8e added; `/hooks` in the commands list; and, in "Headless runs", the `--json` bullet
+  (README.md:1116, "prints one line per event: `message`, `usage`, `error` and `lead`") gains
+  `hook-note`, each hook's grey line (Task 8, the user's choice, 2026-11-09).
 - **The design** gets an "As built" section listing this plan's choices as the user settled them.
 
 **All README wording goes to the user before it is committed.**

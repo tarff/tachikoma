@@ -588,12 +588,15 @@ describe("tachi", { timeout: 15_000 }, () => {
   });
 
   // Release 8b plan, Task 8 and choice 9: a prompt a UserPromptSubmit hook blocked, and any hook's continue: false, end a
-  // -p run with exit code 1 and the grey line as a note on its error output. The lead is the stand-in above, which asks to
-  // read a file, then answers.
+  // -p run with exit code 1 and the grey line as a note on its error output; with --json, as a hook-note line of its own
+  // (the user's choice, 2026-11-09). The lead is the stand-in above, which asks to read a file, then answers.
+  const blocked = "A UserPromptSubmit hook blocked the prompt: not today";
   it.each([
-    ["a UserPromptSubmit hook blocks the prompt", "UserPromptSubmit", { decision: "block", reason: "not today" }, 0, "A UserPromptSubmit hook blocked the prompt: not today"],
-    ["a PreToolUse hook stops the turn", "PreToolUse", { continue: false, stopReason: "enough" }, 1, "A PreToolUse hook stopped the turn: enough"],
-  ])("with -p, fails the run with exit code 1 when %s, with its line", async (_name, event, said, requests, line) => {
+    ["a UserPromptSubmit hook blocks the prompt", "UserPromptSubmit", { decision: "block", reason: "not today" }, 0, blocked, false],
+    ["a PreToolUse hook stops the turn", "PreToolUse", { continue: false, stopReason: "enough" }, 1, "A PreToolUse hook stopped the turn: enough", false],
+    ["a UserPromptSubmit hook blocks the prompt, under --json", "UserPromptSubmit", { decision: "block", reason: "not today" }, 0, blocked, true],
+  ])("with -p, fails the run with exit code 1 when %s, with its line", async (_name, event, said, requests, line, json) => {
+    const flags = json ? ["--json"] : [];
     const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
     onTestFinished(() => removeTree(top));
     const proj = path.join(top, "proj");
@@ -619,8 +622,9 @@ describe("tachi", { timeout: 15_000 }, () => {
     });
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
     const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
-    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
-    expect(r).toEqual({ code: 1, stdout: "", stderr: `note: ${line}\n` });
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", ...flags, env);
+    const out = json ? { stdout: `${JSON.stringify({ event: "hook-note", data: line })}\n`, stderr: "" } : { stdout: "", stderr: `note: ${line}\n` };
+    expect(r).toEqual({ code: 1, ...out });
     expect(asked).toBe(requests);
   });
 
