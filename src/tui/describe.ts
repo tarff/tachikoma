@@ -40,6 +40,7 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
   let picture = false; // the last part put in it was a picture
   for (const p of m.parts) {
     if (p.type === "text" && p.from === "tasks") continue; // shown when it arrived, as "t3 finished"
+    if (p.type === "text" && p.from === "hooks") continue; // for the model, not the conversation (release 8b design, "What a hook's answer does")
     // A picture is its marker in its place, in the line's colour (release 6 plan, choice 22). Two next to each other
     // get a space between, as the blanks between them were left out of the message (pictures.ts, messageParts).
     if (p.type === "text" || p.type === "image") {

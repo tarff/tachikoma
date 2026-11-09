@@ -17,12 +17,14 @@ import { type Line, pathsOf, type Read, readTranscript, Transcript } from "../..
 import { type CompletionRequest, type Message, type Part, type Provider, sentAll, type Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
-import type { Hook } from "../../src/hooks/config.js";
+import type { Event, Hook } from "../../src/hooks/config.js";
 import { Hooks, type Where } from "../../src/hooks/hooks.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
 import { judgeOf } from "../../src/safety/judge.js";
+import { delegateTool } from "../../src/tools/delegate.js";
 import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
-import { defineTool } from "../../src/tools/tool.js";
+import { shellText } from "../../src/tools/shell.js";
+import { defineTool, type Tool } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts, usage } from "../helpers.js";
 
@@ -1437,20 +1439,21 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   const decide = (decision: string, reason?: string, more: object = {}) =>
     answer({ permissionDecision: decision, ...(reason === undefined ? {} : { permissionDecisionReason: reason }), ...more });
   const rewrite = (updatedInput: object, more: object = {}) => answer({ updatedInput, ...more });
-  type Says = { stdout: string; code?: number; go?: string };
+  // `event` is PreToolUse unless given, and `names` the tools' Claude Code names it matches, every tool unless given.
+  type Says = { stdout: string; code?: number; go?: string; event?: Event; names?: string[] };
   type Mode5 = "ask" | "project" | "auto" | "never" | "-p";
   const FIVE: Mode5[] = ["ask", "project", "auto", "never", "-p"];
 
-  async function setup(o: { mode: Mode5; says: Says[]; turns: Turn[]; answers?: boolean[]; transcript?: Transcript; root?: string }) {
+  async function setup(o: { mode: Mode5; says: Says[]; turns: Turn[]; answers?: boolean[]; transcript?: Transcript; root?: string; tools?: Tool[] }) {
     const root = o.root ?? (await folder());
     const { script, out } = await hookFolder();
     const hooks: Hook[] = o.says.map((s) => ({
-      event: "PreToolUse",
-      matcher: { all: true },
+      event: s.event ?? "PreToolUse",
+      matcher: s.names ? { names: s.names } : { all: true },
       command: process.execPath,
       args: [script, out, s.stdout, String(s.code ?? 0), ...(s.go ? [s.go] : [])],
       async: false,
-      where: '"PreToolUse"',
+      where: `"${s.event ?? "PreToolUse"}"`,
     }));
     const headless = o.mode === "-p";
     const asked: { summary: string; warnings?: string[]; note?: string }[] = [];
@@ -1467,9 +1470,17 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       { root, headless, judge: async (action) => (judged.push(action.summary), { allow: false, reason: "no" }), hookRefused: () => void refusals.push(1) },
     );
     const ran: string[] = [];
+    const reported: boolean[] = []; // whether each command was given ctx.report
+    // It reports its parts as shell.ts does; the command "fail" fails with exit code 1, its result in shell.ts's layout.
     const shell = defineTool("shell", "Runs nothing: records the command the gate let through", z.object({ command: z.string() }), async ({ command }, ctx) => {
       await ctx.gate.require({ kind: "shell", outside: false, summary: `run: ${command}`, command }, ctx.signal);
       ran.push(command);
+      reported.push(ctx.report !== undefined);
+      const r = command === "fail"
+        ? { code: 1, signal: null, stdout: "", stderr: "it failed" }
+        : { code: 0, signal: null, stdout: `ran ${command}`, stderr: "" };
+      ctx.report?.({ stdout: r.stdout, stderr: r.stderr, code: r.code });
+      if (r.code !== 0) throw new Error(shellText(r));
       return `ran ${command}`;
     });
     const bus = new Bus();
@@ -1479,9 +1490,10 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     bus.on("tool-end", (e) => outcomes.push(e.outcome));
     const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
     const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate };
+    const lead = new FakeProvider("a", o.turns);
     const session = new Session({
-      lead: new FakeProvider("a", o.turns),
-      tools: [shell, readFileTool, writeFileTool, editFileTool],
+      lead,
+      tools: [shell, readFileTool, writeFileTool, editFileTool, ...(o.tools ?? [])],
       system: "t",
       ctx,
       bus,
@@ -1493,7 +1505,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const errors = collectErrors(bus);
     const results = () => session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [{ output: p.output, isError: p.isError }] : [])));
     const command = (h: Hook) => [h.command, ...(h.args ?? [])].join(" ");
-    return { root, session, asked, judged, refusals, ran, notes, outcomes, inputs, results, errors, hooks, command };
+    return { root, session, lead, asked, judged, refusals, ran, reported, notes, outcomes, inputs, results, errors, hooks, command };
   }
   const oneCall = (name: string, input: object) => [callTool("c1", name, input), reply("ok")];
   const shellCall = (command: string) => oneCall("shell", { command });
@@ -1754,5 +1766,181 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const inputs = readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
     const fired = { agent_id: "t1", agent_type: "Explore", tool_name: "Read", tool_input: { file_path: path.join(root, "a.txt") } };
     expect(inputs).toEqual([expect.objectContaining(fired)]);
+  });
+
+  // Release 8b plan, Task 7 (design, "Tool hooks", and its review's finding 1): the hooks after a call, and a hook's
+  // continue: false stopping the turn as a user's stop does, every call of the reply answered once.
+  const NOT_RUN = "Not run: a hook stopped the turn.";
+  const after = (event: Event, fields: object, top: object = {}) => JSON.stringify({ ...top, hookSpecificOutput: { hookEventName: event, ...fields } });
+  const stops = (reason?: string) => JSON.stringify({ continue: false, ...(reason === undefined ? {} : { stopReason: reason }) });
+  const hookText = (event: Event, text: string) => ({ type: "text", text: `${event} hook:\n${text}`, from: "hooks" });
+  const many = (...c: [string, string, unknown][]): Turn => ({ parts: c.map(([id, name, input]) => ({ type: "tool_call" as const, id, name, input })), usage });
+
+  it("fires PostToolUse after a call that ran, with the input that ran, Bash's shape for a command and Write's type", async () => {
+    const root = await folder();
+    const a = path.join(root, "a.txt");
+    const turns = [
+      callTool("c1", "shell", { command: "echo hi" }),
+      callTool("c2", "write_file", { path: "a.txt", content: "one" }),
+      callTool("c3", "write_file", { path: "a.txt", content: "two" }),
+      reply("ok"),
+    ];
+    const says: Says[] = [{ event: "PostToolUse", stdout: "" }, { names: ["Bash"], stdout: rewrite({ command: "echo rewritten" }) }];
+    const s = await setup({ mode: "never", root, says, turns });
+    await s.session.send("go");
+    const ms = expect.any(Number);
+    const bash = { stdout: "ran echo rewritten", stderr: "", interrupted: false, isImage: false };
+    const write = (id: string, content: string, type: string) => {
+      const fired = { tool_name: "Write", tool_input: { file_path: a, content }, tool_use_id: id, tool_response: { filePath: a, type } };
+      return expect.objectContaining({ ...fired, duration_ms: ms });
+    };
+    expect(s.inputs().filter((i) => i.hook_event_name === "PostToolUse")).toEqual([
+      expect.objectContaining({ tool_name: "Bash", tool_input: { command: "echo rewritten" }, tool_use_id: "c1", tool_response: bash, duration_ms: ms }),
+      write("c2", "one", "create"),
+      write("c3", "two", "update"),
+    ]);
+    expect([s.outcomes, s.notes]).toEqual([["ok", "ok", "ok"], []]);
+  });
+
+  it("fires PostToolUseFailure after a failed call, its error starting Exit code 1, and neither for a declined, unknown or schema-refused call", async () => {
+    const turns = [
+      callTool("c1", "shell", { command: "fail" }),
+      callTool("c2", "shell", { command: "echo no" }),
+      callTool("c3", "nope", {}),
+      callTool("c4", "shell", { command: 5 }),
+      reply("ok"),
+    ];
+    const says: Says[] = [{ event: "PostToolUse", stdout: "" }, { event: "PostToolUseFailure", stdout: "" }];
+    const s = await setup({ mode: "ask", says, turns, answers: [true, false] });
+    await s.session.send("go");
+    expect(s.outcomes).toEqual(["failed", "declined", "failed", "failed"]);
+    const failure = { tool_name: "Bash", tool_input: { command: "fail" }, tool_use_id: "c1", error: "Exit code 1\nit failed\n", is_interrupt: false };
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "PostToolUseFailure", ...failure, duration_ms: expect.any(Number) })]);
+  });
+
+  it("gives the model a string updatedToolOutput in place of a read's result, and ignores one that does not match the tool's result", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const turns = [callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "shell", { command: "echo hi" }), reply("ok")];
+    const says: Says[] = [
+      { event: "PostToolUse", names: ["Read"], stdout: after("PostToolUse", { updatedToolOutput: "not what the file says" }) },
+      { event: "PostToolUse", names: ["Bash"], stdout: after("PostToolUse", { updatedToolOutput: "just words" }) },
+    ];
+    const s = await setup({ mode: "never", root, says, turns });
+    await s.session.send("go");
+    expect(s.results()).toEqual([{ output: "not what the file says", isError: false }, { output: "ran echo hi", isError: false }]);
+    expect(s.outcomes).toEqual(["ok", "ok"]);
+  });
+
+  it("puts the hooks' text for the model after the reply's results, headed, a block's reason among it, the result and outcome unchanged", async () => {
+    const says: Says[] = [
+      { stdout: answer({ additionalContext: "before it ran" }) },
+      { event: "PostToolUse", stdout: after("PostToolUse", { additionalContext: "after it ran" }, { decision: "block", reason: "looked odd" }) },
+    ];
+    const s = await setup({ mode: "never", says, turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([
+      { type: "tool_result", callId: "c1", output: "ran echo hi", isError: false },
+      hookText("PreToolUse", "before it ran"),
+      hookText("PostToolUse", "looked odd"),
+      hookText("PostToolUse", "after it ran"),
+    ]);
+    expect([s.outcomes, s.notes]).toEqual([["ok"], []]);
+  });
+
+  // Task 5's build: write_file reads the file to tell Write's create from update only when report is set.
+  it.each<[string, Partial<Says>, boolean]>([
+    ["a PostToolUse hook for Bash", { event: "PostToolUse", names: ["Bash"] }, true],
+    ["a PostToolUseFailure hook for Bash", { event: "PostToolUseFailure", names: ["Bash"] }, true],
+    ["a PostToolUse hook for Read alone", { event: "PostToolUse", names: ["Read"] }, false],
+    ["a PreToolUse hook alone", {}, false],
+  ])("gives a tool ctx.report only when a hook after the call matches it: %s", async (_name, hook, given) => {
+    const s = await setup({ mode: "never", says: [{ stdout: "", ...hook }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.reported).toEqual([given]);
+  });
+
+  it.each([
+    ["halt", "A PreToolUse hook stopped the turn: halt"],
+    [undefined, "A PreToolUse hook stopped the turn."],
+  ] as const)("stops the turn at a PreToolUse hook's continue: false (reason %s), running no call, its text kept from the next turn", async (reason, line) => {
+    const stopping = JSON.stringify({ ...JSON.parse(stops(reason)), hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: "noted" } });
+    const turns = [many(["c1", "shell", { command: "echo one" }], ["c2", "shell", { command: "echo two" }]), reply("next turn")];
+    const s = await setup({ mode: "never", says: [{ stdout: stopping }], turns });
+    expect(await s.session.send("go")).toEqual({ stopped: reason ?? "" });
+    const notRun = { output: NOT_RUN, isError: true };
+    expect([s.ran, s.results(), s.outcomes, s.notes]).toEqual([[], [notRun, notRun], ["cancelled", "cancelled"], [line]]);
+    expect([s.inputs().length, s.lead.seen.length]).toEqual([1, 1]);
+    expect(await s.session.send("again")).toBeUndefined();
+    // The next request joins the stopped turn's results and the new prompt (types.ts, sentAll): the text is there once.
+    const result = (callId: string) => ({ type: "tool_result", callId, ...notRun });
+    const parts = [result("c1"), result("c2"), hookText("PreToolUse", "noted"), { type: "text", text: "again" }];
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual(parts);
+  });
+
+  it("stops the turn at a PostToolUseFailure hook's continue: false, the failed call keeping its own result and the next not run", async () => {
+    const turns = [many(["c1", "shell", { command: "fail" }], ["c2", "shell", { command: "echo two" }])];
+    const s = await setup({ mode: "never", says: [{ event: "PostToolUseFailure", stdout: stops("it broke") }], turns });
+    expect(await s.session.send("go")).toEqual({ stopped: "it broke" });
+    const failed = shellText({ code: 1, signal: null, stdout: "", stderr: "it failed" });
+    expect(s.results()).toEqual([{ output: failed, isError: true }, { output: NOT_RUN, isError: true }]);
+    expect([s.ran, s.outcomes, s.notes]).toEqual([["fail"], ["failed", "cancelled"], ["A PostToolUseFailure hook stopped the turn: it broke"]]);
+  });
+
+  // The design's review finding 1: the history stays one the providers take and a resume can load.
+  it("stops the turn at a PostToolUse hook's continue: false while a delegate runs: every call answered once, the next request taken, the resume", async () => {
+    const top = await folder();
+    const dir = path.join(top, "sessions", "project");
+    privateDir(dir);
+    const file = path.join(dir, "s1.jsonl");
+    const pictures = path.join(dir, "s1", "pictures");
+    const transcript = new Transcript(file, pictures);
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const worker = new Held("fake:w"); // never answers, so the subagent runs until it is stopped
+    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate: new PermissionGate("never", async () => false) };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => worker, system: "sub", tools: [readFileTool], ctx });
+    const calls = many(
+      ["c1", "shell", { command: "echo one" }],
+      ["c2", "delegate", { description: "look", task: "find x" }],
+      ["c3", "read_file", { path: "a.txt" }],
+    );
+    const says: Says[] = [{ event: "PostToolUse", names: ["Bash"], stdout: stops("enough") }];
+    const s = await setup({ mode: "never", root, says, turns: [calls, reply("fine")], transcript, tools: [delegateTool(tasks, { headless: false })] });
+    expect(await s.session.send("go")).toEqual({ stopped: "enough" });
+    expect([tasks.all.map((t) => t.state), worker.asked.length]).toEqual([["stopped"], 1]);
+    const answered = [
+      { type: "tool_result", callId: "c1", output: "ran echo one", isError: false },
+      { type: "tool_result", callId: "c2", output: "t1 was stopped.", isError: false },
+      { type: "tool_result", callId: "c3", output: NOT_RUN, isError: true },
+    ];
+    expect(s.session.messages[2]!.parts).toEqual(answered);
+    expect(s.notes).toEqual(["A PostToolUse hook stopped the turn: enough"]);
+    await s.session.send("go on");
+    // The results and the new prompt go as one user message (types.ts, sentAll).
+    expect(s.lead.seen[1]!.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(s.lead.seen[1]![2]!.parts).toEqual([...answered, { type: "text", text: "go on" }]);
+    const r = readTranscript(file, pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    expect(r.messages[2]!.parts).toEqual(answered);
+  });
+
+  it("stops a call still running when a delegate's PostToolUse hook stops the turn, sent Agent's shape, in the drafted words", async () => {
+    const root = await folder();
+    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate: new PermissionGate("never", async () => false) };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", [reply("found")]), system: "sub", tools: [readFileTool], ctx });
+    // Runs until it is stopped, then fails as a killed command does.
+    const slow = defineTool("slow", "Waits to be stopped", z.object({}), (_input, c) =>
+      new Promise((_ok, no) => c.signal?.addEventListener("abort", () => no(new Error("killed")))));
+    const calls = many(["c1", "slow", {}], ["c2", "delegate", { description: "look", task: "find x" }]);
+    const says: Says[] = [{ event: "PostToolUse", names: ["Agent"], stdout: stops() }];
+    const s = await setup({ mode: "never", root, says, turns: [calls], tools: [delegateTool(tasks, { headless: false }), slow] });
+    expect(await s.session.send("go")).toEqual({ stopped: "" });
+    expect(s.results()).toEqual([{ output: "Stopped: a hook stopped the turn.", isError: true }, { output: "found", isError: false }]);
+    expect([s.outcomes.sort(), s.errors, s.notes]).toEqual([["cancelled", "ok"], [], ["A PostToolUse hook stopped the turn."]]);
+    const agent = { status: "completed", agentId: "t1", content: [{ type: "text", text: "found" }] };
+    const input = { description: "look", prompt: "find x", subagent_type: "Explore" };
+    expect(s.inputs()).toEqual([expect.objectContaining({ tool_name: "Agent", tool_input: input, tool_use_id: "c2", tool_response: agent })]);
   });
 });

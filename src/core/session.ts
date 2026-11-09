@@ -1,10 +1,10 @@
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
-import { commandOf } from "../hooks/answer.js";
+import { type Combined, commandOf } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Hooks } from "../hooks/hooks.js";
-import { fromClaude, type Paths, pathsFor, toClaude } from "../hooks/tools.js";
+import { errorOf, fromClaude, outputFrom, type Paths, pathsFor, responseOf, toClaude } from "../hooks/tools.js";
 import type { Cache } from "../providers/pictures.js";
-import type { Tool, ToolContext } from "../tools/tool.js";
+import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, Declined, type PermissionGate } from "./permissions.js";
@@ -29,6 +29,19 @@ export const UNSAVED = "saving this session stopped";
 
 export function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
+}
+
+// What the model is told of a call a hook's continue: false came before (release 8b plan, "Lines this plan adds"), and of
+// one it stopped while it ran (drafted at Task 7's build, for the user to approve).
+const NOT_RUN = "Not run: a hook stopped the turn.";
+const STOPPED = "Stopped: a hook stopped the turn.";
+
+// One reply's calls (release 8b plan, Task 7): they run under `signal`, the reply's own, joined to the turn's; `stop` is a
+// hook's continue: false, which stops them as a user's stop does, and `stopped` the first hook that said it.
+interface Round {
+  signal: AbortSignal;
+  stop(event: Event, reason: string): void;
+  stopped?: { event: Event; reason: string };
 }
 
 export interface SessionOptions {
@@ -111,7 +124,7 @@ export class Session {
   #sizes = new Sizes();
   #transcript: Transcript | undefined;
   #saidFailed = false; // whether this transcript's failure has been said: once per transcript
-  // The text PreToolUse hooks handed the model, held for Task 7 to put after the results (release 8b plan, Task 6).
+  // The text the tool hooks handed the model during a reply, held until its results go back (release 8b plan, Tasks 6, 7).
   readonly #hookText: { event: Event; text: string }[] = [];
 
   constructor(private readonly opts: SessionOptions) {
@@ -221,19 +234,20 @@ export class Session {
   }
 
   // An empty `text` starts a turn with only the waiting text, when there is any. The prompt sends its parts, pictures
-  // among its text (release 6 plan, Task 14).
-  async send(text: string | Part[], signal?: AbortSignal): Promise<void> {
+  // among its text (release 6 plan, Task 14). How the turn ended: `stopped`, a hook's continue: false, with its stopReason
+  // ("" when none); nothing otherwise (release 8b plan, choice 17).
+  async send(text: string | Part[], signal?: AbortSignal): Promise<{ stopped: string } | void> {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
     try {
-      await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal);
+      return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal);
     } finally {
       this.#running = false;
     }
   }
 
-  async #turn(typed: Part[], signal?: AbortSignal): Promise<void> {
+  async #turn(typed: Part[], signal?: AbortSignal): Promise<{ stopped: string } | void> {
     const { bus } = this.opts;
     // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept.
     const words = typed.flatMap((p) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
@@ -363,16 +377,37 @@ export class Session {
       const entries = calls.map((c) => ({ name: c.name, input: c.input }));
       this.calls.push(...entries);
 
+      // The reply's calls run under a signal of its own, joined to the turn's, so a hook's continue: false stops them as a
+      // user's stop does, a running delegate ending as a stopped one (release 8b plan, Task 7; design, review finding 1).
+      const halt = new AbortController();
+      const join = () => halt.abort();
+      signal?.addEventListener("abort", join, { once: true });
+      if (signal?.aborted) halt.abort();
+      const round: Round = {
+        signal: halt.signal,
+        stop: (event, reason) => {
+          round.stopped ??= { event, reason };
+          halt.abort();
+        },
+      };
       // Calls of a side-by-side tool (delegate) all start first, together; the rest run one after
-      // another. The results go back in the reply's order, then whatever is waiting for the lead,
-      // after the last tool result, as the providers want it.
+      // another. The results go back in the reply's order, then the hooks' text for the model, so a stopped turn's text
+      // is never the next one's (Task 6's review), then whatever is waiting for the lead, after the last tool result, as
+      // the providers want it.
       const results: ToolResult[] = new Array(calls.length);
       const together = calls.map((c, i) =>
-        this.opts.tools.find((t) => t.spec.name === c.name)?.parallel ? this.#runTool(c, entries[i]!, signal).then((r) => (results[i] = r)) : null,
+        this.opts.tools.find((t) => t.spec.name === c.name)?.parallel ? this.#runTool(c, entries[i]!, round).then((r) => (results[i] = r)) : null,
       );
-      for (const [i, call] of calls.entries()) if (!together[i]) results[i] = await this.#runTool(call, entries[i]!, signal);
+      for (const [i, call] of calls.entries()) if (!together[i]) results[i] = await this.#runTool(call, entries[i]!, round);
       await Promise.all(together);
-      this.#push({ role: "user", parts: [...results, ...this.#waiting()] });
+      signal?.removeEventListener("abort", join);
+      this.#push({ role: "user", parts: [...results, ...this.#hookParts(), ...this.#waiting()] });
+      // Every call has its one result, saved, before the turn ends (design, review finding 1).
+      if (round.stopped) {
+        const { event, reason } = round.stopped;
+        bus.emit("hook-note", reason ? `A ${event} hook stopped the turn: ${reason}` : `A ${event} hook stopped the turn.`);
+        return { stopped: reason };
+      }
       if (signal?.aborted) return;
       when = "during";
       shortened = false;
@@ -535,16 +570,20 @@ export class Session {
   }
 
   // `entry` is the call's place in the record of calls, which a hook's rewrite replaces.
-  async #runTool(call: ToolCall, entry: { name: string; input: unknown }, signal?: AbortSignal): Promise<ToolResult> {
+  async #runTool(call: ToolCall, entry: { name: string; input: unknown }, round: Round): Promise<ToolResult> {
     const { bus } = this.opts;
     bus.emit("tool-start", { id: call.id, name: call.name, input: call.input });
-    const [res, outcome] = await this.#execute(call, entry, signal);
+    const [res, outcome] = await this.#execute(call, entry, round);
     bus.emit("tool-end", { id: call.id, outcome });
     return res;
   }
 
-  async #execute(call: ToolCall, entry: { name: string; input: unknown }, signal?: AbortSignal): Promise<[ToolResult, ToolOutcome]> {
-    if (signal?.aborted) return [result(call, "Cancelled by the user.", true), "cancelled"];
+  async #execute(call: ToolCall, entry: { name: string; input: unknown }, round: Round): Promise<[ToolResult, ToolOutcome]> {
+    const { signal } = round;
+    // A call a stop came before or during: the user's, or a hook's continue: false, in its own words (release 8b plan,
+    // Task 7).
+    const stopped = (byHook: string): [ToolResult, ToolOutcome] => [result(call, round.stopped ? byHook : "Cancelled by the user.", true), "cancelled"];
+    if (signal.aborted) return stopped(NOT_RUN);
     const fail = (message: string): [ToolResult, ToolOutcome] => {
       // Capped like the message: a failed write_file's input is the whole file. The input that ran, a hook's rewrite among
       // them, as the record of calls holds it (Task 6's code review).
@@ -553,18 +592,83 @@ export class Session {
     };
     const tool = this.opts.tools.find((t) => t.spec.name === call.name);
     if (!tool) return fail(`Unknown tool: ${call.name}`);
+    const { hooks } = this.opts;
+    let parts: unknown; // the result's parts as the tool reported them, for the shape hooks are sent (choice 12)
+    let started: number | undefined; // unset: the tool never started
+    let text: string;
+    let ms: number;
     try {
       // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts).
-      const pre = this.opts.hooks ? await this.#preToolUse(call, entry, this.opts.hooks, signal) : { input: call.input, gate: this.opts.ctx.gate };
+      const pre = hooks ? await this.#preToolUse(call, entry, hooks, signal) : { input: call.input, gate: this.opts.ctx.gate };
+      if ("stop" in pre) {
+        round.stop("PreToolUse", pre.stop);
+        return stopped(NOT_RUN);
+      }
       if ("refused" in pre) return [result(call, pre.refused, true), "declined"];
-      return [result(call, truncate(await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal })), false), "ok"];
+      // Only when a hook after the call matches it, so a write with no such hook does not read the file first (files.ts).
+      // A plain capture, which cannot throw into the tool (Task 5's code review).
+      const name = toClaude(entry, this.#hookPaths()).tool_name;
+      const report = hooks?.has("PostToolUse", name) || hooks?.has("PostToolUseFailure", name) ? { report: (p: unknown) => void (parts = p) } : {};
+      started = Date.now();
+      text = truncate(await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal, ...report }));
+      ms = Date.now() - started;
     } catch (err) {
       // Ctrl-C at a question declines it and stops the turn: the call was cancelled, not declined.
       // Cut as a failure's is: a hook's question names the call with its whole input, a write's content included.
-      if (err instanceof Declined) return [result(call, truncate(err.message), true), signal?.aborted ? "cancelled" : "declined"];
-      if (signal?.aborted) return [result(call, "Cancelled by the user.", true), "cancelled"]; // not a failure, so not logged
-      return fail(truncate(errorText(err)));
+      if (err instanceof Declined) return [result(call, truncate(err.message), true), signal.aborted ? "cancelled" : "declined"];
+      if (signal.aborted) return stopped(started === undefined ? NOT_RUN : STOPPED); // not a failure, so not logged
+      const failed = fail(truncate(errorText(err)));
+      // Not for a call that never started, nor an input the tool's schema refused (Claude Code's hooks reference).
+      if (hooks && started !== undefined && !(err instanceof InvalidInput)) {
+        const fields = { error: errorOf(call.name, failed[0].output, parts), is_interrupt: false, duration_ms: Date.now() - started };
+        await this.#postToolUse(hooks, "PostToolUseFailure", call, entry, fields, round);
+      }
+      return failed;
     }
+    // A call a stop came during keeps its own result, such as a stopped delegate's, and no hook after it runs.
+    if (!hooks || signal.aborted) return [result(call, text, false), "ok"];
+    const fields = { tool_response: responseOf(call.name, text, parts, this.#hookPaths()), duration_ms: ms };
+    const c = await this.#postToolUse(hooks, "PostToolUse", call, entry, fields, round);
+    // updatedToolOutput replaces what the model reads where it can be turned back into it, and is ignored otherwise (choice
+    // 13). The outcome stays the call's own.
+    const output = c && "output" in c ? outputFrom(call.name, c.output) : null;
+    return [result(call, output === null ? text : truncate(output), false), "ok"];
+  }
+
+  // PostToolUse or PostToolUseFailure after a call that ran (release 8b plan, Task 7; design, "Tool hooks"), sent the input
+  // that ran, matched on the tool's Claude Code name, under the reply's signal. Its text for the model waits for the reply's
+  // results, and its continue: false stops the reply's calls. Undefined when a stop ended its hooks (run.ts), so the call
+  // keeps its own result.
+  async #postToolUse(
+    hooks: Hooks,
+    event: "PostToolUse" | "PostToolUseFailure",
+    call: ToolCall,
+    entry: { name: string; input: unknown },
+    fields: object,
+    round: Round,
+  ): Promise<Combined | undefined> {
+    const { tool_name, tool_input } = toClaude(entry, this.#hookPaths());
+    let c: Combined;
+    try {
+      c = await hooks.fire(event, { tool_name, tool_input, tool_use_id: call.id, ...fields }, { match: tool_name, signal: round.signal });
+    } catch (err) {
+      if (round.signal.aborted) return undefined;
+      throw err;
+    }
+    this.#hookText.push(...c.context);
+    if (c.stop !== undefined) round.stop(event, c.stop);
+    return c;
+  }
+
+  // The paths hooks are sent: the launch's, or without them ctx.root's on the host (SessionOptions.paths).
+  #hookPaths(): Paths {
+    return this.opts.paths ?? pathsFor(this.opts.ctx.root, null);
+  }
+
+  // The text the tool hooks handed the model during the reply, one part each, headed by its event (release 8b plan,
+  // choice 6), taken so it goes into exactly one message.
+  #hookParts(): Part[] {
+    return this.#hookText.splice(0).map(({ event, text }) => ({ type: "text", text: `${event} hook:\n${text}`, from: "hooks" }));
   }
 
   // PreToolUse before a call (release 8b plan, Task 6; design, "Tool hooks"), matched on the tool's Claude Code name, under
@@ -575,11 +679,13 @@ export class Session {
     entry: { name: string; input: unknown },
     hooks: Hooks,
     signal?: AbortSignal,
-  ): Promise<{ input: unknown; gate: PermissionGate } | { refused: string }> {
-    const paths = this.opts.paths ?? pathsFor(this.opts.ctx.root, null);
+  ): Promise<{ input: unknown; gate: PermissionGate } | { refused: string } | { stop: string }> {
+    const paths = this.#hookPaths();
     const { tool_name, tool_input } = toClaude(call, paths);
     const c = await hooks.fire("PreToolUse", { tool_name, tool_input, tool_use_id: call.id }, { match: tool_name, signal });
     this.#hookText.push(...c.context);
+    // A continue: false stops the turn before the call runs; combine has dropped the rest of the answer (Task 6's build).
+    if (c.stop !== undefined) return { stop: c.stop };
     const say = (line: string) => this.opts.bus.emit("hook-note", line);
     // Each refusal is told to the gate, for -p's exit code (the user's choice, 2026-11-09).
     const refused = (line: string, told = line) => {

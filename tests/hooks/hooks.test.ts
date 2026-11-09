@@ -130,6 +130,19 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(["all", "bash", "edits", "regex", "later"].map((n) => p.inputs(n).length)).toEqual([2, 1, 0, 1, 0]);
   });
 
+  // Release 8b plan, Task 7: the session gives a tool ctx.report only when a hook after the call would run for it.
+  it("says whether any hook at an event matches a value, none with hooks off, and runs none to say it", async () => {
+    const p = await place();
+    const bash = p.hook("bash", { event: "PostToolUse", matcher: { names: ["Bash"] } });
+    const { hooks } = setup(p, [bash, p.hook("pre")]);
+    const asked = () =>
+      [hooks.has("PostToolUse", "Bash"), hooks.has("PostToolUse", "Read"), hooks.has("PostToolUseFailure", "Bash"), hooks.has("PreToolUse", "Read")];
+    expect(asked()).toEqual([true, false, false, true]);
+    hooks.set(config([bash, p.hook("pre")], true));
+    expect(asked()).toEqual([false, false, false, false]);
+    expect([p.inputs("bash"), p.inputs("pre")]).toEqual([[], []]);
+  });
+
   // Release 8b design, "Running a hook" (review, 2026-11-09, finding 3).
   it("runs an entry the same as an earlier one in every field once, under another matcher too, and two alike but for args both", async () => {
     const p = await place();

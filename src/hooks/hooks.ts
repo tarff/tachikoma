@@ -33,6 +33,10 @@ const PROMPT_LIMIT = 30;
 // 2026-11-09, finding 3); its event, matcher and place are not fields of the entry.
 const entry = (h: Hook) => JSON.stringify([h.command, h.args, h.shell, h.timeout, h.async, h.onFailure, h.statusMessage]);
 
+// Whether `hook` runs at `event` for `match`; without one, only a hook that matches everything does.
+const runsFor = (hook: Hook, event: Event, match?: string) =>
+  hook.event === event && (match === undefined ? "all" in hook.matcher : matches(hook.matcher, match));
+
 // Held by the lead's Hooks and every subagent's, so a live edit reaches them all, and a subagent, which has no prompt of
 // its own, sends the lead's prompt id.
 interface Shared {
@@ -80,13 +84,20 @@ export class Hooks {
     this.#runs = [];
   }
 
+  // Whether a fire of `event` with `match` would run any hook, without running one: the session gives a tool ctx.report
+  // only when a hook after the call matches it (release 8b plan, Task 7).
+  has(event: Event, match: string): boolean {
+    const { hooks, off } = this.#shared.config;
+    return !off && hooks.some((h) => runsFor(h, event, match));
+  }
+
   // `match` is what the event's matchers are matched against: a tool's Claude Code name, SessionStart's source, and so
   // on. Without one only a hook that matches everything runs; UserPromptSubmit's and Stop's always do (config.ts).
   async fire(event: Event, fields: object, opts: { match?: string; signal?: AbortSignal } = {}): Promise<Combined> {
     const { hooks, off } = this.#shared.config;
     const seen = new Set<string>();
     const picked = off ? [] : hooks.filter((h) => {
-      if (h.event !== event || !(opts.match === undefined ? "all" in h.matcher : matches(h.matcher, opts.match))) return false;
+      if (!runsFor(h, event, opts.match)) return false;
       const key = entry(h);
       if (seen.has(key)) return false;
       seen.add(key);

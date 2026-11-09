@@ -20,6 +20,10 @@ export interface Tool {
   parallel?: boolean; // a reply's calls of it start together (delegate); other calls run one after another
 }
 
+// An input the tool's schema refused, after which no PostToolUseFailure hook runs (Claude Code's hooks reference;
+// release 8b plan, Task 7).
+export class InvalidInput extends Error {}
+
 // A tool whose input is checked against its schema before it runs. Model output is untrusted.
 // An object schema, because both provider APIs require one for tool input.
 export function defineTool<S extends z.ZodObject>(
@@ -33,7 +37,7 @@ export function defineTool<S extends z.ZodObject>(
     spec: { name, description, inputSchema },
     async run(input, ctx) {
       const parsed = schema.safeParse(input);
-      if (!parsed.success) throw new Error(`Invalid input for ${name}: ${z.prettifyError(parsed.error)}`);
+      if (!parsed.success) throw new InvalidInput(`Invalid input for ${name}: ${z.prettifyError(parsed.error)}`);
       return run(parsed.data, ctx);
     },
   };
