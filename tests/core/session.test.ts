@@ -1427,37 +1427,54 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     });
     return dir;
   }
+  // The hook appends its input to the file named by its first argument, as SCRIPT's does, then prints the answer its second,
+  // a JSON list, gives for this firing of its event: the first the first time, and nothing once the list is used up.
+  const SEQ = `const fs = require("fs");
+const [out, answers] = process.argv.slice(2);
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  const event = JSON.parse(text).hook_event_name;
+  const lines = fs.existsSync(out) ? fs.readFileSync(out, "utf8").split("\\n").filter(Boolean) : [];
+  const before = lines.filter((l) => JSON.parse(l).hook_event_name === event).length;
+  fs.appendFileSync(out, text + "\\n");
+  process.stdout.write(JSON.parse(answers)[before] ?? "");
+});`;
+
   // The hook's script and the file of its inputs, in a folder apart from the project, so a file tool never meets them.
   async function hookFolder() {
     const own = await folder();
     const script = path.join(own, "hook.cjs");
     writeFileSync(script, SCRIPT);
-    return { script, out: path.join(own, "inputs.jsonl") };
+    const seq = path.join(own, "seq.cjs");
+    writeFileSync(seq, SEQ);
+    return { script, seq, out: path.join(own, "inputs.jsonl") };
   }
 
   const answer = (fields: object) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...fields } });
   const decide = (decision: string, reason?: string, more: object = {}) =>
     answer({ permissionDecision: decision, ...(reason === undefined ? {} : { permissionDecisionReason: reason }), ...more });
   const rewrite = (updatedInput: object, more: object = {}) => answer({ updatedInput, ...more });
-  // `event` is PreToolUse unless given, and `names` the tools' Claude Code names it matches, every tool unless given.
-  type Says = { stdout: string; code?: number; go?: string; event?: Event; names?: string[] };
+  // `event` is PreToolUse unless given, and `names` the tools' Claude Code names it matches, every tool unless given. With
+  // `seq` the hook is SEQ, answering each firing in turn, in place of `stdout`.
+  type Says = { stdout: string; code?: number; go?: string; event?: Event; names?: string[]; seq?: string[] };
   type Mode5 = "ask" | "project" | "auto" | "never" | "-p";
   const FIVE: Mode5[] = ["ask", "project", "auto", "never", "-p"];
 
   // An answer may be a promise, for a question the test answers later.
   type Answers = (boolean | Promise<boolean>)[];
-  // `judge` is auto mode's, which says no at once unless given.
+  // `judge` is auto mode's, which says no at once unless given. With `worker`, the lead has delegate, its subagents running
+  // on that model with the lead's hooks, and the session has their Tasks.
   async function setup(o: {
     mode: Mode5; says: Says[]; turns: Turn[]; answers?: Answers; transcript?: Transcript; root?: string; tools?: Tool[]; judge?: Judge;
-    inbox?: () => string[];
+    inbox?: () => string[]; worker?: Provider;
   }) {
     const root = o.root ?? (await folder());
-    const { script, out } = await hookFolder();
+    const { script, seq, out } = await hookFolder();
     const hooks: Hook[] = o.says.map((s) => ({
       event: s.event ?? "PreToolUse",
       matcher: s.names ? { names: s.names } : { all: true },
       command: process.execPath,
-      args: [script, out, s.stdout, String(s.code ?? 0), ...(s.go ? [s.go] : [])],
+      args: s.seq ? [seq, out, JSON.stringify(s.seq)] : [script, out, s.stdout, String(s.code ?? 0), ...(s.go ? [s.go] : [])],
       async: false,
       where: `"${s.event ?? "PreToolUse"}"`,
     }));
@@ -1503,13 +1520,18 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate };
     const lead = new FakeProvider("a", o.turns);
     const given = new Hooks({ hooks, off: false, leftOut: [] }, where, bus); // a test may set others in their place
-    const session = new Session({
+    const worker = o.worker;
+    const tasks = worker
+      ? new Tasks({ bus, max: 8, worker: () => worker, system: "sub", tools: [readFileTool], ctx, transcript: () => session.transcript, hooks: given })
+      : undefined;
+    const session: Session = new Session({
       lead,
-      tools: [shell, readFileTool, writeFileTool, editFileTool, ...(o.tools ?? [])],
+      tools: [shell, readFileTool, writeFileTool, editFileTool, ...(tasks ? [delegateTool(tasks, { headless })] : []), ...(o.tools ?? [])],
       system: "t",
       ctx,
       bus,
       hooks: given,
+      ...(tasks ? { tasks, inbox: () => tasks.take() } : {}),
       ...(o.transcript ? { transcript: o.transcript } : {}),
       ...(o.inbox ? { inbox: o.inbox } : {}),
     });
@@ -1518,7 +1540,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const errors = collectErrors(bus);
     const results = () => session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [{ output: p.output, isError: p.isError }] : [])));
     const command = (h: Hook) => [h.command, ...(h.args ?? [])].join(" ");
-    return { root, session, lead, bus, asked, judged, refusals, ran, reported, notes, outcomes, inputs, results, errors, hooks, given, command };
+    return { root, session, lead, bus, asked, judged, refusals, ran, reported, notes, outcomes, inputs, results, errors, hooks, given, command, tasks };
   }
   const oneCall = (name: string, input: object) => [callTool("c1", name, input), reply("ok")];
   const shellCall = (command: string) => oneCall("shell", { command });
@@ -2175,5 +2197,167 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     await s.session.send("more");
     expect(s.lead.seen[1]![0]!.parts).toEqual(message);
     expect(s.inputs().map((i) => i.prompt)).toEqual(["go", "more"]);
+  });
+
+  // Release 8b plan, Task 9 (choices 8 and 21): Stop and SubagentStop at a turn's normal end, where a block or context keeps
+  // it going, up to Claude Code's 8 in a row, and SubagentStart before a subagent's first request.
+  const block = (reason: string) => JSON.stringify({ decision: "block", reason });
+  const feedback = (text: string) => ({ type: "text", text: `Stop hook feedback:\n${text}`, from: "hooks" });
+  const kept = (reason: string) => `A Stop hook kept the turn going: ${reason}`;
+  const EIGHT = "Stop hooks kept the turn going 8 times in a row; it ends here.";
+  const replies = (n: number, from = 1) => Array.from({ length: n }, (_, i) => reply(`try ${from + i}`));
+  const look = callTool("c1", "delegate", { description: "look", task: "find x" });
+
+  it("keeps the turn going at a Stop hook's block, the model reading its feedback, and fires Stop with the reply's words", async () => {
+    const says: Says[] = [{ event: "Stop", stdout: "", seq: [block("run the tests")] }];
+    const s = await setup({ mode: "never", says, turns: [reply("done, I think"), reply("the tests pass")] });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect(s.lead.seen).toHaveLength(2);
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([feedback("run the tests")]);
+    expect(s.notes).toEqual([kept("run the tests")]);
+    const stop = { hook_event_name: "Stop", background_tasks: [], session_crons: [] };
+    expect(s.inputs()).toEqual([
+      expect.objectContaining({ ...stop, stop_hook_active: false, last_assistant_message: "done, I think" }),
+      expect.objectContaining({ ...stop, stop_hook_active: true, last_assistant_message: "the tests pass" }),
+    ]);
+    expect(s.session.messages.at(-1)).toMatchObject({ role: "assistant", parts: [{ type: "text", text: "the tests pass" }] });
+  });
+
+  // The user's choice, 2026-11-09: with no reason to name, its own line, the hook's text for the model left out of it.
+  it.each([
+    ["a block with no reason", JSON.stringify({ decision: "block" }), ""],
+    ["additionalContext alone", after("Stop", { additionalContext: "check the docs" }), "check the docs"],
+  ])("keeps the turn going at a Stop hook's %s, saying so in its own line", async (_name, said, text) => {
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: "", seq: [said] }], turns: [reply("done"), reply("again")] });
+    await s.session.send("go");
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([feedback(text)]);
+    expect(s.notes).toEqual(["A Stop hook kept the turn going."]);
+  });
+
+  it("ends the turn once Stop hooks have kept it going 8 times in a row: nine blocks give eight more requests, then the line", async () => {
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: block("again") }], turns: replies(9) });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect([s.lead.seen.length, s.inputs().length]).toEqual([9, 9]);
+    expect(s.notes).toEqual([...Array<string>(8).fill(kept("again")), EIGHT]);
+    // The ninth block's reason is not sent: the turn ends on the model's reply.
+    expect(s.session.messages.at(-1)).toMatchObject({ role: "assistant", parts: [{ type: "text", text: "try 9" }] });
+  });
+
+  it("starts the count of Stop blocks again after a reply with a tool call, stop_hook_active staying true", async () => {
+    const turns = [...replies(4), callTool("c1", "shell", { command: "echo hi" }), ...replies(9, 5)];
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: block("again") }], turns });
+    await s.session.send("go");
+    expect([s.lead.seen.length, s.ran]).toEqual([14, ["echo hi"]]);
+    expect(s.notes).toEqual([...Array<string>(12).fill(kept("again")), EIGHT]);
+    expect(s.inputs().map((i) => i.stop_hook_active)).toEqual([false, ...Array<boolean>(12).fill(true)]);
+  });
+
+  it.each([
+    ["enough", "A Stop hook stopped the turn: enough"],
+    [undefined, "A Stop hook stopped the turn."],
+  ] as const)("ends the turn at a Stop hook's continue: false (reason %s), the answer kept and a block beside it not followed", async (reason, line) => {
+    const stopping = JSON.stringify({ ...JSON.parse(stops(reason)), decision: "block", reason: "go on" });
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: stopping }], turns: [reply("the answer")] });
+    expect(await s.session.send("go")).toEqual({ stopped: reason ?? "" });
+    expect([s.lead.seen.length, s.notes]).toEqual([1, [line]]);
+    expect(s.session.messages.at(-1)).toMatchObject({ role: "assistant", parts: [{ type: "text", text: "the answer" }] });
+  });
+
+  it("sends Stop each background subagent still running, in background_tasks", async () => {
+    const worker = new Held("fake:w"); // never answers, so the subagent is still running at Stop
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("started it")];
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: "" }], turns, worker });
+    onTestFinished(() => void s.tasks!.stop());
+    await s.session.send("go");
+    const running = { id: "t1", type: "agent", status: "running", description: "look", agent_type: "Explore" };
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "Stop", background_tasks: [running] })]);
+  });
+
+  it("fires SubagentStart before a subagent's first request, matched on Explore, its text at the start of the subagent's first message", async () => {
+    const worker = new FakeProvider("w", [reply("found it")]);
+    const says: Says[] = [
+      { event: "SubagentStart", names: ["Explore"], stdout: after("SubagentStart", { additionalContext: "look in src/" }) },
+      { event: "SubagentStart", names: ["Plan"], stdout: after("SubagentStart", { additionalContext: "not this one" }) },
+    ];
+    const s = await setup({ mode: "never", says, turns: [look, reply("ok")], worker });
+    await s.session.send("go");
+    expect(worker.seen[0]).toEqual([{ role: "user", parts: [hookText("SubagentStart", "look in src/"), { type: "text", text: "find x" }] }]);
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "SubagentStart", agent_id: "t1", agent_type: "Explore" })]);
+    expect(s.results()).toEqual([{ output: "found it", isError: false }]);
+  });
+
+  it("keeps a subagent going at a SubagentStop hook's block, sent its own fields, its line naming it", async () => {
+    const top = await folder();
+    const dir = path.join(top, "sessions", "project");
+    privateDir(dir);
+    const file = path.join(dir, "s1.jsonl");
+    const transcript = new Transcript(file, path.join(dir, "s1", "pictures"));
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const worker = new FakeProvider("w", [reply("first"), reply("second")]);
+    const says: Says[] = [{ event: "SubagentStop", names: ["Explore"], stdout: "", seq: [block("check again")] }];
+    const s = await setup({ mode: "never", says, turns: [look, reply("ok")], worker, transcript });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect(s.results()).toEqual([{ output: "second", isError: false }]);
+    expect(worker.seen[1]!.at(-1)!.parts).toEqual([feedback("check again")]);
+    // A line that names the subagent already is said without the "t1: " the others start with (the user's choice, 2026-11-09).
+    expect(s.notes).toEqual(["A SubagentStop hook kept t1 going: check again"]);
+    const own = { hook_event_name: "SubagentStop", agent_id: "t1", agent_type: "Explore", agent_transcript_path: path.join(pathsOf(file).subagents, "t1.jsonl") };
+    const inputs = s.inputs();
+    expect(inputs).toEqual([
+      expect.objectContaining({ ...own, stop_hook_active: false, last_assistant_message: "first" }),
+      expect.objectContaining({ ...own, stop_hook_active: true, last_assistant_message: "second" }),
+    ]);
+    expect("background_tasks" in inputs[0]!).toBe(false); // Stop's alone
+  });
+
+  it("ends a subagent once SubagentStop hooks have kept it going 8 times in a row, with its last reply as its answer", async () => {
+    const worker = new FakeProvider("w", replies(9));
+    const s = await setup({ mode: "never", says: [{ event: "SubagentStop", stdout: block("again") }], turns: [look, reply("ok")], worker });
+    await s.session.send("go");
+    expect(s.results()).toEqual([{ output: "try 9", isError: false }]);
+    const line = "SubagentStop hooks kept t1 going 8 times in a row; it ends here.";
+    expect(s.notes).toEqual([...Array<string>(8).fill("A SubagentStop hook kept t1 going: again"), line]);
+  });
+
+  it("says a SubagentStop hook kept a subagent going with no reason in its own line", async () => {
+    const worker = new FakeProvider("w", [reply("first"), reply("second")]);
+    const says: Says[] = [{ event: "SubagentStop", stdout: "", seq: [after("SubagentStop", { additionalContext: "look again" })] }];
+    const s = await setup({ mode: "never", says, turns: [look, reply("ok")], worker });
+    await s.session.send("go");
+    expect(worker.seen[1]!.at(-1)!.parts).toEqual([feedback("look again")]);
+    expect(s.notes).toEqual(["A SubagentStop hook kept t1 going."]);
+  });
+
+  // The user's choice, 2026-11-09: a background subagent a hook stopped wakes the lead, as a failed one does.
+  it.each([
+    ["enough", "Background task t1 (look) was stopped by a hook: enough"],
+    [undefined, "Background task t1 (look) was stopped by a hook."],
+  ] as const)("tells the lead, waking it, when a hook stops a background subagent (reason %s)", async (reason, told) => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const worker = new FakeProvider("w", [callTool("w1", "read_file", { path: "a.txt" }), reply("found it")]);
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("started it")];
+    const s = await setup({ mode: "never", root, says: [{ names: ["Read"], stdout: stops(reason) }], turns, worker });
+    await s.session.send("go");
+    expect(await s.tasks!.all[0]!.done).toEqual({ state: "stopped", text: `t1 was stopped by a hook${reason ? `: ${reason}` : "."}` });
+    expect([s.tasks!.wakes(), s.tasks!.take()]).toEqual([true, [told]]);
+  });
+
+  // Task 7's build: a subagent a hook stops ends as stopped, with its own result, never as failed.
+  it.each<[Event, string | undefined, string]>([
+    ["PreToolUse", "enough", "t1 was stopped by a hook: enough"],
+    ["PostToolUse", undefined, "t1 was stopped by a hook."],
+    ["SubagentStop", "enough", "t1 was stopped by a hook: enough"],
+  ])("stops a subagent at a %s hook's continue: false (reason %s) with its result, leaving the lead's turn going", async (event, reason, result) => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const worker = new FakeProvider("w", [callTool("w1", "read_file", { path: "a.txt" }), reply("found it")]);
+    const says: Says[] = [{ event, names: event === "SubagentStop" ? ["Explore"] : ["Read"], stdout: stops(reason) }];
+    const s = await setup({ mode: "never", root, says, turns: [look, reply("ok")], worker });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect(s.results()).toEqual([{ output: result, isError: false }]);
+    expect(s.tasks!.all.map((t) => [t.state, t.answer])).toEqual([["stopped", result]]);
+    expect([s.lead.seen.length, s.errors]).toEqual([2, []]);
+    expect(s.notes).toEqual([`t1: A ${event} hook stopped the turn${reason ? `: ${reason}` : "."}`]);
   });
 });

@@ -34,7 +34,9 @@ export interface Events {
   tasks: []; // a subagent started, changed or finished
   note: [string]; // a line for the user that is neither a failure nor the conversation, such as pictures left out
   shortened: [string]; // the history was shortened into one message; the summary (release 8a plan, Task 12)
-  "hook-note": [string]; // a hook's grey line, such as its systemMessage (release 8b plan, choice 23)
+  // A hook's grey line, such as its systemMessage (release 8b plan, choice 23). `named`: a subagent's line that names it
+  // already, so Tasks passes it on without its id in front (the user's choice, 2026-11-09).
+  "hook-note": [line: string, named?: true];
 }
 
 // The session emits; the interface, status line, headless output and error log listen.

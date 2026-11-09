@@ -628,6 +628,34 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(asked).toBe(requests);
   });
 
+  // Release 8b plan, Task 9 (Task 8's code review): a Stop hook's continue: false comes after the model's final answer, so
+  // -p still prints that answer, then fails the run with its line, as any hook's continue: false does (choice 9).
+  it("with -p, prints the answer a Stop hook's continue: false came after, and fails the run with its line", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const script = path.join(top, "hook.cjs");
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify({ continue: false, stopReason: "enough" }))});`);
+    const hooks = { Stop: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const server = http.createServer((req, res) => {
+      req.resume().on("end", () => {
+        const choice = { index: 0, finish_reason: "stop", message: { role: "assistant", content: "The notes are made up." } };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
+    expect(r).toEqual({ code: 1, stdout: "The notes are made up.\n", stderr: "note: A Stop hook stopped the turn: enough\n" });
+  });
+
   // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.
   it("with -p, runs on the settings file's lead", () => {
     const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });

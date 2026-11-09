@@ -681,10 +681,11 @@ if (parsed.print !== undefined) {
   const stop = new AbortController();
   process.once("SIGINT", () => stop.abort());
   // A prompt a UserPromptSubmit hook blocked, and a hook's continue: false, end the run with exit code 1, as its work was
-  // cut short (release 8b plan, Task 8 and choice 9). A blocked prompt leaves the history as it was, so a resumed
-  // session's last answer is not printed as this run's.
+  // cut short (release 8b plan, Task 8 and choice 9). A blocked prompt, or one a stop left unsent, leaves the history as it
+  // was, so a resumed session's last answer is not printed as this run's; a stop later in the turn prints the answer it
+  // came after, as a Stop hook's does (Task 9).
   const ended = await session.send(parsed.print, stop.signal);
-  if (!parsed.json && !ended) {
+  if (!parsed.json && !(ended && ("blocked" in ended || ended.unsent))) {
     const last = session.messages.at(-1);
     if (last?.role === "assistant") {
       const text = last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");

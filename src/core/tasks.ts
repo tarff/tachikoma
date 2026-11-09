@@ -5,7 +5,7 @@ import { cost } from "../providers/pricing.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import { Bus, type ErrorEvent } from "./bus.js";
 import type { Owner, PermissionGate } from "./permissions.js";
-import { Session, truncate } from "./session.js";
+import { type Ended, Session, truncate } from "./session.js";
 import { pathsOf, Transcript } from "./transcript.js";
 import type { Message, Provider } from "./types.js";
 
@@ -178,11 +178,12 @@ export class Tasks {
     const own = lead && !lead.failed ? new Transcript(file(lead), lead.pictures, { inherits: true }) : undefined;
     const result = (await this.#place(signal)) ? await this.#work(t, provider, fallback, signal, own) : null;
     const stopped = this.#stops.get(t.id)!;
-    const r: Result = result ?? { state: "stopped", text: "" };
+    // A hook's stop comes with its own result and its stopReason (#work).
+    const byUser = stopped.byUser ? " by the user before it finished" : "";
+    const { hook, ...r }: Result & { hook?: string } = result ?? { state: "stopped", text: `${t.id} was stopped${byUser}.` };
     // How it ended, when the lead was told it failed or was stopped, waiting or running, so a resumed session never
     // reports it lost (release 8a plan, choice 4). A finished one's answer, its last reply, says so already.
     if (r.state !== "done") own?.write({ t: "ended", state: r.state });
-    if (r.state === "stopped") r.text = `${t.id} was stopped${stopped.byUser ? " by the user before it finished" : ""}.`;
     t.state = r.state;
     t.answer = r.text;
     t.ended = Date.now();
@@ -190,13 +191,21 @@ export class Tasks {
     const { id } = t;
     if (t.background && r.state === "done") this.#inbox.push({ id, text: `${name} finished:\n${truncate(r.text)}`, wake: true });
     if (t.background && r.state === "failed") this.#inbox.push({ id, text: `${name} failed: ${r.text}`, wake: true });
+    // Waking the lead, as a failure does (the user's choice, 2026-11-09).
+    if (t.background && hook !== undefined) this.#inbox.push({ id, text: `${name} was stopped by a hook${hook ? `: ${hook}` : "."}`, wake: true });
     if (t.background && r.state === "stopped" && stopped.byUser) this.#inbox.push({ id, text: `${name} was stopped by the user before it finished.`, wake: false });
     this.#changed();
     return r;
   }
 
-  // Null when it was stopped.
-  async #work(t: Task, provider: Provider, fallback: Provider | undefined, signal: AbortSignal, own: Transcript | undefined): Promise<Result | null> {
+  // Null when it was stopped, by the user or the lead's turn; a hook's stop has its own result, with `hook` its stopReason.
+  async #work(
+    t: Task,
+    provider: Provider,
+    fallback: Provider | undefined,
+    signal: AbortSignal,
+    own: Transcript | undefined,
+  ): Promise<(Result & { hook?: string }) | null> {
     const bus = new Bus();
     let failure: ErrorEvent | undefined;
     bus.on("usage", (u) => {
@@ -218,13 +227,14 @@ export class Tasks {
       this.opts.bus.emit("error", { ...e, attempted: `${t.id}: ${e.attempted}`, ...hook });
     });
     // A hook's grey lines reach the user through the lead's bus, as its errors do (second round, finding 3).
-    bus.on("hook-note", (line) => this.opts.bus.emit("hook-note", `${t.id}: ${line}`));
+    bus.on("hook-note", (line, named) => this.opts.bus.emit("hook-note", named ? line : `${t.id}: ${line}`));
     bus.on("tool-start", ({ name, input }) => {
       t.lastTool = { name, input };
       this.#changed();
     });
     const owner: Owner = { name: `${t.id} (${t.description})`, signal, stop: () => this.stop(t.id) };
     const { ctx } = this.opts;
+    const hooks = this.opts.hooks?.for({ id: t.id, ...(own ? { transcript: own.file } : {}) }, bus);
     // The judge sees the subagent's own calls after the lead's, and reports to its bus (release 7 plan, Task 10).
     const session: Session = new Session({
       lead: provider,
@@ -236,18 +246,35 @@ export class Tasks {
       subagent: true,
       id: t.id, // names it in its saving line
       ...(own ? { transcript: own } : {}),
-      ...(this.opts.hooks ? { hooks: this.opts.hooks.for({ id: t.id, ...(own ? { transcript: own.file } : {}) }, bus) } : {}),
+      ...(hooks ? { hooks } : {}),
       ...(this.opts.paths ? { paths: this.opts.paths } : {}),
     });
     t.messages = session.messages;
     t.state = "running";
     this.#changed();
+    let ended: Ended | void;
     try {
-      await session.send(t.task, signal);
+      // SubagentStart before its first request, matched on Claude Code's name for it (release 8b plan, Task 9), its text for
+      // the model at the start of its first message (choice 6). A stop while its hooks run ends them (run.ts), and the
+      // subagent as any stop does.
+      if (hooks) {
+        try {
+          session.waitForNext((await hooks.fire("SubagentStart", {}, { match: "Explore", signal })).context);
+        } catch (err) {
+          if (!signal.aborted) throw err;
+        }
+      }
+      if (signal.aborted) return null;
+      ended = await session.send(t.task, signal);
     } finally {
       this.#release();
     }
     if (signal.aborted) return null;
+    // A hook's continue: false in its session, at any of its events, ends it as stopped, never the lead's turn (release 8b
+    // design, "What a hook's answer does").
+    if (ended && "stopped" in ended) {
+      return { state: "stopped", text: `${t.id} was stopped by a hook${ended.stopped ? `: ${ended.stopped}` : "."}`, hook: ended.stopped };
+    }
     const last = session.messages.at(-1);
     const text = last?.role === "assistant" ? last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n") : "";
     if (text.trim() && !failure) return { state: "done", text };

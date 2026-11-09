@@ -9,6 +9,7 @@ import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, Declined, type PermissionGate, StoppedFirst } from "./permissions.js";
 import { CANCELLED, shorten, type When } from "./shorten.js";
+import type { Task } from "./tasks.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
 import {
   type CompletionRequest,
@@ -37,6 +38,16 @@ const NOT_RUN = "Not run: a hook stopped the turn.";
 const STOPPED = "Stopped: a hook stopped the turn.";
 // The grey line for a hook's continue: false, with its stopReason when it gave one (the same).
 const stoppedTurn = (event: Event, reason: string) => (reason ? `A ${event} hook stopped the turn: ${reason}` : `A ${event} hook stopped the turn.`);
+// Claude Code's hooks reference, "Stop input": Stop or SubagentStop blocks in a row, with no tool call between, before the
+// turn ends anyway (release 8b plan, "Numbers in this plan").
+const MAX_BLOCKS = 8;
+// The grey lines for a Stop or SubagentStop hook keeping the turn going, its reason when it gave one, never the text for the
+// model (approved by the user, 2026-11-09), and for the turn ending at the limit; `id` names a subagent (release 8b plan,
+// "Lines this plan adds").
+const keptGoing = (id: string | undefined, reason: string) =>
+  (id ? `A SubagentStop hook kept ${id} going` : "A Stop hook kept the turn going") + (reason ? `: ${reason}` : ".");
+const keptTooOften = (id: string | undefined) =>
+  `${id ? `SubagentStop hooks kept ${id} going` : "Stop hooks kept the turn going"} ${MAX_BLOCKS} times in a row; it ends here.`;
 
 // How a turn ended, when a hook ended it (Session.send).
 export type Ended = { blocked: string } | { stopped: string; unsent?: true };
@@ -62,7 +73,7 @@ export interface SessionOptions {
   // The window's picture numbers and subagent ids, which a loaded conversation's must not be handed out again (release
   // 8a plan, choices 4 and 5): tui/pictures.ts's Pictures and tasks.ts's Tasks.
   pictures?: { from(n: number): void };
-  tasks?: { from(n: number): void };
+  tasks?: { from(n: number): void; readonly all?: readonly Task[] }; // `all` gives Stop's background_tasks (release 8b plan, choice 21)
   ctx: Omit<ToolContext, "signal">;
   bus: Bus;
   // Takes the text waiting for the lead, such as background subagents' answers, so each goes into
@@ -287,6 +298,10 @@ export class Session {
     let when: When = "start";
     let shortened = false;
     let autoFailed = false;
+    // `blocks`: the Stop or SubagentStop hooks that kept the turn going since its last reply with a call; `kept`: one did in
+    // this turn, for their stop_hook_active (release 8b plan, Task 9).
+    let blocks = 0;
+    let kept = false;
     for (;;) {
       const lead = this.#lead;
       // Not waited for when the lead has no window to look up. A test-timing constraint: app.test.tsx's "hands the lead a
@@ -393,7 +408,30 @@ export class Session {
         }
         return;
       }
-      if (calls.length === 0) return;
+      if (calls.length === 0) {
+        // The turn's normal end (release 8b design, "The events"): a block, or text for the model, keeps it going, the
+        // model reading it next, as Claude Code's "Stop hook feedback" (choice 8), until the limit in a row.
+        const c = hooks ? await this.#stop(hooks, turn.parts, kept, signal) : undefined;
+        if (!c) return;
+        const id = this.opts.subagent ? this.id : undefined;
+        if (c.stop !== undefined) {
+          bus.emit("hook-note", stoppedTurn(id ? "SubagentStop" : "Stop", c.stop));
+          return { stopped: c.stop };
+        }
+        const given = [...(c.block !== undefined ? [c.block] : []), ...c.context.map((x) => x.text)];
+        if (!given.length) return;
+        // Both lines name the subagent already, so Tasks says them without its id in front (the user's choice, 2026-11-09).
+        if (blocks === MAX_BLOCKS) return void bus.emit("hook-note", keptTooOften(id), true);
+        blocks++;
+        kept = true;
+        bus.emit("hook-note", keptGoing(id, c.block ?? ""), true);
+        const said: Part[] = given.map((text) => ({ type: "text", text: `Stop hook feedback:\n${text}`, from: "hooks" }));
+        this.#push({ role: "user", parts: [...said, ...this.#waiting()] });
+        when = "during";
+        shortened = false;
+        continue;
+      }
+      blocks = 0;
       // Kept for the judge in the reply's order, before any runs, as delegate's calls start before the others. A hook's
       // rewrite replaces its call's entry before the call runs (#execute).
       const entries = calls.map((c) => ({ name: c.name, input: c.input }));
@@ -736,6 +774,28 @@ export class Session {
       return { blocked: c.block };
     }
     return this.#hookParts([...c.context]);
+  }
+
+  // Stop at the lead's turn's normal end, SubagentStop at a subagent's (release 8b plan, Task 9; design, "What a hook is
+  // sent"), sent the reply's words and whether a hook kept this turn going before, under the turn's signal. A subagent's is
+  // matched on its Claude Code name, as SubagentStart's is, its agent_id and agent_type among the common fields (hooks.ts).
+  // Undefined when the user's stop ended its hooks (run.ts).
+  async #stop(hooks: Hooks, reply: Part[], active: boolean, signal?: AbortSignal): Promise<Combined | undefined> {
+    const last_assistant_message = reply.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
+    // Each background subagent running or waiting, as choice 21 gives it; crons Tachikoma has none of (design).
+    const background_tasks = (this.opts.tasks?.all ?? [])
+      .filter((t) => t.background && (t.state === "running" || t.state === "waiting"))
+      .map((t) => ({ id: t.id, type: "agent", status: "running", description: t.description, agent_type: "Explore" }));
+    try {
+      if (this.opts.subagent) {
+        const fields = { agent_transcript_path: this.#transcript?.file, last_assistant_message, stop_hook_active: active };
+        return await hooks.fire("SubagentStop", fields, { match: "Explore", signal });
+      }
+      return await hooks.fire("Stop", { stop_hook_active: active, last_assistant_message, background_tasks, session_crons: [] }, { signal });
+    } catch (err) {
+      if (signal?.aborted) return undefined;
+      throw err;
+    }
   }
 
   // PreToolUse before a call (release 8b plan, Task 6; design, "Tool hooks"), matched on the tool's Claude Code name, under
