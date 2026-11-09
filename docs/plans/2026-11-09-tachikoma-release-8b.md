@@ -894,7 +894,13 @@ section).
   hook's output is read whole, so a runaway hook's output is held in memory until its time limit
   ends it; and two from Task 4's review: a turn stopped while hooks run shows no line for a hook
   that had already failed, and Ctrl+O lists none of that turn's runs; a subagent's runs are kept
-  for its whole life, each hook's output held in memory; the release list with 8 in five
+  for its whole life, each hook's output held in memory; and four from Task 5's review: in live
+  link on Windows, a backslash in the model's own path is a separator to a hook but part of a file
+  name in the sandbox; Windows name quirks in a rewrite (a trailing dot or space, `:stream`, 8.3
+  short names) become sandbox names as typed; a failed subagent shows to PostToolUse as completed,
+  its text starting `<id> failed:`; with a PostToolUse hook in force, write_file reads the old file
+  first to tell create from update, which in the sandbox is one more Docker call per write; the
+  release list with 8 in five
   parts, 8e added; `/hooks` in the commands list.
 - **The design** gets an "As built" section listing this plan's choices as the user settled them.
 

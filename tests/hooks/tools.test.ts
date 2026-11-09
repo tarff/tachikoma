@@ -57,6 +57,19 @@ describe("toClaude and fromClaude: every tool both ways", () => {
     expect(toClaude({ name: "other", input: "text" }, HOST)).toEqual({ tool_name: "other", tool_input: {} });
   });
 
+  // Task 5's code review: a plain lookup finds the names every object has.
+  it("takes the names every object has as unknown", () => {
+    expect(toClaude({ name: "constructor", input: { a: 1 } }, HOST)).toEqual({ tool_name: "constructor", tool_input: { a: 1 } });
+    expect(fromClaude("constructor", {}, HOST)).toEqual({ problem: "Tachikoma takes rewrites only for its own tools" });
+    expect(fromClaude("shell", { command: "ls", constructor: "x" }, HOST)).toEqual({ problem: '"constructor" is not a field Tachikoma can take' });
+    // As a hook's JSON is read, so "__proto__" is a field of its own.
+    expect(fromClaude("shell", JSON.parse('{"command": "ls", "__proto__": 1}'), HOST)).toEqual({ problem: '"__proto__" is not a field Tachikoma can take' });
+    expect(fromClaude("todo", { todos: [{ content: "a", status: "toString" }] }, HOST)).toEqual({
+      problem: 'each "status" in "todos" must be "pending", "in_progress" or "completed"' });
+    expect(toClaude({ name: "todo", input: { items: [{ text: "a", status: "toString" }] } }, HOST).tool_input).toEqual({
+      todos: [{ content: "a", status: "toString" }] });
+  });
+
   // The session fires PreToolUse before the tool's own check, so the model's input may be any shape.
   it("sends an input of the wrong shape as it came, field by field", () => {
     expect(toClaude({ name: "read_file", input: { path: 7, extra: true } }, HOST).tool_input).toEqual({ file_path: 7 });
@@ -115,6 +128,20 @@ describe("pathsFor: the paths hooks see", () => {
     expect(COPY.fromHost("C:\\proj")).toBe("/work");
     expect(fromClaude("edit_file", { file_path: "C:\\proj\\a.ts", old_string: "a", new_string: "b" }, COPY)).toEqual({
       input: { path: "/work/a.ts", old_text: "a", new_text: "b" } });
+  });
+
+  // Task 5's code review: Windows' spellings of a path in the project, and of ones outside it, in both sandbox modes.
+  it.each<[string, string | null]>([
+    ["c:\\PROJ\\x", "/work/x"],
+    ["C:/proj/sub/../x", "/work/x"],
+    ["C:\\proj\\", "/work"],
+    ["C:\\projother\\x", null],
+    ["C:\\proj\\a\\..\\..\\other", null],
+    ["\\\\?\\C:\\proj\\x", null],
+    ["D:\\proj\\x", null],
+  ])("in live link and copy mode, %s from a hook is %s", (p, expected) => {
+    expect(LIVE.fromHost(p)).toBe(expected);
+    expect(COPY.fromHost(p)).toBe(expected);
   });
 
   // The box resolves C:\other\a.ts against /work as one odd name in it, as in live link.
@@ -230,6 +257,8 @@ describe("responseOf and errorOf: what PostToolUse and PostToolUseFailure are se
   // Release 8b plan, choice 12.
   it("starts Bash's error with its exit code, then its error output, then its output", () => {
     expect(errorOf("shell", "exit code: 1\n...", { stdout: "out\n", stderr: "err\n", code: 1 })).toBe("Exit code 1\nerr\nout\n");
+    expect(errorOf("shell", "", { stdout: "out", stderr: "err", code: 1 })).toBe("Exit code 1\nerr\nout");
+    expect(errorOf("shell", "", { stdout: "out", stderr: "", code: 1 })).toBe("Exit code 1\nout");
   });
 
   it("gives the error's text for the other tools, and for a command a signal ended", () => {
@@ -258,6 +287,7 @@ describe("outputFrom: a hook's updatedToolOutput, turned back into what the mode
     expect(outputFrom("shell", { stdout: "out" })).toBeNull();
     expect(outputFrom("delegate", { content: [{ type: "image" }] })).toBeNull();
     expect(outputFrom("delegate", "plain")).toBeNull();
+    expect(outputFrom("delegate", { content: [] })).toBeNull();
     expect(outputFrom("write_file", { filePath: "a", type: "create" })).toBeNull();
     expect(outputFrom("other", "x")).toBeNull();
   });

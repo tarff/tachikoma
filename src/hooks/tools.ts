@@ -136,12 +136,14 @@ const FROM_CLAUDE: Record<string, string> = { pending: "pending", in_progress: "
 const TODO_FIELDS = ["content", "status", "activeForm"];
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+// A table's own entry: a plain lookup would find "constructor" or "toString" too (registry.ts does the same).
+const own = <T>(table: Record<string, T> | undefined, key: string): T | undefined => (table && Object.hasOwn(table, key) ? table[key] : undefined);
 
 // The model's call as hooks see it. The model's input is not yet checked against the tool's schema, so a field of the
 // wrong type is sent as it came; fields the tool does not have are left out, as its schema drops them.
 export function toClaude(call: { name: string; input: unknown }, paths: Paths): { tool_name: string; tool_input: Record<string, unknown> } {
   const input = isObject(call.input) ? call.input : {};
-  const spec = TOOLS[call.name];
+  const spec = own(TOOLS, call.name);
   if (!spec) return { tool_name: call.name, tool_input: { ...input } };
   const out: Record<string, unknown> = {};
   for (const f of spec.fields) {
@@ -149,7 +151,7 @@ export function toClaude(call: { name: string; input: unknown }, paths: Paths): 
     if (v === undefined) continue;
     if (f.kind === "path" && typeof v === "string") out[f.theirs] = paths.toHost(v);
     else if (f.kind === "todos" && Array.isArray(v)) {
-      out[f.theirs] = v.map((t) => (isObject(t) ? { content: t.text, status: TO_CLAUDE[String(t.status)] ?? t.status } : t));
+      out[f.theirs] = v.map((t) => (isObject(t) ? { content: t.text, status: own(TO_CLAUDE, String(t.status)) ?? t.status } : t));
     }
     else out[f.theirs] = v;
   }
@@ -159,7 +161,7 @@ export function toClaude(call: { name: string; input: unknown }, paths: Paths): 
 // A hook's rewrite (`updatedInput`, already an object, answer.ts) turned back into the input of the tool `name`, or why it
 // cannot be: the words of a `problem` name the field. A field set to null is not set, as answer.ts reads one.
 export function fromClaude(name: string, input: unknown, paths: Paths): { input: unknown } | { problem: string } {
-  const spec = TOOLS[name];
+  const spec = own(TOOLS, name);
   if (!spec) return { problem: "Tachikoma takes rewrites only for its own tools" };
   if (!isObject(input)) return { problem: '"updatedInput" must be an object' };
   const out: Record<string, unknown> = {};
@@ -176,7 +178,7 @@ export function fromClaude(name: string, input: unknown, paths: Paths): { input:
   const known = new Set(spec.fields.map((f) => f.theirs));
   for (const [key, v] of Object.entries(input)) {
     if (v == null || known.has(key)) continue;
-    const problem = extraProblem(key, v, spec.extra?.[key]);
+    const problem = extraProblem(key, v, own(spec.extra, key));
     if (problem) return { problem };
   }
   return { input: out };
@@ -217,7 +219,7 @@ function todosOf(v: unknown): { value: unknown } | { problem: string } {
     if (t.content == null) return { problem: 'one of "todos" has no "content"' };
     if (typeof t.content !== "string") return { problem: 'each "content" in "todos" must be text in quotes' };
     if (t.status == null) return { problem: 'one of "todos" has no "status"' };
-    const status = typeof t.status === "string" ? FROM_CLAUDE[t.status] : undefined;
+    const status = typeof t.status === "string" ? own(FROM_CLAUDE, t.status) : undefined;
     if (status === undefined) return { problem: 'each "status" in "todos" must be "pending", "in_progress" or "completed"' };
     if (t.activeForm != null && typeof t.activeForm !== "string") return { problem: 'each "activeForm" in "todos" must be text in quotes' };
     items.push({ text: t.content, status });
@@ -243,10 +245,12 @@ export function responseOf(name: string, text: string, parts?: unknown, paths?: 
 }
 
 // PostToolUseFailure's `error` (choice 12): a failed command's starts `Exit code <n>`, as Claude Code's Bash error does,
-// then its error output, then its output. A command a signal ended has no exit code, so it gets the shell's own text.
+// then its error output, then its output, on a line of its own. A command a signal ended has no exit code, so it gets the
+// shell's own text.
 export function errorOf(name: string, text: string, parts?: unknown): string {
-  if (name === "shell" && isObject(parts) && typeof parts.code === "number") return `Exit code ${parts.code}\n${parts.stderr}${parts.stdout}`;
-  return text;
+  if (name !== "shell" || !isObject(parts) || typeof parts.code !== "number") return text;
+  const err = String(parts.stderr);
+  return `Exit code ${parts.code}\n${err}${err && !err.endsWith("\n") ? "\n" : ""}${parts.stdout}`;
 }
 
 // The tools whose result Claude Code's docs give no shape for, so hooks get the text (choice 11) and may give text back.
@@ -260,7 +264,8 @@ export function outputFrom(name: string, value: unknown): string | null {
   if (name === "shell" && isObject(value) && typeof value.stdout === "string" && typeof value.stderr === "string") {
     return shellText({ code: 0, signal: null, stdout: value.stdout, stderr: value.stderr });
   }
-  if (name === "delegate" && isObject(value) && Array.isArray(value.content)) {
+  // An empty content is no answer, so nothing the model could read.
+  if (name === "delegate" && isObject(value) && Array.isArray(value.content) && value.content.length) {
     const texts = value.content.map((c) => (isObject(c) && c.type === "text" && typeof c.text === "string" ? c.text : null));
     return texts.includes(null) ? null : texts.join("\n");
   }
