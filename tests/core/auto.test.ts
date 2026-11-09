@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { type Action, type Judge, PermissionGate } from "../../src/core/permissions.js";
+import { type Action, type Judge, PermissionGate, StoppedFirst } from "../../src/core/permissions.js";
 import { Session } from "../../src/core/session.js";
 import { Tasks } from "../../src/core/tasks.js";
 import type { Message, Provider, Turn } from "../../src/core/types.js";
@@ -255,7 +255,7 @@ describe("auto mode, the turn's signal from each tool", () => {
     for (let i = 0; i < 40 && !answer; i++) await settle();
     stop.abort();
     answer!({ allow: true });
-    await expect(running).rejects.toBe(stop.signal.reason);
+    await expect(running).rejects.toBeInstanceOf(StoppedFirst); // the session's sign that nothing ran (Task 7's re-check)
     expect(given).toBe(stop.signal);
     expect(ran).toEqual([]);
     expect(await readFile(path.join(elsewhere, "notes.txt"), "utf8")).toBe("old");
@@ -386,7 +386,7 @@ describe("auto mode, in the gate", () => {
     await Promise.resolve();
     stop.abort();
     g.out.shift()!.answer(YES);
-    await expect(done).rejects.toBe(stop.signal.reason);
+    await expect(done).rejects.toBeInstanceOf(StoppedFirst);
     expect(g.asked).toEqual([]);
   });
 

@@ -62,9 +62,13 @@ export function visible(text: string, opts: { tabs?: boolean } = {}): string {
 // Thrown when the user says no. The model is told; it is not logged as an error.
 export class Declined extends Error {}
 
-// Thrown for a yes given after the turn was stopped, so the session tells the model the call was not run, not stopped
-// while it ran (release 8b plan, Task 7's re-check).
-export class StoppedFirst extends Error {}
+// Thrown for a yes given after the turn was stopped, or a stop while the judge decides, so the session tells the model
+// the call was not run, not stopped while it ran (release 8b plan, Task 7's re-check).
+export class StoppedFirst extends Error {
+  constructor() {
+    super("The turn was stopped before the call ran.");
+  }
+}
 
 // Who asks a question, when it is not the lead's turn: a subagent's name, its stop signal, and how to
 // stop it (release 4 design, "One line of questions, each with its owner").
@@ -259,7 +263,7 @@ export class PermissionGate {
     if (!yes) throw new Declined(`${this.refusal}: ${shown}`);
     // A yes given after the turn was stopped, by a hook's continue: false while the question was open, runs nothing (release
     // 8b plan, Task 7's code review). A user's stop closes the question as a no, so it is declined above, as before.
-    if (signal?.aborted) throw new StoppedFirst("The turn was stopped before the call ran.");
+    if (signal?.aborted) throw new StoppedFirst();
     // Approving one action resumes auto mode and starts the row again; the session's total keeps counting (choice 8). A
     // question still waiting from a pause that has since been lifted and come again lifts nothing.
     if (pause !== null && top.#pause === pause) {
@@ -275,8 +279,11 @@ export class PermissionGate {
   async #judged(action: Action, signal: AbortSignal): Promise<void> {
     const top = this.#parent ?? this;
     const version = top.#version;
-    const verdict = await this.options.judge!(action, signal, this.#own);
-    signal.throwIfAborted();
+    // A stop while the judge decides, its request cut off or its answer late, runs nothing (Task 7's re-check).
+    const verdict = await this.options.judge!(action, signal, this.#own).catch((err: unknown) => {
+      throw signal.aborted ? new StoppedFirst() : err;
+    });
+    if (signal.aborted) throw new StoppedFirst();
     if (top.#version !== version) return this.require(action, signal);
     if (verdict.allow) {
       top.#inRow = 0; // a yes ends the row

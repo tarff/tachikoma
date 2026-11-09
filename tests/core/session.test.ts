@@ -8,7 +8,7 @@ import { privateDir } from "../../src/auth/private.js";
 import type { Events } from "../../src/core/bus.js";
 import { callText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
-import { type Ask, Declined, PermissionGate } from "../../src/core/permissions.js";
+import { type Ask, Declined, type Judge, PermissionGate } from "../../src/core/permissions.js";
 import { type Conversation, Session, UNSAVED } from "../../src/core/session.js";
 import { CANCELLED, INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
@@ -1446,7 +1446,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   // An answer may be a promise, for a question the test answers later.
   type Answers = (boolean | Promise<boolean>)[];
-  async function setup(o: { mode: Mode5; says: Says[]; turns: Turn[]; answers?: Answers; transcript?: Transcript; root?: string; tools?: Tool[] }) {
+  // `judge` is auto mode's, which says no at once unless given.
+  async function setup(o: { mode: Mode5; says: Says[]; turns: Turn[]; answers?: Answers; transcript?: Transcript; root?: string; tools?: Tool[]; judge?: Judge }) {
     const root = o.root ?? (await folder());
     const { script, out } = await hookFolder();
     const hooks: Hook[] = o.says.map((s) => ({
@@ -1469,7 +1470,12 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
         return answers.shift() ?? false;
       },
       headless ? P : undefined,
-      { root, headless, judge: async (action) => (judged.push(action.summary), { allow: false, reason: "no" }), hookRefused: () => void refusals.push(1) },
+      {
+        root,
+        headless,
+        judge: async (action, signal, own) => (judged.push(action.summary), o.judge ? o.judge(action, signal, own) : { allow: false, reason: "no" }),
+        hookRefused: () => void refusals.push(1),
+      },
     );
     const ran: string[] = [];
     const reported: boolean[] = []; // whether each command was given ctx.report
@@ -1998,6 +2004,36 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(existsSync(path.join(root, "a.txt"))).toBe(false);
     expect(s.results()).toEqual([{ output: NOT_RUN, isError: true }, { output: "found", isError: false }, { output: "saw the stop", isError: false }]);
     expect(s.asked).toHaveLength(1);
+  });
+
+  // Task 7's re-check: in auto mode, a stop while the judge decides runs nothing, whether the judge then still says yes or
+  // its request is cut off, and the model is told the call was not run; the user's stop is a cancel, as before.
+  const onStop = (signal: AbortSignal, then: () => void) => (signal.aborted ? then() : signal.addEventListener("abort", then));
+  const judging: [string, Judge][] = [
+    ["says yes after the stop", (_action, signal) => new Promise((ok) => onStop(signal, () => ok({ allow: true })))],
+    ["has its request cut off", (_action, signal) => new Promise((_ok, no) => onStop(signal, () => no(signal.reason)))],
+  ];
+
+  it.each(judging)("runs nothing in auto mode when a delegate's PostToolUse hook stops the turn while the judge %s", async (_name, judge) => {
+    const root = await folder();
+    const worker = new Held("fake:w"); // answered once the judge is deciding
+    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate: new PermissionGate("never", async () => false) };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => worker, system: "sub", tools: [readFileTool], ctx });
+    const calls = many(["c1", "shell", { command: "echo hi" }], ["c2", "delegate", { description: "look", task: "find x" }]);
+    const says: Says[] = [{ event: "PostToolUse", names: ["Agent"], stdout: stops("enough") }];
+    const s = await setup({ mode: "auto", root, says, turns: [calls], judge, tools: [delegateTool(tasks, { headless: false })] });
+    const sent = s.session.send("go");
+    while (!s.judged.length || !worker.asked.length) await pause(20);
+    worker.answer("found");
+    expect(await sent).toEqual({ stopped: "enough" });
+    expect([s.ran, s.results(), s.outcomes.sort()]).toEqual([[], [{ output: NOT_RUN, isError: true }, { output: "found", isError: false }], ["cancelled", "ok"]]);
+  });
+
+  it.each(judging)("cancels the call in auto mode when the user stops the turn while the judge %s", async (_name, judge) => {
+    const stop = new AbortController();
+    const s = await setup({ mode: "auto", says: [], turns: shellCall("echo hi"), judge: (action, signal, own) => (stop.abort(), judge(action, signal, own)) });
+    await s.session.send("go", stop.signal);
+    expect([s.ran, s.results(), s.outcomes, s.errors]).toEqual([[], [{ output: "Cancelled by the user.", isError: true }], ["cancelled"], []]);
   });
 
   // Task 7's code review: a throw after the call ran leaves its own result, so the history stays one the providers take.
