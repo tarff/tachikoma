@@ -299,7 +299,7 @@ describe("Hooks", { timeout: 15_000 }, () => {
   });
 
   // Release 8b plan, choice 5.
-  it("does not wait for an async hook, leaves it out of the answer, and still reports its failure when it comes", async () => {
+  it("does not wait for an async hook, leaves it out of the answer, and still reports its failure and its block when they come", async () => {
     const p = await place();
     const go = path.join(p.root, "go");
     const late = p.hook("late", { async: true }, { go, stderr: "too late", code: 1 });
@@ -310,11 +310,30 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(errors).toEqual([]);
     writeFileSync(go, "");
     while (hooks.runs.length < 2) await pause(20);
-    expect(errors).toEqual([
-      { kind: "hook", attempted: "PreToolUse hook", message: `PreToolUse hook failed: ${commandOf(late)} exited with code 1: too late`, lead: "fake:lead" },
+    // Sorted, as the two may answer in either order.
+    expect(errors.map((e) => e.message).sort()).toEqual([
+      `PreToolUse hook failed: ${commandOf(blocking)} asked to block, but an "async" hook cannot block`,
+      `PreToolUse hook failed: ${commandOf(late)} exited with code 1: too late`,
     ]);
-    expect(notes).toEqual([]); // its systemMessage is not read
+    expect(errors.map((e) => [e.kind, e.attempted, e.lead])).toEqual([["hook", "PreToolUse hook", "fake:lead"], ["hook", "PreToolUse hook", "fake:lead"]]);
+    expect(notes).toEqual([]); // its systemMessage is not said
     expect(hooks.runs.map((r) => [r.hook.async, r.ran.code]).sort()).toEqual([[true, 0], [true, 1]]);
+  });
+
+  // The user's choice, 2026-11-09: an async hook that asks to block, as combine would file a sync one's answer under block,
+  // says it cannot.
+  it("says an async hook that exits with code 2, or answers decision block, asked to block", async () => {
+    const p = await place();
+    const exit2 = p.hook("exit2", { async: true }, { stderr: "no", code: 2 });
+    const json = p.hook("json", { event: "UserPromptSubmit", async: true }, { stdout: JSON.stringify({ decision: "block", reason: "no" }) });
+    const { hooks, errors } = setup(p, [exit2, json]);
+    await hooks.fire("PreToolUse", {});
+    await hooks.fire("UserPromptSubmit", {});
+    while (hooks.runs.length < 2) await pause(20);
+    expect(errors.map((e) => e.message).sort()).toEqual([
+      `PreToolUse hook failed: ${commandOf(exit2)} asked to block, but an "async" hook cannot block`,
+      `UserPromptSubmit hook failed: ${commandOf(json)} asked to block, but an "async" hook cannot block`,
+    ]);
   });
 
   // Task 4's code review: a /lead switch while an async hook runs does not change the model its failure names.

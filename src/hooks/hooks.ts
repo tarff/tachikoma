@@ -29,6 +29,9 @@ export const MODE_NAMES: Record<Mode, string> = { ask: "default", project: "acce
 const LIMIT = 600;
 const PROMPT_LIMIT = 30;
 
+// As answer.ts shows it in a failure's line.
+const commandOf = (h: Hook) => [h.command, ...(h.args ?? [])].join(" ");
+
 // Two entries are the same hook when every field of the entry is (release 8b design, "Running a hook"; review,
 // 2026-11-09, finding 3); its event, matcher and place are not fields of the entry.
 const entry = (h: Hook) => JSON.stringify([h.command, h.args, h.shell, h.timeout, h.async, h.onFailure, h.statusMessage]);
@@ -108,14 +111,17 @@ export class Hooks {
       return { event, hook, ran, outcome: outcomeOf(event, hook.async ? { ...hook, onFailure: "continue" } : hook, ran) };
     };
     // An async hook is started and left, and a stop of the turn does not end it; its answer is read only to say a failure
-    // (release 8b plan, choice 5).
+    // (release 8b plan, choice 5), or that it asked to block, which it cannot: whatever combine would take as a sync hook's
+    // block (the user's choice, 2026-11-09).
     for (const hook of picked.filter((h) => h.async)) {
       // Its line may be said after the turn; a listener that throws then must not become an unhandled rejection, which
       // would end Tachikoma.
       void run(hook)
         .then((r) => {
           runs.push(r);
-          this.#say(event, lead, combine(event, [r]).failures, []);
+          const c = combine(event, [r]);
+          const asked = c.block === undefined ? [] : [`${commandOf(hook)} asked to block, but an "async" hook cannot block`];
+          this.#say(event, lead, [...c.failures, ...asked], []);
         })
         .catch(() => {});
     }
