@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadSettings, readSettings, settingsDir, shownFile } from "../src/settings.js";
+import { hooksOf, loadSettings, readSettings, settingsDir, shownFile } from "../src/settings.js";
 
 const read = (data: unknown) => readSettings(JSON.stringify(data));
 const problem = (data: unknown) => {
@@ -254,6 +254,77 @@ describe("readSettings", () => {
         settings: { sandboxLimits: { cpus: 2 } },
         warnings: ['settings.json: "sandboxLimits.disk" is not a setting; it was left out'],
       });
+    });
+  });
+
+  // Release 8b plan, Task 1: the hooks themselves are read in src/hooks/config.ts (tests/hooks/config.test.ts).
+  describe("hooks and disableAllHooks", () => {
+    it("applies the other entries when hooks holds only events Tachikoma does not run", () => {
+      expect(read({ mode: "ask", hooks: { Setup: [{ hooks: [{ type: "command", command: "a" }] }] }, disableAllHooks: true })).toEqual({
+        settings: { mode: "ask", hooks: [], disableAllHooks: true },
+        warnings: ['settings.json: "hooks": "Setup" is not an event Tachikoma runs hooks at; its hooks were left out'],
+        hooksLeftOut: ['"Setup" is not an event Tachikoma runs hooks at; its hooks were left out'],
+      });
+    });
+
+    it("refuses hooks of the wrong type, so nothing in the file applies", () => {
+      expect(read({ mode: "ask", hooks: [] })).toEqual({
+        problem:
+          'settings.json: "hooks" must be an object of events, each a list, such as ' +
+          '{"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "check.sh"}]}]} (got [])',
+      });
+    });
+
+    // Release 8b plan, Task 1: turned off, the hooks are still read and warned about, so /hooks can say what is off.
+    it("reads disableAllHooks as true or false, and still reads the hooks", () => {
+      const hooks = { PreToolUse: [{ hooks: [{ type: "command", command: "a", if: "Bash(*)" }, { type: "command", command: "b" }] }] };
+      const r = read({ disableAllHooks: true, hooks });
+      expect(r).toEqual({
+        settings: { disableAllHooks: true, hooks: [{ event: "PreToolUse", matcher: { all: true }, command: "b", async: false, where: '"PreToolUse"' }] },
+        warnings: ['settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: a'],
+        hooksLeftOut: ['"PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: a'],
+      });
+      expect(read({ disableAllHooks: false })).toEqual({ settings: { disableAllHooks: false }, warnings: [] });
+      for (const bad of ["true", 1, null]) {
+        expect(problem({ disableAllHooks: bad })).toBe(`settings.json: "disableAllHooks" must be true or false, without quotes (got ${JSON.stringify(bad)})`);
+      }
+    });
+
+    // The user's choice, 2026-11-10, terminal checklist: /hooks's left-out rows name a hook as /hooks does (hookName); the
+    // warnings said at launch and at a live edit keep its whole command.
+    it("gives /hooks's left-out rows the hook's short name, and the warnings its whole command", () => {
+      const node = "C:\\Program Files\\nodejs\\node.exe";
+      const hooks = {
+        PreToolUse: [{ hooks: [
+          { type: "command", command: node, args: ["C:\\h\\audit.js"], if: "Bash(*)" },
+          { type: "command", command: "jq -r '.x' || exit 2", statusMessage: "guard", comment: "mine" },
+        ] }],
+        Notification: [],
+      };
+      const r = read({ hooks });
+      if ("problem" in r) throw new Error(r.problem);
+      expect(r.warnings).toEqual([
+        `settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: ${node} C:\\h\\audit.js`,
+        `settings.json: "hooks": "PreToolUse" has a hook with "comment", which is not a hook field; it was left out: jq -r '.x' || exit 2`,
+        'settings.json: "hooks": "Notification" is not an event Tachikoma runs hooks at; its hooks were left out',
+      ]);
+      const rows = [
+        '"PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: node audit.js',
+        '"PreToolUse" has a hook with "comment", which is not a hook field; it was left out: guard',
+        '"Notification" is not an event Tachikoma runs hooks at; its hooks were left out',
+      ];
+      expect(r.hooksLeftOut).toEqual(rows);
+      expect(hooksOf(r.settings, r.hooksLeftOut).leftOut).toEqual(rows);
+    });
+
+    // The code review of the change: two hooks whose warnings are the same each keep their own name, in the file's order.
+    it("names two left-out hooks with the same warning each by its own statusMessage", () => {
+      const left = (statusMessage: string) => ({ type: "command", command: "jq x", if: "Bash(*)", statusMessage });
+      const r = read({ hooks: { Stop: [{ hooks: [left("first"), left("second")] }] } });
+      if ("problem" in r) throw new Error(r.problem);
+      const said = 'has a hook with "if", which Tachikoma cannot check, so it was left out: ';
+      expect(r.warnings).toEqual([`settings.json: "hooks": "Stop" ${said}jq x`, `settings.json: "hooks": "Stop" ${said}jq x`]);
+      expect(r.hooksLeftOut).toEqual([`"Stop" ${said}first`, `"Stop" ${said}second`]);
     });
   });
 

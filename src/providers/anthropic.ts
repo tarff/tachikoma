@@ -141,6 +141,11 @@ export class AnthropicProvider implements Provider {
     this.#effort = effort;
   }
 
+  // The effort in force, launch's or a live change's, for the hooks' `effort` field (release 8b plan, Task 6).
+  get effort(): Effort | undefined {
+    return this.#effort;
+  }
+
   async complete(req: CompletionRequest): Promise<Turn> {
     try {
       return await this.#complete(req);

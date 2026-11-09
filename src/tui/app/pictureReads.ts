@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { Part } from "../../core/types.js";
 import type { Fns } from "../App.js";
 import { pictureFile } from "../clipboard.js";
 import { cutPicture, type Editor, insertPicture } from "../editor.js";
@@ -11,16 +12,18 @@ export const pictureReads = (ui: UI, fns: Fns) => {
   // turn, so Enter meanwhile queues as during a turn. A read that found nothing or failed takes its spans out of the
   // message (settle, below), which goes without it (choice 17). Any stop of the turn during the wait (Ctrl-C in the
   // detail view) ends the reads as stopped, and the turn then stops as usual; at the prompt, Esc and Ctrl-C end only
-  // the reads (promptKey, keyRouting.ts).
-  const readsEnded = async (message: Draft, signal: AbortSignal) => {
+  // the reads (promptKey, keyRouting.ts). With the parts, the message they were made from, for a prompt a hook blocks to
+  // go back into the prompt as it went (release 8b plan, Task 8).
+  const readsEnded = async (message: Draft, signal: AbortSignal): Promise<{ parts: Part[]; draft: Draft }> => {
     const ids = new Set(message.spans.filter((s) => ui.pictures.get(s.id) === "reading").map((s) => s.id));
-    if (!ids.size) return messageParts(message, ui.pictures);
+    if (!ids.size) return { parts: messageParts(message, ui.pictures), draft: message };
     ui.reading.current = message;
     signal.addEventListener("abort", fns.stopReads);
     try {
       // Each picture's own settle, set when its number was taken, runs first (newPicture, below).
       await Promise.all([...ids].map((id) => ui.pictures.settled(id)));
-      return messageParts(trimmed(ui.reading.current), ui.pictures); // trimmed again, as a marker taken out may leave a blank at an end
+      const draft = trimmed(ui.reading.current); // trimmed again, as a marker taken out may leave a blank at an end
+      return { parts: messageParts(draft, ui.pictures), draft };
     } finally {
       ui.reading.current = null;
       signal.removeEventListener("abort", fns.stopReads);
@@ -49,6 +52,9 @@ export const pictureReads = (ui: UI, fns: Fns) => {
     if (ui.step.current) ui.step.current = { ...ui.step.current, draft: without(ui.step.current.draft, id) };
     if (ui.search.current) ui.search.current.before = cutPicture(ui.search.current.before, id);
     ui.queue.current = ui.queue.current.map((d) => without(d, id)).filter((d) => d.text.trim());
+    // And the prompts given back while the external editor is open, waiting for it to return (Task 8's re-check), in place.
+    const held = ui.editingBack.current;
+    if (held) held.splice(0, held.length, ...held.map((d) => without(d, id)).filter((d) => d.text.trim()));
     const waits = ui.reading.current?.spans.some((x) => x.id === id);
     if (ui.reading.current) ui.reading.current = without(ui.reading.current, id);
     // A message that was only pictures, left empty, sends nothing (session.ts, send).

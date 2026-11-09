@@ -7,7 +7,7 @@ import { type Command, commands, isScroll, keyList } from "../keys.js";
 import { vertical } from "../layout.js";
 import { commandMenu, listFolder, type Menu as MenuData, pathMenu } from "../menus.js";
 import type { Now } from "../phase.js";
-import { joined, trimmed } from "../pictures.js";
+import { type Draft, joined, trimmed } from "../pictures.js";
 import { promptWidth } from "../Prompt.js";
 import { FOLLOWING } from "../view.js";
 import { contextsOf, type Got, gray, SHORTEN_WORDS } from "./constants.js";
@@ -31,10 +31,11 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     }
     // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom.
     if (c === "models") return fns.command("/model");
-    // Release 5 plan, Task 12; after a shortening, its summary until the next turn (release 8a plan, Task 13).
+    // Release 5 plan, Task 12; after a shortening, its summary until the next turn (release 8a plan, Task 13); the turn's
+    // hook runs after its calls (release 8b plan, choice 24).
     if (c === "lastTurn") {
       const s = ui.summary.current;
-      const lines = s === null ? lastTurn(ui.session.messages) : [gray(SHORTEN_WORDS.summary), gray(s)];
+      const lines = s === null ? lastTurn(ui.session.messages, ui.hooks?.runs) : [gray(SHORTEN_WORDS.summary), gray(s)];
       return ui.fullNow.current ? fns.openDetail(lines) : fns.show(...lines);
     }
     if (c === "todos") return void (ui.todos.current.hidden = !ui.todos.current.hidden);
@@ -84,6 +85,41 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     ui.editor.current = { ...load(ui.editor.current, back.text), spans: back.spans };
     ui.queue.current = [];
     fns.freshText();
+  };
+  // A prompt a UserPromptSubmit hook blocked or stopped (release 8b plan, Task 8; design, "What a hook's answer does"; the
+  // stop approved by the user, 2026-11-09): its words come back into the prompt, after what is there, as the queue does,
+  // with its pictures' spans; the pictures it marked sent go with it again, those sent `before` it staying sent. The
+  // prompts queued behind it come back after it, nothing sent, as Ctrl-C brings them back (the user's choice,
+  // 2026-11-09). While the external editor has the prompt they wait for it to return, as its saved file takes the
+  // prompt's place (handover.tsx, externalEditor; Task 8's code review).
+  const giveBack = (d: Draft, before: ReadonlySet<number>) => {
+    for (const s of d.spans) if (!before.has(s.id)) ui.pictures.unmarkSent(s.id);
+    const back = [d, ...ui.queue.current];
+    ui.queue.current = [];
+    if (ui.editingBack.current) ui.editingBack.current.push(...back);
+    else fns.putBack(back);
+  };
+  // Given-back prompts into the prompt box as its text really is (Task 8's code review): Ctrl+R's search ends first, as
+  // Ctrl-C ends it, so a match it gives cannot take their place, and a walk through the history ends with the draft it
+  // kept, as Down past the newest prompt brings it back, so sending a recalled prompt cannot drop them. A recalled line
+  // changed since, by typing or the external editor, is kept after the draft, before them (Task 8's re-check).
+  const putBack = (given: Draft[]) => {
+    if (ui.search.current) fns.endSearch(ui.search.current.before);
+    let back = given;
+    const walk = ui.step.current;
+    if (walk) {
+      const shown = ui.editor.current;
+      // A picture put in counts as a change, its marker's text aside (Task 8's last re-check).
+      const edited = shown.text !== ui.history.current!.entries[walk.at] || shown.spans.length > 0;
+      if (edited) back = [{ text: shown.text, spans: shown.spans }, ...back];
+      ui.editor.current = { ...load(shown, walk.draft.text), spans: walk.draft.spans };
+      ui.step.current = null;
+    }
+    const all = joined([ui.editor.current, ...back].filter((x) => x.text), "\n");
+    ui.editor.current = { ...load(ui.editor.current, all.text), spans: all.spans };
+    ui.goal.current = null;
+    fns.freshText();
+    fns.say(gray("Your words are back in the prompt box."));
   };
   const clear = (e: Editor) => {
     fns.keep(e.text);
@@ -193,7 +229,7 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     }
   };
   return {
-    run, command, send, restore, clear, swapStash, keep, recall, menuFor, list, chosenIn, fill, shown, endSearch,
-    searchKey,
+    run, command, send, restore, giveBack, putBack, clear, swapStash, keep, recall, menuFor, list, chosenIn, fill, shown,
+    endSearch, searchKey,
   };
 };

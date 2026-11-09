@@ -322,7 +322,12 @@ export const writeFileTool = defineTool(
     const { abs, outside, shown, real, linked } = await ctx.workspace.resolve(p);
     const part = protectedOf(ctx, real, linked);
     await ctx.gate.require({ kind: "write", outside, summary: `write ${shown}`, detail: content, ...(part ? { protectedPart: part, path: shown } : {}) }, ctx.signal);
+    // Whether the file is new, for a hook's Write result (release 8b plan, choice 11), looked for only when a hook may be
+    // sent it, and through the workspace, as the box's files are never opened on the host (release 7 design).
+    const created = ctx.report && (await ctx.workspace.readText(abs).then(() => false, (err) => (err as NodeJS.ErrnoException).code === "ENOENT"));
+    ctx.signal?.throwIfAborted(); // a stop during the read, such as a hook's continue: false, writes nothing (Task 7's re-check)
     await ctx.workspace.writeText(abs, content);
+    ctx.report?.({ path: abs, created });
     return `Wrote ${content.length} characters to ${p}`;
   },
 );
@@ -340,7 +345,9 @@ export const editFileTool = defineTool(
     // asked. It is checked again after: the file may change while the question waits.
     if (!outside) edited(await ctx.workspace.readText(abs), p, old_text, new_text);
     await ctx.gate.require({ kind: "write", outside, summary: `edit ${shown}`, detail, ...(part ? { protectedPart: part, path: shown } : {}) }, ctx.signal);
-    await ctx.workspace.writeText(abs, edited(await ctx.workspace.readText(abs), p, old_text, new_text));
+    const text = edited(await ctx.workspace.readText(abs), p, old_text, new_text);
+    ctx.signal?.throwIfAborted(); // as write_file's
+    await ctx.workspace.writeText(abs, text);
     return `Edited ${p}`;
   },
 );

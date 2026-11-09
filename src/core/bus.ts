@@ -5,8 +5,9 @@ import type { Message, Usage } from "./types.js";
 export interface ErrorEvent {
   // "fallback": a refusal another model rescued; "judge": the judge's request failed (release 7 plan, Task 9); "saving":
   // the session's transcript could not be written, which stops nothing else (release 8a plan, Task 5); "shortening": a
-  // conversation too long for the model could not be shortened, or was still too long once it was (Task 12)
-  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback" | "judge" | "saving" | "shortening";
+  // conversation too long for the model could not be shortened, or was still too long once it was (Task 12); "hook": a
+  // hook failed, which stops nothing (release 8b plan, choice 22)
+  kind: "tool" | "provider" | "refusal" | "max_tokens" | "fallback" | "judge" | "saving" | "shortening" | "hook";
   attempted: string;
   message: string;
   lead: string;
@@ -33,6 +34,11 @@ export interface Events {
   tasks: []; // a subagent started, changed or finished
   note: [string]; // a line for the user that is neither a failure nor the conversation, such as pictures left out
   shortened: [string]; // the history was shortened into one message; the summary (release 8a plan, Task 12)
+  // A hook's grey line, such as its systemMessage (release 8b plan, choice 23). `named`: a subagent's line that names it
+  // already, so Tasks passes it on without its id in front (the user's choice, 2026-11-09).
+  "hook-note": [line: string, named?: true];
+  // A hook with a statusMessage started (`running`) or ended, for the waiting line (release 8b plan, Task 12).
+  "hook-status": [message: string, running: boolean];
 }
 
 // The session emits; the interface, status line, headless output and error log listen.

@@ -64,6 +64,31 @@ export function onPath(name: string, env: NodeJS.ProcessEnv = process.env): stri
   return undefined;
 }
 
+// Git Bash, where Claude Code looks for it, for hooks run by a shell on Windows (release 8b plan, choice 1): the file
+// CLAUDE_CODE_GIT_BASH_PATH names, when it is called bash or sh, as Claude Code's rule has it; bin\bash.exe beside the
+// folder of the first git.exe on PATH (...\Git\cmd\git.exe gives ...\Git\bin\bash.exe); then Git for Windows' two
+// install folders. Never a bare `bash` from PATH, which on Windows can be WSL's, and never a relative path, which
+// would name the working folder. Null when none is found, and on other systems, where it is not used. Looked up once
+// for Tachikoma's own environment; a made-up one, a test's, is looked up each time.
+let found: string | null | undefined;
+export function gitBash(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | null {
+  if (env === process.env && platform === process.platform) return found === undefined ? (found = lookForGitBash(env, platform)) : found;
+  return lookForGitBash(env, platform);
+}
+
+function lookForGitBash(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | null {
+  if (platform !== "win32") return null;
+  const named = env.CLAUDE_CODE_GIT_BASH_PATH;
+  const git = onPath("git", env);
+  const candidates = [
+    named && /^(bash|sh)(\.exe)?$/i.test(path.basename(named)) ? named : undefined,
+    git && path.join(path.dirname(path.dirname(git)), "bin", "bash.exe"),
+    env.ProgramFiles && path.join(env.ProgramFiles, "Git", "bin", "bash.exe"),
+    env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, "Programs", "Git", "bin", "bash.exe"),
+  ];
+  return candidates.find((file) => file && path.isAbsolute(file) && runnable(file, true)) ?? null;
+}
+
 // A file that can be run: outside Windows its run bit must be set. Any failure (not found, no access, an entry that is a
 // file) passes the entry over, as the system's own lookup does.
 function runnable(file: string, windows: boolean): boolean {

@@ -17,6 +17,7 @@ import {
   exitOn,
   exitSignals,
   fullPossible,
+  gitBashLine,
   gitUnread,
   givenBy,
   headlessAnswer,
@@ -58,6 +59,8 @@ import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
 import { errorText, type Provider } from "./core/types.js";
 import { LocalExecutor, LocalWorkspace } from "./exec/local.js";
+import { Hooks } from "./hooks/hooks.js";
+import { pathsFor } from "./hooks/tools.js";
 import { readKeybindings } from "./keybindings.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
@@ -69,7 +72,7 @@ import { copyLock } from "./sandbox/snapshot.js";
 import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
-import { loadSettings, SETTINGS, shownFile } from "./settings.js";
+import { hooksOf, loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { delegateTool } from "./tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { shellTool } from "./tools/shell.js";
@@ -135,9 +138,10 @@ In a session: /lead <provider:model> switches the lead model, /lead or /model pi
 /rename <name> names it, /export [file] writes the conversation to a file as text, or alone copies
 it, /compact [words] shortens it into a summary now, /autocompact <tokens> shortens it once it
 passes that many tokens (/autocompact off: only when a request would not fit), /tasks lists the
-subagents (/tasks t1 shows one, /tasks stop stops them), /errors summarises the error log,
-/screen switches between full screen and classic, /settings opens the settings file in your editor,
-/keybindings opens the keys file in your editor, /vim switches vim mode in this window, /exit quits.
+subagents (/tasks t1 shows one, /tasks stop stops them), /hooks lists the hooks in force,
+/errors summarises the error log, /screen switches between full screen and classic,
+/settings opens the settings file in your editor, /keybindings opens the keys file in your editor,
+/vim switches vim mode in this window, /exit quits.
 Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty
 prompt quits. Ctrl+T hides or shows the to-do list. Esc and Ctrl+T can be moved in the keys file;
 Ctrl-C and Ctrl-D cannot. ? on an empty prompt lists every key.`;
@@ -378,6 +382,9 @@ const sessionId = randomUUID();
 const stats = new Stats(bus);
 const interactive = parsed.print === undefined;
 const gray = (line: string) => styleText("gray", visible(line), { stream: process.stderr });
+// Said once, when a hook run by a shell is in force and there is no Git Bash (release 8b plan, choice 2).
+const bashLine = gitBashLine(loaded.settings);
+if (bashLine) console.error(gray(bashLine));
 
 // Once per launch, after the settings and before the lead (release 8a plan, choice 10), and before any session is opened
 // here: a lock this process holds would look like an earlier process's, left behind, to a sweep that names it by another
@@ -563,9 +570,27 @@ const gate = new PermissionGate(mode, (...a) => ask(...a), interactive ? undefin
   ...(box?.gate ?? { root }),
   headless: !interactive,
   judge: judgeOf(judgeProvider, () => session, instructions.text, bus),
+  // In -p a call a PreToolUse hook refused fails the run, as a refusal the ask reports does (the user's choice, 2026-11-09).
+  ...(interactive ? {} : { hookRefused: () => void (declined = true) }),
 });
 gate.rules = rules;
 gate.protection = box?.protection ?? protection;
+// The user's hooks, one object for the window, handed to the lead's session and, through Tasks, each subagent's (release
+// 8b plan, "Architecture"; Task 6). They run in the project's real folder, and are sent its real paths, or the box's in
+// copy mode (design, "Tool hooks"). Its left-out rows, for /hooks, are the launch warnings' (Task 1; settings.ts, Loaded).
+const hooks = new Hooks(
+  hooksOf(loaded.settings, loaded.hooksLeftOut),
+  {
+    sessionId: () => session.id,
+    transcript: () => session.transcript?.file,
+    root,
+    mode: () => gate.mode,
+    effort: () => session.lead.effort, // the lead's in force, so a live change is sent; only Anthropic's has one
+    lead: () => session.lead.id,
+  },
+  bus,
+);
+const paths = pathsFor(root, box ? { mode: sandbox === "copy" ? "copy" : "live" } : null);
 // ctx.root and the workspace's root are one place: /work in the box (Task 14's review).
 const { executor, workspace } = where;
 const tasks = new Tasks({
@@ -577,6 +602,8 @@ const tasks = new Tasks({
   tools: SUBAGENT_TOOLS,
   ctx: { root: where.root, executor, workspace, gate },
   transcript: () => session.transcript, // each subagent saves beside the lead (release 8a plan, Task 5)
+  hooks,
+  paths,
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus. In the box the shell tool says
 // bash, whatever the host.
@@ -612,7 +639,12 @@ const { session, pictures } = leadSession({
   inbox: () => [...windowSessions.lost(), ...tasks.take()],
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
   tasks,
+  hooks,
+  paths,
 });
+// SessionStart's source, by how the launch opened the conversation (release 8b plan, Task 10): a copy opened as another
+// window holds the session is still a resume, as -c or -r asked for one.
+const source = saved ? (parsed["fork-session"] ? "fork" : "resume") : "startup";
 // The settings file's /autocompact size, for -p too; a live edit or /autocompact changes it for the window (release 8a
 // plan, choice 26).
 session.autoCompact = loaded.settings.autoCompactWindow ?? null;
@@ -624,29 +656,46 @@ if (parsed.print !== undefined) {
   bus.on("error", (e) => {
     // A judge that cannot be reached refuses one action, as a no does, and fails no run (release 7 plan, choice 65); nor
     // does a transcript that cannot be saved (release 8a plan, Task 5), nor a shortening's line after which the request was
-    // sent as it is (Task 13): a later line that ends the turn has no mark, and still fails it.
-    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge" && e.kind !== "saving" && !(e.kind === "shortening" && e.sent)) failed = true;
+    // sent as it is (Task 13): a later line that ends the turn has no mark, and still fails it. Nor does a hook that failed
+    // (release 8b design, "What the user sees").
+    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge" && e.kind !== "saving" && e.kind !== "hook" && !(e.kind === "shortening" && e.sent)) {
+      failed = true;
+    }
   });
   if (parsed.json) {
-    for (const event of ["message", "usage", "error", "lead"] as const) {
+    // A hook's grey lines too, each a line of its own (release 8b plan, Task 8; the user's choice, 2026-11-09).
+    for (const event of ["message", "usage", "error", "lead", "hook-note"] as const) {
       bus.on(event, (data: unknown) => console.log(jsonLine(event, data)));
     }
   } else {
     bus.on("error", (e) => {
       if (e.kind === "fallback") console.error(prose(`note: ${e.message}`));
       else if (e.kind === "saving" || e.kind === "shortening") console.error(prose(e.message)); // the line alone, as the window shows it
+      // A hook's line is escaped whole, as the window escapes it (App.tsx): it carries the hook's own words and its command.
+      else if (e.kind === "hook") console.error(`hook: ${visible(e.message, { tabs: true })}`);
       else if (e.kind !== "tool") console.error(prose(`${e.kind}: ${e.message}`));
     });
+    // A hook's grey lines, as a fallback's note is written (release 8b plan, choice 23), escaped whole, so a line break in
+    // the hook's own words cannot pass for a line of Tachikoma's (Task 6's review).
+    bus.on("hook-note", (line) => console.error(`note: ${visible(line, { tabs: true })}`));
   }
   // Loaded once the error listeners are on, so a start line or mend that failed is said now, not at the first write.
   for (const line of said) console.error(gray(line.text));
   session.load(opened.conversation);
+  session.start(source);
   // On macOS and Linux the running command is in its own process group, so Ctrl-C reaches only us.
   // A second Ctrl-C gets Node's default and ends at once.
   const stop = new AbortController();
   process.once("SIGINT", () => stop.abort());
-  await session.send(parsed.print, stop.signal);
-  if (!parsed.json) {
+  // A prompt a UserPromptSubmit hook blocked, and a hook's continue: false, end the run with exit code 1, as its work was
+  // cut short (release 8b plan, Task 8 and choice 9). A blocked prompt, or one a stop left unsent, leaves the history as it
+  // was, so a resumed session's last answer is not printed as this run's; a stop later in the turn prints the answer it
+  // came after, as a Stop hook's does (Task 9).
+  const ended = await session.send(parsed.print, stop.signal);
+  // Read now: a Ctrl-C during SessionEnd or copy mode's step below comes after the run's work, so it does not mark the run
+  // stopped (Task 10's code review).
+  const aborted = stop.signal.aborted;
+  if (!parsed.json && !(ended && ("blocked" in ended || ended.unsent))) {
     const last = session.messages.at(-1);
     if (last?.role === "assistant") {
       const text = last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
@@ -655,6 +704,8 @@ if (parsed.print !== undefined) {
       if (note) console.error(note);
     }
   }
+  // The run's session ends here, after its answer, however its turn ended, a stop by Ctrl-C too (release 8b plan, Task 10).
+  await session.end("other");
   // Nobody can review here, so the copy is kept (choice 29), unless it has nothing to review: then, as at the session's
   // end in the interface (queue.ts, leave), once the box is gone and under the copy's lock, it is removed (choice 121).
   if (box?.copy) {
@@ -671,7 +722,10 @@ if (parsed.print !== undefined) {
     }
     console.error(line ?? keptForReview(sessionId));
   }
-  process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed, declined });
+  // The run's work is done, so an async hook still running is killed, or it would keep the run going up to its limit
+  // (the user's choice, 2026-11-10; final review).
+  hooks.stopAsync();
+  process.exitCode = headlessExit({ aborted, failed: failed || ended !== undefined, declined });
 } else {
   // Ctrl-C reaches the interface as a key, as raw mode is on, so a SIGINT here came from outside (`kill -INT`), or from
   // Ctrl-C typed while the editor has the terminal, with raw mode off: that one is ignored, as Git ignores it, and the
@@ -695,6 +749,9 @@ if (parsed.print !== undefined) {
   // Copy mode's review at the end (App.tsx, copy; release 7 plan, Task 21): its lines, printed once Ink has ended, and the
   // protection worked out on the host when it opens, never the gate's view of the box; without it, no review.
   const reviewed: string[] = [];
+  // SessionEnd's lines as the user left in full screen or copy mode, escaped, printed to stderr after the review's
+  // (queue.ts, leave; approved by the user, 2026-11-09).
+  const left: string[] = [];
   const copied = box?.copy;
   const copy = box && copied && {
     copy: { session: sessionId, folder: copied.folder, manifest: copied.manifest },
@@ -750,9 +807,17 @@ if (parsed.print !== undefined) {
       scrollSpeed={speed}
       clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
       home={os.homedir()}
-      live={{ loaded, given: givenBy(parsed, process.env), ...(netLine ? { networkLine: netLine } : {}), ...(gitLine ? { gitLine } : {}) }}
+      live={{
+        loaded,
+        given: givenBy(parsed, process.env),
+        ...(netLine ? { networkLine: netLine } : {}),
+        ...(bashLine ? { bashLine } : {}),
+        ...(gitLine ? { gitLine } : {}),
+      }}
       {...(copy ? { copy } : {})}
       saved={windowSessions}
+      leftLines={(lines) => left.push(...lines)}
+      hooks={hooks}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing
@@ -760,16 +825,22 @@ if (parsed.print !== undefined) {
     { stdin: keys as unknown as NodeJS.ReadStream, exitOnCtrlC: false, kittyKeyboard: { mode: "auto" }, maxFps: 60 },
   );
   // Ink's first render, in its legacy mode, runs the App's effects before render() returns (measured 2026-11-06), so its
-  // listeners are on: a start line or mend that failed is said on screen now, not at the first write.
+  // listeners are on: a start line or mend that failed is said on screen now, not at the first write. So are SessionStart's
+  // lines (release 8b plan, Task 10).
   session.load(opened.conversation);
+  session.start(source);
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   // After the terminal is back, as restoreWhenInkEnds waits on the same promise first; an error is its to report. The
-  // lines come escaped (Review.tsx, ReviewEnd).
-  exited.then(
-    () => {
-      for (const line of reviewed) console.log(line);
-    },
-    () => {},
-  );
+  // lines come escaped (Review.tsx, ReviewEnd). Then the window's exit is done, after SessionEnd (queue.ts, leave), so
+  // an async hook still running is killed, as at the end of a -p run (the user's choice, 2026-11-10; final review).
+  exited
+    .then(
+      () => {
+        for (const line of reviewed) console.log(line);
+        for (const line of left) console.error(line);
+      },
+      () => {},
+    )
+    .then(() => hooks.stopAsync());
 }

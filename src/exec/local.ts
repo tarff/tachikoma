@@ -38,18 +38,20 @@ export function killTree(child: ChildProcess): void {
   }
 }
 
-// Detached commands are cut off from the terminal and would outlive us, so we stop them on exit.
-const running = new Set<ChildProcess>();
+// Detached commands are cut off from the terminal and would outlive us, so we stop them on exit. Hooks join it too
+// (release 8b plan, choice 5).
+export const running = new Set<ChildProcess>();
 process.on("exit", () => running.forEach(killTree));
 
 // Keeps the first MAX_TOOL_OUTPUT characters and reads (and drops) the rest, so the command never
 // blocks on a full pipe and a flood of output cannot exhaust memory. The box's commands are cut the same (docker.ts).
-export function collect(stream: Readable): () => string {
+// A hook's stdout passes `Infinity` and is read whole (run.ts).
+export function collect(stream: Readable, limit = MAX_TOOL_OUTPUT): () => string {
   let text = "";
   let dropped = 0;
   stream.setEncoding("utf8"); // decodes characters split across chunks
   stream.on("data", (d: string) => {
-    const room = MAX_TOOL_OUTPUT - text.length;
+    const room = limit - text.length;
     text += d.slice(0, room);
     dropped += Math.max(0, d.length - room);
   });

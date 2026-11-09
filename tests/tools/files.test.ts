@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Mode } from "../../src/core/permissions.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
+import type { ToolContext } from "../../src/tools/tool.js";
 import { editFileTool, programEnvironment, readFileTool, inData, inSettings, resolveIn, sameIgnoringCase, writeFileTool } from "../../src/tools/files.js";
 import { fakeWorkspace, shortName, tempContext } from "../helpers.js";
 
@@ -553,6 +554,23 @@ describe("the file tools through the Workspace", () => {
     const ctx = { ...(await tempContext("ask", [false])), root, workspace };
     await expect(writeFileTool.run({ path: "b.txt", content: "new" }, ctx)).rejects.toThrow("The user declined");
     expect(calls).toEqual(["resolve b.txt"]);
+  });
+
+  // Release 8b plan, Task 7's re-check: a stop, such as a hook's continue: false, that lands while the file is read after
+  // the yes writes nothing. write_file reads only when a hook after the call may be sent its result (ctx.report).
+  it.each<[string, (ctx: ToolContext) => Promise<string>, number]>([
+    ["write_file", (ctx) => writeFileTool.run({ path: "a.txt", content: "new" }, ctx), 1],
+    ["edit_file", (ctx) => editFileTool.run({ path: "a.txt", old_text: "old", new_text: "new" }, ctx), 2],
+  ])("%s writes nothing when the turn is stopped during its read after the yes", async (_name, run, at) => {
+    const root = path.resolve("/made/up/project");
+    const a = path.join(root, "a.txt");
+    const { workspace, calls, files } = fakeWorkspace(root, { [a]: "old" });
+    const stop = new AbortController();
+    let reads = 0;
+    const stopping = { ...workspace, readText: async (abs: string) => (++reads === at && stop.abort(), workspace.readText(abs)) };
+    const ctx = { ...(await tempContext("never")), root, workspace: stopping, signal: stop.signal, report: () => {} };
+    await expect(run(ctx)).rejects.toHaveProperty("name", "AbortError");
+    expect([files, calls.filter((c) => c.startsWith("writeText"))]).toEqual([{ [a]: "old" }, []]);
   });
 
   // Task 16, from Task 14's review: in the box the real place is a /work path, which means nothing on the host, so the

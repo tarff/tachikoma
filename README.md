@@ -1,6 +1,6 @@
 # Tachikoma
 
-> **Work in progress.** Release 8a of 15 is done (the first of release 8's four parts); the rest is
+> **Work in progress.** Release 8b of 15 is done (the second of release 8's five parts); the rest is
 > being built. Expect missing features and changes that break things, and don't rely on it for real
 > work yet.
 
@@ -9,12 +9,13 @@ providers can lead a session. Later releases add handing work to other models an
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, and
 lessons learned from its own error log.
 
-This is release 8a of 15: the core; signing in with ChatGPT; Claude Code's keys and screen;
+This is release 8b of 15: the core; signing in with ChatGPT; Claude Code's keys and screen;
 subagents that read, with a to-do list and your instruction files; a full screen with its own
 scrolling and mouse selection; a settings file, keys you can move, and Claude Code's external
 editor, stash, pictures and vim mode; a Docker sandbox, auto mode (a second model judging
-actions) and a check on dangerous commands; and saved sessions you can reopen, with a conversation
-too long for the model shortened into a summary. The command is `tachi`. So far it has been tested
+actions) and a check on dangerous commands; saved sessions you can reopen, with a conversation
+too long for the model shortened into a summary; and hooks, your own commands run at set moments
+of a session, in Claude Code's format. The command is `tachi`. So far it has been tested
 on Windows 11 only; release 14 adds testing on Linux and macOS.
 
 ## What it does
@@ -50,6 +51,10 @@ on Windows 11 only; release 14 adds testing on Linux and macOS.
 - **Long conversations are shortened** (release 8a): one that will not fit the model's window is
   summarised, instead of ending with an error; `/compact` does it now, and `/autocompact` at a size
   you choose. See [Shortening long conversations](#shortening-long-conversations).
+- **Hooks** (release 8b): your own commands, in Claude Code's format, run at 11 moments of a
+  session, such as before and after each tool call, as you send a prompt and as a turn ends. A hook
+  can refuse or rewrite a tool call, hand the model text, or keep a turn going. They are read from
+  your settings file only, never from a project's files. See [Hooks](#hooks).
 - **Search tools:** `find_files` lists files by a pattern such as `src/**/*.ts`, and `search_files`
   searches their contents with a regular expression. Both skip `.git` and what the project's
   `.gitignore` files list, follow no links, and run no program.
@@ -179,9 +184,10 @@ In a session, `/lead <provider:model>` switches the lead model, `/lead` or `/mod
 models to pick from, `/login chatgpt` and `/logout chatgpt` sign in and out, `/clear`, `/resume`,
 `/branch` and `/rename` start, switch, copy and name [saved sessions](#saved-sessions), `/export`
 writes the conversation out, `/compact` and `/autocompact`
-[shorten it](#shortening-long-conversations), `/tasks` lists the subagents, `/errors` summarises
-the error log, `/screen` switches between full screen and classic, `/settings` and `/keybindings`
-open the settings and keys files in your editor, `/vim` switches vim mode, and `/exit` quits;
+[shorten it](#shortening-long-conversations), `/tasks` lists the subagents, `/hooks` lists the
+[hooks](#hooks) in force, `/errors` summarises the error log, `/screen` switches between full
+screen and classic, `/settings` and `/keybindings` open the settings and keys files in your
+editor, `/vim` switches vim mode, and `/exit` quits;
 commands ignore case. `/lead`, `/model`, `/screen`, `/vim` and `/autocompact` change only the
 window you type them in. Esc or Ctrl-C stops the current turn and the subagents it waits for;
 background subagents go on until `/tasks stop` or you quit.
@@ -834,6 +840,8 @@ Every entry is optional; one left out keeps its default.
 | `editor` | the command for [the external editor](#the-external-editor) | Notepad on Windows, `vi` elsewhere | from the next Ctrl+G, `/settings` or `/keybindings` |
 | `cleanupPeriodDays` | the days a saved session is kept unchanged before a launch deletes it, a whole number from 1: see [Saved sessions](#saved-sessions) | 30 | at the next launch |
 | `autoCompactWindow` | the `/autocompact` size, a whole number of tokens from 1: see [Shortening long conversations](#shortening-long-conversations) | off | at once, as `/autocompact`, with `autoCompactWindow is now 200,000 (from settings.json)`; taken out, off |
+| `hooks` | your own commands, run at moments of a session: see [Hooks](#hooks) | none | from the next event, with `Hooks changed: <n> hooks at <m> events.` |
+| `disableAllHooks` | `true` turns every hook off; they are still read, so `/hooks` can say so | `false` | as `hooks` |
 
 - **Which wins:** a flag, then its variable where it has one (`TACHI_LEAD`, `TACHI_WORKER`,
   `TACHI_CLASSIC`, `TACHI_SCROLL_SPEED`; an empty one counts as unset), then the file, then the
@@ -868,6 +876,327 @@ Every entry is optional; one left out keeps its default.
   project is your home folder, so the model cannot change them with its file tools. A shell command
   is not stopped, but it asks first in `ask` and `project`, and the judge decides it in `auto`. In
   the sandbox, where `never` runs, the box cannot see either file.
+
+## Hooks
+
+Hooks are your own commands, run at 11 moments of a session, such as before and after each tool
+call, as you send a prompt, and as a turn ends. They are written in Claude Code's format, with its
+event names and fields, so a hook script made for Claude Code works unchanged. They are read from
+the `"hooks"` entry of the [settings file](#settings) only: a project's own files never add one, so
+a repository you clone cannot run commands on your machine this way.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "check.sh" }] },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [{ "type": "command", "command": "node ~/.tachikoma/hooks/protect-paths.js" }]
+      }
+    ]
+  }
+}
+```
+
+A path in a hook is read from the project folder unless it is a full one, so name your own scripts
+in full. Windows PowerShell does not turn `~` into your home folder for a program such as `node`, so
+a hook it runs names the folder as `$HOME`.
+
+- **The entry:** each event's name holds a list of `{ "matcher": ..., "hooks": [...] }`, and each
+  hook is `{ "type": "command", "command": ... }`, with these fields, all optional:
+  - `args`, a list: `command` is then started directly, with no shell, on every system;
+  - `shell`, `"bash"` or `"powershell"` (see [where hooks run](#where-hooks-run));
+  - `timeout`, in seconds: 600 by default, 30 at UserPromptSubmit (SessionEnd's hooks share a
+    shorter limit, [below](#what-a-hooks-answer-does));
+  - `async`, `true` or `false`: an async hook is started and not waited for, and its answer is read
+    only to report a failure, or that it asked to block or stop, which it cannot;
+  - `onFailure`, `"continue"` or `"block"`: with `"block"`, any failure is a block, at the events
+    that can block;
+  - `statusMessage`: words for the working line while the hook runs.
+
+  `"disableAllHooks": true` turns every hook off. These are left out, each with a warning at the
+  launch, as an unknown setting gets, and the rest applies: an event Tachikoma does not run hooks
+  at, with all its hooks; a hook of a kind other than `"command"`; and a hook with `if` (Claude
+  Code's condition in its permission-rule syntax, which Tachikoma does not have). A key in an entry
+  other than `matcher` and `hooks`, and a field that is not a hook field, are left out alone, with
+  a warning: the entry's hooks, and the hook, still run. `asyncRewake` gets a warning and runs as
+  plain `async`; `once` is ignored, as Claude Code ignores it in settings files. A value of the
+  wrong type stops the launch, as every entry's does: `settings.json: "hooks": "PreToolUse": a
+  hook's "timeout" must be a number of seconds above 0 and no more than 2147483, such as 30 (got
+  -1)`.
+- **Matchers** pick the hooks that run, by Claude Code's rules: empty, missing or `*` matches
+  everything; text of only letters, digits, `_`, `-`, spaces, commas and `|` is a list of exact
+  names (`Edit|Write`, `Edit, Write`); anything else is a regular expression, matched anywhere in
+  the name. Letter case counts: `Bash` does not match `bash`. A regular expression that cannot be
+  read stops the launch.
+
+### The events
+
+| Event | When it runs | Its matcher is matched against |
+|---|---|---|
+| SessionStart | at the launch (`startup`); `tachi -c`, `-r` and `/resume` (`resume`); `/clear` (`clear`); after a shortening (`compact`); `--fork-session` and `/branch` (`fork`) | the word in brackets |
+| SessionEnd | leaving the window (`prompt_input_exit`); `/clear` (`clear`); `/resume`'s pick (`resume`); the end of a `-p` run, and `/branch` (`other`) | the word in brackets |
+| UserPromptSubmit | each prompt you send, before the model gets it; not a subagent's brief, which the lead wrote | nothing: every hook runs |
+| PreToolUse | before every tool call, the lead's and the subagents' | the tool's name as hooks see it ([below](#tools-under-claude-codes-names)) |
+| PostToolUse | after a call that succeeded | the same |
+| PostToolUseFailure | after a call that failed | the same |
+| Stop | when the lead's turn ends normally; not when you stop it, or a provider's error ends it | nothing: every hook runs |
+| SubagentStart | before a subagent's first request | `Explore` |
+| SubagentStop | when a subagent finishes normally | `Explore` |
+| PreCompact | before each [shortening](#shortening-long-conversations): `manual` for `/compact`, `auto` for every other | `manual` or `auto` |
+| PostCompact | once the summary is made, before it is saved | `manual` or `auto` |
+
+PostToolUse and PostToolUseFailure do not run for a call that was refused, declined or cancelled,
+for an unknown tool, or for an input the tool refused, as in Claude Code.
+
+### What a hook is sent
+
+One JSON object on its standard input, which is then closed, in Claude Code's field names. Every
+event gets `session_id`; `transcript_path`, Tachikoma's own session file; `cwd`, the project folder;
+`hook_event_name`; `permission_mode`, the mode under its nearest Claude Code name (`ask` as
+`default`, `project` as `acceptEdits`, `auto` as `auto`, `never` as `bypassPermissions`);
+`prompt_id`, new for each prompt you send (absent before the first); and `effort`,
+`{"level": ...}`, when the lead has one. In a subagent's session it also gets `agent_id` (`t1`) and
+`agent_type`, always `Explore`, Claude Code's name for its read-only subagent. Then the event's own:
+
+| Event | Its own fields |
+|---|---|
+| SessionStart | `source`, the word in brackets above; `model`, the lead, such as `anthropic:claude-opus-5-5` |
+| SessionEnd | `reason`, the word in brackets above |
+| UserPromptSubmit | `prompt`, as typed, each picture as its `[Image #1]` marker |
+| PreToolUse | `tool_name`, `tool_input`, `tool_use_id` |
+| PostToolUse | the same, with the input that ran, then `tool_response` and `duration_ms` |
+| PostToolUseFailure | the same, then `error`, `is_interrupt` (always `false`) and `duration_ms` |
+| Stop | `stop_hook_active`, true once a Stop hook has kept this turn going; `last_assistant_message`; `background_tasks`, each background subagent running or waiting; `session_crons`, always `[]` |
+| SubagentStart | `agent_id`, `agent_type` |
+| SubagentStop | `agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`, `stop_hook_active` |
+| PreCompact | `trigger`, `custom_instructions` (the `/compact` words, or null) |
+| PostCompact | `trigger`, `compact_summary` |
+
+### Tools under Claude Code's names
+
+Hooks see each tool under Claude Code's name, with its input in Claude Code's fields, so a matcher
+such as `Edit|Write` and a script that reads `tool_input.file_path` work unchanged. On screen,
+every line still names the tool as Tachikoma does (`shell`, not `Bash`).
+
+| Tachikoma's tool | Hooks see | `tool_input` | `tool_response` |
+|---|---|---|---|
+| `shell` | `Bash` | `command` | `{stdout, stderr, interrupted: false, isImage: false}` |
+| `read_file` | `Read` | `file_path`, `offset`, `limit` | the text the model reads |
+| `write_file` | `Write` | `file_path`, `content` | `{filePath, type}`, `type` being `"create"` or `"update"` |
+| `edit_file` | `Edit` | `file_path`, `old_string`, `new_string` | the text the model reads |
+| `find_files` | `Glob` | `pattern` | the text the model reads |
+| `search_files` | `Grep` | `pattern`, `path`, `glob` | the text the model reads |
+| `delegate` | `Agent` | `description`, `prompt`, `run_in_background`, and `subagent_type`, always `"Explore"` | `{status: "completed", agentId, content: [{type: "text", text}]}`; for one started in the background, the text the model reads |
+| `todo` | `TodoWrite` | `todos: [{content, status}]`, `done` sent as `completed` | the text the model reads |
+
+A failed command's `error`, at PostToolUseFailure, starts `Exit code <n>`, then its error output,
+then its output. Paths are given whole: on your machine and in live link, the real project's, with
+backslashes on Windows, as Claude Code sends them; in copy mode, the box's (`/work/...`), so a
+check on a name such as `.env` still works, but no hook can open the copy's files by them.
+
+### What a hook's answer does
+
+Claude Code's table:
+
+| What it printed | Exit code 0 | Exit code 2 | Any other exit code |
+|---|---|---|---|
+| JSON that can be read | the fields apply | a block; the fields are read but cannot undo it | the exit code is ignored and the fields decide: a PreToolUse deny on exit code 1 still refuses |
+| JSON that cannot be read | a failure, its line naming what is wrong | a block, its error output the reason | a failure, its line naming what is wrong |
+| plain text, or nothing | success | a block, its error output the reason | a failure, its line the first line of its error output |
+
+- **JSON** is one object with nothing but white space around it, whose fields that Tachikoma reads
+  have the right types. A `hookSpecificOutput` in it must have a `hookEventName` naming the event.
+  Output that starts with `{` and is not that is JSON that cannot be read. A field given as `null`
+  counts as left out.
+- **A failure blocks nothing,** and nor does a hook that cannot start or runs out of time, which is
+  a failure too. There are two exceptions, at the five events that can block (below). A hook with
+  `"onFailure": "block"` blocks whenever it fails, and for it any exit code but 0 and 2 is a
+  failure, even with JSON that can be read. So does a PreToolUse hook run by a shell on Windows
+  without Git Bash, unless it sets `onFailure` (Claude Code's rule; `"onFailure": "continue"` turns
+  it off).
+- **Blocks happen at five events:** UserPromptSubmit, PreToolUse, Stop, SubagentStop and PreCompact.
+  At PostToolUse and PostToolUseFailure the call has already run, so a block's reason goes to the
+  model beside the result instead. At SessionStart, SessionEnd, SubagentStart and PostCompact, exit
+  code 2 is a failure.
+- **The fields read:** `systemMessage`, on every event, shown to you as a grey line; `continue` and
+  `stopReason` (below); `decision: "block"` and `reason`; `additionalContext` in
+  `hookSpecificOutput`, text for the model, on every event but SessionEnd, PreCompact and
+  PostCompact; PreToolUse's `permissionDecision`, `permissionDecisionReason` and `updatedInput`,
+  and its old `decision` values `approve` and `block`, read as allow and deny; and PostToolUse's
+  `updatedToolOutput`. Plain text on exit code 0 is text for the model at SessionStart and
+  UserPromptSubmit, and joins the summary's instructions at PreCompact; elsewhere it is ignored.
+- **Text for the model** goes where Claude Code puts it: with the prompt (UserPromptSubmit), after
+  the call's result (the tool events), at the start of the next request (SessionStart), in the
+  subagent's first message (SubagentStart), and at the turn's end, which keeps the turn going (Stop
+  and SubagentStop). Each piece is headed `<Event> hook:` (at Stop and SubagentStop, `Stop hook
+  feedback:`), and cut at Claude Code's 10,000 characters, with `[cut: <n> more characters]`
+  (Claude Code saves the rest to a file instead). Several hooks' pieces all go in, in the settings
+  file's order. It is not shown in the conversation; Ctrl+O shows it under the hook's run, and
+  `/export` in a block of its own. It is saved in the session's file, so a resumed session has it
+  without running the hook again. Auto mode's judge never reads it.
+
+Event by event:
+
+- **PreToolUse** runs before Tachikoma's own checks. With several hooks, deny wins over ask, and
+  ask over allow.
+  - **deny,** or exit code 2: the call is not run, in any mode, `-p` included. The model gets the
+    reason, and you see `A PreToolUse hook refused <tool>: <reason>`.
+  - **ask:** the usual question, with `A hook asks: <reason>` above it. A yes stands in for the
+    mode's question and auto mode's judge, for that call. In `never` and in `-p`, where nobody can
+    answer, the call is refused, the model and you told why: `Not allowed in never mode: a
+    PreToolUse hook asked for this call to be approved (<reason>).`, and in `-p` `Not allowed: a
+    PreToolUse hook asked for this call to be approved (<reason>), and -p cannot ask.`
+  - **allow** skips the mode's question and auto mode's judge, never the dangerous-command check, a
+    protected path, a write outside the project, or `never` mode's refusals, which still ask or
+    refuse as they do without it. An ask's yes is the same.
+  - **defer** is no opinion: `A PreToolUse hook answered "defer", which Tachikoma takes as no
+    opinion.`
+  - **A rewrite** (`updatedInput`) replaces the call's whole input, and Tachikoma's checks look at
+    it as if the model had sent it: a hook that turns `npm install x` into `sfw npm install x` has
+    the dangerous-command check read the new command. The model's reply is kept as the model sent
+    it, while auto mode's judge, a shortening's list of recent files, and a resumed session take the
+    input that ran. When two hooks rewrite one call, the first in the settings file wins: `Two
+    PreToolUse hooks rewrote <tool>'s input; the first in the settings file was used, and <command>
+    was ignored.` A rewrite the tool cannot take refuses the call, the model and you told: `A
+    PreToolUse hook's rewrite of <tool> could not be used (<reason>): <command>`, the reason naming
+    the field. So does a Claude Code field that Tachikoma's tool lacks, unless it is set to what
+    Tachikoma does anyway: Edit's `replace_all: true`, Bash's `run_in_background: true` or any
+    `timeout`, Grep's `"-i": true`, and the like are refused. In live link, and in copy mode on
+    Windows, a rewritten whole path outside the project is refused, as the box cannot reach it; in
+    copy mode on macOS and Linux a whole path is taken as the box's own.
+- **PostToolUse and PostToolUseFailure:** a block's reason, exit code 2's error output and
+  `additionalContext` go to the model after the result. The call's outcome stays as it was.
+- **PostToolUse's `updatedToolOutput`** (read at PostToolUse only) replaces the result the model
+  reads when it has the tool's shape: text for Read, Edit, Glob, Grep and TodoWrite, Bash's `stdout`
+  and `stderr`, or Agent's `content`. Any other is not used, and Ctrl+O says so.
+- **UserPromptSubmit:** a block sends nothing and saves nothing: `A UserPromptSubmit hook blocked
+  the prompt: <reason>`. In the window, `Your words are back in the prompt box.` follows, with your
+  words, their pictures and any prompts queued behind them back in the box.
+- **Stop and SubagentStop:** a block, or `additionalContext`, keeps the turn going. The model reads
+  `Stop hook feedback:` and the reason on the next line (with no reason, `The hook gave no reason;
+  carry on with the task.`), and you see `A Stop hook kept the turn going: <reason>` (a subagent's,
+  `A SubagentStop hook kept t1 going: <reason>`). A Stop hook keeps a turn going at most 8 times in
+  a row, Claude Code's limit, and then the turn ends on the model's last reply: `Stop hooks kept the
+  turn going 8 times in a row; it ends here.` A reply with a tool call starts the count again.
+- **`"continue": false`** ends what is under way, with `A <Event> hook stopped the turn:
+  <stopReason>`:
+  - at PreToolUse, PostToolUse or PostToolUseFailure, the turn stops as Esc stops it. Every call of
+    the reply still gets one result, so the conversation stays one the providers take and a resume
+    can load: a call not started gets `Not run: a hook stopped the turn.`, and one still running,
+    such as a `delegate`, is stopped;
+  - at UserPromptSubmit, the prompt is not sent, as with a block, and the words come back;
+  - at Stop, the turn ends, with no block keeping it going;
+  - in a subagent's session, at PreToolUse, PostToolUse, PostToolUseFailure or SubagentStop, it
+    ends that subagent, and never the lead's turn. The subagent ends as stopped, and its result is
+    `t1 was stopped by a hook: <stopReason>`, after its answer when the stop came at SubagentStop. A
+    background one wakes the lead, as a failed one does, with `Background task t1 (<description>)
+    was stopped by a hook: <stopReason>`, or, after an answer, with `Background task t1
+    (<description>) finished:`, the answer, and `t1 was stopped by a hook: <stopReason>` on the
+    next line;
+  - at SessionStart, SessionEnd, SubagentStart, PreCompact and PostCompact it is ignored.
+- **PreCompact:** a block means no shortening: `The conversation could not be shortened (a
+  PreCompact hook blocked it: <reason>); it is unchanged.` Plain text on exit code 0 joins what the
+  summary should focus on, after `/compact`'s words. Once the summary is made, **PostCompact** runs,
+  then SessionStart with `compact`, whose text goes into the shortened conversation itself; if with
+  it the shortened conversation would not fit the model's window, it is left out: `SessionStart
+  hook text was left out: with it, the shortened conversation would not fit the model's window.` A
+  subagent's shortening runs PreCompact and PostCompact, but no SessionStart.
+- **SessionStart's** text waits for the next request, so the first prompt waits for its hooks to
+  finish, the working line showing meanwhile.
+- **SessionEnd's** hooks share 1.5 s, raised by a hook's own longer `timeout`, to 60 s at most,
+  `async` ones included; a hook still running then is killed, with its red line. At `/clear`,
+  `/branch` and `/resume`'s pick the working line shows meanwhile, Esc stops them, and the switch
+  goes ahead. As you leave the window, the keys do nothing while they run; in full screen and in
+  copy mode their lines are also written to the terminal once the window has closed, so none is
+  lost. In `-p` they run after the answer is printed, and after a Ctrl-C too. A signal runs none
+  ([below](#hooks-limits)).
+
+### Where hooks run
+
+- **On your machine, never in the sandbox's box,** with your full permissions: the box does not
+  hold them back. A hook starts in the project's real folder, in copy mode too, with the environment
+  shell commands get, so without the API keys, plus `CLAUDE_PROJECT_DIR`, the project folder, under
+  Claude Code's name.
+- **Several at once:** every hook that matches an event runs at the same time, and Tachikoma waits
+  for them all, then acts on their answers. A hook listed twice, alike in every field, runs once.
+  One still running at its time limit, or when you stop the turn, is killed with everything it
+  started; an `async` one goes on after a stop, and is stopped when Tachikoma exits.
+- **The shell:** a hook without `args` runs in one. On Windows it is Git Bash: the file that
+  `CLAUDE_CODE_GIT_BASH_PATH` names when it is called `bash.exe`, `sh.exe`, `bash` or `sh`, else
+  `bin\bash.exe` beside the folder of the first `git.exe` on your PATH (`Git\cmd\git.exe` gives
+  `Git\bin\bash.exe`), else the ones in Git for Windows' install folders; never a bare `bash` from
+  PATH, which on Windows can be WSL's. With no Git Bash, or with `"shell": "powershell"`, it is
+  Windows PowerShell. When no Git Bash is found and a hook that would run in it is in force (no
+  `args`, and `shell` not `"powershell"`), the launch says so: `Git Bash was not found, so hooks
+  run by a shell use Windows PowerShell; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe to change
+  that.` Elsewhere it is `/bin/sh -c`, or `bash -c` with `"shell": "bash"`; `"powershell"` counts
+  only on Windows.
+- **The settings file is out of the box's reach,** so a command the model runs in the sandbox
+  cannot add a hook. Without the sandbox, a shell command you allowed could edit the file and add
+  one, which applies at once, with the `Hooks changed` line below: no more than such a command can
+  already do on your machine.
+
+### What you see
+
+- **A hook that succeeds says nothing.**
+- **A failure is a red line,** kept in the error log for `/errors`. It starts `<Event> hook failed:
+  <command>`, then one of:
+  - `exited with code <n>`, `was ended by signal <SIGNAME>` or `was ended by an unknown signal`,
+    each followed by `: <first line of its error output>` when it printed any;
+  - `could not start (<reason>)`, `ran out of time after <n> s` or `printed JSON that could not be
+    read (<reason>)`;
+  - for an `async` hook, `asked to block, but an "async" hook cannot block` or `asked to stop, but
+    an "async" hook cannot stop`.
+
+  A hook's failure never fails a subagent or a `-p` run.
+- **The other lines are grey:** the blocks, stops and refusals above, and a hook's `systemMessage`
+  as `<Event> hook: <message>`. A subagent's lines start with its id, `t1: A PreToolUse hook
+  refused shell: <reason>`, except those that already name it.
+- **The working line** shows a hook's `statusMessage` while it runs.
+- **Ctrl+O** lists the last turn's hook runs after its tool calls, a line each, naming each hook
+  as `/hooks` does, such as `◆ PreToolUse hook check.sh for shell · exit 0 · 12 ms`, with what the
+  hook handed the model, or its rewrite as JSON, under it after `⎿`.
+- **`/hooks`** lists the hooks in force by event, each by its name: its `statusMessage`, else its
+  program and the script it runs. Its matcher follows, unless it matches everything, then its time
+  limit if it sets one and `async` if it is. Then come the ones left out, each with why; they are changed in the settings
+  file. Failure lines name a hook by its whole command.
+
+  ```
+  Hooks in force, from ~/.tachikoma/settings.json:
+  PreToolUse
+    check.sh · Bash
+    node protect-paths.js · Edit|Write
+  ```
+
+  On Windows the file is named `~\.tachikoma\settings.json`. With none: `No hooks in force. They go
+  in "hooks" in ~/.tachikoma/settings.json.`; turned off: `Hooks are off: "disableAllHooks" is true
+  in ~/.tachikoma/settings.json.`
+- **Edits apply while Tachikoma runs,** from the next event, a hook already running finishing as it
+  started: `Hooks changed: <n> hooks at <m> events.` (`Hooks changed: 1 hook at 1 event.` for
+  one), `Hooks changed: none in force.` or `Hooks changed: all off (disableAllHooks).` An edit
+  that breaks the entry keeps the hooks in force, and a red line says what is wrong, as for every
+  entry.
+- **In `-p` runs** hooks run too. A failure goes to stderr as `hook: <line>`, a grey line as `note:
+  <line>`; with `--json`, each grey line is a `hook-note` line, and each failure an `error` line. A
+  prompt a hook blocked, or a `"continue": false` in the lead's session, ends the run with exit
+  code 1. A call a PreToolUse hook refused does not end it: the run goes on, and exits with code 1
+  at the end.
+
+### Not yet
+
+- **Planned for release 8c,** with the MCP client: the `mcp_tool` hook kind, the Elicitation and
+  ElicitationResult events, and `mcp__...` tool names in matchers.
+- **Planned for release 8e:** PermissionRequest, PermissionDenied, StopFailure, Notification,
+  PreModelSwitch and PostModelSwitch, PostToolBatch, InstructionsLoaded, ConfigChange, FileChanged
+  and CwdChanged.
+- **Planned for release 10,** with skills: UserPromptExpansion. **For release 14,** with `tachi
+  setup`: Setup, and importing Claude Code's hooks, yours and its plugins', into Tachikoma's file.
+- **Not planned:** the `http`, `prompt` and `agent` hook kinds, `if`, `asyncRewake` and
+  `CLAUDE_ENV_FILE`; TaskCreated, TaskCompleted, TeammateIdle, WorktreeCreate, WorktreeRemove and
+  MessageDisplay, which belong to Claude Code features Tachikoma has not got; and hooks from a
+  project's files.
 
 ## Keys
 
@@ -1113,9 +1442,9 @@ subagent runs in the foreground, since there is no later turn to read its answer
   direction marks of right-to-left text stay as they are. When the answer goes to a pipe or a file
   and something was escaped, a note on stderr says so. `--raw` prints the answer exactly as the model
   wrote it, with a warning.
-- **`--json`** prints one line per event: `message`, `usage`, `error` and `lead`. A request that
-  Anthropic's fallback rescued gives one `usage` line for each model that declined (marked
-  `priceKnown`), then one for the reply.
+- **`--json`** prints one line per event: `message`, `usage`, `error`, `lead` and `hook-note`, each
+  hook's grey line (see [Hooks](#hooks)). A request that Anthropic's fallback rescued gives one
+  `usage` line for each model that declined (marked `priceKnown`), then one for the reply.
 - **Modes and the sandbox:** in `auto` the judge still decides, and its no is final; a dangerous
   command is refused. With the sandbox, the launch lines go to stderr, the image must already be
   built (`tachi sandbox build`), and copy mode keeps its copy, saying on stderr after the answer
@@ -1130,7 +1459,9 @@ subagent runs in the foreground, since there is no later turn to read its answer
 - **Exit codes:** 0 when the run finished; 1 when a request failed, the model refused or hit a limit,
   or an action that needed your answer was refused (a refusal by the judge, or in `never`, which
   nobody was asked about, leaves the code as it is); 130 when stopped with Ctrl-C; 143 on SIGTERM
-  and 129 on SIGHUP. If
+  and 129 on SIGHUP. A prompt a hook blocked, a `"continue": false` from one of the lead's hooks,
+  and a call a PreToolUse hook refused also give 1; a hook that fails does not (see
+  [Hooks](#hooks)). If
   whatever reads the output closes it early (`| head -1`), Tachikoma stops quietly instead of
   crashing; the exit code is then 0, or the run's own code if it had already finished.
 
@@ -1265,8 +1596,9 @@ Each is fixed in a later release, unless it says otherwise.
   Linux as mapping your user to root (user 0) in containers, so there the box may be unable to
   write the project or the copy.
 
-Release 7's and release 8a's limits follow, grouped by part. These are the rarer cases, left as
-limits rather than more code; none has a release set to change it, unless it says so.
+Release 7's, release 8a's and release 8b's limits follow, grouped by part. These are the rarer
+cases, left as limits rather than more code; none has a release set to change it, unless it says
+so.
 
 ### The dangerous-command check's limits
 
@@ -1582,6 +1914,81 @@ limits rather than more code; none has a release set to change it, unless it say
 - **`tachi -p` says nothing when it shortens,** and `-p --json` has no line for the shortening
   itself, only the summary request's `usage` line, marked `"summary":true`.
 
+### Hooks' limits
+
+- **Hooks run with your full permissions,** on your machine, outside the sandbox.
+- **The numbers are Claude Code's,** from its documentation: the time limits, the 10,000-character
+  cap and the limit of 8 Stop blocks. None was measured for Tachikoma.
+- **`transcript_path` is Tachikoma's own session file,** whose lines a script made to read Claude
+  Code's will not understand.
+- **`if` hooks are left out, `asyncRewake` runs as plain `async`, and `CLAUDE_ENV_FILE`,** where a
+  Claude Code session-start hook sets variables for later commands, is not given (none of these is
+  planned to change).
+- **In copy mode a hook cannot reach the copy:** it runs in your own folder, so a hook that changes
+  files, such as a formatter, does not change the ones the model works on.
+- **On Windows, a hook with `args` must start a real `.exe`** (Claude Code's limit too). Only `.exe`
+  files are looked for on PATH, so a bare `npx`, or any other `.cmd`, gets `could not start (not
+  found on PATH)`, and a `.cmd` or `.bat` given by its full path cannot be started without a shell
+  either. Leave out `args` to run one through the shell.
+- **A hook that leaves a program running in the background, holding its output,** is reported as
+  out of time, as its output never ends; redirect that program's output. On Windows that program
+  is not stopped then, if the hook itself has ended.
+- **A hook's output is read whole,** so a runaway hook's output is held in memory until its time
+  limit ends it.
+- **A subagent's hook runs are kept for its whole life,** each hook's output held in memory,
+  though Ctrl+O shows only the lead's.
+- **A turn stopped while hooks run** shows no line for a hook that had already failed, and Ctrl+O
+  lists none of that turn's runs.
+- **In live link on Windows,** a backslash in a path the model gives is a folder separator to a
+  hook, but part of a file's name in the box.
+- **Windows' name quirks in a rewrite,** a trailing dot or space, a `:stream`, an 8.3 short name,
+  reach the sandbox as typed, where they are names of their own.
+- **A failed subagent shows to PostToolUse as completed,** its text starting `<id> failed:`.
+- **With a PostToolUse or PostToolUseFailure hook for Write in force,** `write_file` reads the file
+  first to tell `create` from `update`, which in the sandbox is one more Docker call per write.
+- **A subagent's hooks are sent the lead's `effort`,** not its own model's.
+- **`duration_ms` counts the time a permission question was open,** and the time auto mode's judge
+  took, as Tachikoma's checks run inside the tool.
+- **A question still open when a hook stops the turn** stays on screen until answered, and the call
+  is not run whatever the answer. If auto mode was paused, a yes to that question leaves it paused,
+  as nothing was approved to run; Esc does not lift the pause either.
+- **Just after a live edit of the hooks,** while a call runs, Tachikoma can decide the call needs
+  its result's parts for a hook that is then gone, or the reverse, so a hook may be sent the result
+  as plain text in place of its shape. This is harmless.
+- **With several subagents running side by side,** the hooks' text for the model after their calls
+  comes in the order the calls finish.
+- **Esc while a UserPromptSubmit hook runs** leaves that prompt's pictures marked sent, and its
+  words are in the Up history as text only, so a picture in it must be added again.
+- **Esc while the first prompt waits for the SessionStart hooks** drops that prompt with no line
+  saying so; its words are in the Up history.
+- **A blocked prompt holding a picture numbered before a `/resume`** takes a new number when sent
+  again, leaving a gap in the numbers, which is harmless.
+- **A picture marker can outlive its picture:** if you press Ctrl+G a second time while the first
+  is still waiting for the terminal, and a picture fails to load meanwhile, a blocked prompt's words
+  given back to the box may keep a marker for the picture that is gone (very rare).
+- **The limit of 8 counts Stop blocks in a row,** so a model that calls a tool between blocks can be
+  kept going without end: Esc stops it in the window, Ctrl-C in `-p`.
+- **A turn shortened while Stop hooks keep it going** puts their feedback under "The latest round of
+  tool calls, and their results:" in the shortened conversation.
+- **A signal runs no SessionEnd,** as Tachikoma then ends at once: closing the terminal, a SIGTERM,
+  or a kill; nor does a crash that ends the window. `-p`'s first Ctrl-C stops the turn, and the run
+  ends as usual, SessionEnd included.
+- **When the shortening's line cannot be written** to the session's file, the conversation is
+  unchanged, though its PreCompact, PostCompact and SessionStart `compact` hooks have run.
+- **The working line shows only the lead's hooks' `statusMessage`,** not a subagent's hook's, nor
+  an `async` hook's.
+- **Ctrl+O reads each run on its own,** so when one hook rewrites a call and another says
+  `"continue": false` at the same event, it still shows the first one's rewrite, though the call was
+  not run with it.
+- **`Git Bash was not found...` shows only at launch,** not when a live edit adds a hook that a
+  shell runs; that hook runs in Windows PowerShell all the same.
+- **An `async` SessionStart hook that ends after the first prompt is sent** is not in Ctrl+O's
+  list for that turn.
+- **On Windows, `async` hooks still running at exit are stopped one after another,** each taking 2
+  to 4 seconds, so several can hold up the exit.
+- **Two hooks with no `statusMessage` that run the same program,** such as two `jq` filters, have
+  the same name on Ctrl+O; a `statusMessage` tells them apart.
+
 ## What comes next
 
 1. Core (done): the agent loop, local file and shell tools, Anthropic and OpenAI-format providers
@@ -1601,14 +2008,16 @@ limits rather than more code; none has a release set to change it, unless it say
    applied); auto mode, where a second model judges each action instead of asking you; a check on
    dangerous commands of every kind, and protected paths; `never` mode back, in copy mode only;
    Shift+Enter in Windows Terminal (done).
-8. In four parts:
+8. In five parts:
    - 8a: sessions saved to disk and reopened (`tachi -c`, `tachi -r`, `/resume`, `/clear`), names
      and copies, `/export`, and shortening the history (by itself, `/compact` and `/autocompact`)
-     (this release);
-   - 8b: hooks, in Claude Code's format, from your settings file only;
+     (done);
+   - 8b: hooks, in Claude Code's format, from your settings file only (this release);
    - 8c: MCP tools, and the sandbox's list of allowed sites;
    - 8d: long-term memory (MemPalace), with a save before each shortening; lessons learned from the
-     error log, recalled when the same error comes back.
+     error log, recalled when the same error comes back;
+   - 8e: more of Claude Code's hook events, the ones that have a place in Tachikoma already, such as
+     PermissionRequest, Notification and StopFailure (see [Hooks](#hooks)).
 9. Rewinding: going back to an earlier message, with the files put back as they were then.
 10. Skills: the loader, the bundled superpowers skills, and Tachikoma's own; Tachikoma offers to
     turn what it has learned into new skills, saved only on your yes.

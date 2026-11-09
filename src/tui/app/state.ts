@@ -59,6 +59,8 @@ export function useAppState({
   readPicture,
   copy,
   saved,
+  leftLines,
+  hooks,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -179,10 +181,16 @@ export function useAppState({
   const [pictures] = useState(() => picturesGiven ?? new Pictures());
   // The message waiting for its pictures' reads to end before it is sent, as the reads leave it (perform, queue.ts).
   const reading = useRef<Draft | null>(null);
+  // While the external editor has the prompt, the prompts a UserPromptSubmit hook gave back meanwhile, put in once it
+  // returns, as its saved file takes the prompt's place; null while it is not open (release 8b plan, Task 8's code review).
+  const editingBack = useRef<Draft[] | null>(null);
   const reads = useRef(0); // the pictures' reads running, for the hint row's "Reading picture..." (newPicture, pictureReads.ts)
   // What is running, since when, and for a turn the totals it started from; and the turn's tool calls,
   // kept after it until the next turn starts.
   const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
+  // The statusMessages of the lead's hooks running now, in the order they started: the last is the waiting line's label
+  // while any runs (release 8b design, "What the user sees").
+  const hookStatus = useRef<string[]>([]);
   const calls = useRef<Call[]>([]);
   // The last shortening's summary, which Ctrl+O shows in place of the last turn's calls until the next turn starts
   // (release 8a plan, Task 13).
@@ -290,6 +298,7 @@ export function useAppState({
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
     happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
+    editingBack, leftLines, hooks, hookStatus,
   } as const;
 }
 

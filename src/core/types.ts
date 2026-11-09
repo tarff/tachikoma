@@ -5,8 +5,9 @@ import type { Cache } from "../providers/pictures.js";
 
 export type Part =
   // `from: "tasks"`: text the session added for the lead, such as a background subagent's answer, not
-  // something the user typed.
-  | { type: "text"; text: string; from?: "tasks" }
+  // something the user typed. `from: "hooks"`: text a hook handed the model, headed `<Event> hook:` (release 8b plan,
+  // choice 6).
+  | { type: "text"; text: string; from?: "tasks" | "hooks" }
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; callId: string; output: string; isError: boolean }
   // A picture the user added, the original as read, kept in memory for the session (release 6 plan, choice 9); `id` is
@@ -111,6 +112,7 @@ export interface Provider {
   complete(req: CompletionRequest): Promise<Turn>;
   contextWindow?(signal?: AbortSignal): Promise<number | null>; // the signal stops the lookup (review fixes plan, fix 5)
   setEffort?(effort: Effort | undefined): void; // Anthropic's only, as --effort is
+  readonly effort?: Effort | undefined; // the effort in force, which hooks are sent (release 8b plan, Task 6); Anthropic's only
   // Whether `err`, as complete() threw it, says the request was too long for the model (release 8a plan, choice 20).
   tooLong?(err: unknown): boolean;
   // The provider's own count of the request's input tokens (release 8a plan, choice 19): Anthropic's only.

@@ -35,7 +35,7 @@ const FILES = 5;
 const FILE_TOKENS = 5000; // the approved "over 5,000 tokens" line repeats it, written out as approved
 const FILE_TOOLS = new Set(["read_file", "write_file", "edit_file"]);
 
-interface Shortening {
+export interface Shortening {
   lead: Provider;
   system: string;
   messages: Message[];
@@ -103,8 +103,9 @@ export async function shorten(s: Shortening, when: When): Promise<{ messages: Me
 
 // Whether the new history, sent with the conversation's system prompt and tools, fits the window. No way to tell
 // (null: no ratio yet and no exact count) counts as fitting, as a request with no advance check is sent and the "too
-// long" safety net covers it (design, "When to shorten").
-async function fit(s: Shortening, message: Message): Promise<boolean> {
+// long" safety net covers it (design, "When to shorten"). The session checks the new history again with a SessionStart
+// hook's text in it (release 8b plan, Task 11).
+export async function fit(s: Shortening, message: Message): Promise<boolean> {
   return (await fits(s.lead, { ...pictures(s), system: s.system, messages: [message], tools: s.tools, signal: s.signal }, s.sizes, s.window)) !== false;
 }
 

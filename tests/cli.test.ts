@@ -538,6 +538,235 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(sent[2]!.messages.at(-1)).toMatchObject({ role: "tool", content: "Error: The judge refused: the judge could not be reached: 400 the judge is down" }); // the provider marks a refused call so
   });
 
+  // Release 8b plan, Task 6 (the user's choice, 2026-11-09): a call a PreToolUse hook refused fails a -p run, as a refusal
+  // the gate's ask reports does. The lead is a stand-in served on the loopback address, as above: it asks to read a file in
+  // the project, which -p would read unasked, then answers. The hook is a Node script of the test's own, in exec form.
+  it.each([
+    ["a deny", { permissionDecision: "deny", permissionDecisionReason: "not the notes" }, "Error: not the notes"],
+    [
+      "an ask -p cannot put",
+      { permissionDecision: "ask", permissionDecisionReason: "Sure?" },
+      "Error: Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask.",
+    ],
+  ])("with -p, fails the run with exit code 1 when a PreToolUse hook refuses a call: %s", async (_name, decided, told) => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const script = path.join(top, "hook.cjs");
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...decided } }))});`);
+    const hooks = { PreToolUse: [{ matcher: "Read", hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const sent: { messages: { role: string; content?: unknown }[] }[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const request = JSON.parse(body) as (typeof sent)[number];
+        sent.push(request);
+        const first = !request.messages.some((m) => m.role === "tool");
+        const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "notes.txt" }) } };
+        const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+        const choice = { index: 0, finish_reason: first ? "tool_calls" : "stop", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
+    expect(r).toMatchObject({ code: 1, stdout: "done\n" });
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: told });
+  });
+
+  // Release 8b plan, Task 8 and choice 9: a prompt a UserPromptSubmit hook blocked, and any hook's continue: false, end a
+  // -p run with exit code 1 and the grey line as a note on its error output; with --json, as a hook-note line of its own
+  // (the user's choice, 2026-11-09). The lead is the stand-in above, which asks to read a file, then answers.
+  const blocked = "A UserPromptSubmit hook blocked the prompt: not today";
+  it.each([
+    ["a UserPromptSubmit hook blocks the prompt", "UserPromptSubmit", { decision: "block", reason: "not today" }, 0, blocked, false],
+    ["a PreToolUse hook stops the turn", "PreToolUse", { continue: false, stopReason: "enough" }, 1, "A PreToolUse hook stopped the turn: enough", false],
+    ["a UserPromptSubmit hook blocks the prompt, under --json", "UserPromptSubmit", { decision: "block", reason: "not today" }, 0, blocked, true],
+  ])("with -p, fails the run with exit code 1 when %s, with its line", async (_name, event, said, requests, line, json) => {
+    const flags = json ? ["--json"] : [];
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const script = path.join(top, "hook.cjs");
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify(said))});`);
+    const hooks = { [event]: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    let asked = 0;
+    const server = http.createServer((req, res) => {
+      req.resume().on("end", () => {
+        const call = { id: `c${++asked}`, type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "notes.txt" }) } };
+        const message = { role: "assistant", content: null, tool_calls: [call] };
+        const choice = { index: 0, finish_reason: "tool_calls", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", ...flags, env);
+    const out = json ? { stdout: `${JSON.stringify({ event: "hook-note", data: line })}\n`, stderr: "" } : { stdout: "", stderr: `note: ${line}\n` };
+    expect(r).toEqual({ code: 1, ...out });
+    expect(asked).toBe(requests);
+  });
+
+  // Release 8b plan, Task 9 (Task 8's code review): a Stop hook's continue: false comes after the model's final answer, so
+  // -p still prints that answer, then fails the run with its line, as any hook's continue: false does (choice 9).
+  const keptEight = `${"note: A Stop hook kept the turn going: again\n".repeat(8)}note: Stop hooks kept the turn going 8 times in a row; it ends here.\n`;
+  it.each([
+    [
+      "prints the answer a Stop hook's continue: false came after, and fails the run with its line",
+      { continue: false, stopReason: "enough" },
+      1,
+      1,
+      "note: A Stop hook stopped the turn: enough\n",
+    ],
+    // Task 9's code review: the turn ends at the limit as a normal end does, so the run does not fail.
+    ["prints the answer and exits 0 when Stop hooks keep the turn going 8 times in a row", { decision: "block", reason: "again" }, 0, 9, keptEight],
+  ])("with -p, %s", async (_name, said, code, requests, stderr) => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const script = path.join(top, "hook.cjs");
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify(said))});`);
+    const hooks = { Stop: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    let asked = 0;
+    const server = http.createServer((req, res) => {
+      req.resume().on("end", () => {
+        asked++;
+        const choice = { index: 0, finish_reason: "stop", message: { role: "assistant", content: "The notes are made up." } };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
+    expect(r).toEqual({ code, stdout: "The notes are made up.\n", stderr });
+    expect(asked).toBe(requests);
+  });
+
+  // Release 8b plan, Task 12 (second round, finding 1): a hook's failure never fails a -p run; its line goes to the error
+  // output as `hook: <line>`, and a grey line as `note: <line>`, escaped (Task 6's review). The lead is a stand-in served on
+  // the loopback address, as above: it asks to read a file in the project, then answers.
+  it("with -p, exits 0 when a PreToolUse hook fails and the run then answers, with the hook's lines escaped on its error output", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const broken = path.join(top, "broken.cjs");
+    writeFileSync(broken, 'process.stderr.write("broken\\n"); process.exitCode = 1;');
+    const said = path.join(top, "said.cjs");
+    writeFileSync(said, 'process.stdout.write(JSON.stringify({ systemMessage: "look\\u0007\\nnow" }));');
+    const run = (script: string) => ({ type: "command", command: process.execPath, args: [script] });
+    const hooks = { PreToolUse: [{ matcher: "Read", hooks: [run(broken), run(said)] }] };
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const first = !(JSON.parse(body) as { messages: { role: string }[] }).messages.some((m) => m.role === "tool");
+        const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "notes.txt" }) } };
+        const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+        const choice = { index: 0, finish_reason: first ? "tool_calls" : "stop", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
+    expect(r).toEqual({
+      code: 0,
+      stdout: "done\n",
+      stderr: `hook: PreToolUse hook failed: ${process.execPath} ${broken} exited with code 1: broken\nnote: PreToolUse hook: look\\u0007⏎now\n`,
+    });
+  });
+
+  // Second round, finding 3: a subagent's lines reach -p's error output through the lead's bus, each naming it. The
+  // stand-in answers the lead with a delegate call, then "done", and the subagent, which -p runs in the foreground, with
+  // text; the SubagentStop hook blocks once, saying a systemMessage, then stops the subagent.
+  it("with -p, writes a subagent's systemMessage, its SubagentStop block and its stop to the error output, each naming it", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const script = path.join(top, "hook.cjs");
+    const count = path.join(top, "count");
+    writeFileSync(
+      script,
+      `const fs = require("fs");
+process.stdin.resume().on("end", () => {
+  const n = (fs.existsSync(${JSON.stringify(count)}) ? Number(fs.readFileSync(${JSON.stringify(count)}, "utf8")) : 0) + 1;
+  fs.writeFileSync(${JSON.stringify(count)}, String(n));
+  process.stdout.write(JSON.stringify(n === 1 ? { decision: "block", reason: "again", systemMessage: "hi" } : { continue: false, stopReason: "enough" }));
+});`,
+    );
+    const hooks = { SubagentStop: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const { messages } = JSON.parse(body) as { messages: { role: string; content?: unknown }[] };
+        const subagent = messages.some((m) => m.role === "user" && JSON.stringify(m.content).includes("look around"));
+        const first = !messages.some((m) => m.role === "tool");
+        const call = { id: "c1", type: "function", function: { name: "delegate", arguments: JSON.stringify({ description: "look", task: "look around" }) } };
+        const message = subagent
+          ? { role: "assistant", content: "found it" }
+          : first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+        const choice = { index: 0, finish_reason: !subagent && first ? "tool_calls" : "stop", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "look", env);
+    expect(r).toEqual({
+      code: 0,
+      stdout: "done\n",
+      stderr: "note: t1: SubagentStop hook: hi\nnote: A SubagentStop hook kept t1 going: again\nnote: t1: A SubagentStop hook stopped the turn: enough\n",
+    });
+  });
+
   // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.
   it("with -p, runs on the settings file's lead", () => {
     const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });
@@ -779,6 +1008,122 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
     expect(sent.map((s) => (s as Sent & { model: string }).model)).toEqual(["other", "other"]);
   });
 
+  // Release 8b plan, Task 8's code review: a blocked prompt leaves the history as it was, so the saved session's last
+  // answer is not printed as this run's. The hook is a Node script of the test's own, in exec form.
+  it("prints no answer for a prompt a UserPromptSubmit hook blocked in a -c run, though the saved session ends with one", async () => {
+    const { url, sent } = await standIn();
+    const { proj, data, dir } = place();
+    write(dir, "s1", [{ ...start("s1"), print: true }, message("user", "first"), message("assistant", "the earlier answer")]);
+    const script = path.join(path.dirname(proj), "hook.cjs");
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify({ decision: "block", reason: "not today" }))});`);
+    const hooks = { UserPromptSubmit: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const r = await tachiLater("-p", "again", "-c", { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) });
+    expect(r.code).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toContain("note: A UserPromptSubmit hook blocked the prompt: not today\n");
+    expect(sent).toEqual([]);
+  });
+
+  // Release 8b plan, Task 10: SessionStart once the conversation is loaded, by how the launch opened it, its context in the
+  // first request; SessionEnd "other" at the run's end. The hook writes its input to a file in the case's folder.
+  it("with -p, fires SessionStart startup, resume or fork, its context in the first request, and SessionEnd other at the end", { timeout: 60_000 }, async () => {
+    const { url, sent } = await standIn();
+    const { proj, data } = place();
+    const out = path.join(path.dirname(proj), "inputs.jsonl");
+    const script = path.join(path.dirname(proj), "hook.cjs");
+    writeFileSync(
+      script,
+      `const fs = require("fs");
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.appendFileSync(${JSON.stringify(out)}, text + "\\n");
+  const input = JSON.parse(text);
+  if (input.hook_event_name === "SessionStart")
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "started by " + input.source } }));
+});`,
+    );
+    const hook = { hooks: [{ type: "command", command: process.execPath, args: [script] }] };
+    const env = { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks: { SessionStart: [hook], SessionEnd: [hook] } })) };
+    for (const args of [["-p", "hi"], ["-p", "again", "-c"], ["-p", "more", "-c", "--fork-session"]]) {
+      expect(await tachiLater(...args, env)).toMatchObject({ code: 0, stdout: "done\n" });
+    }
+    const inputs = readFileSync(out, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(inputs.map((i) => [i.hook_event_name, i.source ?? i.reason])).toEqual([
+      ["SessionStart", "startup"],
+      ["SessionEnd", "other"],
+      ["SessionStart", "resume"],
+      ["SessionEnd", "other"],
+      ["SessionStart", "fork"],
+      ["SessionEnd", "other"],
+    ]);
+    expect(inputs.filter((i) => i.hook_event_name === "SessionStart").map((i) => i.model)).toEqual(["openai:lead", "openai:lead", "openai:lead"]);
+    // Each run's request holds its own SessionStart's text, before its prompt; a saved one's is sent again on a resume.
+    expect(sent.map((s) => (s.messages.at(-1)!.content as string))).toEqual([
+      "SessionStart hook:\nstarted by startup\nhi",
+      "SessionStart hook:\nstarted by resume\nagain",
+      "SessionStart hook:\nstarted by fork\nmore",
+    ]);
+  });
+
+  // Task 10's code review: the run's session ends however its turn ended. The UserPromptSubmit hook blocks or stops; the
+  // SessionEnd hook writes its input to a file in the case's folder.
+  it.each([
+    ["a blocked prompt", { decision: "block", reason: "not today" }],
+    ["a hook's stop", { continue: false, stopReason: "enough" }],
+  ])("with -p, fires SessionEnd other after %s", async (_name, said) => {
+    const { url, sent } = await standIn();
+    const { proj, data } = place();
+    const out = path.join(path.dirname(proj), "inputs.jsonl");
+    const prompt = path.join(path.dirname(proj), "prompt.cjs");
+    writeFileSync(prompt, `process.stdout.write(${JSON.stringify(JSON.stringify(said))});`);
+    const end = path.join(path.dirname(proj), "end.cjs");
+    writeFileSync(end, `let t = ""; process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => require("fs").appendFileSync(${JSON.stringify(out)}, t + "\\n"));`);
+    const run = (script: string) => [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }];
+    const hooks = { UserPromptSubmit: run(prompt), SessionEnd: run(end) };
+    const r = await tachiLater("-p", "hi", { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) });
+    expect(r.code).toBe(1);
+    expect(sent).toEqual([]);
+    expect(readFileSync(out, "utf8").trim().split("\n").map((l) => JSON.parse(l).reason)).toEqual(["other"]);
+  });
+
+  // Claude Code's hooks reference, "Common fields": SessionEnd's hooks share 1.5 s (release 8b plan, Task 10).
+  it("with -p, kills a SessionEnd hook still running at 1.5 s, says so, and the run ends as it would", async () => {
+    const { url } = await standIn();
+    const { proj, data } = place();
+    const script = path.join(path.dirname(proj), "hook.cjs");
+    writeFileSync(script, "process.stdin.resume(); setInterval(() => {}, 1000);");
+    const hooks = { SessionEnd: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const r = await tachiLater("-p", "hi", { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) });
+    expect(r).toEqual({ code: 0, stdout: "done\n", stderr: `hook: SessionEnd hook failed: ${process.execPath} ${script} ran out of time after 1.5 s\n` });
+  });
+
+  // The final review (the user's choice, 2026-11-10): an async hook still running once the run's work is done is
+  // killed, so the run ends then, not at the hook's 600 s limit, saying nothing of it. The hook writes its process id
+  // to a file in the test's folder, then never ends; up to 10 s for Windows to end it, as a tree kill there (taskkill
+  // /T) takes 2-4 s.
+  it("with -p, kills an async hook still running once the run is done, and ends", async () => {
+    const { url } = await standIn();
+    const { proj, data } = place();
+    const pidFile = path.join(path.dirname(proj), "pid");
+    const script = path.join(path.dirname(proj), "hook.cjs");
+    writeFileSync(script, `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`);
+    const hooks = { SessionStart: [{ hooks: [{ type: "command", command: process.execPath, args: [script], async: true }] }] };
+    const r = await tachiLater("-p", "hi", { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) });
+    expect(r).toEqual({ code: 0, stdout: "done\n", stderr: "" });
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    onTestFinished(() => void (alive() && process.kill(pid)));
+    for (let i = 0; alive() && i < 500; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(alive()).toBe(false);
+  });
+
   // Task 6's quality review: a window cannot start without a terminal, so it is refused before a held session is copied.
   // The lock is this test process's own, as above.
   it("refuses -c without a terminal before copying a session another window has open", () => {
@@ -826,6 +1171,13 @@ describe("tachi's saved sessions", { timeout: 15_000 }, () => {
 
   it("lists -c, -r, -n and --fork-session in the help", () => {
     expect(tachi("--help").stdout).toContain(HELP_SESSIONS);
+  });
+
+  // Release 8b plan, Task 12: /hooks among the commands, in the user's words (2026-11-10), after the /tasks part.
+  it("lists /hooks in the help, after /tasks", () => {
+    expect(tachi("--help").stdout).toContain(
+      "subagents (/tasks t1 shows one, /tasks stop stops them), /hooks lists the hooks in force,\n/errors summarises the error log,",
+    );
   });
 });
 

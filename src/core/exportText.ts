@@ -23,7 +23,10 @@ export function exportText(messages: Message[], lead: string): string {
     for (const p of m.parts) {
       if (p.type === "tool_result") continue;
       const note = p.type === "text" && p.from === "tasks";
-      const heading = note ? "Subagents:" : m.role === "user" ? "You:" : `Tachikoma (${m.lead ?? lead}):`;
+      // A hook's text for the model is shown as those notes are, under its own first line, `<Event> hook:` (release 8b
+      // plan, Task 8).
+      const hook = p.type === "text" && p.from === "hooks" ? /^(.*)\n([^]*)$/.exec(p.text) : null;
+      const heading = hook ? hook[1]! : note ? "Subagents:" : m.role === "user" ? "You:" : `Tachikoma (${m.lead ?? lead}):`;
       if (block?.heading !== heading) {
         blocks.push((block = { heading, lines: [] }));
         picture = false;
@@ -31,7 +34,7 @@ export function exportText(messages: Message[], lead: string): string {
       // The user's text and pictures are one prompt, as the scrollback shows it: two pictures next to each other get a
       // space between, as the blanks between them were left out of the message (describe.ts).
       if (p.type === "text" || p.type === "image") {
-        const text = p.type === "image" ? `${picture ? " " : ""}${marker(p.id)}` : p.text;
+        const text = p.type === "image" ? `${picture ? " " : ""}${marker(p.id)}` : hook ? hook[2]! : p.text;
         picture = p.type === "image";
         if (heading === "You:" && block.lines.length) block.lines[block.lines.length - 1] += text;
         else block.lines.push(text);

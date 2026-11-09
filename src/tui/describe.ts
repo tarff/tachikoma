@@ -1,6 +1,11 @@
 import { callText } from "../core/exportText.js";
 import { visible } from "../core/permissions.js";
+import { FEEDBACK } from "../core/session.js";
 import type { Message } from "../core/types.js";
+import { combine, hookName } from "../hooks/answer.js";
+import type { Event } from "../hooks/config.js";
+import type { Run } from "../hooks/hooks.js";
+import { outputFrom, tachikomaName } from "../hooks/tools.js";
 import { marker } from "./pictures.js";
 
 export interface Line {
@@ -40,6 +45,7 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
   let picture = false; // the last part put in it was a picture
   for (const p of m.parts) {
     if (p.type === "text" && p.from === "tasks") continue; // shown when it arrived, as "t3 finished"
+    if (p.type === "text" && p.from === "hooks") continue; // for the model, not the conversation (release 8b design, "What a hook's answer does")
     // A picture is its marker in its place, in the line's colour (release 6 plan, choice 22). Two next to each other
     // get a space between, as the blanks between them were left out of the message (pictures.ts, messageParts).
     if (p.type === "text" || p.type === "image") {
@@ -67,12 +73,45 @@ export const conversationLines = (messages: Message[]): Line[] => messages.flatM
 
 // Ctrl+O: every tool call of the latest turn, from its prompt on, with its full input and result,
 // under a heading. A call of a turn still running may have no result yet. A turn starts with a user
-// message that is not tool results: a prompt, or background answers alone.
-export function lastTurn(messages: Message[]): Line[] {
-  const start = messages.findLastIndex((m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result"));
-  if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }];
+// message that is not tool results: a prompt, or background answers alone; never a Stop hook's feedback, which keeps
+// the turn going (release 8b plan, Task 9's code review).
+// `runs`: the turn's hook runs (hooks.ts, Hooks.runs), listed after the calls (release 8b plan, choice 24); before the
+// first turn, SessionStart's, after the line saying there is none (the user's choice, 2026-11-10; final review).
+export function lastTurn(messages: Message[], runs: readonly Run[] = []): Line[] {
+  const feedback = (m: Message) => m.parts[0]?.type === "text" && m.parts[0].from === "hooks" && m.parts[0].text.startsWith(`${FEEDBACK}\n`);
+  const start = messages.findLastIndex((m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result") && !feedback(m));
+  if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }, ...runs.map(runLine)];
   const calls = callLines(messages.slice(start));
-  return [{ text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "gray" }, ...calls];
+  return [{ text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "gray" }, ...calls, ...runs.map(runLine)];
+}
+
+// The events a run of which names its tool on Ctrl+O, as each fires for one call.
+const TOOL_EVENTS: readonly Event[] = ["PreToolUse", "PostToolUse", "PostToolUseFailure"];
+
+// One hook run, in the approved words (release 8b plan, "Lines this plan adds", Ctrl+O): its event and the hook's name as
+// /hooks gives it (answer.ts, hookName; the user's choice, 2026-11-10, terminal checklist), escaped as the question
+// escapes a command, how it ended and its time; under it after ⎿ each text it handed the model (a Stop or
+// SubagentStop block's reason among them, which the model reads as feedback), its rewrite as JSON, or that its
+// updatedToolOutput was not used. A hook a signal ended names it, or says none is known, and a tool event's run names its
+// tool as the window does (the user's words, 2026-11-10; choice 10).
+function runLine(r: Run): Line {
+  const { ran } = r;
+  const signal = ran.signal ? `ended by signal ${ran.signal}` : "ended by an unknown signal";
+  const end = ran.failed === "time" ? "out of time" : ran.failed === "start" ? "could not start" : ran.code === null ? signal : `exit ${ran.code}`;
+  const c = combine(r.event, [r]);
+  const tool = tachikomaName(r.match ?? "");
+  const forTool = TOOL_EVENTS.includes(r.event) && r.match !== undefined ? ` for ${visible(tool)}` : "";
+  const under = [
+    ...(c.block && (r.event === "Stop" || r.event === "SubagentStop") ? [c.block] : []),
+    ...c.context.map((x) => x.text),
+    // As combine reads them, which drops both beside a continue: false, as a stop ends the turn (Task 12's code review).
+    ...(c.rewrite ? [JSON.stringify(c.rewrite.input, null, 2)] : []),
+    ...("output" in c && outputFrom(tool, c.output) === null
+      ? [`its updatedToolOutput was not used: it does not match ${visible(tool)}'s result`]
+      : []),
+  ];
+  const head = [`◆ ${r.event} hook ${visible(hookName(r.hook))}${forTool}`, end, `${ran.ms} ms`].join(" · ");
+  return { text: [head, ...under.map((u) => `  ⎿ ${u}`)].join("\n"), color: "gray" };
 }
 
 // Each tool call in `messages`, with its full input and result, grey: for Ctrl+O and `/tasks t3`.

@@ -1,0 +1,123 @@
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { errorText } from "../core/types.js";
+import { commandEnv, gitBash, onPath } from "../exec/env.js";
+import { collect, killTree, running, shellFor } from "../exec/local.js";
+import type { Hook } from "./config.js";
+
+// What one hook did: its exit code and what it printed, its stdout whole and its stderr cut as a command's is. `failed`
+// says it never started, or was killed at its time limit; Task 3 (answer.ts) reads the rest. `limit` is the limit in
+// force, kept with "time", and `signal` what ended a hook that left no exit code, both for the failure's line.
+export interface Ran {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  ms: number;
+  failed?: "start" | "time";
+  startError?: string;
+  limit?: number;
+  signal?: string;
+}
+
+// The exit code, or the signal when there is none (the user's choice at Task 3: a failure names its signal).
+export function closeOf(code: number | null, signal: NodeJS.Signals | null): Pick<Ran, "code" | "signal"> {
+  return code === null && signal ? { code, signal } : { code };
+}
+
+// How a hook is started, as Claude Code starts it (release 8b design, "Running a hook"). With `args`, the command
+// itself, without a shell, on every system; on Windows a .cmd or .bat cannot be started so (a known limit). Otherwise on
+// Windows Git Bash, unless the hook asks for PowerShell or there is none (release 8b plan, choices 1 and 2), and then
+// Windows PowerShell as the shell tool starts it; elsewhere sh, or bash when the hook asks for it.
+export function shellOf(hook: Hook): { file: string; args: string[] } | { exec: true } {
+  if (hook.args) return { exec: true };
+  if (process.platform === "win32") {
+    const bash = hook.shell === "powershell" ? null : gitBash();
+    if (bash) return { file: bash, args: ["-c", hook.command] };
+    // Windows PowerShell exits 1 for any program that failed, so a hook's exit code 2, a block, would be lost (PR #14's
+    // review, seen 2026-11-10). When the command failed, it exits with the program's code instead, or 1 when a PowerShell
+    // command failed; on a line of its own, so a note at the end of the command cannot hide it.
+    const keep = "\nif (-not $?) { exit $(if ($LASTEXITCODE) { $LASTEXITCODE } else { 1 }) }";
+    const [file, ...args] = shellFor("win32").argv(hook.command + keep);
+    return { file: file!, args };
+  }
+  return { file: hook.shell === "bash" ? "bash" : "/bin/sh", args: ["-c", hook.command] };
+}
+
+// An exec-form command, or a shell, without a folder in it, by its full path from the hook's PATH (onPath), or undefined
+// when it is not there. Started by its bare name, Windows would look in the project folder, where the hook runs, first
+// (the user's choice, 2026-11-09; review fixes plan, fix 1), and elsewhere a PATH entry that is empty or "." names that
+// folder too, which matters for the shell `bash` (Task 2's review). As onPath does, only `<name>.exe` is looked for on
+// Windows, so `node` and `node.exe` are the same. onPath serves every system, as it does for git and docker; a command
+// with a folder in it is used as written.
+export function program(command: string, env: NodeJS.ProcessEnv): string | undefined {
+  if (process.platform !== "win32") return command.includes("/") ? command : onPath(command, env);
+  return /[\\/]|^[a-z]:/i.test(command) ? command : onPath(command.replace(/\.exe$/i, ""), env);
+}
+
+// Runs one hook on the user's machine, never in the box, in `cwd`, the real project folder, which CLAUDE_PROJECT_DIR
+// names under Claude Code's name, with the commands' environment (commandEnv), so it never sees the API keys (release
+// 8b plan, choice 3). Its input is written whole to its stdin, which is then closed (choice 4). At `limit` seconds it is
+// killed with all it started; a stop kills it the same way and rejects with Cancelled, as a command does (local.ts).
+export function runHook(hook: Hook, input: object, opts: { cwd: string; env: NodeJS.ProcessEnv; limit: number; signal?: AbortSignal }): Promise<Ran> {
+  if (opts.signal?.aborted) return Promise.reject(new Error("Cancelled"));
+  const start = Date.now();
+  const ms = () => Date.now() - start;
+  const env = { ...commandEnv(opts.env), CLAUDE_PROJECT_DIR: opts.cwd };
+  const how = shellOf(hook);
+  const [command, args] = "exec" in how ? [hook.command, hook.args!] : [how.file, how.args];
+  const file = program(command, env);
+  if (file === undefined) return Promise.resolve({ code: null, stdout: "", stderr: "", ms: ms(), failed: "start", startError: "not found on PATH" });
+  return new Promise((resolve, reject) => {
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(file, args, { cwd: opts.cwd, env, windowsHide: true, detached: process.platform !== "win32", stdio: "pipe" });
+    } catch (err) {
+      // spawn throws at once for what it cannot take at all: a null byte in the command or its args, or on Windows a
+      // .cmd or .bat given by its full path, which Node will not start without a shell (EINVAL, seen in its test).
+      resolve({ code: null, stdout: "", stderr: "", ms: ms(), failed: "start", startError: errorText(err) });
+      return;
+    }
+    running.add(child);
+    // Its stdout is read whole, so a long JSON answer is never cut into one that cannot be read; answer.ts cuts each text
+    // it hands on (the user's choice, 2026-11-09). A known limit: a runaway hook's output is held in memory until its
+    // time limit. Its error output is cut as a command's is.
+    const stdout = collect(child.stdout, Infinity);
+    const stderr = collect(child.stderr);
+    const ran = (more: Partial<Ran>): Ran => ({ code: null, stdout: stdout(), stderr: stderr(), ms: ms(), ...more });
+    const done = () => {
+      clearTimeout(timer);
+      running.delete(child);
+      opts.signal?.removeEventListener("abort", onAbort);
+      child.off("close", onClose);
+    };
+    // Settles at once, as a command does (local.ts): "close" waits for every holder of the pipes, and a program the hook
+    // started may hold them for good.
+    const kill = () => {
+      killTree(child);
+      done();
+      child.stdout.destroy();
+      child.stderr.destroy();
+    };
+    const timer = setTimeout(() => {
+      kill();
+      resolve(ran({ failed: "time", limit: opts.limit }));
+    }, opts.limit * 1000);
+    const onAbort = () => {
+      kill();
+      reject(new Error("Cancelled"));
+    };
+    const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+      done();
+      resolve(ran(closeOf(code, signal)));
+    };
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    child.on("error", (err) => {
+      done();
+      resolve(ran({ failed: "start", startError: errorText(err) }));
+    });
+    child.on("close", onClose);
+    // A hook may exit without reading its input, which makes this write fail (EPIPE, or EOF on Windows, seen in its
+    // test); that is the hook's choice, and unheard the error would end Tachikoma.
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify(input));
+  });
+}

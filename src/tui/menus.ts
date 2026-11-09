@@ -36,6 +36,7 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
   { label: "/compact [words]", run: "/compact", note: SHORTEN_WORDS.compact },
   { label: "/autocompact <tokens>", run: "/autocompact", note: SHORTEN_WORDS.autocompact },
   { label: "/tasks", run: "/tasks", note: "List the subagents; /tasks t1 shows one, /tasks stop stops them" },
+  { label: "/hooks", run: "/hooks", note: "List the hooks in force" }, // the user's words, 2026-11-10 (release 8b plan, Task 12)
   { label: "/errors", run: "/errors", note: "Summarise the error log" },
   { label: "/screen", run: "/screen", note: "Switch between full screen and classic" },
   { label: "/settings", run: "/settings", note: "Open the settings file in your editor" },

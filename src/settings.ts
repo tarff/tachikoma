@@ -5,12 +5,19 @@ import { type Network, NETWORKS, oneOf, SANDBOXES, type Sandbox, speedValue, sta
 import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode, OFFERED } from "./core/permissions.js";
 import { errorText } from "./core/types.js";
+import { type Hook, type HooksConfig, readHooks } from "./hooks/config.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { type Kind, KINDS, type UserRules } from "./safety/rules.js";
 import type { Segment } from "./tui/StatusLine.js";
 
 // The names live beside the data folder's, so the file tools can refuse them without loading this module.
 export { SETTINGS, settingsDir };
+
+// What the file gives the Hooks object (release 8b plan, Tasks 4 and 12), the launch and a live edit alike: the hooks,
+// whether disableAllHooks turns them off, and /hooks's left-out rows, as readSettings gives them (Loaded, hooksLeftOut).
+export function hooksOf(settings: Settings, leftOut: string[] = []): HooksConfig {
+  return { hooks: settings.hooks ?? [], off: settings.disableAllHooks === true, leftOut };
+}
 
 // The file's place as a message shows it: ~ for the home folder, with the system's own separator.
 export function shownFile(platform: NodeJS.Platform = process.platform): string {
@@ -43,6 +50,10 @@ export interface Settings {
   network?: Network;
   judge?: string;
   sandboxLimits?: SandboxLimits;
+  // The user's hooks, in Claude Code's shape (release 8b design, "The settings entry"); disableAllHooks turns them off,
+  // and they are still read, so /hooks can say what is off (release 8b plan, Task 1). Both are LIVE.
+  hooks?: Hook[];
+  disableAllHooks?: boolean;
 }
 
 // The box's limits as the user wrote them (release 7 plan, Task 12): memory in Docker's own units, g or m. Each one
@@ -54,7 +65,9 @@ export interface SandboxLimits {
   pids?: number;
 }
 
-export type Loaded = { settings: Settings; warnings: string[] } | { problem: string };
+// `hooksLeftOut`, with a "hooks" entry: /hooks's left-out rows, one for each of its warnings, in their order, each hook in
+// them by its name (hooks/config.ts, readHooks).
+export type Loaded = { settings: Settings; warnings: string[]; hooksLeftOut?: string[] } | { problem: string };
 
 // Each value gets its flag's check and words, after the file's and the entry's names (the plan's choice 8); a value of the
 // wrong JSON type is a problem too. An unknown name is a warning and the rest applies. $schema, which editors use to check
@@ -63,6 +76,7 @@ export type Loaded = { settings: Settings; warnings: string[] } | { problem: str
 export function readSettings(text: string): Loaded {
   const settings: Settings = {};
   const warnings: string[] = [];
+  let hooksLeftOut: string[] | undefined;
   try {
     for (const [name, value] of Object.entries(entriesOf(text))) {
       const entry = `${SETTINGS}: ${JSON.stringify(name)}`;
@@ -89,12 +103,16 @@ export function readSettings(text: string): Loaded {
       } else if (name === "vimInsertModeRemaps") settings.vimInsertModeRemaps = remaps(entry, value, warnings);
       else if (name === "dangerousCommands") settings.dangerousCommands = userRules(entry, value, warnings);
       else if (name === "sandboxLimits") settings.sandboxLimits = sandboxLimits(entry, value, warnings);
-      else warnings.push(`${entry} is not a setting; it was left out`);
+      else if (name === "hooks") settings.hooks = readHooks(entry, value, warnings, (hooksLeftOut = []));
+      else if (name === "disableAllHooks") {
+        if (typeof value !== "boolean") throw wrongType(entry, "true or false, without quotes", value);
+        settings.disableAllHooks = value;
+      } else warnings.push(`${entry} is not a setting; it was left out`);
     }
   } catch (err) {
     return { problem: errorText(err) };
   }
-  return { settings, warnings };
+  return { settings, warnings, ...(hooksLeftOut && { hooksLeftOut }) };
 }
 
 // A missing file, or a missing folder, is {}: every default.

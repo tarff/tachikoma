@@ -62,6 +62,14 @@ export function visible(text: string, opts: { tabs?: boolean } = {}): string {
 // Thrown when the user says no. The model is told; it is not logged as an error.
 export class Declined extends Error {}
 
+// Thrown for a yes given after the turn was stopped, or a stop while the judge decides, so the session tells the model
+// the call was not run, not stopped while it ran (release 8b plan, Task 7's re-check).
+export class StoppedFirst extends Error {
+  constructor() {
+    super("The turn was stopped before the call ran.");
+  }
+}
+
 // Who asks a question, when it is not the lead's turn: a subagent's name, its stop signal, and how to
 // stop it (release 4 design, "One line of questions, each with its owner").
 export interface Owner {
@@ -96,16 +104,24 @@ const dangerRefusal = (found: Danger[]) => `Not allowed: this command matches th
 const protectedRefusal = (where: string, part: string) =>
   `Not allowed: ${visible(where)} is a protected path (${visible(part)}), which other programs run or read as settings.`;
 const outsideRefusal = (summary: string) => `Not allowed in never mode: ${visible(summary)}, which is outside the project.`;
+// A PreToolUse hook's ask where nobody can answer it (release 8b plan, "Lines this plan adds"), and its question's note.
+const hookReason = (reason: string) => (reason ? ` (${visible(reason)})` : "");
+const hookNeverRefusal = (reason: string) => `Not allowed in never mode: a PreToolUse hook asked for this call to be approved${hookReason(reason)}.`;
+const hookHeadlessRefusal = (reason: string) => `Not allowed: a PreToolUse hook asked for this call to be approved${hookReason(reason)}, and -p cannot ask.`;
+const hookNote = (reason: string) => (reason ? `A hook asks: ${visible(reason)}` : "A hook asks.");
 
 // `root`: the project's, for the dangerous-command check; `headless`: -p mode, where a danger is refused (Task 8);
 // `judge`: auto mode's (Task 10), which cli.tsx always gives. `home` and `shell` are the box's in the sandbox, its
-// HOME=/tmp and bash (choices 3 and 77; Task 16), and the host's otherwise.
+// HOME=/tmp and bash (choices 3 and 77; Task 16), and the host's otherwise. `hookRefused`: told of each call a PreToolUse
+// hook refused, so -p's exit code counts it as it counts a refusal its ask reports (release 8b plan, Task 6; the user's
+// choice, 2026-11-09).
 export interface GateOptions {
   root?: string;
   home?: string;
   shell?: Shell;
   headless?: boolean;
   judge?: Judge;
+  hookRefused?: () => void;
 }
 
 export class PermissionGate {
@@ -123,6 +139,8 @@ export class PermissionGate {
   #refused = 0;
   #pause: { count: number } | null = null;
   #version = 0;
+  // Set on a gate made for one call a PreToolUse hook allowed, or whose question the user said yes to (withHook).
+  #hook: { allow: true } | { asked: true } | undefined;
   // Where the check reads a command (release 7 plan, Task 8): the project's root (cli.tsx gives its own, the folder it
   // started in), the home folder, and the shell the executor really runs, PowerShell on Windows and /bin/sh elsewhere
   // (exec/local.ts, shellFor; split.ts, shellOf); in live link the box's /work, /tmp and bash (GateOptions, Task 16).
@@ -175,6 +193,41 @@ export class PermissionGate {
     return gate;
   }
 
+  // A gate for one call a PreToolUse hook allowed, or whose question the user said yes to (release 8b plan, Task 6 and
+  // choice 15): the mode's question and the judge are skipped, except for a write outside the project (require); the rest
+  // is this gate's, its questions, mode, rules, protection and auto mode's counts. The two are alike here: a yes to the
+  // hook's question was about the call, so it stands in for the mode's question, as an allow does, and for nothing else.
+  withHook(h: { allow: true } | { asked: true }): PermissionGate {
+    const gate = new PermissionGate(this.#mode, this.ask, this.refusal, this.options);
+    gate.#parent = this.#parent ?? this;
+    if (this.#own) gate.#own = this.#own;
+    gate.#hook = h;
+    return gate;
+  }
+
+  // Where a PreToolUse hook's ask cannot be put, in never and headless, where nobody can answer it, the words of the
+  // call's refusal (release 8b plan, choice 15; design, "Tool hooks"), which the session says and tells the model; else
+  // undefined, and the question is put (hookAsks).
+  hookCannotAsk(reason: string): string | undefined {
+    if (this.mode === "never") return hookNeverRefusal(reason);
+    if (this.options.headless) return hookHeadlessRefusal(reason);
+    return undefined;
+  }
+
+  // A PreToolUse hook's ask, where it can be put (hookCannotAsk): one question, the call named by `summary`, with the
+  // hook's reason as its grey note; a no declines as any no does. A yes returns, and the call runs with
+  // withHook({ asked: true }).
+  async hookAsks(summary: string, reason: string): Promise<void> {
+    const shown = visible(summary);
+    if (!(await this.ask(shown, undefined, undefined, undefined, [], hookNote(reason)))) throw new Declined(`${this.refusal}: ${shown}`);
+  }
+
+  // A call a PreToolUse hook refused (a deny, a block, a rewrite that cannot be used, or an ask nobody can answer), for
+  // -p's exit code (GateOptions).
+  hookRefused(): void {
+    this.options.hookRefused?.();
+  }
+
   // Release 7 plan, Task 8: a protected write asks in ask and project too (in release 6, project wrote one unasked), and
   // a dangerous command asks with its red lines; in `never` both are refused, as is a danger headless. Task 10: in auto, a
   // read and a write in the project that is not protected pass, a danger asks, and the judge decides the rest, under
@@ -191,7 +244,11 @@ export class PermissionGate {
       if (found.length) throw new Declined(dangerRefusal(found));
       return;
     }
-    if (part === undefined && !found.length && !needsApproval(mode, action)) return;
+    // A hook's allow, or a yes to its question, skips only the mode's ordinary question and the judge, and never a write
+    // outside the project: that is asked about in ask and project, and goes to the judge in auto, as without the hook, as a
+    // protected part and a danger are (the user's choices, 2026-11-09).
+    const ordinary = this.#hook ? action.kind === "write" && action.outside : needsApproval(mode, action);
+    if (part === undefined && !found.length && !ordinary) return;
     const top = this.#parent ?? this;
     // Headless never pauses: every refusal is final (Task 10).
     const pause = mode === "auto" && !found.length && !this.options.headless ? top.#pause : null;
@@ -204,6 +261,9 @@ export class PermissionGate {
     // refused whatever it answers.
     if (this.options.headless && found.length) throw new Declined(dangerRefusal(found));
     if (!yes) throw new Declined(`${this.refusal}: ${shown}`);
+    // A yes given after the turn was stopped, by a hook's continue: false while the question was open, runs nothing (release
+    // 8b plan, Task 7's code review). A user's stop closes the question as a no, so it is declined above, as before.
+    if (signal?.aborted) throw new StoppedFirst();
     // Approving one action resumes auto mode and starts the row again; the session's total keeps counting (choice 8). A
     // question still waiting from a pause that has since been lifted and come again lifts nothing.
     if (pause !== null && top.#pause === pause) {
@@ -219,8 +279,11 @@ export class PermissionGate {
   async #judged(action: Action, signal: AbortSignal): Promise<void> {
     const top = this.#parent ?? this;
     const version = top.#version;
-    const verdict = await this.options.judge!(action, signal, this.#own);
-    signal.throwIfAborted();
+    // A stop while the judge decides, its request cut off or its answer late, runs nothing (Task 7's re-check).
+    const verdict = await this.options.judge!(action, signal, this.#own).catch((err: unknown) => {
+      throw signal.aborted ? new StoppedFirst() : err;
+    });
+    if (signal.aborted) throw new StoppedFirst();
     if (top.#version !== version) return this.require(action, signal);
     if (verdict.allow) {
       top.#inRow = 0; // a yes ends the row

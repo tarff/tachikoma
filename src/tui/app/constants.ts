@@ -53,7 +53,7 @@ export const isFile = (file: string) => {
 
 export const COMMANDS =
   "/lead <provider:model>, /model, /login chatgpt, /logout chatgpt, /clear, /resume, /branch [name], /rename <name>, " +
-  "/export [file], /compact [words], /autocompact <tokens>, /tasks, /errors, /screen, /settings, /keybindings, /vim, /exit";
+  "/export [file], /compact [words], /autocompact <tokens>, /tasks, /hooks, /errors, /screen, /settings, /keybindings, /vim, /exit";
 // Release 8a plan, Task 7's words, approved by the user on 2026-11-06: the `/` menu's notes; /resume with no other
 // session saved; /branch before any prompt, or once saving has stopped (session.ts, "Saving fails"), and /rename then, as
 // nothing they wrote would be saved; and the in-window list's hint, whose Esc closes the list where `tachi -r`'s quits.
@@ -102,7 +102,7 @@ export const characters = (text: string) => {
 // What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
 // is a message).
 export const NAMES = [
-  "/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/screen", "/settings", "/keybindings", "/vim",
+  "/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/hooks", "/screen", "/settings", "/keybindings", "/vim",
   "/clear", "/resume", "/branch", "/rename", "/export", "/compact", "/autocompact",
 ];
 export const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
@@ -111,10 +111,12 @@ export const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.
 // vimInsertModeRemaps is read at each key (vimTakes), and the editor at each Ctrl+G, /settings and /keybindings; both
 // are here for their lines (plan, Tasks 12 and 21). dangerousCommands is release 7's (release 7 plan, Task 4), and so are
 // sandbox, network and judge, here for their lines too, as each waits for the next launch (Task 7). autoCompactWindow is
-// release 8a's (release 8a plan, choice 26).
+// release 8a's (release 8a plan, choice 26). hooks and disableAllHooks are release 8b's (release 8b design, "What the
+// user sees"; its plan's Task 12 applies them).
 export const LIVE = [
   "lead", "mode", "sandbox", "network", "judge", "effort", "fallback", "worker", "maxTasks",
   "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor", "dangerousCommands", "autoCompactWindow",
+  "hooks", "disableAllHooks",
 ] as const;
 export const FROM = ` (from ${SETTINGS})`;
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Action, Declined, type Mode, needsApproval, PermissionGate, visible } from "../../src/core/permissions.js";
+import { type Action, type Ask, Declined, type Mode, needsApproval, PermissionGate, visible } from "../../src/core/permissions.js";
 
 const act = (kind: Action["kind"], outside = false): Action => ({ kind, outside, summary: `${kind}${outside ? " outside" : ""}` });
 
@@ -300,5 +300,139 @@ describe("the gate's dangerous commands and protected writes", () => {
     expect(child.protection).toEqual({ hooks: [], files: [] });
     gate.protection = { hooks: ["/p/hooks"], files: ["/p/my.gitconfig"] };
     expect(child.protection).toEqual({ hooks: ["/p/hooks"], files: ["/p/my.gitconfig"] });
+  });
+});
+
+// Release 8b plan, Task 6 and choice 15: a PreToolUse hook's allow, or the user's yes to its question, stands in for the
+// mode's question and the judge for one call; the dangerous-command check, protected paths and never's refusals stay.
+// The commands are text the gate reads; nothing here runs them.
+describe("a gate for one call a hook allowed", () => {
+  type Asked = { summary: string; owner?: string; warnings?: string[]; note?: string };
+  const gateIn = (mode: Mode, answer = true, options: ConstructorParameters<typeof PermissionGate>[3] = {}, refusal?: string) => {
+    const asked: Asked[] = [];
+    const judged: string[] = [];
+    const gate = new PermissionGate(
+      mode,
+      async (summary, _detail, owner, _plain, warnings, note) => {
+        asked.push({ summary, ...(owner ? { owner: owner.name } : {}), ...(warnings?.length ? { warnings } : {}), ...(note ? { note } : {}) });
+        return answer;
+      },
+      refusal,
+      { judge: async (action) => (judged.push(action.summary), { allow: false, reason: "the judge says no" }), ...options },
+    );
+    return { gate, asked, judged };
+  };
+  const run = (command: string): Action => ({ kind: "shell", outside: false, summary: `run: ${command}`, command });
+  const write: Action = { kind: "write", outside: false, summary: "write /p/a.txt" };
+  const outsideWrite: Action = { kind: "write", outside: true, summary: "write /q/a.txt" };
+  const outsideRead: Action = { kind: "read", outside: true, summary: "read /q/a.txt" };
+  const husky: Action = { kind: "write", outside: false, summary: "write /p/.husky/pre-commit", path: "/p/.husky/pre-commit", protectedPart: ".husky" };
+  const push = "git push --force";
+  const hooked = [{ allow: true }, { asked: true }] as const;
+
+  it.each(hooked)("skips the mode's question in ask and project, and the judge in auto (%o)", async (h) => {
+    for (const mode of ["ask", "project", "auto"] as const) {
+      const { gate, asked, judged } = gateIn(mode);
+      await gate.withHook(h).require(run("echo hi"));
+      await gate.withHook(h).require(write);
+      await gate.withHook(h).require(outsideRead);
+      expect([mode, asked, judged]).toEqual([mode, [], []]);
+    }
+  });
+
+  it.each(hooked)("still asks before a dangerous command and a protected write in ask and project (%o)", async (h) => {
+    for (const mode of ["ask", "project"] as const) {
+      const { gate, asked } = gateIn(mode);
+      await gate.withHook(h).require(run(push));
+      await gate.withHook(h).require(husky);
+      expect(asked).toEqual([{ summary: `run: ${push}`, warnings: [`Danger: rewriting or deleting git history: ${push}`] }, { summary: husky.summary }]);
+    }
+  });
+
+  // As now in auto: a danger asks the user, and a protected write goes to the judge (release 7 plan, Task 10).
+  it.each(hooked)("in auto, still asks before a dangerous command, and sends a protected write to the judge (%o)", async (h) => {
+    const { gate, asked, judged } = gateIn("auto");
+    await gate.withHook(h).require(run(push));
+    await expect(gate.withHook(h).require(husky)).rejects.toThrow(new Declined("The judge refused: the judge says no"));
+    expect(asked.map((a) => a.summary)).toEqual([`run: ${push}`]);
+    expect(judged).toEqual([husky.summary]);
+  });
+
+  // The user's choices, 2026-11-09: a hook's allow skips only the mode's ordinary question and the judge, and never waves
+  // a write outside the project through, in any mode.
+  it.each(hooked)("in auto, still sends a write outside the project to the judge (%o)", async (h) => {
+    const { gate, asked, judged } = gateIn("auto");
+    await expect(gate.withHook(h).require(outsideWrite)).rejects.toThrow(new Declined("The judge refused: the judge says no"));
+    expect([asked, judged]).toEqual([[], ["write /q/a.txt"]]);
+  });
+
+  it.each(hooked)("in ask and project, still asks before a write outside the project (%o)", async (h) => {
+    for (const mode of ["ask", "project"] as const) {
+      const { gate, asked } = gateIn(mode, false);
+      await expect(gate.withHook(h).require(outsideWrite)).rejects.toThrow(new Declined("The user declined: write /q/a.txt"));
+      expect(asked).toEqual([{ summary: "write /q/a.txt" }]);
+    }
+  });
+
+  it.each(hooked)("keeps every refusal of never (%o)", async (h) => {
+    const { gate, asked } = gateIn("never");
+    await expect(gate.withHook(h).require(run(push))).rejects.toThrow(/^Not allowed: this command matches the dangerous-command check/);
+    await expect(gate.withHook(h).require(husky)).rejects.toThrow(/is a protected path \(\.husky\)/);
+    await expect(gate.withHook(h).require(outsideWrite)).rejects.toThrow("Not allowed in never mode: write /q/a.txt, which is outside the project.");
+    expect(asked).toEqual([]);
+  });
+
+  it.each(hooked)("headless, still refuses a dangerous command and a protected write (%o)", async (h) => {
+    const p = "Not allowed in -p mode, where nobody can approve it";
+    const { gate } = gateIn("project", false, { headless: true }, p);
+    await gate.withHook(h).require(run("echo hi"));
+    await expect(gate.withHook(h).require(run(push))).rejects.toThrow(/^Not allowed: this command matches the dangerous-command check/);
+    await expect(gate.withHook(h).require(husky)).rejects.toThrow(new Declined(`${p}: ${husky.summary}`));
+  });
+
+  it("asks through a subagent's gate naming the subagent, and reads the lead's mode", async () => {
+    const { gate, asked } = gateIn("ask");
+    const child = gate.for({ name: "t2 (look)", signal: new AbortController().signal, stop: () => {} }).withHook({ allow: true });
+    await child.require(run(push));
+    expect(asked.map((a) => a.owner)).toEqual(["t2 (look)"]);
+    gate.mode = "never";
+    await expect(child.require(run(push))).rejects.toThrow(/^Not allowed: this command/);
+  });
+});
+
+// Release 8b plan, choice 15 and "Lines this plan adds": a PreToolUse hook's ask puts one question with its grey note;
+// in never and headless, where nobody can answer, the call is refused.
+describe("a hook's question", () => {
+  const gateIn = (mode: Mode, answer: boolean, options: ConstructorParameters<typeof PermissionGate>[3] = {}, refusal?: string) => {
+    const asked: { summary: string; note?: string }[] = [];
+    const ask: Ask = async (summary, _detail, _owner, _plain, _warnings, note) => (asked.push({ summary, ...(note ? { note } : {}) }), answer);
+    const gate = new PermissionGate(mode, ask, refusal, options);
+    return { gate, asked };
+  };
+
+  it("asks once, the hook's reason in its note, and goes ahead on a yes", async () => {
+    const { gate, asked } = gateIn("project", true);
+    await gate.hookAsks('read_file {"path":"a.txt"}', "Reading secrets?");
+    await gate.hookAsks("shell {}", "");
+    expect(asked).toEqual([
+      { summary: 'read_file {"path":"a.txt"}', note: "A hook asks: Reading secrets?" },
+      { summary: "shell {}", note: "A hook asks." },
+    ]);
+  });
+
+  it("declines on a no as any no does, and shows control characters as escapes", async () => {
+    const { gate, asked } = gateIn("ask", false);
+    await expect(gate.hookAsks("shell a\u001b[8m", "b\u202e")).rejects.toThrow(new Declined("The user declined: shell a\\u001b[8m"));
+    expect(asked).toEqual([{ summary: "shell a\\u001b[8m", note: "A hook asks: b\\u202e" }]);
+  });
+
+  it("gives the refusal's words in never and headless, where nobody can be asked, with and without a reason", () => {
+    const never = gateIn("never", true).gate;
+    expect(never.hookCannotAsk("Sure?")).toBe("Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).");
+    expect(never.hookCannotAsk("")).toBe("Not allowed in never mode: a PreToolUse hook asked for this call to be approved.");
+    const headless = gateIn("project", true, { headless: true }).gate;
+    expect(headless.hookCannotAsk("Sure?")).toBe("Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask.");
+    expect(headless.hookCannotAsk("")).toBe("Not allowed: a PreToolUse hook asked for this call to be approved, and -p cannot ask.");
+    expect(gateIn("project", true).gate.hookCannotAsk("Sure?")).toBeUndefined();
   });
 });

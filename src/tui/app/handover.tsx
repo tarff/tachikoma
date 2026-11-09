@@ -8,7 +8,7 @@ import { type Detail, opened } from "../DetailView.js";
 import { change } from "../editor.js";
 import { editFile, editorCommand, editText, NOT_FOUND } from "../external.js";
 import { readOut } from "../input.js";
-import { spansIn } from "../pictures.js";
+import { type Draft, spansIn } from "../pictures.js";
 import { PASTE_OFF, PASTE_ON } from "../terminal.js";
 import { ERASE_LINE, FROM, type Printed, WAITING } from "./constants.js";
 import type { UI } from "./state.js";
@@ -232,21 +232,36 @@ export const handover = (ui: UI, fns: Fns) => {
   };
   // Ctrl+G and Ctrl+X Ctrl+E: the prompt as it is when the editor starts goes to it, and what it saved becomes the
   // prompt, the cursor at the end, as one step Ctrl+Z takes back; on failure the prompt stays (design, "On return").
-  // Then the queue goes on: a /screen, /settings or /keybindings may have waited for the editor (next, queue.ts).
+  // Then the queue goes on: a /screen, /settings or /keybindings may have waited for the editor (next, queue.ts). Prompts
+  // a UserPromptSubmit hook gave back while it was open go in after what it saved (promptKeys.ts, giveBack), or at once
+  // if anything here threw. `held` is this call's own: a second Ctrl+G, waiting for the terminal meanwhile, holds what
+  // comes after in its own, and only the call whose list is in the slot empties it (Task 8's re-check).
   const externalEditor = async () => {
-    const ids = ui.editor.current.spans.map((s) => s.id); // the pictures the prompt holds as the editor opens
-    const ran = await fns.away((command) => editText(ui.editor.current.text, command));
-    if (!ran) return; // Ink ended meanwhile
-    if ("failed" in ran.got) fns.editorFailed(ran.command, ran.got.failed);
-    else {
-      const e = ui.editor.current;
-      // A marker is a span again when it names a picture the prompt held as the editor opened (release 6 design,
-      // "Which pictures a message carries"): the editor's file is plain text.
-      const d = change(e, 0, e.text.length, ran.got.text);
-      ui.editor.current = { ...d, spans: spansIn(d.text, ids) };
-      ui.goal.current = null;
-      fns.freshText();
-      ui.rerender((n) => n + 1);
+    // The pictures the prompt holds as the editor opens, read with its text once the terminal is this call's, so ones put
+    // in while it waited for it keep their spans (Task 8's last re-check).
+    let ids: number[] = [];
+    const held: Draft[] = [];
+    ui.editingBack.current = held;
+    try {
+      const ran = await fns.away((command) => {
+        ids = ui.editor.current.spans.map((s) => s.id);
+        return editText(ui.editor.current.text, command);
+      });
+      if (!ran) return void held.splice(0); // Ink ended meanwhile
+      if ("failed" in ran.got) fns.editorFailed(ran.command, ran.got.failed);
+      else {
+        const e = ui.editor.current;
+        // A marker is a span again when it names a picture the prompt held as the editor opened (release 6 design,
+        // "Which pictures a message carries"): the editor's file is plain text.
+        const d = change(e, 0, e.text.length, ran.got.text);
+        ui.editor.current = { ...d, spans: spansIn(d.text, ids) };
+        ui.goal.current = null;
+        fns.freshText();
+        ui.rerender((n) => n + 1);
+      }
+    } finally {
+      if (ui.editingBack.current === held) ui.editingBack.current = null;
+      if (held.length) fns.putBack(held);
     }
     fns.next();
   };

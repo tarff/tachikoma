@@ -73,6 +73,38 @@ describe("exportText", () => {
     );
   });
 
+  // Release 8b plan, Task 8: a hook's text for the model, shown as the subagents' notes are, where it arrived, under its own
+  // heading line, `<Event> hook:`.
+  it("puts a hook's text for the model where it arrived, under its own heading, never under You:", () => {
+    const hook = (event: string, text: string) => ({ type: "text", text: `${event} hook:\n${text}`, from: "hooks" }) as const;
+    const messages: Message[] = [
+      { role: "user", parts: [hook("SessionStart", "from the start"), { type: "text", text: "go" }, hook("UserPromptSubmit", "one"), hook("UserPromptSubmit", "two")] },
+      { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "echo", input: {} }] },
+      { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "ok", isError: false }, hook("PostToolUse", "looked odd")] },
+    ];
+    expect(exportText(messages, "fake:a")).toBe(
+      [
+        "SessionStart hook:",
+        "from the start",
+        "",
+        "You:",
+        "go",
+        "",
+        "UserPromptSubmit hook:",
+        "one",
+        "two",
+        "",
+        "Tachikoma (fake:a):",
+        "● echo {}",
+        "  ⎿ ok",
+        "",
+        "PostToolUse hook:",
+        "looked odd",
+        "",
+      ].join("\n"),
+    );
+  });
+
   // User, 2026-11-06: "Record each reply's lead". A reply saved before replies kept their lead is headed with the lead
   // leading now.
   it("heads each reply with the lead that wrote it, or without one the lead leading now", () => {

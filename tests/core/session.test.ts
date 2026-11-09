@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,7 +8,7 @@ import { privateDir } from "../../src/auth/private.js";
 import type { Events } from "../../src/core/bus.js";
 import { callText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
-import { type Ask, Declined, PermissionGate } from "../../src/core/permissions.js";
+import { type Ask, Declined, type Judge, PermissionGate } from "../../src/core/permissions.js";
 import { type Conversation, Session, UNSAVED } from "../../src/core/session.js";
 import { CANCELLED, INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
@@ -16,10 +16,15 @@ import { Tasks } from "../../src/core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
 import { type CompletionRequest, type Message, type Part, type Provider, sentAll, type Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
+import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
+import type { Event, Hook } from "../../src/hooks/config.js";
+import { Hooks, type Where } from "../../src/hooks/hooks.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
 import { judgeOf } from "../../src/safety/judge.js";
-import { writeFileTool } from "../../src/tools/files.js";
-import { defineTool } from "../../src/tools/tool.js";
+import { delegateTool } from "../../src/tools/delegate.js";
+import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
+import { shellText } from "../../src/tools/shell.js";
+import { defineTool, type Tool } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts, usage } from "../helpers.js";
 
@@ -895,17 +900,68 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
   const big = "x".repeat(600);
   const cutAtWindow = { ...reply("half a repl"), cutOff: { kind: "window" as const, detail: "The conversation filled the context window" } };
 
-  async function setup(lead: Provider, more: Partial<ConstructorParameters<typeof Session>[0]> = {}) {
+  // Release 8b plan, Task 11: the hooks around a shortening. Each is a Node script in a folder of the test's own, run in
+  // exec form, which appends its input to the file named by its first argument, writes its fourth to its error output and
+  // its second to its output, and exits with its third, or with "never" runs until it is stopped. The folder is also the
+  // hooks' project root.
+  const HOOK = `const fs = require("fs");
+const [out, stdout, code, stderr] = process.argv.slice(2);
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.appendFileSync(out, text + "\\n");
+  if (code === "never") return void setInterval(() => {}, 1000);
+  process.stderr.write(stderr);
+  process.stdout.write(stdout);
+  process.exit(Number(code));
+});`;
+  // `names` the values it matches (a trigger, a source), every one unless given.
+  type Said = { event: Event; stdout?: string; code?: number | "never"; stderr?: string; names?: string[] };
+  // With `agent`, a subagent's hooks (Hooks.for), sent its agent_id and agent_type.
+  function hooksOf(said: Said[], bus: Bus, agent?: { id: string }) {
+    const root = path.join(top, `hooks${++n}`);
+    mkdirSync(root, { recursive: true });
+    const script = path.join(root, "hook.cjs");
+    writeFileSync(script, HOOK);
+    const out = path.join(root, "inputs.jsonl");
+    const hooks: Hook[] = said.map((h) => ({
+      event: h.event,
+      matcher: h.names ? { names: h.names } : { all: true },
+      command: process.execPath,
+      args: [script, out, h.stdout ?? "", String(h.code ?? 0), h.stderr ?? ""],
+      async: false,
+      where: `"${h.event}"`,
+    }));
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => "never", effort: () => undefined, lead: () => "fake:a" };
+    const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
+    const given = new Hooks({ hooks, off: false, leftOut: [] }, where, bus);
+    return { hooks: agent ? given.for(agent, bus) : given, inputs };
+  }
+
+  // With `said`, the session has those hooks, a subagent's with `agent`.
+  async function setup(lead: Provider, more: Partial<ConstructorParameters<typeof Session>[0]> = {}, said?: Said[], agent?: { id: string }) {
     const bus = new Bus();
     const errors = collectErrors(bus);
     const summaries: string[] = [];
     bus.on("shortened", (s) => summaries.push(s));
     const usages: Events["usage"][0][] = [];
     bus.on("usage", (u) => usages.push(u));
+    const notes: string[] = [];
+    bus.on("hook-note", (line) => notes.push(line));
+    const hooked = said ? hooksOf(said, bus, agent) : undefined;
     const transcript = saving();
     const ctx = await tempContext();
-    const session = new Session({ lead, tools: [echo], system: "t", systemNow: async () => "t, read again", ctx, bus, transcript, ...more });
-    return { session, bus, errors, summaries, usages, transcript };
+    const session = new Session({
+      lead,
+      tools: [echo],
+      system: "t",
+      systemNow: async () => "t, read again",
+      ctx,
+      bus,
+      transcript,
+      ...(hooked ? { hooks: hooked.hooks } : {}),
+      ...more,
+    });
+    return { session, bus, errors, summaries, usages, transcript, notes, inputs: hooked?.inputs ?? (() => []) };
   }
   // A transcript that cannot be written: a file where its folder should be, with no permission changed (Task 3).
   async function unsavable() {
@@ -1385,5 +1441,1459 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
     const own = new Transcript(path.join(pathsOf(lead.file).subagents, "t1.jsonl"), lead.pictures);
     expect(savedLines(own).map((l) => l.t)).toEqual(["message", "message", "message", "shortened", "message"]);
     expect(isSummary(worker.seen[2]!)).toBe(true);
+  });
+
+  // Release 8b plan, Task 11 (choice 20): PreCompact before the summary request, PostCompact and SessionStart compact once
+  // the summary is made, before it is saved.
+  const sessionText = (text: string): Part => ({ type: "text", text: `SessionStart hook:\n${text}`, from: "hooks" });
+  const LEFT_OUT = "SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.";
+
+  it.each([
+    ["/compact", JSON.stringify({ decision: "block", reason: "not now" }), 0, ""],
+    ["a turn's shortening", "", 2, "not now"],
+  ] as const)("changes nothing at a PreCompact hook's block, for %s, saying its reason in 8a's line", async (how, stdout, code, stderr) => {
+    const turns = how === "/compact" ? [measured("noted")] : [measured("noted"), new TooLong("prompt is too long")];
+    const lead = new Lead("fake:a", turns, 1_000_000);
+    const { session, errors, summaries, transcript, inputs } = await setup(lead, {}, [{ event: "PreCompact", stdout, code, stderr }]);
+    await session.send(big);
+    const before = structuredClone(session.messages);
+    if (how === "/compact") expect(await session.compact("keep the tests")).toBe("a PreCompact hook blocked it: not now");
+    else await session.send("now this");
+    expect(session.messages).toEqual(how === "/compact" ? before : [...before, typed("now this")]);
+    expect([session.system, summaries, lead.seen.length]).toEqual(["t", [], how === "/compact" ? 1 : 2]); // no summary request
+    expect(savedLines(transcript).some((l) => l.t === "shortened")).toBe(false);
+    const line = "The conversation could not be shortened (a PreCompact hook blocked it: not now); it is unchanged.";
+    expect(errors).toEqual([{ kind: "shortening", attempted: "request to fake:a", message: line, lead: "fake:a" }]);
+    const fired = how === "/compact" ? { trigger: "manual", custom_instructions: "keep the tests" } : { trigger: "auto", custom_instructions: null };
+    expect(inputs()).toEqual([expect.objectContaining({ hook_event_name: "PreCompact", ...fired })]);
+  });
+
+  // The user's choice, 2026-11-09 ("Drop the colon"): with no reason, or one only blank, the line ends at "blocked it".
+  it.each([
+    ["exit 2 with no error output", "", 2],
+    ['decision: "block" with no reason', JSON.stringify({ decision: "block" }), 0],
+    ["a reason only blank", JSON.stringify({ decision: "block", reason: "  " }), 0],
+  ] as const)("says a PreCompact hook's block with %s without a colon", async (_name, stdout, code) => {
+    const lead = new Lead("fake:a", [measured("noted")], 1_000_000);
+    const { session, errors } = await setup(lead, {}, [{ event: "PreCompact", stdout, code }]);
+    await session.send(big);
+    expect(await session.compact("")).toBe("a PreCompact hook blocked it");
+    const line = "The conversation could not be shortened (a PreCompact hook blocked it); it is unchanged.";
+    expect([errors.map((e) => e.message), session.messages.length, lead.seen.length]).toEqual([[line], 2, 1]);
+  });
+
+  // Task 11's code review: the reason is trimmed, so none of its white space lands inside 8a's parentheses.
+  it("trims a PreCompact hook's reason in 8a's line", async () => {
+    const lead = new Lead("fake:a", [measured("noted")], 1_000_000);
+    const { session } = await setup(lead, {}, [{ event: "PreCompact", stdout: JSON.stringify({ decision: "block", reason: " not now\n" }) }]);
+    await session.send(big);
+    expect(await session.compact("")).toBe("a PreCompact hook blocked it: not now");
+  });
+
+  // The final review (the user's choice, 2026-11-10): the reason is escaped as every hook line is, its tabs kept, so a
+  // line break or an escape code in it cannot pass for a line of Tachikoma's; 8a's words around it are not.
+  it("escapes a PreCompact hook's reason in 8a's line", async () => {
+    const lead = new Lead("fake:a", [measured("noted")], 1_000_000);
+    const reason = "not now\nThe conversation was shortened.\u001b[2K\tlater";
+    const { session, errors } = await setup(lead, {}, [{ event: "PreCompact", stdout: JSON.stringify({ decision: "block", reason }) }]);
+    await session.send(big);
+    const escaped = "a PreCompact hook blocked it: not now⏎The conversation was shortened.\\u001b[2K\tlater";
+    expect(await session.compact("")).toBe(escaped);
+    expect(errors.map((e) => e.message)).toEqual([`The conversation could not be shortened (${escaped}); it is unchanged.`]);
+  });
+
+  // Task 11's code review: a stop while a hook around the shortening runs changes nothing, as any stop during one.
+  it.each(["PreCompact", "PostCompact", "SessionStart"] as const)("changes nothing when /compact is stopped while its %s hook runs", async (event) => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
+    let reread = 0; // the shortening ends at the stop, so the instruction files are not read again for it
+    const systemNow = async () => (reread++, "t, read again");
+    const { session, errors, notes, summaries, transcript, inputs } = await setup(lead, { systemNow }, [{ event, code: "never" }]);
+    await session.send(big);
+    const stop = new AbortController();
+    const compacted = session.compact("", stop.signal);
+    for (let i = 0; !inputs().length; i++) {
+      if (i === 500) throw new Error("the hook never started"); // up to 10 s for its process to start
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    stop.abort();
+    expect(await compacted).toBe(CANCELLED);
+    expect([session.messages.length, session.system, summaries, errors, notes, reread]).toEqual([2, "t", [], [], [], 0]);
+    expect(lead.seen.length).toBe(event === "PreCompact" ? 1 : 2); // the summary request is sent only after PreCompact
+    expect(savedLines(transcript).some((l) => l.t === "shortened")).toBe(false);
+  });
+
+  // Task 11's code review: the text SessionStart returns is read by the lead /lead switches to (queue.ts), so it is the model.
+  it("sends SessionStart compact the new lead's id on /lead's shortening, and PreCompact the auto trigger", async () => {
+    const a = new Lead("fake:a", [measured("noted"), summaryOf("Many x.")], 10_000);
+    const { session, inputs } = await setup(a, {}, [{ event: "PreCompact" }, { event: "SessionStart", names: ["compact"] }]);
+    await session.send(big);
+    expect(await session.makeRoom(new Lead("fake:b", [], 500))).toBeUndefined();
+    expect(inputs()).toEqual([
+      expect.objectContaining({ hook_event_name: "PreCompact", trigger: "auto", custom_instructions: null }),
+      expect.objectContaining({ hook_event_name: "SessionStart", source: "compact", model: "fake:b" }),
+    ]);
+  });
+
+  // Task 11's code review: the line is said once the shortening is saved, so a stop while the instruction files are read
+  // again, which saves nothing, says nothing.
+  it("does not say SessionStart's text was left out when the shortening is then stopped", async () => {
+    const stop = new AbortController();
+    const systemNow = async () => {
+      stop.abort();
+      return "t, read again";
+    };
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Many x.")], 700);
+    const { session, notes, transcript } = await setup(lead, { systemNow }, [{ event: "SessionStart", names: ["compact"], stdout: "y".repeat(1000) }]);
+    await session.send(big);
+    expect(await session.compact("", stop.signal)).toBe(CANCELLED);
+    expect([notes, session.messages.length, savedLines(transcript).some((l) => l.t === "shortened")]).toEqual([[], 2, false]);
+  });
+
+  // The user's choice, 2026-11-09 ("Pre/Post only"): SessionStart is about the user's session, so a subagent's shortening
+  // fires none.
+  it("fires PreCompact and PostCompact for a subagent's shortening, with its agent fields, and no SessionStart", async () => {
+    const lead = new Lead("fake:w", [measured("noted"), new TooLong("prompt is too long"), summaryOf("Sub summary."), reply("done")], 1_000_000);
+    const said: Said[] = [{ event: "PreCompact" }, { event: "PostCompact" }, { event: "SessionStart", stdout: "not for a subagent" }];
+    const { session, errors, notes, inputs } = await setup(lead, { subagent: true, id: "t1" }, said, { id: "t1" });
+    await session.send(big);
+    await session.send("brief");
+    const agent = { agent_id: "t1", agent_type: "Explore" };
+    expect(inputs()).toEqual([
+      expect.objectContaining({ hook_event_name: "PreCompact", trigger: "auto", ...agent }),
+      expect.objectContaining({ hook_event_name: "PostCompact", trigger: "auto", compact_summary: "Sub summary.", ...agent }),
+    ]);
+    expect(lead.seen[3]!.messages).toEqual([typed(shortened("Sub summary.", "brief"))]);
+    expect([errors, notes, texts(session.messages.at(-1)!)]).toEqual([[], [], ["done"]]);
+  });
+
+  it("adds a PreCompact hook's plain text to the summary request's instructions, after the /compact words", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted."), summaryOf("Again.")], 1_000_000);
+    const { session, errors } = await setup(lead, {}, [{ event: "PreCompact", names: ["manual"], stdout: "keep the file names" }]);
+    await session.send(big);
+    expect(await session.compact("focus on tests")).toBeUndefined();
+    expect(texts(lead.seen[1]!.messages.at(-1)!).at(-1)).toBe(`${INSTRUCTIONS}\n\nFocus on: focus on tests\n\nkeep the file names`);
+    expect(await session.compact("")).toBeUndefined();
+    expect(texts(lead.seen[2]!.messages.at(-1)!).at(-1)).toBe(`${INSTRUCTIONS}\n\nFocus on: keep the file names`);
+    expect(errors).toEqual([]);
+  });
+
+  it("fires PostCompact with the summary, then SessionStart compact, each matched on its trigger or source", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
+    const said: Said[] = [
+      { event: "PreCompact", names: ["manual"] },
+      { event: "PostCompact", names: ["manual"] },
+      { event: "PostCompact", names: ["auto"], stdout: "not this one" },
+      { event: "SessionStart", names: ["compact"] },
+      { event: "SessionStart", names: ["startup"], stdout: "not this one" },
+    ];
+    const { session, errors, inputs } = await setup(lead, {}, said);
+    await session.send(big);
+    expect(await session.compact("")).toBeUndefined();
+    expect(inputs()).toEqual([
+      expect.objectContaining({ hook_event_name: "PreCompact", trigger: "manual", custom_instructions: null }),
+      expect.objectContaining({ hook_event_name: "PostCompact", trigger: "manual", compact_summary: "Compacted." }),
+      expect.objectContaining({ hook_event_name: "SessionStart", source: "compact", model: "fake:a" }),
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  it("sends SessionStart's text in the shortened message with the turn's very next request, saved there, so a resume reads it back", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("The user sent many x."), reply("done")], 700);
+    const context = JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "from the hook" } });
+    const said: Said[] = [
+      { event: "SessionStart", names: ["compact"], stdout: context },
+      { event: "SessionStart", names: ["compact"], stdout: "plain words" },
+    ];
+    const { session, errors, notes, transcript, inputs } = await setup(lead, {}, said);
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] }); // for the resume
+    await session.send(big);
+    await session.send("now this");
+    // Shortened before its request, by the estimate (the ratio is 1 after the first reply), so no "too long" answer came.
+    expect(lead.seen.map(isSummary)).toEqual([false, true, false]);
+    const message: Message = {
+      role: "user",
+      parts: [sessionText("from the hook"), sessionText("plain words"), { type: "text", text: shortened("The user sent many x.", "now this") }],
+    };
+    expect(lead.seen[2]!.messages).toEqual([message]);
+    expect([errors, notes]).toEqual([[], []]);
+    expect(inputs()).toEqual([
+      expect.objectContaining({ hook_event_name: "SessionStart", source: "compact" }),
+      expect.objectContaining({ hook_event_name: "SessionStart", source: "compact" }),
+    ]);
+    const r = readTranscript(transcript.file, transcript.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    expect(r.messages[0]).toEqual(message);
+  });
+
+  it("saves the shortening without SessionStart's text when the shortened conversation would not fit with it, says so, and sends the request", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("The user sent many x."), reply("done")], 700);
+    const { session, errors, notes, transcript } = await setup(lead, {}, [{ event: "SessionStart", names: ["compact"], stdout: "y".repeat(1000) }]);
+    await session.send(big);
+    await session.send("now this");
+    const message = typed(shortened("The user sent many x.", "now this"));
+    expect(lead.seen.map(isSummary)).toEqual([false, true, false]);
+    expect(lead.seen[2]!.messages).toEqual([message]);
+    expect(notes).toEqual([LEFT_OUT]);
+    expect(savedLines(transcript).find((l) => l.t === "shortened")).toEqual({ t: "shortened", at: expect.any(String), system: "t, read again", message });
+    expect([errors, texts(session.messages.at(-1)!)]).toEqual([[], ["done"]]);
+  });
+});
+
+// Release 8b plan, Task 6 (design, "Tool hooks"; choices 10, 15 and 16): PreToolUse before each call, its answer against
+// Tachikoma's own checks, and its rewrite kept in the record. Each hook is a Node script in the test's own folder, run in
+// exec form; the shell tool here is a stand-in that only records the command the gate let through, so nothing runs it.
+describe("Session, PreToolUse hooks", { timeout: 15_000 }, () => {
+  // The hook appends its input to the file named by its first argument, waits for the file named by its fourth when one
+  // is given, polling every 20 ms as helpers.ts's stand-in editor does, then prints its second and exits with its third.
+  const SCRIPT = `const fs = require("fs");
+const [out, stdout, code, go] = process.argv.slice(2);
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.appendFileSync(out, text + "\\n");
+  const finish = () => (process.stdout.write(stdout), process.exit(Number(code)));
+  const poll = () => (!go || fs.existsSync(go) ? finish() : setTimeout(poll, 20));
+  poll();
+});`;
+  const P = "Not allowed in -p mode, where nobody can approve it"; // cli.tsx's refusal in -p
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  // A folder of the test's own, removed when it finishes, tried every 50 ms up to 2 s, as tests/hooks/run.test.ts does:
+  // Windows keeps the folder a killed program worked in for about 170 ms (measured 2026-10-31).
+  async function folder(): Promise<string> {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-pretool-"));
+    onTestFinished(async () => {
+      for (let i = 0; ; i++) {
+        try {
+          return await removeTree(dir);
+        } catch (err) {
+          if (i === 40) throw err;
+          await pause(50);
+        }
+      }
+    });
+    return dir;
+  }
+  // The hook appends its input to the file named by its first argument, as SCRIPT's does, then prints the answer its second,
+  // a JSON list, gives for this firing of its event: the first the first time, and nothing once the list is used up. It counts
+  // every input of its event in the file, so a test gives each event one such hook at most.
+  const SEQ = `const fs = require("fs");
+const [out, answers] = process.argv.slice(2);
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  const event = JSON.parse(text).hook_event_name;
+  const lines = fs.existsSync(out) ? fs.readFileSync(out, "utf8").split("\\n").filter(Boolean) : [];
+  const before = lines.filter((l) => JSON.parse(l).hook_event_name === event).length;
+  fs.appendFileSync(out, text + "\\n");
+  process.stdout.write(JSON.parse(answers)[before] ?? "");
+});`;
+
+  // The hook's script and the file of its inputs, in a folder apart from the project, so a file tool never meets them.
+  async function hookFolder() {
+    const own = await folder();
+    const script = path.join(own, "hook.cjs");
+    writeFileSync(script, SCRIPT);
+    const seq = path.join(own, "seq.cjs");
+    writeFileSync(seq, SEQ);
+    return { script, seq, out: path.join(own, "inputs.jsonl") };
+  }
+
+  const answer = (fields: object) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...fields } });
+  const decide = (decision: string, reason?: string, more: object = {}) =>
+    answer({ permissionDecision: decision, ...(reason === undefined ? {} : { permissionDecisionReason: reason }), ...more });
+  const rewrite = (updatedInput: object, more: object = {}) => answer({ updatedInput, ...more });
+  // `event` is PreToolUse unless given, and `names` the tools' Claude Code names it matches, every tool unless given. With
+  // `seq` the hook is SEQ, answering each firing in turn, in place of `stdout`.
+  type Says = { stdout: string; code?: number; go?: string; event?: Event; names?: string[]; seq?: string[] };
+  type Mode5 = "ask" | "project" | "auto" | "never" | "-p";
+  const FIVE: Mode5[] = ["ask", "project", "auto", "never", "-p"];
+
+  // An answer may be a promise, for a question the test answers later.
+  type Answers = (boolean | Promise<boolean>)[];
+  // `judge` is auto mode's, which says no at once unless given. With `worker`, the lead has delegate, its subagents running
+  // on that model with the lead's hooks, and the session has their Tasks.
+  async function setup(o: {
+    mode: Mode5; says: Says[]; turns: Turn[]; answers?: Answers; transcript?: Transcript; root?: string; tools?: Tool[]; judge?: Judge;
+    inbox?: () => string[]; worker?: Provider;
+  }) {
+    const root = o.root ?? (await folder());
+    const { script, seq, out } = await hookFolder();
+    const hooks: Hook[] = o.says.map((s) => ({
+      event: s.event ?? "PreToolUse",
+      matcher: s.names ? { names: s.names } : { all: true },
+      command: process.execPath,
+      args: s.seq ? [seq, out, JSON.stringify(s.seq)] : [script, out, s.stdout, String(s.code ?? 0), ...(s.go ? [s.go] : [])],
+      async: false,
+      where: `"${s.event ?? "PreToolUse"}"`,
+    }));
+    const headless = o.mode === "-p";
+    const asked: { summary: string; warnings?: string[]; note?: string }[] = [];
+    const judged: string[] = [];
+    const refusals: number[] = [];
+    const answers = [...(o.answers ?? [])];
+    const gate = new PermissionGate(
+      o.mode === "-p" ? "project" : o.mode,
+      async (summary, _detail, _owner, _plain, warnings, note) => {
+        asked.push({ summary, ...(warnings?.length ? { warnings } : {}), ...(note ? { note } : {}) });
+        return answers.shift() ?? false;
+      },
+      headless ? P : undefined,
+      {
+        root,
+        headless,
+        judge: async (action, signal, own) => (judged.push(action.summary), o.judge ? o.judge(action, signal, own) : { allow: false, reason: "no" }),
+        hookRefused: () => void refusals.push(1),
+      },
+    );
+    const ran: string[] = [];
+    const reported: boolean[] = []; // whether each command was given ctx.report
+    // It reports its parts as shell.ts does; the command "fail" fails with exit code 1, its result in shell.ts's layout.
+    const shell = defineTool("shell", "Runs nothing: records the command the gate let through", z.object({ command: z.string() }), async ({ command }, ctx) => {
+      await ctx.gate.require({ kind: "shell", outside: false, summary: `run: ${command}`, command }, ctx.signal);
+      ran.push(command);
+      reported.push(ctx.report !== undefined);
+      const r = command === "fail"
+        ? { code: 1, signal: null, stdout: "", stderr: "it failed" }
+        : { code: 0, signal: null, stdout: `ran ${command}`, stderr: "" };
+      ctx.report?.({ stdout: r.stdout, stderr: r.stderr, code: r.code });
+      if (r.code !== 0) throw new Error(shellText(r));
+      return `ran ${command}`;
+    });
+    const bus = new Bus();
+    const notes: string[] = [];
+    bus.on("hook-note", (line) => notes.push(line));
+    const outcomes: string[] = [];
+    bus.on("tool-end", (e) => outcomes.push(e.outcome));
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate };
+    const lead = new FakeProvider("a", o.turns);
+    const given = new Hooks({ hooks, off: false, leftOut: [] }, where, bus); // a test may set others in their place
+    const worker = o.worker;
+    const tasks = worker
+      ? new Tasks({ bus, max: 8, worker: () => worker, system: "sub", tools: [readFileTool], ctx, transcript: () => session.transcript, hooks: given })
+      : undefined;
+    const session: Session = new Session({
+      lead,
+      tools: [shell, readFileTool, writeFileTool, editFileTool, ...(tasks ? [delegateTool(tasks, { headless })] : []), ...(o.tools ?? [])],
+      system: "t",
+      ctx,
+      bus,
+      hooks: given,
+      ...(tasks ? { tasks, inbox: () => tasks.take() } : {}),
+      ...(o.transcript ? { transcript: o.transcript } : {}),
+      ...(o.inbox ? { inbox: o.inbox } : {}),
+    });
+    // Whole lines only: the last piece is empty once the hook has written its line, or the part of it written so far.
+    const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
+    const errors = collectErrors(bus);
+    const results = () => session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [{ output: p.output, isError: p.isError }] : [])));
+    const command = (h: Hook) => [h.command, ...(h.args ?? [])].join(" ");
+    return { root, session, lead, bus, asked, judged, refusals, ran, reported, notes, outcomes, inputs, results, errors, hooks, given, command, tasks };
+  }
+  const oneCall = (name: string, input: object) => [callTool("c1", name, input), reply("ok")];
+  const shellCall = (command: string) => oneCall("shell", { command });
+
+  it.each(FIVE)("in %s, a deny refuses the call, telling the model the hook's reason, and fires with the call in Claude Code's names", async (mode) => {
+    const s = await setup({ mode, says: [{ stdout: decide("deny", "no shell here") }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.ran).toEqual([]);
+    expect(s.asked).toEqual([]);
+    expect(s.results()).toEqual([{ output: "no shell here", isError: true }]);
+    expect(s.outcomes).toEqual(["declined"]);
+    expect(s.notes).toEqual(["A PreToolUse hook refused shell: no shell here"]);
+    const fired = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "echo hi" }, tool_use_id: "c1" };
+    expect(s.inputs()).toEqual([expect.objectContaining(fired)]);
+  });
+
+  it("refuses on exit 2, and says a refusal with no reason in its own words", async () => {
+    const exit2 = await setup({ mode: "ask", says: [{ stdout: "", code: 2 }], turns: shellCall("echo hi") });
+    await exit2.session.send("go");
+    expect(exit2.results()).toEqual([{ output: "A PreToolUse hook refused shell.", isError: true }]);
+    expect(exit2.notes).toEqual(["A PreToolUse hook refused shell."]);
+    const bare = await setup({ mode: "ask", says: [{ stdout: decide("deny") }], turns: shellCall("echo hi") });
+    await bare.session.send("go");
+    expect(bare.results()).toEqual([{ output: "A PreToolUse hook refused shell.", isError: true }]);
+  });
+
+  it.each(FIVE)("in %s, an allow runs a shell command ask mode would ask about, with no question and no judge", async (mode) => {
+    const s = await setup({ mode, says: [{ stdout: decide("allow", "fine") }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect([s.ran, s.asked, s.judged, s.outcomes, s.notes]).toEqual([["echo hi"], [], [], ["ok"], []]);
+  });
+
+  const push = "git push --force";
+  it.each(["ask", "project", "auto"] as const)("in %s, an allow on a dangerous command still asks, with its red line", async (mode) => {
+    const s = await setup({ mode, says: [{ stdout: decide("allow") }], turns: shellCall(push), answers: [true] });
+    await s.session.send("go");
+    expect(s.asked).toEqual([{ summary: `run: ${push}`, warnings: [`Danger: rewriting or deleting git history: ${push}`] }]);
+    expect(s.ran).toEqual([push]);
+  });
+
+  it.each(["never", "-p"] as const)("in %s, an allow on a dangerous command is still refused", async (mode) => {
+    const s = await setup({ mode, says: [{ stdout: decide("allow") }], turns: shellCall(push) });
+    await s.session.send("go");
+    expect(s.ran).toEqual([]);
+    const refusal = `Not allowed: this command matches the dangerous-command check (rewriting or deleting git history: ${push}).`;
+    expect(s.results()).toEqual([{ output: refusal, isError: true }]);
+  });
+
+  it("in project, an allow on a protected write still asks", async () => {
+    const s = await setup({ mode: "project", says: [{ stdout: decide("allow") }], turns: oneCall("write_file", { path: ".npmrc", content: "x" }) });
+    await s.session.send("go");
+    expect(s.asked).toEqual([{ summary: `write ${path.join(s.root, ".npmrc")}` }]);
+    expect(existsSync(path.join(s.root, ".npmrc"))).toBe(false);
+    expect(s.outcomes).toEqual(["declined"]);
+  });
+
+  // The user's choice, 2026-11-09: an allow skips only the mode's ordinary question and the judge.
+  it.each(["ask", "project"] as const)("in %s, an allow on a write outside the project still asks", async (mode) => {
+    const elsewhere = path.join(await folder(), "a.txt");
+    const s = await setup({ mode, says: [{ stdout: decide("allow") }], turns: oneCall("write_file", { path: elsewhere, content: "x" }) });
+    await s.session.send("go");
+    expect(s.asked.map((a) => a.summary)).toEqual([expect.stringContaining(`write ${elsewhere}`)]);
+    expect(existsSync(elsewhere)).toBe(false);
+  });
+
+  it("in project, an ask puts one question with the hook's note, and a yes runs the call with no second question", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "hello\n");
+    const turns = [callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "shell", { command: "echo hi" }), reply("ok")];
+    const s = await setup({ mode: "project", root, says: [{ stdout: decide("ask", "Check this first") }], turns, answers: [true, true] });
+    await s.session.send("go");
+    expect(s.asked).toEqual([
+      { summary: 'read_file {"path":"a.txt"}', note: "A hook asks: Check this first" },
+      { summary: 'shell {"command":"echo hi"}', note: "A hook asks: Check this first" },
+    ]);
+    expect(s.results()).toEqual([{ output: "     1\thello", isError: false }, { output: "ran echo hi", isError: false }]);
+    expect(s.ran).toEqual(["echo hi"]);
+  });
+
+  it("declines the call on a no to a hook's question, as any no", async () => {
+    const s = await setup({ mode: "ask", says: [{ stdout: decide("ask", "Sure?") }], turns: shellCall("echo hi"), answers: [false] });
+    await s.session.send("go");
+    expect(s.results()).toEqual([{ output: 'The user declined: shell {"command":"echo hi"}', isError: true }]);
+    expect([s.ran, s.outcomes]).toEqual([[], ["declined"]]);
+  });
+
+  // The model's line is also the grey line (the user's choice, 2026-11-09), as a deny's is.
+  it.each([
+    ["never", "Sure?", "Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?)."],
+    ["never", undefined, "Not allowed in never mode: a PreToolUse hook asked for this call to be approved."],
+    ["-p", "Sure?", "Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask."],
+    ["-p", undefined, "Not allowed: a PreToolUse hook asked for this call to be approved, and -p cannot ask."],
+  ] as const)("in %s, an ask (reason %s) refuses the call with its line to the model, and says it grey", async (mode, reason, line) => {
+    const s = await setup({ mode, says: [{ stdout: decide("ask", reason) }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect([s.results(), s.notes, s.asked, s.ran, s.outcomes]).toEqual([[{ output: line, isError: true }], [line], [], [], ["declined"]]);
+  });
+
+  // The question names the call with its whole input, a write's content included, so its refusal is cut as a tool's
+  // long output is (session.ts, truncate).
+  it("cuts the refusal the model gets for a no to a hook's question on a large write", async () => {
+    const content = "x".repeat(MAX_TOOL_OUTPUT);
+    const s = await setup({ mode: "ask", says: [{ stdout: decide("ask") }], turns: oneCall("write_file", { path: "big.txt", content }), answers: [false] });
+    await s.session.send("go");
+    const whole = `The user declined: write_file ${JSON.stringify({ path: "big.txt", content })}`;
+    const cut = `${whole.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${whole.length - MAX_TOOL_OUTPUT} more characters]`;
+    expect([s.results(), s.outcomes]).toEqual([[{ output: cut, isError: true }], ["declined"]]);
+    expect(existsSync(path.join(s.root, "big.txt"))).toBe(false);
+  });
+
+  // The user's own hook: it puts sfw before an install, which the stand-in shell records and never runs.
+  it("runs a rewritten command, the sfw hook's shape, and the gate's check reads the rewritten command", async () => {
+    const s = await setup({ mode: "ask", says: [{ stdout: rewrite({ command: "sfw npm install x" }) }], turns: shellCall("npm install x"), answers: [true] });
+    await s.session.send("go");
+    expect(s.ran).toEqual(["sfw npm install x"]);
+    expect(s.asked.map((a) => a.summary)).toEqual(["run: sfw npm install x"]);
+    expect(s.session.calls).toEqual([{ name: "shell", input: { command: "sfw npm install x" } }]);
+    expect(s.session.messages[1]!.parts).toEqual([{ type: "tool_call", id: "c1", name: "shell", input: { command: "npm install x" } }]);
+    const allowed = rewrite({ command: push }, { permissionDecision: "allow" });
+    const danger = await setup({ mode: "project", says: [{ stdout: allowed }], turns: shellCall("echo hi"), answers: [false] });
+    await danger.session.send("go");
+    expect(danger.asked).toEqual([{ summary: `run: ${push}`, warnings: [`Danger: rewriting or deleting git history: ${push}`] }]);
+  });
+
+  it("names the rewritten call in a hook's question", async () => {
+    const asks = rewrite({ command: "echo two" }, { permissionDecision: "ask" });
+    const s = await setup({ mode: "ask", says: [{ stdout: asks }], turns: shellCall("echo one"), answers: [true] });
+    await s.session.send("go");
+    expect(s.asked).toEqual([{ summary: 'shell {"command":"echo two"}', note: "A hook asks." }]);
+    expect(s.ran).toEqual(["echo two"]);
+  });
+
+  // Choice 16 and the design's review finding 4: the record of calls takes the input that ran, kept over a resume.
+  it("keeps a read rewritten from A to B in the record, saved before the call runs and still there after a resume, the reply saying A", async () => {
+    const top = await folder();
+    const dir = path.join(top, "sessions", "project");
+    privateDir(dir);
+    const file = path.join(dir, "s1.jsonl");
+    const transcript = new Transcript(file, path.join(dir, "s1", "pictures"));
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    writeFileSync(path.join(root, "b.txt"), "B\n");
+    const b = path.join(root, "b.txt");
+    const s = await setup({ mode: "never", root, says: [{ stdout: rewrite({ file_path: b }) }], turns: oneCall("read_file", { path: "a.txt" }), transcript });
+    await s.session.send("go");
+    expect(s.results()).toEqual([{ output: "     1\tB", isError: false }]);
+    expect(s.session.calls).toEqual([{ name: "read_file", input: { path: b } }]);
+    const saved = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
+    expect(saved.map((l) => l.t)).toEqual(["start", "message", "message", "rewritten", "message", "message"]);
+    expect(saved[3]).toEqual({ t: "rewritten", at: expect.any(String), id: "c1", input: { path: b } });
+    const r = readTranscript(file, path.join(dir, "s1", "pictures"));
+    if ("problem" in r) throw new Error(r.problem);
+    expect(r.calls).toEqual([{ name: "read_file", input: { path: b } }]);
+    expect(r.messages[1]!.parts).toEqual([{ type: "tool_call", id: "c1", name: "read_file", input: { path: "a.txt" } }]);
+  });
+
+  it("refuses a rewrite with replace_all: true, with its line", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "hello\n");
+    const edit = rewrite({ file_path: path.join(root, "a.txt"), old_string: "hello", new_string: "bye", replace_all: true });
+    const turns = oneCall("edit_file", { path: "a.txt", old_text: "hello", new_text: "bye" });
+    const s = await setup({ mode: "never", root, says: [{ stdout: edit }], turns });
+    await s.session.send("go");
+    const why = `"replace_all" must be false, as Tachikoma's edit_file replaces one exact match`;
+    const line = `A PreToolUse hook's rewrite of edit_file could not be used (${why}): ${s.command(s.hooks[0]!)}`;
+    expect([s.results(), s.notes, s.outcomes]).toEqual([[{ output: line, isError: true }], [line], ["declined"]]);
+    expect(readFileSync(path.join(root, "a.txt"), "utf8")).toBe("hello\n");
+    expect(s.session.calls).toEqual([{ name: "edit_file", input: { path: "a.txt", old_text: "hello", new_text: "bye" } }]);
+  });
+
+  // Task 6's code review: the error log names the input that ran, as the record of calls does.
+  it("names the rewritten input in the error log when the rewritten call fails", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "hello\n");
+    const a = path.join(root, "a.txt");
+    const edit = rewrite({ file_path: a, old_string: "not in the file", new_string: "bye" });
+    const turns = oneCall("edit_file", { path: "a.txt", old_text: "hello", new_text: "bye" });
+    const s = await setup({ mode: "never", root, says: [{ stdout: edit }], turns });
+    await s.session.send("go");
+    expect(s.outcomes).toEqual(["failed"]);
+    expect(s.errors.map((e) => e.attempted)).toEqual([`edit_file ${JSON.stringify({ path: a, old_text: "not in the file", new_text: "bye" })}`]);
+  });
+
+  it("uses the first of two rewrites in the file, saying which was ignored", async () => {
+    const says = [{ stdout: rewrite({ command: "echo first" }) }, { stdout: rewrite({ command: "echo second" }) }];
+    const s = await setup({ mode: "never", says, turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.ran).toEqual(["echo first"]);
+    const second = s.command(s.hooks[1]!);
+    expect(s.notes).toEqual([`Two PreToolUse hooks rewrote shell's input; the first in the settings file was used, and ${second} was ignored.`]);
+  });
+
+  // Task 3's carry-over: combine still collects a rewrite from a hook that also denied, which a refused call never uses.
+  it.each([
+    ["a deny with a rewrite", { stdout: decide("deny", "no", { updatedInput: { command: "echo other" } }) }],
+    ["exit 2 with a rewrite", { stdout: rewrite({ command: "echo other" }), code: 2 }],
+  ] as const)("never uses a rewrite of a refused call, nor says two rewrites: %s", async (_name, says) => {
+    const s = await setup({ mode: "never", says: [says, { stdout: rewrite({ command: "echo second" }) }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.ran).toEqual([]);
+    expect(s.notes).toEqual([expect.stringMatching(/^A PreToolUse hook refused shell/)]);
+    expect(s.session.calls).toEqual([{ name: "shell", input: { command: "echo hi" } }]);
+  });
+
+  // The user's choice, 2026-11-09: in -p a hook's refusal fails the run, so the gate is told of each (cli.tsx).
+  it.each([
+    ["a deny", { stdout: decide("deny", "no") }, 1],
+    ["a block", { stdout: "", code: 2 }, 1],
+    ["a rewrite that cannot be used", { stdout: rewrite({ command: "echo x", run_in_background: true }) }, 1],
+    ["an ask -p cannot put", { stdout: decide("ask") }, 1],
+    ["an allow", { stdout: decide("allow") }, 0],
+    ["a rewrite that is used", { stdout: rewrite({ command: "echo x" }) }, 0],
+  ] as const)("in -p, tells the gate of a call a hook refused: %s", async (_name, says, times) => {
+    const s = await setup({ mode: "-p", says: [says], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.refusals).toHaveLength(times);
+  });
+
+  it("says a defer, and takes it as no opinion", async () => {
+    const s = await setup({ mode: "ask", says: [{ stdout: decide("defer") }], turns: shellCall("echo hi"), answers: [true] });
+    await s.session.send("go");
+    expect(s.notes).toEqual(['A PreToolUse hook answered "defer", which Tachikoma takes as no opinion.']);
+    expect(s.asked.map((a) => a.summary)).toEqual(["run: echo hi"]);
+    expect(s.ran).toEqual(["echo hi"]);
+  });
+
+  it("cancels the call when the turn is stopped while its PreToolUse hook runs", async () => {
+    const root = await folder();
+    const abort = new AbortController();
+    const says = [{ stdout: decide("allow"), go: path.join(root, "never-made") }];
+    const s = await setup({ mode: "never", root, says, turns: shellCall("echo hi") });
+    const sent = s.session.send("go", abort.signal);
+    while (!s.inputs().length) await pause(20);
+    abort.abort();
+    await sent;
+    expect([s.results(), s.outcomes, s.ran]).toEqual([[{ output: "Cancelled by the user.", isError: true }], ["cancelled"], []]);
+  });
+
+  it("fires a subagent's PreToolUse with its agent_id", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const { script, out } = await hookFolder();
+    const hook: Hook = { event: "PreToolUse", matcher: { names: ["Read"] }, command: process.execPath, args: [script, out, "", "0"], async: false, where: "" };
+    const bus = new Bus();
+    const gate = new PermissionGate("never", async () => false);
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const tasks = new Tasks({
+      bus,
+      max: 8,
+      worker: () => new FakeProvider("w", [callTool("c1", "read_file", { path: "a.txt" }), reply("found it")]),
+      system: "sub",
+      tools: [readFileTool],
+      ctx: { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate },
+      hooks: new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, bus),
+    });
+    expect(await tasks.start("look", { background: false }).done).toEqual({ state: "done", text: "found it" });
+    const inputs = readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const fired = { agent_id: "t1", agent_type: "Explore", tool_name: "Read", tool_input: { file_path: path.join(root, "a.txt") } };
+    expect(inputs).toEqual([expect.objectContaining(fired)]);
+  });
+
+  // Release 8b plan, Task 7 (design, "Tool hooks", and its review's finding 1): the hooks after a call, and a hook's
+  // continue: false stopping the turn as a user's stop does, every call of the reply answered once.
+  const NOT_RUN = "Not run: a hook stopped the turn.";
+  const after = (event: Event, fields: object, top: object = {}) => JSON.stringify({ ...top, hookSpecificOutput: { hookEventName: event, ...fields } });
+  const stops = (reason?: string) => JSON.stringify({ continue: false, ...(reason === undefined ? {} : { stopReason: reason }) });
+  const hookText = (event: Event, text: string) => ({ type: "text", text: `${event} hook:\n${text}`, from: "hooks" });
+  const many = (...c: [string, string, unknown][]): Turn => ({ parts: c.map(([id, name, input]) => ({ type: "tool_call" as const, id, name, input })), usage });
+
+  it("fires PostToolUse after a call that ran, with the input that ran, Bash's shape for a command and Write's type", async () => {
+    const root = await folder();
+    const a = path.join(root, "a.txt");
+    const turns = [
+      callTool("c1", "shell", { command: "echo hi" }),
+      callTool("c2", "write_file", { path: "a.txt", content: "one" }),
+      callTool("c3", "write_file", { path: "a.txt", content: "two" }),
+      reply("ok"),
+    ];
+    const says: Says[] = [{ event: "PostToolUse", stdout: "" }, { names: ["Bash"], stdout: rewrite({ command: "echo rewritten" }) }];
+    const s = await setup({ mode: "never", root, says, turns });
+    await s.session.send("go");
+    const ms = expect.any(Number);
+    const bash = { stdout: "ran echo rewritten", stderr: "", interrupted: false, isImage: false };
+    const write = (id: string, content: string, type: string) => {
+      const fired = { tool_name: "Write", tool_input: { file_path: a, content }, tool_use_id: id, tool_response: { filePath: a, type } };
+      return expect.objectContaining({ ...fired, duration_ms: ms });
+    };
+    expect(s.inputs().filter((i) => i.hook_event_name === "PostToolUse")).toEqual([
+      expect.objectContaining({ tool_name: "Bash", tool_input: { command: "echo rewritten" }, tool_use_id: "c1", tool_response: bash, duration_ms: ms }),
+      write("c2", "one", "create"),
+      write("c3", "two", "update"),
+    ]);
+    expect([s.outcomes, s.notes]).toEqual([["ok", "ok", "ok"], []]);
+  });
+
+  it("fires PostToolUseFailure after a failed call, its error starting Exit code 1, and neither for a declined, unknown or schema-refused call", async () => {
+    const turns = [
+      callTool("c1", "shell", { command: "fail" }),
+      callTool("c2", "shell", { command: "echo no" }),
+      callTool("c3", "nope", {}),
+      callTool("c4", "shell", { command: 5 }),
+      reply("ok"),
+    ];
+    const says: Says[] = [{ event: "PostToolUse", stdout: "" }, { event: "PostToolUseFailure", stdout: "" }];
+    const s = await setup({ mode: "ask", says, turns, answers: [true, false] });
+    await s.session.send("go");
+    expect(s.outcomes).toEqual(["failed", "declined", "failed", "failed"]);
+    const failure = { tool_name: "Bash", tool_input: { command: "fail" }, tool_use_id: "c1", error: "Exit code 1\nit failed\n", is_interrupt: false };
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "PostToolUseFailure", ...failure, duration_ms: expect.any(Number) })]);
+  });
+
+  it("fires neither PostToolUse nor PostToolUseFailure for a call a PreToolUse hook refused, nor one the user's stop cancelled", async () => {
+    const post: Says[] = [{ event: "PostToolUse", stdout: "" }, { event: "PostToolUseFailure", stdout: "" }];
+    const denied = await setup({ mode: "never", says: [{ stdout: decide("deny", "no") }, ...post], turns: shellCall("echo hi") });
+    await denied.session.send("go");
+    expect([denied.outcomes, denied.inputs().map((i) => i.hook_event_name)]).toEqual([["declined"], ["PreToolUse"]]);
+    const stop = new AbortController();
+    // Stops the turn once it runs, as Esc does, then fails as a killed command does.
+    const stopping = defineTool("stopping", "Stops the turn while it runs", z.object({}), (_input, c) =>
+      new Promise((_ok, no) => {
+        c.signal?.addEventListener("abort", () => no(new Error("killed")));
+        stop.abort();
+      }));
+    const cancelled = await setup({ mode: "never", says: post, turns: [callTool("c1", "stopping", {})], tools: [stopping] });
+    await cancelled.session.send("go", stop.signal);
+    expect([cancelled.results(), cancelled.outcomes, cancelled.inputs()]).toEqual([[{ output: "Cancelled by the user.", isError: true }], ["cancelled"], []]);
+  });
+
+  it("gives the model a string updatedToolOutput in place of a read's result, and ignores one that does not match the tool's result", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const turns = [callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "shell", { command: "echo hi" }), reply("ok")];
+    const says: Says[] = [
+      { event: "PostToolUse", names: ["Read"], stdout: after("PostToolUse", { updatedToolOutput: "not what the file says" }) },
+      { event: "PostToolUse", names: ["Bash"], stdout: after("PostToolUse", { updatedToolOutput: "just words" }) },
+    ];
+    const s = await setup({ mode: "never", root, says, turns });
+    await s.session.send("go");
+    expect(s.results()).toEqual([{ output: "not what the file says", isError: false }, { output: "ran echo hi", isError: false }]);
+    expect(s.outcomes).toEqual(["ok", "ok"]);
+  });
+
+  it("puts the hooks' text for the model after the reply's results, headed, a block's reason among it, the result and outcome unchanged", async () => {
+    const says: Says[] = [
+      { stdout: answer({ additionalContext: "before it ran" }) },
+      { event: "PostToolUse", stdout: after("PostToolUse", { additionalContext: "after it ran" }, { decision: "block", reason: "looked odd" }) },
+    ];
+    const s = await setup({ mode: "never", says, turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([
+      { type: "tool_result", callId: "c1", output: "ran echo hi", isError: false },
+      hookText("PreToolUse", "before it ran"),
+      hookText("PostToolUse", "looked odd"),
+      hookText("PostToolUse", "after it ran"),
+    ]);
+    expect([s.outcomes, s.notes]).toEqual([["ok"], []]);
+  });
+
+  // Task 5's build: write_file reads the file to tell Write's create from update only when report is set.
+  it.each<[string, Partial<Says>, boolean]>([
+    ["a PostToolUse hook for Bash", { event: "PostToolUse", names: ["Bash"] }, true],
+    ["a PostToolUseFailure hook for Bash", { event: "PostToolUseFailure", names: ["Bash"] }, true],
+    ["a PostToolUse hook for Read alone", { event: "PostToolUse", names: ["Read"] }, false],
+    ["a PreToolUse hook alone", {}, false],
+  ])("gives a tool ctx.report only when a hook after the call matches it: %s", async (_name, hook, given) => {
+    const s = await setup({ mode: "never", says: [{ stdout: "", ...hook }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.reported).toEqual([given]);
+  });
+
+  it.each([
+    ["halt", "A PreToolUse hook stopped the turn: halt"],
+    [undefined, "A PreToolUse hook stopped the turn."],
+  ] as const)("stops the turn at a PreToolUse hook's continue: false (reason %s), running no call, its text kept from the next turn", async (reason, line) => {
+    const stopping = JSON.stringify({ ...JSON.parse(stops(reason)), hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: "noted" } });
+    const turns = [many(["c1", "shell", { command: "echo one" }], ["c2", "shell", { command: "echo two" }]), reply("next turn")];
+    const s = await setup({ mode: "never", says: [{ stdout: stopping }], turns });
+    expect(await s.session.send("go")).toEqual({ stopped: reason ?? "" });
+    const notRun = { output: NOT_RUN, isError: true };
+    expect([s.ran, s.results(), s.outcomes, s.notes]).toEqual([[], [notRun, notRun], ["cancelled", "cancelled"], [line]]);
+    expect([s.inputs().length, s.lead.seen.length]).toEqual([1, 1]);
+    expect(await s.session.send("again")).toBeUndefined();
+    // The next request joins the stopped turn's results and the new prompt (types.ts, sentAll): the text is there once.
+    const result = (callId: string) => ({ type: "tool_result", callId, ...notRun });
+    const parts = [result("c1"), result("c2"), hookText("PreToolUse", "noted"), { type: "text", text: "again" }];
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual(parts);
+  });
+
+  it("stops the turn at a PostToolUseFailure hook's continue: false, the failed call keeping its own result and the next not run", async () => {
+    const turns = [many(["c1", "shell", { command: "fail" }], ["c2", "shell", { command: "echo two" }])];
+    const s = await setup({ mode: "never", says: [{ event: "PostToolUseFailure", stdout: stops("it broke") }], turns });
+    expect(await s.session.send("go")).toEqual({ stopped: "it broke" });
+    const failed = shellText({ code: 1, signal: null, stdout: "", stderr: "it failed" });
+    expect(s.results()).toEqual([{ output: failed, isError: true }, { output: NOT_RUN, isError: true }]);
+    expect([s.ran, s.outcomes, s.notes]).toEqual([["fail"], ["failed", "cancelled"], ["A PostToolUseFailure hook stopped the turn: it broke"]]);
+  });
+
+  // The design's review finding 1: the history stays one the providers take and a resume can load.
+  it("stops the turn at a PostToolUse hook's continue: false while a delegate runs: every call answered once, the next request taken, the resume", async () => {
+    const top = await folder();
+    const dir = path.join(top, "sessions", "project");
+    privateDir(dir);
+    const file = path.join(dir, "s1.jsonl");
+    const pictures = path.join(dir, "s1", "pictures");
+    const transcript = new Transcript(file, pictures);
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const worker = new Held("fake:w"); // never answers, so the subagent runs until it is stopped
+    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate: new PermissionGate("never", async () => false) };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => worker, system: "sub", tools: [readFileTool], ctx });
+    const calls = many(
+      ["c1", "shell", { command: "echo one" }],
+      ["c2", "delegate", { description: "look", task: "find x" }],
+      ["c3", "read_file", { path: "a.txt" }],
+    );
+    const says: Says[] = [{ event: "PostToolUse", names: ["Bash"], stdout: stops("enough") }];
+    const s = await setup({ mode: "never", root, says, turns: [calls, reply("fine")], transcript, tools: [delegateTool(tasks, { headless: false })] });
+    expect(await s.session.send("go")).toEqual({ stopped: "enough" });
+    expect([tasks.all.map((t) => t.state), worker.asked.length]).toEqual([["stopped"], 1]);
+    const answered = [
+      { type: "tool_result", callId: "c1", output: "ran echo one", isError: false },
+      { type: "tool_result", callId: "c2", output: "t1 was stopped.", isError: false },
+      { type: "tool_result", callId: "c3", output: NOT_RUN, isError: true },
+    ];
+    expect(s.session.messages[2]!.parts).toEqual(answered);
+    expect(s.notes).toEqual(["A PostToolUse hook stopped the turn: enough"]);
+    await s.session.send("go on");
+    // The results and the new prompt go as one user message (types.ts, sentAll).
+    expect(s.lead.seen[1]!.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(s.lead.seen[1]![2]!.parts).toEqual([...answered, { type: "text", text: "go on" }]);
+    const r = readTranscript(file, pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    expect(r.messages[2]!.parts).toEqual(answered);
+  });
+
+  it("stops a call still running when a delegate's PostToolUse hook stops the turn, sent Agent's shape, in the approved words", async () => {
+    const root = await folder();
+    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate: new PermissionGate("never", async () => false) };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", [reply("found")]), system: "sub", tools: [readFileTool], ctx });
+    // Runs until it is stopped, then fails as a killed command does.
+    const slow = defineTool("slow", "Waits to be stopped", z.object({}), (_input, c) =>
+      new Promise((_ok, no) => {
+        if (c.signal?.aborted) return no(new Error("killed"));
+        c.signal?.addEventListener("abort", () => no(new Error("killed")));
+      }));
+    const calls = many(["c1", "slow", {}], ["c2", "delegate", { description: "look", task: "find x" }]);
+    const says: Says[] = [{ event: "PostToolUse", names: ["Agent"], stdout: stops() }];
+    const s = await setup({ mode: "never", root, says, turns: [calls], tools: [delegateTool(tasks, { headless: false }), slow] });
+    expect(await s.session.send("go")).toEqual({ stopped: "" });
+    expect(s.results()).toEqual([{ output: "Stopped: a hook stopped the turn.", isError: true }, { output: "found", isError: false }]);
+    expect([s.outcomes.sort(), s.errors, s.notes]).toEqual([["cancelled", "ok"], [], ["A PostToolUse hook stopped the turn."]]);
+    const agent = { status: "completed", agentId: "t1", content: [{ type: "text", text: "found" }] };
+    const input = { description: "look", prompt: "find x", subagent_type: "Explore" };
+    expect(s.inputs()).toEqual([expect.objectContaining({ tool_name: "Agent", tool_input: input, tool_use_id: "c2", tool_response: agent })]);
+  });
+
+  // Task 7's code review: a question still open when a hook stops the turn runs nothing, whatever its answer, and the
+  // model is told it was not run (Task 7's re-check).
+  it.each<[string, Mode5, Says[]]>([
+    ["the mode's question", "ask", []],
+    ["a PreToolUse hook's ask", "project", [{ names: ["Write"], stdout: decide("ask") }]],
+  ])("writes nothing on a yes to %s given after a delegate's PostToolUse hook stopped the turn", async (_name, mode, pre) => {
+    const root = await folder();
+    let yes!: (answer: boolean) => void;
+    const answer = new Promise<boolean>((r) => (yes = r));
+    const worker = new Held("fake:w"); // answered once the write's question is open
+    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate: new PermissionGate("never", async () => false) };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => worker, system: "sub", tools: [readFileTool], ctx });
+    // Runs beside the others until the turn is stopped, then says yes to the write's question.
+    const watch = {
+      ...defineTool("watch", "Says yes once the turn is stopped", z.object({}), (_input, c) =>
+        new Promise<string>((ok) => {
+          const go = () => (yes(true), ok("saw the stop"));
+          if (c.signal?.aborted) go();
+          else c.signal?.addEventListener("abort", go);
+        })),
+      parallel: true,
+    };
+    const calls = many(["c1", "write_file", { path: "a.txt", content: "x" }], ["c2", "delegate", { description: "look", task: "find x" }], ["c3", "watch", {}]);
+    const says: Says[] = [...pre, { event: "PostToolUse", names: ["Agent"], stdout: stops("enough") }];
+    const s = await setup({ mode, root, says, turns: [calls], answers: [answer], tools: [delegateTool(tasks, { headless: false }), watch] });
+    const sent = s.session.send("go");
+    while (!s.asked.length || !worker.asked.length) await pause(20);
+    worker.answer("found");
+    expect(await sent).toEqual({ stopped: "enough" });
+    expect(existsSync(path.join(root, "a.txt"))).toBe(false);
+    expect(s.results()).toEqual([{ output: NOT_RUN, isError: true }, { output: "found", isError: false }, { output: "saw the stop", isError: false }]);
+    expect(s.asked).toHaveLength(1);
+  });
+
+  // Task 7's re-check: in auto mode, a stop while the judge decides runs nothing, whether the judge then still says yes or
+  // its request is cut off, and the model is told the call was not run; the user's stop is a cancel, as before.
+  const onStop = (signal: AbortSignal, then: () => void) => (signal.aborted ? then() : signal.addEventListener("abort", then));
+  const judging: [string, Judge][] = [
+    ["says yes after the stop", (_action, signal) => new Promise((ok) => onStop(signal, () => ok({ allow: true })))],
+    ["has its request cut off", (_action, signal) => new Promise((_ok, no) => onStop(signal, () => no(signal.reason)))],
+  ];
+
+  it.each(judging)("runs nothing in auto mode when a delegate's PostToolUse hook stops the turn while the judge %s", async (_name, judge) => {
+    const root = await folder();
+    const worker = new Held("fake:w"); // answered once the judge is deciding
+    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate: new PermissionGate("never", async () => false) };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => worker, system: "sub", tools: [readFileTool], ctx });
+    const calls = many(["c1", "shell", { command: "echo hi" }], ["c2", "delegate", { description: "look", task: "find x" }]);
+    const says: Says[] = [{ event: "PostToolUse", names: ["Agent"], stdout: stops("enough") }];
+    const s = await setup({ mode: "auto", root, says, turns: [calls], judge, tools: [delegateTool(tasks, { headless: false })] });
+    const sent = s.session.send("go");
+    while (!s.judged.length || !worker.asked.length) await pause(20);
+    worker.answer("found");
+    expect(await sent).toEqual({ stopped: "enough" });
+    expect([s.ran, s.results(), s.outcomes.sort()]).toEqual([[], [{ output: NOT_RUN, isError: true }, { output: "found", isError: false }], ["cancelled", "ok"]]);
+  });
+
+  it.each(judging)("cancels the call in auto mode when the user stops the turn while the judge %s", async (_name, judge) => {
+    const stop = new AbortController();
+    const s = await setup({ mode: "auto", says: [], turns: shellCall("echo hi"), judge: (action, signal, own) => (stop.abort(), judge(action, signal, own)) });
+    await s.session.send("go", stop.signal);
+    expect([s.ran, s.results(), s.outcomes, s.errors]).toEqual([[], [{ output: "Cancelled by the user.", isError: true }], ["cancelled"], []]);
+  });
+
+  // Task 7's code review: a throw after the call ran leaves its own result, so the history stays one the providers take.
+  it("keeps a call's own result when a listener of the hooks' lines throws at PostToolUse, saying so, and the next send works", async () => {
+    const says: Says[] = [{ event: "PostToolUse", stdout: JSON.stringify({ systemMessage: "hello" }) }];
+    const s = await setup({ mode: "never", says, turns: [...shellCall("echo hi"), reply("again")] });
+    s.bus.on("hook-note", () => {
+      throw new Error("listener broke");
+    });
+    await s.session.send("go");
+    expect([s.results(), s.outcomes]).toEqual([[{ output: "ran echo hi", isError: false }], ["ok"]]);
+    expect(s.errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([["hook", "PostToolUse hook", "PostToolUse hook failed: listener broke"]]);
+    await s.session.send("more");
+    expect(s.lead.seen[2]!.at(-1)!.parts).toEqual([{ type: "text", text: "more" }]);
+  });
+
+  // Release 8b plan, Task 8 (choices 6 and 17): UserPromptSubmit before a prompt goes, and the hooks' text for the model
+  // in the prompt's message, saved with it.
+  const prompted = (fields: object, top: object = {}) => after("UserPromptSubmit", fields, top);
+  const own = (text: string, on: Says = { stdout: "" }): Says => ({ ...on, event: "UserPromptSubmit", stdout: text });
+
+  it("fires UserPromptSubmit with the prompt, each picture its marker, and sends its context and plain text with the prompt, headed", async () => {
+    const says = [own(prompted({ additionalContext: "the tests are in tests/" })), own("plain words")];
+    const s = await setup({ mode: "never", says, turns: [reply("ok"), reply("again")] });
+    const png = { type: "image", id: 3, mediaType: "image/png", data: Buffer.from("png") } as const;
+    await s.session.send([{ type: "text", text: "what is in " }, png, { type: "text", text: "?" }]);
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([
+      { type: "text", text: "what is in " },
+      { ...png, data: expect.anything() }, // the stand-in keeps a copy of each request, its Buffer a Uint8Array
+      { type: "text", text: "?" },
+      hookText("UserPromptSubmit", "the tests are in tests/"),
+      hookText("UserPromptSubmit", "plain words"),
+    ]);
+    const first = { hook_event_name: "UserPromptSubmit", prompt: "what is in [Image #3]?", prompt_id: expect.any(String) };
+    expect(s.inputs()).toEqual([expect.objectContaining(first), expect.objectContaining(first)]);
+    // The judge's prompts hold the user's own words alone (choice 6).
+    expect(s.session.prompts).toEqual(["what is in [Image #3]?"]);
+    // Each prompt gets a prompt id of its own (Hooks.newPrompt).
+    await s.session.send("more");
+    const ids = s.inputs().map((i) => i.prompt_id);
+    expect([ids[0] === ids[1], ids[2] === ids[0], ids[2] === ids[3]]).toEqual([true, false, true]);
+  });
+
+  it.each([
+    ["a block", JSON.stringify({ decision: "block", reason: "not today" }), { blocked: "not today" }, "A UserPromptSubmit hook blocked the prompt: not today"],
+    // No reason: its own words (approved by the user, 2026-11-09).
+    ["exit 2 with no error output", "", { blocked: "" }, "A UserPromptSubmit hook blocked the prompt."],
+    ["a continue: false", stops("halt"), { stopped: "halt", unsent: true }, "A UserPromptSubmit hook stopped the turn: halt"],
+  ] as const)("sends nothing and saves nothing at a UserPromptSubmit hook's %s, leaving the waiting text for the next prompt", async (_name, stdout, ended, line) => {
+    const top = await folder();
+    const file = path.join(top, "s1.jsonl");
+    const transcript = new Transcript(file, path.join(top, "s1", "pictures"));
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const waiting = ["t1 finished"];
+    const says = [own(stdout, { stdout, code: stdout ? 0 : 2 })];
+    const s = await setup({ mode: "never", says, turns: [reply("ok")], transcript, inbox: () => waiting.splice(0) });
+    s.session.waitForNext([{ event: "SessionStart", text: "from the start" }]);
+    expect(await s.session.send("go")).toEqual(ended);
+    expect([s.session.messages, s.session.prompts, s.lead.seen, waiting]).toEqual([[], [], [], ["t1 finished"]]);
+    expect(readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => (JSON.parse(l) as Line).t)).toEqual(["start"]);
+    expect(s.notes).toEqual([line]);
+    // Both kinds of waiting text go with the next prompt that is sent (Task 8's code review).
+    s.given.set({ hooks: [], off: false, leftOut: [] });
+    await s.session.send("again");
+    const next = [hookText("SessionStart", "from the start"), { type: "text", text: "again" }, { type: "text", text: "t1 finished", from: "tasks" }];
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual(next);
+  });
+
+  it("sends nothing and saves nothing when the user stops the turn while a UserPromptSubmit hook runs", async () => {
+    const root = await folder();
+    const abort = new AbortController();
+    const s = await setup({ mode: "never", root, says: [own("", { stdout: "", go: path.join(root, "never-made") })], turns: [reply("ok")] });
+    const sent = s.session.send("go", abort.signal);
+    // Up to 10 s for the hook's process to start (Task 8's code review), then the test fails here, not at its timeout.
+    for (let i = 0; !s.inputs().length; i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+    abort.abort();
+    expect(await sent).toBeUndefined();
+    expect([s.session.messages, s.session.prompts, s.lead.seen, s.notes, s.errors]).toEqual([[], [], [], [], []]);
+  });
+
+  it("fires no UserPromptSubmit for a subagent's brief, which the lead wrote", async () => {
+    const root = await folder();
+    const { script, out } = await hookFolder();
+    const hook: Hook = { event: "UserPromptSubmit", matcher: { all: true }, command: process.execPath, args: [script, out, "", "0"], async: false, where: "" };
+    const bus = new Bus();
+    const gate = new PermissionGate("never", async () => false);
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const tasks = new Tasks({
+      bus,
+      max: 8,
+      worker: () => new FakeProvider("w", [reply("found it")]),
+      system: "sub",
+      tools: [readFileTool],
+      ctx: { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate },
+      hooks: new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, bus),
+    });
+    expect(await tasks.start("look", { background: false }).done).toEqual({ state: "done", text: "found it" });
+    expect(existsSync(out)).toBe(false);
+  });
+
+  // Task 10 fills it with SessionStart's text; a load empties it, as that text was the last conversation's.
+  it("sends the text waiting for the next request at the start of the next prompt's message, once, and a load empties it", async () => {
+    const s = await setup({ mode: "never", says: [], turns: [reply("ok"), reply("again"), reply("three")] });
+    s.session.waitForNext([{ event: "SessionStart", text: "from the start" }]);
+    await s.session.send("go");
+    await s.session.send("more");
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([hookText("SessionStart", "from the start"), { type: "text", text: "go" }]);
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([{ type: "text", text: "more" }]);
+    s.session.waitForNext([{ event: "SessionStart", text: "the last one's" }]);
+    s.session.load({ id: "s2", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+    await s.session.send("three");
+    expect(s.lead.seen[2]!.at(-1)!.parts).toEqual([{ type: "text", text: "three" }]);
+  });
+
+  it("keeps a UserPromptSubmit hook's text in the saved message, so a resumed session sends it again without running the hook", async () => {
+    const top = await folder();
+    const file = path.join(top, "s1.jsonl");
+    const pictures = path.join(top, "s1", "pictures");
+    const transcript = new Transcript(file, pictures);
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const says = [own(prompted({ additionalContext: "remember the tests" }))];
+    const s = await setup({ mode: "never", says, turns: [reply("ok"), reply("again")], transcript });
+    await s.session.send("go");
+    const r = readTranscript(file, pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    const message = [{ type: "text", text: "go" }, hookText("UserPromptSubmit", "remember the tests")];
+    expect(r.messages[0]!.parts).toEqual(message);
+    expect(r.prompts).toEqual(["go"]);
+    s.session.load({ id: "s1", messages: r.messages, system: r.system, transcript, prompts: r.prompts, calls: r.calls, nextPicture: r.nextPicture, nextTask: r.nextTask });
+    expect(s.inputs()).toHaveLength(1);
+    await s.session.send("more");
+    expect(s.lead.seen[1]![0]!.parts).toEqual(message);
+    expect(s.inputs().map((i) => i.prompt)).toEqual(["go", "more"]);
+  });
+
+  // Release 8b plan, Task 9 (choices 8 and 21): Stop and SubagentStop at a turn's normal end, where a block or context keeps
+  // it going, up to Claude Code's 8 in a row, and SubagentStart before a subagent's first request.
+  const block = (reason: string) => JSON.stringify({ decision: "block", reason });
+  const feedback = (text: string) => ({ type: "text", text: `Stop hook feedback:\n${text}`, from: "hooks" });
+  const NO_REASON = "The hook gave no reason; carry on with the task.";
+  const kept = (reason: string) => `A Stop hook kept the turn going: ${reason}`;
+  const EIGHT = "Stop hooks kept the turn going 8 times in a row; it ends here.";
+  const replies = (n: number, from = 1) => Array.from({ length: n }, (_, i) => reply(`try ${from + i}`));
+  const look = callTool("c1", "delegate", { description: "look", task: "find x" });
+
+  it("keeps the turn going at a Stop hook's block, the model reading its feedback, and fires Stop with the reply's words", async () => {
+    const says: Says[] = [{ event: "Stop", stdout: "", seq: [block("run the tests")] }];
+    const s = await setup({ mode: "never", says, turns: [reply("done, I think"), reply("the tests pass")] });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect(s.lead.seen).toHaveLength(2);
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([feedback("run the tests")]);
+    expect(s.notes).toEqual([kept("run the tests")]);
+    const stop = { hook_event_name: "Stop", background_tasks: [], session_crons: [] };
+    expect(s.inputs()).toEqual([
+      expect.objectContaining({ ...stop, stop_hook_active: false, last_assistant_message: "done, I think" }),
+      expect.objectContaining({ ...stop, stop_hook_active: true, last_assistant_message: "the tests pass" }),
+    ]);
+    expect(s.session.messages.at(-1)).toMatchObject({ role: "assistant", parts: [{ type: "text", text: "the tests pass" }] });
+  });
+
+  // The user's choice, 2026-11-09: with no reason to name, its own line, the hook's text for the model left out of it.
+  it.each([
+    // The user's choice, 2026-11-09: the model is told to carry on.
+    ["a block with no reason", JSON.stringify({ decision: "block" }), NO_REASON],
+    ["additionalContext alone", after("Stop", { additionalContext: "check the docs" }), "check the docs"],
+  ])("keeps the turn going at a Stop hook's %s, saying so in its own line", async (_name, said, text) => {
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: "", seq: [said] }], turns: [reply("done"), reply("again")] });
+    await s.session.send("go");
+    expect(s.lead.seen[1]!.at(-1)!.parts).toEqual([feedback(text)]);
+    expect(s.notes).toEqual(["A Stop hook kept the turn going."]);
+  });
+
+  it("ends the turn once Stop hooks have kept it going 8 times in a row: nine blocks give eight more requests, then the line", async () => {
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: block("again") }], turns: replies(9) });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect([s.lead.seen.length, s.inputs().length]).toEqual([9, 9]);
+    expect(s.notes).toEqual([...Array<string>(8).fill(kept("again")), EIGHT]);
+    // The ninth block's reason is not sent: the turn ends on the model's reply.
+    expect(s.session.messages.at(-1)).toMatchObject({ role: "assistant", parts: [{ type: "text", text: "try 9" }] });
+  });
+
+  it("starts the count of Stop blocks again after a reply with a tool call, stop_hook_active staying true", async () => {
+    const turns = [...replies(4), callTool("c1", "shell", { command: "echo hi" }), ...replies(9, 5)];
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: block("again") }], turns });
+    await s.session.send("go");
+    expect([s.lead.seen.length, s.ran]).toEqual([14, ["echo hi"]]);
+    expect(s.notes).toEqual([...Array<string>(12).fill(kept("again")), EIGHT]);
+    expect(s.inputs().map((i) => i.stop_hook_active)).toEqual([false, ...Array<boolean>(12).fill(true)]);
+  });
+
+  it.each([
+    ["enough", "A Stop hook stopped the turn: enough"],
+    [undefined, "A Stop hook stopped the turn."],
+  ] as const)("ends the turn at a Stop hook's continue: false (reason %s), the answer kept and a block beside it not followed", async (reason, line) => {
+    const stopping = JSON.stringify({ ...JSON.parse(stops(reason)), decision: "block", reason: "go on" });
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: stopping }], turns: [reply("the answer")] });
+    expect(await s.session.send("go")).toEqual({ stopped: reason ?? "" });
+    expect([s.lead.seen.length, s.notes]).toEqual([1, [line]]);
+    expect(s.session.messages.at(-1)).toMatchObject({ role: "assistant", parts: [{ type: "text", text: "the answer" }] });
+  });
+
+  it("sends Stop each background subagent still running, in background_tasks", async () => {
+    const worker = new Held("fake:w"); // never answers, so the subagent is still running at Stop
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("started it")];
+    const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: "" }], turns, worker });
+    onTestFinished(() => void s.tasks!.stop());
+    await s.session.send("go");
+    const running = { id: "t1", type: "agent", status: "running", description: "look", agent_type: "Explore" };
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "Stop", background_tasks: [running] })]);
+  });
+
+  it("fires SubagentStart before a subagent's first request, matched on Explore, its text at the start of the subagent's first message", async () => {
+    const worker = new FakeProvider("w", [reply("found it")]);
+    const says: Says[] = [
+      { event: "SubagentStart", names: ["Explore"], stdout: after("SubagentStart", { additionalContext: "look in src/" }) },
+      { event: "SubagentStart", names: ["Plan"], stdout: after("SubagentStart", { additionalContext: "not this one" }) },
+    ];
+    const s = await setup({ mode: "never", says, turns: [look, reply("ok")], worker });
+    await s.session.send("go");
+    expect(worker.seen[0]).toEqual([{ role: "user", parts: [hookText("SubagentStart", "look in src/"), { type: "text", text: "find x" }] }]);
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "SubagentStart", agent_id: "t1", agent_type: "Explore" })]);
+    expect(s.results()).toEqual([{ output: "found it", isError: false }]);
+  });
+
+  it("keeps a subagent going at a SubagentStop hook's block, sent its own fields, its line naming it", async () => {
+    const top = await folder();
+    const dir = path.join(top, "sessions", "project");
+    privateDir(dir);
+    const file = path.join(dir, "s1.jsonl");
+    const transcript = new Transcript(file, path.join(dir, "s1", "pictures"));
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const worker = new FakeProvider("w", [reply("first"), reply("second")]);
+    const says: Says[] = [{ event: "SubagentStop", names: ["Explore"], stdout: "", seq: [block("check again")] }];
+    const s = await setup({ mode: "never", says, turns: [look, reply("ok")], worker, transcript });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect(s.results()).toEqual([{ output: "second", isError: false }]);
+    expect(worker.seen[1]!.at(-1)!.parts).toEqual([feedback("check again")]);
+    // A line that names the subagent already is said without the "t1: " the others start with (the user's choice, 2026-11-09).
+    expect(s.notes).toEqual(["A SubagentStop hook kept t1 going: check again"]);
+    const own = { hook_event_name: "SubagentStop", agent_id: "t1", agent_type: "Explore", agent_transcript_path: path.join(pathsOf(file).subagents, "t1.jsonl") };
+    const inputs = s.inputs();
+    expect(inputs).toEqual([
+      expect.objectContaining({ ...own, stop_hook_active: false, last_assistant_message: "first" }),
+      expect.objectContaining({ ...own, stop_hook_active: true, last_assistant_message: "second" }),
+    ]);
+    expect("background_tasks" in inputs[0]!).toBe(false); // Stop's alone
+  });
+
+  it("ends a subagent once SubagentStop hooks have kept it going 8 times in a row, with its last reply as its answer", async () => {
+    const worker = new FakeProvider("w", replies(9));
+    const s = await setup({ mode: "never", says: [{ event: "SubagentStop", stdout: block("again") }], turns: [look, reply("ok")], worker });
+    await s.session.send("go");
+    expect(s.results()).toEqual([{ output: "try 9", isError: false }]);
+    const line = "SubagentStop hooks kept t1 going 8 times in a row; it ends here.";
+    expect(s.notes).toEqual([...Array<string>(8).fill("A SubagentStop hook kept t1 going: again"), line]);
+  });
+
+  it.each([
+    ["a block with no reason", JSON.stringify({ decision: "block" }), NO_REASON],
+    ["additionalContext alone", after("SubagentStop", { additionalContext: "look again" }), "look again"],
+  ])("says a SubagentStop hook's %s kept a subagent going in its own line", async (_name, said, text) => {
+    const worker = new FakeProvider("w", [reply("first"), reply("second")]);
+    const says: Says[] = [{ event: "SubagentStop", stdout: "", seq: [said] }];
+    const s = await setup({ mode: "never", says, turns: [look, reply("ok")], worker });
+    await s.session.send("go");
+    expect(worker.seen[1]!.at(-1)!.parts).toEqual([feedback(text)]);
+    expect(s.notes).toEqual(["A SubagentStop hook kept t1 going."]);
+  });
+
+  // The user's choice, 2026-11-09: a background subagent a hook stopped wakes the lead, as a failed one does.
+  it.each([
+    ["enough", "Background task t1 (look) was stopped by a hook: enough"],
+    [undefined, "Background task t1 (look) was stopped by a hook."],
+  ] as const)("tells the lead, waking it, when a hook stops a background subagent (reason %s)", async (reason, told) => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const worker = new FakeProvider("w", [callTool("w1", "read_file", { path: "a.txt" }), reply("found it")]);
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("started it")];
+    const s = await setup({ mode: "never", root, says: [{ names: ["Read"], stdout: stops(reason) }], turns, worker });
+    await s.session.send("go");
+    expect(await s.tasks!.all[0]!.done).toEqual({ state: "stopped", text: `t1 was stopped by a hook${reason ? `: ${reason}` : "."}` });
+    expect([s.tasks!.wakes(), s.tasks!.take()]).toEqual([true, [told]]);
+  });
+
+  // The user's choice, 2026-11-09: a SubagentStop stop came after the answer, which the lead gets as a finished one's, cut
+  // at the same size, the stop's line after it.
+  it.each([
+    ["enough", "t1 was stopped by a hook: enough"],
+    [undefined, "t1 was stopped by a hook."],
+  ] as const)("gives the lead a background subagent's answer, then the stop's line, when a SubagentStop hook stops it (reason %s)", async (reason, line) => {
+    const long = "x".repeat(MAX_TOOL_OUTPUT + 5);
+    const worker = new FakeProvider("w", [reply(long)]);
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("started it")];
+    const s = await setup({ mode: "never", says: [{ event: "SubagentStop", stdout: stops(reason) }], turns, worker });
+    await s.session.send("go");
+    expect(await s.tasks!.all[0]!.done).toEqual({ state: "stopped", text: `${long}\n${line}`, stop: { answer: long, line } });
+    const told = `Background task t1 (look) finished:\n${"x".repeat(MAX_TOOL_OUTPUT)}\n[cut: 5 more characters]\n${line}`;
+    expect([s.tasks!.wakes(), s.tasks!.take()]).toEqual([true, [told]]);
+  });
+
+  // Task 9's re-check: the call's result is cut at the size every tool's is, so the answer is cut first, leaving the stop's
+  // line whole after it; in -p a background subagent runs in the foreground, its result after delegate's line. /tasks
+  // keeps the whole answer.
+  it.each<[string, Mode5, boolean, string]>([
+    ["a subagent the lead waits for", "never", false, ""],
+    ["a background subagent in -p", "-p", true, "t1 ran in the foreground, since -p has no later turn to read a background answer in.\n\n"],
+  ])("keeps a SubagentStop stop's line after a long answer of %s, the answer cut to leave room for it", async (_name, mode, background, head) => {
+    const long = "x".repeat(MAX_TOOL_OUTPUT + 10_000);
+    const worker = new FakeProvider("w", [reply(long)]);
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background }), reply("ok")];
+    const s = await setup({ mode, says: [{ event: "SubagentStop", stdout: stops("enough") }], turns, worker });
+    await s.session.send("go");
+    const line = "t1 was stopped by a hook: enough";
+    const [r] = s.results();
+    const shape = /^(x+)\n\[cut: (\d+) more characters\]\nt1 was stopped by a hook: enough$/.exec(r!.output.slice(head.length));
+    expect([r!.output.startsWith(head), r!.output.length <= MAX_TOOL_OUTPUT, shape !== null]).toEqual([true, true, true]);
+    expect(shape![1]!.length + Number(shape![2])).toBe(long.length); // the cut's count is the characters left out
+    expect(s.tasks!.all[0]!.answer).toBe(`${long}\n${line}`);
+  });
+
+  // Task 9's code review: a stop that comes as the Stop hooks answer, or while they run, sends nothing more.
+  it("ends the turn, sending no feedback and saying no line for the block, when the user stops it as a Stop hook blocks", async () => {
+    const stop = new AbortController();
+    const says: Says[] = [{ event: "Stop", stdout: JSON.stringify({ decision: "block", reason: "go on", systemMessage: "checking" }) }];
+    const s = await setup({ mode: "never", says, turns: [reply("done"), reply("again")] });
+    s.bus.on("hook-note", (line) => void (line === "Stop hook: checking" && stop.abort())); // as Esc is pressed
+    expect(await s.session.send("go", stop.signal)).toBeUndefined();
+    expect([s.lead.seen.length, s.notes, s.session.messages.length]).toEqual([1, ["Stop hook: checking"], 2]);
+  });
+
+  it("ends the turn, sending nothing more, when the user stops it while a Stop hook runs", async () => {
+    const root = await folder();
+    const abort = new AbortController();
+    const says: Says[] = [{ event: "Stop", stdout: block("go on"), go: path.join(root, "never-made") }];
+    const s = await setup({ mode: "never", root, says, turns: [reply("done"), reply("again")] });
+    const sent = s.session.send("go", abort.signal);
+    // Up to 10 s for the hook's process to start, as for UserPromptSubmit above.
+    for (let i = 0; !s.inputs().length; i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+    abort.abort();
+    expect(await sent).toBeUndefined();
+    expect([s.lead.seen.length, s.notes, s.session.messages.length, s.errors]).toEqual([1, [], 2, []]);
+  });
+
+  it("stops a subagent the user stops while its SubagentStart hook runs, sending it nothing", async () => {
+    const root = await folder();
+    const worker = new Held("fake:w");
+    const says: Says[] = [{ event: "SubagentStart", stdout: "", go: path.join(root, "never-made") }];
+    const s = await setup({ mode: "never", root, says, turns: [look, reply("ok")], worker });
+    const sent = s.session.send("go");
+    for (let i = 0; !s.inputs().length; i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+    expect(s.tasks!.stop("t1")).toBe(true);
+    await sent;
+    expect(s.results()).toEqual([{ output: "t1 was stopped by the user before it finished.", isError: false }]);
+    expect([worker.asked.length, s.tasks!.all[0]!.messages, s.tasks!.all[0]!.state]).toEqual([0, [], "stopped"]);
+  });
+
+  // Task 7's build: a subagent a hook stops ends as stopped, with its own result, never as failed. At SubagentStop the stop
+  // comes after its answer, which is kept, the stop's line after it (the user's choice, 2026-11-09).
+  it.each<[Event, string | undefined, string]>([
+    ["PreToolUse", "enough", "t1 was stopped by a hook: enough"],
+    ["PostToolUse", undefined, "t1 was stopped by a hook."],
+    ["SubagentStop", "enough", "found it\nt1 was stopped by a hook: enough"],
+    ["SubagentStop", undefined, "found it\nt1 was stopped by a hook."],
+  ])("stops a subagent at a %s hook's continue: false (reason %s) with its result, leaving the lead's turn going", async (event, reason, result) => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const worker = new FakeProvider("w", [callTool("w1", "read_file", { path: "a.txt" }), reply("found it")]);
+    const says: Says[] = [{ event, names: event === "SubagentStop" ? ["Explore"] : ["Read"], stdout: stops(reason) }];
+    const s = await setup({ mode: "never", root, says, turns: [look, reply("ok")], worker });
+    expect(await s.session.send("go")).toBeUndefined();
+    expect(s.results()).toEqual([{ output: result, isError: false }]);
+    expect(s.tasks!.all.map((t) => [t.state, t.answer])).toEqual([["stopped", result]]);
+    expect([s.lead.seen.length, s.errors]).toEqual([2, []]);
+    expect(s.notes).toEqual([`t1: A ${event} hook stopped the turn${reason ? `: ${reason}` : "."}`]);
+  });
+
+  // Release 8b plan, Task 10: SessionStart once a conversation is loaded, matched on its source, its text waiting for the
+  // next request (Task 8), which waits for its hooks so the text reaches it; SessionEnd as the session ends.
+  const started = async (s: Awaited<ReturnType<typeof setup>>, n: number) => {
+    for (let i = 0; s.inputs().length < n; i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+  };
+
+  it("fires SessionStart with its source and the lead as model, matched on the source, and the next request waits for its text", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const says: Says[] = [
+      { event: "SessionStart", names: ["resume"], stdout: after("SessionStart", { additionalContext: "from the hook" }), go },
+      { event: "SessionStart", names: ["startup"], stdout: "not this one" },
+    ];
+    const s = await setup({ mode: "never", root, says, turns: [reply("ok")] });
+    s.session.start("resume");
+    const sent = s.session.send("go");
+    await started(s, 1);
+    await pause(100);
+    expect(s.lead.seen).toEqual([]);
+    writeFileSync(go, "");
+    expect(await sent).toBeUndefined();
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([hookText("SessionStart", "from the hook"), { type: "text", text: "go" }]);
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "SessionStart", source: "resume", model: "fake:a" })]);
+  });
+
+  it("drops SessionStart's text when another conversation is loaded before its hooks answer", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const s = await setup({ mode: "never", root, says: [{ event: "SessionStart", stdout: "the last one's", go }], turns: [reply("ok")] });
+    s.session.start("startup");
+    await started(s, 1);
+    s.session.load({ id: "s2", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+    writeFileSync(go, ""); // too late: the load stopped the hook (Task 10's code review), so it never answers
+    await s.session.send("next");
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([{ type: "text", text: "next" }]);
+  });
+
+  it("sends nothing when the user stops a turn waiting for SessionStart's hooks, and their text goes with the next one", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const s = await setup({ mode: "never", root, says: [{ event: "SessionStart", stdout: "from the start", go }], turns: [reply("ok")] });
+    const abort = new AbortController();
+    s.session.start("startup");
+    const sent = s.session.send("go", abort.signal);
+    await started(s, 1);
+    abort.abort();
+    expect(await sent).toBeUndefined();
+    expect([s.session.messages, s.session.prompts, s.lead.seen]).toEqual([[], [], []]);
+    writeFileSync(go, "");
+    await s.session.send("again");
+    expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([hookText("SessionStart", "from the start"), { type: "text", text: "again" }]);
+  });
+
+  // Task 10's code review: SessionStart's hooks still running when the session ends, or another is loaded, are stopped. The
+  // hook writes its process id to a file in the test's folder, then never ends; up to 10 s for Windows to end it, as a tree
+  // kill there (taskkill /T) takes 2-4 s.
+  it.each(["end", "load"] as const)("stops SessionStart's hooks still running at a session's %s", async (how) => {
+    const root = await folder();
+    const pidFile = path.join(root, "pid");
+    const script = path.join(root, "forever.cjs");
+    writeFileSync(script, `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`);
+    const s = await setup({ mode: "never", root, says: [], turns: [] });
+    const hook: Hook = { event: "SessionStart", matcher: { all: true }, command: process.execPath, args: [script], async: false, where: "" };
+    s.given.set({ hooks: [hook], off: false, leftOut: [] });
+    s.session.start("startup");
+    for (let i = 0; !existsSync(pidFile) || !readFileSync(pidFile, "utf8"); i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    onTestFinished(() => void (alive() && process.kill(pid)));
+    if (how === "end") await s.session.end("other");
+    else s.session.load({ id: "s2", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+    for (let i = 0; alive() && i < 500; i++) await pause(20);
+    expect(alive()).toBe(false);
+    expect(s.errors).toEqual([]);
+  });
+
+  it("fires SessionEnd with its reason, matched on it, and refuses to while a turn runs, as a load does", async () => {
+    const root = await folder();
+    const go = path.join(root, "go");
+    const says: Says[] = [
+      { event: "SessionEnd", names: ["clear"], stdout: "" },
+      { event: "SessionEnd", names: ["other"], stdout: "" },
+      { event: "UserPromptSubmit", stdout: "", go },
+    ];
+    const s = await setup({ mode: "never", root, says, turns: [reply("ok")] });
+    await s.session.end("clear");
+    expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "SessionEnd", reason: "clear", session_id: "s1" })]);
+    const sent = s.session.send("go");
+    await started(s, 2);
+    await expect(s.session.end("other")).rejects.toThrow("A turn is already running");
+    writeFileSync(go, "");
+    await sent;
+    expect(s.inputs()).toHaveLength(2);
+  });
+
+  // The final review (the user's choices, 2026-11-10): Ctrl+O's runs (Hooks.runs). Up to 10 s for a hook to answer.
+  const until = async (done: () => boolean) => {
+    for (let i = 0; !done(); i++) {
+      if (i === 500) throw new Error("the hook never answered");
+      await pause(20);
+    }
+  };
+  const fresh = (id: string, messages: Message[] = []) => ({ id, messages, system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+  const old: Message[] = [{ role: "user", parts: [{ type: "text", text: "old" }] }, { role: "assistant", parts: [{ type: "text", text: "old answer" }] }];
+
+  // SessionStart's runs at a launch or a /clear show before the first prompt, then first in the first turn's runs; a
+  // resumed conversation shows them under its last turn, and its first new turn has its own alone, as before.
+  it("keeps SessionStart's runs at a launch and a /clear first in the first turn's runs, and not at a resume", async () => {
+    const says: Says[] = [{ event: "SessionStart", stdout: "" }, { event: "UserPromptSubmit", stdout: "" }];
+    const s = await setup({ mode: "never", says, turns: [reply("one"), reply("two"), reply("three"), reply("four")] });
+    const events = () => s.given.runs.map((r) => [r.event, r.match]);
+    const begin = async (source: "startup" | "clear" | "resume") => {
+      s.session.start(source);
+      await until(() => s.given.runs.length > 0);
+      expect(events()).toEqual([["SessionStart", source]]);
+    };
+    await begin("startup");
+    await s.session.send("go");
+    expect(events()).toEqual([["SessionStart", "startup"], ["UserPromptSubmit", undefined]]);
+    await s.session.send("more");
+    expect(events()).toEqual([["UserPromptSubmit", undefined]]);
+    s.session.load(fresh("s2"));
+    await begin("clear");
+    await s.session.send("go");
+    expect(events()).toEqual([["SessionStart", "clear"], ["UserPromptSubmit", undefined]]);
+    s.session.load(fresh("s3", old));
+    await begin("resume");
+    await s.session.send("go");
+    expect(events()).toEqual([["UserPromptSubmit", undefined]]);
+  });
+
+  // A prompt a UserPromptSubmit hook blocked starts no turn, so Ctrl+O lists the runs it listed before: SessionStart's
+  // on a first prompt, the last turn's after.
+  it("leaves the runs as they were at a blocked prompt, a first one too", async () => {
+    const says: Says[] = [{ event: "SessionStart", stdout: "" }, { event: "UserPromptSubmit", stdout: "", seq: [block("no"), "", block("no")] }];
+    const s = await setup({ mode: "never", says, turns: [reply("ok")] });
+    const events = () => s.given.runs.map((r) => r.event);
+    s.session.start("startup");
+    await until(() => s.given.runs.length > 0);
+    expect(await s.session.send("go")).toEqual({ blocked: "no" });
+    expect(events()).toEqual(["SessionStart"]);
+    expect(await s.session.send("again")).toBeUndefined();
+    expect(events()).toEqual(["SessionStart", "UserPromptSubmit"]);
+    expect(await s.session.send("third")).toEqual({ blocked: "no" });
+    expect(events()).toEqual(["SessionStart", "UserPromptSubmit"]);
+  });
+
+  // The user's choice, 2026-11-10: a prompt a UserPromptSubmit hook's continue: false left unsent, or the user's stop
+  // during UserPromptSubmit, starts no turn either, so Ctrl+O lists the last turn's runs, as after a block.
+  it("leaves the last turn's runs as they were at a prompt a UserPromptSubmit hook's continue: false left unsent", async () => {
+    const s = await setup({ mode: "never", says: [{ event: "UserPromptSubmit", stdout: "", seq: ["", stops("halt")] }], turns: [reply("ok")] });
+    await s.session.send("go");
+    const last = s.given.runs;
+    expect(last.map((r) => r.event)).toEqual(["UserPromptSubmit"]);
+    expect(await s.session.send("again")).toEqual({ stopped: "halt", unsent: true });
+    expect(s.given.runs).toBe(last);
+  });
+
+  it("leaves the last turn's runs as they were when the user stops a prompt while its UserPromptSubmit hook runs", async () => {
+    const root = await folder();
+    const s = await setup({ mode: "never", root, says: [{ event: "UserPromptSubmit", stdout: "" }], turns: [reply("ok")] });
+    await s.session.send("go");
+    const last = s.given.runs;
+    expect(last.map((r) => r.event)).toEqual(["UserPromptSubmit"]);
+    const hook = s.hooks[0]!;
+    s.given.set({ hooks: [{ ...hook, args: [...hook.args!.slice(0, 4), path.join(root, "never-made")] }], off: false, leftOut: [] });
+    const abort = new AbortController();
+    const sent = s.session.send("again", abort.signal);
+    await started(s, 2);
+    abort.abort();
+    expect(await sent).toBeUndefined();
+    expect(s.given.runs).toBe(last);
+  });
+
+  // A switch's SessionEnd is sent the last prompt's id, as its conversation's, and the SessionStart after the load
+  // none, as a launch's before any prompt.
+  it.each(["clear", "resume"] as const)("sends the SessionEnd of a /%s the last prompt's id, and the SessionStart after it none", async (how) => {
+    const says: Says[] = [{ event: "UserPromptSubmit", stdout: "" }, { event: "SessionEnd", stdout: "" }, { event: "SessionStart", stdout: "" }];
+    const s = await setup({ mode: "never", says, turns: [reply("ok")] });
+    await s.session.send("go");
+    await s.session.end(how);
+    s.session.load(fresh("s2", how === "resume" ? old : []));
+    s.session.start(how);
+    await until(() => s.inputs().length === 3);
+    const [prompt, end, start] = s.inputs();
+    expect([prompt!.hook_event_name, end!.hook_event_name, start!.hook_event_name]).toEqual(["UserPromptSubmit", "SessionEnd", "SessionStart"]);
+    expect(prompt!.prompt_id).toEqual(expect.any(String));
+    expect(end!.prompt_id).toBe(prompt!.prompt_id);
+    expect("prompt_id" in start!).toBe(false);
   });
 });

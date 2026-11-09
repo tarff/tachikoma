@@ -2,6 +2,7 @@ import { lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { withLock } from "../../auth/lock.js";
 import { leadGone, type Opened } from "../../clilib.js";
+import type { ErrorEvent } from "../../core/bus.js";
 import { summarize } from "../../core/errorlog.js";
 import { exportText } from "../../core/exportText.js";
 import { type Protection, visible } from "../../core/permissions.js";
@@ -10,10 +11,12 @@ import { listSessions } from "../../core/sessions.js";
 import { CANCELLED } from "../../core/shorten.js";
 import type { Task } from "../../core/tasks.js";
 import { errorText, type Provider } from "../../core/types.js";
+import { hookName } from "../../hooks/answer.js";
+import { limitOf } from "../../hooks/hooks.js";
 import { KEYBINDINGS } from "../../keybindings.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
-import { SETTINGS } from "../../settings.js";
+import { SETTINGS, shownFile } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { unquoted } from "../clipboard.js";
 import { callLines, conversationLines, type Line } from "../describe.js";
@@ -101,6 +104,7 @@ export const queue = (ui: UI, fns: Fns) => {
         return fns.leave();
       }
       if (alone("/errors")) return fns.say(...summarize(ui.errorFile).map((row) => ({ text: row, oneLine: true })));
+      if (alone("/hooks")) return fns.say(...hooksList());
       // Not to full screen where it can't draw: classic, as at the start (clilib.ts, screenMode).
       if (alone("/screen") && !ui.fullNow.current && !ui.fullPossible)
         return fns.say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
@@ -141,11 +145,11 @@ export const queue = (ui: UI, fns: Fns) => {
         const refused = fns.subagentsRunning(command);
         if (refused) return fns.say(refused);
         if (command === "/resume") return fns.resume();
-        if (command === "/branch") return fns.branch(rest);
-        // The instruction files are read again meanwhile: what is typed waits in the queue, as during a turn.
+        // The instruction files are read again meanwhile (/clear), and SessionEnd's hooks run (both; release 8b plan, Task
+        // 10): what is typed waits in the queue, as during a turn.
         ui.working.current = true;
         try {
-          return await fns.startFresh();
+          return await (command === "/branch" ? fns.branch(rest) : fns.startFresh());
         } finally {
           ui.working.current = false;
         }
@@ -154,7 +158,7 @@ export const queue = (ui: UI, fns: Fns) => {
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
       if (!account && !listing && /^\/[a-z]+$/i.test(text)) return fns.say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
-      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings", "/clear", "/resume"].includes(command))
+      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings", "/clear", "/resume", "/hooks"].includes(command))
         return fns.say({ text: `${command} takes nothing after it.`, color: "red" });
       ui.abort.current = new AbortController();
       const turn = !account && !listing;
@@ -186,7 +190,15 @@ export const queue = (ui: UI, fns: Fns) => {
             else ui.setPicker(groups);
             return true;
           }
-        } else await ui.session.send(await fns.readsEnded(message, ui.abort.current.signal), ui.abort.current.signal);
+        } else {
+          const { signal } = ui.abort.current;
+          // The message's pictures sent before it, which a blocked prompt's words do not take back (promptKeys.ts, giveBack).
+          const before = new Set(message.spans.flatMap((s) => (ui.pictures.sent(s.id) ? [s.id] : [])));
+          const read = await fns.readsEnded(message, signal);
+          const ended = await ui.session.send(read.parts, signal);
+          // A prompt a UserPromptSubmit hook blocked or stopped was not sent (approved by the user, 2026-11-09).
+          if (ended && ("blocked" in ended || ended.unsent)) fns.giveBack(read.draft, before);
+        }
       } finally {
         ui.setBusy(false);
         ui.working.current = false;
@@ -217,6 +229,25 @@ export const queue = (ui: UI, fns: Fns) => {
     if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "red" }];
     const t = ui.tasks.all.find((x) => x.id === verb);
     return t ? fns.recordOf(t) : [none(verb)];
+  };
+  // `/hooks`: the hooks in force, read-only, by event in the file's order, each by its name (answer.ts, hookName), then
+  // its matcher when not every value, its own timeout when it sets one and `async` for an async one (the user's choice,
+  // 2026-11-10, terminal checklist), then the ones left out, in the approved words, each hook in them by its name too
+  // (settings.ts, hooksOf; release 8b plan, choice 25 and "Lines this plan adds"). Hook text is escaped as the question
+  // escapes a command; the file is named as the launch names it (settings.ts, shownFile).
+  const hooksList = (): Line[] => {
+    const { hooks, off, leftOut } = ui.hooks?.config ?? { hooks: [], off: false, leftOut: [] };
+    if (off) return [gray(`Hooks are off: "disableAllHooks" is true in ${shownFile()}.`)];
+    const events = new Map<string, string[]>();
+    for (const h of hooks) {
+      const matcher = "all" in h.matcher ? "" : ` · ${visible("names" in h.matcher ? h.matcher.names.join("|") : h.matcher.regex.source)}`;
+      const row = `  ${visible(hookName(h))}${matcher}${h.timeout === undefined ? "" : ` · ${limitOf(h)} s`}${h.async ? " · async" : ""}`;
+      events.set(h.event, [...(events.get(h.event) ?? []), row]);
+    }
+    const listed = hooks.length
+      ? [`Hooks in force, from ${shownFile()}:`, ...[...events].flatMap(([event, rows]) => [event, ...rows])]
+      : [`No hooks in force. They go in "hooks" in ${shownFile()}.`];
+    return [...listed, ...(leftOut.length ? ["Left out:", ...leftOut.map((w) => `  ${visible(w)}`)] : [])].map(gray);
   };
   // `/tasks t3`'s record: the subagent's tool calls and answer in full.
   const recordOf = (t: Task): Line[] => {
@@ -291,21 +322,54 @@ export const queue = (ui: UI, fns: Fns) => {
     ui.setPicker(null);
     fns.next();
   };
-  // Leaving the session (/exit, and Ctrl-C or Ctrl-D twice): Ink ends, as ever. In copy mode the box is stopped first,
-  // with the turn and the subagents, and once Docker reports it gone the review (Review.tsx) opens in the App's place,
-  // Ink still mounted, under the lock beside the copy's folder, so two reviews of one copy take turns; its lines are
+  // Leaving the session (/exit, and Ctrl-C or Ctrl-D twice): Ink ends, as ever. No turn runs then, as /exit waits for it in
+  // the queue and the exit keys do nothing during one (keyRouting.ts), so only the subagents are stopped, first, in every
+  // mode. In copy mode the box is stopped next, and once Docker reports it gone the review (Review.tsx) opens in the App's
+  // place, Ink still mounted, under the lock beside the copy's folder, so two reviews of one copy take turns; its lines are
   // handed back, to print once Ink has ended (release 7 plan, Task 21). From the first step the App's own keys, pastes
   // and mouse are off (phase.ts, review), and nothing more starts. A view printed out comes back first, so the review
   // can draw. A copy with nothing to review is removed instead, its line printed (choice 121; copies.ts, dropIfNothing).
+  // Then, in every mode, SessionEnd fires (endSession, below) before Ink ends (release 8b plan, Task 10).
   const leave = () => {
-    const c = ui.copy;
-    if (!c) return ui.exit();
     if (ui.leaving.current) return;
     ui.leaving.current = true;
     ui.tasks.stop();
-    ui.abort.current?.abort();
     ui.rerender((n) => n + 1);
-    void (async () => {
+    const c = ui.copy;
+    void (c ? review(c) : Promise.resolve())
+      .then(endSession)
+      .finally(() => ui.exit());
+  };
+  // SessionEnd as the user leaves, once copy mode's review is done: the screen stays as it is meanwhile, its keys off
+  // (phase.ts, review), and its hooks have 1.5 s, or a hook's own longer timeout up to 60 s (hooks.ts). Its lines are said
+  // in the window as any hook's are. Where the window cannot show them, in full screen, which takes them away with the
+  // second screen, and in copy mode, whose review or leaving line is drawn in place of everything, they are handed back
+  // too, the same words escaped as hook lines are, to print once Ink has ended, so none is lost (approved by the user,
+  // 2026-11-09; Task 10's spec review).
+  const endSession = async () => {
+    const said: string[] = [];
+    // As App.tsx's onError draws a hook's failure, the line alone; the window shows a hook's note so too (Task 12).
+    const onError = (e: ErrorEvent) => void (e.kind === "hook" && e.attempted === "SessionEnd hook" && said.push(`✗ ${e.message}`));
+    const onNote = (line: string) => void (line.startsWith("SessionEnd hook: ") && said.push(line));
+    ui.bus.on("error", onError);
+    ui.bus.on("hook-note", onNote);
+    try {
+      await ui.session.end("prompt_input_exit");
+    } catch {
+      // Only a listener of its lines that throws gets here; the window closes all the same.
+    } finally {
+      ui.bus.off("error", onError);
+      ui.bus.off("hook-note", onNote);
+    }
+    if (!said.length) return;
+    if (ui.fullNow.current || ui.copy) ui.leftLines?.(said.map((l) => visible(l, { tabs: true })));
+    // In plain classic mode they stay in the terminal: React commits them before Ink ends, as /screen waits for it
+    // (handover.tsx).
+    else await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  // Copy mode's part of leaving (leave, above). Its failures are its own lines, so it never rejects.
+  const review = (c: NonNullable<UI["copy"]>) =>
+    (async () => {
       await fns.comeBack();
       if (!(await c.stop())) return c.ended([NOT_GONE, kept(c.copy.session)]);
       await withLock(copyLock(c.copy.folder), async () => {
@@ -327,10 +391,7 @@ export const queue = (ui: UI, fns: Fns) => {
         const end = await new Promise<ReviewEnd>((onEnd) => ui.setReviewing({ protection, onEnd, read }));
         c.ended(end.lines);
       });
-    })()
-      .catch((err) => c.ended([visible(errorText(err)), kept(c.copy.session)]))
-      .finally(() => ui.exit());
-  };
+    })().catch((err) => c.ended([visible(errorText(err)), kept(c.copy.session)]));
   // /clear, /resume and /branch are refused while a subagent runs, so no answer can arrive in the wrong session (release 8a
   // design, "Resuming"); during a turn they wait in the queue, as every command does. Null when none runs.
   const subagentsRunning = (command: string): Line | null => {
@@ -347,13 +408,30 @@ export const queue = (ui: UI, fns: Fns) => {
   // window's sandbox carries on: a copy-mode box is not started afresh, so its review at exit covers both sessions'
   // changes (Task 7). Another conversation's finished subagents leave /tasks and the panel. A branch is the same
   // conversation, so it keeps them, its waiting text, shown calls, to-do list, answers and gauge, and is not drawn again
-  // (release 8a final review, user, 2026-11-07: "Clear them", "Drop the reprint", "Keep them too").
-  const switchTo = (next: Opened, lines: Line[], branched = false) => {
+  // (release 8a final review, user, 2026-11-07: "Clear them", "Drop the reprint", "Keep them too"). The session left ends
+  // first, with SessionEnd's `end` reason, and the one opened starts last, with SessionStart's `start` source, once its saved
+  // lead leads (release 8b plan, Task 10 and choice 18). Meanwhile what is typed waits in the queue (`working`, set by the
+  // callers), as during a turn.
+  // While SessionEnd's hooks run the working line shows, and Esc, or Ctrl-C, stops them through its own signal, as it stops
+  // a turn, and the switch goes ahead (the user's choice, 2026-11-09: "Esc stops it").
+  const switchTo = async (next: Opened, lines: Line[], how: { end: "clear" | "resume" | "other"; start: "clear" | "resume" | "fork"; lead?: Provider }) => {
+    const branched = how.start === "fork";
+    const shown = ui.session.ends(how.end);
+    let signal: AbortSignal | undefined;
+    if (shown) {
+      signal = (ui.abort.current = new AbortController()).signal;
+      ui.doing.current = { label: "Working", at: Date.now(), from: null };
+      ui.setNow(ui.doing.current.at);
+      ui.setBusy(true);
+    }
     try {
-      ui.session.load(next.conversation);
+      await ui.session.end(how.end, signal);
+      ui.session.load(next.conversation, { keepRuns: branched }); // a branch keeps its hook runs too (the user, 2026-11-10)
     } catch (err) {
       next.release();
       throw err;
+    } finally {
+      if (shown) ui.setBusy(false);
     }
     ui.saved.switched(next);
     if (!branched) {
@@ -367,11 +445,19 @@ export const queue = (ui: UI, fns: Fns) => {
     }
     fns.say(...(branched ? [] : conversationLines(next.conversation.messages)), ...lines);
     ui.rerender((n) => n + 1);
+    if (how.lead) {
+      ui.waiting.current.lead = undefined; // it wins over a lead the settings file set meanwhile, as a /lead typed then would
+      ui.session.setLead(how.lead);
+    }
+    ui.session.start(how.start);
   };
   // /clear: a new session, with the same lead and mode, its system prompt built afresh (design, "Resuming").
   const startFresh = async () => {
     const system = await ui.session.freshSystem();
-    switchTo(ui.saved.fresh(ui.session.lead.id, system), [gray("Started a new session; the last one is kept (tachi --resume lists it).")]);
+    await switchTo(ui.saved.fresh(ui.session.lead.id, system), [gray("Started a new session; the last one is kept (tachi --resume lists it).")], {
+      end: "clear",
+      start: "clear",
+    });
   };
   // /resume: the folder's other saved sessions, in the list `tachi -r` shows (choice 14). True when it opened, holding the
   // queue until a pick or Esc, as the model list does.
@@ -386,10 +472,14 @@ export const queue = (ui: UI, fns: Fns) => {
   // read or copied is said in red, and the window stays in its session (design, "When something goes wrong"). It leads
   // with its saved lead, switched to as /lead switches, once its conversation is loaded; one that cannot be made leaves
   // the window's leading, with the launch's line (user, 2026-11-06: "The session's saved lead").
-  const pickSession = (id: string) => {
+  const pickSession = async (id: string) => {
     ui.listOpen.current = false;
     ui.setSessions(null);
     ui.view.current = FOLLOWING; // what it says is asked for, as the model list's pick says (pick, above)
+    // While SessionEnd's hooks run (switchTo), what is typed waits in the queue. A turn started under the list holds it
+    // already, and is left alone: the switch is refused (Session.end).
+    const hold = !ui.working.current;
+    if (hold) ui.working.current = true;
     try {
       const now = ui.session.lead.id;
       let made: Provider | undefined;
@@ -406,14 +496,13 @@ export const queue = (ui: UI, fns: Fns) => {
       });
       if ("problem" in next) fns.say({ text: next.problem, color: "red" });
       else {
-        switchTo(next, [...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "gray" })));
-        if (made) {
-          ui.waiting.current.lead = undefined; // it wins over a lead the settings file set meanwhile, as a /lead typed then would
-          ui.session.setLead(made);
-        }
+        const lines = [...next.lines, ...(gone ? [{ text: gone }] : [])].map((l) => ({ ...l, color: "gray" as const }));
+        await switchTo(next, lines, { end: "resume", start: "resume", ...(made ? { lead: made } : {}) });
       }
     } catch (err) {
       fns.say({ text: errorText(err), color: "red" });
+    } finally {
+      if (hold) ui.working.current = false;
     }
     fns.next();
   };
@@ -425,7 +514,7 @@ export const queue = (ui: UI, fns: Fns) => {
   // /branch [name]: a copy of this session, named, which the window carries on in (design, "Names, branches and export").
   // Without a name it takes the first prompt's first line, as the resume line names a session. A session with no
   // prompt has nothing to copy, and one whose saving stopped would leave out what came after.
-  const branch = (name: string) => {
+  const branch = async (name: string) => {
     const first = ui.session.prompts[0]?.split(/\r?\n/)[0];
     if (!first) return fns.say(gray(SESSION_WORDS.nothingToBranch));
     if (!ui.session.transcript || ui.session.transcript.failed !== null) return fns.say({ text: SESSION_WORDS.unsaved("/branch"), color: "red" });
@@ -433,7 +522,7 @@ export const queue = (ui: UI, fns: Fns) => {
     const named = name || first;
     const next = ui.saved.branch(original, ui.session.lead.id, named);
     if ("problem" in next) return fns.say({ text: next.problem, color: "red" });
-    switchTo(next, [gray(`Branched: this window is now ${named}; the original is kept as ${original}.`)], true);
+    await switchTo(next, [gray(`Branched: this window is now ${named}; the original is kept as ${original}.`)], { end: "other", start: "fork" });
   };
   // /rename <name> names this session in its transcript, as the lists then show it (design, "Names, branches and export").
   const rename = (name: string) => {

@@ -270,6 +270,37 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(r.firstPrompt).toBe("look at [Image #4]");
   });
 
+  // Release 8b plan, choice 16 (design, review finding 4): a PreToolUse hook's rewrite is saved after its reply, and the
+  // record of calls takes it in its call's place, before and after a shortening; the reply itself is kept as it came.
+  it("puts each saved rewrite in its call's place in the calls, before and after a shortening, leaving the replies as they were", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "message", message: prompt("go") });
+    t.write({ t: "message", message: asks("c1", { path: "A" }) });
+    t.write({ t: "rewritten", id: "c1", input: { path: "B" } });
+    t.write({ t: "message", message: answers("c1", "B's text") });
+    t.write({ t: "shortened", system: "New prompt.", message: prompt("summary of it all") });
+    // The same id again, as a provider may give a later call: each rewrite counts for the reply it follows.
+    t.write({ t: "message", message: asks("c1", { path: "C" }) });
+    t.write({ t: "message", message: answers("c1", "C's text") });
+    t.write({ t: "message", message: asks("c2", { path: "D" }) });
+    t.write({ t: "rewritten", id: "c2", input: { path: "E" } });
+    // Tachikoma's fields are an object, never a list: such a line is damaged, and its call keeps its own input.
+    t.write({ t: "message", message: asks("c3", { path: "F" }) });
+    t.write({ t: "rewritten", id: "c3", input: ["G"] });
+    expect(t.failed).toBeNull();
+    const r = read(p);
+    expect(r.damaged).toBe(1);
+    expect(r.calls).toEqual([
+      { name: "read_file", input: { path: "B" } },
+      { name: "read_file", input: { path: "C" } },
+      { name: "read_file", input: { path: "E" } },
+      { name: "read_file", input: { path: "F" } },
+    ]);
+    expect(r.messages.filter((m) => m.role === "assistant")).toEqual([asks("c1", { path: "C" }), asks("c2", { path: "D" }), asks("c3", { path: "F" })]);
+  });
+
   it("leaves a cut-off reply's calls out of the judge's calls, as session.ts never keeps them", async () => {
     const p = place();
     const t = new Transcript(p.file, p.pictures);
