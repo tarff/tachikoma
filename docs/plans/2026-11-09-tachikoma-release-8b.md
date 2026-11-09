@@ -313,6 +313,7 @@ command with its `args` after it, escaped as the question escapes a command.
 | A no to a hook's question (to the model) | the gate's own refusal, `The user declined: <tool> <its input as JSON>`, the call named as the question names it (approved by the user, 2026-11-09) |
 | A hook stopped the turn (grey) | `A <Event> hook stopped the turn: <stopReason>` (no reason: `A <Event> hook stopped the turn.`) |
 | A call not run after a stop (to the model) | `Not run: a hook stopped the turn.` |
+| A call running when a hook stopped the turn (to the model) | `Stopped: a hook stopped the turn.` (approved by the user, 2026-11-09) |
 | A subagent stopped by a hook (its result) | `<id> was stopped by a hook: <stopReason>` (no reason: `<id> was stopped by a hook.`) |
 | UserPromptSubmit blocked (grey) | `A UserPromptSubmit hook blocked the prompt: <reason>` then, in the window, `Your words are back in the prompt box.` |
 | Stop kept the turn going (grey) | `A Stop hook kept the turn going: <reason>` |
@@ -781,6 +782,9 @@ the stand-in model's request with the prompt, headed; a subagent's brief fires n
 the judge's prompts do not hold hook text; a resumed session has the hook text and does not run the
 hook.
 
+**Note from Task 7's build** (2026-11-09): until this task, a `continue: false` in `-p` exits 0;
+this task adds choice 9's exit code 1. The export still shows hook text under "You:".
+
 Commit: `feat: UserPromptSubmit, and hook text sent to the model where Claude Code puts it`.
 
 ## Task 9: Stop, SubagentStart and SubagentStop
@@ -807,6 +811,10 @@ eight more requests, then the line; a tool call between restarts the count;
 `last_assistant_message`; `background_tasks` lists a running background subagent; SubagentStart's
 context is in the subagent's first request; a SubagentStop block keeps it going; `continue: false`
 in a subagent stops it with its result and leaves the lead's turn going.
+
+**Note from Task 7's build** (2026-11-09): a subagent that a hook stops (PreToolUse, PostToolUse or
+PostToolUseFailure) now ends as failed ("it ended without an answer"), as its turn ends on results
+with no reply. This task must give it the `<id> was stopped by a hook` result.
 
 Commit: `feat: Stop, SubagentStart and SubagentStop, with Claude Code's limit of eight blocks`.
 

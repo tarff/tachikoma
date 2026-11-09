@@ -31,8 +31,8 @@ export function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
 }
 
-// What the model is told of a call a hook's continue: false came before (release 8b plan, "Lines this plan adds"), and of
-// one it stopped while it ran (drafted at Task 7's build, for the user to approve).
+// What the model is told of a call a hook's continue: false came before, and of one it stopped while it ran (release 8b
+// plan, "Lines this plan adds").
 const NOT_RUN = "Not run: a hook stopped the turn.";
 const STOPPED = "Stopped: a hook stopped the turn.";
 

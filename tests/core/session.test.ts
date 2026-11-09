@@ -1926,7 +1926,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(r.messages[2]!.parts).toEqual(answered);
   });
 
-  it("stops a call still running when a delegate's PostToolUse hook stops the turn, sent Agent's shape, in the drafted words", async () => {
+  it("stops a call still running when a delegate's PostToolUse hook stops the turn, sent Agent's shape, in the approved words", async () => {
     const root = await folder();
     const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate: new PermissionGate("never", async () => false) };
     const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", [reply("found")]), system: "sub", tools: [readFileTool], ctx });
