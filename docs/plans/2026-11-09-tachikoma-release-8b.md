@@ -213,9 +213,9 @@ Each is marked in its task. The user approves them with the plan.
    started in, as Claude Code's); `cwd` in its input is the same.
 4. **Its input** is written to its standard input whole, then closed.
 5. **`async` hooks** are started and not waited for; their answer is read only to report a
-   failure, as Claude Code's are, or that the hook asked to block, which it cannot (its line
-   below; the user's choice, 2026-11-09); they are stopped when Tachikoma exits, as the shell
-   tool's commands are.
+   failure, as Claude Code's are, or that the hook asked to stop or to block, which it cannot
+   (their lines below, the stop's alone when it asks both; the user's choices, 2026-11-09); they
+   are stopped when Tachikoma exits, as the shell tool's commands are.
 
 **The answers**
 6. **The text a hook hands the model** goes in as a text part marked `from: "hooks"`, headed
@@ -300,6 +300,7 @@ command with its `args` after it, escaped as the question escapes a command.
 | A hook's JSON could not be read (red) | `<Event> hook failed: <command> printed JSON that could not be read (<reason>)` |
 | The JSON's `<reason>` | `it is cut short`; `there is text after the object`; any other broken JSON, the parser's own words; `"<field>" must be text in quotes` (`systemMessage`, `stopReason`, `reason`, `additionalContext`, `permissionDecisionReason`, `hookEventName`); `"continue" must be true or false`; `"decision" must be "approve" or "block"`; `"permissionDecision" must be "allow", "deny", "ask" or "defer"`; `"hookSpecificOutput" must be an object`; `"updatedInput" must be an object`; `"hookSpecificOutput" has no "hookEventName"`; `"hookSpecificOutput" names <OtherEvent>` |
 | An async hook asked to block (red) | `<Event> hook failed: <command> asked to block, but an "async" hook cannot block` (approved by the user, 2026-11-09) |
+| An async hook asked to stop (red) | `<Event> hook failed: <command> asked to stop, but an "async" hook cannot stop`; one that asks to stop and to block gives this line alone (approved by the user, 2026-11-09) |
 | What a hook failure attempted, which `/errors` shows | `<Event> hook`; a subagent's, `t1: <Event> hook` (approved by the user, 2026-11-09) |
 | PreToolUse refused a call (grey) | `A PreToolUse hook refused <tool>: <reason>` |
 | A rewrite that cannot be used (grey; the call refused) | `A PreToolUse hook's rewrite of <tool> could not be used (<reason>): <command>` |
@@ -557,7 +558,9 @@ export const MODE_NAMES: Record<Mode, string> = { ask: "default", project: "acce
   then `fields`.
 - **`async` hooks** are started and left: their failure is still reported when it comes, and so
   is an answer that asks to block (exit 2, or JSON that blocks or denies: what `combine` would file
-  under `block` for a sync hook), with its own red line (the user's choice, 2026-11-09).
+  under `block` for a sync hook), with its own red line, and one that asks to stop the turn
+  (`continue: false`, `combine`'s `stop`), with its own, which alone is said when it asks both,
+  as a stop wins (the user's choices, 2026-11-09).
 - **Lines:** each failure is a bus `error` of kind `hook` with the red line; each `systemMessage`
   a `hook-note` with its line. The other lines are said by the callers that act on the answer.
 - **`set`** takes effect for the next `fire`; a `fire` under way finishes with the hooks it began

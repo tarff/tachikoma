@@ -49,9 +49,12 @@ const cut = (s: string) => (s.length <= MAX_TEXT ? s : `${s.slice(0, MAX_TEXT)}\
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const firstLine = (s: string) => s.trim().split(/\r?\n/)[0] ?? "";
 
+// A hook as its lines show it: its command with its args after it.
+export const commandOf = (hook: Hook) => [hook.command, ...(hook.args ?? [])].join(" ");
+
 // One hook's answer. `bash` says Git Bash was found; it is read only when the Windows rule below could apply.
 export function outcomeOf(event: Event, hook: Hook, ran: Ran, platform: NodeJS.Platform = process.platform, bash?: boolean): Outcome {
-  const command = [hook.command, ...(hook.args ?? [])].join(" ");
+  const command = commandOf(hook);
   // Two cases turn a failure into a block, as exit 2, and there the exit code is not ignored: onFailure "block", and on
   // Windows without Git Bash a PreToolUse hook run by a shell with onFailure not set (Claude Code's rule; design).
   const strict = BLOCKING.includes(event) && (hook.onFailure === "block"

@@ -326,14 +326,32 @@ describe("Hooks", { timeout: 15_000 }, () => {
     const p = await place();
     const exit2 = p.hook("exit2", { async: true }, { stderr: "no", code: 2 });
     const json = p.hook("json", { event: "UserPromptSubmit", async: true }, { stdout: JSON.stringify({ decision: "block", reason: "no" }) });
-    const { hooks, errors } = setup(p, [exit2, json]);
+    const denied = JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" } });
+    const deny = p.hook("deny", { async: true }, { stdout: denied });
+    const { hooks, errors } = setup(p, [exit2, json, deny]);
     await hooks.fire("PreToolUse", {});
     await hooks.fire("UserPromptSubmit", {});
-    while (hooks.runs.length < 2) await pause(20);
+    while (hooks.runs.length < 3) await pause(20);
     expect(errors.map((e) => e.message).sort()).toEqual([
+      `PreToolUse hook failed: ${commandOf(deny)} asked to block, but an "async" hook cannot block`,
       `PreToolUse hook failed: ${commandOf(exit2)} asked to block, but an "async" hook cannot block`,
       `UserPromptSubmit hook failed: ${commandOf(json)} asked to block, but an "async" hook cannot block`,
-    ]);
+    ].sort());
+  });
+
+  // The user's choice, 2026-11-09: an async hook that asks to stop the turn says it cannot; one that asks to stop and to
+  // block says only the stop, as a stop wins in combine.
+  it("says an async hook that answers continue false asked to stop, and only that when it also blocks", async () => {
+    const p = await place();
+    const stop = p.hook("stop", { async: true }, { stdout: JSON.stringify({ continue: false, stopReason: "done" }) });
+    const both = p.hook("both", { async: true }, { stdout: JSON.stringify({ continue: false, decision: "block" }) });
+    const { hooks, errors } = setup(p, [stop, both]);
+    await hooks.fire("PreToolUse", {});
+    while (hooks.runs.length < 2) await pause(20);
+    expect(errors.map((e) => e.message).sort()).toEqual([
+      `PreToolUse hook failed: ${commandOf(both)} asked to stop, but an "async" hook cannot stop`,
+      `PreToolUse hook failed: ${commandOf(stop)} asked to stop, but an "async" hook cannot stop`,
+    ].sort());
   });
 
   // Task 4's code review: a /lead switch while an async hook runs does not change the model its failure names.
