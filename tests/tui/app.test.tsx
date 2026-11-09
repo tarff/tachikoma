@@ -9241,13 +9241,54 @@ process.stdin.resume().on("end", () => {
     expect(app.lastFrame()).toContain("› first\n");
   });
 
+  // Task 8's re-check: a recalled line the user changed is kept, after the draft, before the words.
+  it("keeps a history line edited during the walk when it gives the words back", async () => {
+    const hook = hookFor(BLOCK, { held: true });
+    const { app } = await mount([], { hooks: hook.hooks, past: ["fix the tests"] });
+    await press(app, "first", "\r");
+    await untilSlowly(hook.started);
+    await press(app, "\u001b[A", "\u001b[A", " in foo");
+    expect(app.lastFrame()).toContain("› fix the tests in foo\n");
+    hook.go();
+    await untilSlow(app, BACK);
+    expect(app.lastFrame()).toMatch(/› fix the tests in foo\n\s*first\n/);
+  });
+
+  // Whether the session has said the hook's block, after which the App gives the words back within the same run of
+  // microtasks (queue.ts, perform); the screen is not drawn again while the editor has the terminal.
+  const saidBlock = (bus: Bus) => {
+    let said = false;
+    bus.on("hook-note", (line) => void (said ||= line.startsWith("A UserPromptSubmit hook blocked the prompt")));
+    return () => said;
+  };
+
+  it("keeps what the external editor saved over a recalled line when it gives the words back", async () => {
+    const editor = standInEditor();
+    editor.next("my long rewrite\n");
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const hook = hookFor(BLOCK, { held: true });
+    const { app, bus } = await mount([], { hooks: hook.hooks, past: ["older"] });
+    const blocked = saidBlock(bus);
+    await press(app, "first", "\r");
+    await untilSlowly(hook.started);
+    await press(app, "\u001b[A", "\u001b[A", "\u0007"); // Up past the prompt just sent, then Ctrl+G
+    await untilSlowly(editor.started);
+    hook.go();
+    await untilSlowly(blocked);
+    await tick();
+    editor.go();
+    await untilSlow(app, BACK);
+    expect(app.lastFrame()).toMatch(/› my long rewrite\n\s*first\n/);
+  });
+
   it("gives the words back after the external editor returns, after what it saved, with their pictures", async () => {
     const editor = standInEditor();
     editor.next("edited\n");
     vi.stubEnv("VISUAL", editor.command("wait"));
     const pictures = new Pictures();
     const hook = hookFor(BLOCK, { held: true });
-    const { app, session } = await mount([reply("seen")], { pictures, hooks: hook.hooks });
+    const { app, session, bus } = await mount([reply("seen")], { pictures, hooks: hook.hooks });
+    const blocked = saidBlock(bus);
     await press(app, "see ", PICTURE);
     pictures.set(1, PNG);
     await press(app, "\r");
@@ -9255,14 +9296,41 @@ process.stdin.resume().on("end", () => {
     await press(app, "draft", "\u0007"); // Ctrl+G
     await untilSlowly(editor.started);
     hook.go();
-    await untilSlowly(hook.answered);
-    for (let i = 0; i < 10; i++) await tick(); // the block reaches the App while the editor is open
+    // The block reaches the App while the editor is open, and the words wait for it to return.
+    await untilSlowly(blocked);
+    await tick();
+    expect(app.lastFrame()).not.toContain(BACK);
     editor.go();
     await untilSlow(app, BACK);
     expect(app.lastFrame()).toMatch(/› edited\n\s*see \[Image #1\]/);
     await press(app, "\r");
     await untilSlow(app, "seen");
     expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "edited\nsee " }, { type: "image", id: 1, ...PNG }]);
+  });
+
+  // Task 8's re-check: a read that fails while the words wait for the editor takes its marker out of them, as it does
+  // from the queue (pictureReads.ts, settle).
+  it("takes a failed picture's marker out of the words waiting for the external editor", async () => {
+    const editor = standInEditor();
+    editor.next("edited\n");
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const pictures = new Pictures();
+    const hook = hookFor(BLOCK, { held: true });
+    const { app, bus } = await mount([], { pictures, hooks: hook.hooks });
+    const blocked = saidBlock(bus);
+    await press(app, "first", "\r");
+    await untilSlowly(hook.started);
+    await press(app, "queued ", PICTURE, "\r", "\u0007"); // a prompt queued with a picture still being read, then Ctrl+G
+    await untilSlowly(editor.started);
+    hook.go();
+    await untilSlowly(blocked);
+    await tick();
+    pictures.set(1, { failed: "it broke" });
+    await tick();
+    editor.go();
+    await untilSlow(app, BACK);
+    expect(app.lastFrame()).toMatch(/› edited\n\s*first\n\s*queued *\n/);
+    expect(app.lastFrame()).not.toContain("[Image #1]");
   });
 
   // giveBack's `before`: a picture an earlier message sent stays sent, so a copy of its marker goes as text.

@@ -833,10 +833,13 @@ this task adds choice 9's exit code 1. The export still shows hook text under "Y
   together, nothing sent, as Ctrl-C brings the queue back, with one `Your words are back in the
   prompt box.`
 - **Given-back words land where the box's text really is** (Task 8's code review): an open Ctrl+R
-  search ends first, as Esc ends it, so a match it gives cannot take their place; a walk through
-  the history ends with the draft it kept, as Down past the newest brings it back; while the
-  external editor has the prompt they wait, and go in after what it saved once it returns, with
-  their pictures' spans (`ui.editingBack`, handover.tsx).
+  search ends first, as Ctrl-C ends it, so a match it gives cannot take their place; a walk through
+  the history ends with the draft it kept, as Down past the newest brings it back, and a recalled
+  line changed since, by typing or the external editor, is kept after the draft, before the words
+  (Task 8's re-check); while the external editor has the prompt they wait, and go in after what it
+  saved once it returns, or at once if that throws, with their pictures' spans (`ui.editingBack`,
+  each Ctrl+G's own list, handover.tsx), and a picture read that fails meanwhile takes its marker
+  out of them, as it does from the queue.
 - **Esc while a UserPromptSubmit hook runs** leaves that prompt's pictures marked sent, so they do
   not go again; its words are in the Up history as text only (a known limit, Task 13).
 - **In `-p --json`, each grey hook line is a JSON line too,** `{"event":"hook-note","data":"<line>"}`,

@@ -52,6 +52,9 @@ export const pictureReads = (ui: UI, fns: Fns) => {
     if (ui.step.current) ui.step.current = { ...ui.step.current, draft: without(ui.step.current.draft, id) };
     if (ui.search.current) ui.search.current.before = cutPicture(ui.search.current.before, id);
     ui.queue.current = ui.queue.current.map((d) => without(d, id)).filter((d) => d.text.trim());
+    // And the prompts given back while the external editor is open, waiting for it to return (Task 8's re-check), in place.
+    const held = ui.editingBack.current;
+    if (held) held.splice(0, held.length, ...held.map((d) => without(d, id)).filter((d) => d.text.trim()));
     const waits = ui.reading.current?.spans.some((x) => x.id === id);
     if (ui.reading.current) ui.reading.current = without(ui.reading.current, id);
     // A message that was only pictures, left empty, sends nothing (session.ts, send).

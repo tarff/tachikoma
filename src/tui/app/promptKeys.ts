@@ -99,13 +99,17 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     else fns.putBack(back);
   };
   // Given-back prompts into the prompt box as its text really is (Task 8's code review): Ctrl+R's search ends first, as
-  // Esc ends it, so a match it gives cannot take their place, and a walk through the history ends with the draft it
-  // kept, as Down past the newest prompt brings it back, so sending a recalled prompt cannot drop them.
-  const putBack = (back: Draft[]) => {
+  // Ctrl-C ends it, so a match it gives cannot take their place, and a walk through the history ends with the draft it
+  // kept, as Down past the newest prompt brings it back, so sending a recalled prompt cannot drop them. A recalled line
+  // changed since, by typing or the external editor, is kept after the draft, before them (Task 8's re-check).
+  const putBack = (given: Draft[]) => {
     if (ui.search.current) fns.endSearch(ui.search.current.before);
+    let back = given;
     const walk = ui.step.current;
     if (walk) {
-      ui.editor.current = { ...load(ui.editor.current, walk.draft.text), spans: walk.draft.spans };
+      const shown = ui.editor.current;
+      if (shown.text !== ui.history.current!.entries[walk.at]) back = [{ text: shown.text, spans: shown.spans }, ...back];
+      ui.editor.current = { ...load(shown, walk.draft.text), spans: walk.draft.spans };
       ui.step.current = null;
     }
     const all = joined([ui.editor.current, ...back].filter((x) => x.text), "\n");
