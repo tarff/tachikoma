@@ -11,6 +11,7 @@ import { type Conversation, Session, type SessionOptions } from "./core/session.
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "./core/transcript.js";
 import { errorText, type ToolSpec } from "./core/types.js";
+import { gitBash } from "./exec/env.js";
 import type { Executor } from "./exec/executor.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { gitFolderOutside, type GitSettings, gitSettings, hasSubmodules, within } from "./safety/gitconfig.js";
@@ -266,6 +267,18 @@ export const keptForReview = (name: string) => `Changes kept for review: tachi r
 // null when there is nothing to say.
 export function networkLine(flags: Flags, sandbox: Sandbox): string | null {
   return flags.network !== undefined && sandbox === "off" ? "--network acts only with the sandbox on; it was ignored" : null;
+}
+
+// Without Git Bash, a hook run by a shell runs in Windows PowerShell (release 8b plan, choices 1 and 2), which the launch
+// says once, when such a hook is in force, and again in full screen (App.tsx); one that asks for PowerShell, or runs
+// without a shell (`args`), needs no Git Bash. Undefined when there is nothing to say. `bash` is the lookup (exec/env.ts),
+// which a test gives, as Git for Windows' install folder cannot be hidden from a child process (Windows sets ProgramFiles
+// for each one, seen 2026-11-10).
+export function gitBashLine(settings: Settings, platform: NodeJS.Platform = process.platform, bash: () => string | null = gitBash): string | undefined {
+  const shelled = !settings.disableAllHooks && (settings.hooks ?? []).some((h) => !h.args && h.shell !== "powershell");
+  return platform === "win32" && shelled && bash() === null
+    ? "Git Bash was not found, so hooks run by a shell use Windows PowerShell; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe to change that."
+    : undefined;
 }
 
 // Live link's launch (release 7 plan, Task 16), in the plan's order: choice 13's refusal; Docker's state and the image

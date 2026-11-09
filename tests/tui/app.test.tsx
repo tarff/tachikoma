@@ -32,7 +32,7 @@ import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { delegateTool } from "../../src/tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "../../src/tools/index.js";
-import type { Hook } from "../../src/hooks/config.js";
+import type { Event as HookEvent, Hook, HooksConfig } from "../../src/hooks/config.js";
 import { Hooks } from "../../src/hooks/hooks.js";
 import { History } from "../../src/tui/history.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
@@ -153,7 +153,9 @@ async function mount(
     copy?: AppProps["copy"]; // copy mode's copy, and what leave() does with it (release 7 plan, Task 21)
     sessions?: string; // the sessions folder, as sessionsDir gives it; a fresh one for this mount when not given
     save?: boolean; // the session saves there from the start, as cli.tsx starts one (App's sessions); unsaved otherwise
-    hooks?: Hook[]; // the user's hooks, as cli.tsx hands them to the session; none when not given (release 8b plan, Task 8)
+    // The user's hooks, as cli.tsx hands them to the session, the subagents and the App, or the whole of what the launch
+    // read, with left-out rows and `off` for /hooks; none when not given (release 8b plan, Tasks 8 and 12).
+    hooks?: Hook[] | HooksConfig;
     leftLines?: AppProps["leftLines"]; // takes SessionEnd's lines at the window's exit, in full screen or copy mode (Task 10)
   } = {},
 ) {
@@ -171,6 +173,21 @@ async function mount(
   const judge = judgeOf(opts.judge, () => session, "", bus); // as cli.tsx gives it: unset, the lead leading judges
   const gate = new PermissionGate(opts.mode ?? "ask", (...a) => ask(...a), undefined, { root: ctx.root, judge });
   gate.rules = opts.live?.loaded.settings.dangerousCommands ?? NO_RULES; // as cli.tsx sets it at launch
+  const config = Array.isArray(opts.hooks) ? { hooks: opts.hooks, off: false, leftOut: [] } : opts.hooks;
+  const hooks =
+    config &&
+    new Hooks(
+      config,
+      {
+        sessionId: () => session.id,
+        transcript: () => session.transcript?.file,
+        root: ctx.root,
+        mode: () => gate.mode,
+        effort: () => undefined,
+        lead: () => session.lead.id,
+      },
+      bus,
+    );
   const tasks = new Tasks({
     bus,
     max: 8,
@@ -179,6 +196,7 @@ async function mount(
     tools: SUBAGENT_TOOLS,
     ctx: { ...ctx, gate },
     transcript: () => session.transcript, // as cli.tsx gives it
+    ...(hooks ? { hooks } : {}),
   });
   // As cli.tsx makes them: one Pictures for the session and the App (leadSession), the window's sessions, and the inbox,
   // the lost subagents' lines first.
@@ -198,15 +216,7 @@ async function mount(
     tasks,
     inbox: () => [...windowSessions.lost(), ...tasks.take()],
     ask: (...a) => ask(...a), // as cli.tsx gives it
-    ...(opts.hooks
-      ? {
-          hooks: new Hooks(
-            { hooks: opts.hooks, off: false, leftOut: [] },
-            { sessionId: () => session.id, transcript: () => session.transcript?.file, root: ctx.root, mode: () => gate.mode, effort: () => undefined, lead: () => session.lead.id },
-            bus,
-          ),
-        }
-      : {}),
+    ...(hooks ? { hooks } : {}),
   });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
   if (opts.past) writeFileSync(historyFile, opts.past.map((p) => `${JSON.stringify(p)}\n`).join(""));
@@ -271,6 +281,7 @@ async function mount(
       readPicture={opts.readPicture === undefined ? () => new Promise(() => {}) : opts.readPicture}
       copy={opts.copy}
       leftLines={opts.leftLines}
+      hooks={hooks}
     />,
   );
   mounted.push(app);
@@ -279,7 +290,7 @@ async function mount(
   app.stdout.emit("resize");
   if (opened) session.load(opened.conversation); // once the App listens, as cli.tsx loads it
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, sessions, mouse, copies, gate, pictures, ask: (...a: Parameters<Ask>) => ask(...a) };
+  return { app, session, ctx, bus, tasks, historyFile, sessions, mouse, copies, gate, pictures, hooks, ask: (...a: Parameters<Ask>) => ask(...a) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -9556,5 +9567,218 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       expect(left).toEqual([]);
       expect(stripVTControlCharacters(app.frames.join("\n")).replace(/\s/g, "")).toContain(line.replace(/\s/g, "")); // drawn before Ink ended
     }
+  });
+
+  // Release 8b plan, Task 12 (choices 22 to 25). A hook of the test's own: `body` runs once the hook has read its input,
+  // with `input`, the input as sent, and `n`, how many times the script has run, the first time 1.
+  function nodeHook(body: string) {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-app-hook-"));
+    onTestFinished(() => removeTree(dir));
+    const script = path.join(dir, "hook.cjs");
+    const count = path.join(dir, "count");
+    writeFileSync(
+      script,
+      `const fs = require("fs");
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  const input = JSON.parse(text);
+  const n = (fs.existsSync(${JSON.stringify(count)}) ? Number(fs.readFileSync(${JSON.stringify(count)}, "utf8")) : 0) + 1;
+  fs.writeFileSync(${JSON.stringify(count)}, String(n));
+  ${body}
+});`,
+    );
+    const hook = (event: HookEvent, more: Partial<Hook> = {}): Hook => ({
+      event, matcher: { all: true }, command: process.execPath, args: [script], async: false, where: JSON.stringify(event), ...more,
+    });
+    return { script, hook, command: `${process.execPath} ${script}` };
+  }
+  // A frame without its colours and its white space, where Ink wraps a long line (the hooks' commands are long paths).
+  const squashed = (text: string) => stripVTControlCharacters(text).replace(/\s/g, "");
+
+  it("shows a hook's systemMessage grey and escaped, and a hook's failure red with the line alone", async () => {
+    await inColour(async () => {
+      const said = nodeHook('process.stdout.write(JSON.stringify({ systemMessage: "look\\u0007\\nnow" }));');
+      const broken = nodeHook('process.stderr.write("broken\\n"); process.exitCode = 1;');
+      const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], {
+        hooks: [said.hook("PreToolUse"), broken.hook("PreToolUse")],
+      });
+      await type(app, "go");
+      await untilSlow(app, "done");
+      const frame = app.lastFrame()!;
+      // A bell would act on the terminal, and a line break could pass for a line of the window's own (Task 6's review).
+      expect(frame).toContain("\u001b[90mPreToolUse hook: look\\u0007⏎now");
+      expect(frame).toContain("\u001b[31m✗ PreToolUse hook failed: ");
+      expect(squashed(frame)).toContain(squashed(`✗ PreToolUse hook failed: ${broken.command} exited with code 1: broken`));
+    });
+  });
+
+  // Task 8's carry-over: the session says the block during send, before the App gives the words back.
+  it("shows a UserPromptSubmit hook's block before saying the words are back in the prompt box", async () => {
+    const { app } = await mount([], { hooks: hookFor(BLOCK).hooks });
+    await type(app, "first");
+    await untilSlow(app, BACK);
+    expect(app.lastFrame()).toContain(`A UserPromptSubmit hook blocked the prompt: not yet\n${BACK}\n`);
+  });
+
+  // Plan review, second round, finding 3: a subagent's lines reach the window through the lead's bus, each naming it.
+  it("shows a subagent's systemMessage, its SubagentStop block and its stop, each naming it", async () => {
+    const stop = nodeHook(`const block = { decision: "block", reason: "again", systemMessage: "hi" };
+  process.stdout.write(JSON.stringify(n === 1 ? block : { continue: false, stopReason: "enough" }));`);
+    const worker = new FakeProvider("w", [reply("found it"), reply("found it again")]);
+    const { app } = await mount([callTool("c1", "delegate", { description: "look", task: "look around" }), reply("all done")], {
+      worker,
+      hooks: [stop.hook("SubagentStop")],
+    });
+    await type(app, "go");
+    await untilSlow(app, "all done");
+    expect(app.lastFrame()).toContain("t1: SubagentStop hook: hi\nA SubagentStop hook kept t1 going: again\n");
+    expect(app.lastFrame()).toContain("t1: A SubagentStop hook stopped the turn: enough\n");
+  });
+
+  // Choice 24, and Task 6's review: the call is shown as the model sent it, and the rewrite under its hook's run.
+  it("lists the last turn's hook runs on Ctrl+O after its calls, with what each handed the model, rewrote or could not use", async () => {
+    const h = nodeHook(`process.stdout.write(JSON.stringify(input.hook_event_name === "PreToolUse"
+    ? { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { file_path: "b.txt" }, additionalContext: "checked" } }
+    : { hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: { not: "text" } } }));`);
+    const { app, ctx } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], { hooks: [h.hook("PreToolUse"), h.hook("PostToolUse")] });
+    await writeFile(path.join(ctx.root, "b.txt"), "from b");
+    await type(app, "go");
+    await untilSlow(app, "done");
+    await press(app, "\u000f");
+    const frame = app.lastFrame()!;
+    expect(frame).toContain('Last turn: 1 tool call\n● read_file {\n  "path": "a.txt"\n}\n  ⎿ ');
+    expect(frame).toMatch(/⎿ [^\n]*from b/);
+    const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const run = (event: string) => `${literal(`◆${event}hook${squashed(h.command)}·exit0·`)}\\d+ms`;
+    const shown = squashed(frame.slice(frame.lastIndexOf("Last turn:")));
+    const rewrite = literal('⎿checked⎿{"file_path":"b.txt"}');
+    const unused = literal("⎿itsupdatedToolOutputwasnotused:itdoesnotmatchread_file'sresult");
+    expect(shown).toMatch(new RegExp(`fromb${run("PreToolUse")}${rewrite}${run("PostToolUse")}${unused}`));
+  });
+
+  // Choice 25: the list, printed once into the conversation, as /tasks prints its list.
+  it("lists the hooks in force on /hooks, by event, with the ones left out", async () => {
+    const leftOut = ['"Notification" is not an event Tachikoma runs hooks at; its hooks were left out'];
+    const hook = (event: HookEvent, matcher: Hook["matcher"], command: string, more: Partial<Hook> = {}): Hook => ({
+      event, matcher, command, async: false, where: JSON.stringify(event), ...more,
+    });
+    const hooks = [
+      hook("PreToolUse", { names: ["Read", "Write"] }, "check.sh"),
+      hook("PreToolUse", { regex: /^mcp__/ }, "log", { args: ["--all"], timeout: 5, async: true }),
+      hook("UserPromptSubmit", { all: true }, "guard"),
+      hook("SessionEnd", { all: true }, "bye"),
+    ];
+    const { app } = await mount([], { hooks: { hooks, off: false, leftOut } });
+    await type(app, "/hooks");
+    expect(app.lastFrame()).toContain(
+      [
+        `Hooks in force, from ${shownFile()}:`,
+        "PreToolUse",
+        "  Read|Write · check.sh · 600 s",
+        "  ^mcp__ · log --all · 5 s · async",
+        "UserPromptSubmit",
+        "  * · guard · 30 s",
+        "SessionEnd",
+        "  * · bye · 1.5 s",
+        "Left out:",
+        `  ${leftOut[0]}`,
+      ].join("\n"),
+    );
+    await type(app, "/hooks now");
+    expect(app.lastFrame()).toContain("/hooks takes nothing after it.");
+  });
+
+  it.each([
+    ["none in force", { hooks: [], off: false, leftOut: [] }, `No hooks in force. They go in "hooks" in ${shownFile()}.`],
+    ["only left-out ones", { hooks: [], off: false, leftOut: ['"Notification" is not an event Tachikoma runs hooks at; its hooks were left out'] },
+      `No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  "Notification" is not an event Tachikoma runs hooks at; its hooks were left out`],
+    ["hooks turned off", { hooks: [{ event: "Stop", matcher: { all: true }, command: "x", async: false, where: '"Stop"' }], off: true, leftOut: [] },
+      `Hooks are off: "disableAllHooks" is true in ${shownFile()}.`],
+  ] as [string, HooksConfig, string][])("says so on /hooks with %s", async (_name, config, said) => {
+    const { app } = await mount([], { hooks: config });
+    await type(app, "/hooks");
+    expect(app.lastFrame()).toContain(`${said}\n`);
+    expect(app.lastFrame()).not.toContain("Hooks in force");
+  });
+
+  // Release 8b design, "What the user sees" ("Live, with a line"): an edit applies from the next event; a matcher's regular
+  // expression stringifies to {}, so the comparison reads its text (Task 6's review); a broken file keeps the hooks.
+  it("applies a live edit of the hooks from the next call, with its line, and keeps them when the file breaks", async () => {
+    const h = nodeHook('process.stdout.write(JSON.stringify({ systemMessage: "fired " + n }));');
+    const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+    onTestFinished(() => removeTree(home));
+    const where = path.join(settingsDir(home), "settings.json");
+    mkdirSync(settingsDir(home), { recursive: true });
+    writeFileSync(where, "{}");
+    const { app, hooks } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], {
+      home, live: { loaded: { settings: {}, warnings: [] }, given: {} }, hooks: [],
+    });
+    const entry = (matcher: string) => ({ PreToolUse: [{ matcher, hooks: [{ type: "command", command: process.execPath, args: [h.script] }] }] });
+    const write = (settings: object | string) => writeFileSync(where, typeof settings === "string" ? settings : JSON.stringify(settings));
+    // In the conversation, above the prompt: the hint row under it shows the edit's last line too, until a key (choice 35).
+    const times = (text: string) => app.lastFrame()!.slice(0, app.lastFrame()!.lastIndexOf("›")).split(text).length - 1;
+    const CHANGED = "Hooks changed: 1 hook at 1 event.";
+    write({ hooks: entry("Read") });
+    await vi.waitFor(() => expect(times(CHANGED)).toBe(1), { timeout: 2_000 });
+    await type(app, "go");
+    await untilSlow(app, "PreToolUse hook: fired 1");
+    await untilSlow(app, "done");
+    write({ hooks: entry("R.ad") });
+    await vi.waitFor(() => expect(times(CHANGED)).toBe(2), { timeout: 2_000 });
+    write({ hooks: entry("Re.d") }); // one regular expression for another
+    await vi.waitFor(() => expect(times(CHANGED)).toBe(3), { timeout: 2_000 });
+    write("{");
+    await untilSlow(app, "the last good settings still apply");
+    expect(hooks!.config.hooks.map((x) => x.matcher)).toEqual([{ regex: /Re.d/ }]);
+    write({ hooks: entry("Read"), disableAllHooks: true }); // both entries changed: one line
+    await untilSlow(app, "Hooks changed: all off (disableAllHooks).");
+    await tick();
+    expect(times("Hooks changed: all off (disableAllHooks).")).toBe(1);
+    expect(times(CHANGED)).toBe(3);
+    expect(hooks!.config.off).toBe(true);
+    write({});
+    await untilSlow(app, "Hooks changed: none in force.");
+    expect(hooks!.config).toEqual({ hooks: [], off: false, leftOut: [] });
+  });
+
+  it("shows a running hook's statusMessage on the waiting line, escaped, then the line's own words again", async () => {
+    const hook = hookFor({}, { held: true });
+    hook.hooks[0]!.statusMessage = "Checking\u0007 the prompt";
+    const lead = new Held();
+    const { app } = await mount([], { lead, hooks: hook.hooks });
+    await type(app, "first");
+    await untilSlowly(hook.started);
+    await untilSlow(app, "Checking\\u0007 the prompt · ");
+    hook.go();
+    await untilSlow(app, "Working · ");
+    expect(app.lastFrame()).not.toContain("Checking");
+    lead.answer("done");
+    await untilSlow(app, "done");
+  });
+
+  // Task 10's carry-over: in plain classic mode the window's own line is what the user keeps of a SessionEnd note at exit.
+  it("draws a SessionEnd hook's systemMessage at /exit in plain classic mode before the window closes", async () => {
+    const hook = endHook(JSON.stringify({ systemMessage: "bye" }), "go");
+    const left: string[][] = [];
+    const { app, session, sessions } = await mount([], { save: true, hooks: hook.hooks, leftLines: (l) => left.push(l) });
+    await type(app, "/exit");
+    await untilSlowly(() => hook.inputs().length === 1);
+    hook.go();
+    await untilSlowly(() => closed(sessions, session.id));
+    expect(app.frames.join("\n")).toContain("SessionEnd hook: bye");
+    expect(left).toEqual([]);
+  });
+
+  // Choice 2: the launch's line, which full screen hides on stderr until the user quits, shows in the session too, grey as
+  // the settings file's warnings, as the --network line does.
+  it("shows in full screen, in grey, that Git Bash was not found", async () => {
+    await inColour(async () => {
+      const line = "Git Bash was not found, so hooks run by a shell use Windows PowerShell; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe to change that.";
+      const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+      onTestFinished(() => removeTree(home));
+      const { app } = await mount([], { full: true, home, live: { loaded: { settings: {}, warnings: [] }, given: {}, bashLine: line } });
+      expect(app.lastFrame()).toContain("\u001b[90mGit Bash was not found");
+      expect(squashed(app.lastFrame()!)).toContain(squashed(line));
+    });
   });
 });

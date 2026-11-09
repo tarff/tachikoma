@@ -31,10 +31,11 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     }
     // Alt+P is `/model` typed then: during a turn it waits in the queue, and like Enter it goes to the bottom.
     if (c === "models") return fns.command("/model");
-    // Release 5 plan, Task 12; after a shortening, its summary until the next turn (release 8a plan, Task 13).
+    // Release 5 plan, Task 12; after a shortening, its summary until the next turn (release 8a plan, Task 13); the turn's
+    // hook runs after its calls (release 8b plan, choice 24).
     if (c === "lastTurn") {
       const s = ui.summary.current;
-      const lines = s === null ? lastTurn(ui.session.messages) : [gray(SHORTEN_WORDS.summary), gray(s)];
+      const lines = s === null ? lastTurn(ui.session.messages, ui.hooks?.runs) : [gray(SHORTEN_WORDS.summary), gray(s)];
       return ui.fullNow.current ? fns.openDetail(lines) : fns.show(...lines);
     }
     if (c === "todos") return void (ui.todos.current.hidden = !ui.todos.current.hidden);

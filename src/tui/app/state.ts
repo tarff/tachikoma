@@ -60,6 +60,7 @@ export function useAppState({
   copy,
   saved,
   leftLines,
+  hooks,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -187,6 +188,9 @@ export function useAppState({
   // What is running, since when, and for a turn the totals it started from; and the turn's tool calls,
   // kept after it until the next turn starts.
   const doing = useRef<{ label: string; at: number; from: { output: number; cost: number; unpriced: number } | null }>({ label: "", at: 0, from: null });
+  // The statusMessages of the lead's hooks running now, in the order they started: the last is the waiting line's label
+  // while any runs (release 8b design, "What the user sees").
+  const hookStatus = useRef<string[]>([]);
   const calls = useRef<Call[]>([]);
   // The last shortening's summary, which Ctrl+O shows in place of the last turn's calls until the next turn starts
   // (release 8a plan, Task 13).
@@ -294,7 +298,7 @@ export function useAppState({
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
     happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
-    editingBack, leftLines,
+    editingBack, leftLines, hooks, hookStatus,
   } as const;
 }
 

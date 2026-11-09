@@ -11,10 +11,12 @@ import { listSessions } from "../../core/sessions.js";
 import { CANCELLED } from "../../core/shorten.js";
 import type { Task } from "../../core/tasks.js";
 import { errorText, type Provider } from "../../core/types.js";
+import { commandOf } from "../../hooks/answer.js";
+import { limitOf } from "../../hooks/hooks.js";
 import { KEYBINDINGS } from "../../keybindings.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
-import { SETTINGS } from "../../settings.js";
+import { SETTINGS, shownFile } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { unquoted } from "../clipboard.js";
 import { callLines, conversationLines, type Line } from "../describe.js";
@@ -102,6 +104,7 @@ export const queue = (ui: UI, fns: Fns) => {
         return fns.leave();
       }
       if (alone("/errors")) return fns.say(...summarize(ui.errorFile).map((row) => ({ text: row, oneLine: true })));
+      if (alone("/hooks")) return fns.say(...hooksList());
       // Not to full screen where it can't draw: classic, as at the start (clilib.ts, screenMode).
       if (alone("/screen") && !ui.fullNow.current && !ui.fullPossible)
         return fns.say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
@@ -155,7 +158,7 @@ export const queue = (ui: UI, fns: Fns) => {
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
       if (!account && !listing && /^\/[a-z]+$/i.test(text)) return fns.say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
-      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings", "/clear", "/resume"].includes(command))
+      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings", "/clear", "/resume", "/hooks"].includes(command))
         return fns.say({ text: `${command} takes nothing after it.`, color: "red" });
       ui.abort.current = new AbortController();
       const turn = !account && !listing;
@@ -226,6 +229,23 @@ export const queue = (ui: UI, fns: Fns) => {
     if (id !== undefined) return [{ text: "Usage: /tasks, /tasks <number>, /tasks stop [<number>]", color: "red" }];
     const t = ui.tasks.all.find((x) => x.id === verb);
     return t ? fns.recordOf(t) : [none(verb)];
+  };
+  // `/hooks`: the hooks in force, read-only, by event in the file's order, each with its matcher, command and time limit,
+  // then the ones left out, in the approved words (release 8b plan, choice 25 and "Lines this plan adds"). A command is
+  // escaped as the question escapes one; the file is named as the launch names it (settings.ts, shownFile).
+  const hooksList = (): Line[] => {
+    const { hooks, off, leftOut } = ui.hooks?.config ?? { hooks: [], off: false, leftOut: [] };
+    if (off) return [gray(`Hooks are off: "disableAllHooks" is true in ${shownFile()}.`)];
+    const events = new Map<string, string[]>();
+    for (const h of hooks) {
+      const matcher = "all" in h.matcher ? "*" : "names" in h.matcher ? h.matcher.names.join("|") : h.matcher.regex.source;
+      const row = `  ${visible(matcher)} · ${visible(commandOf(h))} · ${limitOf(h)} s${h.async ? " · async" : ""}`;
+      events.set(h.event, [...(events.get(h.event) ?? []), row]);
+    }
+    const listed = hooks.length
+      ? [`Hooks in force, from ${shownFile()}:`, ...[...events].flatMap(([event, rows]) => [event, ...rows])]
+      : [`No hooks in force. They go in "hooks" in ${shownFile()}.`];
+    return [...listed, ...(leftOut.length ? ["Left out:", ...leftOut.map((w) => `  ${visible(w)}`)] : [])].map(gray);
   };
   // `/tasks t3`'s record: the subagent's tool calls and answer in full.
   const recordOf = (t: Task): Line[] => {

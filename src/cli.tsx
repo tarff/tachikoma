@@ -17,6 +17,7 @@ import {
   exitOn,
   exitSignals,
   fullPossible,
+  gitBashLine,
   gitUnread,
   givenBy,
   headlessAnswer,
@@ -71,7 +72,7 @@ import { copyLock } from "./sandbox/snapshot.js";
 import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
-import { loadSettings, SETTINGS, shownFile } from "./settings.js";
+import { hooksOf, loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { delegateTool } from "./tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
 import { shellTool } from "./tools/shell.js";
@@ -380,6 +381,9 @@ const sessionId = randomUUID();
 const stats = new Stats(bus);
 const interactive = parsed.print === undefined;
 const gray = (line: string) => styleText("gray", visible(line), { stream: process.stderr });
+// Said once, when a hook run by a shell is in force and there is no Git Bash (release 8b plan, choice 2).
+const bashLine = gitBashLine(loaded.settings);
+if (bashLine) console.error(gray(bashLine));
 
 // Once per launch, after the settings and before the lead (release 8a plan, choice 10), and before any session is opened
 // here: a lock this process holds would look like an earlier process's, left behind, to a sweep that names it by another
@@ -572,14 +576,10 @@ gate.rules = rules;
 gate.protection = box?.protection ?? protection;
 // The user's hooks, one object for the window, handed to the lead's session and, through Tasks, each subagent's (release
 // 8b plan, "Architecture"; Task 6). They run in the project's real folder, and are sent its real paths, or the box's in
-// copy mode (design, "Tool hooks"). `leftOut` is the launch warnings' words after `"hooks": `, for /hooks (Task 1).
-const hooksEntry = `${SETTINGS}: "hooks": `;
+// copy mode (design, "Tool hooks"). Its left-out rows, for /hooks, are the launch warnings' words (Task 1; settings.ts,
+// hooksOf).
 const hooks = new Hooks(
-  {
-    hooks: loaded.settings.hooks ?? [],
-    off: loaded.settings.disableAllHooks === true,
-    leftOut: loaded.warnings.flatMap((w) => (w.startsWith(hooksEntry) ? [w.slice(hooksEntry.length)] : [])),
-  },
+  hooksOf(loaded.settings, loaded.warnings),
   {
     sessionId: () => session.id,
     transcript: () => session.transcript?.file,
@@ -671,10 +671,13 @@ if (parsed.print !== undefined) {
     bus.on("error", (e) => {
       if (e.kind === "fallback") console.error(prose(`note: ${e.message}`));
       else if (e.kind === "saving" || e.kind === "shortening") console.error(prose(e.message)); // the line alone, as the window shows it
+      // A hook's line is escaped whole, as the window escapes it (App.tsx): it carries the hook's own words and its command.
+      else if (e.kind === "hook") console.error(`hook: ${visible(e.message, { tabs: true })}`);
       else if (e.kind !== "tool") console.error(prose(`${e.kind}: ${e.message}`));
     });
-    // A hook's grey lines, as a fallback's note is written (release 8b plan, choice 23), made safe for a terminal.
-    bus.on("hook-note", (line) => console.error(prose(`note: ${line}`)));
+    // A hook's grey lines, as a fallback's note is written (release 8b plan, choice 23), escaped whole, so a line break in
+    // the hook's own words cannot pass for a line of Tachikoma's (Task 6's review).
+    bus.on("hook-note", (line) => console.error(`note: ${visible(line, { tabs: true })}`));
   }
   // Loaded once the error listeners are on, so a start line or mend that failed is said now, not at the first write.
   for (const line of said) console.error(gray(line.text));
@@ -801,10 +804,17 @@ if (parsed.print !== undefined) {
       scrollSpeed={speed}
       clipboard={(report) => new Clipboard((s) => screen.write(s), tool && runTool(tool), report)}
       home={os.homedir()}
-      live={{ loaded, given: givenBy(parsed, process.env), ...(netLine ? { networkLine: netLine } : {}), ...(gitLine ? { gitLine } : {}) }}
+      live={{
+        loaded,
+        given: givenBy(parsed, process.env),
+        ...(netLine ? { networkLine: netLine } : {}),
+        ...(bashLine ? { bashLine } : {}),
+        ...(gitLine ? { gitLine } : {}),
+      }}
       {...(copy ? { copy } : {})}
       saved={windowSessions}
       leftLines={(lines) => left.push(...lines)}
+      hooks={hooks}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing

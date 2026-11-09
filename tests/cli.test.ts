@@ -670,6 +670,103 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(asked).toBe(requests);
   });
 
+  // Release 8b plan, Task 12 (second round, finding 1): a hook's failure never fails a -p run; its line goes to the error
+  // output as `hook: <line>`, and a grey line as `note: <line>`, escaped (Task 6's review). The lead is a stand-in served on
+  // the loopback address, as above: it asks to read a file in the project, then answers.
+  it("with -p, exits 0 when a PreToolUse hook fails and the run then answers, with the hook's lines escaped on its error output", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const broken = path.join(top, "broken.cjs");
+    writeFileSync(broken, 'process.stderr.write("broken\\n"); process.exitCode = 1;');
+    const said = path.join(top, "said.cjs");
+    writeFileSync(said, 'process.stdout.write(JSON.stringify({ systemMessage: "look\\u0007\\nnow" }));');
+    const run = (script: string) => ({ type: "command", command: process.execPath, args: [script] });
+    const hooks = { PreToolUse: [{ matcher: "Read", hooks: [run(broken), run(said)] }] };
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const first = !(JSON.parse(body) as { messages: { role: string }[] }).messages.some((m) => m.role === "tool");
+        const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "notes.txt" }) } };
+        const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+        const choice = { index: 0, finish_reason: first ? "tool_calls" : "stop", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
+    expect(r).toEqual({
+      code: 0,
+      stdout: "done\n",
+      stderr: `hook: PreToolUse hook failed: ${process.execPath} ${broken} exited with code 1: broken\nnote: PreToolUse hook: look\\u0007⏎now\n`,
+    });
+  });
+
+  // Second round, finding 3: a subagent's lines reach -p's error output through the lead's bus, each naming it. The
+  // stand-in answers the lead with a delegate call, then "done", and the subagent, which -p runs in the foreground, with
+  // text; the SubagentStop hook blocks once, saying a systemMessage, then stops the subagent.
+  it("with -p, writes a subagent's systemMessage, its SubagentStop block and its stop to the error output, each naming it", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    const script = path.join(top, "hook.cjs");
+    const count = path.join(top, "count");
+    writeFileSync(
+      script,
+      `const fs = require("fs");
+process.stdin.resume().on("end", () => {
+  const n = (fs.existsSync(${JSON.stringify(count)}) ? Number(fs.readFileSync(${JSON.stringify(count)}, "utf8")) : 0) + 1;
+  fs.writeFileSync(${JSON.stringify(count)}, String(n));
+  process.stdout.write(JSON.stringify(n === 1 ? { decision: "block", reason: "again", systemMessage: "hi" } : { continue: false, stopReason: "enough" }));
+});`,
+    );
+    const hooks = { SubagentStop: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const { messages } = JSON.parse(body) as { messages: { role: string; content?: unknown }[] };
+        const subagent = messages.some((m) => m.role === "user" && JSON.stringify(m.content).includes("look around"));
+        const first = !messages.some((m) => m.role === "tool");
+        const call = { id: "c1", type: "function", function: { name: "delegate", arguments: JSON.stringify({ description: "look", task: "look around" }) } };
+        const message = subagent
+          ? { role: "assistant", content: "found it" }
+          : first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+        const choice = { index: 0, finish_reason: !subagent && first ? "tool_calls" : "stop", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "look", env);
+    expect(r).toEqual({
+      code: 0,
+      stdout: "done\n",
+      stderr: "note: t1: SubagentStop hook: hi\nnote: A SubagentStop hook kept t1 going: again\nnote: t1: A SubagentStop hook stopped the turn: enough\n",
+    });
+  });
+
   // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.
   it("with -p, runs on the settings file's lead", () => {
     const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });

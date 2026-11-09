@@ -9,12 +9,14 @@ import { readInstructions } from "../src/core/instructions.js";
 import { PermissionGate } from "../src/core/permissions.js";
 import { listSessions, openSession, sessionsDir } from "../src/core/sessions.js";
 import type { Message, ToolSpec } from "../src/core/types.js";
+import type { Hook } from "../src/hooks/config.js";
 import {
   approvalQuestion,
   chooseSession,
   exitOn,
   exitSignals,
   fullPossible,
+  gitBashLine,
   givenBy,
   headlessAnswer,
   headlessDeclined,
@@ -239,6 +241,26 @@ describe("fullPossible", () => {
     expect(fullPossible({}, false)).toBe(false);
     expect(fullPossible({ CI: "true" }, true)).toBe(false);
     expect(fullPossible({ CI: "0" }, true)).toBe(true);
+  });
+});
+
+// Release 8b plan, choices 1 and 2: the launch's line when a hook run by a shell is in force and Git Bash is not found.
+// The lookup is a stand-in: Git for Windows' install folder cannot be hidden from a launch on a PC that has it.
+describe("gitBashLine", () => {
+  const LINE = "Git Bash was not found, so hooks run by a shell use Windows PowerShell; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe to change that.";
+  const hook = (more: Partial<Hook> = {}): Hook => ({ event: "Stop", matcher: { all: true }, command: "check.sh", async: false, where: '"Stop"', ...more });
+  const none = () => null;
+  it("names Git Bash's absence on Windows when a hook run by a shell is in force", () => {
+    expect(gitBashLine({ hooks: [hook({ args: ["x"] }), hook()] }, "win32", none)).toBe(LINE);
+    expect(gitBashLine({ hooks: [hook({ shell: "bash" })] }, "win32", none)).toBe(LINE); // it asked for bash, and gets PowerShell
+  });
+
+  it("says nothing with Git Bash found, elsewhere than Windows, with hooks off, or for hooks that need no shell or ask for PowerShell", () => {
+    expect(gitBashLine({ hooks: [hook()] }, "win32", () => "C:\\Git\\bin\\bash.exe")).toBeUndefined();
+    expect(gitBashLine({ hooks: [hook()] }, "linux", none)).toBeUndefined();
+    expect(gitBashLine({ hooks: [hook()], disableAllHooks: true }, "win32", none)).toBeUndefined();
+    expect(gitBashLine({ hooks: [hook({ args: ["x"] }), hook({ shell: "powershell" })] }, "win32", none)).toBeUndefined();
+    expect(gitBashLine({}, "win32", none)).toBeUndefined();
   });
 });
 

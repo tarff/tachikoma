@@ -16,11 +16,11 @@ describe("commandMenu", () => {
     expect(labels(m)).toEqual([
       ...["/lead <provider:model>", "/model", "/login chatgpt", "/logout chatgpt"],
       ...["/clear", "/resume", "/branch [name]", "/rename <name>", "/export [file]", "/compact [words]", "/autocompact <tokens>"],
-      ...["/tasks", "/errors", "/screen", "/settings", "/keybindings", "/vim", "/exit"],
+      ...["/tasks", "/hooks", "/errors", "/screen", "/settings", "/keybindings", "/vim", "/exit"],
     ]);
     expect(m!.entries[0]).toMatchObject({ note: "Switch the lead model; alone, pick it from a list", fill: "/lead ", run: "/lead" });
-    expect(m!.entries[14]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
-    expect(m!.entries[15]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
+    expect(m!.entries[15]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
+    expect(m!.entries[16]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
   });
 
   // Release 8a plan, Task 13 (choice 25; constants.ts, SHORTEN_WORDS).

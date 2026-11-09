@@ -9,6 +9,7 @@ import type { Stats } from "../core/stats.js";
 import type { Tasks } from "../core/tasks.js";
 import { errorText, type Message, type Provider } from "../core/types.js";
 import type { Workspace } from "../exec/workspace.js";
+import type { Hooks } from "../hooks/hooks.js";
 import { KEYBINDINGS } from "../keybindings.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { UserRules } from "../safety/rules.js";
@@ -98,8 +99,9 @@ export interface AppProps {
   // it the App watches the file and applies each edit (release 6 design, "Live edits"); without it, as in most tests,
   // it does not.
   // `networkLine`: the launch's line saying --network was ignored without the sandbox, if it said one (clilib.ts);
-  // `gitLine`: the one saying git's settings could not be read, escaped (cli.tsx; release 7 plan, Task 8).
-  live?: { loaded: { settings: Settings; warnings: string[] }; given: Given; networkLine?: string; gitLine?: string };
+  // `gitLine`: the one saying git's settings could not be read, escaped (cli.tsx; release 7 plan, Task 8); `bashLine`: the
+  // one saying Git Bash was not found for the hooks run by a shell (release 8b plan, choice 2).
+  live?: { loaded: { settings: Settings; warnings: string[] }; given: Given; networkLine?: string; gitLine?: string; bashLine?: string };
   // The session's pictures (pictures.ts; release 6 plan, choice 9); the App makes its own when not given. Tests give
   // one to end its reads.
   pictures?: Pictures;
@@ -123,6 +125,9 @@ export interface AppProps {
   // Takes the lines SessionEnd's hooks said as the user left where the window could not show them, in full screen or copy
   // mode, escaped, to print once Ink has ended (queue.ts, leave; release 8b plan, Task 10).
   leftLines?: (lines: string[]) => void;
+  // The user's hooks, the session's and its subagents' (cli.tsx), for Ctrl+O's runs, /hooks and live edits (release 8b plan,
+  // Task 12); without them, as in most tests, /hooks has none in force.
+  hooks?: Hooks;
 }
 
 type OutputArea = ReturnType<typeof output>;
@@ -283,8 +288,10 @@ export function App(props: AppProps) {
       if (e.kind === "tool") ui.rerender((n) => n + 1);
       else if (e.kind === "fallback") latest.current.say({ text: `↪ ${e.message}`, color: "magenta" });
       // Its line names what failed, so it goes without a label (release 8a plan, Task 5; user, 2026-11-06), as a
-      // shortening's does (Task 12), and a hook's (release 8b plan, choice 22).
-      else if (e.kind === "saving" || e.kind === "shortening" || e.kind === "hook") latest.current.say({ text: `✗ ${e.message}`, color: "red" });
+      // shortening's does (Task 12), and a hook's (release 8b plan, choice 22), whose line is escaped whole, as its grey
+      // lines are (onHookNote).
+      else if (e.kind === "hook") latest.current.say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "red" });
+      else if (e.kind === "saving" || e.kind === "shortening") latest.current.say({ text: `✗ ${e.message}`, color: "red" });
       else latest.current.say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
     };
     const onUsage = () => {
@@ -320,6 +327,16 @@ export function App(props: AppProps) {
       ui.rerender((n) => n + 1);
     };
     const onNote = (text: string) => latest.current.say(gray(text));
+    // A hook's grey line (release 8b plan, choice 23), escaped whole: it carries the hook's own words, raw, and its command,
+    // so a line break in them cannot pass for a line of the window's own (Task 6's review).
+    const onHookNote = (line: string) => latest.current.say(gray(visible(line, { tabs: true })));
+    // The waiting line's label while a hook with a statusMessage runs (release 8b design, "What the user sees").
+    const onHookStatus = (message: string, running: boolean) => {
+      const s = ui.hookStatus.current;
+      if (running) s.push(message);
+      else if (s.includes(message)) s.splice(s.lastIndexOf(message), 1);
+      ui.rerender((n) => n + 1);
+    };
     // A shortening (release 8a plan, Task 13): its line; its summary, for Ctrl+O until the next turn; and the gauge's
     // context, 0 until the next request reports, as the summary request's usage leaves it alone (stats.ts).
     const onShortened = (summary: string) => {
@@ -337,14 +354,17 @@ export function App(props: AppProps) {
     ui.bus.on("tasks", onTasks);
     ui.bus.on("note", onNote);
     ui.bus.on("shortened", onShortened);
+    ui.bus.on("hook-note", onHookNote);
+    ui.bus.on("hook-status", onHookStatus);
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
     // stderr is seen, and they are not said twice. So does the line naming the kinds of the dangerous-command check that
     // are off, in red, as it says the check is weaker (release 7 plan, Task 4, the user's choice). The line saying
     // --network was ignored is a warning too, grey as the settings file's, in the launch's order (release 7 plan, choice 22),
-    // and so is the one saying git's settings could not be read (Task 8).
+    // and so is the one saying git's settings could not be read (Task 8), and the one saying Git Bash was not found
+    // (release 8b plan, choice 2).
     const off = ui.fullNow.current && ui.live ? checkOffLine(ui.live.loaded.settings.dangerousCommands) : null;
-    const said = ui.live ? [ui.live.networkLine, ui.live.gitLine].filter((l) => l !== undefined) : [];
+    const said = ui.live ? [ui.live.networkLine, ui.live.bashLine, ui.live.gitLine].filter((l) => l !== undefined) : [];
     const warnings = ui.fullNow.current && ui.live ? [...ui.live.loaded.warnings, ...said] : [];
     const launchLines: Line[] = [...warnings.map(gray), ...(off ? [{ text: off, color: "red" }] : [])];
     fns.say(...launchLines, ...ui.intro);
@@ -395,6 +415,8 @@ export function App(props: AppProps) {
       ui.bus.off("tasks", onTasks);
       ui.bus.off("note", onNote);
       ui.bus.off("shortened", onShortened);
+      ui.bus.off("hook-note", onHookNote);
+      ui.bus.off("hook-status", onHookStatus);
       // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
       // Ink ending on a drawing error would leave with nothing on screen.
       ui.tasks.stop();
@@ -665,7 +687,7 @@ export function App(props: AppProps) {
   const escFirst = fns.vimFirst() && ui.table.keysFor("chat:cancel", "Chat").includes("escape");
   const workingLine = ui.busy && (
     <WorkingLine
-      label={ui.doing.current.label}
+      label={ui.hookStatus.current.length ? visible(ui.hookStatus.current.at(-1)!) : ui.doing.current.label}
       stop={escFirst ? `${stop} ${stop}` : stop}
       ms={Math.max(0, ui.now - ui.doing.current.at)}
       spend={

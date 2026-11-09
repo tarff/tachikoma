@@ -2,12 +2,19 @@ import { resolve } from "../../clilib.js";
 import { errorText, type Provider } from "../../core/types.js";
 import { KEYBINDINGS, type KeysLoaded } from "../../keybindings.js";
 import { NO_RULES } from "../../safety/rules.js";
-import { type Loaded, SETTINGS, type Settings } from "../../settings.js";
+import { hooksOf, type Loaded, SETTINGS, type Settings } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { editorCommand } from "../external.js";
 import { start as vimStart } from "../vim.js";
 import { FROM, gray, LIVE, tokens } from "./constants.js";
 import type { UI } from "./state.js";
+
+// Whether an entry's value is unchanged: a hook's matcher holds a RegExp, which JSON writes as {}, so it is compared by
+// its text, or an edit of the expression alone would look like none (release 8b plan, Task 6's review).
+const same = (a: unknown, b: unknown) => {
+  const text = (v: unknown) => JSON.stringify(v, (_key, x: unknown) => (x instanceof RegExp ? { regex: x.source, flags: x.flags } : x));
+  return text(a) === text(b);
+};
 
 export const liveEdits = (ui: UI, fns: Fns) => {
   // A live edit of the settings file (release 6 design, "Live edits"): a broken file keeps the last good settings
@@ -18,11 +25,13 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     if ("problem" in read) return fns.note({ text: `${read.problem}; the last good settings still apply`, color: "red" });
     for (const w of read.warnings) if (!ui.warned.current.includes(w)) fns.note(gray(w));
     ui.warned.current = read.warnings;
+    // /hooks's left-out rows follow the file, an edit of a left-out hook alone among them (release 8b plan, Task 12).
+    if (ui.hooks) ui.hooks.set({ ...ui.hooks.config, leftOut: hooksOf(read.settings, read.warnings).leftOut });
     const before = ui.fileNow.current;
     ui.fileNow.current = read.settings;
     const now = resolve({}, {}, read.settings);
     for (const key of LIVE) {
-      if (JSON.stringify(before[key]) === JSON.stringify(read.settings[key])) continue;
+      if (same(before[key], read.settings[key])) continue;
       // VISUAL and EDITOR come before the file's editor, as a flag comes before an entry (external.ts, editorCommand).
       const flag = key === "editor" ? (process.env.VISUAL ? "VISUAL" : process.env.EDITOR ? "EDITOR" : undefined) : ui.live?.given[key];
       if (flag) fns.note(gray(`${SETTINGS}'s "${key}" was left as ${flag} set it for this session`));
@@ -128,7 +137,24 @@ export const liveEdits = (ui: UI, fns: Fns) => {
       ui.rules.current = { add: [...new Set([...r.add, ...after.add])], off: r.off.filter((kind) => after.off.includes(kind)) };
       ui.onRules(ui.rules.current);
     } else if (key === "hooks" || key === "disableAllHooks") {
-      // Nothing yet: release 8b plan, Task 12 applies them.
+      // From the next event, a hook already running finishing as it started (release 8b design, "What the user sees":
+      // "Live, with a line"). The two entries make one set of hooks, so an edit of both says its line once: the second
+      // finds the hooks already set.
+      const h = ui.hooks;
+      const next = hooksOf(s, ui.warned.current);
+      if (!h || (same(h.config.hooks, next.hooks) && h.config.off === next.off)) return;
+      h.set(next);
+      const events = new Set(next.hooks.map((x) => x.event)).size;
+      const n = next.hooks.length;
+      fns.note(
+        gray(
+          next.off
+            ? "Hooks changed: all off (disableAllHooks)."
+            : n
+              ? `Hooks changed: ${n} hook${n === 1 ? "" : "s"} at ${events} event${events === 1 ? "" : "s"}.`
+              : "Hooks changed: none in force.",
+        ),
+      );
     } else {
       // scrollSpeed. The wheel's carried fraction is in the old speed's units, so the new one starts with none (review
       // fixes plan, fix 6).

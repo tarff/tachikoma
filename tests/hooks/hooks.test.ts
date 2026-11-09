@@ -484,4 +484,32 @@ describe("Hooks", { timeout: 15_000 }, () => {
     await expect(firing).rejects.toThrow("Cancelled");
     expect(errors).toEqual([]);
   });
+
+  // Release 8b plan, Task 12 (design, "What the user sees"): the waiting line shows a running hook's statusMessage, so the
+  // bus says when one starts and ends; an async hook is not waited for, so it says nothing (the builder's choice, Task 12).
+  it("says a hook's statusMessage on the bus as it starts and as it ends, a stopped one too, and nothing for an async one", async () => {
+    const p = await place();
+    const go = path.join(p.root, "go");
+    const never = path.join(p.root, "never");
+    const { hooks, bus } = setup(p, [
+      p.hook("held", { statusMessage: "Checking" }, { go }),
+      p.hook("plain"),
+      p.hook("left", { statusMessage: "Logging", async: true }),
+    ]);
+    const said: [string, boolean][] = [];
+    bus.on("hook-status", (message, running) => void said.push([message, running]));
+    const firing = hooks.fire("PreToolUse", {});
+    while (p.inputs("held").length < 1) await pause(20);
+    expect(said).toEqual([["Checking", true]]);
+    writeFileSync(go, "");
+    await firing;
+    expect(said).toEqual([["Checking", true], ["Checking", false]]);
+    hooks.set(config([p.hook("stopped", { statusMessage: "Waiting" }, { go: never })]));
+    const stop = new AbortController();
+    const stopped = hooks.fire("PreToolUse", {}, { signal: stop.signal });
+    while (p.inputs("stopped").length < 1) await pause(20);
+    stop.abort();
+    await expect(stopped).rejects.toThrow("Cancelled");
+    expect(said.slice(2)).toEqual([["Waiting", true], ["Waiting", false]]);
+  });
 });

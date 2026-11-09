@@ -5,13 +5,24 @@ import { type Network, NETWORKS, oneOf, SANDBOXES, type Sandbox, speedValue, sta
 import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode, OFFERED } from "./core/permissions.js";
 import { errorText } from "./core/types.js";
-import { type Hook, readHooks } from "./hooks/config.js";
+import { type Hook, type HooksConfig, readHooks } from "./hooks/config.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { type Kind, KINDS, type UserRules } from "./safety/rules.js";
 import type { Segment } from "./tui/StatusLine.js";
 
 // The names live beside the data folder's, so the file tools can refuse them without loading this module.
 export { SETTINGS, settingsDir };
+
+// What the file gives the Hooks object (release 8b plan, Tasks 4 and 12), the launch and a live edit alike: the hooks,
+// whether disableAllHooks turns them off, and the warnings' words after `"hooks": `, for /hooks's left-out rows.
+const HOOKS_ENTRY = `${SETTINGS}: "hooks": `;
+export function hooksOf(settings: Settings, warnings: string[]): HooksConfig {
+  return {
+    hooks: settings.hooks ?? [],
+    off: settings.disableAllHooks === true,
+    leftOut: warnings.flatMap((w) => (w.startsWith(HOOKS_ENTRY) ? [w.slice(HOOKS_ENTRY.length)] : [])),
+  };
+}
 
 // The file's place as a message shows it: ~ for the home folder, with the system's own separator.
 export function shownFile(platform: NodeJS.Platform = process.platform): string {

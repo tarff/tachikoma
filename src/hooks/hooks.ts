@@ -20,7 +20,9 @@ export interface Where {
   lead: () => string;
   agent?: { id: string; transcript?: string };
 }
-export interface Run { event: Event; hook: Hook; ran: Ran; outcome: Outcome } // for Ctrl+O (release 8b plan, choice 24)
+// For Ctrl+O (release 8b plan, choice 24); `match`, what the event's matchers were matched against, names a tool hook's
+// tool, for the line saying its updatedToolOutput was not used.
+export interface Run { event: Event; hook: Hook; ran: Ran; outcome: Outcome; match?: string }
 
 // Each mode under its nearest Claude Code name (release 8b design, "What a hook is sent").
 export const MODE_NAMES: Record<Mode, string> = { ask: "default", project: "acceptEdits", auto: "auto", never: "bypassPermissions" };
@@ -31,6 +33,11 @@ const PROMPT_LIMIT = 30;
 // The same: SessionEnd's hooks share 1.5 s, which a hook's own longer timeout raises, to 60 s at most.
 const END_LIMIT = 1.5;
 const END_MOST = 60;
+
+// A hook's own time limit in seconds, as fire gives it; at SessionEnd, as when it runs alone, since a longer timeout among
+// the hooks run with it raises their shared 1.5 s (fire). /hooks lists it (release 8b plan, "Lines this plan adds").
+export const limitOf = (hook: Hook): number =>
+  hook.event === "SessionEnd" ? Math.min(END_MOST, hook.timeout ?? END_LIMIT) : (hook.timeout ?? (hook.event === "UserPromptSubmit" ? PROMPT_LIMIT : LIMIT));
 
 // Two entries are the same hook when every field of the entry is (release 8b design, "Running a hook"; review,
 // 2026-11-09, finding 3); its event, matcher and place are not fields of the entry.
@@ -116,13 +123,23 @@ export class Hooks {
     // One limit for all of SessionEnd's hooks, which run at once, so it is the time they share (release 8b plan, Task 10); a
     // hook's own shorter timeout still ends it sooner (Task 10's code review).
     const shared = event === "SessionEnd" ? Math.min(END_MOST, Math.max(END_LIMIT, ...picked.map((h) => h.timeout ?? 0))) : undefined;
-    const run = async (hook: Hook, signal?: AbortSignal) => {
-      const limit = shared !== undefined ? Math.min(hook.timeout ?? shared, shared) : (hook.timeout ?? (event === "UserPromptSubmit" ? PROMPT_LIMIT : LIMIT));
-      // runHook adds commandEnv and CLAUDE_PROJECT_DIR; the folder is the project's root (release 8b plan, choice 3).
-      const ran = await runHook(hook, input, { cwd: this.#where.root, env: process.env, limit, signal });
+    const run = async (hook: Hook, signal?: AbortSignal): Promise<Run> => {
+      const limit = shared !== undefined ? Math.min(hook.timeout ?? shared, shared) : limitOf(hook);
+      // The waiting line shows a statusMessage while its hook runs (release 8b design, "What the user sees"); an async hook
+      // is not waited for, so it has none there.
+      const status = hook.async ? undefined : hook.statusMessage;
+      if (status !== undefined) this.#bus.emit("hook-status", status, true);
+      let ran: Ran;
+      try {
+        // runHook adds commandEnv and CLAUDE_PROJECT_DIR; the folder is the project's root (release 8b plan, choice 3).
+        ran = await runHook(hook, input, { cwd: this.#where.root, env: process.env, limit, signal });
+      } finally {
+        if (status !== undefined) this.#bus.emit("hook-status", status, false);
+      }
       // An async hook blocks nothing, so its failure stays a failure, to be said: onFailure "continue" turns off both ways
       // outcomeOf makes one a block, onFailure "block" and a shell on Windows without Git Bash (Task 4's spec review).
-      return { event, hook, ran, outcome: outcomeOf(event, hook.async ? { ...hook, onFailure: "continue" } : hook, ran) };
+      const outcome = outcomeOf(event, hook.async ? { ...hook, onFailure: "continue" } : hook, ran);
+      return { event, hook, ran, outcome, ...(opts.match !== undefined ? { match: opts.match } : {}) };
     };
     // An async hook is started and left, and a stop of the turn does not end it; its answer is read only to say a failure
     // (release 8b plan, choice 5), or that it asked to stop or to block, which it cannot: whatever combine would take as a

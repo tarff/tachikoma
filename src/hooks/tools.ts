@@ -129,6 +129,10 @@ const TOOLS: Record<string, Spec> = {
   todo: { claude: "TodoWrite", fields: [{ ours: "items", theirs: "todos", kind: "todos", required: true }] },
 };
 
+// The Tachikoma tool Claude Code's name stands for, or the name itself for a tool it does not know, for the lines, which
+// name tools as the window does (choice 10).
+export const tachikomaName = (claude: string) => Object.keys(TOOLS).find((name) => TOOLS[name]!.claude === claude) ?? claude;
+
 // The to-do list's statuses: Tachikoma's `done` is Claude Code's `completed` (Task 5).
 const TO_CLAUDE: Record<string, string> = { pending: "pending", in_progress: "in_progress", done: "completed" };
 const FROM_CLAUDE: Record<string, string> = { pending: "pending", in_progress: "in_progress", completed: "done" };

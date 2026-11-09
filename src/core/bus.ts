@@ -37,6 +37,8 @@ export interface Events {
   // A hook's grey line, such as its systemMessage (release 8b plan, choice 23). `named`: a subagent's line that names it
   // already, so Tasks passes it on without its id in front (the user's choice, 2026-11-09).
   "hook-note": [line: string, named?: true];
+  // A hook with a statusMessage started (`running`) or ended, for the waiting line (release 8b plan, Task 12).
+  "hook-status": [message: string, running: boolean];
 }
 
 // The session emits; the interface, status line, headless output and error log listen.
