@@ -1818,6 +1818,23 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.inputs()).toEqual([expect.objectContaining({ hook_event_name: "PostToolUseFailure", ...failure, duration_ms: expect.any(Number) })]);
   });
 
+  it("fires neither PostToolUse nor PostToolUseFailure for a call a PreToolUse hook refused, nor one the user's stop cancelled", async () => {
+    const post: Says[] = [{ event: "PostToolUse", stdout: "" }, { event: "PostToolUseFailure", stdout: "" }];
+    const denied = await setup({ mode: "never", says: [{ stdout: decide("deny", "no") }, ...post], turns: shellCall("echo hi") });
+    await denied.session.send("go");
+    expect([denied.outcomes, denied.inputs().map((i) => i.hook_event_name)]).toEqual([["declined"], ["PreToolUse"]]);
+    const stop = new AbortController();
+    // Stops the turn once it runs, as Esc does, then fails as a killed command does.
+    const stopping = defineTool("stopping", "Stops the turn while it runs", z.object({}), (_input, c) =>
+      new Promise((_ok, no) => {
+        c.signal?.addEventListener("abort", () => no(new Error("killed")));
+        stop.abort();
+      }));
+    const cancelled = await setup({ mode: "never", says: post, turns: [callTool("c1", "stopping", {})], tools: [stopping] });
+    await cancelled.session.send("go", stop.signal);
+    expect([cancelled.results(), cancelled.outcomes, cancelled.inputs()]).toEqual([[{ output: "Cancelled by the user.", isError: true }], ["cancelled"], []]);
+  });
+
   it("gives the model a string updatedToolOutput in place of a read's result, and ignores one that does not match the tool's result", async () => {
     const root = await folder();
     writeFileSync(path.join(root, "a.txt"), "A\n");

@@ -191,6 +191,11 @@ present, `bash` on PATH is WSL's, `jq` on PATH from winget, `CLAUDE_CODE_GIT_BAS
 | 8 | Stop or SubagentStop blocks in a row, with no tool call between, before the turn ends anyway | the hooks reference, "Stop input" |
 | 30,000 characters | how much of a hook's error output is read (`MAX_TOOL_OUTPUT`); its output is read whole (the user's choice, 2026-11-09) | executor.ts:3, as every command's output is read |
 
+Where the 30,000 applies to the tool hooks (Task 7's review): what the model reads, and an
+`updatedToolOutput` put in its place, are cut to 30,000 characters (`MAX_TOOL_OUTPUT`). Agent's
+`tool_response` carries the subagent's whole answer. Bash's `stdout` and `stderr` are each cut at
+30,000 as they are read, by `collect` (local.ts), and so are a sandbox command's (docker.ts).
+
 No other number is set. Anywhere a builder feels a number is needed, they stop and ask the
 controller, who asks the user.
 
@@ -941,8 +946,10 @@ section).
   short names) become sandbox names as typed; a failed subagent shows to PostToolUse as completed,
   its text starting `<id> failed:`; with a PostToolUse hook in force, write_file reads the old file
   first to tell create from update, which in the sandbox is one more Docker call per write; and one
-  from Task 6's review: a subagent's hooks are sent the lead's effort, not its own model's; the
-  release list with 8 in five
+  from Task 6's review: a subagent's hooks are sent the lead's effort, not its own model's; and two
+  from Task 7's review: `duration_ms` counts the time a permission question was open, and auto
+  mode's judge, as the gate runs inside the tool; a question still open when a hook stops the turn
+  stays on screen, and a yes to it still runs that call; the release list with 8 in five
   parts, 8e added; `/hooks` in the commands list.
 - **The design** gets an "As built" section listing this plan's choices as the user settled them.
 
