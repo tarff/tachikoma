@@ -40,7 +40,6 @@ export interface Task {
   done: Promise<Result>;
 }
 
-
 export interface TasksOptions {
   bus: Bus; // the lead's: subagents' spend and errors are reported there, marked with the subagent
   max: number; // --max-tasks
