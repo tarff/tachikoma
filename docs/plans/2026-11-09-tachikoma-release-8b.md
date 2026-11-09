@@ -745,6 +745,10 @@ lets its call run. `combine` drops the deny, ask, allow and rewrite when a stop 
 Task 6's `#preToolUse` (session.ts) does not read `stop`, so the call goes ahead as if the hooks
 had no opinion. This task must check `c.stop` there first and not run that call.
 
+**Note from Task 6's review** (2026-11-09): `Session.#hookText` holds the PreToolUse text for the
+model, and `load()` empties it. Drain it per reply, putting it after that reply's results, so a
+stopped turn's text never reaches the next turn's results.
+
 Commit: `feat: PostToolUse and PostToolUseFailure, and a hook that stops the turn leaving every call answered`.
 
 **End of Part 2:** run the whole suite once.
@@ -893,6 +897,13 @@ Commit: `feat: PreCompact and PostCompact around each shortening`.
 - At the launch, the warnings print as other settings warnings do, and the Git Bash line once when
   a hook run by a shell is in force and none is found.
 
+**Notes from Task 6's review** (2026-11-09):
+- **Escape every hook line before it is shown.** The window's `hook-note` listener and `-p`'s
+  `note:` line pass each line through `visible(line, { tabs: true })`: the refusal line carries
+  the hook's own reason, raw, and its command.
+- **Ctrl+O shows a rewrite under its call.** The tool line keeps the model's input, as the design
+  says ("Ctrl+O shows the model's call and the rewrite"); check that the rewrite appears under it.
+
 **Tests:** each line in the window and in `-p`; a `-p` run whose PreToolUse hook fails, then
 answers, exits 0 with the hook's line on its error output (second round, finding 1); a subagent's
 `systemMessage`, its SubagentStop block and its `continue: false` line reach the window and `-p`'s
@@ -921,7 +932,8 @@ section).
   name in the sandbox; Windows name quirks in a rewrite (a trailing dot or space, `:stream`, 8.3
   short names) become sandbox names as typed; a failed subagent shows to PostToolUse as completed,
   its text starting `<id> failed:`; with a PostToolUse hook in force, write_file reads the old file
-  first to tell create from update, which in the sandbox is one more Docker call per write; the
+  first to tell create from update, which in the sandbox is one more Docker call per write; and one
+  from Task 6's review: a subagent's hooks are sent the lead's effort, not its own model's; the
   release list with 8 in five
   parts, 8e added; `/hooks` in the commands list.
 - **The design** gets an "As built" section listing this plan's choices as the user settled them.

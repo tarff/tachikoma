@@ -149,6 +149,7 @@ export class Session {
     this.#transcript = c.transcript;
     this.messages.splice(0, this.messages.length, ...c.messages);
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
+    this.#hookText.splice(0); // the last conversation's hook text, not yet sent, is not this one's (Task 6's code review)
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();
@@ -545,8 +546,9 @@ export class Session {
   async #execute(call: ToolCall, entry: { name: string; input: unknown }, signal?: AbortSignal): Promise<[ToolResult, ToolOutcome]> {
     if (signal?.aborted) return [result(call, "Cancelled by the user.", true), "cancelled"];
     const fail = (message: string): [ToolResult, ToolOutcome] => {
-      // Capped like the message: a failed write_file's input is the whole file.
-      this.opts.bus.emit("error", { kind: "tool", attempted: truncate(`${call.name} ${JSON.stringify(call.input)}`), message, lead: this.#lead.id });
+      // Capped like the message: a failed write_file's input is the whole file. The input that ran, a hook's rewrite among
+      // them, as the record of calls holds it (Task 6's code review).
+      this.opts.bus.emit("error", { kind: "tool", attempted: truncate(`${call.name} ${JSON.stringify(entry.input)}`), message, lead: this.#lead.id });
       return [result(call, message, true), "failed"];
     };
     const tool = this.opts.tools.find((t) => t.spec.name === call.name);

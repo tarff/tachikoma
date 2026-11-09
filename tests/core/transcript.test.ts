@@ -286,15 +286,19 @@ describe("transcript", { timeout: 15_000 }, () => {
     t.write({ t: "message", message: answers("c1", "C's text") });
     t.write({ t: "message", message: asks("c2", { path: "D" }) });
     t.write({ t: "rewritten", id: "c2", input: { path: "E" } });
+    // Tachikoma's fields are an object, never a list: such a line is damaged, and its call keeps its own input.
+    t.write({ t: "message", message: asks("c3", { path: "F" }) });
+    t.write({ t: "rewritten", id: "c3", input: ["G"] });
     expect(t.failed).toBeNull();
     const r = read(p);
-    expect(r.damaged).toBe(0);
+    expect(r.damaged).toBe(1);
     expect(r.calls).toEqual([
       { name: "read_file", input: { path: "B" } },
       { name: "read_file", input: { path: "C" } },
       { name: "read_file", input: { path: "E" } },
+      { name: "read_file", input: { path: "F" } },
     ]);
-    expect(r.messages.filter((m) => m.role === "assistant")).toEqual([asks("c1", { path: "C" }), asks("c2", { path: "D" })]);
+    expect(r.messages.filter((m) => m.role === "assistant")).toEqual([asks("c1", { path: "C" }), asks("c2", { path: "D" }), asks("c3", { path: "F" })]);
   });
 
   it("leaves a cut-off reply's calls out of the judge's calls, as session.ts never keeps them", async () => {

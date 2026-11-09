@@ -356,7 +356,7 @@ function valid(l: unknown): l is Line {
   if (r.t === "shortened") return strings("system") && isMessage(r.message);
   if (r.t === "subagent") return strings("id", "description", "file");
   if (r.t === "ended") return r.state === "failed" || r.state === "stopped" || r.state === "lost";
-  if (r.t === "rewritten") return strings("id") && typeof r.input === "object" && r.input !== null;
+  if (r.t === "rewritten") return strings("id") && typeof r.input === "object" && r.input !== null && !Array.isArray(r.input);
   return false;
 }
 

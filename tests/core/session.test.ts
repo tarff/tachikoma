@@ -1488,10 +1488,12 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       hooks: new Hooks({ hooks, off: false, leftOut: [] }, where, bus),
       ...(o.transcript ? { transcript: o.transcript } : {}),
     });
-    const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
+    // Whole lines only: the last piece is empty once the hook has written its line, or the part of it written so far.
+    const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
+    const errors = collectErrors(bus);
     const results = () => session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [{ output: p.output, isError: p.isError }] : [])));
     const command = (h: Hook) => [h.command, ...(h.args ?? [])].join(" ");
-    return { root, session, asked, judged, refusals, ran, notes, outcomes, inputs, results, hooks, command };
+    return { root, session, asked, judged, refusals, ran, notes, outcomes, inputs, results, errors, hooks, command };
   }
   const oneCall = (name: string, input: object) => [callTool("c1", name, input), reply("ok")];
   const shellCall = (command: string) => oneCall("shell", { command });
@@ -1661,6 +1663,19 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect([s.results(), s.notes, s.outcomes]).toEqual([[{ output: line, isError: true }], [line], ["declined"]]);
     expect(readFileSync(path.join(root, "a.txt"), "utf8")).toBe("hello\n");
     expect(s.session.calls).toEqual([{ name: "edit_file", input: { path: "a.txt", old_text: "hello", new_text: "bye" } }]);
+  });
+
+  // Task 6's code review: the error log names the input that ran, as the record of calls does.
+  it("names the rewritten input in the error log when the rewritten call fails", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "hello\n");
+    const a = path.join(root, "a.txt");
+    const edit = rewrite({ file_path: a, old_string: "not in the file", new_string: "bye" });
+    const turns = oneCall("edit_file", { path: "a.txt", old_text: "hello", new_text: "bye" });
+    const s = await setup({ mode: "never", root, says: [{ stdout: edit }], turns });
+    await s.session.send("go");
+    expect(s.outcomes).toEqual(["failed"]);
+    expect(s.errors.map((e) => e.attempted)).toEqual([`edit_file ${JSON.stringify({ path: a, old_text: "not in the file", new_text: "bye" })}`]);
   });
 
   it("uses the first of two rewrites in the file, saying which was ignored", async () => {
