@@ -297,3 +297,113 @@ Option chosen: "Yes that looks fine", for these homes:
 | The `http`, `prompt` and `agent` hook kinds; `if`; `asyncRewake`; `CLAUDE_ENV_FILE` | Not planned: nothing in the user's setup uses them |
 | TaskCreated, TaskCompleted, TeammateIdle, WorktreeCreate, WorktreeRemove, MessageDisplay | Probably never: they belong to Claude Code features Tachikoma has not got |
 | Hooks from a project's files, and the folder-trust question | Never (user, 2026-11-06: "Your settings file only"); with only the user's file read, no trust question is needed |
+
+## As built
+
+Where the build differs from the design above, or settles what it left open. The plan
+(`2026-11-09-tachikoma-release-8b.md`) lists its 25 choices, each marked in its task, with every
+line the build added in its table "Lines this plan adds"; every number here is from the plan's
+table "Numbers in this plan" or from the code's comments, as cited there. "The user's choice"
+marks the user's answers, given on 2026-11-09 and 2026-11-10 from options offered. The README's
+known limits gather every rarer case the build left as a limit.
+
+- **The settings entry (Task 1).** A hook's `timeout` is a number of seconds above 0 and no more
+  than 2147483, the longest wait Node's `setTimeout` takes (the user's choice). A key in an entry
+  other than `matcher` and `hooks` is left out with a warning, and the entry's hooks are still
+  read; each warning about one hook ends with its command and args, so two alike can be told apart
+  (the user's words at Task 1's review). With `disableAllHooks` the hooks are still read and warned
+  about, so `/hooks` can say what is off.
+- **Running a hook (Task 2; choices 1-5).** Git Bash is looked for, once per process, in this
+  order: the file `CLAUDE_CODE_GIT_BASH_PATH` names, when it is an existing `bash.exe`, `sh.exe`,
+  `bash` or `sh`; `bin\bash.exe` beside the folder of the first `git.exe` on PATH;
+  `%ProgramFiles%\Git\bin\bash.exe`; then `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`. Never a bare
+  `bash` from PATH, which on the user's PC is WSL's. Without it, a hook run by a shell runs in
+  Windows PowerShell, and the launch says so once. A command, or a shell, named without a folder is
+  found on PATH and started by its full path, so the project folder is never searched for it; one
+  not there could not start, `not found on PATH` (the user's choice). As only `.exe` is looked for
+  on Windows, a bare `npx` is not found (a known limit). A hook's output is read whole, so a long
+  JSON answer can still be read, and each text it hands on is cut at 10,000 characters (the user's
+  choice); its error output is cut at 30,000 characters, as a command's is.
+- **Reading the answers (Task 3).** A field printed as `null` counts as left out (the user's
+  choice). A failure's line names the signal that ended a hook with no exit code, and a timeout's
+  line the limit in force (the user's choices). A block made from a failure (`onFailure: "block"`,
+  or the Windows rule) has the failure's own words as its reason, unless the hook exited, or was
+  ended by a signal, with error output, whose first line is then the reason, so a timeout's block
+  says it ran out of time (the user's choice at Task 3's review). At SessionStart, SessionEnd,
+  SubagentStart and PostCompact exit 2 is a failure, `exited with code 2`, and `onFailure:
+  "block"` changes nothing there, following this design's row "Cannot block" (the user's choice).
+  At PostToolUse and PostToolUseFailure a block's reason becomes text for the model, and the call's
+  outcome is unchanged (plan review, finding 3).
+- **`async` hooks (Task 4; choice 5).** Their answer is read to report a failure, and also when it
+  asks to block or to stop, which an `async` hook cannot, each with its own red line, the stop's
+  alone when it asks both (the user's choices). SessionEnd alone waits for its `async` hooks, within
+  its shared limit, so none is left running and no line is lost as Tachikoma ends (Task 10's code
+  review). A hook's failure fails no subagent and no `-p` run (plan review, finding 1).
+- **Tools (Task 5; choices 10-14).** A field Tachikoma's tool cannot do, beside choice 14's (Grep's
+  `head_limit`, `-A` and the like), is refused, not dropped, so a rewrite is taken whole or not at
+  all (the user's choice). In the sandbox a rewritten whole path outside the project is refused, as
+  the box would take it as one odd name in `/work`; in copy mode on Windows a host path inside the
+  project becomes its place in the copy (the user's choices). Write's `filePath` is the path hooks
+  are sent, as its `file_path` is. The rewrite's reasons are the user's approved wording.
+- **PreToolUse (Task 6; choices 15-16).** A hook's allow, and a yes to its ask, never wave a write
+  outside the project through, in any mode: ask and project modes still ask, auto still goes to
+  the judge, and `never` still refuses (the user's choice). In `-p` a call a PreToolUse hook refused
+  fails the run with exit code 1: a deny, a block, an ask `-p` cannot put, and a rewrite that cannot
+  be used (the user's choice). An ask nobody can answer, in `-p` and in `never`, is also a grey
+  line, in the words the model gets (the user's choice). The hooks' `effort` follows a live change
+  of the lead's effort, not the launch's value (the user's choice).
+- **After a call, and a stop (Task 7).** `write_file` reads the old file, to tell `create` from
+  `update`, only when a PostToolUse or PostToolUseFailure hook matches the call. A stop from a tool
+  event leaves every call of the reply one result: a call not started gets `Not run: a hook stopped
+  the turn.`, a call whose tool throws at the stop gets `Stopped: a hook stopped the turn.` (the
+  user's approved line), and a running `delegate` keeps its own stopped result.
+- **UserPromptSubmit and text for the model (Task 8; choices 6, 17).** It fires only for a turn with
+  the user's own words, not for one that reads background answers alone. A stop at UserPromptSubmit
+  puts the words back, as a block does, and the prompts queued behind come back with them, with one
+  `Your words are back in the prompt box.` (the user's choices). Esc while its hooks run sends and
+  saves nothing, and the words stay in the prompt history only. In `-p --json` each grey hook line
+  is a `hook-note` JSON line (the user's choice). The prompt's message holds, in order,
+  SessionStart's waiting text, the prompt's own parts, UserPromptSubmit's text, then the subagents'
+  waiting text.
+- **Stop and the subagents' events (Task 9; choices 8, 21).** `stop_hook_active` stays true for the
+  rest of the turn once a Stop hook has kept it going. The ninth block in a row is not followed: the
+  turn ends on the model's reply with the 8-times line. A block with no reason sends the model `The
+  hook gave no reason; carry on with the task.`, and its grey line, as `additionalContext` alone's,
+  names no reason (the user's choices). A SubagentStop stop keeps the subagent's answer, with the
+  stop's line after it; a background subagent a hook stopped tells the lead so, waking it as a
+  failed one does (the user's choices). SubagentStop's lines that name the subagent drop the
+  `<id>: ` in front (the user's choice). SubagentStart and SubagentStop are matched on `Explore`, as
+  Claude Code matches both on the subagent's type.
+- **SessionStart and SessionEnd (Task 10; choices 18-19).** SessionStart's `model` is the lead's
+  full id, such as `anthropic:claude-opus-5-5` (the user's choice). It is not waited for where it
+  fires; the next turn waits for its hooks, so their text reaches its request. SessionEnd's hooks
+  share one limit, 1.5 s or the longest `timeout` among them, 60 s at most. A switch's SessionEnd
+  (`/clear`, `/branch`, `/resume`'s pick) shows the working line, and Esc stops it (the user's
+  choice: "Esc stops it"). Leaving the window turns the keys off while SessionEnd runs, with no new
+  line, and its lines, in full screen and in copy mode, are also written to stderr once Ink has
+  ended, so none is lost (the user's choices). A copy opened because another window holds the
+  session is still `resume`. A crash that ends the window runs no SessionEnd, as a signal runs none
+  (a known limit).
+- **PreCompact and PostCompact (Task 11; choice 20).** `manual` is `/compact`'s alone. PreCompact's
+  plain text joins the focus after `/compact`'s words, a paragraph each. A block with no reason, or
+  one only blank, gives `a PreCompact hook blocked it`, with no colon (the user's choice: "Drop the
+  colon"). A subagent's shortening fires PreCompact and PostCompact and no SessionStart `compact`
+  (the user's choice: "Pre/Post only"). SessionStart `compact`'s text goes first in the shortened
+  message, and is left out, with a grey line, when with it the message would not fit the window.
+  `/lead`'s shortening sends SessionStart `compact` the new lead's id as `model`, as that lead reads
+  its text once the switch is made; every other shortening sends the lead's (Task 11's code
+  review). For 8d: `onShorten` runs before PreCompact, so 8d's memory save will run even for a
+  shortening a PreCompact hook then blocks.
+- **What the user sees (Task 12; choices 22-25),** in the user's words at Task 12's spec review: the
+  `/` menu's note for `/hooks` is `List the hooks in force`, and HELP says `/hooks lists the hooks
+  in force`; Ctrl+O names a tool event's tool by Tachikoma's name, `for <tool>`, and a run a signal
+  ended as `ended by signal <SIGNAME>`; `Hooks changed` is singular for 1; `/hooks` names the file
+  as the other lines do, `~\.tachikoma\settings.json` on Windows; the working line shows the
+  `statusMessage` of the lead's sync hooks only (a known limit). Ctrl+O lists exactly the runs of
+  the lead turn it shows, and `/branch` keeps them, then adds the branch's own SessionEnd and
+  SessionStart runs (the user's choice). The Git Bash line is said only when a hook run by a shell
+  is in force.
+- **The documents (Task 13).** The README says plainly that a command in the sandbox cannot add a
+  hook, as `~/.tachikoma` is not in the box, and that on the host a shell command you allowed could,
+  the edit applying at once with its `Hooks changed` line. Release 8 now has five parts, 8e holding
+  the events this design leaves to it.
