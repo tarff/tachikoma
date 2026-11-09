@@ -442,17 +442,33 @@ describe("Hooks", { timeout: 15_000 }, () => {
   });
 
   // Claude Code's hooks reference, "Common fields" (release 8b plan, "Numbers in this plan"; Task 10).
+  // A hook's own shorter timeout still ends it sooner (Task 10's code review).
   it("shares 1.5 s between SessionEnd's hooks, raised by a hook's own longer timeout, to 60 s at most", async () => {
     const p = await place();
     const end = (name: string, timeout?: number) => p.hook(name, { event: "SessionEnd", ...(timeout === undefined ? {} : { timeout }) });
-    for (const [given, limit] of [
-      [[end("a"), end("b", 0.5)], 1.5],
-      [[end("a"), end("b", 10)], 10],
-      [[end("a", 100)], 60],
+    for (const [given, limits] of [
+      [[end("a"), end("b", 0.5)], [1.5, 0.5]],
+      [[end("a"), end("b", 10)], [10, 10]],
+      [[end("a", 100)], [60]],
     ] as const) {
       vi.mocked(runHook).mockClear();
       await setup(p, [...given]).hooks.fire("SessionEnd", {});
-      expect(vi.mocked(runHook).mock.calls.map((c) => c[2].limit)).toEqual(given.map(() => limit));
+      expect(vi.mocked(runHook).mock.calls.map((c) => c[2].limit)).toEqual(limits);
     }
+  });
+
+  // Task 10's code review: at SessionEnd nothing is left running, and no failure line is lost, as Tachikoma is ending.
+  it("waits for SessionEnd's async hooks too, within their limits, saying their failures before it returns", async () => {
+    const p = await place();
+    const never = path.join(p.root, "never");
+    const slow = p.hook("slow", { event: "SessionEnd", async: true, timeout: 0.5 }, { go: never });
+    const failing = p.hook("failing", { event: "SessionEnd", async: true }, { stderr: "it broke", code: 1 });
+    const { hooks, errors } = setup(p, [slow, failing]);
+    await hooks.fire("SessionEnd", {});
+    expect(errors.map((e) => e.message).sort()).toEqual([
+      `SessionEnd hook failed: ${commandOf(failing)} exited with code 1: it broke`,
+      `SessionEnd hook failed: ${commandOf(slow)} ran out of time after 0.5 s`,
+    ]);
+    expect(hooks.runs).toHaveLength(2);
   });
 });

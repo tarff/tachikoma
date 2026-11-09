@@ -689,6 +689,9 @@ if (parsed.print !== undefined) {
   // was, so a resumed session's last answer is not printed as this run's; a stop later in the turn prints the answer it
   // came after, as a Stop hook's does (Task 9).
   const ended = await session.send(parsed.print, stop.signal);
+  // Read now: a Ctrl-C during SessionEnd or copy mode's step below comes after the run's work, so it does not mark the run
+  // stopped (Task 10's code review).
+  const aborted = stop.signal.aborted;
   if (!parsed.json && !(ended && ("blocked" in ended || ended.unsent))) {
     const last = session.messages.at(-1);
     if (last?.role === "assistant") {
@@ -716,7 +719,7 @@ if (parsed.print !== undefined) {
     }
     console.error(line ?? keptForReview(sessionId));
   }
-  process.exitCode = headlessExit({ aborted: stop.signal.aborted, failed: failed || ended !== undefined, declined });
+  process.exitCode = headlessExit({ aborted, failed: failed || ended !== undefined, declined });
 } else {
   // Ctrl-C reaches the interface as a key, as raw mode is on, so a SIGINT here came from outside (`kill -INT`), or from
   // Ctrl-C typed while the editor has the terminal, with raw mode off: that one is ignored, as Git ignores it, and the

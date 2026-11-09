@@ -113,10 +113,11 @@ export class Hooks {
     // Read once, so a late async hook's failure names the model that led when it started, not one a /lead switch
     // put in since (Task 4's code review).
     const lead = this.#where.lead();
-    // One limit for all of SessionEnd's hooks, which run at once, so it is the time they share (release 8b plan, Task 10).
+    // One limit for all of SessionEnd's hooks, which run at once, so it is the time they share (release 8b plan, Task 10); a
+    // hook's own shorter timeout still ends it sooner (Task 10's code review).
     const shared = event === "SessionEnd" ? Math.min(END_MOST, Math.max(END_LIMIT, ...picked.map((h) => h.timeout ?? 0))) : undefined;
     const run = async (hook: Hook, signal?: AbortSignal) => {
-      const limit = shared ?? hook.timeout ?? (event === "UserPromptSubmit" ? PROMPT_LIMIT : LIMIT);
+      const limit = shared !== undefined ? Math.min(hook.timeout ?? shared, shared) : (hook.timeout ?? (event === "UserPromptSubmit" ? PROMPT_LIMIT : LIMIT));
       // runHook adds commandEnv and CLAUDE_PROJECT_DIR; the folder is the project's root (release 8b plan, choice 3).
       const ran = await runHook(hook, input, { cwd: this.#where.root, env: process.env, limit, signal });
       // An async hook blocks nothing, so its failure stays a failure, to be said: onFailure "continue" turns off both ways
@@ -125,9 +126,12 @@ export class Hooks {
     };
     // An async hook is started and left, and a stop of the turn does not end it; its answer is read only to say a failure
     // (release 8b plan, choice 5), or that it asked to stop or to block, which it cannot: whatever combine would take as a
-    // sync hook's stop or block, the stop winning as there (the user's choices, 2026-11-09).
+    // sync hook's stop or block, the stop winning as there (the user's choices, 2026-11-09). SessionEnd alone waits for its
+    // async hooks too, within its shared limit, as Tachikoma is ending: none is left running then, and no failure line is
+    // lost (Task 10's code review, following the user's choices for the window's exit).
+    const left: Promise<void>[] = [];
     for (const hook of picked.filter((h) => h.async)) {
-      void run(hook).then((r) => {
+      const done = run(hook).then((r) => {
         runs.push(r);
         const c = combine(event, [r]);
         const command = commandOf(hook);
@@ -139,9 +143,11 @@ export class Hooks {
           this.#say(event, lead, [...c.failures, ...asked], []);
         } catch {}
       });
+      left.push(done);
     }
     // A stop ends every hook given the signal and rejects with Cancelled, as a command does (run.ts).
     const results = await Promise.all(picked.filter((h) => !h.async).map((h) => run(h, opts.signal)));
+    if (event === "SessionEnd") await Promise.all(left);
     runs.push(...results);
     const combined = combine(event, results);
     this.#say(event, lead, combined.failures, combined.messages);

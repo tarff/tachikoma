@@ -175,8 +175,10 @@ export class Session {
   // The hooks' text waiting for the next request, SessionStart's (Task 10), sent at the start of the next user message
   // (Task 8).
   readonly #nextText: { event: Event; text: string }[] = [];
-  // SessionStart's hooks still running (Task 10): the next turn waits for them, so their text reaches its request.
+  // SessionStart's hooks still running (Task 10): the next turn waits for them, so their text reaches its request. `#stopStart`
+  // stops them at a load or the session's end, never at a turn's stop, after which their text waits for the next turn.
   #starting: Promise<void> | undefined;
+  #stopStart: AbortController | undefined;
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -215,7 +217,7 @@ export class Session {
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
     this.#hookText.splice(0); // the last conversation's hook text, not yet sent, is not this one's (Task 6's code review)
     this.#nextText.splice(0); // nor is the text waiting for its next request: SessionStart fires after the load (Task 10)
-    this.#starting = undefined; // nor the text of SessionStart's hooks still running for it
+    this.#stopStarting(); // nor the text of SessionStart's hooks still running for it, which are stopped (Task 10's code review)
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();
@@ -239,30 +241,43 @@ export class Session {
 
   // SessionStart, once a conversation is loaded (release 8b plan, Task 10), matched on its source, with the lead as its
   // model (design, "What a hook is sent"). Not waited for here: the next turn waits for its hooks, so their text goes with
-  // its request; a load meanwhile drops it, as it was the last conversation's. A shortening's (Task 11) is not fired here.
+  // its request; a load or the session's end meanwhile stops its hooks and drops their text, as it was the last
+  // conversation's. A shortening's (Task 11) is not fired here.
   start(source: "startup" | "resume" | "clear" | "fork"): void {
     const { hooks } = this.opts;
     if (!hooks) return;
-    const fired: Promise<void> = hooks.fire("SessionStart", { source, model: this.#lead.id }, { match: source }).then(
+    const stop = new AbortController();
+    const fired: Promise<void> = hooks.fire("SessionStart", { source, model: this.#lead.id }, { match: source, signal: stop.signal }).then(
       (c) => {
         if (this.#starting !== fired) return;
         this.#starting = undefined;
         this.waitForNext(c.context);
       },
-      // Only a listener of its lines that throws can reject it, and unheard that would end Tachikoma (hooks.ts).
+      // The Cancelled of a load's or an end's stop, or a listener of its lines that throws, which unheard would end
+      // Tachikoma (hooks.ts).
       () => {
         if (this.#starting === fired) this.#starting = undefined;
       },
     );
     this.#starting = fired;
+    this.#stopStart = stop;
   }
 
-  // SessionEnd, as the session ends (Task 10), matched on its reason; its hooks share 1.5 s (hooks.ts). Refused while a turn
-  // runs, as a load is, so a switch that cannot be made ends nothing; but not as the user leaves the window, where a turn
-  // stopped just now may still be ending, and the window closes either way (queue.ts, leave).
+  // SessionEnd, as the session ends (Task 10), matched on its reason; its hooks share 1.5 s (hooks.ts). SessionStart's hooks
+  // still running are stopped first (Task 10's code review). Refused while a turn runs, as a load is, so a switch that
+  // cannot be made ends nothing: /resume's pick under a turn started under its list. The window's exit is let through
+  // only as a guard: no exit happens during a turn, as /exit waits for it in the queue and the exit keys do nothing then
+  // (keyRouting.ts), and were one to, the window would close all the same (queue.ts, leave).
   async end(reason: "prompt_input_exit" | "clear" | "resume" | "other"): Promise<void> {
     if (this.#running && reason !== "prompt_input_exit") throw new Error("A turn is already running");
+    this.#stopStarting();
     await this.opts.hooks?.fire("SessionEnd", { reason }, { match: reason });
+  }
+
+  #stopStarting(): void {
+    this.#stopStart?.abort();
+    this.#stopStart = undefined;
+    this.#starting = undefined;
   }
 
   // Before /lead makes `next` the lead (release 8a design, "When to shorten"): a conversation that will not fit its smaller

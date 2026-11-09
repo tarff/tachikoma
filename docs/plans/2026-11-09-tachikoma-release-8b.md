@@ -982,8 +982,21 @@ folder; SessionStart's context reaches the first request; a SessionEnd hook that
   exit code unchanged (a `hook` error fails no run). Under `--json` its lines are the `error` and
   `hook-note` JSON lines every hook's are.
 - **SessionEnd's limit is one for all its hooks,** as they run at once: 1.5 s, or the longest
-  `timeout` among them when longer, 60 s at most (hooks.ts), `async` ones too. Its failure is the
-  approved line, `ran out of time after 1.5 s`.
+  `timeout` among them when longer, 60 s at most (hooks.ts), `async` ones too. A hook's own shorter
+  `timeout` still ends it sooner (Task 10's code review). Its failure is the approved line, `ran out
+  of time after 1.5 s`.
+- **SessionEnd waits for its `async` hooks too,** within that limit, as Tachikoma is ending: none
+  is left running, and no failure line is lost (Task 10's code review, following the user's choices
+  for the window's exit). Every other event leaves `async` hooks running, as before.
+- **SessionStart's hooks still running are stopped** at a load and at the session's end, their
+  text dropped; a stop of the turn waiting for them leaves them running, so their text waits for
+  the next turn (Task 10's code review).
+- **`-p`'s exit code reads the stop as `send` returns,** so a Ctrl-C during SessionEnd or copy
+  mode's step, after the run's work, does not turn a finished run into a stopped one (Task 10's
+  code review). Not tested: on Windows Node cannot hand a child process a Ctrl-C, it kills it
+  instead (Node's docs for `subprocess.kill`), and CI runs on Windows only.
+- **A switch's SessionEnd shows no working line:** the line says Esc stops what runs, which it
+  cannot here (Task 10's code review; left for the user).
 - **`-p`'s SessionEnd `other`** fires after the answer is printed and before copy mode's step, so
   the copy's line stays the last. It fires after a Ctrl-C stop too: `-p`'s first Ctrl-C stops the
   turn and the run ends as usual, not through `exitOn`, which choice 19 is about.
@@ -997,11 +1010,12 @@ folder; SessionStart's context reaches the first request; a SessionEnd hook that
   `/resume`'s pick now hold the queue while SessionEnd runs, as `/clear` already did.
 - **SessionStart's `model` is the lead's full id,** such as `anthropic:claude-opus-5-5` (approved
   by the user, 2026-11-09).
-- **Leaving the window** (`/exit`, Ctrl-C or Ctrl-D twice) stops the turn and the subagents first,
-  as copy mode's leaving does, then, after copy mode's review, fires SessionEnd
-  `prompt_input_exit`, then Ink ends. While its hooks run the keys are off and the screen stays as
-  it is, with no new line (approved by the user, 2026-11-09). It fires even while the stopped turn
-  is still ending, which `Session.end` allows for this reason alone.
+- **Leaving the window** (`/exit`, Ctrl-C or Ctrl-D twice) stops the subagents first, as copy
+  mode's leaving does, then, after copy mode's review, fires SessionEnd `prompt_input_exit`, then
+  Ink ends. While its hooks run the keys are off and the screen stays as it is, with no new line
+  (approved by the user, 2026-11-09). No turn runs then: `/exit` waits for it in the queue and the
+  exit keys do nothing during one. `Session.end` still lets this reason through its turn check, as a
+  guard only, since the window closes whatever happens (Task 10's code review).
 - **SessionEnd's lines as the user leaves** (a failure's red line, a hook's `systemMessage`) are
   said in the window as any hook's; in full screen, which takes them away with the second screen,
   they are also written to stderr once Ink has ended, the same words escaped as hook lines are

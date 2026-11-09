@@ -968,6 +968,27 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     ]);
   });
 
+  // Task 10's code review: the run's session ends however its turn ended. The UserPromptSubmit hook blocks or stops; the
+  // SessionEnd hook writes its input to a file in the case's folder.
+  it.each([
+    ["a blocked prompt", { decision: "block", reason: "not today" }],
+    ["a hook's stop", { continue: false, stopReason: "enough" }],
+  ])("with -p, fires SessionEnd other after %s", async (_name, said) => {
+    const { url, sent } = await standIn();
+    const { proj, data } = place();
+    const out = path.join(path.dirname(proj), "inputs.jsonl");
+    const prompt = path.join(path.dirname(proj), "prompt.cjs");
+    writeFileSync(prompt, `process.stdout.write(${JSON.stringify(JSON.stringify(said))});`);
+    const end = path.join(path.dirname(proj), "end.cjs");
+    writeFileSync(end, `let t = ""; process.stdin.setEncoding("utf8").on("data", (d) => (t += d)).on("end", () => require("fs").appendFileSync(${JSON.stringify(out)}, t + "\\n"));`);
+    const run = (script: string) => [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }];
+    const hooks = { UserPromptSubmit: run(prompt), SessionEnd: run(end) };
+    const r = await tachiLater("-p", "hi", { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) });
+    expect(r.code).toBe(1);
+    expect(sent).toEqual([]);
+    expect(readFileSync(out, "utf8").trim().split("\n").map((l) => JSON.parse(l).reason)).toEqual(["other"]);
+  });
+
   // Claude Code's hooks reference, "Common fields": SessionEnd's hooks share 1.5 s (release 8b plan, Task 10).
   it("with -p, kills a SessionEnd hook still running at 1.5 s, says so, and the run ends as it would", async () => {
     const { url } = await standIn();

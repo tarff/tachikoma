@@ -2482,8 +2482,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     s.session.start("startup");
     await started(s, 1);
     s.session.load({ id: "s2", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
-    writeFileSync(go, "");
-    while (s.given.runs.length < 1) await pause(20);
+    writeFileSync(go, ""); // too late: the load stopped the hook (Task 10's code review), so it never answers
     await s.session.send("next");
     expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([{ type: "text", text: "next" }]);
   });
@@ -2502,6 +2501,39 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     writeFileSync(go, "");
     await s.session.send("again");
     expect(s.lead.seen[0]!.at(-1)!.parts).toEqual([hookText("SessionStart", "from the start"), { type: "text", text: "again" }]);
+  });
+
+  // Task 10's code review: SessionStart's hooks still running when the session ends, or another is loaded, are stopped. The
+  // hook writes its process id to a file in the test's folder, then never ends; up to 10 s for Windows to end it, as a tree
+  // kill there (taskkill /T) takes 2-4 s.
+  it.each(["end", "load"] as const)("stops SessionStart's hooks still running at a session's %s", async (how) => {
+    const root = await folder();
+    const pidFile = path.join(root, "pid");
+    const script = path.join(root, "forever.cjs");
+    writeFileSync(script, `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`);
+    const s = await setup({ mode: "never", root, says: [], turns: [] });
+    const hook: Hook = { event: "SessionStart", matcher: { all: true }, command: process.execPath, args: [script], async: false, where: "" };
+    s.given.set({ hooks: [hook], off: false, leftOut: [] });
+    s.session.start("startup");
+    for (let i = 0; !existsSync(pidFile) || !readFileSync(pidFile, "utf8"); i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    onTestFinished(() => void (alive() && process.kill(pid)));
+    if (how === "end") await s.session.end("other");
+    else s.session.load({ id: "s2", messages: [], system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+    for (let i = 0; alive() && i < 500; i++) await pause(20);
+    expect(alive()).toBe(false);
+    expect(s.errors).toEqual([]);
   });
 
   it("fires SessionEnd with its reason, matched on it, and refuses to while a turn runs, as a load does", async () => {

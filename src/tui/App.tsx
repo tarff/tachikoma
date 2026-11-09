@@ -659,6 +659,8 @@ export function App(props: AppProps) {
   };
   // Where vim takes Esc first (vimFirst) the line names it twice; a key chat:cancel has with Ctrl or Alt never goes to
   // vim (choice 31).
+  // A pick from /resume's list, called without await, so nothing may escape, as the model list's pick (queue.ts, pick).
+  const pickSession = (id: string) => void fns.pickSession(id).catch((err) => fns.say({ text: errorText(err), color: "red" }));
   const stop = ui.keyOf("chat:cancel", "Chat", "escape");
   const escFirst = fns.vimFirst() && ui.table.keysFor("chat:cancel", "Chat").includes("escape");
   const workingLine = ui.busy && (
@@ -724,10 +726,10 @@ export function App(props: AppProps) {
         // the status line, less its hint's and the one Ink ends on.
         ui.full ? (
           <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
-            <SessionList {...ui.sessions} bindings={ui.table} onPick={fns.pickSession} onClose={fns.closeSessions} keys={ui.pickerKey} maxRows={pickerRows} />
+            <SessionList {...ui.sessions} bindings={ui.table} onPick={pickSession} onClose={fns.closeSessions} keys={ui.pickerKey} maxRows={pickerRows} />
           </Box>
         ) : (
-          <SessionList {...ui.sessions} bindings={ui.table} onPick={fns.pickSession} onClose={fns.closeSessions} keys={ui.pickerKey} maxRows={ui.height - 3} />
+          <SessionList {...ui.sessions} bindings={ui.table} onPick={pickSession} onClose={fns.closeSessions} keys={ui.pickerKey} maxRows={ui.height - 3} />
         )
       ) : ui.question ? (
         // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8); auto mode's pause, a

@@ -300,9 +300,10 @@ export const queue = (ui: UI, fns: Fns) => {
     ui.setPicker(null);
     fns.next();
   };
-  // Leaving the session (/exit, and Ctrl-C or Ctrl-D twice): Ink ends, as ever. In copy mode the box is stopped first,
-  // with the turn and the subagents, and once Docker reports it gone the review (Review.tsx) opens in the App's place,
-  // Ink still mounted, under the lock beside the copy's folder, so two reviews of one copy take turns; its lines are
+  // Leaving the session (/exit, and Ctrl-C or Ctrl-D twice): Ink ends, as ever. No turn runs then, as /exit waits for it in
+  // the queue and the exit keys do nothing during one (keyRouting.ts), so only the subagents are stopped, first, in every
+  // mode. In copy mode the box is stopped next, and once Docker reports it gone the review (Review.tsx) opens in the App's
+  // place, Ink still mounted, under the lock beside the copy's folder, so two reviews of one copy take turns; its lines are
   // handed back, to print once Ink has ended (release 7 plan, Task 21). From the first step the App's own keys, pastes
   // and mouse are off (phase.ts, review), and nothing more starts. A view printed out comes back first, so the review
   // can draw. A copy with nothing to review is removed instead, its line printed (choice 121; copies.ts, dropIfNothing).
@@ -311,7 +312,6 @@ export const queue = (ui: UI, fns: Fns) => {
     if (ui.leaving.current) return;
     ui.leaving.current = true;
     ui.tasks.stop();
-    ui.abort.current?.abort();
     ui.rerender((n) => n + 1);
     const c = ui.copy;
     void (c ? review(c) : Promise.resolve())
@@ -323,8 +323,7 @@ export const queue = (ui: UI, fns: Fns) => {
   // in the window as any hook's are. Where the window cannot show them, in full screen, which takes them away with the
   // second screen, and in copy mode, whose review or leaving line is drawn in place of everything, they are handed back
   // too, the same words escaped as hook lines are, to print once Ink has ended, so none is lost (approved by the user,
-  // 2026-11-09; Task 10's spec review). A turn stopped just now may still be ending, which Session.end allows for this
-  // reason alone.
+  // 2026-11-09; Task 10's spec review).
   const endSession = async () => {
     const said: string[] = [];
     // As App.tsx's onError draws a hook's failure, the line alone; the window shows a hook's note so too (Task 12).

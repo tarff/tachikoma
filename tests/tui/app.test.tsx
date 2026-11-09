@@ -9144,8 +9144,9 @@ describe("App's hooks", { timeout: 60_000 }, () => {
     for (let i = 0; i < 200 && !app.lastFrame()?.includes(text); i++) await tick();
     expect(app.lastFrame()).toContain(text);
   }
-  async function untilSlowly(check: () => boolean) {
-    for (let i = 0; i < 200 && !check(); i++) await tick();
+  // `ticks`: more for a wait that holds several hooks' runs, or a kill, which on Windows takes 2-4 s (taskkill /T).
+  async function untilSlowly(check: () => boolean, ticks = 200) {
+    for (let i = 0; i < ticks && !check(); i++) await tick();
     expect(check()).toBe(true);
   }
   // A UserPromptSubmit hook that gives `answer` to the `at`th prompt it is sent (the first unless given), once go() is
@@ -9411,7 +9412,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
         await press(app, "\r");
       }
       await untilSlow(app, line);
-      await untilSlowly(() => inputs().length === n);
+      await untilSlowly(() => inputs().length === n, 600);
       ids.push(session.id);
     }
     expect(inputs().map((i) => [i.hook_event_name, i.reason ?? i.source, i.session_id])).toEqual([
@@ -9476,6 +9477,25 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(left).toEqual([["SessionEnd hook: bye\tnow\\u0007"]]);
   });
 
+  // Task 10's code review: what is typed while a switch's SessionEnd runs waits in the queue, then goes to the new session.
+  it("holds a prompt typed while /clear's SessionEnd hooks run, then sends it in the new session", async () => {
+    const hook = endHook("", "go");
+    const lead = new FakeProvider("a", [reply("one"), reply("two")]);
+    const { app, session } = await mount([], { lead, save: true, hooks: hook.hooks });
+    await type(app, "first");
+    await untilSlow(app, "one");
+    const old = session.id;
+    await type(app, "/clear");
+    await untilSlowly(() => hook.inputs().length === 1);
+    await type(app, "hello");
+    await tick();
+    expect(lead.seen).toHaveLength(1);
+    hook.go();
+    await untilSlow(app, "two");
+    expect(session.id).not.toBe(old);
+    expect(lead.seen[1]).toEqual([{ role: "user", parts: [{ type: "text", text: "hello" }] }]);
+  });
+
   // In copy mode the review, or the leaving line, is drawn in place of everything, so the line is handed back there too,
   // in classic mode as well (Task 10's spec review). The copy's box is never gone here, so no review opens.
   it.each([
@@ -9495,7 +9515,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const { app, session, sessions } = await mount([], { save: true, hooks: hook.hooks, full, leftLines: (l) => left.push(l), ...(copied ? { copy } : {}) });
     await press(app, "\u0003", "\u0003");
     await untilSlowly(() => hook.inputs().length === 1);
-    await untilSlowly(() => closed(sessions, session.id));
+    await untilSlowly(() => closed(sessions, session.id), 600); // Node's start, 1.5 s, then the kill
     // Red with the line alone, as the window draws a hook's failure (release 8b plan, choice 22).
     const line = `✗ SessionEnd hook failed: ${process.execPath} ${hook.script} ran out of time after 1.5 s`;
     expect(ended).toHaveLength(copied ? 1 : 0); // after the copy's own lines
