@@ -1018,7 +1018,10 @@ section).
   8's spec review: a blocked prompt holding a picture numbered before a `/resume` takes a new number
   when sent again, leaving a gap in the numbers, which is harmless; and one from Task 8's code
   review: Esc while a UserPromptSubmit hook runs leaves that prompt's pictures marked sent, its
-  words in the Up history as text only, so a picture in it must be added again; the release list with 8 in five
+  words in the Up history as text only, so a picture in it must be added again; and one from its
+  last re-check: with two Ctrl+G presses while the first waits for the terminal, words held by the
+  first skip a failed picture read's cleanup and may keep a dead `[Image #n]` marker (very rare);
+  the release list with 8 in five
   parts, 8e added; `/hooks` in the commands list; and, in "Headless runs", the `--json` bullet
   (README.md:1116, "prints one line per event: `message`, `usage`, `error` and `lead`") gains
   `hook-note`, each hook's grey line (Task 8, the user's choice, 2026-11-09).

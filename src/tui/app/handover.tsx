@@ -237,11 +237,16 @@ export const handover = (ui: UI, fns: Fns) => {
   // if anything here threw. `held` is this call's own: a second Ctrl+G, waiting for the terminal meanwhile, holds what
   // comes after in its own, and only the call whose list is in the slot empties it (Task 8's re-check).
   const externalEditor = async () => {
-    const ids = ui.editor.current.spans.map((s) => s.id); // the pictures the prompt holds as the editor opens
+    // The pictures the prompt holds as the editor opens, read with its text once the terminal is this call's, so ones put
+    // in while it waited for it keep their spans (Task 8's last re-check).
+    let ids: number[] = [];
     const held: Draft[] = [];
     ui.editingBack.current = held;
     try {
-      const ran = await fns.away((command) => editText(ui.editor.current.text, command));
+      const ran = await fns.away((command) => {
+        ids = ui.editor.current.spans.map((s) => s.id);
+        return editText(ui.editor.current.text, command);
+      });
       if (!ran) return void held.splice(0); // Ink ended meanwhile
       if ("failed" in ran.got) fns.editorFailed(ran.command, ran.got.failed);
       else {

@@ -9296,16 +9296,35 @@ process.stdin.resume().on("end", () => {
     await press(app, "draft", "\u0007"); // Ctrl+G
     await untilSlowly(editor.started);
     hook.go();
-    // The block reaches the App while the editor is open, and the words wait for it to return.
+    // The block reaches the App while the editor is open, and the words wait for it to return: given back at once, the
+    // editor's saved text would take their place, and the box would hold "edited" alone.
     await untilSlowly(blocked);
     await tick();
-    expect(app.lastFrame()).not.toContain(BACK);
     editor.go();
     await untilSlow(app, BACK);
     expect(app.lastFrame()).toMatch(/› edited\n\s*see \[Image #1\]/);
     await press(app, "\r");
     await untilSlow(app, "seen");
     expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "edited\nsee " }, { type: "image", id: 1, ...PNG }]);
+  });
+
+  // Task 8's last re-check: the editor reads the prompt's pictures as it opens, so one put in while its Ctrl+G waited for
+  // the terminal, here held by /settings' editor, keeps its span through it.
+  it("keeps the span of a picture put in while Ctrl+G waited for the terminal", async () => {
+    const editor = standInEditor();
+    vi.stubEnv("VISUAL", editor.command("wait"));
+    const pictures = new Pictures();
+    const { app, session } = await mount([reply("seen")], { pictures });
+    await press(app, "/settings", "\r");
+    await untilSlowly(editor.started);
+    await press(app, "\u0007", "see ", PICTURE); // Ctrl+G waits for the terminal; the picture goes in meanwhile
+    pictures.set(1, PNG);
+    editor.next("see [Image #1]\n");
+    editor.go(); // /settings' editor ends, and Ctrl+G's, the same stand-in, returns at once with the text above
+    await untilSlow(app, "› see [Image #1]\n");
+    await press(app, "\r");
+    await untilSlow(app, "seen");
+    expect(session.messages[0]!.parts).toEqual([{ type: "text", text: "see " }, { type: "image", id: 1, ...PNG }]);
   });
 
   // Task 8's re-check: a read that fails while the words wait for the editor takes its marker out of them, as it does

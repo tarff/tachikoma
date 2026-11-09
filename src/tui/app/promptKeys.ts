@@ -108,7 +108,9 @@ export const promptKeys = (ui: UI, fns: Fns) => {
     const walk = ui.step.current;
     if (walk) {
       const shown = ui.editor.current;
-      if (shown.text !== ui.history.current!.entries[walk.at]) back = [{ text: shown.text, spans: shown.spans }, ...back];
+      // A picture put in counts as a change, its marker's text aside (Task 8's last re-check).
+      const edited = shown.text !== ui.history.current!.entries[walk.at] || shown.spans.length > 0;
+      if (edited) back = [{ text: shown.text, spans: shown.spans }, ...back];
       ui.editor.current = { ...load(shown, walk.draft.text), spans: walk.draft.spans };
       ui.step.current = null;
     }
