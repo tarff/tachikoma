@@ -1,9 +1,13 @@
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
+import { commandOf } from "../hooks/answer.js";
+import type { Event } from "../hooks/config.js";
+import type { Hooks } from "../hooks/hooks.js";
+import { fromClaude, type Paths, pathsFor, toClaude } from "../hooks/tools.js";
 import type { Cache } from "../providers/pictures.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
-import { type Ask, Declined } from "./permissions.js";
+import { type Ask, Declined, type PermissionGate } from "./permissions.js";
 import { CANCELLED, shorten, type When } from "./shorten.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
 import {
@@ -52,6 +56,11 @@ export interface SessionOptions {
   // A subagent's session: the text it is sent is its brief, which the lead wrote, not the user's own words, so it is not
   // kept as a prompt (release 7 plan, choice 6).
   subagent?: boolean;
+  // The user's hooks (release 8b plan, Task 6): the window's, or a subagent's from hooks.for. `paths` turns a tool's paths
+  // into the ones hooks are sent and back (hooks/tools.ts, pathsFor): the launch's, from the project's real root and the
+  // sandbox's mode, as ctx.root is the box's /work there; without it, ctx.root's on the host.
+  hooks?: Hooks;
+  paths?: Paths;
 }
 
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
@@ -102,6 +111,8 @@ export class Session {
   #sizes = new Sizes();
   #transcript: Transcript | undefined;
   #saidFailed = false; // whether this transcript's failure has been said: once per transcript
+  // The text PreToolUse hooks handed the model, held for Task 7 to put after the results (release 8b plan, Task 6).
+  readonly #hookText: { event: Event; text: string }[] = [];
 
   constructor(private readonly opts: SessionOptions) {
     this.#lead = opts.lead;
@@ -346,15 +357,19 @@ export class Session {
         return;
       }
       if (calls.length === 0) return;
-      // Kept for the judge in the reply's order, before any runs, as delegate's calls start before the others.
-      for (const c of calls) this.calls.push({ name: c.name, input: c.input });
+      // Kept for the judge in the reply's order, before any runs, as delegate's calls start before the others. A hook's
+      // rewrite replaces its call's entry before the call runs (#execute).
+      const entries = calls.map((c) => ({ name: c.name, input: c.input }));
+      this.calls.push(...entries);
 
       // Calls of a side-by-side tool (delegate) all start first, together; the rest run one after
       // another. The results go back in the reply's order, then whatever is waiting for the lead,
       // after the last tool result, as the providers want it.
       const results: ToolResult[] = new Array(calls.length);
-      const together = calls.map((c, i) => (this.opts.tools.find((t) => t.spec.name === c.name)?.parallel ? this.#runTool(c, signal).then((r) => (results[i] = r)) : null));
-      for (const [i, call] of calls.entries()) if (!together[i]) results[i] = await this.#runTool(call, signal);
+      const together = calls.map((c, i) =>
+        this.opts.tools.find((t) => t.spec.name === c.name)?.parallel ? this.#runTool(c, entries[i]!, signal).then((r) => (results[i] = r)) : null,
+      );
+      for (const [i, call] of calls.entries()) if (!together[i]) results[i] = await this.#runTool(call, entries[i]!, signal);
       await Promise.all(together);
       this.#push({ role: "user", parts: [...results, ...this.#waiting()] });
       if (signal?.aborted) return;
@@ -518,15 +533,16 @@ export class Session {
     this.opts.bus.emit("error", sent ? { ...error, sent: true } : error);
   }
 
-  async #runTool(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
+  // `entry` is the call's place in the record of calls, which a hook's rewrite replaces.
+  async #runTool(call: ToolCall, entry: { name: string; input: unknown }, signal?: AbortSignal): Promise<ToolResult> {
     const { bus } = this.opts;
     bus.emit("tool-start", { id: call.id, name: call.name, input: call.input });
-    const [res, outcome] = await this.#execute(call, signal);
+    const [res, outcome] = await this.#execute(call, entry, signal);
     bus.emit("tool-end", { id: call.id, outcome });
     return res;
   }
 
-  async #execute(call: ToolCall, signal?: AbortSignal): Promise<[ToolResult, ToolOutcome]> {
+  async #execute(call: ToolCall, entry: { name: string; input: unknown }, signal?: AbortSignal): Promise<[ToolResult, ToolOutcome]> {
     if (signal?.aborted) return [result(call, "Cancelled by the user.", true), "cancelled"];
     const fail = (message: string): [ToolResult, ToolOutcome] => {
       // Capped like the message: a failed write_file's input is the whole file.
@@ -536,13 +552,68 @@ export class Session {
     const tool = this.opts.tools.find((t) => t.spec.name === call.name);
     if (!tool) return fail(`Unknown tool: ${call.name}`);
     try {
-      return [result(call, truncate(await tool.run(call.input, { ...this.opts.ctx, signal })), false), "ok"];
+      // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts).
+      const pre = this.opts.hooks ? await this.#preToolUse(call, entry, this.opts.hooks, signal) : { input: call.input, gate: this.opts.ctx.gate };
+      if ("refused" in pre) return [result(call, pre.refused, true), "declined"];
+      return [result(call, truncate(await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal })), false), "ok"];
     } catch (err) {
       // Ctrl-C at a question declines it and stops the turn: the call was cancelled, not declined.
       if (err instanceof Declined) return [result(call, err.message, true), signal?.aborted ? "cancelled" : "declined"];
       if (signal?.aborted) return [result(call, "Cancelled by the user.", true), "cancelled"]; // not a failure, so not logged
       return fail(truncate(errorText(err)));
     }
+  }
+
+  // PreToolUse before a call (release 8b plan, Task 6; design, "Tool hooks"), matched on the tool's Claude Code name, under
+  // the turn's signal. The input to run and the gate to run it with, or what the model is told of a refusal. The lines
+  // name the tool as the rest of the window does (choice 10).
+  async #preToolUse(
+    call: ToolCall,
+    entry: { name: string; input: unknown },
+    hooks: Hooks,
+    signal?: AbortSignal,
+  ): Promise<{ input: unknown; gate: PermissionGate } | { refused: string }> {
+    const paths = this.opts.paths ?? pathsFor(this.opts.ctx.root, null);
+    const { tool_name, tool_input } = toClaude(call, paths);
+    const c = await hooks.fire("PreToolUse", { tool_name, tool_input, tool_use_id: call.id }, { match: tool_name, signal });
+    this.#hookText.push(...c.context);
+    const say = (line: string) => this.opts.bus.emit("hook-note", line);
+    if (c.deferred) say('A PreToolUse hook answered "defer", which Tachikoma takes as no opinion.');
+    // A deny, or a block (exit 2, or a failure that onFailure "block" makes one), refuses the call in every mode; the model
+    // gets its reason. A rewrite beside it is never used, as nothing runs (Task 3's carry-over).
+    if (c.block !== undefined) {
+      const line = c.block ? `A PreToolUse hook refused ${call.name}: ${c.block}` : `A PreToolUse hook refused ${call.name}.`;
+      say(line);
+      return { refused: c.block || line };
+    }
+    // A rewrite is turned back into the tool's fields, and Tachikoma's checks look at it as if the model had sent it.
+    let input = call.input;
+    if (c.rewrite) {
+      const back = fromClaude(call.name, c.rewrite.input, paths);
+      if ("problem" in back) {
+        const line = `A PreToolUse hook's rewrite of ${call.name} could not be used (${back.problem}): ${commandOf(c.rewrite.from)}`;
+        say(line);
+        return { refused: line };
+      }
+      input = back.input;
+    }
+    // The question names the call that would run, by its name and input, as Ctrl+O does (choice 15).
+    let gate = this.opts.ctx.gate;
+    if (c.decision === "ask") {
+      await gate.hookAsks(`${call.name} ${JSON.stringify(input)}`, c.reason ?? "");
+      gate = gate.withHook({ asked: true });
+    } else if (c.decision === "allow") gate = gate.withHook({ allow: true });
+    // What runs is what the record keeps, saved before it runs (choice 16; design, review finding 4); the reply in the
+    // history stays as the model sent it.
+    if (c.rewrite) {
+      entry.input = input;
+      this.#transcript?.write({ t: "rewritten", id: call.id, input });
+      this.#saving();
+      for (const h of c.rewrite.ignored) {
+        say(`Two PreToolUse hooks rewrote ${call.name}'s input; the first in the settings file was used, and ${commandOf(h)} was ignored.`);
+      }
+    }
+    return { input, gate };
   }
 
   #waiting(): Part[] {

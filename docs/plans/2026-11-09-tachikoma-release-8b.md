@@ -688,6 +688,13 @@ withHook(h: { allow: true } | { asked: true }): PermissionGate;   // for one cal
 - A rewrite with `replace_all: true` refuses the call with its line.
 - A subagent's call fires PreToolUse with `agent_id`.
 
+**Decided at the build** (the user, 2026-11-09):
+- **A hook's `allow` skips only the mode's ordinary question and the judge.** In ask and project
+  modes a write outside the project is still asked about, as a protected part or a danger is;
+  `never` still refuses it, as now. So `withHook({ allow: true })` keeps the outside-the-project
+  question, tested in both modes. At the build, `withHook({ asked: true })` keeps it too: the
+  user's yes was to the hook's question about the call, not to the outside write.
+
 Commit: `feat: PreToolUse: a hook's deny, ask and allow against Tachikoma's checks, and its rewrite kept in the record`.
 
 ## Task 7: After a call, and a hook that stops the turn

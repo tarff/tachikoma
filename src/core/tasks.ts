@@ -1,4 +1,6 @@
 import path from "node:path";
+import type { Hooks } from "../hooks/hooks.js";
+import type { Paths } from "../hooks/tools.js";
 import { cost } from "../providers/pricing.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import { Bus, type ErrorEvent } from "./bus.js";
@@ -48,6 +50,10 @@ export interface TasksOptions {
   // The lead session's transcript, read at each start, as loading a conversation swaps it; each subagent saves beside it
   // (release 8a plan, Task 5).
   transcript?: () => Transcript | undefined;
+  // The window's hooks, and the paths they are sent, as the lead's session has them; each subagent's session fires them
+  // through hooks.for(itself), so its input carries its agent_id (release 8b plan, Task 6).
+  hooks?: Hooks;
+  paths?: Paths;
 }
 
 // The task manager (release 4 design, "How it is built"): starts subagents, each its own Session,
@@ -230,6 +236,8 @@ export class Tasks {
       subagent: true,
       id: t.id, // names it in its saving line
       ...(own ? { transcript: own } : {}),
+      ...(this.opts.hooks ? { hooks: this.opts.hooks.for({ id: t.id, ...(own ? { transcript: own.file } : {}) }, bus) } : {}),
+      ...(this.opts.paths ? { paths: this.opts.paths } : {}),
     });
     t.messages = session.messages;
     t.state = "running";

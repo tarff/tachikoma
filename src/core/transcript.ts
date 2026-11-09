@@ -41,7 +41,10 @@ export type Line<M = SavedMessage> =
   | { t: "name"; at: string; name: string }
   | { t: "shortened"; at: string; system: string; message: M }
   | { t: "subagent"; at: string; id: string; description: string; file: string }
-  | { t: "ended"; at: string; state: "failed" | "stopped" | "lost" };
+  | { t: "ended"; at: string; state: "failed" | "stopped" | "lost" }
+  // A PreToolUse hook's rewrite of the call `id` of the reply before it, in Tachikoma's fields, written before the call
+  // runs (release 8b plan, choice 16).
+  | { t: "rewritten"; at: string; id: string; input: unknown };
 
 // Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -196,6 +199,14 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     const subagents: Extract<Line, { t: "subagent" }>[] = [];
     const used: number[] = [];
     const said = lines.flatMap((l) => (l.t === "message" ? [l.message] : []));
+    // Each rewrite a PreToolUse hook made, by its call's id, under the message it follows, its call's reply, so the record
+    // holds the input that ran (release 8b plan, choice 16; design, review finding 4).
+    const rewrites: Map<string, unknown>[] = [];
+    let at = -1;
+    for (const l of lines) {
+      if (l.t === "message") at++;
+      else if (l.t === "rewritten" && at >= 0) (rewrites[at] ??= new Map()).set(l.id, l.input);
+    }
     for (const [i, m] of said.entries()) {
       // As session.ts keeps them for the judge: the user's own words, each picture as its marker, and the calls of each
       // reply that was run. A shortening's message is never one of them, so a summary never stands in for what the user
@@ -203,7 +214,9 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       // results cannot be told from one that ran, so its calls count.
       const words = m.parts.flatMap(own).join("");
       if (m.role === "user" && words) prompts.push(words);
-      if (!cutOff(m, said[i + 1])) for (const p of m.parts) if (p.type === "tool_call") calls.push({ name: p.name, input: p.input });
+      if (!cutOff(m, said[i + 1])) {
+        for (const p of m.parts) if (p.type === "tool_call") calls.push({ name: p.name, input: rewrites[i]?.has(p.id) ? rewrites[i].get(p.id) : p.input });
+      }
     }
     for (const l of lines) {
       if (l.t === "tools") tools = l.tools;
@@ -343,6 +356,7 @@ function valid(l: unknown): l is Line {
   if (r.t === "shortened") return strings("system") && isMessage(r.message);
   if (r.t === "subagent") return strings("id", "description", "file");
   if (r.t === "ended") return r.state === "failed" || r.state === "stopped" || r.state === "lost";
+  if (r.t === "rewritten") return strings("id") && typeof r.input === "object" && r.input !== null;
   return false;
 }
 

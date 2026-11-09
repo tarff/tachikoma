@@ -58,6 +58,8 @@ import { Stats } from "./core/stats.js";
 import { Tasks } from "./core/tasks.js";
 import { errorText, type Provider } from "./core/types.js";
 import { LocalExecutor, LocalWorkspace } from "./exec/local.js";
+import { Hooks } from "./hooks/hooks.js";
+import { pathsFor } from "./hooks/tools.js";
 import { readKeybindings } from "./keybindings.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
@@ -566,6 +568,27 @@ const gate = new PermissionGate(mode, (...a) => ask(...a), interactive ? undefin
 });
 gate.rules = rules;
 gate.protection = box?.protection ?? protection;
+// The user's hooks, one object for the window, handed to the lead's session and, through Tasks, each subagent's (release
+// 8b plan, "Architecture"; Task 6). They run in the project's real folder, and are sent its real paths, or the box's in
+// copy mode (design, "Tool hooks"). `leftOut` is the launch warnings' words after `"hooks": `, for /hooks (Task 1).
+const hooksEntry = `${SETTINGS}: "hooks": `;
+const hooks = new Hooks(
+  {
+    hooks: loaded.settings.hooks ?? [],
+    off: loaded.settings.disableAllHooks === true,
+    leftOut: loaded.warnings.flatMap((w) => (w.startsWith(hooksEntry) ? [w.slice(hooksEntry.length)] : [])),
+  },
+  {
+    sessionId: () => session.id,
+    transcript: () => session.transcript?.file,
+    root,
+    mode: () => gate.mode,
+    effort: () => (session.lead.setEffort ? effort : undefined), // the lead has one only where --effort applies (Anthropic's)
+    lead: () => session.lead.id,
+  },
+  bus,
+);
+const paths = pathsFor(root, box ? { mode: sandbox === "copy" ? "copy" : "live" } : null);
 // ctx.root and the workspace's root are one place: /work in the box (Task 14's review).
 const { executor, workspace } = where;
 const tasks = new Tasks({
@@ -577,6 +600,8 @@ const tasks = new Tasks({
   tools: SUBAGENT_TOOLS,
   ctx: { root: where.root, executor, workspace, gate },
   transcript: () => session.transcript, // each subagent saves beside the lead (release 8a plan, Task 5)
+  hooks,
+  paths,
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus. In the box the shell tool says
 // bash, whatever the host.
@@ -612,6 +637,8 @@ const { session, pictures } = leadSession({
   inbox: () => [...windowSessions.lost(), ...tasks.take()],
   ask: (...a) => ask(...a), // read at each call, as the gate's: the App binds its own once it starts
   tasks,
+  hooks,
+  paths,
 });
 // The settings file's /autocompact size, for -p too; a live edit or /autocompact changes it for the window (release 8a
 // plan, choice 26).
@@ -624,8 +651,11 @@ if (parsed.print !== undefined) {
   bus.on("error", (e) => {
     // A judge that cannot be reached refuses one action, as a no does, and fails no run (release 7 plan, choice 65); nor
     // does a transcript that cannot be saved (release 8a plan, Task 5), nor a shortening's line after which the request was
-    // sent as it is (Task 13): a later line that ends the turn has no mark, and still fails it.
-    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge" && e.kind !== "saving" && !(e.kind === "shortening" && e.sent)) failed = true;
+    // sent as it is (Task 13): a later line that ends the turn has no mark, and still fails it. Nor does a hook that failed
+    // (release 8b design, "What the user sees").
+    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge" && e.kind !== "saving" && e.kind !== "hook" && !(e.kind === "shortening" && e.sent)) {
+      failed = true;
+    }
   });
   if (parsed.json) {
     for (const event of ["message", "usage", "error", "lead"] as const) {

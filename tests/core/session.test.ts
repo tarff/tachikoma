@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -16,9 +16,12 @@ import { Tasks } from "../../src/core/tasks.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "../../src/core/transcript.js";
 import { type CompletionRequest, type Message, type Part, type Provider, sentAll, type Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
+import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
+import type { Hook } from "../../src/hooks/config.js";
+import { Hooks, type Where } from "../../src/hooks/hooks.js";
 import { fitted, LIMITS } from "../../src/providers/pictures.js";
 import { judgeOf } from "../../src/safety/judge.js";
-import { writeFileTool } from "../../src/tools/files.js";
+import { editFileTool, readFileTool, writeFileTool } from "../../src/tools/files.js";
 import { defineTool } from "../../src/tools/tool.js";
 import { Pictures } from "../../src/tui/pictures.js";
 import { Bus, FakeProvider, Held, callTool, collectErrors, removeTree, reply, tempContext, texts, usage } from "../helpers.js";
@@ -1385,5 +1388,325 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
     const own = new Transcript(path.join(pathsOf(lead.file).subagents, "t1.jsonl"), lead.pictures);
     expect(savedLines(own).map((l) => l.t)).toEqual(["message", "message", "message", "shortened", "message"]);
     expect(isSummary(worker.seen[2]!)).toBe(true);
+  });
+});
+
+// Release 8b plan, Task 6 (design, "Tool hooks"; choices 10, 15 and 16): PreToolUse before each call, its answer against
+// Tachikoma's own checks, and its rewrite kept in the record. Each hook is a Node script in the test's own folder, run in
+// exec form; the shell tool here is a stand-in that only records the command the gate let through, so nothing runs it.
+describe("Session, PreToolUse hooks", { timeout: 15_000 }, () => {
+  // The hook appends its input to the file named by its first argument, waits for the file named by its fourth when one
+  // is given, polling every 20 ms as helpers.ts's stand-in editor does, then prints its second and exits with its third.
+  const SCRIPT = `const fs = require("fs");
+const [out, stdout, code, go] = process.argv.slice(2);
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.appendFileSync(out, text + "\\n");
+  const finish = () => (process.stdout.write(stdout), process.exit(Number(code)));
+  const poll = () => (!go || fs.existsSync(go) ? finish() : setTimeout(poll, 20));
+  poll();
+});`;
+  const P = "Not allowed in -p mode, where nobody can approve it"; // cli.tsx's refusal in -p
+  const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  // A folder of the test's own, removed when it finishes, tried every 50 ms up to 2 s, as tests/hooks/run.test.ts does:
+  // Windows keeps the folder a killed program worked in for about 170 ms (measured 2026-10-31).
+  async function folder(): Promise<string> {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-pretool-"));
+    onTestFinished(async () => {
+      for (let i = 0; ; i++) {
+        try {
+          return await removeTree(dir);
+        } catch (err) {
+          if (i === 40) throw err;
+          await pause(50);
+        }
+      }
+    });
+    return dir;
+  }
+  // The hook's script and the file of its inputs, in a folder apart from the project, so a file tool never meets them.
+  async function hookFolder() {
+    const own = await folder();
+    const script = path.join(own, "hook.cjs");
+    writeFileSync(script, SCRIPT);
+    return { script, out: path.join(own, "inputs.jsonl") };
+  }
+
+  const answer = (fields: object) => JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...fields } });
+  const decide = (decision: string, reason?: string, more: object = {}) =>
+    answer({ permissionDecision: decision, ...(reason === undefined ? {} : { permissionDecisionReason: reason }), ...more });
+  const rewrite = (updatedInput: object, more: object = {}) => answer({ updatedInput, ...more });
+  type Says = { stdout: string; code?: number; go?: string };
+  type Mode5 = "ask" | "project" | "auto" | "never" | "-p";
+  const FIVE: Mode5[] = ["ask", "project", "auto", "never", "-p"];
+
+  async function setup(o: { mode: Mode5; says: Says[]; turns: Turn[]; answers?: boolean[]; transcript?: Transcript; root?: string }) {
+    const root = o.root ?? (await folder());
+    const { script, out } = await hookFolder();
+    const hooks: Hook[] = o.says.map((s) => ({
+      event: "PreToolUse",
+      matcher: { all: true },
+      command: process.execPath,
+      args: [script, out, s.stdout, String(s.code ?? 0), ...(s.go ? [s.go] : [])],
+      async: false,
+      where: '"PreToolUse"',
+    }));
+    const headless = o.mode === "-p";
+    const asked: { summary: string; warnings?: string[]; note?: string }[] = [];
+    const judged: string[] = [];
+    const answers = [...(o.answers ?? [])];
+    const gate = new PermissionGate(
+      o.mode === "-p" ? "project" : o.mode,
+      async (summary, _detail, _owner, _plain, warnings, note) => {
+        asked.push({ summary, ...(warnings?.length ? { warnings } : {}), ...(note ? { note } : {}) });
+        return answers.shift() ?? false;
+      },
+      headless ? P : undefined,
+      { root, headless, judge: async (action) => (judged.push(action.summary), { allow: false, reason: "no" }) },
+    );
+    const ran: string[] = [];
+    const shell = defineTool("shell", "Runs nothing: records the command the gate let through", z.object({ command: z.string() }), async ({ command }, ctx) => {
+      await ctx.gate.require({ kind: "shell", outside: false, summary: `run: ${command}`, command }, ctx.signal);
+      ran.push(command);
+      return `ran ${command}`;
+    });
+    const bus = new Bus();
+    const notes: string[] = [];
+    bus.on("hook-note", (line) => notes.push(line));
+    const outcomes: string[] = [];
+    bus.on("tool-end", (e) => outcomes.push(e.outcome));
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate };
+    const session = new Session({
+      lead: new FakeProvider("a", o.turns),
+      tools: [shell, readFileTool, writeFileTool, editFileTool],
+      system: "t",
+      ctx,
+      bus,
+      hooks: new Hooks({ hooks, off: false, leftOut: [] }, where, bus),
+      ...(o.transcript ? { transcript: o.transcript } : {}),
+    });
+    const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
+    const results = () => session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [{ output: p.output, isError: p.isError }] : [])));
+    return { root, session, asked, judged, ran, notes, outcomes, inputs, results, hooks, command: (h: Hook) => [h.command, ...(h.args ?? [])].join(" ") };
+  }
+  const oneCall = (name: string, input: object) => [callTool("c1", name, input), reply("ok")];
+  const shellCall = (command: string) => oneCall("shell", { command });
+
+  it.each(FIVE)("in %s, a deny refuses the call, telling the model the hook's reason, and fires with the call in Claude Code's names", async (mode) => {
+    const s = await setup({ mode, says: [{ stdout: decide("deny", "no shell here") }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.ran).toEqual([]);
+    expect(s.asked).toEqual([]);
+    expect(s.results()).toEqual([{ output: "no shell here", isError: true }]);
+    expect(s.outcomes).toEqual(["declined"]);
+    expect(s.notes).toEqual(["A PreToolUse hook refused shell: no shell here"]);
+    const fired = { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "echo hi" }, tool_use_id: "c1" };
+    expect(s.inputs()).toEqual([expect.objectContaining(fired)]);
+  });
+
+  it("refuses on exit 2, and says a refusal with no reason in its own words", async () => {
+    const exit2 = await setup({ mode: "ask", says: [{ stdout: "", code: 2 }], turns: shellCall("echo hi") });
+    await exit2.session.send("go");
+    expect(exit2.results()).toEqual([{ output: "A PreToolUse hook refused shell.", isError: true }]);
+    expect(exit2.notes).toEqual(["A PreToolUse hook refused shell."]);
+    const bare = await setup({ mode: "ask", says: [{ stdout: decide("deny") }], turns: shellCall("echo hi") });
+    await bare.session.send("go");
+    expect(bare.results()).toEqual([{ output: "A PreToolUse hook refused shell.", isError: true }]);
+  });
+
+  it.each(FIVE)("in %s, an allow runs a shell command ask mode would ask about, with no question and no judge", async (mode) => {
+    const s = await setup({ mode, says: [{ stdout: decide("allow", "fine") }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect([s.ran, s.asked, s.judged, s.outcomes, s.notes]).toEqual([["echo hi"], [], [], ["ok"], []]);
+  });
+
+  const push = "git push --force";
+  it.each(["ask", "project", "auto"] as const)("in %s, an allow on a dangerous command still asks, with its red line", async (mode) => {
+    const s = await setup({ mode, says: [{ stdout: decide("allow") }], turns: shellCall(push), answers: [true] });
+    await s.session.send("go");
+    expect(s.asked).toEqual([{ summary: `run: ${push}`, warnings: [`Danger: rewriting or deleting git history: ${push}`] }]);
+    expect(s.ran).toEqual([push]);
+  });
+
+  it.each(["never", "-p"] as const)("in %s, an allow on a dangerous command is still refused", async (mode) => {
+    const s = await setup({ mode, says: [{ stdout: decide("allow") }], turns: shellCall(push) });
+    await s.session.send("go");
+    expect(s.ran).toEqual([]);
+    const refusal = `Not allowed: this command matches the dangerous-command check (rewriting or deleting git history: ${push}).`;
+    expect(s.results()).toEqual([{ output: refusal, isError: true }]);
+  });
+
+  it("in project, an allow on a protected write still asks", async () => {
+    const s = await setup({ mode: "project", says: [{ stdout: decide("allow") }], turns: oneCall("write_file", { path: ".npmrc", content: "x" }) });
+    await s.session.send("go");
+    expect(s.asked).toEqual([{ summary: `write ${path.join(s.root, ".npmrc")}` }]);
+    expect(existsSync(path.join(s.root, ".npmrc"))).toBe(false);
+    expect(s.outcomes).toEqual(["declined"]);
+  });
+
+  // The user's choice, 2026-11-09: an allow skips only the mode's ordinary question and the judge.
+  it.each(["ask", "project"] as const)("in %s, an allow on a write outside the project still asks", async (mode) => {
+    const elsewhere = path.join(await folder(), "a.txt");
+    const s = await setup({ mode, says: [{ stdout: decide("allow") }], turns: oneCall("write_file", { path: elsewhere, content: "x" }) });
+    await s.session.send("go");
+    expect(s.asked.map((a) => a.summary)).toEqual([expect.stringContaining(`write ${elsewhere}`)]);
+    expect(existsSync(elsewhere)).toBe(false);
+  });
+
+  it("in project, an ask puts one question with the hook's note, and a yes runs the call with no second question", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "hello\n");
+    const turns = [callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "shell", { command: "echo hi" }), reply("ok")];
+    const s = await setup({ mode: "project", root, says: [{ stdout: decide("ask", "Check this first") }], turns, answers: [true, true] });
+    await s.session.send("go");
+    expect(s.asked).toEqual([
+      { summary: 'read_file {"path":"a.txt"}', note: "A hook asks: Check this first" },
+      { summary: 'shell {"command":"echo hi"}', note: "A hook asks: Check this first" },
+    ]);
+    expect(s.results()).toEqual([{ output: "     1\thello", isError: false }, { output: "ran echo hi", isError: false }]);
+    expect(s.ran).toEqual(["echo hi"]);
+  });
+
+  it("declines the call on a no to a hook's question, as any no", async () => {
+    const s = await setup({ mode: "ask", says: [{ stdout: decide("ask", "Sure?") }], turns: shellCall("echo hi"), answers: [false] });
+    await s.session.send("go");
+    expect(s.results()).toEqual([{ output: 'The user declined: shell {"command":"echo hi"}', isError: true }]);
+    expect([s.ran, s.outcomes]).toEqual([[], ["declined"]]);
+  });
+
+  it.each([
+    ["never", "Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?)."],
+    ["-p", "Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask."],
+  ] as const)("in %s, an ask refuses the call with its line to the model", async (mode, line) => {
+    const s = await setup({ mode, says: [{ stdout: decide("ask", "Sure?") }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect([s.results(), s.asked, s.ran, s.outcomes]).toEqual([[{ output: line, isError: true }], [], [], ["declined"]]);
+  });
+
+  // The user's own hook: it puts sfw before an install, which the stand-in shell records and never runs.
+  it("runs a rewritten command, the sfw hook's shape, and the gate's check reads the rewritten command", async () => {
+    const s = await setup({ mode: "ask", says: [{ stdout: rewrite({ command: "sfw npm install x" }) }], turns: shellCall("npm install x"), answers: [true] });
+    await s.session.send("go");
+    expect(s.ran).toEqual(["sfw npm install x"]);
+    expect(s.asked.map((a) => a.summary)).toEqual(["run: sfw npm install x"]);
+    expect(s.session.calls).toEqual([{ name: "shell", input: { command: "sfw npm install x" } }]);
+    expect(s.session.messages[1]!.parts).toEqual([{ type: "tool_call", id: "c1", name: "shell", input: { command: "npm install x" } }]);
+    const allowed = rewrite({ command: push }, { permissionDecision: "allow" });
+    const danger = await setup({ mode: "project", says: [{ stdout: allowed }], turns: shellCall("echo hi"), answers: [false] });
+    await danger.session.send("go");
+    expect(danger.asked).toEqual([{ summary: `run: ${push}`, warnings: [`Danger: rewriting or deleting git history: ${push}`] }]);
+  });
+
+  it("names the rewritten call in a hook's question", async () => {
+    const asks = rewrite({ command: "echo two" }, { permissionDecision: "ask" });
+    const s = await setup({ mode: "ask", says: [{ stdout: asks }], turns: shellCall("echo one"), answers: [true] });
+    await s.session.send("go");
+    expect(s.asked).toEqual([{ summary: 'shell {"command":"echo two"}', note: "A hook asks." }]);
+    expect(s.ran).toEqual(["echo two"]);
+  });
+
+  // Choice 16 and the design's review finding 4: the record of calls takes the input that ran, kept over a resume.
+  it("keeps a read rewritten from A to B in the record, saved before the call runs and still there after a resume, the reply saying A", async () => {
+    const top = await folder();
+    const dir = path.join(top, "sessions", "project");
+    privateDir(dir);
+    const file = path.join(dir, "s1.jsonl");
+    const transcript = new Transcript(file, path.join(dir, "s1", "pictures"));
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    writeFileSync(path.join(root, "b.txt"), "B\n");
+    const b = path.join(root, "b.txt");
+    const s = await setup({ mode: "never", root, says: [{ stdout: rewrite({ file_path: b }) }], turns: oneCall("read_file", { path: "a.txt" }), transcript });
+    await s.session.send("go");
+    expect(s.results()).toEqual([{ output: "     1\tB", isError: false }]);
+    expect(s.session.calls).toEqual([{ name: "read_file", input: { path: b } }]);
+    const saved = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
+    expect(saved.map((l) => l.t)).toEqual(["start", "message", "message", "rewritten", "message", "message"]);
+    expect(saved[3]).toEqual({ t: "rewritten", at: expect.any(String), id: "c1", input: { path: b } });
+    const r = readTranscript(file, path.join(dir, "s1", "pictures"));
+    if ("problem" in r) throw new Error(r.problem);
+    expect(r.calls).toEqual([{ name: "read_file", input: { path: b } }]);
+    expect(r.messages[1]!.parts).toEqual([{ type: "tool_call", id: "c1", name: "read_file", input: { path: "a.txt" } }]);
+  });
+
+  it("refuses a rewrite with replace_all: true, with its line", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "hello\n");
+    const edit = rewrite({ file_path: path.join(root, "a.txt"), old_string: "hello", new_string: "bye", replace_all: true });
+    const turns = oneCall("edit_file", { path: "a.txt", old_text: "hello", new_text: "bye" });
+    const s = await setup({ mode: "never", root, says: [{ stdout: edit }], turns });
+    await s.session.send("go");
+    const why = `"replace_all" must be false, as Tachikoma's edit_file replaces one exact match`;
+    const line = `A PreToolUse hook's rewrite of edit_file could not be used (${why}): ${s.command(s.hooks[0]!)}`;
+    expect([s.results(), s.notes, s.outcomes]).toEqual([[{ output: line, isError: true }], [line], ["declined"]]);
+    expect(readFileSync(path.join(root, "a.txt"), "utf8")).toBe("hello\n");
+    expect(s.session.calls).toEqual([{ name: "edit_file", input: { path: "a.txt", old_text: "hello", new_text: "bye" } }]);
+  });
+
+  it("uses the first of two rewrites in the file, saying which was ignored", async () => {
+    const says = [{ stdout: rewrite({ command: "echo first" }) }, { stdout: rewrite({ command: "echo second" }) }];
+    const s = await setup({ mode: "never", says, turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.ran).toEqual(["echo first"]);
+    const second = s.command(s.hooks[1]!);
+    expect(s.notes).toEqual([`Two PreToolUse hooks rewrote shell's input; the first in the settings file was used, and ${second} was ignored.`]);
+  });
+
+  // Task 3's carry-over: combine still collects a rewrite from a hook that also denied, which a refused call never uses.
+  it.each([
+    ["a deny with a rewrite", { stdout: decide("deny", "no", { updatedInput: { command: "echo other" } }) }],
+    ["exit 2 with a rewrite", { stdout: rewrite({ command: "echo other" }), code: 2 }],
+  ] as const)("never uses a rewrite of a refused call, nor says two rewrites: %s", async (_name, says) => {
+    const s = await setup({ mode: "never", says: [says, { stdout: rewrite({ command: "echo second" }) }], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.ran).toEqual([]);
+    expect(s.notes).toEqual([expect.stringMatching(/^A PreToolUse hook refused shell/)]);
+    expect(s.session.calls).toEqual([{ name: "shell", input: { command: "echo hi" } }]);
+  });
+
+  it("says a defer, and takes it as no opinion", async () => {
+    const s = await setup({ mode: "ask", says: [{ stdout: decide("defer") }], turns: shellCall("echo hi"), answers: [true] });
+    await s.session.send("go");
+    expect(s.notes).toEqual(['A PreToolUse hook answered "defer", which Tachikoma takes as no opinion.']);
+    expect(s.asked.map((a) => a.summary)).toEqual(["run: echo hi"]);
+    expect(s.ran).toEqual(["echo hi"]);
+  });
+
+  it("cancels the call when the turn is stopped while its PreToolUse hook runs", async () => {
+    const root = await folder();
+    const abort = new AbortController();
+    const says = [{ stdout: decide("allow"), go: path.join(root, "never-made") }];
+    const s = await setup({ mode: "never", root, says, turns: shellCall("echo hi") });
+    const sent = s.session.send("go", abort.signal);
+    while (!s.inputs().length) await pause(20);
+    abort.abort();
+    await sent;
+    expect([s.results(), s.outcomes, s.ran]).toEqual([[{ output: "Cancelled by the user.", isError: true }], ["cancelled"], []]);
+  });
+
+  it("fires a subagent's PreToolUse with its agent_id", async () => {
+    const root = await folder();
+    writeFileSync(path.join(root, "a.txt"), "A\n");
+    const { script, out } = await hookFolder();
+    const hook: Hook = { event: "PreToolUse", matcher: { names: ["Read"] }, command: process.execPath, args: [script, out, "", "0"], async: false, where: "" };
+    const bus = new Bus();
+    const gate = new PermissionGate("never", async () => false);
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    const tasks = new Tasks({
+      bus,
+      max: 8,
+      worker: () => new FakeProvider("w", [callTool("c1", "read_file", { path: "a.txt" }), reply("found it")]),
+      system: "sub",
+      tools: [readFileTool],
+      ctx: { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate },
+      hooks: new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, bus),
+    });
+    expect(await tasks.start("look", { background: false }).done).toEqual({ state: "done", text: "found it" });
+    const inputs = readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
+    const fired = { agent_id: "t1", agent_type: "Explore", tool_name: "Read", tool_input: { file_path: path.join(root, "a.txt") } };
+    expect(inputs).toEqual([expect.objectContaining(fired)]);
   });
 });
