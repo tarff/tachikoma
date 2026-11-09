@@ -154,7 +154,7 @@ async function mount(
     sessions?: string; // the sessions folder, as sessionsDir gives it; a fresh one for this mount when not given
     save?: boolean; // the session saves there from the start, as cli.tsx starts one (App's sessions); unsaved otherwise
     hooks?: Hook[]; // the user's hooks, as cli.tsx hands them to the session; none when not given (release 8b plan, Task 8)
-    leftLines?: AppProps["leftLines"]; // takes SessionEnd's lines at the window's exit in full screen (release 8b plan, Task 10)
+    leftLines?: AppProps["leftLines"]; // takes SessionEnd's lines at the window's exit, in full screen or copy mode (Task 10)
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
@@ -9460,7 +9460,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   };
 
   it("fires SessionEnd prompt_input_exit at /exit, its keys off and the screen as it was while its hooks run, then closes", async () => {
-    const hook = endHook(JSON.stringify({ systemMessage: "bye" }), "go");
+    const hook = endHook(JSON.stringify({ systemMessage: "bye\tnow\u0007" }), "go"); // a tab kept, a bell escaped
     const left: string[][] = [];
     const { app, session, sessions } = await mount([], { save: true, hooks: hook.hooks, full: true, leftLines: (l) => left.push(l) });
     await type(app, "/exit");
@@ -9473,25 +9473,37 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(closed(sessions, session.id)).toBe(false);
     hook.go();
     await untilSlowly(() => closed(sessions, session.id));
-    expect(left).toEqual([["SessionEnd hook: bye"]]);
+    expect(left).toEqual([["SessionEnd hook: bye\tnow\\u0007"]]);
   });
 
+  // In copy mode the review, or the leaving line, is drawn in place of everything, so the line is handed back there too,
+  // in classic mode as well (Task 10's spec review). The copy's box is never gone here, so no review opens.
   it.each([
-    ["full screen", true],
-    ["classic", false],
-  ])("kills a SessionEnd hook that sleeps at 1.5 s, says so, and the window still closes, in %s", async (_name, full) => {
+    ["full screen", true, false],
+    ["classic", false, false],
+    ["classic, in copy mode", false, true],
+  ])("kills a SessionEnd hook that sleeps at 1.5 s, says so, and the window still closes, in %s", async (_name, full, copied) => {
     const hook = endHook("", "never");
     const left: string[][] = [];
-    const { app, session, sessions } = await mount([], { save: true, hooks: hook.hooks, full, leftLines: (l) => left.push(l) });
+    const ended: string[][] = [];
+    const copy: AppProps["copy"] = {
+      copy: { session: "s1", folder: path.join(tmpdir(), "tachi-no-copy"), manifest: {} as never },
+      stop: async () => false,
+      protection: async () => ({ hooks: [], files: [] }),
+      ended: (lines) => ended.push(lines),
+    };
+    const { app, session, sessions } = await mount([], { save: true, hooks: hook.hooks, full, leftLines: (l) => left.push(l), ...(copied ? { copy } : {}) });
     await press(app, "\u0003", "\u0003");
     await untilSlowly(() => hook.inputs().length === 1);
     await untilSlowly(() => closed(sessions, session.id));
-    const line = `SessionEnd hook failed: ${process.execPath} ${hook.script} ran out of time after 1.5 s`;
-    // In classic mode the line stays in the terminal as the window showed it; in full screen it is printed once closed.
-    if (full) expect(left).toEqual([[`✗ hook: ${line}`]]);
+    // Red with the line alone, as the window draws a hook's failure (release 8b plan, choice 22).
+    const line = `✗ SessionEnd hook failed: ${process.execPath} ${hook.script} ran out of time after 1.5 s`;
+    expect(ended).toHaveLength(copied ? 1 : 0); // after the copy's own lines
+    // In plain classic mode the line stays in the terminal as the window drew it; otherwise it is printed once closed.
+    if (full || copied) expect(left).toEqual([[line]]);
     else {
       expect(left).toEqual([]);
-      expect(stripVTControlCharacters(app.frames.join("\n")).replace(/\s/g, "")).toContain(`✗hook:${line}`.replace(/\s/g, "")); // drawn before Ink ended
+      expect(stripVTControlCharacters(app.frames.join("\n")).replace(/\s/g, "")).toContain(line.replace(/\s/g, "")); // drawn before Ink ended
     }
   });
 });

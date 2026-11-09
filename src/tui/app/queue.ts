@@ -320,13 +320,15 @@ export const queue = (ui: UI, fns: Fns) => {
   };
   // SessionEnd as the user leaves, once copy mode's review is done: the screen stays as it is meanwhile, its keys off
   // (phase.ts, review), and its hooks have 1.5 s, or a hook's own longer timeout up to 60 s (hooks.ts). Its lines are said
-  // in the window as any hook's are; in full screen they go with the second screen, so they are handed back too, the
-  // same words escaped, to print once Ink has ended (approved by the user, 2026-11-09). A turn stopped just now may still be
-  // ending, which Session.end allows for this reason alone.
+  // in the window as any hook's are. Where the window cannot show them, in full screen, which takes them away with the
+  // second screen, and in copy mode, whose review or leaving line is drawn in place of everything, they are handed back
+  // too, the same words escaped as hook lines are, to print once Ink has ended, so none is lost (approved by the user,
+  // 2026-11-09; Task 10's spec review). A turn stopped just now may still be ending, which Session.end allows for this
+  // reason alone.
   const endSession = async () => {
     const said: string[] = [];
-    // As App.tsx's onError draws a hook's failure; the window shows a hook's note as the line alone (Task 12).
-    const onError = (e: ErrorEvent) => void (e.kind === "hook" && e.attempted === "SessionEnd hook" && said.push(`✗ hook: ${e.message}`));
+    // As App.tsx's onError draws a hook's failure, the line alone; the window shows a hook's note so too (Task 12).
+    const onError = (e: ErrorEvent) => void (e.kind === "hook" && e.attempted === "SessionEnd hook" && said.push(`✗ ${e.message}`));
     const onNote = (line: string) => void (line.startsWith("SessionEnd hook: ") && said.push(line));
     ui.bus.on("error", onError);
     ui.bus.on("hook-note", onNote);
@@ -339,8 +341,9 @@ export const queue = (ui: UI, fns: Fns) => {
       ui.bus.off("hook-note", onNote);
     }
     if (!said.length) return;
-    if (ui.fullNow.current) ui.leftLines?.(said.map((l) => visible(l)));
-    // In classic mode they stay in the terminal: React commits them before Ink ends, as /screen waits for it (handover.tsx).
+    if (ui.fullNow.current || ui.copy) ui.leftLines?.(said.map((l) => visible(l, { tabs: true })));
+    // In plain classic mode they stay in the terminal: React commits them before Ink ends, as /screen waits for it
+    // (handover.tsx).
     else await new Promise((resolve) => setTimeout(resolve, 0));
   };
   // Copy mode's part of leaving (leave, above). Its failures are its own lines, so it never rejects.

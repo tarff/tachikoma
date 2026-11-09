@@ -740,8 +740,8 @@ if (parsed.print !== undefined) {
   // Copy mode's review at the end (App.tsx, copy; release 7 plan, Task 21): its lines, printed once Ink has ended, and the
   // protection worked out on the host when it opens, never the gate's view of the box; without it, no review.
   const reviewed: string[] = [];
-  // SessionEnd's lines as the user left in full screen, escaped, printed to stderr after the review's (queue.ts, leave;
-  // approved by the user, 2026-11-09).
+  // SessionEnd's lines as the user left in full screen or copy mode, escaped, printed to stderr after the review's
+  // (queue.ts, leave; approved by the user, 2026-11-09).
   const left: string[] = [];
   const copied = box?.copy;
   const copy = box && copied && {

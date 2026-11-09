@@ -120,8 +120,8 @@ export interface AppProps {
   // The window's saved sessions (clilib.ts, WindowSessions), which /clear, /resume and /branch switch between and /rename
   // names (release 8a plan, Task 7).
   saved: WindowSessions;
-  // Takes the lines SessionEnd's hooks said as the user left in full screen, escaped, to print once Ink has ended, as the
-  // second screen takes them away (queue.ts, leave; release 8b plan, Task 10).
+  // Takes the lines SessionEnd's hooks said as the user left where the window could not show them, in full screen or copy
+  // mode, escaped, to print once Ink has ended (queue.ts, leave; release 8b plan, Task 10).
   leftLines?: (lines: string[]) => void;
 }
 
@@ -283,8 +283,8 @@ export function App(props: AppProps) {
       if (e.kind === "tool") ui.rerender((n) => n + 1);
       else if (e.kind === "fallback") latest.current.say({ text: `↪ ${e.message}`, color: "magenta" });
       // Its line names what failed, so it goes without a label (release 8a plan, Task 5; user, 2026-11-06), as a
-      // shortening's does (Task 12).
-      else if (e.kind === "saving" || e.kind === "shortening") latest.current.say({ text: `✗ ${e.message}`, color: "red" });
+      // shortening's does (Task 12), and a hook's (release 8b plan, choice 22).
+      else if (e.kind === "saving" || e.kind === "shortening" || e.kind === "hook") latest.current.say({ text: `✗ ${e.message}`, color: "red" });
       else latest.current.say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
     };
     const onUsage = () => {
@@ -458,7 +458,8 @@ export function App(props: AppProps) {
     const { protection, onEnd, read } = ui.reviewing;
     return <Review copy={ui.copy.copy} bindings={ui.table} protection={protection} onEnd={onEnd} read={read} />;
   }
-  // Leaving without copy mode, the screen stays as it is while SessionEnd's hooks run, its keys off (queue.ts, leave).
+  // Only copy mode's leaving has a line of its own; any other leaves the screen as it is while SessionEnd's hooks run, its
+  // keys off (queue.ts, leave).
   if (ui.leaving.current && ui.copy) return <Text color="gray">{ui.leavingLine.current ?? STOPPING}</Text>;
 
   // The detail view drawn, which hides the prompt, its menu and what goes with them (release 5 plan, Task 12).

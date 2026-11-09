@@ -1004,16 +1004,23 @@ folder; SessionStart's context reaches the first request; a SessionEnd hook that
   is still ending, which `Session.end` allows for this reason alone.
 - **SessionEnd's lines as the user leaves** (a failure's red line, a hook's `systemMessage`) are
   said in the window as any hook's; in full screen, which takes them away with the second screen,
-  they are also written to stderr once Ink has ended, the same words escaped, after copy mode's
-  review lines; in classic mode they stay in the terminal as shown, the window waiting for React to
-  draw them before Ink ends (approved by the user, 2026-11-09). A failure is written as the window
-  draws it, `✗ hook: <the line>`, a note as the line alone.
+  they are also written to stderr once Ink has ended, the same words escaped as hook lines are
+  (`visible(line, { tabs: true })`), after copy mode's review lines; in classic mode they stay in
+  the terminal as shown, the window waiting for React to draw them before Ink ends (approved by the
+  user, 2026-11-09). A failure is written as the window draws it, `✗ <the line>`, red with the line
+  alone (choice 22), a note as the line alone.
+- **In copy mode, classic too, SessionEnd's lines at the exit are also written to stderr** once Ink
+  has ended, as the review, or the leaving line, is drawn in place of everything and they cannot be
+  shown: this follows the user's choice that no line is lost at the exit (Task 10's spec review).
+- **The window draws a `hook` error with the line alone,** `✗ <line>`, as it draws `saving` (Task
+  10's spec review, so the window and the stderr copy match).
 - **A crash that ends the window runs no SessionEnd,** as a signal runs none (a known limit, Task
   13).
 
-**Carry-over for Task 12:** the window shows no `hook-note` lines yet, so in classic mode a
-SessionEnd `systemMessage` at the exit is not drawn until Task 12's listener; in full screen it is
-written to stderr already.
+**Carry-over for Task 12:** `onError` for `hook` is done (App.tsx: red, the line alone, as
+`saving`); Task 12 checks it rather than adds it. The window shows no `hook-note` lines yet, so in
+plain classic mode a SessionEnd `systemMessage` at the exit is not drawn until Task 12's listener;
+in full screen and in copy mode it is written to stderr already.
 
 **Carry-over for Tasks 11 and 13:** SessionStart `compact` fires in `#shorten` itself, not through
 `Session.start`, as its text joins the shortened message and never waits in the queue (Task 11).
