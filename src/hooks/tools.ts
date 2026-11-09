@@ -6,8 +6,9 @@ import { shellText } from "../tools/shell.js";
 // Nothing here runs a tool or a hook.
 
 // How a path the tool takes becomes the one hooks are sent, and back (design, "Tool hooks"): on the host the real one;
-// in live link the box's /work turned into the real project; in copy mode the box's, both ways.
-export interface Paths { toHost(p: string): string; fromHost(p: string): string }
+// in live link the box's /work turned into the real project; in copy mode the box's, both ways. `fromHost` gives null for
+// a host path outside the project that the box would take as a name in /work (the user's choice, 2026-11-09).
+export interface Paths { toHost(p: string): string; fromHost(p: string): string | null }
 
 // The box's folder for the project, as clilib.ts (BOX_ROOT) and mounts.ts (BOX) name it (release 7 plan, choice 19).
 const BOX = "/work";
@@ -22,17 +23,23 @@ export function pathsFor(root: string, box: { mode: "live" | "copy" } | null, pl
   const host = platform === "win32" ? path.win32 : path.posix;
   if (!box) return { toHost: (p) => host.resolve(root, p), fromHost: (p) => p };
   const inBox = (p: string) => path.posix.resolve(BOX, p);
-  if (box.mode === "copy") return { toHost: inBox, fromHost: (p) => p };
+  // On Windows a whole path starting with one "/" can only be the box's, as Windows' own start with a drive or \\.
+  const boxOwn = (p: string) => platform === "win32" && /^\/(?!\/)/.test(p);
+  const outside = (p: string) => leaves(host.relative(root, p), host);
+  // Copy mode: hooks are sent the box's paths, so elsewhere a whole path is the box's too. On Windows the box would take
+  // a host path (C:\..., \\server\...) as a name in /work; one outside the project is refused (the user's choice).
+  if (box.mode === "copy") return { toHost: inBox, fromHost: (p) => (platform === "win32" && host.isAbsolute(p) && !boxOwn(p) && outside(p) ? null : p) };
   return {
     // A box path outside /work, such as /etc/hosts, is the box's own and has no place on the host, so it stays.
     toHost(p) {
       const rel = path.posix.relative(BOX, inBox(p));
       return leaves(rel, path.posix) ? inBox(p) : host.join(root, ...rel.split("/"));
     },
-    // A path outside the project, or not whole, is left for the tool to take as it would the model's.
+    // Live link: hooks are sent host paths, so a whole one is the host's, and outside the project the box cannot reach it
+    // (the user's choice, 2026-11-09). One not whole is left for the tool to take as it would the model's.
     fromHost(p) {
-      const rel = host.relative(root, p);
-      return !host.isAbsolute(p) || leaves(rel, host) ? p : path.posix.join(BOX, ...rel.split(host.sep));
+      if (!host.isAbsolute(p) || boxOwn(p)) return p;
+      return outside(p) ? null : path.posix.join(BOX, ...host.relative(root, p).split(host.sep));
     },
   };
 }
@@ -180,7 +187,9 @@ function take(f: Field, v: unknown, paths: Paths): { value: unknown } | { proble
     case "text":
     case "path":
       if (typeof v !== "string") return { problem: `"${f.theirs}" must be text in quotes` };
-      return { value: f.kind === "path" ? paths.fromHost(v) : v };
+      if (f.kind === "text") return { value: v };
+      const p = paths.fromHost(v);
+      return p === null ? { problem: `"${f.theirs}" is outside the project, which the sandbox cannot reach` } : { value: p };
     // Above 0, as read_file's schema takes them (files.ts).
     case "count":
       return Number.isInteger(v) && (v as number) >= 1 ? { value: v } : { problem: `"${f.theirs}" must be a whole number above 0` };

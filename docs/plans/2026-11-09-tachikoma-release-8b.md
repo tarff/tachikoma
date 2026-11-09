@@ -304,6 +304,7 @@ command with its `args` after it, escaped as the question escapes a command.
 | What a hook failure attempted, which `/errors` shows | `<Event> hook`; a subagent's, `t1: <Event> hook` (approved by the user, 2026-11-09) |
 | PreToolUse refused a call (grey) | `A PreToolUse hook refused <tool>: <reason>` |
 | A rewrite that cannot be used (grey; the call refused) | `A PreToolUse hook's rewrite of <tool> could not be used (<reason>): <command>` |
+| The rewrite's `<reason>` (`fromClaude`'s `problem`, Task 5; approved by the user, 2026-11-09) | Two reused from the JSON reasons above: `"updatedInput" must be an object`; `"<field>" must be text in quotes` (`command`, `file_path`, `content`, `old_string`, `new_string`, `pattern`, `path`, `glob`, `description`, `prompt`). New: `Tachikoma takes rewrites only for its own tools`; `"updatedInput" has no "<field>"`; `"offset" must be a whole number above 0`, the same for `"limit"`; `"run_in_background" must be true or false` (Agent's); `"<field>" is not a field Tachikoma can take`; `"todos" must be a list`; `each of "todos" must be an object`; `one of "todos" has no "content"`; `each "content" in "todos" must be text in quotes`; `one of "todos" has no "status"`; `each "status" in "todos" must be "pending", "in_progress" or "completed"`; `each "activeForm" in "todos" must be text in quotes`; `"<field>" in "todos" is not a field Tachikoma can take`; `"<field>" is outside the project, which the sandbox cannot reach` (`file_path`, or Grep's `path`). Choice 14's: `"replace_all" must be false, as Tachikoma's edit_file replaces one exact match`; `"run_in_background" must be false, as Tachikoma's shell cannot run a command in the background` (Bash's); `"timeout" cannot be set, as Tachikoma's shell has no time limit`; `"output_mode" must be "content", as Tachikoma's search_files gives the matching lines`; `"-i" must be false, as Tachikoma's search_files matches letter case exactly`; `"multiline" must be false, as Tachikoma's search_files matches within one line`; `"path" cannot be set, as Tachikoma's find_files searches the whole project` (Glob's); `"subagent_type" must be "Explore", as Tachikoma's subagents only read`; `"model" cannot be set, as a subagent runs on the model --worker names, or else the lead's` |
 | Two rewrites of one call (grey) | `Two PreToolUse hooks rewrote <tool>'s input; the first in the settings file was used, and <command> was ignored.` |
 | `defer` (grey) | `A PreToolUse hook answered "defer", which Tachikoma takes as no opinion.` |
 | A hook's ask, the question's note (grey) | `A hook asks: <reason>` (no reason: `A hook asks.`) |
@@ -598,7 +599,7 @@ export function fromClaude(name: string, input: unknown, paths: Paths): { input:
 export function responseOf(name: string, text: string, parts?: unknown): unknown;   // choice 11
 export function errorOf(name: string, text: string, parts?: unknown): string;       // choice 12
 export function outputFrom(name: string, value: unknown): string | null;             // choice 13; null: not used
-export interface Paths { toHost(p: string): string; fromHost(p: string): string }   // design, "Tool hooks"
+export interface Paths { toHost(p: string): string; fromHost(p: string): string | null }   // design, "Tool hooks"; null: outside, in the sandbox
 export function pathsFor(root: string, box: { mode: "live" | "copy" } | null, platform?: NodeJS.Platform): Paths;
 ```
 
@@ -614,6 +615,19 @@ export function pathsFor(root: string, box: { mode: "live" | "copy" } | null, pl
 - **`report`:** `shell` reports `{ stdout, stderr, code }`, `write_file` `{ path, created }`,
   `delegate` `{ id, text }`; `responseOf` builds choice 11's shapes from them, and the text for the
   rest.
+
+**Decided at the build** (the user, 2026-11-09):
+- **A field Tachikoma's tool cannot do is refused,** not dropped, beside choice 14's: Grep's
+  `head_limit`, `-A`, `-B`, `-C`, `type` and the like give `"<field>" is not a field Tachikoma
+  can take`, so a rewrite is taken whole or not at all.
+- **A rewritten path outside the project is refused in the sandbox** with `"<field>" is outside
+  the project, which the sandbox cannot reach` (`fromHost` gives null), as the box would take it
+  as one odd name in `/work` (`C:\other\a.ts` becomes `/work/C:\other\a.ts`). In live link, any
+  whole host path outside the project; off Windows a whole path there is the host's, as hooks are
+  sent host paths. In copy mode, a Windows host path (a drive or `\\`) outside the project; off
+  Windows a whole path there is the box's own, as hooks are sent the box's. On Windows a path
+  starting with one `/` is the box's in both. On the host, one outside the project goes to the
+  gate as now.
 
 **Tests:** every tool both ways, round-tripping; `/work` paths in live link and copy mode;
 backslashes on Windows (with `platform`); each `problem`; Bash's `error` starts `Exit code 1`;
@@ -683,6 +697,9 @@ Commit: `feat: PreToolUse: a hook's deny, ask and allow against Tachikoma's chec
   PostToolUseFailure with `error` (`errorOf`), `is_interrupt: false` and `duration_ms`. Neither
   fires for a call that was refused, declined, cancelled, of an unknown tool, or with an input the
   tool's schema refused (Claude Code's rule).
+- **`ctx.report`** (Task 5) is set only when a PostToolUse or PostToolUseFailure hook matches the
+  call, so a write with no such hook does not read the file first: `write_file` reads it to tell
+  Write's `create` from `update` only when `report` is set (Task 5's build, 2026-11-09).
 - **Their answer:** a block's reason, exit 2's error output and `additionalContext` go after the
   results as hook text (choice 6); `updatedToolOutput` replaces what the model reads when
   `outputFrom` can use it (choice 13). The call's outcome is unchanged.
