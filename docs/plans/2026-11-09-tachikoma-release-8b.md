@@ -755,6 +755,11 @@ had no opinion. This task must check `c.stop` there first and not run that call.
 model, and `load()` empties it. Drain it per reply, putting it after that reply's results, so a
 stopped turn's text never reaches the next turn's results.
 
+**Known small points from Task 7's code review** (2026-11-09):
+- `Hooks.has` and `fire` can disagree after a live edit while a call runs: the tool may report its
+  parts and no hook use them, or a hook be sent the text in place of the shape. This is harmless.
+- Hook text from calls run side by side (`delegate`) comes in the order they finish.
+
 Commit: `feat: PostToolUse and PostToolUseFailure, and a hook that stops the turn leaving every call answered`.
 
 **End of Part 2:** run the whole suite once.
@@ -949,8 +954,8 @@ section).
   from Task 6's review: a subagent's hooks are sent the lead's effort, not its own model's; and two
   from Task 7's review: `duration_ms` counts the time a permission question was open, and auto
   mode's judge, as the gate runs inside the tool; a question still open when a hook stops the turn
-  stays on screen, and a yes to it still runs that call; the release list with 8 in five
-  parts, 8e added; `/hooks` in the commands list.
+  stays on screen until answered, and the call is not run whatever the answer; the release list
+  with 8 in five parts, 8e added; `/hooks` in the commands list.
 - **The design** gets an "As built" section listing this plan's choices as the user settled them.
 
 **All README wording goes to the user before it is committed.**

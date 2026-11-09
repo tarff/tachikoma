@@ -1444,7 +1444,9 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   type Mode5 = "ask" | "project" | "auto" | "never" | "-p";
   const FIVE: Mode5[] = ["ask", "project", "auto", "never", "-p"];
 
-  async function setup(o: { mode: Mode5; says: Says[]; turns: Turn[]; answers?: boolean[]; transcript?: Transcript; root?: string; tools?: Tool[] }) {
+  // An answer may be a promise, for a question the test answers later.
+  type Answers = (boolean | Promise<boolean>)[];
+  async function setup(o: { mode: Mode5; says: Says[]; turns: Turn[]; answers?: Answers; transcript?: Transcript; root?: string; tools?: Tool[] }) {
     const root = o.root ?? (await folder());
     const { script, out } = await hookFolder();
     const hooks: Hook[] = o.says.map((s) => ({
@@ -1505,7 +1507,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const errors = collectErrors(bus);
     const results = () => session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [{ output: p.output, isError: p.isError }] : [])));
     const command = (h: Hook) => [h.command, ...(h.args ?? [])].join(" ");
-    return { root, session, lead, asked, judged, refusals, ran, reported, notes, outcomes, inputs, results, errors, hooks, command };
+    return { root, session, lead, bus, asked, judged, refusals, ran, reported, notes, outcomes, inputs, results, errors, hooks, command };
   }
   const oneCall = (name: string, input: object) => [callTool("c1", name, input), reply("ok")];
   const shellCall = (command: string) => oneCall("shell", { command });
@@ -1949,7 +1951,10 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => new FakeProvider("w", [reply("found")]), system: "sub", tools: [readFileTool], ctx });
     // Runs until it is stopped, then fails as a killed command does.
     const slow = defineTool("slow", "Waits to be stopped", z.object({}), (_input, c) =>
-      new Promise((_ok, no) => c.signal?.addEventListener("abort", () => no(new Error("killed")))));
+      new Promise((_ok, no) => {
+        if (c.signal?.aborted) return no(new Error("killed"));
+        c.signal?.addEventListener("abort", () => no(new Error("killed")));
+      }));
     const calls = many(["c1", "slow", {}], ["c2", "delegate", { description: "look", task: "find x" }]);
     const says: Says[] = [{ event: "PostToolUse", names: ["Agent"], stdout: stops() }];
     const s = await setup({ mode: "never", root, says, turns: [calls], tools: [delegateTool(tasks, { headless: false }), slow] });
@@ -1959,5 +1964,52 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const agent = { status: "completed", agentId: "t1", content: [{ type: "text", text: "found" }] };
     const input = { description: "look", prompt: "find x", subagent_type: "Explore" };
     expect(s.inputs()).toEqual([expect.objectContaining({ tool_name: "Agent", tool_input: input, tool_use_id: "c2", tool_response: agent })]);
+  });
+
+  // Task 7's code review: a question still open when a hook stops the turn runs nothing, whatever its answer.
+  it.each<[string, Mode5, Says[], string]>([
+    ["the mode's question", "ask", [], "Stopped: a hook stopped the turn."],
+    ["a PreToolUse hook's ask", "project", [{ names: ["Write"], stdout: decide("ask") }], NOT_RUN],
+  ])("writes nothing on a yes to %s given after a delegate's PostToolUse hook stopped the turn", async (_name, mode, pre, words) => {
+    const root = await folder();
+    let yes!: (answer: boolean) => void;
+    const answer = new Promise<boolean>((r) => (yes = r));
+    const worker = new Held("fake:w"); // answered once the write's question is open
+    const ctx = { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root), gate: new PermissionGate("never", async () => false) };
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => worker, system: "sub", tools: [readFileTool], ctx });
+    // Runs beside the others until the turn is stopped, then says yes to the write's question.
+    const watch = {
+      ...defineTool("watch", "Says yes once the turn is stopped", z.object({}), (_input, c) =>
+        new Promise<string>((ok) => {
+          const go = () => (yes(true), ok("saw the stop"));
+          if (c.signal?.aborted) go();
+          else c.signal?.addEventListener("abort", go);
+        })),
+      parallel: true,
+    };
+    const calls = many(["c1", "write_file", { path: "a.txt", content: "x" }], ["c2", "delegate", { description: "look", task: "find x" }], ["c3", "watch", {}]);
+    const says: Says[] = [...pre, { event: "PostToolUse", names: ["Agent"], stdout: stops("enough") }];
+    const s = await setup({ mode, root, says, turns: [calls], answers: [answer], tools: [delegateTool(tasks, { headless: false }), watch] });
+    const sent = s.session.send("go");
+    while (!s.asked.length || !worker.asked.length) await pause(20);
+    worker.answer("found");
+    expect(await sent).toEqual({ stopped: "enough" });
+    expect(existsSync(path.join(root, "a.txt"))).toBe(false);
+    expect(s.results()).toEqual([{ output: words, isError: true }, { output: "found", isError: false }, { output: "saw the stop", isError: false }]);
+    expect(s.asked).toHaveLength(1);
+  });
+
+  // Task 7's code review: a throw after the call ran leaves its own result, so the history stays one the providers take.
+  it("keeps a call's own result when a listener of the hooks' lines throws at PostToolUse, saying so, and the next send works", async () => {
+    const says: Says[] = [{ event: "PostToolUse", stdout: JSON.stringify({ systemMessage: "hello" }) }];
+    const s = await setup({ mode: "never", says, turns: [...shellCall("echo hi"), reply("again")] });
+    s.bus.on("hook-note", () => {
+      throw new Error("listener broke");
+    });
+    await s.session.send("go");
+    expect([s.results(), s.outcomes]).toEqual([[{ output: "ran echo hi", isError: false }], ["ok"]]);
+    expect(s.errors.map((e) => [e.kind, e.attempted, e.message])).toEqual([["hook", "PostToolUse hook", "PostToolUse hook failed: listener broke"]]);
+    await s.session.send("more");
+    expect(s.lead.seen[2]!.at(-1)!.parts).toEqual([{ type: "text", text: "more" }]);
   });
 });

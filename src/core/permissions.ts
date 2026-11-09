@@ -253,6 +253,9 @@ export class PermissionGate {
     // refused whatever it answers.
     if (this.options.headless && found.length) throw new Declined(dangerRefusal(found));
     if (!yes) throw new Declined(`${this.refusal}: ${shown}`);
+    // A yes given after the turn was stopped, by a hook's continue: false while the question was open, runs nothing (release
+    // 8b plan, Task 7's code review). A user's stop closes the question as a no, so it is declined above, as before.
+    signal?.throwIfAborted();
     // Approving one action resumes auto mode and starts the row again; the session's total keeps counting (choice 8). A
     // question still waiting from a pause that has since been lifted and come again lifts nothing.
     if (pause !== null && top.#pause === pause) {

@@ -385,8 +385,10 @@ export class Session {
       if (signal?.aborted) halt.abort();
       const round: Round = {
         signal: halt.signal,
+        // The first stop wins, so a user's that came first keeps its words (Task 7's code review).
         stop: (event, reason) => {
-          round.stopped ??= { event, reason };
+          if (halt.signal.aborted) return;
+          round.stopped = { event, reason };
           halt.abort();
         },
       };
@@ -395,12 +397,18 @@ export class Session {
       // is never the next one's (Task 6's review), then whatever is waiting for the lead, after the last tool result, as
       // the providers want it.
       const results: ToolResult[] = new Array(calls.length);
-      const together = calls.map((c, i) =>
-        this.opts.tools.find((t) => t.spec.name === c.name)?.parallel ? this.#runTool(c, entries[i]!, round).then((r) => (results[i] = r)) : null,
-      );
-      for (const [i, call] of calls.entries()) if (!together[i]) results[i] = await this.#runTool(call, entries[i]!, round);
-      await Promise.all(together);
-      signal?.removeEventListener("abort", join);
+      try {
+        const together = calls.map((c, i) =>
+          this.opts.tools.find((t) => t.spec.name === c.name)?.parallel ? this.#runTool(c, entries[i]!, round).then((r) => (results[i] = r)) : null,
+        );
+        // Each is handled now, so one that fails while a call after it runs is no unhandled rejection; Promise.all below
+        // still rejects with it (Task 7's code review).
+        for (const p of together) p?.catch(() => {});
+        for (const [i, call] of calls.entries()) if (!together[i]) results[i] = await this.#runTool(call, entries[i]!, round);
+        await Promise.all(together);
+      } finally {
+        signal?.removeEventListener("abort", join);
+      }
       this.#push({ role: "user", parts: [...results, ...this.#hookParts(), ...this.#waiting()] });
       // Every call has its one result, saved, before the turn ends (design, review finding 1).
       if (round.stopped) {
@@ -607,8 +615,13 @@ export class Session {
       if ("refused" in pre) return [result(call, pre.refused, true), "declined"];
       // Only when a hook after the call matches it, so a write with no such hook does not read the file first (files.ts).
       // A plain capture, which cannot throw into the tool (Task 5's code review).
-      const name = toClaude(entry, this.#hookPaths()).tool_name;
-      const report = hooks?.has("PostToolUse", name) || hooks?.has("PostToolUseFailure", name) ? { report: (p: unknown) => void (parts = p) } : {};
+      let report: Pick<ToolContext, "report"> = {};
+      if (hooks) {
+        const name = toClaude(entry, this.#hookPaths()).tool_name;
+        if (hooks.has("PostToolUse", name) || hooks.has("PostToolUseFailure", name)) report = { report: (p: unknown) => void (parts = p) };
+      }
+      // A yes to a hook's own question, given after a hook stopped the turn, runs nothing either (Task 7's code review).
+      if (signal.aborted) return stopped(NOT_RUN);
       started = Date.now();
       text = truncate(await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal, ...report }));
       ms = Date.now() - started;
@@ -637,8 +650,8 @@ export class Session {
 
   // PostToolUse or PostToolUseFailure after a call that ran (release 8b plan, Task 7; design, "Tool hooks"), sent the input
   // that ran, matched on the tool's Claude Code name, under the reply's signal. Its text for the model waits for the reply's
-  // results, and its continue: false stops the reply's calls. Undefined when a stop ended its hooks (run.ts), so the call
-  // keeps its own result.
+  // results, and its continue: false stops the reply's calls. Undefined when a stop ended its hooks (run.ts), or anything
+  // else threw, so the call keeps its own result and the history stays paired (Task 7's code review).
   async #postToolUse(
     hooks: Hooks,
     event: "PostToolUse" | "PostToolUseFailure",
@@ -647,13 +660,16 @@ export class Session {
     fields: object,
     round: Round,
   ): Promise<Combined | undefined> {
-    const { tool_name, tool_input } = toClaude(entry, this.#hookPaths());
     let c: Combined;
     try {
+      const { tool_name, tool_input } = toClaude(entry, this.#hookPaths());
       c = await hooks.fire(event, { tool_name, tool_input, tool_use_id: call.id, ...fields }, { match: tool_name, signal: round.signal });
     } catch (err) {
       if (round.signal.aborted) return undefined;
-      throw err;
+      // Such as a listener of the hooks' lines that throws: a hook failure's red line, in its words with the error's own.
+      const message = `${event} hook failed: ${errorText(err)}`;
+      this.opts.bus.emit("error", { kind: "hook", attempted: `${event} hook`, message, lead: this.#lead.id });
+      return undefined;
     }
     this.#hookText.push(...c.context);
     if (c.stop !== undefined) round.stop(event, c.stop);
