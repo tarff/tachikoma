@@ -1109,7 +1109,6 @@ request is sent (second round, finding 2).
   three (answer.ts); PostCompact's answer is used only for its lines.
 - **Tests:** in "Session, shortening", with a hook script of their own in the describe's temp
   folder, as that describe has the stand-in lead with a window.
-
 - **A PreCompact block with no reason** (exit 2 with no error output, `decision: "block"` with no
   `reason`, or a reason only blank) gives `a PreCompact hook blocked it`, so the line reads `The
   conversation could not be shortened (a PreCompact hook blocked it); it is unchanged.` (the user's
@@ -1118,6 +1117,19 @@ request is sent (second round, finding 2).
   `agent_type`, **and no SessionStart `compact`,** as SessionStart is about the user's session; its
   shortened message gets no SessionStart text, so it needs no second check (the user's choice,
   2026-11-09: "Pre/Post only").
+- **Task 11's code review:**
+  - `/lead`'s shortening sends SessionStart `compact` the new lead's id as `model`, as that lead
+    reads its text once the switch is made (queue.ts calls `setLead` straight after `makeRoom`);
+    every other shortening sends the lead's. PreCompact and PostCompact have no `model`.
+  - The left-out line is said only once the shortening is saved, beside the `shortened` event, so a
+    stop while the instruction files are read again, or a `shortened` line that cannot be written,
+    says nothing of it.
+  - A PreCompact block's reason is trimmed in 8a's line, so none of its white space lands inside the
+    parentheses.
+  - A stop during the PostCompact hooks ends the shortening there, before the instruction files are
+    read again; the stop tests check that.
+- **For 8d:** `onShorten` runs before PreCompact, so 8d's memory save will run for a shortening that
+  a PreCompact hook then blocks.
 
 Commit: `feat: PreCompact and PostCompact around each shortening`.
 

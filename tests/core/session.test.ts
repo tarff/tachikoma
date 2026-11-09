@@ -902,18 +902,20 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
 
   // Release 8b plan, Task 11: the hooks around a shortening. Each is a Node script in a folder of the test's own, run in
   // exec form, which appends its input to the file named by its first argument, writes its fourth to its error output and
-  // its second to its output, and exits with its third. The folder is also the hooks' project root.
+  // its second to its output, and exits with its third, or with "never" runs until it is stopped. The folder is also the
+  // hooks' project root.
   const HOOK = `const fs = require("fs");
 const [out, stdout, code, stderr] = process.argv.slice(2);
 let text = "";
 process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
   fs.appendFileSync(out, text + "\\n");
+  if (code === "never") return void setInterval(() => {}, 1000);
   process.stderr.write(stderr);
   process.stdout.write(stdout);
   process.exit(Number(code));
 });`;
   // `names` the values it matches (a trigger, a source), every one unless given.
-  type Said = { event: Event; stdout?: string; code?: number; stderr?: string; names?: string[] };
+  type Said = { event: Event; stdout?: string; code?: number | "never"; stderr?: string; names?: string[] };
   // With `agent`, a subagent's hooks (Hooks.for), sent its agent_id and agent_type.
   function hooksOf(said: Said[], bus: Bus, agent?: { id: string }) {
     const root = path.join(top, `hooks${++n}`);
@@ -1478,6 +1480,61 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(await session.compact("")).toBe("a PreCompact hook blocked it");
     const line = "The conversation could not be shortened (a PreCompact hook blocked it); it is unchanged.";
     expect([errors.map((e) => e.message), session.messages.length, lead.seen.length]).toEqual([[line], 2, 1]);
+  });
+
+  // Task 11's code review: the reason is trimmed, so none of its white space lands inside 8a's parentheses.
+  it("trims a PreCompact hook's reason in 8a's line", async () => {
+    const lead = new Lead("fake:a", [measured("noted")], 1_000_000);
+    const { session } = await setup(lead, {}, [{ event: "PreCompact", stdout: JSON.stringify({ decision: "block", reason: " not now\n" }) }]);
+    await session.send(big);
+    expect(await session.compact("")).toBe("a PreCompact hook blocked it: not now");
+  });
+
+  // Task 11's code review: a stop while a hook around the shortening runs changes nothing, as any stop during one.
+  it.each(["PreCompact", "PostCompact", "SessionStart"] as const)("changes nothing when /compact is stopped while its %s hook runs", async (event) => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
+    let reread = 0; // the shortening ends at the stop, so the instruction files are not read again for it
+    const systemNow = async () => (reread++, "t, read again");
+    const { session, errors, notes, summaries, transcript, inputs } = await setup(lead, { systemNow }, [{ event, code: "never" }]);
+    await session.send(big);
+    const stop = new AbortController();
+    const compacted = session.compact("", stop.signal);
+    for (let i = 0; !inputs().length; i++) {
+      if (i === 500) throw new Error("the hook never started"); // up to 10 s for its process to start
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    stop.abort();
+    expect(await compacted).toBe(CANCELLED);
+    expect([session.messages.length, session.system, summaries, errors, notes, reread]).toEqual([2, "t", [], [], [], 0]);
+    expect(lead.seen.length).toBe(event === "PreCompact" ? 1 : 2); // the summary request is sent only after PreCompact
+    expect(savedLines(transcript).some((l) => l.t === "shortened")).toBe(false);
+  });
+
+  // Task 11's code review: the text SessionStart returns is read by the lead /lead switches to (queue.ts), so it is the model.
+  it("sends SessionStart compact the new lead's id on /lead's shortening, and PreCompact the auto trigger", async () => {
+    const a = new Lead("fake:a", [measured("noted"), summaryOf("Many x.")], 10_000);
+    const { session, inputs } = await setup(a, {}, [{ event: "PreCompact" }, { event: "SessionStart", names: ["compact"] }]);
+    await session.send(big);
+    expect(await session.makeRoom(new Lead("fake:b", [], 500))).toBeUndefined();
+    expect(inputs()).toEqual([
+      expect.objectContaining({ hook_event_name: "PreCompact", trigger: "auto", custom_instructions: null }),
+      expect.objectContaining({ hook_event_name: "SessionStart", source: "compact", model: "fake:b" }),
+    ]);
+  });
+
+  // Task 11's code review: the line is said once the shortening is saved, so a stop while the instruction files are read
+  // again, which saves nothing, says nothing.
+  it("does not say SessionStart's text was left out when the shortening is then stopped", async () => {
+    const stop = new AbortController();
+    const systemNow = async () => {
+      stop.abort();
+      return "t, read again";
+    };
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Many x.")], 700);
+    const { session, notes, transcript } = await setup(lead, { systemNow }, [{ event: "SessionStart", names: ["compact"], stdout: "y".repeat(1000) }]);
+    await session.send(big);
+    expect(await session.compact("", stop.signal)).toBe(CANCELLED);
+    expect([notes, session.messages.length, savedLines(transcript).some((l) => l.t === "shortened")]).toEqual([[], 2, false]);
   });
 
   // The user's choice, 2026-11-09 ("Pre/Post only"): SessionStart is about the user's session, so a subagent's shortening

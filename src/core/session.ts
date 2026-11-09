@@ -315,7 +315,8 @@ export class Session {
       const over = await this.#over(lead, then, signal);
       if (over === undefined) return CANCELLED;
       if (!over) return;
-      const r = await this.#shorten(lead, "between", then, signal);
+      // SessionStart compact's model is `next`, the lead that reads its text once the switch is made (Task 11's code review).
+      const r = await this.#shorten(lead, "between", then, signal, undefined, undefined, next.id);
       return r === "done" ? undefined : r === "unsaved" ? UNSAVED : r.problem;
     } finally {
       this.#running = false;
@@ -668,7 +669,7 @@ export class Session {
   // written, which `write` records without throwing; either way nothing changes. The problem when it failed, as
   // shorten.ts words it, nothing changed either. `focus` is /compact's words, "" when it gives none, and set for /compact
   // alone, so the hooks' trigger is "manual" for /compact only and "auto" for /lead's and the turn's (release 8b plan,
-  // choice 20).
+  // choice 20). `model` is SessionStart compact's, the lead's unless given.
   async #shorten(
     lead: Provider,
     when: When,
@@ -676,6 +677,7 @@ export class Session {
     signal?: AbortSignal,
     asked?: Message,
     focus?: string,
+    model = this.#lead.id,
   ): Promise<"done" | "unsaved" | { problem: string }> {
     const { bus, hooks } = this.opts;
     const t = this.#transcript;
@@ -689,7 +691,9 @@ export class Session {
     if (hooks) {
       const c = await this.#aroundShortening(hooks, "PreCompact", { trigger, custom_instructions: focus || null }, trigger, signal);
       if (!c) return { problem: CANCELLED };
-      if (c.block !== undefined) return { problem: `a PreCompact hook blocked it${c.block.trim() ? `: ${c.block}` : ""}` };
+      // Trimmed, so no white space of the reason lands inside 8a's parentheses (Task 11's code review).
+      const reason = c.block?.trim();
+      if (reason !== undefined) return { problem: `a PreCompact hook blocked it${reason ? `: ${reason}` : ""}` };
       instructions = c.instructions;
     }
     const focused = [focus, ...instructions].filter(Boolean).join("\n\n");
@@ -720,11 +724,14 @@ export class Session {
     // shortens once a request, so it is checked again with the text; one that no longer fits is left out, with its line,
     // never cut, as no part of a hook's text is safe to drop (second round, finding 2). A subagent's shortening fires
     // PostCompact alone: SessionStart is about the user's session (the user's choice, 2026-11-09: "Pre/Post only").
+    // `leftOut`: the line is said once the shortening is saved, so one that is then stopped or cannot be written says
+    // nothing of it (Task 11's code review).
+    let leftOut = false;
     if (hooks) {
       if (!(await this.#aroundShortening(hooks, "PostCompact", { trigger, compact_summary: r.summary }, trigger, signal))) return { problem: CANCELLED };
     }
     if (hooks && !this.opts.subagent) {
-      const c = await this.#aroundShortening(hooks, "SessionStart", { source: "compact", model: this.#lead.id }, "compact", signal);
+      const c = await this.#aroundShortening(hooks, "SessionStart", { source: "compact", model }, "compact", signal);
       if (!c) return { problem: CANCELLED };
       const text = this.#hookParts([...c.context]);
       if (text.length) {
@@ -737,7 +744,7 @@ export class Session {
           throw err;
         }
         if (room) message = joined;
-        else bus.emit("hook-note", LEFT_OUT);
+        else leftOut = true;
       }
     }
     // The new history goes with a system prompt built afresh, both in one line, so the shortening is saved whole or not
@@ -752,6 +759,7 @@ export class Session {
     }
     this.system = system;
     this.messages.splice(0, this.messages.length, message);
+    if (leftOut) bus.emit("hook-note", LEFT_OUT);
     bus.emit("shortened", r.summary);
     return "done";
   }
