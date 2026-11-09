@@ -75,11 +75,12 @@ export const conversationLines = (messages: Message[]): Line[] => messages.flatM
 // under a heading. A call of a turn still running may have no result yet. A turn starts with a user
 // message that is not tool results: a prompt, or background answers alone; never a Stop hook's feedback, which keeps
 // the turn going (release 8b plan, Task 9's code review).
-// `runs`: the turn's hook runs (hooks.ts, Hooks.runs), listed after the calls (release 8b plan, choice 24).
+// `runs`: the turn's hook runs (hooks.ts, Hooks.runs), listed after the calls (release 8b plan, choice 24); before the
+// first turn, SessionStart's, after the line saying there is none (the user's choice, 2026-11-10; final review).
 export function lastTurn(messages: Message[], runs: readonly Run[] = []): Line[] {
   const feedback = (m: Message) => m.parts[0]?.type === "text" && m.parts[0].from === "hooks" && m.parts[0].text.startsWith(`${FEEDBACK}\n`);
   const start = messages.findLastIndex((m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result") && !feedback(m));
-  if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }];
+  if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }, ...runs.map(runLine)];
   const calls = callLines(messages.slice(start));
   return [{ text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "gray" }, ...calls, ...runs.map(runLine)];
 }

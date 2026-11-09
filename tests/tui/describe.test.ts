@@ -78,6 +78,17 @@ describe("lastTurn", () => {
     ]);
   });
 
+  // The final review (the user's choice, 2026-11-10): before the first prompt, SessionStart's runs follow the line
+  // saying there is no turn yet.
+  it("lists the runs after the line saying there is no turn yet", () => {
+    const hook: Hook = { event: "SessionStart", matcher: { all: true }, command: "start.sh", async: false, where: '"SessionStart"' };
+    const runs: Run[] = [{ event: "SessionStart", hook, ran: { code: 0, stdout: "", stderr: "", ms: 12 }, outcome: { kind: "ok" }, match: "startup" }];
+    expect(lastTurn([], runs)).toEqual([
+      { text: "No turn yet, so no tool calls to show.", color: "gray" },
+      { text: "◆ SessionStart hook start.sh · exit 0 · 12 ms", color: "gray" },
+    ]);
+  });
+
   // The user's words, 2026-11-10: a run a signal ended names it, or says none is known; a tool event's run names its tool
   // as the window does (choice 10).
   it("names a hook run's signal, or says none is known, and a tool hook's tool by Tachikoma's name", () => {

@@ -489,6 +489,52 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(errors).toEqual([]);
   });
 
+  // The final review (the user's choice, 2026-11-10): an async hook still running when Tachikoma exits is killed with
+  // all it started, the lead's and a subagent's alike, saying nothing, as the user has left; one fired after is never
+  // started. Each hook writes its process id to a file in the test's folder, then never ends; up to 10 s for Windows to
+  // end it, as a tree kill there (taskkill /T) takes 2-4 s.
+  it("kills every async hook still running at stopAsync, a subagent's too, saying nothing, and starts none after", async () => {
+    const p = await place();
+    const forever = (name: string): Hook => {
+      const pidFile = path.join(p.root, `${name}.pid`);
+      return p.hook(name, { async: true, args: ["-e", `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`] });
+    };
+    const { hooks, errors, notes } = setup(p, [forever("lead")]);
+    const sub = hooks.for({ id: "t1" }, new Bus());
+    await hooks.fire("PreToolUse", {});
+    sub.set(config([forever("sub")]));
+    await sub.fire("PreToolUse", {});
+    const pids: number[] = [];
+    for (const name of ["lead", "sub"]) {
+      const pidFile = path.join(p.root, `${name}.pid`);
+      for (let i = 0; !existsSync(pidFile) || !readFileSync(pidFile, "utf8"); i++) {
+        if (i === 500) throw new Error("the hook never started");
+        await pause(20);
+      }
+      pids.push(Number(readFileSync(pidFile, "utf8")));
+    }
+    const alive = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    onTestFinished(() => pids.forEach((pid) => alive(pid) && process.kill(pid)));
+    hooks.stopAsync();
+    for (let i = 0; pids.some(alive) && i < 500; i++) await pause(20);
+    expect(pids.map(alive)).toEqual([false, false]);
+    vi.mocked(runHook).mockClear();
+    hooks.set(config([forever("late")]));
+    await hooks.fire("PreToolUse", {});
+    await pause(100);
+    expect([errors, notes, hooks.runs, sub.runs, existsSync(path.join(p.root, "late.pid"))]).toEqual([[], [], [], [], false]);
+    expect(await Promise.allSettled(vi.mocked(runHook).mock.results.map((r) => r.value))).toEqual([
+      { status: "rejected", reason: new Error("Cancelled") },
+    ]);
+  });
+
   // Release 8b plan, Task 12 (design, "What the user sees"): the waiting line shows a running hook's statusMessage, so the
   // bus says when one starts and ends; an async hook is not waited for, so it says nothing (the builder's choice, Task 12).
   it("says a hook's statusMessage on the bus as it starts and as it ends, a stopped one too, and nothing for an async one", async () => {

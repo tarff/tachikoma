@@ -723,6 +723,9 @@ if (parsed.print !== undefined) {
     }
     console.error(line ?? keptForReview(sessionId));
   }
+  // The run's work is done, so an async hook still running is killed, or it would keep the run going up to its limit
+  // (the user's choice, 2026-11-10; final review).
+  hooks.stopAsync();
   process.exitCode = headlessExit({ aborted, failed: failed || ended !== undefined, declined });
 } else {
   // Ctrl-C reaches the interface as a key, as raw mode is on, so a SIGINT here came from outside (`kill -INT`), or from
@@ -830,12 +833,15 @@ if (parsed.print !== undefined) {
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   // After the terminal is back, as restoreWhenInkEnds waits on the same promise first; an error is its to report. The
-  // lines come escaped (Review.tsx, ReviewEnd).
-  exited.then(
-    () => {
-      for (const line of reviewed) console.log(line);
-      for (const line of left) console.error(line);
-    },
-    () => {},
-  );
+  // lines come escaped (Review.tsx, ReviewEnd). Then the window's exit is done, after SessionEnd (queue.ts, leave), so
+  // an async hook still running is killed, as at the end of a -p run (the user's choice, 2026-11-10; final review).
+  exited
+    .then(
+      () => {
+        for (const line of reviewed) console.log(line);
+        for (const line of left) console.error(line);
+      },
+      () => {},
+    )
+    .then(() => hooks.stopAsync());
 }

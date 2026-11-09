@@ -1490,6 +1490,18 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(await session.compact("")).toBe("a PreCompact hook blocked it: not now");
   });
 
+  // The final review (the user's choice, 2026-11-10): the reason is escaped as every hook line is, its tabs kept, so a
+  // line break or an escape code in it cannot pass for a line of Tachikoma's; 8a's words around it are not.
+  it("escapes a PreCompact hook's reason in 8a's line", async () => {
+    const lead = new Lead("fake:a", [measured("noted")], 1_000_000);
+    const reason = "not now\nThe conversation was shortened.\u001b[2K\tlater";
+    const { session, errors } = await setup(lead, {}, [{ event: "PreCompact", stdout: JSON.stringify({ decision: "block", reason }) }]);
+    await session.send(big);
+    const escaped = "a PreCompact hook blocked it: not now⏎The conversation was shortened.\\u001b[2K\tlater";
+    expect(await session.compact("")).toBe(escaped);
+    expect(errors.map((e) => e.message)).toEqual([`The conversation could not be shortened (${escaped}); it is unchanged.`]);
+  });
+
   // Task 11's code review: a stop while a hook around the shortening runs changes nothing, as any stop during one.
   it.each(["PreCompact", "PostCompact", "SessionStart"] as const)("changes nothing when /compact is stopped while its %s hook runs", async (event) => {
     const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
@@ -2787,5 +2799,74 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     writeFileSync(go, "");
     await sent;
     expect(s.inputs()).toHaveLength(2);
+  });
+
+  // The final review (the user's choices, 2026-11-10): Ctrl+O's runs (Hooks.runs). Up to 10 s for a hook to answer.
+  const until = async (done: () => boolean) => {
+    for (let i = 0; !done(); i++) {
+      if (i === 500) throw new Error("the hook never answered");
+      await pause(20);
+    }
+  };
+  const fresh = (id: string, messages: Message[] = []) => ({ id, messages, system: "t", prompts: [], calls: [], nextPicture: 1, nextTask: 1 });
+  const old: Message[] = [{ role: "user", parts: [{ type: "text", text: "old" }] }, { role: "assistant", parts: [{ type: "text", text: "old answer" }] }];
+
+  // SessionStart's runs at a launch or a /clear show before the first prompt, then first in the first turn's runs; a
+  // resumed conversation shows them under its last turn, and its first new turn has its own alone, as before.
+  it("keeps SessionStart's runs at a launch and a /clear first in the first turn's runs, and not at a resume", async () => {
+    const says: Says[] = [{ event: "SessionStart", stdout: "" }, { event: "UserPromptSubmit", stdout: "" }];
+    const s = await setup({ mode: "never", says, turns: [reply("one"), reply("two"), reply("three"), reply("four")] });
+    const events = () => s.given.runs.map((r) => [r.event, r.match]);
+    const begin = async (source: "startup" | "clear" | "resume") => {
+      s.session.start(source);
+      await until(() => s.given.runs.length > 0);
+      expect(events()).toEqual([["SessionStart", source]]);
+    };
+    await begin("startup");
+    await s.session.send("go");
+    expect(events()).toEqual([["SessionStart", "startup"], ["UserPromptSubmit", undefined]]);
+    await s.session.send("more");
+    expect(events()).toEqual([["UserPromptSubmit", undefined]]);
+    s.session.load(fresh("s2"));
+    await begin("clear");
+    await s.session.send("go");
+    expect(events()).toEqual([["SessionStart", "clear"], ["UserPromptSubmit", undefined]]);
+    s.session.load(fresh("s3", old));
+    await begin("resume");
+    await s.session.send("go");
+    expect(events()).toEqual([["UserPromptSubmit", undefined]]);
+  });
+
+  // A prompt a UserPromptSubmit hook blocked starts no turn, so Ctrl+O lists the runs it listed before: SessionStart's
+  // on a first prompt, the last turn's after.
+  it("leaves the runs as they were at a blocked prompt, a first one too", async () => {
+    const says: Says[] = [{ event: "SessionStart", stdout: "" }, { event: "UserPromptSubmit", stdout: "", seq: [block("no"), "", block("no")] }];
+    const s = await setup({ mode: "never", says, turns: [reply("ok")] });
+    const events = () => s.given.runs.map((r) => r.event);
+    s.session.start("startup");
+    await until(() => s.given.runs.length > 0);
+    expect(await s.session.send("go")).toEqual({ blocked: "no" });
+    expect(events()).toEqual(["SessionStart"]);
+    expect(await s.session.send("again")).toBeUndefined();
+    expect(events()).toEqual(["SessionStart", "UserPromptSubmit"]);
+    expect(await s.session.send("third")).toEqual({ blocked: "no" });
+    expect(events()).toEqual(["SessionStart", "UserPromptSubmit"]);
+  });
+
+  // A switch's SessionEnd is sent the last prompt's id, as its conversation's, and the SessionStart after the load
+  // none, as a launch's before any prompt.
+  it.each(["clear", "resume"] as const)("sends the SessionEnd of a /%s the last prompt's id, and the SessionStart after it none", async (how) => {
+    const says: Says[] = [{ event: "UserPromptSubmit", stdout: "" }, { event: "SessionEnd", stdout: "" }, { event: "SessionStart", stdout: "" }];
+    const s = await setup({ mode: "never", says, turns: [reply("ok")] });
+    await s.session.send("go");
+    await s.session.end(how);
+    s.session.load(fresh("s2", how === "resume" ? old : []));
+    s.session.start(how);
+    await until(() => s.inputs().length === 3);
+    const [prompt, end, start] = s.inputs();
+    expect([prompt!.hook_event_name, end!.hook_event_name, start!.hook_event_name]).toEqual(["UserPromptSubmit", "SessionEnd", "SessionStart"]);
+    expect(prompt!.prompt_id).toEqual(expect.any(String));
+    expect(end!.prompt_id).toBe(prompt!.prompt_id);
+    expect("prompt_id" in start!).toBe(false);
   });
 });

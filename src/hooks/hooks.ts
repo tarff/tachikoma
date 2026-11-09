@@ -48,10 +48,12 @@ const runsFor = (hook: Hook, event: Event, match?: string) =>
   hook.event === event && (match === undefined ? "all" in hook.matcher : matches(hook.matcher, match));
 
 // Held by the lead's Hooks and every subagent's, so a live edit reaches them all, and a subagent, which has no prompt of
-// its own, sends the lead's prompt id.
+// its own, sends the lead's prompt id. `left` stops the async hooks still running as Tachikoma exits, a subagent's
+// among them (stopAsync).
 interface Shared {
   config: HooksConfig;
   promptId?: string;
+  left: AbortController;
 }
 
 export class Hooks {
@@ -61,7 +63,7 @@ export class Hooks {
   #runs: Run[] = [];
 
   constructor(config: HooksConfig, where: Where, bus: Bus) {
-    this.#shared = { config };
+    this.#shared = { config, left: new AbortController() };
     this.#where = where;
     this.#bus = bus;
   }
@@ -83,9 +85,15 @@ export class Hooks {
 
   // A new list of runs, at each lead turn before its UserPromptSubmit, a turn of background answers alone too, and at a
   // load, so Ctrl+O lists exactly the runs of the turn it shows (Task 12's code review). A fire under way adds its runs
-  // to the list it began with.
-  newTurn(): void {
-    this.#runs = [];
+  // to the list it began with. `carried`: the runs the new list begins with, SessionStart's at a fresh conversation's
+  // first turn (session.ts).
+  newTurn(carried: readonly Run[] = []): void {
+    this.#runs = [...carried];
+  }
+
+  // `runs` the list again, as a prompt a UserPromptSubmit hook blocked starts no turn (session.ts).
+  restoreRuns(runs: Run[]): void {
+    this.#runs = runs;
   }
 
   // A subagent's: the same hooks, its own fields and bus.
@@ -98,6 +106,20 @@ export class Hooks {
   // A new prompt_id for each prompt the user sends (release 8b design, "What a hook is sent").
   newPrompt(): void {
     this.#shared.promptId = randomUUID();
+  }
+
+  // No prompt_id, as before a launch's first prompt, once another conversation is loaded, so the SessionStart after it
+  // is not sent the last one's (session.ts, load; the user's choice, 2026-11-10; final review).
+  forgetPrompt(): void {
+    delete this.#shared.promptId;
+  }
+
+  // As Tachikoma exits, once the -p run's work is done or the window's exit (cli.tsx): every async hook still running
+  // is killed with all it started, as a stop kills a hook (run.ts), saying nothing, as the user has left; one fired
+  // after is never started. Unstopped, its pipes and its time limit would keep Node running up to that limit (the
+  // user's choice, 2026-11-10; final review). SessionEnd's own are waited for, so none of them is left by then.
+  stopAsync(): void {
+    this.#shared.left.abort();
   }
 
   // Whether a fire of `event` with `match` would run any hook, without running one: the session gives a tool ctx.report
@@ -152,11 +174,13 @@ export class Hooks {
     // sync hook's stop or block, the stop winning as there (the user's choices, 2026-11-09). SessionEnd alone waits for its
     // async hooks too, within its shared limit, as Tachikoma is ending: none is left running then, and no failure line is
     // lost (Task 10's code review, following the user's choices for the window's exit); being waited for, they are stopped
-    // with the rest, as a switch's Esc stops them (the user's choice, 2026-11-09: "Esc stops it").
+    // with the rest, as a switch's Esc stops them (the user's choice, 2026-11-09: "Esc stops it"). The others are
+    // stopped as Tachikoma exits (stopAsync), their Cancelled heard here, never an unhandled rejection.
     const end = event === "SessionEnd";
+    const exiting = this.#shared.left.signal;
     const left: Promise<void>[] = [];
     for (const hook of picked.filter((h) => h.async)) {
-      const done = run(hook, end ? opts.signal : undefined).then((r) => {
+      const done = run(hook, end ? opts.signal : exiting).then((r) => {
         runs.push(r);
         const c = combine(event, [r]);
         const command = commandOf(hook);
@@ -167,6 +191,8 @@ export class Hooks {
         try {
           this.#say(event, lead, [...c.failures, ...asked], []);
         } catch {}
+      }, (err) => {
+        if (end || !exiting.aborted) throw err;
       });
       left.push(done);
     }

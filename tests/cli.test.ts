@@ -1097,6 +1097,33 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(r).toEqual({ code: 0, stdout: "done\n", stderr: `hook: SessionEnd hook failed: ${process.execPath} ${script} ran out of time after 1.5 s\n` });
   });
 
+  // The final review (the user's choice, 2026-11-10): an async hook still running once the run's work is done is
+  // killed, so the run ends then, not at the hook's 600 s limit, saying nothing of it. The hook writes its process id
+  // to a file in the test's folder, then never ends; up to 10 s for Windows to end it, as a tree kill there (taskkill
+  // /T) takes 2-4 s.
+  it("with -p, kills an async hook still running once the run is done, and ends", async () => {
+    const { url } = await standIn();
+    const { proj, data } = place();
+    const pidFile = path.join(path.dirname(proj), "pid");
+    const script = path.join(path.dirname(proj), "hook.cjs");
+    writeFileSync(script, `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`);
+    const hooks = { SessionStart: [{ hooks: [{ type: "command", command: process.execPath, args: [script], async: true }] }] };
+    const r = await tachiLater("-p", "hi", { ...where(proj, data, url), ...homeWith(JSON.stringify({ hooks })) });
+    expect(r).toEqual({ code: 0, stdout: "done\n", stderr: "" });
+    const pid = Number(readFileSync(pidFile, "utf8"));
+    const alive = () => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    onTestFinished(() => void (alive() && process.kill(pid)));
+    for (let i = 0; alive() && i < 500; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(alive()).toBe(false);
+  });
+
   // Task 6's quality review: a window cannot start without a terminal, so it is refused before a held session is copied.
   // The lock is this test process's own, as above.
   it("refuses -c without a terminal before copying a session another window has open", () => {

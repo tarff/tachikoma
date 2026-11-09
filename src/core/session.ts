@@ -7,7 +7,7 @@ import type { Cache } from "../providers/pictures.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
-import { type Ask, Declined, type PermissionGate, StoppedFirst } from "./permissions.js";
+import { type Ask, Declined, type PermissionGate, StoppedFirst, visible } from "./permissions.js";
 import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
@@ -226,6 +226,10 @@ export class Session {
     // Nor its hook runs, a switch's SessionEnd among them, which Ctrl+O would list under this conversation's last turn; the
     // SessionStart fired after the load begins the new list (Task 12's code review).
     if (!this.opts.subagent && !opts.keepRuns) this.opts.hooks?.newTurn();
+    // Nor its last prompt's id: the switch's SessionEnd, fired before the load, was sent it, and the SessionStart after
+    // is sent none, as a launch's is (the user's choice, 2026-11-10; final review); /branch's too, as a fork's launch
+    // sends none.
+    if (!this.opts.subagent) this.opts.hooks?.forgetPrompt();
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();
@@ -379,12 +383,19 @@ export class Session {
     // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept.
     const words = typed.flatMap((p) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
     // Ctrl+O's list of this turn's hook runs starts here, before UserPromptSubmit, for a turn of background answers alone
-    // too (release 8b plan, Task 12's code review). A subagent's runs are its own Hooks' (hooks.ts, for).
-    if (!this.opts.subagent) hooks?.newTurn();
+    // too (release 8b plan, Task 12's code review). A subagent's runs are its own Hooks' (hooks.ts, for). A fresh
+    // conversation's first turn begins it with SessionStart's runs, which Ctrl+O listed before the first prompt; a
+    // prompt a UserPromptSubmit hook blocks starts no turn, so Ctrl+O lists again the runs it listed before (the user's
+    // choices, 2026-11-10; final review).
+    const before = this.opts.subagent ? undefined : hooks?.runs;
+    if (before) hooks!.newTurn(this.messages.length ? [] : before.filter((r) => r.event === "SessionStart"));
     // The user's own prompt only: a subagent's brief is the lead's (release 8b design, "The events"). Before anything is
     // kept, pushed or taken, so a block or a stop sends and saves nothing, and the waiting text stays for the next prompt.
     const prompted = words && !this.opts.subagent && hooks ? await this.#userPromptSubmit(hooks, words, signal) : [];
-    if (!Array.isArray(prompted)) return prompted;
+    if (!Array.isArray(prompted)) {
+      if (before && prompted && "blocked" in prompted) hooks!.restoreRuns(before);
+      return prompted;
+    }
     if (words && !this.opts.subagent) this.prompts.push(words);
     const own: Part[] = [...typed, ...prompted, ...this.#waiting()];
     if (!own.length) return;
@@ -698,9 +709,11 @@ export class Session {
     if (hooks) {
       const c = await this.#aroundShortening(hooks, "PreCompact", { trigger, custom_instructions: focus || null }, trigger, signal);
       if (!c) return { problem: CANCELLED };
-      // Trimmed, so no white space of the reason lands inside 8a's parentheses (Task 11's code review).
+      // Trimmed, so no white space of the reason lands inside 8a's parentheses (Task 11's code review), and escaped as
+      // every hook line is, so a line break in it cannot pass for a line of Tachikoma's (the user's choice, 2026-11-10;
+      // final review).
       const reason = c.block?.trim();
-      if (reason !== undefined) return { problem: `a PreCompact hook blocked it${reason ? `: ${reason}` : ""}` };
+      if (reason !== undefined) return { problem: `a PreCompact hook blocked it${reason ? `: ${visible(reason, { tabs: true })}` : ""}` };
       instructions = c.instructions;
     }
     const focused = [focus, ...instructions].filter(Boolean).join("\n\n");
