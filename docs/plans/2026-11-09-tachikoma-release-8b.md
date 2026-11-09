@@ -329,7 +329,7 @@ command with its `args` after it, escaped as the question escapes a command.
 | A background subagent stopped by a hook (to the lead, waking it as a failed one does) | `Background task <id> (<description>) was stopped by a hook: <stopReason>` (no reason: `Background task <id> (<description>) was stopped by a hook.`; approved by the user, 2026-11-09); at SubagentStop, after its answer: `Background task <id> (<description>) finished:`, then the answer, cut at 30,000 characters as a finished one's is, then `<id> was stopped by a hook: <stopReason>` (no reason: `<id> was stopped by a hook.`), waking the lead too (approved by the user, 2026-11-09) |
 | The 8 blocks reached (grey) | `Stop hooks kept the turn going 8 times in a row; it ends here.` (for a subagent: `SubagentStop hooks kept <id> going 8 times in a row; it ends here.`) |
 | A Stop block's reason (to the model) | `Stop hook feedback:` then the reason on the next line (no reason, at Stop and SubagentStop: `The hook gave no reason; carry on with the task.` on that line; approved by the user, 2026-11-09) |
-| PreCompact blocked (the 8a line's reason) | `a PreCompact hook blocked it: <reason>`, in `The conversation could not be shortened (<reason>); it is unchanged.` |
+| PreCompact blocked (the 8a line's reason) | `a PreCompact hook blocked it: <reason>`, in `The conversation could not be shortened (<reason>); it is unchanged.` (no reason, or one only blank: `a PreCompact hook blocked it`, so `The conversation could not be shortened (a PreCompact hook blocked it); it is unchanged.`; approved by the user, 2026-11-09) |
 | A hook's `systemMessage` (grey) | `<Event> hook: <message>` |
 | Text for the model's heading | `<Event> hook:` |
 | SessionStart text left out after a shortening (grey) | `SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.` |
@@ -1110,13 +1110,14 @@ request is sent (second round, finding 2).
 - **Tests:** in "Session, shortening", with a hook script of their own in the describe's temp
   folder, as that describe has the stand-in lead with a window.
 
-**Left open for the user** (Task 11's build):
-- A PreCompact block with no reason (exit 2 with no error output, or `decision: "block"` with no
-  `reason`) gives `The conversation could not be shortened (a PreCompact hook blocked it: ); it is
-  unchanged.`, as only the line with a reason is approved.
-- The three events fire in a subagent's shortening too, as the design says "around each
-  shortening", sent `agent_id` and `agent_type`; SessionStart `compact` among them, though a
-  subagent's start is SubagentStart.
+- **A PreCompact block with no reason** (exit 2 with no error output, `decision: "block"` with no
+  `reason`, or a reason only blank) gives `a PreCompact hook blocked it`, so the line reads `The
+  conversation could not be shortened (a PreCompact hook blocked it); it is unchanged.` (the user's
+  choice, 2026-11-09: "Drop the colon").
+- **A subagent's shortening fires PreCompact and PostCompact,** sent its `agent_id` and
+  `agent_type`, **and no SessionStart `compact`,** as SessionStart is about the user's session; its
+  shortened message gets no SessionStart text, so it needs no second check (the user's choice,
+  2026-11-09: "Pre/Post only").
 
 Commit: `feat: PreCompact and PostCompact around each shortening`.
 

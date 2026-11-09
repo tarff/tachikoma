@@ -914,7 +914,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 });`;
   // `names` the values it matches (a trigger, a source), every one unless given.
   type Said = { event: Event; stdout?: string; code?: number; stderr?: string; names?: string[] };
-  function hooksOf(said: Said[], bus: Bus) {
+  // With `agent`, a subagent's hooks (Hooks.for), sent its agent_id and agent_type.
+  function hooksOf(said: Said[], bus: Bus, agent?: { id: string }) {
     const root = path.join(top, `hooks${++n}`);
     mkdirSync(root, { recursive: true });
     const script = path.join(root, "hook.cjs");
@@ -930,11 +931,12 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     }));
     const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => "never", effort: () => undefined, lead: () => "fake:a" };
     const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
-    return { hooks: new Hooks({ hooks, off: false, leftOut: [] }, where, bus), inputs };
+    const given = new Hooks({ hooks, off: false, leftOut: [] }, where, bus);
+    return { hooks: agent ? given.for(agent, bus) : given, inputs };
   }
 
-  // With `said`, the session has those hooks.
-  async function setup(lead: Provider, more: Partial<ConstructorParameters<typeof Session>[0]> = {}, said?: Said[]) {
+  // With `said`, the session has those hooks, a subagent's with `agent`.
+  async function setup(lead: Provider, more: Partial<ConstructorParameters<typeof Session>[0]> = {}, said?: Said[], agent?: { id: string }) {
     const bus = new Bus();
     const errors = collectErrors(bus);
     const summaries: string[] = [];
@@ -943,7 +945,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     bus.on("usage", (u) => usages.push(u));
     const notes: string[] = [];
     bus.on("hook-note", (line) => notes.push(line));
-    const hooked = said ? hooksOf(said, bus) : undefined;
+    const hooked = said ? hooksOf(said, bus, agent) : undefined;
     const transcript = saving();
     const ctx = await tempContext();
     const session = new Session({
@@ -1462,6 +1464,37 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(errors).toEqual([{ kind: "shortening", attempted: "request to fake:a", message: line, lead: "fake:a" }]);
     const fired = how === "/compact" ? { trigger: "manual", custom_instructions: "keep the tests" } : { trigger: "auto", custom_instructions: null };
     expect(inputs()).toEqual([expect.objectContaining({ hook_event_name: "PreCompact", ...fired })]);
+  });
+
+  // The user's choice, 2026-11-09 ("Drop the colon"): with no reason, or one only blank, the line ends at "blocked it".
+  it.each([
+    ["exit 2 with no error output", "", 2],
+    ['decision: "block" with no reason', JSON.stringify({ decision: "block" }), 0],
+    ["a reason only blank", JSON.stringify({ decision: "block", reason: "  " }), 0],
+  ] as const)("says a PreCompact hook's block with %s without a colon", async (_name, stdout, code) => {
+    const lead = new Lead("fake:a", [measured("noted")], 1_000_000);
+    const { session, errors } = await setup(lead, {}, [{ event: "PreCompact", stdout, code }]);
+    await session.send(big);
+    expect(await session.compact("")).toBe("a PreCompact hook blocked it");
+    const line = "The conversation could not be shortened (a PreCompact hook blocked it); it is unchanged.";
+    expect([errors.map((e) => e.message), session.messages.length, lead.seen.length]).toEqual([[line], 2, 1]);
+  });
+
+  // The user's choice, 2026-11-09 ("Pre/Post only"): SessionStart is about the user's session, so a subagent's shortening
+  // fires none.
+  it("fires PreCompact and PostCompact for a subagent's shortening, with its agent fields, and no SessionStart", async () => {
+    const lead = new Lead("fake:w", [measured("noted"), new TooLong("prompt is too long"), summaryOf("Sub summary."), reply("done")], 1_000_000);
+    const said: Said[] = [{ event: "PreCompact" }, { event: "PostCompact" }, { event: "SessionStart", stdout: "not for a subagent" }];
+    const { session, errors, notes, inputs } = await setup(lead, { subagent: true, id: "t1" }, said, { id: "t1" });
+    await session.send(big);
+    await session.send("brief");
+    const agent = { agent_id: "t1", agent_type: "Explore" };
+    expect(inputs()).toEqual([
+      expect.objectContaining({ hook_event_name: "PreCompact", trigger: "auto", ...agent }),
+      expect.objectContaining({ hook_event_name: "PostCompact", trigger: "auto", compact_summary: "Sub summary.", ...agent }),
+    ]);
+    expect(lead.seen[3]!.messages).toEqual([typed(shortened("Sub summary.", "brief"))]);
+    expect([errors, notes, texts(session.messages.at(-1)!)]).toEqual([[], [], ["done"]]);
   });
 
   it("adds a PreCompact hook's plain text to the summary request's instructions, after the /compact words", async () => {

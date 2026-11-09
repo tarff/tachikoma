@@ -683,12 +683,13 @@ export class Session {
     for (const f of this.onShorten) f();
     const trigger = focus === undefined ? "auto" : "manual";
     // PreCompact beside onShorten, before the summary request (Task 11): a block changes nothing, 8a's line giving its
-    // reason; its plain text joins the focus, after /compact's words (design, "What a hook's answer does").
+    // reason, and without one, or with one only blank, ending at "blocked it" (the user's choice, 2026-11-09: "Drop the
+    // colon"); its plain text joins the focus, after /compact's words (design, "What a hook's answer does").
     let instructions: string[] = [];
     if (hooks) {
       const c = await this.#aroundShortening(hooks, "PreCompact", { trigger, custom_instructions: focus || null }, trigger, signal);
       if (!c) return { problem: CANCELLED };
-      if (c.block !== undefined) return { problem: `a PreCompact hook blocked it: ${c.block}` };
+      if (c.block !== undefined) return { problem: `a PreCompact hook blocked it${c.block.trim() ? `: ${c.block}` : ""}` };
       instructions = c.instructions;
     }
     const focused = [focus, ...instructions].filter(Boolean).join("\n\n");
@@ -717,9 +718,12 @@ export class Session {
     // next request's message (Task 8), so it is saved with the shortening and goes with the very next request, never
     // through the queue for the next request. shorten() checked the message against the window without it, and a turn
     // shortens once a request, so it is checked again with the text; one that no longer fits is left out, with its line,
-    // never cut, as no part of a hook's text is safe to drop (second round, finding 2).
+    // never cut, as no part of a hook's text is safe to drop (second round, finding 2). A subagent's shortening fires
+    // PostCompact alone: SessionStart is about the user's session (the user's choice, 2026-11-09: "Pre/Post only").
     if (hooks) {
       if (!(await this.#aroundShortening(hooks, "PostCompact", { trigger, compact_summary: r.summary }, trigger, signal))) return { problem: CANCELLED };
+    }
+    if (hooks && !this.opts.subagent) {
       const c = await this.#aroundShortening(hooks, "SessionStart", { source: "compact", model: this.#lead.id }, "compact", signal);
       if (!c) return { problem: CANCELLED };
       const text = this.#hookParts([...c.context]);
