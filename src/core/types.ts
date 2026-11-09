@@ -111,6 +111,7 @@ export interface Provider {
   complete(req: CompletionRequest): Promise<Turn>;
   contextWindow?(signal?: AbortSignal): Promise<number | null>; // the signal stops the lookup (review fixes plan, fix 5)
   setEffort?(effort: Effort | undefined): void; // Anthropic's only, as --effort is
+  readonly effort?: Effort | undefined; // the effort in force, which hooks are sent (release 8b plan, Task 6); Anthropic's only
   // Whether `err`, as complete() threw it, says the request was too long for the model (release 8a plan, choice 20).
   tooLong?(err: unknown): boolean;
   // The provider's own count of the request's input tokens (release 8a plan, choice 19): Anthropic's only.

@@ -302,14 +302,15 @@ command with its `args` after it, escaped as the question escapes a command.
 | An async hook asked to block (red) | `<Event> hook failed: <command> asked to block, but an "async" hook cannot block` (approved by the user, 2026-11-09) |
 | An async hook asked to stop (red) | `<Event> hook failed: <command> asked to stop, but an "async" hook cannot stop`; one that asks to stop and to block gives this line alone (approved by the user, 2026-11-09) |
 | What a hook failure attempted, which `/errors` shows | `<Event> hook`; a subagent's, `t1: <Event> hook` (approved by the user, 2026-11-09) |
-| PreToolUse refused a call (grey) | `A PreToolUse hook refused <tool>: <reason>` |
-| A rewrite that cannot be used (grey; the call refused) | `A PreToolUse hook's rewrite of <tool> could not be used (<reason>): <command>` |
+| PreToolUse refused a call (grey) | `A PreToolUse hook refused <tool>: <reason>`, the model told the reason alone; no reason: `A PreToolUse hook refused <tool>.`, which the model is told too (approved by the user, 2026-11-09) |
+| A rewrite that cannot be used (grey; the call refused) | `A PreToolUse hook's rewrite of <tool> could not be used (<reason>): <command>`; the model is told the same line (approved by the user, 2026-11-09) |
 | The rewrite's `<reason>` (`fromClaude`'s `problem`, Task 5; approved by the user, 2026-11-09) | Two reused from the JSON reasons above: `"updatedInput" must be an object`; `"<field>" must be text in quotes` (`command`, `file_path`, `content`, `old_string`, `new_string`, `pattern`, `path`, `glob`, `description`, `prompt`). New: `Tachikoma takes rewrites only for its own tools`; `"updatedInput" has no "<field>"`; `"offset" must be a whole number above 0`, the same for `"limit"`; `"run_in_background" must be true or false` (Agent's); `"<field>" is not a field Tachikoma can take`; `"todos" must be a list`; `each of "todos" must be an object`; `one of "todos" has no "content"`; `each "content" in "todos" must be text in quotes`; `one of "todos" has no "status"`; `each "status" in "todos" must be "pending", "in_progress" or "completed"`; `each "activeForm" in "todos" must be text in quotes`; `"<field>" in "todos" is not a field Tachikoma can take`; `"<field>" is outside the project, which the sandbox cannot reach` (`file_path`, or Grep's `path`). Choice 14's: `"replace_all" must be false, as Tachikoma's edit_file replaces one exact match`; `"run_in_background" must be false, as Tachikoma's shell cannot run a command in the background` (Bash's); `"timeout" cannot be set, as Tachikoma's shell has no time limit`; `"output_mode" must be "content", as Tachikoma's search_files gives the matching lines`; `"-i" must be false, as Tachikoma's search_files matches letter case exactly`; `"multiline" must be false, as Tachikoma's search_files matches within one line`; `"path" cannot be set, as Tachikoma's find_files searches the whole project` (Glob's); `"subagent_type" must be "Explore", as Tachikoma's subagents only read`; `"model" cannot be set, as a subagent runs on the model --worker names, or else the lead's` |
 | Two rewrites of one call (grey) | `Two PreToolUse hooks rewrote <tool>'s input; the first in the settings file was used, and <command> was ignored.` |
 | `defer` (grey) | `A PreToolUse hook answered "defer", which Tachikoma takes as no opinion.` |
 | A hook's ask, the question's note (grey) | `A hook asks: <reason>` (no reason: `A hook asks.`) |
-| A hook's ask in `never` (to the model) | `Not allowed in never mode: a PreToolUse hook asked for this call to be approved (<reason>).` |
-| A hook's ask in `-p` (to the model) | `Not allowed: a PreToolUse hook asked for this call to be approved (<reason>), and -p cannot ask.` |
+| A hook's ask in `never` (to the model) | `Not allowed in never mode: a PreToolUse hook asked for this call to be approved (<reason>).` (no reason: `Not allowed in never mode: a PreToolUse hook asked for this call to be approved.`; approved by the user, 2026-11-09) |
+| A hook's ask in `-p` (to the model) | `Not allowed: a PreToolUse hook asked for this call to be approved (<reason>), and -p cannot ask.` (no reason: `Not allowed: a PreToolUse hook asked for this call to be approved, and -p cannot ask.`; approved by the user, 2026-11-09) |
+| A no to a hook's question (to the model) | the gate's own refusal, `The user declined: <tool> <its input as JSON>`, the call named as the question names it (approved by the user, 2026-11-09) |
 | A hook stopped the turn (grey) | `A <Event> hook stopped the turn: <stopReason>` (no reason: `A <Event> hook stopped the turn.`) |
 | A call not run after a stop (to the model) | `Not run: a hook stopped the turn.` |
 | A subagent stopped by a hook (its result) | `<id> was stopped by a hook: <stopReason>` (no reason: `<id> was stopped by a hook.`) |
@@ -689,11 +690,17 @@ withHook(h: { allow: true } | { asked: true }): PermissionGate;   // for one cal
 - A subagent's call fires PreToolUse with `agent_id`.
 
 **Decided at the build** (the user, 2026-11-09):
-- **A hook's `allow` skips only the mode's ordinary question and the judge.** In ask and project
-  modes a write outside the project is still asked about, as a protected part or a danger is;
-  `never` still refuses it, as now. So `withHook({ allow: true })` keeps the outside-the-project
-  question, tested in both modes. At the build, `withHook({ asked: true })` keeps it too: the
-  user's yes was to the hook's question about the call, not to the outside write.
+- **A hook's `allow` skips only the mode's ordinary question and the judge, and never waves a
+  write outside the project through, in any mode.** In ask and project modes such a write is
+  still asked about, as a protected part or a danger is; in auto it still goes to the judge, as
+  without the hook; `never` still refuses it, as now. `withHook({ asked: true })` keeps the same
+  rule: the user's yes was to the hook's question about the call, not to the outside write.
+  Tested in all three asking modes.
+- **In `-p` a call a PreToolUse hook refused fails the run** (exit code 1), as a refusal the
+  gate's ask reports does: a deny, a block, an ask `-p` cannot put, and a rewrite that cannot be
+  used. The gate is told through `GateOptions.hookRefused`, which `cli.tsx` sets in `-p` only.
+- **The hooks' `effort` field follows a live change of effort:** it reads the lead's own effort
+  in force (`Provider.effort`, Anthropic's), as `lead` is read, not the launch's value.
 
 Commit: `feat: PreToolUse: a hook's deny, ask and allow against Tachikoma's checks, and its rewrite kept in the record`.
 
@@ -729,6 +736,11 @@ Commit: `feat: PreToolUse: a hook's deny, ask and allow against Tachikoma's chec
 - `continue: false` from the first of three calls while a `delegate` runs: the delegate is stopped,
   each call has one result, the next request is taken by the stand-in model, and the session
   resumed from its transcript loads with every call answered (finding 1).
+
+**Note from Task 6's build** (2026-11-09): until this task, a PreToolUse hook's `continue: false`
+lets its call run. `combine` drops the deny, ask, allow and rewrite when a stop is given, and
+Task 6's `#preToolUse` (session.ts) does not read `stop`, so the call goes ahead as if the hooks
+had no opinion. This task must check `c.stop` there first and not run that call.
 
 Commit: `feat: PostToolUse and PostToolUseFailure, and a hook that stops the turn leaving every call answered`.
 

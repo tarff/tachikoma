@@ -6985,9 +6985,9 @@ describe("App's live settings", () => {
   it("sends a changed effort to the fallback and the subagents' worker as well as the lead", async () => {
     // Records the effort each request goes with, as AnthropicProvider sends it.
     class Effortful extends FakeProvider {
-      effort: string | undefined;
+      effort: Provider["effort"];
       readonly sent: (string | undefined)[] = [];
-      setEffort(effort: string | undefined) {
+      setEffort(effort: Provider["effort"]) {
         this.effort = effort;
       }
       override complete(req: Parameters<FakeProvider["complete"]>[0]) {

@@ -358,7 +358,14 @@ describe("a gate for one call a hook allowed", () => {
     expect(judged).toEqual([husky.summary]);
   });
 
-  // The user's choice, 2026-11-09: a hook's allow skips only the mode's ordinary question and the judge.
+  // The user's choices, 2026-11-09: a hook's allow skips only the mode's ordinary question and the judge, and never waves
+  // a write outside the project through, in any mode.
+  it.each(hooked)("in auto, still sends a write outside the project to the judge (%o)", async (h) => {
+    const { gate, asked, judged } = gateIn("auto");
+    await expect(gate.withHook(h).require(outsideWrite)).rejects.toThrow(new Declined("The judge refused: the judge says no"));
+    expect([asked, judged]).toEqual([[], ["write /q/a.txt"]]);
+  });
+
   it.each(hooked)("in ask and project, still asks before a write outside the project (%o)", async (h) => {
     for (const mode of ["ask", "project"] as const) {
       const { gate, asked } = gateIn(mode, false);

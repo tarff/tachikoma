@@ -104,13 +104,16 @@ const hookNote = (reason: string) => (reason ? `A hook asks: ${visible(reason)}`
 
 // `root`: the project's, for the dangerous-command check; `headless`: -p mode, where a danger is refused (Task 8);
 // `judge`: auto mode's (Task 10), which cli.tsx always gives. `home` and `shell` are the box's in the sandbox, its
-// HOME=/tmp and bash (choices 3 and 77; Task 16), and the host's otherwise.
+// HOME=/tmp and bash (choices 3 and 77; Task 16), and the host's otherwise. `hookRefused`: told of each call a PreToolUse
+// hook refused, so -p's exit code counts it as it counts a refusal its ask reports (release 8b plan, Task 6; the user's
+// choice, 2026-11-09).
 export interface GateOptions {
   root?: string;
   home?: string;
   shell?: Shell;
   headless?: boolean;
   judge?: Judge;
+  hookRefused?: () => void;
 }
 
 export class PermissionGate {
@@ -183,9 +186,9 @@ export class PermissionGate {
   }
 
   // A gate for one call a PreToolUse hook allowed, or whose question the user said yes to (release 8b plan, Task 6 and
-  // choice 15): the mode's question and the judge are skipped; the rest is this gate's, its questions, mode, rules,
-  // protection and auto mode's counts. The two are alike here: a yes to the hook's question was about the call, so it
-  // stands in for the mode's question, as an allow does, and for nothing else.
+  // choice 15): the mode's question and the judge are skipped, except for a write outside the project (require); the rest
+  // is this gate's, its questions, mode, rules, protection and auto mode's counts. The two are alike here: a yes to the
+  // hook's question was about the call, so it stands in for the mode's question, as an allow does, and for nothing else.
   withHook(h: { allow: true } | { asked: true }): PermissionGate {
     const gate = new PermissionGate(this.#mode, this.ask, this.refusal, this.options);
     gate.#parent = this.#parent ?? this;
@@ -198,10 +201,20 @@ export class PermissionGate {
   // with the hook's reason as its grey note; a no declines as any no does. In never and headless nobody can answer, so
   // the call is refused. A yes returns, and the call runs with withHook({ asked: true }).
   async hookAsks(summary: string, reason: string): Promise<void> {
-    if (this.mode === "never") throw new Declined(hookNeverRefusal(reason));
-    if (this.options.headless) throw new Declined(hookHeadlessRefusal(reason));
+    const refuse = (message: string) => {
+      this.hookRefused();
+      return new Declined(message);
+    };
+    if (this.mode === "never") throw refuse(hookNeverRefusal(reason));
+    if (this.options.headless) throw refuse(hookHeadlessRefusal(reason));
     const shown = visible(summary);
     if (!(await this.ask(shown, undefined, undefined, undefined, [], hookNote(reason)))) throw new Declined(`${this.refusal}: ${shown}`);
+  }
+
+  // A call a PreToolUse hook refused (a deny, a block, a rewrite that cannot be used, or an ask nobody can answer), for
+  // -p's exit code (GateOptions).
+  hookRefused(): void {
+    this.options.hookRefused?.();
   }
 
   // Release 7 plan, Task 8: a protected write asks in ask and project too (in release 6, project wrote one unasked), and
@@ -220,9 +233,10 @@ export class PermissionGate {
       if (found.length) throw new Declined(dangerRefusal(found));
       return;
     }
-    // A hook's allow, or a yes to its question, skips only the mode's ordinary question and the judge: in ask and project a
-    // write outside the project is still asked about, as a protected part and a danger are (the user's choice, 2026-11-09).
-    const ordinary = this.#hook ? action.kind === "write" && action.outside && (mode === "ask" || mode === "project") : needsApproval(mode, action);
+    // A hook's allow, or a yes to its question, skips only the mode's ordinary question and the judge, and never a write
+    // outside the project: that is asked about in ask and project, and goes to the judge in auto, as without the hook, as a
+    // protected part and a danger are (the user's choices, 2026-11-09).
+    const ordinary = this.#hook ? action.kind === "write" && action.outside : needsApproval(mode, action);
     if (part === undefined && !found.length && !ordinary) return;
     const top = this.#parent ?? this;
     // Headless never pauses: every refusal is final (Task 10).

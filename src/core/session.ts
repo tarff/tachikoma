@@ -578,23 +578,24 @@ export class Session {
     const c = await hooks.fire("PreToolUse", { tool_name, tool_input, tool_use_id: call.id }, { match: tool_name, signal });
     this.#hookText.push(...c.context);
     const say = (line: string) => this.opts.bus.emit("hook-note", line);
+    // Each refusal is told to the gate, for -p's exit code (the user's choice, 2026-11-09).
+    const refused = (line: string, told = line) => {
+      say(line);
+      this.opts.ctx.gate.hookRefused();
+      return { refused: told };
+    };
     if (c.deferred) say('A PreToolUse hook answered "defer", which Tachikoma takes as no opinion.');
     // A deny, or a block (exit 2, or a failure that onFailure "block" makes one), refuses the call in every mode; the model
     // gets its reason. A rewrite beside it is never used, as nothing runs (Task 3's carry-over).
     if (c.block !== undefined) {
       const line = c.block ? `A PreToolUse hook refused ${call.name}: ${c.block}` : `A PreToolUse hook refused ${call.name}.`;
-      say(line);
-      return { refused: c.block || line };
+      return refused(line, c.block || line);
     }
     // A rewrite is turned back into the tool's fields, and Tachikoma's checks look at it as if the model had sent it.
     let input = call.input;
     if (c.rewrite) {
       const back = fromClaude(call.name, c.rewrite.input, paths);
-      if ("problem" in back) {
-        const line = `A PreToolUse hook's rewrite of ${call.name} could not be used (${back.problem}): ${commandOf(c.rewrite.from)}`;
-        say(line);
-        return { refused: line };
-      }
+      if ("problem" in back) return refused(`A PreToolUse hook's rewrite of ${call.name} could not be used (${back.problem}): ${commandOf(c.rewrite.from)}`);
       input = back.input;
     }
     // The question names the call that would run, by its name and input, as Ctrl+O does (choice 15).

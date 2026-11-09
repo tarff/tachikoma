@@ -538,6 +538,55 @@ describe("tachi", { timeout: 15_000 }, () => {
     expect(sent[2]!.messages.at(-1)).toMatchObject({ role: "tool", content: "Error: The judge refused: the judge could not be reached: 400 the judge is down" }); // the provider marks a refused call so
   });
 
+  // Release 8b plan, Task 6 (the user's choice, 2026-11-09): a call a PreToolUse hook refused fails a -p run, as a refusal
+  // the gate's ask reports does. The lead is a stand-in served on the loopback address, as above: it asks to read a file in
+  // the project, which -p would read unasked, then answers. The hook is a Node script of the test's own, in exec form.
+  it.each([
+    ["a deny", { permissionDecision: "deny", permissionDecisionReason: "not the notes" }, "Error: not the notes"],
+    [
+      "an ask -p cannot put",
+      { permissionDecision: "ask", permissionDecisionReason: "Sure?" },
+      "Error: Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask.",
+    ],
+  ])("with -p, fails the run with exit code 1 when a PreToolUse hook refuses a call: %s", async (_name, decided, told) => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
+    onTestFinished(() => removeTree(top));
+    const proj = path.join(top, "proj");
+    mkdirSync(proj);
+    writeFileSync(path.join(proj, "notes.txt"), "made-up notes\n");
+    const script = path.join(top, "hook.cjs");
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...decided } }))});`);
+    const hooks = { PreToolUse: [{ matcher: "Read", hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    const sent: { messages: { role: string; content?: unknown }[] }[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (d: string) => (body += d));
+      req.on("end", () => {
+        const request = JSON.parse(body) as (typeof sent)[number];
+        sent.push(request);
+        const first = !request.messages.some((m) => m.role === "tool");
+        const call = { id: "c1", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "notes.txt" }) } };
+        const message = first ? { role: "assistant", content: null, tool_calls: [call] } : { role: "assistant", content: "done" };
+        const choice = { index: 0, finish_reason: first ? "tool_calls" : "stop", message };
+        const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
+        const answer = { id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage };
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(answer));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    onTestFinished(() => {
+      server.close();
+      server.closeAllConnections();
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
+    const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
+    expect(r).toMatchObject({ code: 1, stdout: "done\n" });
+    expect(sent).toHaveLength(2);
+    expect(sent[1]!.messages.at(-1)).toMatchObject({ role: "tool", content: told });
+  });
+
   // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.
   it("with -p, runs on the settings file's lead", () => {
     const r = tachi("-p", "hi", { ...homeWith('{"lead": "openai:none"}'), OPENAI_API_KEY: "x", OPENAI_BASE_URL: "http://127.0.0.1:9/v1" });

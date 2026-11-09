@@ -565,6 +565,8 @@ const gate = new PermissionGate(mode, (...a) => ask(...a), interactive ? undefin
   ...(box?.gate ?? { root }),
   headless: !interactive,
   judge: judgeOf(judgeProvider, () => session, instructions.text, bus),
+  // In -p a call a PreToolUse hook refused fails the run, as a refusal the ask reports does (the user's choice, 2026-11-09).
+  ...(interactive ? {} : { hookRefused: () => void (declined = true) }),
 });
 gate.rules = rules;
 gate.protection = box?.protection ?? protection;
@@ -583,7 +585,7 @@ const hooks = new Hooks(
     transcript: () => session.transcript?.file,
     root,
     mode: () => gate.mode,
-    effort: () => (session.lead.setEffort ? effort : undefined), // the lead has one only where --effort applies (Anthropic's)
+    effort: () => session.lead.effort, // the lead's in force, so a live change is sent; only Anthropic's has one
     lead: () => session.lead.id,
   },
   bus,

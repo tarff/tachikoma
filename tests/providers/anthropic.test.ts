@@ -260,6 +260,17 @@ describe("AnthropicProvider", () => {
     expect(() => new AnthropicProvider("claude-opus-5-5")).toThrow("Set ANTHROPIC_API_KEY to use anthropic");
   });
 
+  // Read by the hooks' `effort` field at each event, so a live change is what they are sent (release 8b plan, Task 6; the
+  // user's choice, 2026-11-09).
+  it("tells the effort in force, the launch's and then a live change's", () => {
+    const provider = new AnthropicProvider("claude-opus-5-5", "high");
+    expect(provider.effort).toBe("high");
+    provider.setEffort("low");
+    expect(provider.effort).toBe("low");
+    provider.setEffort(undefined);
+    expect(provider.effort).toBeUndefined();
+  });
+
   it("sends only the API key, even when a bearer token is set", async () => {
     vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "a-bearer-token");
     const sent: Headers[] = [];

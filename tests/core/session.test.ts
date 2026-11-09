@@ -1455,6 +1455,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const headless = o.mode === "-p";
     const asked: { summary: string; warnings?: string[]; note?: string }[] = [];
     const judged: string[] = [];
+    const refusals: number[] = [];
     const answers = [...(o.answers ?? [])];
     const gate = new PermissionGate(
       o.mode === "-p" ? "project" : o.mode,
@@ -1463,7 +1464,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
         return answers.shift() ?? false;
       },
       headless ? P : undefined,
-      { root, headless, judge: async (action) => (judged.push(action.summary), { allow: false, reason: "no" }) },
+      { root, headless, judge: async (action) => (judged.push(action.summary), { allow: false, reason: "no" }), hookRefused: () => void refusals.push(1) },
     );
     const ran: string[] = [];
     const shell = defineTool("shell", "Runs nothing: records the command the gate let through", z.object({ command: z.string() }), async ({ command }, ctx) => {
@@ -1489,7 +1490,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     });
     const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
     const results = () => session.messages.flatMap((m) => m.parts.flatMap((p) => (p.type === "tool_result" ? [{ output: p.output, isError: p.isError }] : [])));
-    return { root, session, asked, judged, ran, notes, outcomes, inputs, results, hooks, command: (h: Hook) => [h.command, ...(h.args ?? [])].join(" ") };
+    const command = (h: Hook) => [h.command, ...(h.args ?? [])].join(" ");
+    return { root, session, asked, judged, refusals, ran, notes, outcomes, inputs, results, hooks, command };
   }
   const oneCall = (name: string, input: object) => [callTool("c1", name, input), reply("ok")];
   const shellCall = (command: string) => oneCall("shell", { command });
@@ -1665,6 +1667,20 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.ran).toEqual([]);
     expect(s.notes).toEqual([expect.stringMatching(/^A PreToolUse hook refused shell/)]);
     expect(s.session.calls).toEqual([{ name: "shell", input: { command: "echo hi" } }]);
+  });
+
+  // The user's choice, 2026-11-09: in -p a hook's refusal fails the run, so the gate is told of each (cli.tsx).
+  it.each([
+    ["a deny", { stdout: decide("deny", "no") }, 1],
+    ["a block", { stdout: "", code: 2 }, 1],
+    ["a rewrite that cannot be used", { stdout: rewrite({ command: "echo x", run_in_background: true }) }, 1],
+    ["an ask -p cannot put", { stdout: decide("ask") }, 1],
+    ["an allow", { stdout: decide("allow") }, 0],
+    ["a rewrite that is used", { stdout: rewrite({ command: "echo x" }) }, 0],
+  ] as const)("in -p, tells the gate of a call a hook refused: %s", async (_name, says, times) => {
+    const s = await setup({ mode: "-p", says: [says], turns: shellCall("echo hi") });
+    await s.session.send("go");
+    expect(s.refusals).toHaveLength(times);
   });
 
   it("says a defer, and takes it as no opinion", async () => {
