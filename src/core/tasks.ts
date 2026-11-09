@@ -15,6 +15,9 @@ export type TaskState = "waiting" | "running" | "done" | "failed" | "stopped";
 export interface Result {
   state: "done" | "failed" | "stopped";
   text: string;
+  // A hook's stop after the answer: `text` is the answer, then the stop's line, apart here so a cut of the answer leaves
+  // the line whole (release 8b plan, Task 9's re-check).
+  stop?: { answer: string; line: string };
 }
 
 // One subagent, as the panel and /tasks show it.
@@ -37,9 +40,6 @@ export interface Task {
   done: Promise<Result>;
 }
 
-// What #work adds for a hook's stop, for #run's message to the lead: the stopReason, and when the stop came after the
-// answer, the answer and the stop's line apart.
-type HookStop = { hook?: string; answer?: string; line?: string };
 
 export interface TasksOptions {
   bus: Bus; // the lead's: subagents' spend and errors are reported there, marked with the subagent
@@ -184,7 +184,7 @@ export class Tasks {
     const stopped = this.#stops.get(t.id)!;
     // A hook's stop comes with its own result and its stopReason (#work).
     const byWhom = stopped.byUser ? " by the user before it finished" : ""; // the words, said after "was stopped"
-    const { hook, answer, line, ...r }: Result & HookStop = result ?? { state: "stopped", text: `${t.id} was stopped${byWhom}.` };
+    const { hook, ...r }: Result & { hook?: string } = result ?? { state: "stopped", text: `${t.id} was stopped${byWhom}.` };
     // How it ended, when the lead was told it failed or was stopped, waiting or running, so a resumed session never
     // reports it lost (release 8a plan, choice 4). A finished one's answer, its last reply, says so already.
     if (r.state !== "done") own?.write({ t: "ended", state: r.state });
@@ -198,7 +198,9 @@ export class Tasks {
     // Waking the lead, as a failure does; after an answer, the answer as a finished one's, then the stop's line (the user's
     // choices, 2026-11-09).
     if (t.background && hook !== undefined) {
-      const text = answer !== undefined ? `${name} finished:\n${truncate(answer)}\n${line}` : `${name} was stopped by a hook${hook ? `: ${hook}` : "."}`;
+      const text = r.stop
+        ? `${name} finished:\n${truncate(r.stop.answer)}\n${r.stop.line}`
+        : `${name} was stopped by a hook${hook ? `: ${hook}` : "."}`;
       this.#inbox.push({ id, text, wake: true });
     }
     if (t.background && r.state === "stopped" && stopped.byUser) this.#inbox.push({ id, text: `${name} was stopped by the user before it finished.`, wake: false });
@@ -206,15 +208,14 @@ export class Tasks {
     return r;
   }
 
-  // Null when it was stopped, by the user or the lead's turn; a hook's stop has its own result, with `hook` its stopReason,
-  // and when it came after the answer, `answer` and the stop's `line` apart.
+  // Null when it was stopped, by the user or the lead's turn; a hook's stop has its own result, with `hook` its stopReason.
   async #work(
     t: Task,
     provider: Provider,
     fallback: Provider | undefined,
     signal: AbortSignal,
     own: Transcript | undefined,
-  ): Promise<(Result & HookStop) | null> {
+  ): Promise<(Result & { hook?: string }) | null> {
     const bus = new Bus();
     let failure: ErrorEvent | undefined;
     bus.on("usage", (u) => {
@@ -287,7 +288,7 @@ export class Tasks {
     if (ended && "stopped" in ended) {
       const line = `${t.id} was stopped by a hook${ended.stopped ? `: ${ended.stopped}` : "."}`;
       if (!text.trim()) return { state: "stopped", text: line, hook: ended.stopped };
-      return { state: "stopped", text: `${text}\n${line}`, hook: ended.stopped, answer: text, line };
+      return { state: "stopped", text: `${text}\n${line}`, stop: { answer: text, line }, hook: ended.stopped };
     }
     if (text.trim() && !failure) return { state: "done", text };
     return { state: "failed", text: failure?.message ?? "it ended without an answer" };

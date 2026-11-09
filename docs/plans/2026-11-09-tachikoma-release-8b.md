@@ -923,7 +923,10 @@ it: only a block, or a stop marked `unsent`, skips it.
   answer, so the line is the result alone. A background one's message to the lead (approved by the
   user, 2026-11-09) is then `Background task <id> (<description>) finished:`, the answer cut at
   30,000 characters as a finished one's is, and `<id> was stopped by a hook: <stopReason>` on the
-  next line, waking the lead.
+  next line, waking the lead. When the lead waits for the subagent (and in `-p`, where a background
+  one runs in the foreground), delegate cuts the answer first, leaving room for the stop's line, so
+  the session's cut of the call's result at 30,000 characters keeps that line (Task 9's re-check);
+  `/tasks` shows the answer whole.
 - **Task 9's code review:** a stop as the Stop hooks answer sends nothing more. Ctrl+O's last turn
   takes a Stop hook's feedback as part of the turn it kept going: a user message whose first part
   is hook text starting `Stop hook feedback:` starts no turn (`FEEDBACK`, session.ts), while

@@ -32,6 +32,18 @@ export function truncate(s: string): string {
   return s.length <= MAX_TOOL_OUTPUT ? s : `${s.slice(0, MAX_TOOL_OUTPUT)}\n[cut: ${s.length - MAX_TOOL_OUTPUT} more characters]`;
 }
 
+// `s` cut, as truncate cuts, so that with `around` more characters of a tool's output it all fits MAX_TOOL_OUTPUT, the
+// cut's marker included, and the session's own cut leaves it whole: for a line that must follow it, such as a hook's stop
+// after a subagent's answer (release 8b plan, Task 9's re-check).
+export function truncateLeaving(s: string, around: number): string {
+  const room = MAX_TOOL_OUTPUT - around;
+  if (s.length <= room) return s;
+  const marker = (n: number) => `\n[cut: ${n} more characters]`;
+  // The marker for s.length is never shorter than the one given, whose count is smaller.
+  const keep = Math.max(0, room - marker(s.length).length);
+  return `${s.slice(0, keep)}${marker(s.length - keep)}`;
+}
+
 // What the model is told of a call a hook's continue: false came before, and of one it stopped while it ran (release 8b
 // plan, "Lines this plan adds").
 const NOT_RUN = "Not run: a hook stopped the turn.";

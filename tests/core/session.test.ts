@@ -2360,9 +2360,29 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("started it")];
     const s = await setup({ mode: "never", says: [{ event: "SubagentStop", stdout: stops(reason) }], turns, worker });
     await s.session.send("go");
-    expect(await s.tasks!.all[0]!.done).toEqual({ state: "stopped", text: `${long}\n${line}` });
+    expect(await s.tasks!.all[0]!.done).toEqual({ state: "stopped", text: `${long}\n${line}`, stop: { answer: long, line } });
     const told = `Background task t1 (look) finished:\n${"x".repeat(MAX_TOOL_OUTPUT)}\n[cut: 5 more characters]\n${line}`;
     expect([s.tasks!.wakes(), s.tasks!.take()]).toEqual([true, [told]]);
+  });
+
+  // Task 9's re-check: the call's result is cut at the size every tool's is, so the answer is cut first, leaving the stop's
+  // line whole after it; in -p a background subagent runs in the foreground, its result after delegate's line. /tasks
+  // keeps the whole answer.
+  it.each<[string, Mode5, boolean, string]>([
+    ["a subagent the lead waits for", "never", false, ""],
+    ["a background subagent in -p", "-p", true, "t1 ran in the foreground, since -p has no later turn to read a background answer in.\n\n"],
+  ])("keeps a SubagentStop stop's line after a long answer of %s, the answer cut to leave room for it", async (_name, mode, background, head) => {
+    const long = "x".repeat(MAX_TOOL_OUTPUT + 10_000);
+    const worker = new FakeProvider("w", [reply(long)]);
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background }), reply("ok")];
+    const s = await setup({ mode, says: [{ event: "SubagentStop", stdout: stops("enough") }], turns, worker });
+    await s.session.send("go");
+    const line = "t1 was stopped by a hook: enough";
+    const [r] = s.results();
+    const shape = /^(x+)\n\[cut: (\d+) more characters\]\nt1 was stopped by a hook: enough$/.exec(r!.output.slice(head.length));
+    expect([r!.output.startsWith(head), r!.output.length <= MAX_TOOL_OUTPUT, shape !== null]).toEqual([true, true, true]);
+    expect(shape![1]!.length + Number(shape![2])).toBe(long.length); // the cut's count is the characters left out
+    expect(s.tasks!.all[0]!.answer).toBe(`${long}\n${line}`);
   });
 
   // Task 9's code review: a stop that comes as the Stop hooks answer, or while they run, sends nothing more.
