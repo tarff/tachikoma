@@ -32,11 +32,8 @@ export function shellOf(hook: Hook): { file: string; args: string[] } | { exec: 
   if (process.platform === "win32") {
     const bash = hook.shell === "powershell" ? null : gitBash();
     if (bash) return { file: bash, args: ["-c", hook.command] };
-    // Windows PowerShell exits 1 for any program that failed, so a hook's exit code 2, a block, would be lost (PR #14's
-    // review, seen 2026-11-10). When the command failed, it exits with the program's code instead, or 1 when a PowerShell
-    // command failed; on a line of its own, so a note at the end of the command cannot hide it.
-    const keep = "\nif (-not $?) { exit $(if ($LASTEXITCODE) { $LASTEXITCODE } else { 1 }) }";
-    const [file, ...args] = shellFor("win32").argv(hook.command + keep);
+    // shellFor keeps a failed program's exit code, so a hook's 2 still blocks (PR #14's review).
+    const [file, ...args] = shellFor("win32").argv(hook.command);
     return { file: file!, args };
   }
   return { file: hook.shell === "bash" ? "bash" : "/bin/sh", args: ["-c", hook.command] };

@@ -15,7 +15,17 @@ export function shellFor(platform: NodeJS.Platform = process.platform): { name: 
       name: "PowerShell",
       // By its full path: Windows looks for a bare "powershell.exe" in the project folder before PATH (review fixes plan,
       // fix 1). Without the encoding line PowerShell writes the console code page, which garbles anything outside ASCII.
-      argv: (c) => [system32("WindowsPowerShell/v1.0/powershell.exe"), "-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${c}`],
+      // Windows PowerShell exits 1 for any program that failed, which lost a hook's exit code 2, a block, and told the
+      // model 1 for every failure (PR #14's review, seen 2026-11-10). So when the command failed, the last line exits
+      // with the program's code instead, or 1 when a PowerShell command failed; on a line of its own, so a note at the
+      // end of the command cannot hide it.
+      argv: (c) => [
+        system32("WindowsPowerShell/v1.0/powershell.exe"),
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ${c}\nif (-not $?) { exit $(if ($LASTEXITCODE) { $LASTEXITCODE } else { 1 }) }`,
+      ],
     };
   }
   return { name: "sh", argv: (c) => ["/bin/sh", "-c", c] };
