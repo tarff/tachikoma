@@ -2853,6 +2853,33 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(events()).toEqual(["SessionStart", "UserPromptSubmit"]);
   });
 
+  // The user's choice, 2026-11-10: a prompt a UserPromptSubmit hook's continue: false left unsent, or the user's stop
+  // during UserPromptSubmit, starts no turn either, so Ctrl+O lists the last turn's runs, as after a block.
+  it("leaves the last turn's runs as they were at a prompt a UserPromptSubmit hook's continue: false left unsent", async () => {
+    const s = await setup({ mode: "never", says: [{ event: "UserPromptSubmit", stdout: "", seq: ["", stops("halt")] }], turns: [reply("ok")] });
+    await s.session.send("go");
+    const last = s.given.runs;
+    expect(last.map((r) => r.event)).toEqual(["UserPromptSubmit"]);
+    expect(await s.session.send("again")).toEqual({ stopped: "halt", unsent: true });
+    expect(s.given.runs).toBe(last);
+  });
+
+  it("leaves the last turn's runs as they were when the user stops a prompt while its UserPromptSubmit hook runs", async () => {
+    const root = await folder();
+    const s = await setup({ mode: "never", root, says: [{ event: "UserPromptSubmit", stdout: "" }], turns: [reply("ok")] });
+    await s.session.send("go");
+    const last = s.given.runs;
+    expect(last.map((r) => r.event)).toEqual(["UserPromptSubmit"]);
+    const hook = s.hooks[0]!;
+    s.given.set({ hooks: [{ ...hook, args: [...hook.args!.slice(0, 4), path.join(root, "never-made")] }], off: false, leftOut: [] });
+    const abort = new AbortController();
+    const sent = s.session.send("again", abort.signal);
+    await started(s, 2);
+    abort.abort();
+    expect(await sent).toBeUndefined();
+    expect(s.given.runs).toBe(last);
+  });
+
   // A switch's SessionEnd is sent the last prompt's id, as its conversation's, and the SessionStart after the load
   // none, as a launch's before any prompt.
   it.each(["clear", "resume"] as const)("sends the SessionEnd of a /%s the last prompt's id, and the SessionStart after it none", async (how) => {

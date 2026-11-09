@@ -384,16 +384,17 @@ export class Session {
     const words = typed.flatMap((p) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
     // Ctrl+O's list of this turn's hook runs starts here, before UserPromptSubmit, for a turn of background answers alone
     // too (release 8b plan, Task 12's code review). A subagent's runs are its own Hooks' (hooks.ts, for). A fresh
-    // conversation's first turn begins it with SessionStart's runs, which Ctrl+O listed before the first prompt; a
-    // prompt a UserPromptSubmit hook blocks starts no turn, so Ctrl+O lists again the runs it listed before (the user's
-    // choices, 2026-11-10; final review).
+    // conversation's first turn begins it with SessionStart's runs that have answered, which Ctrl+O listed before the
+    // first prompt; an async one that answers later goes to the list before it, a known limit. A prompt that starts no
+    // turn, one a UserPromptSubmit hook blocks or leaves unsent, or the user stops while its hooks run, puts back the
+    // list Ctrl+O listed before, so it always shows one whole turn (the user's choices, 2026-11-10; final review).
     const before = this.opts.subagent ? undefined : hooks?.runs;
     if (before) hooks!.newTurn(this.messages.length ? [] : before.filter((r) => r.event === "SessionStart"));
     // The user's own prompt only: a subagent's brief is the lead's (release 8b design, "The events"). Before anything is
     // kept, pushed or taken, so a block or a stop sends and saves nothing, and the waiting text stays for the next prompt.
     const prompted = words && !this.opts.subagent && hooks ? await this.#userPromptSubmit(hooks, words, signal) : [];
     if (!Array.isArray(prompted)) {
-      if (before && prompted && "blocked" in prompted) hooks!.restoreRuns(before);
+      if (before) hooks!.restoreRuns(before);
       return prompted;
     }
     if (words && !this.opts.subagent) this.prompts.push(words);
