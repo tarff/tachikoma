@@ -9649,7 +9649,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(frame).toContain('Last turn: 1 tool call\n● read_file {\n  "path": "a.txt"\n}\n  ⎿ ');
     expect(frame).toMatch(/⎿ [^\n]*from b/);
     const literal = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const run = (event: string) => `${literal(`◆${event}hook${squashed(h.command)}forread_file·exit0·`)}\\d+ms`;
+    // Named as /hooks names it, its program and script (the user's choice, 2026-11-10, terminal checklist).
+    const run = (event: string) => `${literal(`◆${event}hooknodehook.cjsforread_file·exit0·`)}\\d+ms`;
     const shown = squashed(frame.slice(frame.lastIndexOf("Last turn:")));
     const rewrite = literal('⎿checked⎿{"file_path":"b.txt"}');
     const unused = literal("⎿itsupdatedToolOutputwasnotused:itdoesnotmatchread_file'sresult");
@@ -9682,13 +9683,13 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
         "PreToolUse",
         "  protected paths guard · Edit|Write",
         "  jq · Bash",
-        "  log · ^mcp__ · 5 s",
+        "  log · ^mcp__ · 5 s · async",
         "SessionStart",
         "  recall\\u0007 · startup|resume|clear",
         "UserPromptSubmit",
         "  node block-prompt.js",
         "PostToolUse",
-        "  node.exe fail.js · Glob",
+        "  node fail.js · Glob",
         "  node sleep.js · Grep · 2 s",
         "SessionEnd",
         "  bye",
@@ -9992,10 +9993,15 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     mkdirSync(settingsDir(home), { recursive: true });
     writeFileSync(where, "{}");
     const { app } = await mount([], { home, live: { loaded: { settings: {}, warnings: [] }, given: {} }, hooks: [] });
-    writeFileSync(where, JSON.stringify({ hooks: { Notification: [{ hooks: [{ type: "command", command: "x" }] }] } }));
+    const audit = { type: "command", command: "node", args: [path.join(home, "audit.js")], if: "Bash(*)" };
+    writeFileSync(where, JSON.stringify({ hooks: { Notification: [{ hooks: [{ type: "command", command: "x" }] }], Stop: [{ hooks: [audit] }] } }));
     const warning = '"Notification" is not an event Tachikoma runs hooks at; its hooks were left out';
-    await untilSlowly(() => squashed(app.lastFrame()!).includes(squashed(`settings.json: "hooks": ${warning}`)));
+    const unchecked = '"Stop" has a hook with "if", which Tachikoma cannot check, so it was left out: ';
+    await untilSlowly(() => squashed(app.lastFrame()!).includes(squashed(`settings.json: "hooks": ${unchecked}node ${audit.args[0]}`)));
+    expect(squashed(app.lastFrame()!)).toContain(squashed(`settings.json: "hooks": ${warning}`));
     await type(app, "/hooks");
-    expect(app.lastFrame()).toContain(`No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  ${warning}\n`);
+    // The user's choice, 2026-11-10, terminal checklist: the left-out row names the hook as /hooks does; the warning above
+    // keeps its whole command.
+    expect(app.lastFrame()).toContain(`No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  ${warning}\n  ${unchecked}node audit.js\n`);
   });
 });

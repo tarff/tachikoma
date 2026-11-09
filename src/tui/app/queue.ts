@@ -11,7 +11,7 @@ import { listSessions } from "../../core/sessions.js";
 import { CANCELLED } from "../../core/shorten.js";
 import type { Task } from "../../core/tasks.js";
 import { errorText, type Provider } from "../../core/types.js";
-import type { Hook } from "../../hooks/config.js";
+import { hookName } from "../../hooks/answer.js";
 import { limitOf } from "../../hooks/hooks.js";
 import { KEYBINDINGS } from "../../keybindings.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
@@ -28,19 +28,6 @@ import {
   characters, COMMANDS, EXPORT_WORDS, FROM, gray, isCommand, names, NOT_GONE, reviewUnopened, SESSION_WORDS, SHORTEN_WORDS,
 } from "./constants.js";
 import type { UI } from "./state.js";
-
-// A hook as /hooks names it (the user's choice, 2026-11-10, terminal checklist): its statusMessage when it has one;
-// otherwise its program's file name, then the file name of the first later word that reads as a file, such as
-// `node block-prompt.js` for `node "C:/x y/block-prompt.js"`, or the program's alone. The words are the command and its
-// args, or, for a command a shell runs, its text split at spaces outside quotes, the quotes taken off. A word reads as a
-// file when it is not an option (`-x`) and its last part, after any / or \, is a name, a dot and an extension.
-const hookName = (h: Hook): string => {
-  if (h.statusMessage) return h.statusMessage;
-  const words = h.args ? [h.command, ...h.args] : [...h.command.matchAll(/"([^"]*)"|'([^']*)'|[^\s"']+/g)].map((m) => m[1] ?? m[2] ?? m[0]);
-  const last = (w: string) => w.split(/[\\/]/).at(-1)!;
-  const file = words.slice(1).find((w) => !w.startsWith("-") && /^\w[\w.-]*\.[A-Za-z0-9]+$/.test(last(w)));
-  return [last(words[0] ?? ""), ...(file ? [last(file)] : [])].join(" ");
-};
 
 export const queue = (ui: UI, fns: Fns) => {
   // Called without await, so nothing may escape: an unhandled rejection ends the program. The queue
@@ -243,17 +230,18 @@ export const queue = (ui: UI, fns: Fns) => {
     const t = ui.tasks.all.find((x) => x.id === verb);
     return t ? fns.recordOf(t) : [none(verb)];
   };
-  // `/hooks`: the hooks in force, read-only, by event in the file's order, each by its name (hookName, above), then its
-  // matcher when not every value and its own timeout when it sets one (the user's choice, 2026-11-10, terminal
-  // checklist), then the ones left out, in the approved words (release 8b plan, choice 25 and "Lines this plan adds").
-  // Hook text is escaped as the question escapes a command; the file is named as the launch names it (settings.ts, shownFile).
+  // `/hooks`: the hooks in force, read-only, by event in the file's order, each by its name (answer.ts, hookName), then
+  // its matcher when not every value, its own timeout when it sets one and `async` for an async one (the user's choice,
+  // 2026-11-10, terminal checklist), then the ones left out, in the approved words, each hook in them by its name too
+  // (settings.ts, hooksOf; release 8b plan, choice 25 and "Lines this plan adds"). Hook text is escaped as the question
+  // escapes a command; the file is named as the launch names it (settings.ts, shownFile).
   const hooksList = (): Line[] => {
     const { hooks, off, leftOut } = ui.hooks?.config ?? { hooks: [], off: false, leftOut: [] };
     if (off) return [gray(`Hooks are off: "disableAllHooks" is true in ${shownFile()}.`)];
     const events = new Map<string, string[]>();
     for (const h of hooks) {
       const matcher = "all" in h.matcher ? "" : ` · ${visible("names" in h.matcher ? h.matcher.names.join("|") : h.matcher.regex.source)}`;
-      const row = `  ${visible(hookName(h))}${matcher}${h.timeout === undefined ? "" : ` · ${limitOf(h)} s`}`;
+      const row = `  ${visible(hookName(h))}${matcher}${h.timeout === undefined ? "" : ` · ${limitOf(h)} s`}${h.async ? " · async" : ""}`;
       events.set(h.event, [...(events.get(h.event) ?? []), row]);
     }
     const listed = hooks.length

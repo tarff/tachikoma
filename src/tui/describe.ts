@@ -2,7 +2,7 @@ import { callText } from "../core/exportText.js";
 import { visible } from "../core/permissions.js";
 import { FEEDBACK } from "../core/session.js";
 import type { Message } from "../core/types.js";
-import { combine, commandOf } from "../hooks/answer.js";
+import { combine, hookName } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Run } from "../hooks/hooks.js";
 import { outputFrom, tachikomaName } from "../hooks/tools.js";
@@ -88,8 +88,9 @@ export function lastTurn(messages: Message[], runs: readonly Run[] = []): Line[]
 // The events a run of which names its tool on Ctrl+O, as each fires for one call.
 const TOOL_EVENTS: readonly Event[] = ["PreToolUse", "PostToolUse", "PostToolUseFailure"];
 
-// One hook run, in the approved words (release 8b plan, "Lines this plan adds", Ctrl+O): its event and command, escaped as
-// the question escapes a command, how it ended and its time; under it after ⎿ each text it handed the model (a Stop or
+// One hook run, in the approved words (release 8b plan, "Lines this plan adds", Ctrl+O): its event and the hook's name as
+// /hooks gives it (answer.ts, hookName; the user's choice, 2026-11-10, terminal checklist), escaped as the question
+// escapes a command, how it ended and its time; under it after ⎿ each text it handed the model (a Stop or
 // SubagentStop block's reason among them, which the model reads as feedback), its rewrite as JSON, or that its
 // updatedToolOutput was not used. A hook a signal ended names it, or says none is known, and a tool event's run names its
 // tool as the window does (the user's words, 2026-11-10; choice 10).
@@ -109,7 +110,7 @@ function runLine(r: Run): Line {
       ? [`its updatedToolOutput was not used: it does not match ${visible(tool)}'s result`]
       : []),
   ];
-  const head = [`◆ ${r.event} hook ${visible(commandOf(r.hook))}${forTool}`, end, `${ran.ms} ms`].join(" · ");
+  const head = [`◆ ${r.event} hook ${visible(hookName(r.hook))}${forTool}`, end, `${ran.ms} ms`].join(" · ");
   return { text: [head, ...under.map((u) => `  ⎿ ${u}`)].join("\n"), color: "gray" };
 }
 

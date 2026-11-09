@@ -5,7 +5,7 @@ import { type Network, NETWORKS, oneOf, SANDBOXES, type Sandbox, speedValue, sta
 import { SETTINGS, SETTINGS_DIR, settingsDir } from "./core/datadir.js";
 import { MODES, type Mode, OFFERED } from "./core/permissions.js";
 import { errorText } from "./core/types.js";
-import { type Hook, type HooksConfig, readHooks } from "./hooks/config.js";
+import { type Hook, type HooksConfig, readHooks, shortOf } from "./hooks/config.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { type Kind, KINDS, type UserRules } from "./safety/rules.js";
 import type { Segment } from "./tui/StatusLine.js";
@@ -14,13 +14,14 @@ import type { Segment } from "./tui/StatusLine.js";
 export { SETTINGS, settingsDir };
 
 // What the file gives the Hooks object (release 8b plan, Tasks 4 and 12), the launch and a live edit alike: the hooks,
-// whether disableAllHooks turns them off, and the warnings' words after `"hooks": `, for /hooks's left-out rows.
+// whether disableAllHooks turns them off, and the warnings' words after `"hooks": `, for /hooks's left-out rows, each hook
+// in them by its name (hooks/config.ts, shortOf).
 const HOOKS_ENTRY = `${SETTINGS}: "hooks": `;
 export function hooksOf(settings: Settings, warnings: string[]): HooksConfig {
   return {
     hooks: settings.hooks ?? [],
     off: settings.disableAllHooks === true,
-    leftOut: warnings.flatMap((w) => (w.startsWith(HOOKS_ENTRY) ? [w.slice(HOOKS_ENTRY.length)] : [])),
+    leftOut: warnings.flatMap((w) => (w.startsWith(HOOKS_ENTRY) ? [shortOf(warnings, w).slice(HOOKS_ENTRY.length)] : [])),
   };
 }
 

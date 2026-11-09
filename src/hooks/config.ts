@@ -1,4 +1,5 @@
 import { errorText } from "../core/types.js";
+import { hookName } from "./answer.js";
 
 // The hooks entry of the settings file, in Claude Code's shape, so a hook made for Claude Code works unchanged (release 8b
 // design, "The settings entry"). What Tachikoma cannot run is left out with a warning and the rest applies; a value of the
@@ -34,6 +35,13 @@ const texts = (value: unknown): value is string[] => Array.isArray(value) && val
 const MAX_TIMER_MS = 2_147_483_647;
 const MAX_SECONDS = Math.floor(MAX_TIMER_MS / 1000);
 const TIMEOUT = `a number of seconds above 0 and no more than ${MAX_SECONDS}, such as 30`;
+
+// /hooks's left-out rows name a hook as /hooks does (answer.ts, hookName) where its warning ends with its whole command;
+// the warnings said at launch and at a live edit keep the command (the user's choice, 2026-11-10, terminal checklist).
+// The short words are kept beside the list the warnings were pushed to, by its identity, so neither the warnings nor the
+// settings change shape; hooksOf (settings.ts) reads them, with the launch's or the live edit's list.
+const shortWords = new WeakMap<string[], Map<string, string>>();
+export const shortOf = (warnings: string[], warning: string) => shortWords.get(warnings)?.get(warning) ?? warning;
 
 const EXAMPLE = '{"type": "command", "command": "check.sh"}';
 const GROUP = `{"matcher": "Bash", "hooks": [${EXAMPLE}]}`;
@@ -97,7 +105,14 @@ function hookOf(place: string, h: unknown, warnings: string[]): Omit<Hook, "even
   if (typeof h.command !== "string") throw wrongType(field("command"), "text in quotes", h.command);
   const args = h.args;
   if (args !== undefined && !texts(args)) throw wrongType(field("args"), "a list of text in quotes", args);
-  const named = (words: string) => warnings.push(`${place} ${words}: ${[h.command, ...(args ?? [])].join(" ")}`);
+  const command = h.command;
+  const named = (words: string) => {
+    const said = `${place} ${words}: ${[command, ...(args ?? [])].join(" ")}`;
+    warnings.push(said);
+    const statusMessage = typeof h.statusMessage === "string" ? h.statusMessage : undefined;
+    const short = shortWords.get(warnings) ?? new Map<string, string>();
+    shortWords.set(warnings, short.set(said, `${place} ${words}: ${hookName({ command, args, statusMessage })}`));
+  };
   // Claude Code runs a hook with `if` only when its permission rule matches, which Tachikoma cannot check, and running it
   // every time would be wrong (release 8b design, "The settings entry").
   if ("if" in h) {

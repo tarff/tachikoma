@@ -52,6 +52,20 @@ const firstLine = (s: string) => s.trim().split(/\r?\n/)[0] ?? "";
 // A hook as its lines show it: its command with its args after it.
 export const commandOf = (hook: Hook) => [hook.command, ...(hook.args ?? [])].join(" ");
 
+// A hook as /hooks and Ctrl+O name it (the user's choice, 2026-11-10, terminal checklist): its statusMessage when it has
+// one; otherwise its program's file name, a trailing .exe dropped, then the file name of the first later word that reads
+// as a file, such as `node block-prompt.js` for `node "C:/x y/block-prompt.js"`, or the program's alone. The words are the
+// command and its args, or, for a command a shell runs, its text split at spaces outside quotes, the quotes taken off. A
+// word reads as a file when it is not an option (`-x`) and its last part, after any / or \, is a name, a dot and an
+// extension.
+export const hookName = (h: Pick<Hook, "command" | "args" | "statusMessage">): string => {
+  if (h.statusMessage) return h.statusMessage;
+  const words = h.args ? [h.command, ...h.args] : [...h.command.matchAll(/"([^"]*)"|'([^']*)'|[^\s"']+/g)].map((m) => m[1] ?? m[2] ?? m[0]);
+  const last = (w: string) => w.split(/[\\/]/).at(-1)!;
+  const file = words.slice(1).find((w) => !w.startsWith("-") && /^\w[\w.-]*\.[A-Za-z0-9]+$/.test(last(w)));
+  return [last(words[0] ?? "").replace(/\.exe$/i, ""), ...(file ? [last(file)] : [])].join(" ");
+};
+
 // One hook's answer. `bash` says Git Bash was found; it is read only when the Windows rule below could apply.
 export function outcomeOf(event: Event, hook: Hook, ran: Ran, platform: NodeJS.Platform = process.platform, bash?: boolean): Outcome {
   const command = commandOf(hook);

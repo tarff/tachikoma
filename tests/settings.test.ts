@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadSettings, readSettings, settingsDir, shownFile } from "../src/settings.js";
+import { hooksOf, loadSettings, readSettings, settingsDir, shownFile } from "../src/settings.js";
 
 const read = (data: unknown) => readSettings(JSON.stringify(data));
 const problem = (data: unknown) => {
@@ -286,6 +286,31 @@ describe("readSettings", () => {
       for (const bad of ["true", 1, null]) {
         expect(problem({ disableAllHooks: bad })).toBe(`settings.json: "disableAllHooks" must be true or false, without quotes (got ${JSON.stringify(bad)})`);
       }
+    });
+
+    // The user's choice, 2026-11-10, terminal checklist: /hooks's left-out rows name a hook as /hooks does (hookName); the
+    // warnings said at launch and at a live edit keep its whole command.
+    it("gives /hooks's left-out rows the hook's short name, and the warnings its whole command", () => {
+      const node = "C:\\Program Files\\nodejs\\node.exe";
+      const hooks = {
+        PreToolUse: [{ hooks: [
+          { type: "command", command: node, args: ["C:\\h\\audit.js"], if: "Bash(*)" },
+          { type: "command", command: "jq -r '.x' || exit 2", statusMessage: "guard", comment: "mine" },
+        ] }],
+        Notification: [],
+      };
+      const r = read({ hooks });
+      if ("problem" in r) throw new Error(r.problem);
+      expect(r.warnings).toEqual([
+        `settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: ${node} C:\\h\\audit.js`,
+        `settings.json: "hooks": "PreToolUse" has a hook with "comment", which is not a hook field; it was left out: jq -r '.x' || exit 2`,
+        'settings.json: "hooks": "Notification" is not an event Tachikoma runs hooks at; its hooks were left out',
+      ]);
+      expect(hooksOf(r.settings, r.warnings).leftOut).toEqual([
+        '"PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: node audit.js',
+        '"PreToolUse" has a hook with "comment", which is not a hook field; it was left out: guard',
+        '"Notification" is not an event Tachikoma runs hooks at; its hooks were left out',
+      ]);
     });
   });
 

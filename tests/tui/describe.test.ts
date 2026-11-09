@@ -89,6 +89,21 @@ describe("lastTurn", () => {
     ]);
   });
 
+  // The user's choice, 2026-11-10, terminal checklist: a run names its hook as /hooks does (hookName), not by its command.
+  it("names each hook run by its statusMessage, or its program and script", () => {
+    const base = { matcher: { all: true }, async: false } as const;
+    const ok = { kind: "ok" } as const;
+    const ran: Ran = { code: 0, stdout: "", stderr: "", ms: 12 };
+    const runs: Run[] = [
+      { event: "PreToolUse", hook: { ...base, event: "PreToolUse", command: "jq -r '.x | not'", statusMessage: "sfw guard", where: '"PreToolUse"' }, ran, outcome: ok, match: "Bash" },
+      { event: "Stop", hook: { ...base, event: "Stop", command: "C:\\Program Files\\nodejs\\node.exe", args: ["C:\\h\\check.js"], where: '"Stop"' }, ran, outcome: ok },
+    ];
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }], runs).slice(1).map((l) => l.text)).toEqual([
+      "◆ PreToolUse hook sfw guard for shell · exit 0 · 12 ms",
+      "◆ Stop hook node check.js · exit 0 · 12 ms",
+    ]);
+  });
+
   // The user's words, 2026-11-10: a run a signal ended names it, or says none is known; a tool event's run names its tool
   // as the window does (choice 10).
   it("names a hook run's signal, or says none is known, and a tool hook's tool by Tachikoma's name", () => {

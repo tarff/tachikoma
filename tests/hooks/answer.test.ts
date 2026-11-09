@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { combine, type Outcome, outcomeOf } from "../../src/hooks/answer.js";
+import { combine, hookName, type Outcome, outcomeOf } from "../../src/hooks/answer.js";
 import type { Event, Hook } from "../../src/hooks/config.js";
 import type { Ran } from "../../src/hooks/run.js";
 
@@ -199,6 +199,21 @@ describe("outcomeOf: the failure lines", () => {
   it("a shell-form hook is named by its command alone", () => {
     expect(answer("Stop", ranOf({ code: 1 }), hookOf({ command: "./check.sh --all", args: undefined }))).toEqual({
       kind: "failed", line: "./check.sh --all exited with code 1" });
+  });
+});
+
+// The short name /hooks and Ctrl+O give a hook (the user's choice, 2026-11-10, terminal checklist).
+describe("hookName", () => {
+  it.each<[string, Partial<Hook>, string]>([
+    ["its statusMessage", { statusMessage: "protected paths guard" }, "protected paths guard"],
+    ["the program and the script, from args", { command: "node", args: ["--no-warnings", "C:\\t\\check.js"] }, "node check.js"],
+    ["a trailing .exe dropped, any case", { command: "C:\\Program Files\\nodejs\\NODE.Exe", args: ["C:\\t\\fail.js"] }, "NODE fail.js"],
+    ["an empty statusMessage, as none", { command: "/usr/bin/node", args: ["x.test.mjs"], statusMessage: "" }, "node x.test.mjs"],
+    ["a shell command's quoted path", { command: 'bash "C:/a b/recall.sh" --quiet', args: undefined }, "bash recall.sh"],
+    ["a shell command with no file after it", { command: `jq -r '.tool_input.file_path | test("\\\\.git/")' || exit 2`, args: undefined }, "jq"],
+    ["the program alone", { command: "check", args: undefined }, "check"],
+  ])("%s", (_, fields, name) => {
+    expect(hookName(hookOf(fields))).toBe(name);
   });
 });
 
