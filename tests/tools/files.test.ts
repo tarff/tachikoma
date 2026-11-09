@@ -569,7 +569,7 @@ describe("the file tools through the Workspace", () => {
     let reads = 0;
     const stopping = { ...workspace, readText: async (abs: string) => (++reads === at && stop.abort(), workspace.readText(abs)) };
     const ctx = { ...(await tempContext("never")), root, workspace: stopping, signal: stop.signal, report: () => {} };
-    await expect(run(ctx)).rejects.toThrow();
+    await expect(run(ctx)).rejects.toHaveProperty("name", "AbortError");
     expect([files, calls.filter((c) => c.startsWith("writeText"))]).toEqual([{ [a]: "old" }, []]);
   });
 
