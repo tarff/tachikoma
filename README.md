@@ -1536,8 +1536,6 @@ Each is fixed in a later release, unless it says otherwise.
   tools work inside the box, where a link can lead only to what the box can see.
 - **On Windows, cancelling cannot stop a program whose shell has already exited.** Cancel still
   returns at once. On macOS and Linux it does stop it.
-- **On Windows, shell exit codes are only 0 or 1.** PowerShell reports only whether the last command
-  succeeded, so a program's own exit code is lost.
 - **On Windows, PowerShell error messages repeat the whole command**, including the line Tachikoma
   puts first to make the output UTF-8. The ways around it that were tried either lost the exit code or
   turned error messages into XML.
