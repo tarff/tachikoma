@@ -228,7 +228,9 @@ Each is marked in its task. The user approves them with the plan.
    file. It goes where Claude Code puts it: with the prompt (UserPromptSubmit), after the call's
    result (the tool events), at the start of the conversation's next request (SessionStart), in
    the subagent's first message (SubagentStart), and at the turn's end, which keeps the turn going
-   (Stop, SubagentStop). The judge never reads it (prompts take only the user's own words today).
+   (Stop, SubagentStop). At Stop and SubagentStop it is headed `Stop hook feedback:` instead, as
+   Claude Code's is (choice 8, Task 9). The judge never reads it (prompts take only the user's own
+   words today).
 7. **Text over 10,000 characters is cut,** with `[cut: <n> more characters]`, as a tool's long
    output is (design, "What a hook's answer does"); Claude Code writes it to a file instead.
 8. **A Stop hook's `additionalContext`** keeps the turn going, as a block does, as Claude Code's
@@ -326,7 +328,7 @@ command with its `args` after it, escaped as the question escapes a command.
 | SubagentStop kept a subagent going (grey) | `A SubagentStop hook kept <id> going: <reason>` (no reason, or `additionalContext` alone: `A SubagentStop hook kept <id> going.`; approved by the user, 2026-11-09) |
 | A background subagent stopped by a hook (to the lead, waking it as a failed one does) | `Background task <id> (<description>) was stopped by a hook: <stopReason>` (no reason: `Background task <id> (<description>) was stopped by a hook.`; approved by the user, 2026-11-09) |
 | The 8 blocks reached (grey) | `Stop hooks kept the turn going 8 times in a row; it ends here.` (for a subagent: `SubagentStop hooks kept <id> going 8 times in a row; it ends here.`) |
-| A Stop block's reason (to the model) | `Stop hook feedback:` then the reason on the next line |
+| A Stop block's reason (to the model) | `Stop hook feedback:` then the reason on the next line (no reason, at Stop and SubagentStop: `The hook gave no reason; carry on with the task.` on that line; approved by the user, 2026-11-09) |
 | PreCompact blocked (the 8a line's reason) | `a PreCompact hook blocked it: <reason>`, in `The conversation could not be shortened (<reason>); it is unchanged.` |
 | A hook's `systemMessage` (grey) | `<Event> hook: <message>` |
 | Text for the model's heading | `<Event> hook:` |
@@ -911,6 +913,10 @@ it: only a block, or a stop marked `unsent`, skips it.
 - **The kept-going line with nothing to name** (approved by the user, 2026-11-09): a block with no
   reason, and `additionalContext` alone, say `A Stop hook kept the turn going.` (a subagent's, `A
   SubagentStop hook kept <id> going.`); the hook's text for the model stays out of the line.
+- **A block with no reason** (exit 2 with no error output, or `decision: "block"` with no `reason`;
+  approved by the user, 2026-11-09) sends the model `Stop hook feedback:` then, on the next line,
+  `The hook gave no reason; carry on with the task.`, at SubagentStop too; `additionalContext`
+  alone sends its own text (Task 9's spec review).
 - **A background subagent a hook stopped** (approved by the user, 2026-11-09) tells the lead
   `Background task <id> (<description>) was stopped by a hook: <stopReason>` (no reason, ending
   `was stopped by a hook.`), waking it as a failed one does.

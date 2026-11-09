@@ -41,6 +41,9 @@ const stoppedTurn = (event: Event, reason: string) => (reason ? `A ${event} hook
 // Claude Code's hooks reference, "Stop input": Stop or SubagentStop blocks in a row, with no tool call between, before the
 // turn ends anyway (release 8b plan, "Numbers in this plan").
 const MAX_BLOCKS = 8;
+// What the model reads after "Stop hook feedback:" for a Stop or SubagentStop block with no reason (approved by the user,
+// 2026-11-09).
+const NO_REASON = "The hook gave no reason; carry on with the task.";
 // The grey lines for a Stop or SubagentStop hook keeping the turn going, its reason when it gave one, never the text for the
 // model (approved by the user, 2026-11-09), and for the turn ending at the limit; `id` names a subagent (release 8b plan,
 // "Lines this plan adds").
@@ -418,7 +421,8 @@ export class Session {
           bus.emit("hook-note", stoppedTurn(id ? "SubagentStop" : "Stop", c.stop));
           return { stopped: c.stop };
         }
-        const given = [...(c.block !== undefined ? [c.block] : []), ...c.context.map((x) => x.text)];
+        // A block with no reason tells the model to carry on (the user's choice, 2026-11-09).
+        const given = [...(c.block !== undefined ? [c.block || NO_REASON] : []), ...c.context.map((x) => x.text)];
         if (!given.length) return;
         // Both lines name the subagent already, so Tasks says them without its id in front (the user's choice, 2026-11-09).
         if (blocks === MAX_BLOCKS) return void bus.emit("hook-note", keptTooOften(id), true);

@@ -2203,6 +2203,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
   // it going, up to Claude Code's 8 in a row, and SubagentStart before a subagent's first request.
   const block = (reason: string) => JSON.stringify({ decision: "block", reason });
   const feedback = (text: string) => ({ type: "text", text: `Stop hook feedback:\n${text}`, from: "hooks" });
+  const NO_REASON = "The hook gave no reason; carry on with the task.";
   const kept = (reason: string) => `A Stop hook kept the turn going: ${reason}`;
   const EIGHT = "Stop hooks kept the turn going 8 times in a row; it ends here.";
   const replies = (n: number, from = 1) => Array.from({ length: n }, (_, i) => reply(`try ${from + i}`));
@@ -2225,7 +2226,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
 
   // The user's choice, 2026-11-09: with no reason to name, its own line, the hook's text for the model left out of it.
   it.each([
-    ["a block with no reason", JSON.stringify({ decision: "block" }), ""],
+    // The user's choice, 2026-11-09: the model is told to carry on.
+    ["a block with no reason", JSON.stringify({ decision: "block" }), NO_REASON],
     ["additionalContext alone", after("Stop", { additionalContext: "check the docs" }), "check the docs"],
   ])("keeps the turn going at a Stop hook's %s, saying so in its own line", async (_name, said, text) => {
     const s = await setup({ mode: "never", says: [{ event: "Stop", stdout: "", seq: [said] }], turns: [reply("done"), reply("again")] });
@@ -2319,12 +2321,15 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.notes).toEqual([...Array<string>(8).fill("A SubagentStop hook kept t1 going: again"), line]);
   });
 
-  it("says a SubagentStop hook kept a subagent going with no reason in its own line", async () => {
+  it.each([
+    ["a block with no reason", JSON.stringify({ decision: "block" }), NO_REASON],
+    ["additionalContext alone", after("SubagentStop", { additionalContext: "look again" }), "look again"],
+  ])("says a SubagentStop hook's %s kept a subagent going in its own line", async (_name, said, text) => {
     const worker = new FakeProvider("w", [reply("first"), reply("second")]);
-    const says: Says[] = [{ event: "SubagentStop", stdout: "", seq: [after("SubagentStop", { additionalContext: "look again" })] }];
+    const says: Says[] = [{ event: "SubagentStop", stdout: "", seq: [said] }];
     const s = await setup({ mode: "never", says, turns: [look, reply("ok")], worker });
     await s.session.send("go");
-    expect(worker.seen[1]!.at(-1)!.parts).toEqual([feedback("look again")]);
+    expect(worker.seen[1]!.at(-1)!.parts).toEqual([feedback(text)]);
     expect(s.notes).toEqual(["A SubagentStop hook kept t1 going."]);
   });
 
