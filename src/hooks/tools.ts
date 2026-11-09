@@ -26,9 +26,16 @@ export function pathsFor(root: string, box: { mode: "live" | "copy" } | null, pl
   // On Windows a whole path starting with one "/" can only be the box's, as Windows' own start with a drive or \\.
   const boxOwn = (p: string) => platform === "win32" && /^\/(?!\/)/.test(p);
   const outside = (p: string) => leaves(host.relative(root, p), host);
-  // Copy mode: hooks are sent the box's paths, so elsewhere a whole path is the box's too. On Windows the box would take
-  // a host path (C:\..., \\server\...) as a name in /work; one outside the project is refused (the user's choice).
-  if (box.mode === "copy") return { toHost: inBox, fromHost: (p) => (platform === "win32" && host.isAbsolute(p) && !boxOwn(p) && outside(p) ? null : p) };
+  const toBox = (p: string) => path.posix.join(BOX, ...host.relative(root, p).split(host.sep));
+  // Copy mode: hooks are sent the box's paths, so off Windows a whole path is the box's too. On Windows the box would take
+  // a host path (C:\..., \\server\...) as a name in /work, so one in the project becomes its place in the copy, the file
+  // the tool works on, and one outside it is refused (the user's choices, 2026-11-09).
+  if (box.mode === "copy") {
+    return {
+      toHost: inBox,
+      fromHost: (p) => (platform !== "win32" || !host.isAbsolute(p) || boxOwn(p) ? p : outside(p) ? null : toBox(p)),
+    };
+  }
   return {
     // A box path outside /work, such as /etc/hosts, is the box's own and has no place on the host, so it stays.
     toHost(p) {
@@ -39,7 +46,7 @@ export function pathsFor(root: string, box: { mode: "live" | "copy" } | null, pl
     // (the user's choice, 2026-11-09). One not whole is left for the tool to take as it would the model's.
     fromHost(p) {
       if (!host.isAbsolute(p) || boxOwn(p)) return p;
-      return outside(p) ? null : path.posix.join(BOX, ...host.relative(root, p).split(host.sep));
+      return outside(p) ? null : toBox(p);
     },
   };
 }

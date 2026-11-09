@@ -109,6 +109,14 @@ describe("pathsFor: the paths hooks see", () => {
     expect(fromClaude("read_file", { file_path: "/other/a.ts" }, HOST)).toEqual({ input: { path: "/other/a.ts" } });
   });
 
+  // The user's choice, 2026-11-09: its place in the copy, the file the tool works on.
+  it("in copy mode, turns a Windows host path in the project into its place in the copy", () => {
+    expect(COPY.fromHost("C:\\proj\\src\\a.ts")).toBe("/work/src/a.ts");
+    expect(COPY.fromHost("C:\\proj")).toBe("/work");
+    expect(fromClaude("edit_file", { file_path: "C:\\proj\\a.ts", old_string: "a", new_string: "b" }, COPY)).toEqual({
+      input: { path: "/work/a.ts", old_text: "a", new_text: "b" } });
+  });
+
   // The box resolves C:\other\a.ts against /work as one odd name in it, as in live link.
   it("in copy mode, refuses a Windows host path outside the project, and keeps the box's own paths", () => {
     expect(COPY.fromHost("C:\\other\\a.ts")).toBeNull();
@@ -117,6 +125,7 @@ describe("pathsFor: the paths hooks see", () => {
     expect(fromClaude("search_files", { pattern: "x", path: "\\\\server\\share" }, COPY)).toEqual({
       problem: '"path" is outside the project, which the sandbox cannot reach' });
     expect(COPY.fromHost("/etc/hosts")).toBe("/etc/hosts");
+    expect(COPY.fromHost("src\\a.ts")).toBe("src\\a.ts");
     // Off Windows, hooks are sent the box's paths in copy mode, so a whole path is the box's.
     expect(pathsFor("/proj", { mode: "copy" }, "linux").fromHost("/home/u/a.ts")).toBe("/home/u/a.ts");
   });

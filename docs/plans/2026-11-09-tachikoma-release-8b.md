@@ -596,7 +596,7 @@ Commit: `feat: the Hooks object: matching, running at once, the common fields, a
 ```ts
 export function toClaude(call: { name: string; input: unknown }, paths: Paths): { tool_name: string; tool_input: Record<string, unknown> };
 export function fromClaude(name: string, input: unknown, paths: Paths): { input: unknown } | { problem: string };
-export function responseOf(name: string, text: string, parts?: unknown): unknown;   // choice 11
+export function responseOf(name: string, text: string, parts?: unknown, paths?: Paths): unknown;   // choice 11; paths: below
 export function errorOf(name: string, text: string, parts?: unknown): string;       // choice 12
 export function outputFrom(name: string, value: unknown): string | null;             // choice 13; null: not used
 export interface Paths { toHost(p: string): string; fromHost(p: string): string | null }   // design, "Tool hooks"; null: outside, in the sandbox
@@ -624,10 +624,14 @@ export function pathsFor(root: string, box: { mode: "live" | "copy" } | null, pl
   the project, which the sandbox cannot reach` (`fromHost` gives null), as the box would take it
   as one odd name in `/work` (`C:\other\a.ts` becomes `/work/C:\other\a.ts`). In live link, any
   whole host path outside the project; off Windows a whole path there is the host's, as hooks are
-  sent host paths. In copy mode, a Windows host path (a drive or `\\`) outside the project; off
-  Windows a whole path there is the box's own, as hooks are sent the box's. On Windows a path
-  starting with one `/` is the box's in both. On the host, one outside the project goes to the
-  gate as now.
+  sent host paths. In copy mode, a Windows host path (a drive or `\\`) outside the project; one
+  inside it becomes its place in the copy (`C:\proj\x` becomes `/work/x`), the file the tool works
+  on; off Windows a whole path there is the box's own, as hooks are sent the box's. On Windows a
+  path starting with one `/` is the box's in both. On the host, one outside the project goes to
+  the gate as now.
+- **`responseOf` takes `paths`,** optional, beyond the interface first planned: Write's `filePath`
+  is then the path hooks see, as its `file_path` is; in live link `write_file` knows only the
+  `/work` path, and the result alone cannot say where that is on the host.
 
 **Tests:** every tool both ways, round-tripping; `/work` paths in live link and copy mode;
 backslashes on Windows (with `platform`); each `problem`; Bash's `error` starts `Exit code 1`;
