@@ -407,3 +407,12 @@ known limits gather every rarer case the build left as a limit.
   hook, as `~/.tachikoma` is not in the box, and that on the host a shell command you allowed could,
   the edit applying at once with its `Hooks changed` line. Release 8 now has five parts, 8e holding
   the events this design leaves to it.
+- **The whole-release review (2026-11-10).** `async` hooks still running when a `-p` run or the
+  window ends are killed, with all they started, so none keeps Tachikoma alive; SessionEnd's are
+  still waited for (the user's choice). Ctrl+O shows a new session's SessionStart runs, after `No
+  turn yet` and then first in the first turn's runs, and a prompt that starts no turn (blocked,
+  left unsent by `continue: false`, or stopped with Esc) leaves its list as it was (the user's
+  choices). A switch, `/branch` included, clears `prompt_id`, so SessionStart is sent none, as at a
+  launch (the user's choice). A PreCompact block's reason is escaped as every other hook line is.
+  The README's example hook names its script in full, as a path is read from the project folder
+  (the user's choice); four rarer points, and two from the fixes' review, became known limits.

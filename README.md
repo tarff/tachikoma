@@ -892,12 +892,16 @@ a repository you clone cannot run commands on your machine this way.
       { "matcher": "Bash", "hooks": [{ "type": "command", "command": "check.sh" }] },
       {
         "matcher": "Edit|Write",
-        "hooks": [{ "type": "command", "command": "node", "args": ["protect-paths.js"] }]
+        "hooks": [{ "type": "command", "command": "node ~/.tachikoma/hooks/protect-paths.js" }]
       }
     ]
   }
 }
 ```
+
+A path in a hook is read from the project folder unless it is a full one, so name your own scripts
+in full. Windows PowerShell does not turn `~` into your home folder for a program such as `node`, so
+a hook it runs names the folder as `$HOME`.
 
 - **The entry:** each event's name holds a list of `{ "matcher": ..., "hooks": [...] }`, and each
   hook is `{ "type": "command", "command": ... }`, with these fields, all optional:
@@ -984,7 +988,7 @@ every line still names the tool as Tachikoma does (`shell`, not `Bash`).
 | `edit_file` | `Edit` | `file_path`, `old_string`, `new_string` | the text the model reads |
 | `find_files` | `Glob` | `pattern` | the text the model reads |
 | `search_files` | `Grep` | `pattern`, `path`, `glob` | the text the model reads |
-| `delegate` | `Agent` | `description`, `prompt`, `run_in_background`, and `subagent_type`, always `"Explore"` | `{status: "completed", agentId, content: [{type: "text", text}]}` |
+| `delegate` | `Agent` | `description`, `prompt`, `run_in_background`, and `subagent_type`, always `"Explore"` | `{status: "completed", agentId, content: [{type: "text", text}]}`; for one started in the background, the text the model reads |
 | `todo` | `TodoWrite` | `todos: [{content, status}]`, `done` sent as `completed` | the text the model reads |
 
 A failed command's `error`, at PostToolUseFailure, starts `Exit code <n>`, then its error output,
@@ -1161,7 +1165,7 @@ Event by event:
   Hooks in force, from ~/.tachikoma/settings.json:
   PreToolUse
     Bash · check.sh · 600 s
-    Edit|Write · node protect-paths.js · 600 s
+    Edit|Write · node ~/.tachikoma/hooks/protect-paths.js · 600 s
   ```
 
   On Windows the file is named `~\.tachikoma\settings.json`. With none: `No hooks in force. They go
@@ -1925,10 +1929,12 @@ so.
   found on PATH)`, and a `.cmd` or `.bat` given by its full path cannot be started without a shell
   either. Leave out `args` to run one through the shell.
 - **A hook that leaves a program running in the background, holding its output,** is reported as
-  out of time, as its output never ends; redirect that program's output.
+  out of time, as its output never ends; redirect that program's output. On Windows that program
+  is not stopped then, if the hook itself has ended.
 - **A hook's output is read whole,** so a runaway hook's output is held in memory until its time
   limit ends it.
-- **A subagent's hook runs are kept for its whole life,** each hook's output held in memory.
+- **A subagent's hook runs are kept for its whole life,** each hook's output held in memory,
+  though Ctrl+O shows only the lead's.
 - **A turn stopped while hooks run** shows no line for a hook that had already failed, and Ctrl+O
   lists none of that turn's runs.
 - **In live link on Windows,** a backslash in a path the model gives is a folder separator to a
@@ -1951,6 +1957,8 @@ so.
   comes in the order the calls finish.
 - **Esc while a UserPromptSubmit hook runs** leaves that prompt's pictures marked sent, and its
   words are in the Up history as text only, so a picture in it must be added again.
+- **Esc while the first prompt waits for the SessionStart hooks** drops that prompt with no line
+  saying so; its words are in the Up history.
 - **A blocked prompt holding a picture numbered before a `/resume`** takes a new number when sent
   again, leaving a gap in the numbers, which is harmless.
 - **A picture marker can outlive its picture:** if you press Ctrl+G a second time while the first
@@ -1970,6 +1978,12 @@ so.
 - **Ctrl+O reads each run on its own,** so when one hook rewrites a call and another says
   `"continue": false` at the same event, it still shows the first one's rewrite, though the call was
   not run with it.
+- **`Git Bash was not found...` shows only at launch,** not when a live edit adds a hook that a
+  shell runs; that hook runs in Windows PowerShell all the same.
+- **An `async` SessionStart hook that ends after the first prompt is sent** is not in Ctrl+O's
+  list for that turn.
+- **On Windows, `async` hooks still running at exit are stopped one after another,** each taking 2
+  to 4 seconds, so several can hold up the exit.
 
 ## What comes next
 
