@@ -9656,16 +9656,22 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(shown).toMatch(new RegExp(`fromb${run("PreToolUse")}${rewrite}${run("PostToolUse")}${unused}`));
   });
 
-  // Choice 25: the list, printed once into the conversation, as /tasks prints its list.
-  it("lists the hooks in force on /hooks, by event, with the ones left out", async () => {
+  // Choice 25: the list, printed once into the conversation, as /tasks prints its list. Each hook by its name, its matcher
+  // when not every value, and its own timeout (the user's choice, 2026-11-10, terminal checklist).
+  it("lists the hooks in force on /hooks, by event, each by its name, with the ones left out", async () => {
     const leftOut = ['"Notification" is not an event Tachikoma runs hooks at; its hooks were left out'];
     const hook = (event: HookEvent, matcher: Hook["matcher"], command: string, more: Partial<Hook> = {}): Hook => ({
       event, matcher, command, async: false, where: JSON.stringify(event), ...more,
     });
+    const jq = `jq -r '.tool_input.command | test("^(npm|pnpm) (i|install)\\\\b") | not' | grep -q true || exit 2`;
     const hooks = [
-      hook("PreToolUse", { names: ["Read", "Write"] }, "check.sh"),
+      hook("PreToolUse", { names: ["Edit", "Write"] }, jq, { statusMessage: "protected paths guard" }),
+      hook("PreToolUse", { names: ["Bash"] }, jq),
       hook("PreToolUse", { regex: /^mcp__/ }, "log", { args: ["--all"], timeout: 5, async: true }),
-      hook("UserPromptSubmit", { all: true }, "guard"),
+      hook("SessionStart", { names: ["startup", "resume", "clear"] }, 'bash "C:/a b/recall.sh" --quiet', { statusMessage: "recall\u0007" }),
+      hook("UserPromptSubmit", { all: true }, 'node "C:/x y/block-prompt.js"'),
+      hook("PostToolUse", { names: ["Glob"] }, "C:\\Program Files\\nodejs\\node.exe", { args: ["--no-warnings", "C:\\t\\fail.js"], statusMessage: "" }),
+      hook("PostToolUse", { names: ["Grep"] }, "node", { args: ["sleep.js"], timeout: 2 }),
       hook("SessionEnd", { all: true }, "bye"),
     ];
     const { app } = await mount([], { hooks: { hooks, off: false, leftOut } });
@@ -9674,12 +9680,18 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       [
         `Hooks in force, from ${shownFile()}:`,
         "PreToolUse",
-        "  Read|Write · check.sh · 600 s",
-        "  ^mcp__ · log --all · 5 s · async",
+        "  protected paths guard · Edit|Write",
+        "  jq · Bash",
+        "  log · ^mcp__ · 5 s",
+        "SessionStart",
+        "  recall\\u0007 · startup|resume|clear",
         "UserPromptSubmit",
-        "  * · guard · 30 s",
+        "  node block-prompt.js",
+        "PostToolUse",
+        "  node.exe fail.js · Glob",
+        "  node sleep.js · Grep · 2 s",
         "SessionEnd",
-        "  * · bye · 1.5 s",
+        "  bye",
         "Left out:",
         `  ${leftOut[0]}`,
       ].join("\n"),
