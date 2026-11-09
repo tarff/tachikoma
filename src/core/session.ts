@@ -41,6 +41,9 @@ const stoppedTurn = (event: Event, reason: string) => (reason ? `A ${event} hook
 // Claude Code's hooks reference, "Stop input": Stop or SubagentStop blocks in a row, with no tool call between, before the
 // turn ends anyway (release 8b plan, "Numbers in this plan").
 const MAX_BLOCKS = 8;
+// The heading of what a Stop or SubagentStop hook hands the model (release 8b plan, choice 8): Ctrl+O's last turn reads it
+// (tui/describe.ts, lastTurn).
+export const FEEDBACK = "Stop hook feedback:";
 // What the model reads after "Stop hook feedback:" for a Stop or SubagentStop block with no reason (approved by the user,
 // 2026-11-09).
 const NO_REASON = "The hook gave no reason; carry on with the task.";
@@ -415,7 +418,8 @@ export class Session {
         // The turn's normal end (release 8b design, "The events"): a block, or text for the model, keeps it going, the
         // model reading it next, as Claude Code's "Stop hook feedback" (choice 8), until the limit in a row.
         const c = hooks ? await this.#stop(hooks, turn.parts, kept, signal) : undefined;
-        if (!c) return;
+        // A stop as they answered sends nothing more, as any stop does (Task 9's code review).
+        if (!c || signal?.aborted) return;
         const id = this.opts.subagent ? this.id : undefined;
         if (c.stop !== undefined) {
           bus.emit("hook-note", stoppedTurn(id ? "SubagentStop" : "Stop", c.stop));
@@ -429,7 +433,7 @@ export class Session {
         blocks++;
         kept = true;
         bus.emit("hook-note", keptGoing(id, c.block ?? ""), true);
-        const said: Part[] = given.map((text) => ({ type: "text", text: `Stop hook feedback:\n${text}`, from: "hooks" }));
+        const said: Part[] = given.map((text) => ({ type: "text", text: `${FEEDBACK}\n${text}`, from: "hooks" }));
         this.#push({ role: "user", parts: [...said, ...this.#waiting()] });
         when = "during";
         shortened = false;
@@ -786,7 +790,8 @@ export class Session {
   // Undefined when the user's stop ended its hooks (run.ts).
   async #stop(hooks: Hooks, reply: Part[], active: boolean, signal?: AbortSignal): Promise<Combined | undefined> {
     const last_assistant_message = reply.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
-    // Each background subagent running or waiting, as choice 21 gives it; crons Tachikoma has none of (design).
+    // Each background subagent running or waiting, as choice 21 gives it: one waiting for a place is reported "running" on
+    // purpose, as that choice says. Crons Tachikoma has none of (design).
     const background_tasks = (this.opts.tasks?.all ?? [])
       .filter((t) => t.background && (t.state === "running" || t.state === "waiting"))
       .map((t) => ({ id: t.id, type: "agent", status: "running", description: t.description, agent_type: "Explore" }));

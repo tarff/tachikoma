@@ -322,11 +322,11 @@ command with its `args` after it, escaped as the question escapes a command.
 | A hook stopped the turn (grey) | `A <Event> hook stopped the turn: <stopReason>` (no reason: `A <Event> hook stopped the turn.`) |
 | A call not run after a stop (to the model) | `Not run: a hook stopped the turn.` |
 | A call running when a hook stopped the turn (to the model) | `Stopped: a hook stopped the turn.` (approved by the user, 2026-11-09) |
-| A subagent stopped by a hook (its result) | `<id> was stopped by a hook: <stopReason>` (no reason: `<id> was stopped by a hook.`) |
+| A subagent stopped by a hook (its result) | `<id> was stopped by a hook: <stopReason>` (no reason: `<id> was stopped by a hook.`); at SubagentStop, after its answer, the answer then this line on a line of its own (approved by the user, 2026-11-09) |
 | UserPromptSubmit blocked (grey) | `A UserPromptSubmit hook blocked the prompt: <reason>` (no reason: `A UserPromptSubmit hook blocked the prompt.`; approved by the user, 2026-11-09) then, in the window, `Your words are back in the prompt box.`; a stop at UserPromptSubmit also puts the words back, its own line (`A UserPromptSubmit hook stopped the turn: <stopReason>`) then this one (approved by the user, 2026-11-09) |
 | Stop kept the turn going (grey) | `A Stop hook kept the turn going: <reason>` (a block with no reason, or `additionalContext` alone: `A Stop hook kept the turn going.`, the hook's text for the model left out; approved by the user, 2026-11-09) |
 | SubagentStop kept a subagent going (grey) | `A SubagentStop hook kept <id> going: <reason>` (no reason, or `additionalContext` alone: `A SubagentStop hook kept <id> going.`; approved by the user, 2026-11-09) |
-| A background subagent stopped by a hook (to the lead, waking it as a failed one does) | `Background task <id> (<description>) was stopped by a hook: <stopReason>` (no reason: `Background task <id> (<description>) was stopped by a hook.`; approved by the user, 2026-11-09) |
+| A background subagent stopped by a hook (to the lead, waking it as a failed one does) | `Background task <id> (<description>) was stopped by a hook: <stopReason>` (no reason: `Background task <id> (<description>) was stopped by a hook.`; approved by the user, 2026-11-09); at SubagentStop, after its answer: `Background task <id> (<description>) finished:`, then the answer, cut at 30,000 characters as a finished one's is, then `<id> was stopped by a hook: <stopReason>` (no reason: `<id> was stopped by a hook.`), waking the lead too (approved by the user, 2026-11-09) |
 | The 8 blocks reached (grey) | `Stop hooks kept the turn going 8 times in a row; it ends here.` (for a subagent: `SubagentStop hooks kept <id> going 8 times in a row; it ends here.`) |
 | A Stop block's reason (to the model) | `Stop hook feedback:` then the reason on the next line (no reason, at Stop and SubagentStop: `The hook gave no reason; carry on with the task.` on that line; approved by the user, 2026-11-09) |
 | PreCompact blocked (the 8a line's reason) | `a PreCompact hook blocked it: <reason>`, in `The conversation could not be shortened (<reason>); it is unchanged.` |
@@ -917,6 +917,18 @@ it: only a block, or a stop marked `unsent`, skips it.
   approved by the user, 2026-11-09) sends the model `Stop hook feedback:` then, on the next line,
   `The hook gave no reason; carry on with the task.`, at SubagentStop too; `additionalContext`
   alone sends its own text (Task 9's spec review).
+- **A SubagentStop stop keeps the subagent's answer** (approved by the user, 2026-11-09, at Task 9's
+  code review): the result is the answer, then `<id> was stopped by a hook: <stopReason>` on a line
+  of its own; its state stays `stopped`. A stop at PreToolUse or PostToolUse comes before any
+  answer, so the line is the result alone. A background one's message to the lead (approved by the
+  user, 2026-11-09) is then `Background task <id> (<description>) finished:`, the answer cut at
+  30,000 characters as a finished one's is, and `<id> was stopped by a hook: <stopReason>` on the
+  next line, waking the lead.
+- **Task 9's code review:** a stop as the Stop hooks answer sends nothing more. Ctrl+O's last turn
+  takes a Stop hook's feedback as part of the turn it kept going: a user message whose first part
+  is hook text starting `Stop hook feedback:` starts no turn (`FEEDBACK`, session.ts), while
+  background answers alone still start one, as before (the controller's choice over skipping every
+  message of hook or waiting text alone, which would have broken that).
 - **A background subagent a hook stopped** (approved by the user, 2026-11-09) tells the lead
   `Background task <id> (<description>) was stopped by a hook: <stopReason>` (no reason, ending
   `was stopped by a hook.`), waking it as a failed one does.
@@ -1064,7 +1076,10 @@ section).
   words in the Up history as text only, so a picture in it must be added again; and one from its
   last re-check: with two Ctrl+G presses while the first waits for the terminal, words held by the
   first skip a failed picture read's cleanup and may keep a dead `[Image #n]` marker (very rare);
-  the release list with 8 in five
+  and two from Task 9's code review: the limit of 8 counts Stop blocks in a row, so a model that
+  calls a tool between blocks can be kept going without end (Esc stops it in the window, Ctrl-C in
+  `-p`); a turn shortened while Stop hooks keep it going puts their feedback under "The latest round
+  of tool calls, and their results:" in the shortened message; the release list with 8 in five
   parts, 8e added; `/hooks` in the commands list; and, in "Headless runs", the `--json` bullet
   (README.md:1116, "prints one line per event: `message`, `usage`, `error` and `lead`") gains
   `hook-note`, each hook's grey line (Task 8, the user's choice, 2026-11-09).

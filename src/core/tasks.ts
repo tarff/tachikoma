@@ -37,6 +37,10 @@ export interface Task {
   done: Promise<Result>;
 }
 
+// What #work adds for a hook's stop, for #run's message to the lead: the stopReason, and when the stop came after the
+// answer, the answer and the stop's line apart.
+type HookStop = { hook?: string; answer?: string; line?: string };
+
 export interface TasksOptions {
   bus: Bus; // the lead's: subagents' spend and errors are reported there, marked with the subagent
   max: number; // --max-tasks
@@ -179,8 +183,8 @@ export class Tasks {
     const result = (await this.#place(signal)) ? await this.#work(t, provider, fallback, signal, own) : null;
     const stopped = this.#stops.get(t.id)!;
     // A hook's stop comes with its own result and its stopReason (#work).
-    const byUser = stopped.byUser ? " by the user before it finished" : "";
-    const { hook, ...r }: Result & { hook?: string } = result ?? { state: "stopped", text: `${t.id} was stopped${byUser}.` };
+    const byWhom = stopped.byUser ? " by the user before it finished" : ""; // the words, said after "was stopped"
+    const { hook, answer, line, ...r }: Result & HookStop = result ?? { state: "stopped", text: `${t.id} was stopped${byWhom}.` };
     // How it ended, when the lead was told it failed or was stopped, waiting or running, so a resumed session never
     // reports it lost (release 8a plan, choice 4). A finished one's answer, its last reply, says so already.
     if (r.state !== "done") own?.write({ t: "ended", state: r.state });
@@ -191,21 +195,26 @@ export class Tasks {
     const { id } = t;
     if (t.background && r.state === "done") this.#inbox.push({ id, text: `${name} finished:\n${truncate(r.text)}`, wake: true });
     if (t.background && r.state === "failed") this.#inbox.push({ id, text: `${name} failed: ${r.text}`, wake: true });
-    // Waking the lead, as a failure does (the user's choice, 2026-11-09).
-    if (t.background && hook !== undefined) this.#inbox.push({ id, text: `${name} was stopped by a hook${hook ? `: ${hook}` : "."}`, wake: true });
+    // Waking the lead, as a failure does; after an answer, the answer as a finished one's, then the stop's line (the user's
+    // choices, 2026-11-09).
+    if (t.background && hook !== undefined) {
+      const text = answer !== undefined ? `${name} finished:\n${truncate(answer)}\n${line}` : `${name} was stopped by a hook${hook ? `: ${hook}` : "."}`;
+      this.#inbox.push({ id, text, wake: true });
+    }
     if (t.background && r.state === "stopped" && stopped.byUser) this.#inbox.push({ id, text: `${name} was stopped by the user before it finished.`, wake: false });
     this.#changed();
     return r;
   }
 
-  // Null when it was stopped, by the user or the lead's turn; a hook's stop has its own result, with `hook` its stopReason.
+  // Null when it was stopped, by the user or the lead's turn; a hook's stop has its own result, with `hook` its stopReason,
+  // and when it came after the answer, `answer` and the stop's `line` apart.
   async #work(
     t: Task,
     provider: Provider,
     fallback: Provider | undefined,
     signal: AbortSignal,
     own: Transcript | undefined,
-  ): Promise<(Result & { hook?: string }) | null> {
+  ): Promise<(Result & HookStop) | null> {
     const bus = new Bus();
     let failure: ErrorEvent | undefined;
     bus.on("usage", (u) => {
@@ -270,13 +279,16 @@ export class Tasks {
       this.#release();
     }
     if (signal.aborted) return null;
-    // A hook's continue: false in its session, at any of its events, ends it as stopped, never the lead's turn (release 8b
-    // design, "What a hook's answer does").
-    if (ended && "stopped" in ended) {
-      return { state: "stopped", text: `${t.id} was stopped by a hook${ended.stopped ? `: ${ended.stopped}` : "."}`, hook: ended.stopped };
-    }
     const last = session.messages.at(-1);
     const text = last?.role === "assistant" ? last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n") : "";
+    // A hook's continue: false in its session, at any of its events, ends it as stopped, never the lead's turn (release 8b
+    // design, "What a hook's answer does"). At SubagentStop it came after the answer, which is kept, the stop's line after
+    // it (the user's choice, 2026-11-09); a stop during a round of calls leaves no answer.
+    if (ended && "stopped" in ended) {
+      const line = `${t.id} was stopped by a hook${ended.stopped ? `: ${ended.stopped}` : "."}`;
+      if (!text.trim()) return { state: "stopped", text: line, hook: ended.stopped };
+      return { state: "stopped", text: `${text}\n${line}`, hook: ended.stopped, answer: text, line };
+    }
     if (text.trim() && !failure) return { state: "done", text };
     return { state: "failed", text: failure?.message ?? "it ended without an answer" };
   }

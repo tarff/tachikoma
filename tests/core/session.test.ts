@@ -1428,7 +1428,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     return dir;
   }
   // The hook appends its input to the file named by its first argument, as SCRIPT's does, then prints the answer its second,
-  // a JSON list, gives for this firing of its event: the first the first time, and nothing once the list is used up.
+  // a JSON list, gives for this firing of its event: the first the first time, and nothing once the list is used up. It counts
+  // every input of its event in the file, so a test gives each event one such hook at most.
   const SEQ = `const fs = require("fs");
 const [out, answers] = process.argv.slice(2);
 let text = "";
@@ -2348,11 +2349,71 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect([s.tasks!.wakes(), s.tasks!.take()]).toEqual([true, [told]]);
   });
 
-  // Task 7's build: a subagent a hook stops ends as stopped, with its own result, never as failed.
+  // The user's choice, 2026-11-09: a SubagentStop stop came after the answer, which the lead gets as a finished one's, cut
+  // at the same size, the stop's line after it.
+  it.each([
+    ["enough", "t1 was stopped by a hook: enough"],
+    [undefined, "t1 was stopped by a hook."],
+  ] as const)("gives the lead a background subagent's answer, then the stop's line, when a SubagentStop hook stops it (reason %s)", async (reason, line) => {
+    const long = "x".repeat(MAX_TOOL_OUTPUT + 5);
+    const worker = new FakeProvider("w", [reply(long)]);
+    const turns = [callTool("c1", "delegate", { description: "look", task: "find x", background: true }), reply("started it")];
+    const s = await setup({ mode: "never", says: [{ event: "SubagentStop", stdout: stops(reason) }], turns, worker });
+    await s.session.send("go");
+    expect(await s.tasks!.all[0]!.done).toEqual({ state: "stopped", text: `${long}\n${line}` });
+    const told = `Background task t1 (look) finished:\n${"x".repeat(MAX_TOOL_OUTPUT)}\n[cut: 5 more characters]\n${line}`;
+    expect([s.tasks!.wakes(), s.tasks!.take()]).toEqual([true, [told]]);
+  });
+
+  // Task 9's code review: a stop that comes as the Stop hooks answer, or while they run, sends nothing more.
+  it("ends the turn, sending no feedback and saying no line for the block, when the user stops it as a Stop hook blocks", async () => {
+    const stop = new AbortController();
+    const says: Says[] = [{ event: "Stop", stdout: JSON.stringify({ decision: "block", reason: "go on", systemMessage: "checking" }) }];
+    const s = await setup({ mode: "never", says, turns: [reply("done"), reply("again")] });
+    s.bus.on("hook-note", (line) => void (line === "Stop hook: checking" && stop.abort())); // as Esc is pressed
+    expect(await s.session.send("go", stop.signal)).toBeUndefined();
+    expect([s.lead.seen.length, s.notes, s.session.messages.length]).toEqual([1, ["Stop hook: checking"], 2]);
+  });
+
+  it("ends the turn, sending nothing more, when the user stops it while a Stop hook runs", async () => {
+    const root = await folder();
+    const abort = new AbortController();
+    const says: Says[] = [{ event: "Stop", stdout: block("go on"), go: path.join(root, "never-made") }];
+    const s = await setup({ mode: "never", root, says, turns: [reply("done"), reply("again")] });
+    const sent = s.session.send("go", abort.signal);
+    // Up to 10 s for the hook's process to start, as for UserPromptSubmit above.
+    for (let i = 0; !s.inputs().length; i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+    abort.abort();
+    expect(await sent).toBeUndefined();
+    expect([s.lead.seen.length, s.notes, s.session.messages.length, s.errors]).toEqual([1, [], 2, []]);
+  });
+
+  it("stops a subagent the user stops while its SubagentStart hook runs, sending it nothing", async () => {
+    const root = await folder();
+    const worker = new Held("fake:w");
+    const says: Says[] = [{ event: "SubagentStart", stdout: "", go: path.join(root, "never-made") }];
+    const s = await setup({ mode: "never", root, says, turns: [look, reply("ok")], worker });
+    const sent = s.session.send("go");
+    for (let i = 0; !s.inputs().length; i++) {
+      if (i === 500) throw new Error("the hook never started");
+      await pause(20);
+    }
+    expect(s.tasks!.stop("t1")).toBe(true);
+    await sent;
+    expect(s.results()).toEqual([{ output: "t1 was stopped by the user before it finished.", isError: false }]);
+    expect([worker.asked.length, s.tasks!.all[0]!.messages, s.tasks!.all[0]!.state]).toEqual([0, [], "stopped"]);
+  });
+
+  // Task 7's build: a subagent a hook stops ends as stopped, with its own result, never as failed. At SubagentStop the stop
+  // comes after its answer, which is kept, the stop's line after it (the user's choice, 2026-11-09).
   it.each<[Event, string | undefined, string]>([
     ["PreToolUse", "enough", "t1 was stopped by a hook: enough"],
     ["PostToolUse", undefined, "t1 was stopped by a hook."],
-    ["SubagentStop", "enough", "t1 was stopped by a hook: enough"],
+    ["SubagentStop", "enough", "found it\nt1 was stopped by a hook: enough"],
+    ["SubagentStop", undefined, "found it\nt1 was stopped by a hook."],
   ])("stops a subagent at a %s hook's continue: false (reason %s) with its result, leaving the lead's turn going", async (event, reason, result) => {
     const root = await folder();
     writeFileSync(path.join(root, "a.txt"), "A\n");

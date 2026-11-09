@@ -630,16 +630,29 @@ describe("tachi", { timeout: 15_000 }, () => {
 
   // Release 8b plan, Task 9 (Task 8's code review): a Stop hook's continue: false comes after the model's final answer, so
   // -p still prints that answer, then fails the run with its line, as any hook's continue: false does (choice 9).
-  it("with -p, prints the answer a Stop hook's continue: false came after, and fails the run with its line", async () => {
+  const keptEight = `${"note: A Stop hook kept the turn going: again\n".repeat(8)}note: Stop hooks kept the turn going 8 times in a row; it ends here.\n`;
+  it.each([
+    [
+      "prints the answer a Stop hook's continue: false came after, and fails the run with its line",
+      { continue: false, stopReason: "enough" },
+      1,
+      1,
+      "note: A Stop hook stopped the turn: enough\n",
+    ],
+    // Task 9's code review: the turn ends at the limit as a normal end does, so the run does not fail.
+    ["prints the answer and exits 0 when Stop hooks keep the turn going 8 times in a row", { decision: "block", reason: "again" }, 0, 9, keptEight],
+  ])("with -p, %s", async (_name, said, code, requests, stderr) => {
     const top = mkdtempSync(path.join(tmpdir(), "tachi-cli-hook-"));
     onTestFinished(() => removeTree(top));
     const proj = path.join(top, "proj");
     mkdirSync(proj);
     const script = path.join(top, "hook.cjs");
-    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify({ continue: false, stopReason: "enough" }))});`);
+    writeFileSync(script, `process.stdout.write(${JSON.stringify(JSON.stringify(said))});`);
     const hooks = { Stop: [{ hooks: [{ type: "command", command: process.execPath, args: [script] }] }] };
+    let asked = 0;
     const server = http.createServer((req, res) => {
       req.resume().on("end", () => {
+        asked++;
         const choice = { index: 0, finish_reason: "stop", message: { role: "assistant", content: "The notes are made up." } };
         const usage = { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 };
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: "r", object: "chat.completion", created: 0, model: "lead", choices: [choice], usage }));
@@ -653,7 +666,8 @@ describe("tachi", { timeout: 15_000 }, () => {
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
     const env = { cwd: proj, OPENAI_API_KEY: "x", OPENAI_BASE_URL: url, ...homeWith(JSON.stringify({ hooks })) };
     const r = await tachiLater("--lead", "openai:lead", "-p", "read the notes", env);
-    expect(r).toEqual({ code: 1, stdout: "The notes are made up.\n", stderr: "note: A Stop hook stopped the turn: enough\n" });
+    expect(r).toEqual({ code, stdout: "The notes are made up.\n", stderr });
+    expect(asked).toBe(requests);
   });
 
   // Port 9, as above: the run gets as far as asking the model and fails there, with nothing sent anywhere.

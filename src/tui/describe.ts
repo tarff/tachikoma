@@ -1,5 +1,6 @@
 import { callText } from "../core/exportText.js";
 import { visible } from "../core/permissions.js";
+import { FEEDBACK } from "../core/session.js";
 import type { Message } from "../core/types.js";
 import { marker } from "./pictures.js";
 
@@ -68,9 +69,11 @@ export const conversationLines = (messages: Message[]): Line[] => messages.flatM
 
 // Ctrl+O: every tool call of the latest turn, from its prompt on, with its full input and result,
 // under a heading. A call of a turn still running may have no result yet. A turn starts with a user
-// message that is not tool results: a prompt, or background answers alone.
+// message that is not tool results: a prompt, or background answers alone; never a Stop hook's feedback, which keeps
+// the turn going (release 8b plan, Task 9's code review).
 export function lastTurn(messages: Message[]): Line[] {
-  const start = messages.findLastIndex((m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result"));
+  const feedback = (m: Message) => m.parts[0]?.type === "text" && m.parts[0].from === "hooks" && m.parts[0].text.startsWith(`${FEEDBACK}\n`);
+  const start = messages.findLastIndex((m) => m.role === "user" && !m.parts.some((p) => p.type === "tool_result") && !feedback(m));
   if (start === -1) return [{ text: "No turn yet, so no tool calls to show.", color: "gray" }];
   const calls = callLines(messages.slice(start));
   return [{ text: `Last turn: ${calls.length} tool call${calls.length === 1 ? "" : "s"}`, color: "gray" }, ...calls];
