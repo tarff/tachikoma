@@ -900,17 +900,64 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
   const big = "x".repeat(600);
   const cutAtWindow = { ...reply("half a repl"), cutOff: { kind: "window" as const, detail: "The conversation filled the context window" } };
 
-  async function setup(lead: Provider, more: Partial<ConstructorParameters<typeof Session>[0]> = {}) {
+  // Release 8b plan, Task 11: the hooks around a shortening. Each is a Node script in a folder of the test's own, run in
+  // exec form, which appends its input to the file named by its first argument, writes its fourth to its error output and
+  // its second to its output, and exits with its third. The folder is also the hooks' project root.
+  const HOOK = `const fs = require("fs");
+const [out, stdout, code, stderr] = process.argv.slice(2);
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.appendFileSync(out, text + "\\n");
+  process.stderr.write(stderr);
+  process.stdout.write(stdout);
+  process.exit(Number(code));
+});`;
+  // `names` the values it matches (a trigger, a source), every one unless given.
+  type Said = { event: Event; stdout?: string; code?: number; stderr?: string; names?: string[] };
+  function hooksOf(said: Said[], bus: Bus) {
+    const root = path.join(top, `hooks${++n}`);
+    mkdirSync(root, { recursive: true });
+    const script = path.join(root, "hook.cjs");
+    writeFileSync(script, HOOK);
+    const out = path.join(root, "inputs.jsonl");
+    const hooks: Hook[] = said.map((h) => ({
+      event: h.event,
+      matcher: h.names ? { names: h.names } : { all: true },
+      command: process.execPath,
+      args: [script, out, h.stdout ?? "", String(h.code ?? 0), h.stderr ?? ""],
+      async: false,
+      where: `"${h.event}"`,
+    }));
+    const where: Where = { sessionId: () => "s1", transcript: () => undefined, root, mode: () => "never", effort: () => undefined, lead: () => "fake:a" };
+    const inputs = () => (existsSync(out) ? readFileSync(out, "utf8").split("\n").slice(0, -1).map((l) => JSON.parse(l) as Record<string, unknown>) : []);
+    return { hooks: new Hooks({ hooks, off: false, leftOut: [] }, where, bus), inputs };
+  }
+
+  // With `said`, the session has those hooks.
+  async function setup(lead: Provider, more: Partial<ConstructorParameters<typeof Session>[0]> = {}, said?: Said[]) {
     const bus = new Bus();
     const errors = collectErrors(bus);
     const summaries: string[] = [];
     bus.on("shortened", (s) => summaries.push(s));
     const usages: Events["usage"][0][] = [];
     bus.on("usage", (u) => usages.push(u));
+    const notes: string[] = [];
+    bus.on("hook-note", (line) => notes.push(line));
+    const hooked = said ? hooksOf(said, bus) : undefined;
     const transcript = saving();
     const ctx = await tempContext();
-    const session = new Session({ lead, tools: [echo], system: "t", systemNow: async () => "t, read again", ctx, bus, transcript, ...more });
-    return { session, bus, errors, summaries, usages, transcript };
+    const session = new Session({
+      lead,
+      tools: [echo],
+      system: "t",
+      systemNow: async () => "t, read again",
+      ctx,
+      bus,
+      transcript,
+      ...(hooked ? { hooks: hooked.hooks } : {}),
+      ...more,
+    });
+    return { session, bus, errors, summaries, usages, transcript, notes, inputs: hooked?.inputs ?? (() => []) };
   }
   // A transcript that cannot be written: a file where its folder should be, with no permission changed (Task 3).
   async function unsavable() {
@@ -1390,6 +1437,103 @@ describe("Session, shortening", { timeout: 15_000 }, () => {
     const own = new Transcript(path.join(pathsOf(lead.file).subagents, "t1.jsonl"), lead.pictures);
     expect(savedLines(own).map((l) => l.t)).toEqual(["message", "message", "message", "shortened", "message"]);
     expect(isSummary(worker.seen[2]!)).toBe(true);
+  });
+
+  // Release 8b plan, Task 11 (choice 20): PreCompact before the summary request, PostCompact and SessionStart compact once
+  // the summary is made, before it is saved.
+  const sessionText = (text: string): Part => ({ type: "text", text: `SessionStart hook:\n${text}`, from: "hooks" });
+  const LEFT_OUT = "SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.";
+
+  it.each([
+    ["/compact", JSON.stringify({ decision: "block", reason: "not now" }), 0, ""],
+    ["a turn's shortening", "", 2, "not now"],
+  ] as const)("changes nothing at a PreCompact hook's block, for %s, saying its reason in 8a's line", async (how, stdout, code, stderr) => {
+    const turns = how === "/compact" ? [measured("noted")] : [measured("noted"), new TooLong("prompt is too long")];
+    const lead = new Lead("fake:a", turns, 1_000_000);
+    const { session, errors, summaries, transcript, inputs } = await setup(lead, {}, [{ event: "PreCompact", stdout, code, stderr }]);
+    await session.send(big);
+    const before = structuredClone(session.messages);
+    if (how === "/compact") expect(await session.compact("keep the tests")).toBe("a PreCompact hook blocked it: not now");
+    else await session.send("now this");
+    expect(session.messages).toEqual(how === "/compact" ? before : [...before, typed("now this")]);
+    expect([session.system, summaries, lead.seen.length]).toEqual(["t", [], how === "/compact" ? 1 : 2]); // no summary request
+    expect(savedLines(transcript).some((l) => l.t === "shortened")).toBe(false);
+    const line = "The conversation could not be shortened (a PreCompact hook blocked it: not now); it is unchanged.";
+    expect(errors).toEqual([{ kind: "shortening", attempted: "request to fake:a", message: line, lead: "fake:a" }]);
+    const fired = how === "/compact" ? { trigger: "manual", custom_instructions: "keep the tests" } : { trigger: "auto", custom_instructions: null };
+    expect(inputs()).toEqual([expect.objectContaining({ hook_event_name: "PreCompact", ...fired })]);
+  });
+
+  it("adds a PreCompact hook's plain text to the summary request's instructions, after the /compact words", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted."), summaryOf("Again.")], 1_000_000);
+    const { session, errors } = await setup(lead, {}, [{ event: "PreCompact", names: ["manual"], stdout: "keep the file names" }]);
+    await session.send(big);
+    expect(await session.compact("focus on tests")).toBeUndefined();
+    expect(texts(lead.seen[1]!.messages.at(-1)!).at(-1)).toBe(`${INSTRUCTIONS}\n\nFocus on: focus on tests\n\nkeep the file names`);
+    expect(await session.compact("")).toBeUndefined();
+    expect(texts(lead.seen[2]!.messages.at(-1)!).at(-1)).toBe(`${INSTRUCTIONS}\n\nFocus on: keep the file names`);
+    expect(errors).toEqual([]);
+  });
+
+  it("fires PostCompact with the summary, then SessionStart compact, each matched on its trigger or source", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("Compacted.")], 1_000_000);
+    const said: Said[] = [
+      { event: "PreCompact", names: ["manual"] },
+      { event: "PostCompact", names: ["manual"] },
+      { event: "PostCompact", names: ["auto"], stdout: "not this one" },
+      { event: "SessionStart", names: ["compact"] },
+      { event: "SessionStart", names: ["startup"], stdout: "not this one" },
+    ];
+    const { session, errors, inputs } = await setup(lead, {}, said);
+    await session.send(big);
+    expect(await session.compact("")).toBeUndefined();
+    expect(inputs()).toEqual([
+      expect.objectContaining({ hook_event_name: "PreCompact", trigger: "manual", custom_instructions: null }),
+      expect.objectContaining({ hook_event_name: "PostCompact", trigger: "manual", compact_summary: "Compacted." }),
+      expect.objectContaining({ hook_event_name: "SessionStart", source: "compact", model: "fake:a" }),
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  it("sends SessionStart's text in the shortened message with the turn's very next request, saved there, so a resume reads it back", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("The user sent many x."), reply("done")], 700);
+    const context = JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "from the hook" } });
+    const said: Said[] = [
+      { event: "SessionStart", names: ["compact"], stdout: context },
+      { event: "SessionStart", names: ["compact"], stdout: "plain words" },
+    ];
+    const { session, errors, notes, transcript, inputs } = await setup(lead, {}, said);
+    transcript.write({ t: "start", v: 1, id: "s1", project: top, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] }); // for the resume
+    await session.send(big);
+    await session.send("now this");
+    // Shortened before its request, by the estimate (the ratio is 1 after the first reply), so no "too long" answer came.
+    expect(lead.seen.map(isSummary)).toEqual([false, true, false]);
+    const message: Message = {
+      role: "user",
+      parts: [sessionText("from the hook"), sessionText("plain words"), { type: "text", text: shortened("The user sent many x.", "now this") }],
+    };
+    expect(lead.seen[2]!.messages).toEqual([message]);
+    expect([errors, notes]).toEqual([[], []]);
+    expect(inputs()).toEqual([
+      expect.objectContaining({ hook_event_name: "SessionStart", source: "compact" }),
+      expect.objectContaining({ hook_event_name: "SessionStart", source: "compact" }),
+    ]);
+    const r = readTranscript(transcript.file, transcript.pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    expect(r.messages[0]).toEqual(message);
+  });
+
+  it("saves the shortening without SessionStart's text when the shortened conversation would not fit with it, says so, and sends the request", async () => {
+    const lead = new Lead("fake:a", [measured("noted"), summaryOf("The user sent many x."), reply("done")], 700);
+    const { session, errors, notes, transcript } = await setup(lead, {}, [{ event: "SessionStart", names: ["compact"], stdout: "y".repeat(1000) }]);
+    await session.send(big);
+    await session.send("now this");
+    const message = typed(shortened("The user sent many x.", "now this"));
+    expect(lead.seen.map(isSummary)).toEqual([false, true, false]);
+    expect(lead.seen[2]!.messages).toEqual([message]);
+    expect(notes).toEqual([LEFT_OUT]);
+    expect(savedLines(transcript).find((l) => l.t === "shortened")).toEqual({ t: "shortened", at: expect.any(String), system: "t, read again", message });
+    expect([errors, texts(session.messages.at(-1)!)]).toEqual([[], ["done"]]);
   });
 });
 

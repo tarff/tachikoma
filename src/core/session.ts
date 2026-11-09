@@ -8,7 +8,7 @@ import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
 import { type Ask, Declined, type PermissionGate, StoppedFirst } from "./permissions.js";
-import { CANCELLED, shorten, type When } from "./shorten.js";
+import { CANCELLED, fit, type Shortening, shorten, type When } from "./shorten.js";
 import type { Task } from "./tasks.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
 import {
@@ -66,6 +66,9 @@ const keptGoing = (id: string | undefined, reason: string) =>
   (id ? `A SubagentStop hook kept ${id} going` : "A Stop hook kept the turn going") + (reason ? `: ${reason}` : ".");
 const keptTooOften = (id: string | undefined) =>
   `${id ? `SubagentStop hooks kept ${id} going` : "Stop hooks kept the turn going"} ${MAX_BLOCKS} times in a row; it ends here.`;
+// The grey line for SessionStart's text left out of a shortening it would no longer let fit (release 8b plan, "Lines this
+// plan adds"; Task 11).
+const LEFT_OUT = "SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.";
 
 // True once `p` has settled, false when `signal` stops the wait first: a turn waiting for SessionStart's hooks (Task 10).
 const settled = (p: Promise<void>, signal?: AbortSignal) =>
@@ -159,8 +162,8 @@ export class Session {
   // The providers the user said to send no pictures to, by id, for the session (release 6 design, "When the provider
   // refuses").
   readonly #refusedPictures = new Set<string>();
-  // Run before a shortening's summary request: empty in 8a; 8b's hooks and 8d's memory save join it (release 8a plan,
-  // choice 24).
+  // Run before a shortening's summary request: empty in 8a; 8d's memory save joins it (release 8a plan, choice 24). 8b's
+  // PreCompact fires beside it, as its answer can stop the shortening (release 8b plan, Task 11).
   readonly onShorten: (() => void)[] = [];
   // The /autocompact size in tokens: a conversation past it is shortened before its next request, as one past the window
   // is; null, the window alone (release 8a design, "When to shorten"). Task 13's /autocompact sets it (plan, choice 26).
@@ -663,7 +666,9 @@ export class Session {
   // One shortening (release 8a design, "How shortening works"; plan, Task 12), by `lead`, into what fits `window`.
   // "unsaved": the transcript is not on disk, so nothing is summarised (step 1), or its `shortened` line could not be
   // written, which `write` records without throwing; either way nothing changes. The problem when it failed, as
-  // shorten.ts words it, nothing changed either.
+  // shorten.ts words it, nothing changed either. `focus` is /compact's words, "" when it gives none, and set for /compact
+  // alone, so the hooks' trigger is "manual" for /compact only and "auto" for /lead's and the turn's (release 8b plan,
+  // choice 20).
   async #shorten(
     lead: Provider,
     when: When,
@@ -672,44 +677,91 @@ export class Session {
     asked?: Message,
     focus?: string,
   ): Promise<"done" | "unsaved" | { problem: string }> {
-    const { bus } = this.opts;
+    const { bus, hooks } = this.opts;
     const t = this.#transcript;
     if (!t || t.failed !== null) return "unsaved";
     for (const f of this.onShorten) f();
-    const r = await shorten(
-      {
-        lead,
-        system: this.system,
-        messages: this.messages,
-        ...(asked ? { asked } : {}),
-        ...(focus ? { focus } : {}),
-        tools: this.opts.tools.map((t) => t.spec),
-        calls: this.calls,
-        workspace: this.opts.ctx.workspace,
-        sizes: this.#sizes,
-        window: window ?? Infinity, // not known: every fit passes, and the "too long" answer is the safety net
-        ...(signal ? { signal } : {}),
-        shrunk: this.#shrunk,
-        ...(this.#refusedPictures.has(lead.id) ? { refusedBy: lead.id } : {}),
-        // Counted as the judge's is, apart from the conversation's context (stats.ts).
-        onUsage: (u) => bus.emit("usage", { ...u, summary: true }),
-      },
-      when,
-    );
+    const trigger = focus === undefined ? "auto" : "manual";
+    // PreCompact beside onShorten, before the summary request (Task 11): a block changes nothing, 8a's line giving its
+    // reason; its plain text joins the focus, after /compact's words (design, "What a hook's answer does").
+    let instructions: string[] = [];
+    if (hooks) {
+      const c = await this.#aroundShortening(hooks, "PreCompact", { trigger, custom_instructions: focus || null }, trigger, signal);
+      if (!c) return { problem: CANCELLED };
+      if (c.block !== undefined) return { problem: `a PreCompact hook blocked it: ${c.block}` };
+      instructions = c.instructions;
+    }
+    const focused = [focus, ...instructions].filter(Boolean).join("\n\n");
+    const s: Shortening = {
+      lead,
+      system: this.system,
+      messages: this.messages,
+      ...(asked ? { asked } : {}),
+      ...(focused ? { focus: focused } : {}),
+      tools: this.opts.tools.map((t) => t.spec),
+      calls: this.calls,
+      workspace: this.opts.ctx.workspace,
+      sizes: this.#sizes,
+      window: window ?? Infinity, // not known: every fit passes, and the "too long" answer is the safety net
+      ...(signal ? { signal } : {}),
+      shrunk: this.#shrunk,
+      ...(this.#refusedPictures.has(lead.id) ? { refusedBy: lead.id } : {}),
+      // Counted as the judge's is, apart from the conversation's context (stats.ts).
+      onUsage: (u) => bus.emit("usage", { ...u, summary: true }),
+    };
+    const r = await shorten(s, when);
     if ("problem" in r) return r;
+    let message = r.messages[0]!;
+    // PostCompact, then SessionStart compact, once the summary is made and before it is saved (Task 11; plan review,
+    // 2026-11-09, finding 2). SessionStart's text joins the new history's one message, first, as it goes first in the
+    // next request's message (Task 8), so it is saved with the shortening and goes with the very next request, never
+    // through the queue for the next request. shorten() checked the message against the window without it, and a turn
+    // shortens once a request, so it is checked again with the text; one that no longer fits is left out, with its line,
+    // never cut, as no part of a hook's text is safe to drop (second round, finding 2).
+    if (hooks) {
+      if (!(await this.#aroundShortening(hooks, "PostCompact", { trigger, compact_summary: r.summary }, trigger, signal))) return { problem: CANCELLED };
+      const c = await this.#aroundShortening(hooks, "SessionStart", { source: "compact", model: this.#lead.id }, "compact", signal);
+      if (!c) return { problem: CANCELLED };
+      const text = this.#hookParts([...c.context]);
+      if (text.length) {
+        const joined: Message = { ...message, parts: [...text, ...message.parts] };
+        let room: boolean;
+        try {
+          room = await fit(s, joined);
+        } catch (err) {
+          if (signal?.aborted) return { problem: CANCELLED }; // fits() lets a stop through
+          throw err;
+        }
+        if (room) message = joined;
+        else bus.emit("hook-note", LEFT_OUT);
+      }
+    }
     // The new history goes with a system prompt built afresh, both in one line, so the shortening is saved whole or not
-    // at all (choices 3 and 4).
+    // at all (choices 3 and 4). A line that cannot be written changes nothing, though the hooks above have run (a known
+    // limit, Task 13).
     const system = await this.freshSystem();
     if (signal?.aborted) return { problem: CANCELLED }; // a stop while the files were read changes nothing either
-    t.write({ t: "shortened", system, message: r.messages[0]! });
+    t.write({ t: "shortened", system, message });
     if (t.failed !== null) {
       this.#saving();
       return "unsaved";
     }
     this.system = system;
-    this.messages.splice(0, this.messages.length, ...r.messages);
+    this.messages.splice(0, this.messages.length, message);
     bus.emit("shortened", r.summary);
     return "done";
+  }
+
+  // One of the events around a shortening (release 8b plan, Task 11), matched on its trigger or SessionStart's source,
+  // under the shortening's signal. Undefined when a stop ended its hooks (run.ts), which changes nothing, as any stop
+  // during a shortening does.
+  async #aroundShortening(hooks: Hooks, event: Event, fields: object, match: string, signal?: AbortSignal): Promise<Combined | undefined> {
+    try {
+      return await hooks.fire(event, fields, { match, signal });
+    } catch (err) {
+      if (signal?.aborted) return undefined;
+      throw err;
+    }
   }
 
   // The approved line for a request still too long for `lead`, with its size by the lead's ratio or its exact count; null

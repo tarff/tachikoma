@@ -1083,6 +1083,41 @@ message (finding 2); with a stand-in model whose window fits the summary but not
 the hook's text, the shortening is saved without the text, the line is said, and the turn's
 request is sent (second round, finding 2).
 
+**Decided at the build** (2026-11-09):
+- **The trigger comes from the focus being given:** `compact` always passes its words (`""` with
+  none), `/lead`'s `makeRoom` and the turn pass none, so `manual` is `/compact`'s alone and `auto`
+  every other (choice 20). `custom_instructions` is the words, or null when there are none.
+- **Matchers:** PreCompact and PostCompact are matched on the trigger, SessionStart on `compact`, as
+  Claude Code matches them.
+- **The order in `#shorten`:** `onShorten`, PreCompact, the summary (`shorten()`), PostCompact,
+  SessionStart `compact`, the check with the hook text, the system prompt built afresh, the
+  `shortened` line. PreCompact fires only when the shortening can be saved (not for "unsaved"), and
+  still fires when `shorten()` then fails without a summary request (nothing to summarise, the
+  prompt too big alone).
+- **PreCompact's plain text joins the focus** after `/compact`'s words, each piece a paragraph of
+  its own (`\n\n` between), in the file's order, so the summary request reads `Focus on: <words>`
+  then the hooks' text; with no words, `Focus on: <hook text>`.
+- **SessionStart's text goes first in the shortened message,** before the summary, as Task 8 puts
+  SessionStart's text first in the next request's message. Each piece is a part `from: "hooks"`
+  headed `SessionStart hook:`.
+- **The check with the text is `shorten()`'s own** (`fit`, with the same request parts: the system
+  prompt before it is built afresh, the tools, the window), made only when there is text.
+- **A stop** while any of the three events' hooks runs, or during that check, changes nothing, as
+  any stop during a shortening: `/compact` gets `cancelled by the user`, a turn ends saying nothing.
+- **A hook that fails** gets its red line and the shortening goes on, except a PreCompact hook with
+  `onFailure: "block"`, whose failure is a block (answer.ts). `continue: false` is ignored at all
+  three (answer.ts); PostCompact's answer is used only for its lines.
+- **Tests:** in "Session, shortening", with a hook script of their own in the describe's temp
+  folder, as that describe has the stand-in lead with a window.
+
+**Left open for the user** (Task 11's build):
+- A PreCompact block with no reason (exit 2 with no error output, or `decision: "block"` with no
+  `reason`) gives `The conversation could not be shortened (a PreCompact hook blocked it: ); it is
+  unchanged.`, as only the line with a reason is approved.
+- The three events fire in a subagent's shortening too, as the design says "around each
+  shortening", sent `agent_id` and `agent_type`; SessionStart `compact` among them, though a
+  subagent's start is SubagentStart.
+
 Commit: `feat: PreCompact and PostCompact around each shortening`.
 
 **End of Part 3:** run the whole suite once.
@@ -1162,7 +1197,9 @@ section).
   calls a tool between blocks can be kept going without end (Esc stops it in the window, Ctrl-C in
   `-p`); a turn shortened while Stop hooks keep it going puts their feedback under "The latest round
   of tool calls, and their results:" in the shortened message; and one from Task 10's build: a crash
-  that ends the window runs no SessionEnd, as a signal runs none; the release list with 8 in five
+  that ends the window runs no SessionEnd, as a signal runs none; and one from Task 11's build: when
+  the `shortened` line cannot be written, the conversation is unchanged, though its PreCompact,
+  PostCompact and SessionStart `compact` hooks have run; the release list with 8 in five
   parts, 8e added; `/hooks` in the commands list; and, in "Headless runs", the `--json` bullet
   (README.md:1116, "prints one line per event: `message`, `usage`, `error` and `lead`") gains
   `hook-note`, each hook's grey line (Task 8, the user's choice, 2026-11-09).
