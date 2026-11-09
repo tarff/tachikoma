@@ -60,6 +60,24 @@ describe("lastTurn", () => {
     ]);
   });
 
+  // Task 12's code review: combine drops a rewrite and an updatedToolOutput beside a continue: false, as the call never
+  // runs, so Ctrl+O shows neither.
+  it("shows no rewrite, nor an unused updatedToolOutput, for a run that also stopped the turn", () => {
+    const hook = (event: Event): Hook => ({ event, matcher: { all: true }, command: "check.sh", async: false, where: JSON.stringify(event) });
+    const ran: Ran = { code: 0, stdout: "", stderr: "", ms: 12 };
+    const stop = (event: Event, more: object) => ({ continue: false, hookSpecificOutput: { hookEventName: event, ...more } });
+    const ok = (json: Record<string, unknown>) => ({ kind: "ok" as const, json });
+    const runs: Run[] = [
+      { event: "PreToolUse", hook: hook("PreToolUse"), ran, outcome: ok(stop("PreToolUse", { updatedInput: { command: "ls" } })), match: "Bash" },
+      { event: "PostToolUse", hook: hook("PostToolUse"), ran, outcome: ok(stop("PostToolUse", { updatedToolOutput: { not: "text" } })), match: "Read" },
+    ];
+    const turn = lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }], runs);
+    expect(turn.slice(1).map((l) => l.text)).toEqual([
+      "◆ PreToolUse hook check.sh for shell · exit 0 · 12 ms",
+      "◆ PostToolUse hook check.sh for read_file · exit 0 · 12 ms",
+    ]);
+  });
+
   // The user's words, 2026-11-10: a run a signal ended names it, or says none is known; a tool event's run names its tool
   // as the window does (choice 10).
   it("names a hook run's signal, or says none is known, and a tool hook's tool by Tachikoma's name", () => {

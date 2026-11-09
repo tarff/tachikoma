@@ -222,6 +222,9 @@ export class Session {
     this.#hookText.splice(0); // the last conversation's hook text, not yet sent, is not this one's (Task 6's code review)
     this.#nextText.splice(0); // nor is the text waiting for its next request: SessionStart fires after the load (Task 10)
     this.#stopStarting(); // nor the text of SessionStart's hooks still running for it, which are stopped (Task 10's code review)
+    // Nor its hook runs, a switch's SessionEnd among them, which Ctrl+O would list under this conversation's last turn; the
+    // SessionStart fired after the load begins the new list (Task 12's code review).
+    if (!this.opts.subagent) this.opts.hooks?.newTurn();
     this.calls.splice(0, this.calls.length, ...c.calls);
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();
@@ -374,6 +377,9 @@ export class Session {
     if (this.#starting && !(await settled(this.#starting, signal))) return;
     // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept.
     const words = typed.flatMap((p) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [])).join("");
+    // Ctrl+O's list of this turn's hook runs starts here, before UserPromptSubmit, for a turn of background answers alone
+    // too (release 8b plan, Task 12's code review). A subagent's runs are its own Hooks' (hooks.ts, for).
+    if (!this.opts.subagent) hooks?.newTurn();
     // The user's own prompt only: a subagent's brief is the lead's (release 8b design, "The events"). Before anything is
     // kept, pushed or taken, so a block or a stop sends and saves nothing, and the waiting text stays for the next prompt.
     const prompted = words && !this.opts.subagent && hooks ? await this.#userPromptSubmit(hooks, words, signal) : [];

@@ -54,6 +54,9 @@ import { wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, texts, usage } from "../helpers.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
+// How long a test waits for the settings watcher: fs.watch reported each of 400 writes within 5 ms on this machine
+// (measured 2026-10-28); 2 s is as long as until() waits (40 ticks of 50 ms), room for a busy machine.
+const WATCHED = { timeout: 2_000 };
 
 // How many times each file has been read, so a test can tell the settings watcher has read a file it wrote (readsOf,
 // below); otherwise node:fs's own. It counts every reader, so a test reads `where` itself only outside a readsOf wait.
@@ -6756,9 +6759,6 @@ describe("App's vim mode", () => {
 // file", "When a live change applies").
 describe("App's live settings", () => {
   const FROM = "(from settings.json)";
-  // fs.watch reported each of 400 writes within 5 ms on this machine (measured 2026-10-28); 2 s is as long as until()
-  // waits (40 ticks of 50 ms), room for a busy machine.
-  const WATCHED = { timeout: 2_000 };
   // A long line wraps, and Ink can carry the space it broke at onto the next row.
   const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
   const sees = (app: ReturnType<typeof render>, text: string) => vi.waitFor(() => expect(flat(app)).toContain(text), WATCHED);
@@ -9719,14 +9719,14 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const times = (text: string) => app.lastFrame()!.slice(0, app.lastFrame()!.lastIndexOf("›")).split(text).length - 1;
     const CHANGED = "Hooks changed: 1 hook at 1 event.";
     write({ hooks: entry("Read") });
-    await vi.waitFor(() => expect(times(CHANGED)).toBe(1), { timeout: 2_000 });
+    await vi.waitFor(() => expect(times(CHANGED)).toBe(1), WATCHED);
     await type(app, "go");
     await untilSlow(app, "PreToolUse hook: fired 1");
     await untilSlow(app, "done");
     write({ hooks: entry("R.ad") });
-    await vi.waitFor(() => expect(times(CHANGED)).toBe(2), { timeout: 2_000 });
+    await vi.waitFor(() => expect(times(CHANGED)).toBe(2), WATCHED);
     write({ hooks: entry("Re.d") }); // one regular expression for another
-    await vi.waitFor(() => expect(times(CHANGED)).toBe(3), { timeout: 2_000 });
+    await vi.waitFor(() => expect(times(CHANGED)).toBe(3), WATCHED);
     write("{");
     await untilSlow(app, "the last good settings still apply");
     expect(hooks!.config.hooks.map((x) => x.matcher)).toEqual([{ regex: /Re.d/ }]);
@@ -9904,6 +9904,53 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     await type(app, "/compact");
     const line = "SessionStart hook text was left out: with it, the shortened conversation would not fit the model's window.";
     await untilSlowly(() => squashed(app.lastFrame()!).includes(squashed(line)));
+  });
+
+  // Task 12's code review: Ctrl+O lists exactly the runs of the lead turn it shows, so a turn that only reads background
+  // answers starts a list of its own.
+  it("lists on Ctrl+O none of an earlier turn's hook runs after a turn that only reads background answers", async () => {
+    const h = nodeHook("");
+    const worker = new Held("fake:w");
+    const delegate = callTool("c1", "delegate", { description: "find x", task: "find x", background: true });
+    const lead = new FakeProvider("a", [delegate, reply("started it"), reply("t1 says found")]);
+    const { app } = await mount([], { lead, worker, hooks: [h.hook("PreToolUse")] });
+    await type(app, "go");
+    await untilSlow(app, "started it");
+    await press(app, "\u000f");
+    expect(squashed(app.lastFrame()!)).toContain("◆PreToolUsehook");
+    worker.answer("found");
+    await untilSlow(app, "t1 says found");
+    await press(app, "\u000f");
+    const frame = app.lastFrame()!;
+    expect(frame.slice(frame.lastIndexOf("Last turn:"))).toMatch(/^Last turn: 0 tool calls\n/);
+    expect(frame.slice(frame.lastIndexOf("Last turn:"))).not.toContain("◆");
+  });
+
+  // Task 12's code review: after a switch the old session's runs are gone, the switch's SessionEnd among them.
+  it("lists on Ctrl+O none of the old session's hook runs after /resume", async () => {
+    const h = nodeHook("");
+    const sessions = path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-hook-")), "data", "sessions");
+    onTestFinished(() => removeTree(path.dirname(path.dirname(sessions))));
+    const earlier = await mount([callTool("c1", "find_files", { pattern: "*.md" }), reply("noted")], { save: true, sessions });
+    await type(earlier.app, "remember apple");
+    await untilSlow(earlier.app, "noted");
+    earlier.app.unmount();
+    const { app } = await mount([callTool("c1", "read_file", { path: "a.txt" }), reply("done")], {
+      save: true,
+      sessions,
+      hooks: [h.hook("PreToolUse"), h.hook("SessionEnd")],
+    });
+    await type(app, "go");
+    await untilSlow(app, "done");
+    await type(app, "/resume");
+    await untilSlow(app, "Saved sessions in this folder, newest first:");
+    await press(app, "\r");
+    await untilSlow(app, "Resumed:");
+    await press(app, "\u000f");
+    const frame = app.lastFrame()!;
+    const shown = frame.slice(frame.lastIndexOf("Last turn:"));
+    expect(shown).toMatch(/^Last turn: 1 tool call\n● find_files/);
+    expect(shown).not.toContain("◆");
   });
 
   // Task 12's spec review: /hooks's left-out rows follow a live edit too.

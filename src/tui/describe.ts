@@ -97,16 +97,15 @@ function runLine(r: Run): Line {
   const signal = ran.signal ? `ended by signal ${ran.signal}` : "ended by an unknown signal";
   const end = ran.failed === "time" ? "out of time" : ran.failed === "start" ? "could not start" : ran.code === null ? signal : `exit ${ran.code}`;
   const c = combine(r.event, [r]);
-  const json = r.outcome.kind === "failed" ? {} : (r.outcome.json ?? {});
-  const specific = (typeof json.hookSpecificOutput === "object" && json.hookSpecificOutput !== null ? json.hookSpecificOutput : {}) as Record<string, unknown>;
   const tool = tachikomaName(r.match ?? "");
   const forTool = TOOL_EVENTS.includes(r.event) && r.match !== undefined ? ` for ${visible(tool)}` : "";
   const under = [
     ...(c.block && (r.event === "Stop" || r.event === "SubagentStop") ? [c.block] : []),
     ...c.context.map((x) => x.text),
-    ...(r.event === "PreToolUse" && specific.updatedInput != null ? [JSON.stringify(specific.updatedInput, null, 2)] : []),
-    ...(r.event === "PostToolUse" && specific.updatedToolOutput != null && outputFrom(tool, specific.updatedToolOutput) === null
-      ? [`its updatedToolOutput was not used: it does not match ${tool}'s result`]
+    // As combine reads them, which drops both beside a continue: false, as the call never runs (Task 12's code review).
+    ...(c.rewrite ? [JSON.stringify(c.rewrite.input, null, 2)] : []),
+    ...("output" in c && outputFrom(tool, c.output) === null
+      ? [`its updatedToolOutput was not used: it does not match ${visible(tool)}'s result`]
       : []),
   ];
   const head = [`◆ ${r.event} hook ${visible(commandOf(r.hook))}${forTool}`, end, `${ran.ms} ms`].join(" · ");

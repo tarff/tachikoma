@@ -1189,6 +1189,13 @@ makes the next call fire it, with the line; the waiting line shows a `statusMess
   and an async hook's, does not reach it (a known limit, Task 13).
 - The Git Bash line is worked out by `gitBashLine` (clilib.ts) and tested there: Windows sets
   `ProgramFiles` for each child process, so a launch in a test cannot hide Git for Windows' install.
+- **Ctrl+O lists exactly the runs of the lead turn it shows** (Task 12's code review):
+  `Hooks.newTurn()` starts a new list at each lead turn, before its UserPromptSubmit, a turn of
+  background answers alone too, and at each load. This replaces Task 8's note that such a turn keeps
+  the list; `newPrompt()` now sets the prompt id alone. After a switch the old session's runs, its
+  SessionEnd's among them, are gone, and the new session's SessionStart runs begin the list,
+  shown under the conversation's last turn until the next turn starts its own (the builder's
+  choice).
 
 Commit: `feat: hooks on the screen: their lines, Ctrl+O, /hooks, and live edits`.
 

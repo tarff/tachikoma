@@ -237,12 +237,16 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(ids[3]).not.toBe(ids[1]);
   });
 
-  it("empties the turn's runs at each prompt", async () => {
+  // Task 12's code review: the runs are emptied at each lead turn, a prompt's or one reading background answers alone, and
+  // at a load (session.ts), never by a new prompt id.
+  it("empties the turn's runs at each turn, and keeps them at a new prompt id", async () => {
     const p = await place();
     const { hooks } = setup(p, [p.hook("h")]);
     await hooks.fire("PreToolUse", {});
     expect(hooks.runs.map((r) => [r.event, r.ran.code, r.outcome.kind])).toEqual([["PreToolUse", 0, "ok"]]);
     hooks.newPrompt();
+    expect(hooks.runs).toHaveLength(1);
+    hooks.newTurn();
     expect(hooks.runs).toEqual([]);
   });
 

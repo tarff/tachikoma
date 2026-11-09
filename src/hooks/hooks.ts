@@ -81,6 +81,13 @@ export class Hooks {
     return this.#runs;
   }
 
+  // A new list of runs, at each lead turn before its UserPromptSubmit, a turn of background answers alone too, and at a
+  // load, so Ctrl+O lists exactly the runs of the turn it shows (Task 12's code review). A fire under way adds its runs
+  // to the list it began with.
+  newTurn(): void {
+    this.#runs = [];
+  }
+
   // A subagent's: the same hooks, its own fields and bus.
   for(agent: { id: string; transcript?: string }, bus: Bus): Hooks {
     const hooks = new Hooks(this.#shared.config, { ...this.#where, agent }, bus);
@@ -91,7 +98,6 @@ export class Hooks {
   // A new prompt_id for each prompt the user sends (release 8b design, "What a hook is sent").
   newPrompt(): void {
     this.#shared.promptId = randomUUID();
-    this.#runs = [];
   }
 
   // Whether a fire of `event` with `match` would run any hook, without running one: the session gives a tool ctx.report
