@@ -298,6 +298,7 @@ command with its `args` after it, escaped as the question escapes a command.
 | A hook ended by a signal (red) | `<Event> hook failed: <command> was ended by signal <SIGNAME>: <first line of its error output>` (without error output, it ends at `<SIGNAME>`; with no signal known, `was ended by an unknown signal`) |
 | A hook's JSON could not be read (red) | `<Event> hook failed: <command> printed JSON that could not be read (<reason>)` |
 | The JSON's `<reason>` | `it is cut short`; `there is text after the object`; any other broken JSON, the parser's own words; `"<field>" must be text in quotes` (`systemMessage`, `stopReason`, `reason`, `additionalContext`, `permissionDecisionReason`, `hookEventName`); `"continue" must be true or false`; `"decision" must be "approve" or "block"`; `"permissionDecision" must be "allow", "deny", "ask" or "defer"`; `"hookSpecificOutput" must be an object`; `"updatedInput" must be an object`; `"hookSpecificOutput" has no "hookEventName"`; `"hookSpecificOutput" names <OtherEvent>` |
+| What a hook failure attempted, which `/errors` shows | `<Event> hook`; a subagent's, `t1: <Event> hook` (approved by the user, 2026-11-09) |
 | PreToolUse refused a call (grey) | `A PreToolUse hook refused <tool>: <reason>` |
 | A rewrite that cannot be used (grey; the call refused) | `A PreToolUse hook's rewrite of <tool> could not be used (<reason>): <command>` |
 | Two rewrites of one call (grey) | `Two PreToolUse hooks rewrote <tool>'s input; the first in the settings file was used, and <command> was ignored.` |

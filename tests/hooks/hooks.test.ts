@@ -2,14 +2,26 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import type { ErrorEvent } from "../../src/core/bus.js";
 import type { Mode } from "../../src/core/permissions.js";
+import { gitBash } from "../../src/exec/env.js";
 import { combine } from "../../src/hooks/answer.js";
 import type { Event, Hook, HooksConfig } from "../../src/hooks/config.js";
 import { Hooks, MODE_NAMES, type Where } from "../../src/hooks/hooks.js";
+import { runHook } from "../../src/hooks/run.js";
 import type { Effort } from "../../src/providers/anthropic.js";
 import { Bus, collectErrors, removeTree } from "../helpers.js";
+
+// Both run as they are; a test reads the limits runHook was given, or has one answer stand in for a run or for Git Bash.
+vi.mock("../../src/hooks/run.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/hooks/run.js")>();
+  return { ...real, runHook: vi.fn(real.runHook) };
+});
+vi.mock("../../src/exec/env.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../../src/exec/env.js")>();
+  return { ...real, gitBash: vi.fn(real.gitBash) };
+});
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -303,6 +315,41 @@ describe("Hooks", { timeout: 15_000 }, () => {
     ]);
     expect(notes).toEqual([]); // its systemMessage is not read
     expect(hooks.runs.map((r) => [r.hook.async, r.ran.code]).sort()).toEqual([[true, 0], [true, 1]]);
+  });
+
+  // Task 4's spec review: a failure that onFailure "block" would make a block is still said for an async hook, which blocks
+  // nothing.
+  it("says an async hook's failure with onFailure block", async () => {
+    const p = await place();
+    const failing = p.hook("h", { async: true, onFailure: "block" }, { stderr: "bad thing", code: 1 });
+    const { hooks, errors } = setup(p, [failing]);
+    await hooks.fire("PreToolUse", {});
+    while (hooks.runs.length < 1) await pause(20);
+    expect(errors.map((e) => e.message)).toEqual([`PreToolUse hook failed: ${commandOf(failing)} exited with code 1: bad thing`]);
+  });
+
+  // The other way a failure becomes a block: a PreToolUse hook run by a shell on Windows without Git Bash (answer.ts). The
+  // run stands in for one, as Windows PowerShell would run it here.
+  it.skipIf(process.platform !== "win32")("says an async PreToolUse hook's failure run by a shell on Windows without Git Bash", async () => {
+    const p = await place();
+    const real = vi.mocked(gitBash).getMockImplementation()!;
+    vi.mocked(gitBash).mockImplementation(() => null);
+    onTestFinished(() => void vi.mocked(gitBash).mockImplementation(real));
+    vi.mocked(runHook).mockResolvedValueOnce({ code: 1, stdout: "", stderr: "bad thing", ms: 1 });
+    const { hooks, errors } = setup(p, [{ ...p.hook("h", { async: true }), command: "check.sh", args: undefined }]);
+    await hooks.fire("PreToolUse", {});
+    while (hooks.runs.length < 1) await pause(20);
+    expect(errors.map((e) => e.message)).toEqual(["PreToolUse hook failed: check.sh exited with code 1: bad thing"]);
+  });
+
+  // Claude Code's hooks reference, "Common fields".
+  it("gives a hook without a timeout 30 s at UserPromptSubmit and 600 s elsewhere", async () => {
+    const p = await place();
+    const { hooks } = setup(p, [p.hook("prompt", { event: "UserPromptSubmit" }), p.hook("tool")]);
+    vi.mocked(runHook).mockClear();
+    await hooks.fire("UserPromptSubmit", {});
+    await hooks.fire("PreToolUse", {});
+    expect(vi.mocked(runHook).mock.calls.map((c) => c[2].limit)).toEqual([30, 600]);
   });
 
   it("stops every hook it started when the turn stops, and rejects with Cancelled", async () => {

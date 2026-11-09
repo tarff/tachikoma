@@ -251,7 +251,8 @@ describe("Tasks", () => {
     worker.answer("found it");
     expect(await t.done).toEqual({ state: "done", text: "found it" });
     const line = `PreToolUse hook failed: ${process.execPath} ${script} ran out of time after 0.5 s`;
-    expect(errors).toEqual([{ kind: "hook", attempted: "t1: PreToolUse hook", message: `t1: ${line}`, lead: "fake:lead" }]);
+    // The subagent's own model, as its other errors record (Task 4's spec review).
+    expect(errors).toEqual([{ kind: "hook", attempted: "t1: PreToolUse hook", message: `t1: ${line}`, lead: worker.id }]);
   });
 
   // Release 8b plan review, 2026-11-09, second round, finding 3: a subagent's hook lines reach the user.

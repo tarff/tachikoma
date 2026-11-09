@@ -100,7 +100,9 @@ export class Hooks {
       const limit = hook.timeout ?? (event === "UserPromptSubmit" ? PROMPT_LIMIT : LIMIT);
       // runHook adds commandEnv and CLAUDE_PROJECT_DIR; the folder is the project's root (release 8b plan, choice 3).
       const ran = await runHook(hook, input, { cwd: this.#where.root, env: process.env, limit, signal });
-      return { event, hook, ran, outcome: outcomeOf(event, hook, ran) };
+      // An async hook blocks nothing, so its failure stays a failure, to be said: onFailure "continue" turns off both ways
+      // outcomeOf makes one a block, onFailure "block" and a shell on Windows without Git Bash (Task 4's spec review).
+      return { event, hook, ran, outcome: outcomeOf(event, hook.async ? { ...hook, onFailure: "continue" } : hook, ran) };
     };
     // An async hook is started and left, and a stop of the turn does not end it; its answer is read only to say a failure
     // (release 8b plan, choice 5).

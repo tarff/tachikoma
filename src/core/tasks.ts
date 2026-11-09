@@ -205,10 +205,11 @@ export class Tasks {
       // A judge that cannot be reached refuses one action, as a no does, and fails no subagent (release 7 plan, choice 65);
       // nor does a file that cannot be saved (release 8a plan, Task 5), nor a hook's failure (release 8b plan review,
       // 2026-11-09, finding 1): a hook stops a subagent only through continue: false. A hook's red line is its message
-      // alone, so it starts with the subagent too (release 8b plan, "Lines this plan adds").
+      // alone, so it starts with the subagent too (release 8b plan, "Lines this plan adds"), and it names the subagent's
+      // model, as the subagent's other errors do; its Hooks knows only the lead's (Task 4's spec review).
       if (e.kind !== "fallback" && e.kind !== "tool" && e.kind !== "judge" && e.kind !== "saving" && e.kind !== "hook") failure = e;
-      const message = e.kind === "hook" ? `${t.id}: ${e.message}` : e.message;
-      this.opts.bus.emit("error", { ...e, attempted: `${t.id}: ${e.attempted}`, message });
+      const hook = e.kind === "hook" ? { message: `${t.id}: ${e.message}`, lead: provider.id } : {};
+      this.opts.bus.emit("error", { ...e, attempted: `${t.id}: ${e.attempted}`, ...hook });
     });
     // A hook's grey lines reach the user through the lead's bus, as its errors do (second round, finding 3).
     bus.on("hook-note", (line) => this.opts.bus.emit("hook-note", `${t.id}: ${line}`));
