@@ -196,6 +196,23 @@ setTimeout(() => {}, 60000);`);
     expect(ran.code).toBe(0);
     expect(ran.stdout).toMatch(/^(MINGW|MSYS)/);
   }, 15_000);
+
+  // The PR #14 review: Windows PowerShell exits 1 for any program that failed, so a hook's exit code 2, a block, was lost
+  // (seen 2026-11-10). A failed PowerShell command still exits 1, and the hook's own `exit` is kept.
+  it.skipIf(process.platform !== "win32")("keeps a program's exit code in a hook run by PowerShell", async () => {
+    const root = await folder();
+    const node = `& '${process.execPath}'`;
+    const cases: [string, number][] = [
+      [`${node} -e "process.exit(2)"`, 2],
+      [`${node} -e "process.exit(0)" # a note`, 0],
+      ["Get-Item tachi-no-such-file", 1],
+      ["exit 5", 5],
+    ];
+    for (const [command, code] of cases) {
+      const ran = await runHook(hookOf({ command, shell: "powershell" }), {}, { cwd: root, env: process.env, limit: 30 });
+      expect([command, ran.code]).toEqual([command, code]);
+    }
+  }, 30_000);
 });
 
 // The mapping alone, as the real signal test above cannot run on Windows.
