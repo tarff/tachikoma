@@ -1155,17 +1155,19 @@ Event by event:
   as `<Event> hook: <message>`. A subagent's lines start with its id, `t1: A PreToolUse hook
   refused shell: <reason>`, except those that already name it.
 - **The working line** shows a hook's `statusMessage` while it runs.
-- **Ctrl+O** lists the last turn's hook runs after its tool calls, a line each, such as
-  `◆ PreToolUse hook check.sh for shell · exit 0 · 12 ms`, with what the hook handed the model, or
-  its rewrite as JSON, under it after `⎿`.
-- **`/hooks`** lists the hooks in force by event, each with its matcher, command and time limit,
-  then the ones left out, each with why; they are changed in the settings file:
+- **Ctrl+O** lists the last turn's hook runs after its tool calls, a line each, naming each hook
+  as `/hooks` does, such as `◆ PreToolUse hook check.sh for shell · exit 0 · 12 ms`, with what the
+  hook handed the model, or its rewrite as JSON, under it after `⎿`.
+- **`/hooks`** lists the hooks in force by event, each by its name: its `statusMessage`, else its
+  program and the script it runs. Its matcher follows, unless it matches everything, then its time
+  limit if it sets one and `async` if it is. Then come the ones left out, each with why; they are changed in the settings
+  file. Failure lines name a hook by its whole command.
 
   ```
   Hooks in force, from ~/.tachikoma/settings.json:
   PreToolUse
-    Bash · check.sh · 600 s
-    Edit|Write · node ~/.tachikoma/hooks/protect-paths.js · 600 s
+    check.sh · Bash
+    node protect-paths.js · Edit|Write
   ```
 
   On Windows the file is named `~\.tachikoma\settings.json`. With none: `No hooks in force. They go
@@ -1984,6 +1986,8 @@ so.
   list for that turn.
 - **On Windows, `async` hooks still running at exit are stopped one after another,** each taking 2
   to 4 seconds, so several can hold up the exit.
+- **Two hooks with no `statusMessage` that run the same program,** such as two `jq` filters, have
+  the same name on Ctrl+O; a `statusMessage` tells them apart.
 
 ## What comes next
 

@@ -416,3 +416,8 @@ known limits gather every rarer case the build left as a limit.
   launch (the user's choice). A PreCompact block's reason is escaped as every other hook line is.
   The README's example hook names its script in full, as a path is read from the project folder
   (the user's choice); four rarer points, and two from the fixes' review, became known limits.
+- **The terminal checklist (2026-11-10).** All ten items passed. `/hooks` was "a long wall of
+  text", so it and Ctrl+O name each hook by its `statusMessage`, else its program and the script it
+  runs, in place of the whole command; `/hooks` shows a matcher only when it does not match
+  everything, a time limit only when the hook sets one, and `async`. The left-out rows use the
+  same names; the warnings and the red failure lines keep the whole command (the user's choices).
