@@ -760,6 +760,9 @@ stopped turn's text never reaches the next turn's results.
 - `Hooks.has` and `fire` can disagree after a live edit while a call runs: the tool may report its
   parts and no hook use them, or a hook be sent the text in place of the shape. This is harmless.
 - Hook text from calls run side by side (`delegate`) comes in the order they finish.
+- When auto mode is paused and a hook stops the turn while its question is open, a yes given
+  afterwards leaves auto mode paused: nothing was approved to run. Esc does not lift the pause
+  either.
 
 Commit: `feat: PostToolUse and PostToolUseFailure, and a hook that stops the turn leaving every call answered`.
 

@@ -1966,11 +1966,12 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(s.inputs()).toEqual([expect.objectContaining({ tool_name: "Agent", tool_input: input, tool_use_id: "c2", tool_response: agent })]);
   });
 
-  // Task 7's code review: a question still open when a hook stops the turn runs nothing, whatever its answer.
-  it.each<[string, Mode5, Says[], string]>([
-    ["the mode's question", "ask", [], "Stopped: a hook stopped the turn."],
-    ["a PreToolUse hook's ask", "project", [{ names: ["Write"], stdout: decide("ask") }], NOT_RUN],
-  ])("writes nothing on a yes to %s given after a delegate's PostToolUse hook stopped the turn", async (_name, mode, pre, words) => {
+  // Task 7's code review: a question still open when a hook stops the turn runs nothing, whatever its answer, and the
+  // model is told it was not run (Task 7's re-check).
+  it.each<[string, Mode5, Says[]]>([
+    ["the mode's question", "ask", []],
+    ["a PreToolUse hook's ask", "project", [{ names: ["Write"], stdout: decide("ask") }]],
+  ])("writes nothing on a yes to %s given after a delegate's PostToolUse hook stopped the turn", async (_name, mode, pre) => {
     const root = await folder();
     let yes!: (answer: boolean) => void;
     const answer = new Promise<boolean>((r) => (yes = r));
@@ -1995,7 +1996,7 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     worker.answer("found");
     expect(await sent).toEqual({ stopped: "enough" });
     expect(existsSync(path.join(root, "a.txt"))).toBe(false);
-    expect(s.results()).toEqual([{ output: words, isError: true }, { output: "found", isError: false }, { output: "saw the stop", isError: false }]);
+    expect(s.results()).toEqual([{ output: NOT_RUN, isError: true }, { output: "found", isError: false }, { output: "saw the stop", isError: false }]);
     expect(s.asked).toHaveLength(1);
   });
 

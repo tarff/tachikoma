@@ -7,7 +7,7 @@ import type { Cache } from "../providers/pictures.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
 import { characters, fits, Sizes } from "./fit.js";
-import { type Ask, Declined, type PermissionGate } from "./permissions.js";
+import { type Ask, Declined, type PermissionGate, StoppedFirst } from "./permissions.js";
 import { CANCELLED, shorten, type When } from "./shorten.js";
 import { CUT_OFF, type Transcript } from "./transcript.js";
 import {
@@ -629,7 +629,8 @@ export class Session {
       // Ctrl-C at a question declines it and stops the turn: the call was cancelled, not declined.
       // Cut as a failure's is: a hook's question names the call with its whole input, a write's content included.
       if (err instanceof Declined) return [result(call, truncate(err.message), true), signal.aborted ? "cancelled" : "declined"];
-      if (signal.aborted) return stopped(started === undefined ? NOT_RUN : STOPPED); // not a failure, so not logged
+      // Not a failure, so not logged. A yes after the stop ran nothing, though the tool had started (Task 7's re-check).
+      if (signal.aborted) return stopped(started === undefined || err instanceof StoppedFirst ? NOT_RUN : STOPPED);
       const failed = fail(truncate(errorText(err)));
       // Not for a call that never started, nor an input the tool's schema refused (Claude Code's hooks reference).
       if (hooks && started !== undefined && !(err instanceof InvalidInput)) {
