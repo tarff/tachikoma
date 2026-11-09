@@ -9674,6 +9674,9 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
       hook("PostToolUse", { names: ["Glob"] }, "C:\\Program Files\\nodejs\\node.exe", { args: ["--no-warnings", "C:\\t\\fail.js"], statusMessage: "" }),
       hook("PostToolUse", { names: ["Grep"] }, "node", { args: ["sleep.js"], timeout: 2 }),
       hook("SessionEnd", { all: true }, "bye"),
+      // The limit that applies, as limitOf gives it: at SessionEnd a hook's own timeout counts up to 60 s.
+      hook("SessionEnd", { all: true }, "save", { timeout: 30 }),
+      hook("SessionEnd", { all: true }, "long", { timeout: 90 }),
     ];
     const { app } = await mount([], { hooks: { hooks, off: false, leftOut } });
     await type(app, "/hooks");
@@ -9693,6 +9696,8 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
         "  node sleep.js · Grep · 2 s",
         "SessionEnd",
         "  bye",
+        "  save · 30 s",
+        "  long · 60 s",
         "Left out:",
         `  ${leftOut[0]}`,
       ].join("\n"),

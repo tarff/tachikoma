@@ -263,6 +263,7 @@ describe("readSettings", () => {
       expect(read({ mode: "ask", hooks: { Setup: [{ hooks: [{ type: "command", command: "a" }] }] }, disableAllHooks: true })).toEqual({
         settings: { mode: "ask", hooks: [], disableAllHooks: true },
         warnings: ['settings.json: "hooks": "Setup" is not an event Tachikoma runs hooks at; its hooks were left out'],
+        hooksLeftOut: ['"Setup" is not an event Tachikoma runs hooks at; its hooks were left out'],
       });
     });
 
@@ -281,6 +282,7 @@ describe("readSettings", () => {
       expect(r).toEqual({
         settings: { disableAllHooks: true, hooks: [{ event: "PreToolUse", matcher: { all: true }, command: "b", async: false, where: '"PreToolUse"' }] },
         warnings: ['settings.json: "hooks": "PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: a'],
+        hooksLeftOut: ['"PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: a'],
       });
       expect(read({ disableAllHooks: false })).toEqual({ settings: { disableAllHooks: false }, warnings: [] });
       for (const bad of ["true", 1, null]) {
@@ -306,11 +308,23 @@ describe("readSettings", () => {
         `settings.json: "hooks": "PreToolUse" has a hook with "comment", which is not a hook field; it was left out: jq -r '.x' || exit 2`,
         'settings.json: "hooks": "Notification" is not an event Tachikoma runs hooks at; its hooks were left out',
       ]);
-      expect(hooksOf(r.settings, r.warnings).leftOut).toEqual([
+      const rows = [
         '"PreToolUse" has a hook with "if", which Tachikoma cannot check, so it was left out: node audit.js',
         '"PreToolUse" has a hook with "comment", which is not a hook field; it was left out: guard',
         '"Notification" is not an event Tachikoma runs hooks at; its hooks were left out',
-      ]);
+      ];
+      expect(r.hooksLeftOut).toEqual(rows);
+      expect(hooksOf(r.settings, r.hooksLeftOut).leftOut).toEqual(rows);
+    });
+
+    // The code review of the change: two hooks whose warnings are the same each keep their own name, in the file's order.
+    it("names two left-out hooks with the same warning each by its own statusMessage", () => {
+      const left = (statusMessage: string) => ({ type: "command", command: "jq x", if: "Bash(*)", statusMessage });
+      const r = read({ hooks: { Stop: [{ hooks: [left("first"), left("second")] }] } });
+      if ("problem" in r) throw new Error(r.problem);
+      const said = 'has a hook with "if", which Tachikoma cannot check, so it was left out: ';
+      expect(r.warnings).toEqual([`settings.json: "hooks": "Stop" ${said}jq x`, `settings.json: "hooks": "Stop" ${said}jq x`]);
+      expect(r.hooksLeftOut).toEqual([`"Stop" ${said}first`, `"Stop" ${said}second`]);
     });
   });
 

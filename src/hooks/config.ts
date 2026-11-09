@@ -36,27 +36,27 @@ const MAX_TIMER_MS = 2_147_483_647;
 const MAX_SECONDS = Math.floor(MAX_TIMER_MS / 1000);
 const TIMEOUT = `a number of seconds above 0 and no more than ${MAX_SECONDS}, such as 30`;
 
-// /hooks's left-out rows name a hook as /hooks does (answer.ts, hookName) where its warning ends with its whole command;
-// the warnings said at launch and at a live edit keep the command (the user's choice, 2026-11-10, terminal checklist).
-// The short words are kept beside the list the warnings were pushed to, by its identity, so neither the warnings nor the
-// settings change shape; hooksOf (settings.ts) reads them, with the launch's or the live edit's list.
-const shortWords = new WeakMap<string[], Map<string, string>>();
-export const shortOf = (warnings: string[], warning: string) => shortWords.get(warnings)?.get(warning) ?? warning;
-
 const EXAMPLE = '{"type": "command", "command": "check.sh"}';
 const GROUP = `{"matcher": "Bash", "hooks": [${EXAMPLE}]}`;
 // Claude Code's events that take no matcher; one written there is ignored, as Claude Code ignores it.
 const NO_MATCHER: readonly Event[] = ["UserPromptSubmit", "Stop"];
 
-// `entry` is the file's and the entry's names, `settings.json: "hooks"`, which each warning starts with.
-export function readHooks(entry: string, value: unknown, warnings: string[]): Hook[] {
+// `entry` is the file's and the entry's names, `settings.json: "hooks"`, which each warning starts with. `leftOut` gets
+// /hooks's left-out row for each warning, in the same order: its words after `"hooks": `, a hook named in them as /hooks
+// names it (answer.ts, hookName) where the warning ends with its whole command, which the warnings said at launch and at a
+// live edit keep (the user's choice, 2026-11-10, terminal checklist).
+export function readHooks(entry: string, value: unknown, warnings: string[], leftOut: string[] = []): Hook[] {
   if (!isObject(value)) throw wrongType(entry, `an object of events, each a list, such as {"PreToolUse": [${GROUP}]}`, value);
   const hooks: Hook[] = [];
   for (const [name, groups] of Object.entries(value)) {
     const where = JSON.stringify(name);
     const place = `${entry}: ${where}`;
+    const leave = (words: string, short = words) => {
+      warnings.push(`${place} ${words}`);
+      leftOut.push(`${where} ${short}`);
+    };
     if (!(EVENTS as readonly string[]).includes(name)) {
-      warnings.push(`${place} is not an event Tachikoma runs hooks at; its hooks were left out`);
+      leave("is not an event Tachikoma runs hooks at; its hooks were left out");
       continue;
     }
     const event = name as Event;
@@ -66,11 +66,11 @@ export function readHooks(entry: string, value: unknown, warnings: string[]): Ho
       // A misspelled key is dropped and the rest of the entry applies (the user's words at Task 1's review).
       for (const key of Object.keys(group)) {
         if (key === "matcher" || key === "hooks") continue;
-        warnings.push(`${place} has an entry with ${JSON.stringify(key)}, which is not "matcher" or "hooks"; it was left out`);
+        leave(`has an entry with ${JSON.stringify(key)}, which is not "matcher" or "hooks"; it was left out`);
       }
       const matcher = NO_MATCHER.includes(event) ? { all: true as const } : groupMatcher(place, group.matcher);
       for (const h of group.hooks) {
-        const hook = hookOf(place, h, warnings);
+        const hook = hookOf(place, h, leave);
         if (hook) hooks.push({ event, matcher, ...hook, where });
       }
     }
@@ -88,15 +88,16 @@ function groupMatcher(place: string, text: unknown): Matcher {
 }
 
 // One hook's fields, or undefined for one left out. A hook of another kind is left out before its fields are read, as
-// they are that kind's own.
-function hookOf(place: string, h: unknown, warnings: string[]): Omit<Hook, "event" | "matcher" | "where"> | undefined {
+// they are that kind's own. `leave` says a warning's words after the place, and /hooks's row's when they differ.
+type Leave = (words: string, short?: string) => void;
+function hookOf(place: string, h: unknown, leave: Leave): Omit<Hook, "event" | "matcher" | "where"> | undefined {
   if (!isObject(h)) throw wrongType(`${place}: each hook`, `an object, such as ${EXAMPLE}`, h);
   const field = (name: string) => `${place}: a hook's ${JSON.stringify(name)}`;
   const missing = (name: string) => new Error(`${place}: a hook must have ${JSON.stringify(name)}, such as ${EXAMPLE}`);
   if (h.type === undefined) throw missing("type");
   if (typeof h.type !== "string") throw wrongType(field("type"), 'text in quotes, such as "command"', h.type);
   if (h.type !== "command") {
-    warnings.push(`${place} has a ${JSON.stringify(h.type)} hook; only "command" hooks run, so it was left out`);
+    leave(`has a ${JSON.stringify(h.type)} hook; only "command" hooks run, so it was left out`);
     return undefined;
   }
   // The command and its args come before the warnings below, which end with them so that two alike can be told apart
@@ -106,13 +107,9 @@ function hookOf(place: string, h: unknown, warnings: string[]): Omit<Hook, "even
   const args = h.args;
   if (args !== undefined && !texts(args)) throw wrongType(field("args"), "a list of text in quotes", args);
   const command = h.command;
-  const named = (words: string) => {
-    const said = `${place} ${words}: ${[command, ...(args ?? [])].join(" ")}`;
-    warnings.push(said);
-    const statusMessage = typeof h.statusMessage === "string" ? h.statusMessage : undefined;
-    const short = shortWords.get(warnings) ?? new Map<string, string>();
-    shortWords.set(warnings, short.set(said, `${place} ${words}: ${hookName({ command, args, statusMessage })}`));
-  };
+  const statusMessage = typeof h.statusMessage === "string" ? h.statusMessage : undefined;
+  const named = (words: string) =>
+    leave(`${words}: ${[command, ...(args ?? [])].join(" ")}`, `${words}: ${hookName({ command, args, statusMessage })}`);
   // Claude Code runs a hook with `if` only when its permission rule matches, which Tachikoma cannot check, and running it
   // every time would be wrong (release 8b design, "The settings entry").
   if ("if" in h) {

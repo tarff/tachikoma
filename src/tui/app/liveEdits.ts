@@ -26,7 +26,7 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     for (const w of read.warnings) if (!ui.warned.current.includes(w)) fns.note(gray(w));
     ui.warned.current = read.warnings;
     // /hooks's left-out rows follow the file, an edit of a left-out hook alone among them (release 8b plan, Task 12).
-    if (ui.hooks) ui.hooks.set({ ...ui.hooks.config, leftOut: hooksOf(read.settings, read.warnings).leftOut });
+    if (ui.hooks) ui.hooks.set({ ...ui.hooks.config, leftOut: read.hooksLeftOut ?? [] });
     const before = ui.fileNow.current;
     ui.fileNow.current = read.settings;
     const now = resolve({}, {}, read.settings);
@@ -139,10 +139,11 @@ export const liveEdits = (ui: UI, fns: Fns) => {
     } else if (key === "hooks" || key === "disableAllHooks") {
       // From the next event, a hook already running finishing as it started (release 8b design, "What the user sees":
       // "Live, with a line"). The two entries make one set of hooks, so an edit of both says its line once: the second
-      // finds the hooks already set.
+      // finds the hooks already set. The left-out rows are the edit's, set in onSettings before this.
       const h = ui.hooks;
-      const next = hooksOf(s, ui.warned.current);
-      if (!h || (same(h.config.hooks, next.hooks) && h.config.off === next.off)) return;
+      if (!h) return;
+      const next = hooksOf(s, h.config.leftOut);
+      if (same(h.config.hooks, next.hooks) && h.config.off === next.off) return;
       h.set(next);
       const events = new Set(next.hooks.map((x) => x.event)).size;
       const n = next.hooks.length;

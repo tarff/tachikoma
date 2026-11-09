@@ -41,6 +41,7 @@ describe("readHooks", () => {
         ],
       },
       warnings: [],
+      hooksLeftOut: [],
     });
   });
 

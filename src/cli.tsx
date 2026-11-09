@@ -577,10 +577,9 @@ gate.rules = rules;
 gate.protection = box?.protection ?? protection;
 // The user's hooks, one object for the window, handed to the lead's session and, through Tasks, each subagent's (release
 // 8b plan, "Architecture"; Task 6). They run in the project's real folder, and are sent its real paths, or the box's in
-// copy mode (design, "Tool hooks"). Its left-out rows, for /hooks, are the launch warnings' words (Task 1; settings.ts,
-// hooksOf).
+// copy mode (design, "Tool hooks"). Its left-out rows, for /hooks, are the launch warnings' (Task 1; settings.ts, Loaded).
 const hooks = new Hooks(
-  hooksOf(loaded.settings, loaded.warnings),
+  hooksOf(loaded.settings, loaded.hooksLeftOut),
   {
     sessionId: () => session.id,
     transcript: () => session.transcript?.file,

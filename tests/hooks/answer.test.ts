@@ -212,6 +212,17 @@ describe("hookName", () => {
     ["a shell command's quoted path", { command: 'bash "C:/a b/recall.sh" --quiet', args: undefined }, "bash recall.sh"],
     ["a shell command with no file after it", { command: `jq -r '.tool_input.file_path | test("\\\\.git/")' || exit 2`, args: undefined }, "jq"],
     ["the program alone", { command: "check", args: undefined }, "check"],
+    // Claude Code's documented form: pieces that touch, with no space between, are one word.
+    ["a quoted piece joined to the rest", { command: '"$CLAUDE_PROJECT_DIR"/.claude/hooks/check-style.sh', args: undefined }, "check-style.sh"],
+    ["PowerShell's call operator skipped", { command: '& "C:\\Program Files\\nodejs\\node.exe" C:\\h\\x.js', args: undefined }, "node x.js"],
+    ["leading variables skipped", { command: "FOO=1 BAR_2=a/b.js node x.js", args: undefined }, "node x.js"],
+    ["a statusMessage of spaces, as none", { command: "node", args: ["a.js"], statusMessage: "   " }, "node a.js"],
+    ["a statusMessage's spaces around it taken off", { statusMessage: " guard " }, "guard"],
+    // A blank name falls back to the whole command, or with that blank too, the command in quotes.
+    ["no program, the whole command", { command: "", args: ["x.js"] }, "x.js"],
+    ["variables alone, the whole command", { command: "FOO=1", args: undefined }, "FOO=1"],
+    ["an empty command, in quotes", { command: "", args: undefined }, '""'],
+    ["a command of spaces, in quotes", { command: "   ", args: undefined }, '"   "'],
   ])("%s", (_, fields, name) => {
     expect(hookName(hookOf(fields))).toBe(name);
   });

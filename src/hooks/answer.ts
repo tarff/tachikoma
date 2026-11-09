@@ -50,20 +50,29 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 const firstLine = (s: string) => s.trim().split(/\r?\n/)[0] ?? "";
 
 // A hook as its lines show it: its command with its args after it.
-export const commandOf = (hook: Hook) => [hook.command, ...(hook.args ?? [])].join(" ");
+export const commandOf = (hook: Pick<Hook, "command" | "args">) => [hook.command, ...(hook.args ?? [])].join(" ");
 
 // A hook as /hooks and Ctrl+O name it (the user's choice, 2026-11-10, terminal checklist): its statusMessage when it has
-// one; otherwise its program's file name, a trailing .exe dropped, then the file name of the first later word that reads
-// as a file, such as `node block-prompt.js` for `node "C:/x y/block-prompt.js"`, or the program's alone. The words are the
-// command and its args, or, for a command a shell runs, its text split at spaces outside quotes, the quotes taken off. A
-// word reads as a file when it is not an option (`-x`) and its last part, after any / or \, is a name, a dot and an
-// extension.
+// one that is not blank, spaces around it taken off; otherwise its program's file name, a trailing .exe dropped, then the
+// file name of the first later word that reads as a file, such as `node block-prompt.js` for
+// `node "C:/x y/block-prompt.js"`, or the program's alone. The words are the command and its args, or, for a command a
+// shell runs, its text split at spaces outside quotes, pieces that touch with no space between one word
+// (`"$CLAUDE_PROJECT_DIR"/.claude/hooks/check.sh`, Claude Code's documented form), the quotes taken off. PowerShell's
+// call operator `&` and variables set before the program (`FOO=1`) are not the program, so they are skipped. A word reads
+// as a file when it is not an option (`-x`) and its last part, after any / or \, is a name, a dot and an extension.
+// With no program left, the name is the whole command, or that in quotes when it is blank too, so no row is blank.
 export const hookName = (h: Pick<Hook, "command" | "args" | "statusMessage">): string => {
-  if (h.statusMessage) return h.statusMessage;
-  const words = h.args ? [h.command, ...h.args] : [...h.command.matchAll(/"([^"]*)"|'([^']*)'|[^\s"']+/g)].map((m) => m[1] ?? m[2] ?? m[0]);
+  const status = h.statusMessage?.trim();
+  if (status) return status;
+  const words = h.args
+    ? [h.command, ...h.args]
+    : [...h.command.matchAll(/(?:"[^"]*"|'[^']*'|[^\s"']+)+/g)].map((m) => m[0].replace(/"([^"]*)"|'([^']*)'/g, "$1$2"));
+  while (words[0] === "&" || /^[A-Za-z_]\w*=/.test(words[0] ?? "")) words.shift();
   const last = (w: string) => w.split(/[\\/]/).at(-1)!;
+  const program = last(words[0] ?? "").replace(/\.exe$/i, "").trim();
+  if (!program) return commandOf(h).trim() || JSON.stringify(commandOf(h));
   const file = words.slice(1).find((w) => !w.startsWith("-") && /^\w[\w.-]*\.[A-Za-z0-9]+$/.test(last(w)));
-  return [last(words[0] ?? "").replace(/\.exe$/i, ""), ...(file ? [last(file)] : [])].join(" ");
+  return file ? `${program} ${last(file)}` : program;
 };
 
 // One hook's answer. `bash` says Git Bash was found; it is read only when the Windows rule below could apply.
