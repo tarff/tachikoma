@@ -380,6 +380,23 @@ describe("MCP tools in the session: a remote server's drop", () => {
     expect(d.t.errors).toEqual([]);
   });
 
+  it("offers a server whose drop was seen before the request, and the model's call connects it again, is asked and reaches it", async () => {
+    const t = await setup();
+    const log = t.log();
+    const fake = await httpFake(t.dir, { log, tools });
+    const servers = await t.ready([t.remote("r", fake.url)]);
+    await servers.server("r")!.callTool("cut", {}, {}).catch(() => {});
+    expect(servers.list()[0]!.state).toMatchObject({ is: "stopped", retry: true });
+    const states: string[] = [];
+    t.q.then = () => states.push(`${servers.server("r")!.state.is} ${t.notes.length}`);
+    const { session, model } = t.session(servers, [echoCall, reply("done")]);
+    await session.send("go");
+    expect(model.requests[0]!.tools).toEqual(["own", "mcp__r__cut", "mcp__r__echo"]);
+    expect(t.results(session)).toEqual([{ output: "back", isError: false }]);
+    expect([t.q.asked, states, t.notes, t.errors]).toEqual([['mcp__r__echo {"text":"back"}'], ["ready 1"], [AGAIN("r")], []]);
+    expect(t.calls(log, "echo")).toHaveLength(1);
+  });
+
   it("refuses the call with the changed line, before its question, when the new connection's tool is not the one shown", async () => {
     const d = await dropped(async (fake, log2) => {
       await fake.stop();

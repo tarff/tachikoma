@@ -399,6 +399,32 @@ describe("Servers: starting, waiting and stopping", () => {
     ]);
   });
 
+  // Choices 13 and 33: a dropped remote server's next call connects it again, so its tools stay offered, its last list;
+  // one stopped for good, or failed, offers none.
+  it("keeps offering a dropped remote server's last tools, which current() calls stopped until a new connection replaces them", async () => {
+    const { dir, config, make } = await setup();
+    const fake = await httpFake(dir, { tools: [plain] });
+    const remote: ServerConfig = {
+      ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
+      entry: { kind: "http", url: fake.url, headers: {} },
+    };
+    const servers = make([remote, await config("gone"), await config("bad", { exit: 3 })]);
+    servers.startAll();
+    await servers.ready();
+    await servers.server("gone")!.callTool("exit", { code: 4 }, {}).catch(() => {});
+    await vi.waitFor(() => expect(stateOf(servers, "gone")?.is).toBe("stopped"), WAIT);
+    await servers.server("r")!.callTool("cut", {}, {}).catch(() => {});
+    expect(stateOf(servers, "r")).toMatchObject({ is: "stopped", retry: true });
+    const dropped = servers.offer();
+    expect(dropped.map((o) => `${o.server} ${o.tool}`)).toEqual(["r plain"]);
+    expect(servers.current(dropped[0]!)).toBe("stopped");
+    expect(await servers.reconnect("r")).toBe(true);
+    expect(servers.current(dropped[0]!)).toBe("restarted");
+    const now = servers.offer();
+    expect(now.map((o) => [o.spec.name, o.definition])).toEqual(dropped.map((o) => [o.spec.name, o.definition]));
+    expect(servers.current(now[0]!)).toBe("same");
+  });
+
   // Task 5's code review: only a server stopped with retry has a new connection to try, so a failed one is not said again.
   it("tries no reconnect, and says nothing more, for a server that failed, stopped for good, or is ready", async () => {
     const { errors, config, make } = await setup();

@@ -35,6 +35,7 @@ interface Slot {
   late?: boolean; // still starting when a wait gave up on it, so its ready line is said (design, "Starting and stopping servers")
   stopSaid?: number; // the connection whose stop has been said, so each stop is said once
   reconnecting?: Promise<boolean>;
+  last?: Tool[]; // its list when it was last ready, offered while it is stopped with retry (choices 13 and 33)
   // Its left-out lines said, kept while it is not ready, so a new connection with the same list says none again; a live
   // edit's restart is a new slot, which says its own (Task 5's code review).
   said: Set<string>;
@@ -278,8 +279,10 @@ export class Servers {
     return offered;
   }
 
-  // The table of names, rebuilt from every ready server's list (choice 7): `mcp__<safe server>__<safe tool>`, each name
-  // with one owner, given first to the owner the last offer gave it while that tool is still offered, then in the order
+  // The table of names, rebuilt from every ready server's list (choice 7), and the last list of a remote one whose
+  // connection dropped and has its one new connection to come, which its next call makes at the start of its run (choices
+  // 13 and 33), so the model still sees its tools; current() calls them stopped until then. One stopped for good, or
+  // failed, offers none. `mcp__<safe server>__<safe tool>`, each name with one owner, given first to the owner the last offer gave it while that tool is still offered, then in the order
   // the configs are given and each list's order; a later tool with a name in force is left out (design, finding 2).
   // Schemas are flattened or left out before a name is given (choice 36). `fresh`: the left-out lines of each ready server
   // that it had not said; one not ready keeps what it said (Slot.said).
@@ -288,10 +291,13 @@ export class Servers {
     const candidates: { slot: Slot; server: Server; tool: Tool; full: string; prepared: Extract<Prepared, { schema: unknown }>; who: string }[] = [];
     for (const slot of this.#slots) {
       const server = slot.server;
-      if (server?.state.is !== "ready") continue;
+      const state = server?.state;
+      if (state?.is === "ready") slot.last = state.tools;
+      const tools = state?.is === "ready" ? state.tools : state?.is === "stopped" && state.retry ? slot.last : undefined;
+      if (!server || !tools) continue;
       const own: string[] = [];
       lines.set(slot, own);
-      for (const tool of server.state.tools) {
+      for (const tool of tools) {
         const who = `MCP server ${visible(slot.config.name)}: "${visible(tool.name, { tabs: true })}" was left out: `;
         const prepared = this.#prepare(tool);
         if ("reason" in prepared) {
