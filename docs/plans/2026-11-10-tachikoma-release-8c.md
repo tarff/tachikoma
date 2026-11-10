@@ -562,6 +562,40 @@ search, always on", "Own lookup tool, every provider")
     "Says it still holds"): the answer is forgotten only once the reset line is written; when the
     write fails the answer stays, in memory and in the file, and one red line says `Your answer
     for <name> could not be reset (<reason>); the next launch still uses it.`
+53. **The sign-in's return address is Claude Code's** (Task 11's build and spec review; the user's
+    choice, 2026-11-11, "Claude Code's form"): `http://localhost:<port>/callback`, listened for on
+    both `127.0.0.1` and `::1`, so an entry with a fixed `callbackPort` copied from Claude Code
+    signs in unchanged. Claude Code's MCP page: services that match the registered address exactly
+    refused its 2.1.229, which sent `127.0.0.1`, and 2.1.231 went back to `localhost`.
+54. **An entry's headers go only to its server** (Task 11's spec review; the user's choice,
+    2026-11-11, "Headers to server only"): the library's sign-in requests (discovery,
+    registration, token, refresh) never carry the entry's `headers`, so a key in one never reaches
+    a host the server names.
+55. **An entry with its own headers is never signed in** (the user's choice, 2026-11-11, "Failed,
+    401"): a 401 to an entry that has `headers` keeps `failed: <address> answered 401`, which points
+    at its key; only an entry without headers is `needs sign-in`.
+56. **A Sign out that cannot be written** (the user's choice, 2026-11-11, "Match sign-in's line"):
+    red `Sign-out of <name> failed: <reason>`; the sign-in stays.
+57. **A damaged `mcp-auth.json`** (Task 11's spec review; the user's choice, 2026-11-11, "Empty,
+    with a red line"): it counts as holding no sign-in, and one red line says `MCP sign-ins in
+    <file> could not be read, so they were left out; signing in again replaces them.`, the file
+    named as `shownFile()` names files; its contents are never quoted, as they hold tokens.
+58. **`authServerMetadataUrl` is used** (the user's choice, 2026-11-11, "Use it"): sign-in reads the
+    sign-in service's metadata from it, as Claude Code does, in place of discovery.
+    Sign out is offered only when tokens are kept; a client registered without them is not a
+    sign-in (Task 11's spec review).
+59. **Sign-in's other lines** (Task 11's quality review; the user's choices, 2026-11-11, all
+    "Approve"/"Replace"):
+    - A sign-in lost mid-session (a refused refresh, a Sign out in another window): the server
+      becomes `needs sign-in` and the call answers the model `The MCP server <name> needs sign-in,
+      which the user does from /mcp.`
+    - Reasons in `Sign-in to <name> failed: <reason>`: no code in the reply, `the sign-in page sent
+      back no code`; a busy fixed port, `port <n>, the entry's callbackPort, is in use`; a service
+      with no registration and no `clientId`, `the sign-in service needs a client id; set "oauth":
+      {"clientId": ...} in the server's entry`.
+    - The entry's `clientId` wins over a stored client with another id; a 401 from a server that
+      publishes no sign-in details stays `failed: <address> answered 401`; nothing is registered
+      at launch, even when the sign-in service's issuer changed.
 
 ## Lines this plan adds
 
@@ -618,6 +652,10 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | **Sign-in**: the question | `Open your browser to sign in to <name> at <host>?` |
 | Waiting (grey) | `Waiting for the sign-in in your browser. If it did not open, go to: <url>` |
 | Done, failed, signed out | grey `Signed in to <name>.`; red `Sign-in to <name> failed: <reason>`; grey `Signed out of <name>.` |
+| A Sign out that cannot be written (red; choice 56) | `Sign-out of <name> failed: <reason>` |
+| A sign-in lost mid-session (to the model; choice 59) | `The MCP server <name> needs sign-in, which the user does from /mcp.` |
+| Sign-in failure reasons (choice 59) | `the sign-in page sent back no code`; `port <n>, the entry's callbackPort, is in use`; `the sign-in service needs a client id; set "oauth": {"clientId": ...} in the server's entry` |
+| A damaged `mcp-auth.json` (red, once; choice 57) | `MCP sign-ins in <file> could not be read, so they were left out; signing in again replaces them.` |
 | `-p`, a server that needs sign-in (note) | `MCP server <name> needs sign-in, which -p cannot do; sign in from /mcp in the window.` |
 | **Forms**: the heading | `<name> asks: <message>` |
 | A field's question | `<title, or the field's name>` then ` (a number)`, ` (yes or no)`, ` (optional)` where they apply, then `: ` |
@@ -1171,7 +1209,8 @@ Commit: `feat: /mcp lists the servers and their actions, and a live edit restart
 **Behaviour** (design, "Remote servers and sign-in"; choice 28):
 - An `OAuthClientProvider` per remote server: client information (dynamic registration, or the
   entry's `clientId`) and tokens kept in `mcp-auth.json` under its lock; `redirectUrl` on
-  `127.0.0.1` at a free port, or the entry's `callbackPort`; the code verifier in memory.
+  `127.0.0.1` at a free port, or the entry's `callbackPort` (as built: `localhost`, choice 53); the
+  code verifier in memory.
 - A server whose start ends in `UnauthorizedError` is `needs sign-in`; the launch never waits.
 - Sign in asks its question, opens the browser with `openBrowser`, prints the waiting line, takes
   the code at the local address, finishes with the library's `auth`, and reconnects. Esc stops the
@@ -1293,7 +1332,12 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   line says `restarted` for a changed entry that then does not start (the sandbox's network off,
   or a removed user entry uncovering a project's one that waits for a yes); with the sandbox's
   network off, `/mcp` may read a project's answers for the first time, so their notes or the
-  unreadable line can come then or at a later live edit);
+  unreadable line can come then or at a later live edit; and Task 11's reviews: Sign out does not
+  ask the service to revoke the tokens; two windows refreshing one rotating token at once may
+  lose that sign-in; Esc after the code came back may still save the sign-in, kept at the next
+  launch; tokens are keyed by the address as written, so a changed slash, case or `:443` means
+  signing in again; another program on this computer could open the printed start address
+  first, as with `/login chatgpt`; clients that need a secret are not supported);
   the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
