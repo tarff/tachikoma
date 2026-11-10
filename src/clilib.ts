@@ -10,9 +10,13 @@ import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { type Conversation, Session, type SessionOptions } from "./core/session.js";
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "./core/transcript.js";
-import { errorText, type ToolSpec } from "./core/types.js";
+import { errorText, madeUnder, type ToolSpec } from "./core/types.js";
 import { gitBash } from "./exec/env.js";
 import type { Executor } from "./exec/executor.js";
+import type { Answers } from "./mcp/answers.js";
+import type { ServerConfig } from "./mcp/config.js";
+import { SEARCH } from "./mcp/search.js";
+import type { Servers } from "./mcp/servers.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { gitFolderOutside, type GitSettings, gitSettings, hasSubmodules, within } from "./safety/gitconfig.js";
 import { NO_RULES, type UserRules } from "./safety/rules.js";
@@ -572,6 +576,41 @@ export function approvalQuestion(reached: Reached[]): string {
   return [`Read ${files(reached.length)} from outside the project, reached by the instruction files?`, ...reached.map((r) => `  ${visible(r.path)}, ${visible(r.how)}`), "[y/n]"].join("\n");
 }
 
+// The question for a project's MCP server at the launch (release 8c plan, choice 23; "Lines this plan adds"): its command
+// and arguments as they will run, or its address, escaped. A command or argument that is empty or holds a space or a
+// quote is shown in quotes, a quote in it as \", so where each one ends can be seen.
+export function serverQuestion(c: ServerConfig): string {
+  const name = visible(c.name);
+  const e = c.entry;
+  if (e.kind !== "stdio") return `Connect to the MCP server "${name}" from this project's .mcp.json at ${visible(e.url)}? [y/n]`;
+  const shown = (word: string) => (word === "" || /[\s"]/.test(word) ? `"${word.replaceAll('"', '\\"')}"` : word);
+  return `Start the MCP server "${name}" from this project's .mcp.json: ${visible([e.command, ...e.args].map(shown).join(" "))}? [y/n]`;
+}
+
+// Each project server not yet answered for its entry as written, asked about one at a time, in the order the file gives
+// them, its answer kept, a no too (choices 23 and 24). `answers` is called only when a project's server needs one, as
+// reading the project's answers throws on a file it cannot read (answersFor).
+export async function askServers(configs: ServerConfig[], answers: () => Answers, ask: (question: string) => Promise<boolean>): Promise<void> {
+  const project = configs.filter((c) => c.where === "project");
+  if (!project.length) return;
+  const given = answers();
+  for (const c of project) if (given.get(c.name, c.written) === undefined) given.set(c.name, c.written, await ask(serverQuestion(c)));
+}
+
+// The launch's MCP lines, said once the bus has its listeners (release 8c plan, Task 9; "Lines this plan adds"): with the
+// sandbox's network off, once, that every server is off; in -p, each project server not answered yes in the window, which
+// is skipped (design, "A project's servers"). One the user said no to is skipped without a line, as in the window.
+export function mcpLines(servers: Servers, opts: { print: boolean }): string[] {
+  const list = servers.list();
+  if (list.some((s) => s.state.is === "off")) {
+    return ["MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them."];
+  }
+  if (!opts.print) return [];
+  return list
+    .filter((s) => s.where === "project" && s.state.is === "waiting for your yes")
+    .map((s) => `MCP server ${visible(s.name)} from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.`);
+}
+
 // With -p nobody can approve them, so they are left out, and stderr names them.
 export function headlessLeftOut(reached: Reached[]): string {
   const n = reached.length;
@@ -700,8 +739,9 @@ export function openSaved(dir: string, id: string, o: { fork: boolean; copy?: st
 
 // A saved session made this window's, once the launch's lead and tools are known (release 8a design, "Resuming"; plan,
 // choice 4). It writes `-n`'s name; a `lead` line when this launch leads with another model, so the next resume opens
-// with it; a `tools` line when the tools differ from those the history was last saved under, so a reply is sent with its
-// thinking only under its own tools. Once the lost lines have been handed to the model (`reported`), `lost` goes into
+// with it; no `tools` line, which the session's first request writes when its tools differ from those the history was
+// last saved under, so a reply is sent with its thinking only under its own tools (release 8c plan, choice 46). Once
+// the lost lines have been handed to the model (`reported`), `lost` goes into
 // each unfinished subagent's file, so it is reported once (user, 2026-11-06: "Report once"). A session saved under
 // another sandbox setting than this launch's, `prompt.box`, has a system prompt naming another shell and project root,
 // so this launch's, `prompt.full`, takes its place and is written in a `system` line, the replies keeping their
@@ -715,7 +755,6 @@ export function resumed(
   const { read, transcript } = s;
   if (o.name) transcript.write({ t: "name", name: o.name });
   if (o.lead !== read.lead) transcript.write({ t: "lead", lead: o.lead });
-  if (JSON.stringify(read.tools) !== JSON.stringify(o.tools)) transcript.write({ t: "tools", tools: o.tools });
   const rebuilt = read.box !== o.prompt.box;
   if (rebuilt) transcript.write({ t: "system", system: o.prompt.full, box: o.prompt.box });
   if (o.interactive && read.print) transcript.write({ t: "interactive" });
@@ -728,7 +767,14 @@ export function resumed(
       new Transcript(file, transcript.pictures, { inherits: true }).write({ t: "ended", state: "lost" });
     }
   };
-  const { messages, dropped, otherTools } = read.withTools(o.tools, system);
+  // The history under the tools it was last saved under, which hold tool_search and the MCP tools once a request has
+  // offered them: a reply made under others, or under another system prompt, goes without its thinking here, and the
+  // session's first request leaves out the rest's when its own tools differ, writing its tools line then (release 8c
+  // plan, Task 9; choice 46). Its line is said only when Tachikoma's own tools changed, for a reply the session would send
+  // without its thinking, Anthropic's (session.ts, #kept); a changed set of MCP tools says nothing, as servers come and go.
+  const { messages, dropped } = read.withTools(read.tools, system);
+  const own = (tools: ToolSpec[]) => madeUnder("", tools.filter((t) => t.name !== SEARCH && !t.name.startsWith("mcp__")));
+  const otherTools = own(read.tools) !== own(o.tools) && messages.some((m) => m.native?.provider === "anthropic");
   const lines = [
     ...(s.copied ? [{ text: "Opened a copy: that session is open in another window." }] : []),
     { text: `Resumed: ${o.name || read.name || read.firstPrompt?.split(/\r?\n/)[0] || s.id}.`, oneLine: true },
@@ -753,7 +799,7 @@ export function resumed(
       nextPicture: read.nextPicture,
       nextTask: read.nextTask,
       loaded: read.loaded, // a resume's and /branch's (release 8c plan, choice 41)
-      tools: o.tools, // the tools saved last, by the tools line above when they changed (Task 6b's quality review)
+      tools: read.tools, // the tools saved last, which its replies were made under (Task 6b's quality review; choice 46)
     },
     lines,
     lost: read.unfinished.map((u) => `Subagent ${u.id} (${u.description}) had not finished when the session ended; its answer was lost.`),

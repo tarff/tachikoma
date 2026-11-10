@@ -10,6 +10,7 @@ import { accountCommand } from "./auth/chatgpt.js";
 import { withLock } from "./auth/lock.js";
 import {
   approvalQuestion,
+  askServers,
   checkOffLine,
   chooseSession,
   dropOnExit,
@@ -31,6 +32,7 @@ import {
   leadOf,
   leadSession,
   MAX_TASKS,
+  mcpLines,
   networkLine,
   newSaved,
   openSaved,
@@ -62,6 +64,10 @@ import { LocalExecutor, LocalWorkspace } from "./exec/local.js";
 import { Hooks } from "./hooks/hooks.js";
 import { pathsFor } from "./hooks/tools.js";
 import { readKeybindings } from "./keybindings.js";
+import { type Answers, answersFor, launchAnswers } from "./mcp/answers.js";
+import { mergeServers, readProjectFile } from "./mcp/config.js";
+import { Servers } from "./mcp/servers.js";
+import { approveOf, mcpTools } from "./mcp/tools.js";
 import { EFFORTS } from "./providers/anthropic.js";
 import { listModels } from "./providers/models.js";
 import { createProvider } from "./providers/registry.js";
@@ -163,6 +169,9 @@ function fail(message: string): never {
 // The question at the start, before the screen is drawn (release 4 design, "Files that lead elsewhere
 // ask first"): y reads the files, any other key leaves them out, and Ctrl-C quits. Ink unrefs stdin when a screen drawn
 // before this one ends (`tachi -r`'s list), and Node would then exit instead of waiting for the key, so it is ref'd again.
+// It is resumed too: a data listener does not wake a stream paused on purpose (Node's stream docs, readable.pause), as
+// the question before leaves it, so a question after another, such as each project MCP server's (release 8c plan,
+// choice 23), would otherwise never hear its key (found at Task 9's build).
 function askAtStart(question: string): Promise<boolean> {
   process.stdout.write(`${question} `);
   process.stdin.ref();
@@ -177,6 +186,7 @@ function askAtStart(question: string): Promise<boolean> {
       process.stdout.write(`${yes ? "y" : "n"}\n`);
       resolve(yes);
     });
+    process.stdin.resume();
   });
 }
 
@@ -348,6 +358,9 @@ if (parsed.help) {
 // OSC 52 cannot act on the terminal (release 6 plan, choice 30).
 const loaded = loadSettings();
 if ("problem" in loaded) fail(visible(loaded.problem));
+// A project's MCP servers are read with the settings (release 8c plan, Task 9), at the launch only (Task 2), their
+// warnings said with the settings', and shown with them in full screen (App.tsx).
+const projectServers = readProjectFile(process.cwd(), process.env, loaded.warnings);
 for (const warning of loaded.warnings) console.error(visible(warning));
 const leadSpec = leadOf(parsed, process.env, loaded.settings);
 if (!leadSpec) fail(`No lead model given. Pass --lead, set TACHI_LEAD, or put "lead": "<provider:model>" in ${shownFile()}.\n\n${HELP}`);
@@ -541,6 +554,38 @@ const instructions = await readInstructions(instructionsAt, async (reached) => {
   for (const r of reached) asked.set(r.path, yes);
   return yes;
 });
+// The MCP servers, the user's entry winning a name both files give (release 8c design, "A project's servers"). The
+// sandbox's network is "none" with the sandbox off; with it on and its network off, no server starts (design, "Starting
+// and stopping servers").
+const mcpConfigs = mergeServers(loaded.settings.mcpServers ?? [], projectServers);
+const mcpNetwork = sandbox === "off" ? "none" : options.network;
+// The project's answers (choice 24), read once, when a project's server needs one; readPrivate's note that it made the
+// file private is grey, as the launch's other notes are. A file that cannot be read leaves every project server
+// unanswered: Servers says why in red (Task 5), and in the window each is asked about again, its answer kept for this
+// launch only (launchOnly), as nothing can be written there.
+let answers: Answers | undefined;
+let unread: { err: unknown } | undefined;
+const projectAnswers = (): Answers => {
+  if (unread) throw unread.err;
+  try {
+    return (answers ??= answersFor(root, data, (line) => console.error(gray(line))));
+  } catch (err) {
+    unread = { err };
+    throw err;
+  }
+};
+const launchOnly = launchAnswers();
+// In the window, after the instruction files' question, one question per project server not yet answered (choice 23);
+// none with the network off, as none could start. -p asks nothing: it starts only those already said yes to.
+if (interactive && mcpNetwork !== "off") {
+  await askServers(mcpConfigs, () => {
+    try {
+      return projectAnswers();
+    } catch {
+      return launchOnly;
+    }
+  }, askAtStart);
+}
 // Then the box: leftover boxes removed, the box started and its node checked (sandboxStart). From here the model works in
 // it, on /work (choice 19). Its launch lines are grey in the interface, and on stderr with -p.
 let box: Started | undefined;
@@ -558,6 +603,18 @@ if (ready) {
 const where = box ?? { root, executor: new LocalExecutor(), workspace: new LocalWorkspace(root) };
 const first = box?.system ?? systemPrompt(root);
 const system = [first, instructions.text].filter(Boolean).join("\n\n");
+// The MCP servers, made once the sandbox has started, and started once the bus has its listeners (release 8c plan, Task
+// 9). They work in the project's own folder, as they run outside the box until a later release (design, "Starting and
+// stopping servers").
+const servers = new Servers(mcpConfigs, {
+  root,
+  env: process.env,
+  bus,
+  answers: projectAnswers,
+  unread: launchOnly,
+  network: mcpNetwork,
+  lead: () => session.lead.id,
+});
 
 let declined = false;
 let ask: Ask = async (summary, _detail, owner, _plain, warnings) => {
@@ -590,6 +647,8 @@ const hooks = new Hooks(
   },
   bus,
 );
+// mcp_tool hooks reach the servers only through this, the subagents' Hooks too (release 8c plan, Task 8).
+hooks.useServers(servers);
 const paths = pathsFor(root, box ? { mode: sandbox === "copy" ? "copy" : "live" } : null);
 // ctx.root and the workspace's root are one place: /work in the box (Task 14's review).
 const { executor, workspace } = where;
@@ -604,6 +663,7 @@ const tasks = new Tasks({
   transcript: () => session.transcript, // each subagent saves beside the lead (release 8a plan, Task 5)
   hooks,
   paths,
+  mcp: servers, // each subagent's own MCP tools, its trusted read-only ones only (Task 7)
 });
 // The to-do list and delegate are the lead's alone; the screen shows the list from the bus. In the box the shell tool says
 // bash, whatever the host.
@@ -641,6 +701,10 @@ const { session, pictures } = leadSession({
   tasks,
   hooks,
   paths,
+  // The MCP tools, each call asked about by the launch's question (release 8c plan, Task 7), and the servers the first
+  // prompt waits for (choice 25).
+  mcp: mcpTools(servers, bus, approveOf(servers)),
+  servers,
 });
 // SessionStart's source, by how the launch opened the conversation (release 8b plan, Task 10): a copy opened as another
 // window holds the session is still a resume, as -c or -r asked for one.
@@ -657,14 +721,14 @@ if (parsed.print !== undefined) {
     // A judge that cannot be reached refuses one action, as a no does, and fails no run (release 7 plan, choice 65); nor
     // does a transcript that cannot be saved (release 8a plan, Task 5), nor a shortening's line after which the request was
     // sent as it is (Task 13): a later line that ends the turn has no mark, and still fails it. Nor does a hook that failed
-    // (release 8b design, "What the user sees").
-    if (e.kind !== "tool" && e.kind !== "fallback" && e.kind !== "judge" && e.kind !== "saving" && e.kind !== "hook" && !(e.kind === "shortening" && e.sent)) {
-      failed = true;
-    }
+    // (release 8b design, "What the user sees"), nor an MCP server, nor the project's answers (release 8c plan, choice 26).
+    const harmless = ["tool", "fallback", "judge", "saving", "hook", "mcp"];
+    if (!harmless.includes(e.kind) && !(e.kind === "shortening" && e.sent)) failed = true;
   });
   if (parsed.json) {
-    // A hook's grey lines too, each a line of its own (release 8b plan, Task 8; the user's choice, 2026-11-09).
-    for (const event of ["message", "usage", "error", "lead", "hook-note"] as const) {
+    // A hook's grey lines too, each a line of its own (release 8b plan, Task 8; the user's choice, 2026-11-09), and the MCP
+    // ones (release 8c plan, choice 26).
+    for (const event of ["message", "usage", "error", "lead", "hook-note", "mcp-note"] as const) {
       bus.on(event, (data: unknown) => console.log(jsonLine(event, data)));
     }
   } else {
@@ -678,7 +742,12 @@ if (parsed.print !== undefined) {
     // A hook's grey lines, as a fallback's note is written (release 8b plan, choice 23), escaped whole, so a line break in
     // the hook's own words cannot pass for a line of Tachikoma's (Task 6's review).
     bus.on("hook-note", (line) => console.error(`note: ${visible(line, { tabs: true })}`));
+    // An MCP grey line so too (choice 26); a failure is `mcp: <line>`, as every other kind's (above).
+    bus.on("mcp-note", (line) => console.error(`note: ${visible(line, { tabs: true })}`));
   }
+  // Started once the listeners are on, before the prompt is sent, which waits for them (choice 25).
+  servers.startAll();
+  for (const line of mcpLines(servers, { print: true })) bus.emit("mcp-note", line);
   // Loaded once the error listeners are on, so a start line or mend that failed is said now, not at the first write.
   for (const line of said) console.error(gray(line.text));
   session.load(opened.conversation);
@@ -705,7 +774,9 @@ if (parsed.print !== undefined) {
     }
   }
   // The run's session ends here, after its answer, however its turn ended, a stop by Ctrl-C too (release 8b plan, Task 10).
+  // Then the MCP servers stop, after SessionEnd, whose mcp_tool hooks call them (release 8c plan, Task 8's code review).
   await session.end("other");
+  await servers.stopAll();
   // Nobody can review here, so the copy is kept (choice 29), unless it has nothing to review: then, as at the session's
   // end in the interface (queue.ts, leave), once the box is gone and under the copy's lock, it is removed (choice 121).
   if (box?.copy) {
@@ -826,14 +897,19 @@ if (parsed.print !== undefined) {
   );
   // Ink's first render, in its legacy mode, runs the App's effects before render() returns (measured 2026-11-06), so its
   // listeners are on: a start line or mend that failed is said on screen now, not at the first write. So are SessionStart's
-  // lines (release 8b plan, Task 10).
+  // lines (release 8b plan, Task 10), and the MCP servers' (release 8c plan, Task 9), started now, before a prompt can be
+  // typed, which waits for them (choice 25).
+  servers.startAll();
+  for (const line of mcpLines(servers, { print: false })) bus.emit("mcp-note", line);
   session.load(opened.conversation);
   session.start(source);
   const exited = ink.waitUntilExit();
   restoreWhenInkEnds(screen, exited);
   // After the terminal is back, as restoreWhenInkEnds waits on the same promise first; an error is its to report. The
   // lines come escaped (Review.tsx, ReviewEnd). Then the window's exit is done, after SessionEnd (queue.ts, leave), so
-  // an async hook still running is killed, as at the end of a -p run (the user's choice, 2026-11-10; final review).
+  // an async hook still running is killed, as at the end of a -p run (the user's choice, 2026-11-10; final review), and
+  // the MCP servers stop, after SessionEnd too, whose mcp_tool hooks call them (release 8c plan, Task 8's code review). A
+  // crash leaves them to the exit's kill (exec/local.ts, running).
   exited
     .then(
       () => {
@@ -842,5 +918,6 @@ if (parsed.print !== undefined) {
       },
       () => {},
     )
-    .then(() => hooks.stopAsync());
+    .then(() => hooks.stopAsync())
+    .then(() => servers.stopAll());
 }

@@ -3,7 +3,7 @@ import { type Combined, commandOf } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Hooks } from "../hooks/hooks.js";
 import { errorOf, fromClaude, isMcp, outputFrom, type Paths, pathsFor, responseOf, toClaude } from "../hooks/tools.js";
-import type { Offered } from "../mcp/servers.js";
+import type { Offered, Servers } from "../mcp/servers.js";
 import type { McpTools } from "../mcp/tools.js";
 import type { Cache } from "../providers/pictures.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
@@ -138,6 +138,9 @@ export interface SessionOptions {
   // The offer defines the tools loaded so far and gives tool_search, which loads the rest; `loaded` is the conversation's
   // set, saved here and replaced by a load (Task 6b; choices 37 and 41).
   mcp?: McpTools;
+  // The MCP servers the launch's first prompt waits for, after SessionStart's hooks (release 8c plan, choice 25): `ready`
+  // as Servers gives it; `waitingFor` names those still starting, for the waiting line. The lead's only.
+  servers?: Pick<Servers, "ready" | "waitingFor">;
 }
 
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
@@ -202,6 +205,10 @@ export class Session {
   // its sync hooks take the stop: async ones are left running, as every event's are but SessionEnd's (hooks.ts).
   #starting: Promise<void> | undefined;
   #stopStart: AbortController | undefined;
+  // The first prompt waits for the MCP servers still starting, once (choice 25); `#serverWait` stops that wait alone, so
+  // Esc sends the prompt without the late ones (design, "Starting and stopping servers").
+  #serversFirst: boolean;
+  #serverWait: AbortController | undefined;
   // The MCP tools the request being made, or last made, offered, and its tool_search: its reply's calls run on these
   // (release 8c plan, choices 9 and 37).
   #offered: Offered[] = [];
@@ -223,6 +230,7 @@ export class Session {
     this.id = opts.id ?? "";
     this.system = opts.system;
     this.#transcript = opts.transcript;
+    this.#serversFirst = opts.servers !== undefined;
     // A launch's start line holds Tachikoma's own tools.
     this.#savedTools = madeUnder("", this.#own());
   }
@@ -352,6 +360,36 @@ export class Session {
     this.#starting = undefined;
   }
 
+  // The first prompt's wait for the MCP servers (choice 25), made once: false when the turn's own signal stopped it, so
+  // nothing is sent; true once none is starting, or when Esc stopped this wait alone (stopWaiting). Either stop leaves
+  // those still starting to say when they are ready (Servers, ready).
+  async #serversReady(signal?: AbortSignal): Promise<boolean> {
+    this.#serversFirst = false;
+    const wait = new AbortController();
+    const stop = () => wait.abort();
+    if (signal?.aborted) stop();
+    signal?.addEventListener("abort", stop, { once: true });
+    this.#serverWait = wait;
+    try {
+      await this.opts.servers!.ready(wait.signal);
+    } finally {
+      signal?.removeEventListener("abort", stop);
+      this.#serverWait = undefined;
+    }
+    return !signal?.aborted;
+  }
+
+  // The MCP servers the first prompt waits for now, escaped, for the waiting line (choice 25); none outside that wait.
+  waitingFor(): string[] {
+    return this.#serverWait ? this.opts.servers!.waitingFor() : [];
+  }
+
+  // Esc while the first prompt waits for the MCP servers: it is sent without those still starting, whose tools join a
+  // later request once they are ready (design, "Starting and stopping servers").
+  stopWaiting(): void {
+    this.#serverWait?.abort();
+  }
+
   // Before /lead makes `next` the lead (release 8a design, "When to shorten"): a conversation that will not fit its smaller
   // window is shortened between turns by the lead leading now, estimated with that lead's ratio, as `next` has none yet
   // (plan, Task 12). The reason it could not be, for /lead's refusal; undefined when it fits, when that cannot be told, and
@@ -429,7 +467,13 @@ export class Session {
     const { bus, hooks } = this.opts;
     // SessionStart's hooks answer first, so their text goes with this request; a stop meanwhile sends and saves nothing and
     // says nothing, as a stop during UserPromptSubmit's does, and their text waits for the next one (Task 10).
-    if (this.#starting && !(await settled(this.#starting, signal))) return;
+    // The launch's first prompt waits for the MCP servers too, through the same wait, so one stop ends both, those still
+    // starting saying when they are ready (choice 25); an Esc during the servers' wait alone sends the prompt without them.
+    if (this.#starting && !(await settled(this.#starting, signal))) {
+      if (this.#serversFirst) void this.#serversReady(signal);
+      return;
+    }
+    if (this.#serversFirst && !(await this.#serversReady(signal))) return;
     // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept. One
     // a server supplied is not the user's (release 8c plan, choice 34).
     const words = typed

@@ -10,8 +10,12 @@ import { PermissionGate } from "../src/core/permissions.js";
 import { listSessions, openSession, sessionsDir } from "../src/core/sessions.js";
 import type { Message, ToolSpec } from "../src/core/types.js";
 import type { Hook } from "../src/hooks/config.js";
+import { type Answers, answersFor } from "../src/mcp/answers.js";
+import type { ServerConfig } from "../src/mcp/config.js";
+import { Servers } from "../src/mcp/servers.js";
 import {
   approvalQuestion,
+  askServers,
   chooseSession,
   exitOn,
   exitSignals,
@@ -26,6 +30,7 @@ import {
   jsonLine,
   leadOf,
   leadSession,
+  mcpLines,
   newSaved,
   openSaved,
   prose,
@@ -35,6 +40,7 @@ import {
   resumeArgs,
   screenMode,
   scrollSpeed,
+  serverQuestion,
   statusSegments,
   systemAgain,
   WindowSessions,
@@ -80,6 +86,60 @@ describe("the instruction files on screen", () => {
     expect(headlessLeftOut([{ path: path.resolve("/elsewhere/x.md"), how: "imported by CLAUDE.md" }])).toBe(
       `note: 1 instruction file from outside the project left out, since nobody can approve it in -p mode: ${path.resolve("/elsewhere/x.md")}, imported by CLAUDE.md`,
     );
+  });
+});
+
+// Release 8c plan, Task 9 (choices 23, 24 and 26; "Lines this plan adds"): a project's MCP servers asked about at the
+// launch, and the launch's MCP lines. No server is started here: a Servers made without startAll starts none.
+describe("MCP servers at the launch", { timeout: 15_000 }, () => {
+  const server = (name: string, entry: ServerConfig["entry"], where: ServerConfig["where"] = "project"): ServerConfig => ({
+    name, safe: name.replace(/[^A-Za-z0-9_-]/g, "_"), entry, where, trusted: null, trustedTools: [], alwaysLoad: false, written: `as written: ${name}`,
+  });
+  const local = (name: string, args: string[] = [], where: ServerConfig["where"] = "project") =>
+    server(name, { kind: "stdio", command: "npx", args, env: {} }, where);
+  const servers = (configs: ServerConfig[], network: "on" | "off" | "none", answers: () => Answers) =>
+    new Servers(configs, { root: tmpdir(), env: {}, bus: new Bus(), answers, network, lead: () => "fake:a" });
+  const none = (): Answers => ({ get: () => undefined, set: () => {}, reset: () => {} });
+
+  it("asks about a project's local server with its command and arguments, and a remote one at its address, escaped", () => {
+    const tv = local("tv", ["-y", "tradingview-mcp"]);
+    expect(serverQuestion(tv)).toBe('Start the MCP server "tv" from this project\'s .mcp.json: npx -y tradingview-mcp? [y/n]');
+    // A command or argument that is empty or holds a space or a quote is shown in quotes, a quote in it as \", so where
+    // each ends can be seen.
+    expect(serverQuestion(local("a\u001b[2Jb", ["C:\\my server\\x.js", "", 'say "hi"']))).toBe(
+      'Start the MCP server "a\\u001b[2Jb" from this project\'s .mcp.json: npx "C:\\my server\\x.js" "" "say \\"hi\\""? [y/n]',
+    );
+    const remote = server("sanity", { kind: "http", url: "https://mcp.sanity.io/\u202e", headers: {} });
+    expect(serverQuestion(remote)).toBe('Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.sanity.io/\\u202e? [y/n]');
+  });
+
+  it("asks about each project server not yet answered for its entry, in order, and keeps a yes and a no for the next launch", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
+    onTestFinished(() => removeTree(top));
+    const data = path.join(top, "data", "tachikoma");
+    answersFor(top, data).set("old", "as written: old", true);
+    const asked: string[] = [];
+    const replies = [true, false];
+    const configs = [local("mine", [], "user"), local("old"), local("yes"), local("no")];
+    await askServers(configs, () => answersFor(top, data), async (question) => (asked.push(question), replies.shift()!));
+    expect(asked).toEqual([serverQuestion(local("yes")), serverQuestion(local("no"))]);
+    const kept = answersFor(top, data);
+    expect(["old", "yes", "no"].map((name) => kept.get(name, `as written: ${name}`))).toEqual([true, true, false]);
+    // Nothing read nor asked without a project server.
+    await askServers([local("mine", [], "user")], () => expect.unreachable("no project server, so no answers are read"), async () => expect.unreachable());
+  });
+
+  it("says once that the sandbox's network keeps every server off, and in -p names each project server not answered yes", () => {
+    const configs = [local("mine", [], "user"), local("yes"), local("no"), local("new")];
+    expect(mcpLines(servers(configs, "off", none), { print: true })).toEqual([
+      "MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them.",
+    ]);
+    const given = (): Answers => ({ get: (name) => ({ yes: true, no: false })[name], set: () => {}, reset: () => {} });
+    expect(mcpLines(servers(configs, "none", given), { print: true })).toEqual([
+      "MCP server new from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.",
+    ]);
+    expect(mcpLines(servers(configs, "none", given), { print: false })).toEqual([]);
+    expect(mcpLines(servers([], "off", none), { print: true })).toEqual([]);
   });
 });
 
@@ -638,32 +698,57 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect([read(path.join(dir, "held.jsonl")), read(path.join(dir, "forked.jsonl"))]).toEqual(before);
     });
 
-    // Release 8a plan, choice 4 (Task 6 spec review): the lead and the tools a resume brings are recorded.
-    it("writes a lead line for another lead, and a tools line for other tools, and nothing for the same ones", () => {
+    // Release 8a plan, choice 4 (Task 6 spec review): the lead a resume brings is recorded. Its tools are not: the session's
+    // first request writes its tools line, holding tool_search and the MCP tools too (release 8c plan, Task 9; choice 46).
+    it("writes a lead line for another lead, and no tools line for other tools, and nothing for the same ones", () => {
       const file = saved(dir, "same", talk("same", "hi"));
       open("same").release();
       expect(lines(file).map((l) => l.t)).toEqual(["start", "message", "message"]);
       open("same", { lead: "fake:b", as: other }).release();
-      expect(lines(file).slice(3)).toMatchObject([{ t: "lead", lead: "fake:b" }, { t: "tools", tools: other }]);
+      expect(lines(file).slice(3)).toEqual([expect.objectContaining({ t: "lead", lead: "fake:b" })]);
     });
 
-    it("sends a reply's thinking only under the tools it was saved under, saying when any was left out", () => {
+    // Release 8c plan, Task 9 (choice 46): the history comes under the tools it was last saved under, which the session's
+    // first request compares with its own (keepThinking), so the strip is left to it; the line is said only when
+    // Tachikoma's own tools changed.
+    it("keeps a reply's thinking for the session under the tools it was saved under, saying when Tachikoma's own changed", () => {
       saved(dir, "thought", [start("thought"), message(prompt("hi")), message(said("Done.", native))]);
       saved(dir, "plain", [start("plain"), message(prompt("hi")), message(said("Done."))]);
       const changed = "The tools have changed since this session was saved, so its earlier replies are sent without their thinking.";
-      // Under other tools: the first reply's thinking is left out, and a reply made then keeps its own.
+      // Under other tools of Tachikoma's own: the line, the thinking kept for the session's first request to leave out.
       const b = open("thought", { as: other });
-      expect(b.conversation.messages).toEqual([prompt("hi"), said("Done.")]);
+      expect(b.conversation.messages).toEqual([prompt("hi"), said("Done.", native)]);
+      expect(b.conversation.tools).toEqual(tools);
       expect(b.lines.map((l) => l.text)).toEqual(["Resumed: hi.", changed]);
+      // As the session's first request under them writes it, then its reply.
+      b.conversation.transcript!.write({ t: "tools", tools: other });
       b.conversation.transcript!.write({ t: "message", message: prompt("again") });
       b.conversation.transcript!.write({ t: "message", message: said("Done again.", native) });
       b.release();
-      // Back under the first tools: neither goes, as the other tools' reply comes after the first, and thinking is left out
-      // only from the front (release 8c plan, Task 6b's quality review).
+      // Back under the first tools: the reply before the tools changed goes without its thinking here, as thinking is left
+      // out only from the front (Task 6b's quality review); the later one's is left for the session.
       const a = open("thought");
-      expect(a.conversation.messages).toEqual([prompt("hi"), said("Done."), prompt("again"), said("Done again.")]);
+      expect(a.conversation.messages).toEqual([prompt("hi"), said("Done."), prompt("again"), said("Done again.", native)]);
+      expect(a.conversation.tools).toEqual(other);
       expect(a.lines.map((l) => l.text)).toEqual(["Resumed: hi.", changed]);
       expect(open("plain", { as: other }).lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+    });
+
+    // Choice 46 at resume: a saved set holding tool_search and MCP tools beside Tachikoma's own says nothing and keeps the
+    // thinking, as the session's first request offers the same set when the same servers are ready.
+    it("says nothing of tool_search and the MCP tools in the saved set, keeping the thinking and that set", () => {
+      const mcp: ToolSpec[] = [
+        { name: "tool_search", description: "Finds MCP tools.", inputSchema: { type: "object" } },
+        { name: "mcp__tv__quote_get", description: "A quote.", inputSchema: { type: "object" } },
+      ];
+      const searched = [start("searched"), { t: "tools", at, tools: [...tools, ...mcp] }, message(prompt("hi")), message(said("Done.", native))];
+      const file = saved(dir, "searched", searched);
+      const o = open("searched");
+      expect(o.lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
+      expect(o.conversation.messages).toEqual([prompt("hi"), said("Done.", native)]);
+      expect(o.conversation.tools).toEqual([...tools, ...mcp]);
+      o.release();
+      expect(lines(file).map((l) => l.t)).toEqual(["start", "tools", "message", "message"]);
     });
 
     // Release 8a final review (user, 2026-11-07: "Rebuild it", "Save the setting", "Only at the change"): a session saved
@@ -679,6 +764,8 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       expect(b.conversation.messages).toEqual([prompt("hi"), said("Done.")]);
       expect(b.lines.map((l) => l.text)).toEqual(["Resumed: hi.", `${changed}, and its earlier replies are sent without their thinking.`]);
       expect(lines(file).at(-1)).toMatchObject({ t: "system", system: box.full, box: true });
+      // As the session's first request under the box's tools writes them (choice 46), then its reply.
+      b.conversation.transcript!.write({ t: "tools", tools: other });
       b.conversation.transcript!.write({ t: "message", message: prompt("again") });
       b.conversation.transcript!.write({ t: "message", message: said("Done again.", native) });
       b.release();

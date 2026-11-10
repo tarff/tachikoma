@@ -48,9 +48,10 @@ async function setup() {
     const entry = { kind: "stdio" as const, command: process.execPath, args: [script], env: {} };
     return { name, safe, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry, ...over };
   };
-  const make = (configs: ServerConfig[], opts: { answers?: () => Answers; network?: "on" | "off" | "none" } = {}) => {
+  const make = (configs: ServerConfig[], opts: { answers?: () => Answers; unread?: Answers; network?: "on" | "off" | "none" } = {}) => {
     const answers = opts.answers ?? nobody;
-    const servers = new Servers(configs, { root: dir, env: process.env, bus, answers, network: opts.network ?? "none", lead: () => "fake:a" });
+    const unread = opts.unread ? { unread: opts.unread } : {};
+    const servers = new Servers(configs, { root: dir, env: process.env, bus, answers, ...unread, network: opts.network ?? "none", lead: () => "fake:a" });
     made.push(servers);
     return servers;
   };
@@ -634,6 +635,23 @@ describe("Servers: a project's servers and the network", () => {
       },
     ]);
     expect(servers.list().map((s) => s.state.is)).toEqual(["ready", "waiting for your yes"]);
+  });
+
+  // Release 8c plan, Task 9: in the window the launch asks about them again, each answer kept for that launch only, as
+  // nothing can be written to the file; the red line is said all the same.
+  it("takes the launch's own answers when the project's could not be read, still saying why in red", async () => {
+    const { dir, config, make, errors } = await setup();
+    const data = path.join(dir, "data", "tachikoma");
+    mkdirSync(projectFile("mcp-answers", dir, data), { recursive: true });
+    const p = { where: "project" as const };
+    const configs = [await config("yes", {}, { ...p, written: "w1" }), await config("no", {}, { ...p, written: "w2" })];
+    const unread = given({ yes: ["w1", true], no: ["w2", false] })();
+    const servers = make(configs, { answers: () => answersFor(dir, data), unread });
+    servers.startAll();
+    await servers.ready();
+    const unreadable = /^MCP answers for this project could not be read \(.+\), so its servers are asked about again\.$/;
+    expect(errors.map((e) => e.message)).toEqual([expect.stringMatching(unreadable)]);
+    expect(servers.list().map((s) => s.state.is)).toEqual(["ready", "you said no"]);
   });
 
   it("starts no server with the sandbox's network off, every one off", async () => {

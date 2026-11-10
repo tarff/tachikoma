@@ -64,3 +64,18 @@ export function answersFor(root: string, dir: string = dataDir(), warn: (message
     },
   };
 }
+
+// Answers kept for this launch only, written nowhere: the window's, when the project's file could not be read, so each
+// server asked about again starts or not as the user says, and is asked about at the next launch too (release 8c plan,
+// Task 9).
+export function launchAnswers(): Answers {
+  const answers = new Map<string, Answer>();
+  return {
+    get: (name, entry) => {
+      const answer = answers.get(name);
+      return answer?.entry === entry ? answer.yes : undefined;
+    },
+    set: (name, entry, yes) => void answers.set(name, { entry, yes }),
+    reset: (name) => void answers.delete(name),
+  };
+}

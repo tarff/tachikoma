@@ -19,7 +19,7 @@ import { system32 } from "../../src/exec/env.js";
 import type { Executor } from "../../src/exec/executor.js";
 import { LocalWorkspace } from "../../src/exec/local.js";
 import type { Workspace } from "../../src/exec/workspace.js";
-import { Session } from "../../src/core/session.js";
+import { Session, type SessionOptions } from "../../src/core/session.js";
 import { attachErrorLog } from "../../src/core/errorlog.js";
 import { exportText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
@@ -160,6 +160,7 @@ async function mount(
     // read, with left-out rows and `off` for /hooks; none when not given (release 8b plan, Tasks 8 and 12).
     hooks?: Hook[] | HooksConfig;
     leftLines?: AppProps["leftLines"]; // takes SessionEnd's lines at the window's exit, in full screen or copy mode (Task 10)
+    servers?: SessionOptions["servers"]; // the MCP servers the first prompt waits for (release 8c plan, Task 9); none when not given
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
@@ -220,6 +221,7 @@ async function mount(
     inbox: () => [...windowSessions.lost(), ...tasks.take()],
     ask: (...a) => ask(...a), // as cli.tsx gives it
     ...(hooks ? { hooks } : {}),
+    ...(opts.servers ? { servers: opts.servers } : {}),
   });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
   if (opts.past) writeFileSync(historyFile, opts.past.map((p) => `${JSON.stringify(p)}\n`).join(""));
@@ -10058,5 +10060,96 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     // The user's choice, 2026-11-10, terminal checklist: the left-out row names the hook as /hooks does; the warning above
     // keeps its whole command.
     expect(app.lastFrame()).toContain(`No hooks in force. They go in "hooks" in ${shownFile()}.\nLeft out:\n  ${warning}\n  ${unchecked}node audit.js\n`);
+  });
+});
+
+// Release 8c plan, Task 9 (choices 25 and 26): the MCP servers in the window. The servers are a stand-in for Servers'
+// ready and waitingFor, so no process starts here; the launch's own are tested with fake servers in tests/cli.test.ts.
+describe("App's MCP", () => {
+  // `names` are still starting until go(); each wait the session makes is kept with its signal, which Esc stops.
+  function starting(names: string[]) {
+    const waits: AbortSignal[] = [];
+    let left = names;
+    const done: (() => void)[] = [];
+    const servers: NonNullable<SessionOptions["servers"]> = {
+      waitingFor: () => left,
+      ready: (signal) =>
+        new Promise<boolean>((resolve) => {
+          waits.push(signal!);
+          if (!left.length) return resolve(true);
+          done.push(() => resolve(true));
+          signal?.addEventListener("abort", () => resolve(false), { once: true });
+        }),
+    };
+    const go = () => {
+      left = [];
+      for (const d of done.splice(0)) d();
+    };
+    return { servers, waits, go };
+  }
+
+  it("names the servers the first prompt waits for on the waiting line, and Esc sends it without them", async () => {
+    const s = starting(["tradingview", "sanity"]);
+    const lead = new Held();
+    const { app } = await mount([], { lead, servers: s.servers });
+    await type(app, "first");
+    await until(app, "Waiting for MCP servers: tradingview, sanity... · ");
+    expect(lead.asked).toHaveLength(0);
+    await press(app, "\u001b");
+    await waitFor(() => lead.asked.length === 1);
+    expect(s.waits.map((w) => w.aborted)).toEqual([true]);
+    await until(app, "Working · ");
+    lead.answer("done");
+    await until(app, "done");
+    // Only the first prompt waits: the late servers' tools join a request once they are ready (design, "Starting and
+    // stopping servers").
+    await type(app, "second");
+    await waitFor(() => lead.asked.length === 2);
+    expect(s.waits).toHaveLength(1);
+    lead.answer("done again");
+    await until(app, "done again");
+  });
+
+  it("sends the first prompt once the servers have started", async () => {
+    const s = starting(["tradingview"]);
+    const lead = new Held();
+    const { app } = await mount([], { lead, servers: s.servers });
+    await type(app, "first");
+    await until(app, "Waiting for MCP servers: tradingview... · ");
+    s.go();
+    await waitFor(() => lead.asked.length === 1);
+    expect(s.waits.map((w) => w.aborted)).toEqual([false]);
+    await until(app, "Working · ");
+    lead.answer("done");
+    await until(app, "done");
+  });
+
+  // Ctrl-C stops the turn as ever, the wait with it, so nothing is sent and the prompt comes back.
+  it("sends nothing when Ctrl-C stops the first prompt's wait", async () => {
+    const s = starting(["tradingview"]);
+    const lead = new Held();
+    const { app, session } = await mount([], { lead, servers: s.servers });
+    await type(app, "first");
+    await until(app, "Waiting for MCP servers: tradingview... · ");
+    await press(app, "\u0003");
+    await gone(app, "Waiting for MCP servers");
+    expect(s.waits.map((w) => w.aborted)).toEqual([true]);
+    expect(lead.asked).toEqual([]);
+    expect(session.messages).toEqual([]);
+  });
+
+  // Choice 26: an MCP grey line is grey, a failure red, each line alone, as it names what failed, as a hook's is; both
+  // escaped whole, as they carry what a server sent.
+  it("says an MCP note in grey and an MCP failure in red, escaped", async () => {
+    await inColour(async () => {
+      const { app, bus } = await mount([]);
+      bus.emit("mcp-note", "MCP server tv is ready: 3 tools.\u0007");
+      const message = "MCP server tv failed to start: it exited with code 3: bad\u001b[2J";
+      bus.emit("error", { kind: "mcp", attempted: "MCP server tv", message, lead: "fake:a" });
+      await until(app, "failed to start");
+      const frame = app.lastFrame()!;
+      expect(frame).toContain("\u001b[90mMCP server tv is ready: 3 tools.\\u0007");
+      expect(frame).toContain("\u001b[31m✗ MCP server tv failed to start: it exited with code 3: bad\\u001b[2J");
+    });
   });
 });

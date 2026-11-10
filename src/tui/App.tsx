@@ -291,7 +291,9 @@ export function App(props: AppProps) {
       // Its line names what failed, so it goes without a label (release 8a plan, Task 5; user, 2026-11-06), as a
       // shortening's does (Task 12), and a hook's (release 8b plan, choice 22), whose line is escaped whole, as its grey
       // lines are (onHookNote).
-      else if (e.kind === "hook") latest.current.say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "red" });
+      // An MCP failure's line names its server too (release 8c plan, choice 26), and is escaped whole, as it carries what
+      // the server or the system said.
+      else if (e.kind === "hook" || e.kind === "mcp") latest.current.say({ text: `✗ ${visible(e.message, { tabs: true })}`, color: "red" });
       else if (e.kind === "saving" || e.kind === "shortening") latest.current.say({ text: `✗ ${e.message}`, color: "red" });
       else latest.current.say({ text: `✗ ${e.kind}: ${e.message}`, color: "red" });
     };
@@ -331,6 +333,8 @@ export function App(props: AppProps) {
     // A hook's grey line (release 8b plan, choice 23), escaped whole: it carries the hook's own words, raw, and its command,
     // so a line break in them cannot pass for a line of the window's own (Task 6's review).
     const onHookNote = (line: string) => latest.current.say(gray(visible(line, { tabs: true })));
+    // An MCP grey line (release 8c plan, choice 26), escaped whole as a hook's is: it carries a server's names and words.
+    const onMcpNote = (line: string) => latest.current.say(gray(visible(line, { tabs: true })));
     // The waiting line's label while a hook with a statusMessage runs (release 8b design, "What the user sees").
     const onHookStatus = (message: string, running: boolean) => {
       const s = ui.hookStatus.current;
@@ -357,6 +361,7 @@ export function App(props: AppProps) {
     ui.bus.on("shortened", onShortened);
     ui.bus.on("hook-note", onHookNote);
     ui.bus.on("hook-status", onHookStatus);
+    ui.bus.on("mcp-note", onMcpNote);
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
     // stderr is seen, and they are not said twice. So does the line naming the kinds of the dangerous-command check that
@@ -418,6 +423,7 @@ export function App(props: AppProps) {
       ui.bus.off("shortened", onShortened);
       ui.bus.off("hook-note", onHookNote);
       ui.bus.off("hook-status", onHookStatus);
+      ui.bus.off("mcp-note", onMcpNote);
       // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
       // Ink ending on a drawing error would leave with nothing on screen.
       ui.tasks.stop();
@@ -686,9 +692,18 @@ export function App(props: AppProps) {
   // vim (choice 31).
   const stop = ui.keyOf("chat:cancel", "Chat", "escape");
   const escFirst = fns.vimFirst() && ui.table.keysFor("chat:cancel", "Chat").includes("escape");
+  // While the first prompt waits for the MCP servers, the waiting line names them (release 8c plan, choice 25), already
+  // escaped (Servers, waitingFor); a hook's statusMessage first, as SessionStart's hooks are waited for before them.
+  const servers = ui.session.waitingFor();
   const workingLine = ui.busy && (
     <WorkingLine
-      label={ui.hookStatus.current.length ? visible(ui.hookStatus.current.at(-1)!) : ui.doing.current.label}
+      label={
+        ui.hookStatus.current.length
+          ? visible(ui.hookStatus.current.at(-1)!)
+          : servers.length
+            ? `Waiting for MCP servers: ${servers.join(", ")}...`
+            : ui.doing.current.label
+      }
       stop={escFirst ? `${stop} ${stop}` : stop}
       ms={Math.max(0, ui.now - ui.doing.current.at)}
       spend={

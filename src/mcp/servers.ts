@@ -74,11 +74,12 @@ export class Servers {
   readonly #env: NodeJS.ProcessEnv;
   readonly #bus: Bus;
   readonly #makeAnswers: () => Answers;
+  readonly #unread: Answers | undefined;
   readonly #network: "on" | "off" | "none";
   readonly #lead: () => string;
   readonly #startMs?: number;
   #slots: Slot[];
-  #answers: Answers | null | undefined; // null: they could not be read; undefined: not read yet
+  #answers: Answers | null | undefined; // null: they could not be read, and none were given in their place; undefined: not read yet
   #unreadable: string | undefined; // why, until it is said
   #started = false;
   #offered = new Map<string, { server: string; tool: string }>(); // each name the last offer gave, with its owner (choice 7)
@@ -88,16 +89,21 @@ export class Servers {
   #lastId = 0;
 
   // `answers` makes the project's answers (answersFor), read only when a project's server needs one, since it throws on a
-  // file it cannot read; that is caught here. `network` is the sandbox's: "none" when it is off. `lead` names the model
+  // file it cannot read; that is caught here, and `unread` answers in its place: the ones the window's launch asked for
+  // then, kept for that launch only (Task 9). `network` is the sandbox's: "none" when it is off. `lead` names the model
   // leading, which every error on the bus carries. `startMs` is a server's start limit, 30 s unless a test gives one.
   constructor(
     configs: ServerConfig[],
-    opts: { root: string; env: NodeJS.ProcessEnv; bus: Bus; answers: () => Answers; network: "on" | "off" | "none"; lead: () => string; startMs?: number },
+    opts: {
+      root: string; env: NodeJS.ProcessEnv; bus: Bus; answers: () => Answers; unread?: Answers;
+      network: "on" | "off" | "none"; lead: () => string; startMs?: number;
+    },
   ) {
     this.#root = opts.root;
     this.#env = opts.env;
     this.#bus = opts.bus;
     this.#makeAnswers = opts.answers;
+    this.#unread = opts.unread;
     this.#network = opts.network;
     this.#lead = opts.lead;
     this.#startMs = opts.startMs;
@@ -328,7 +334,7 @@ export class Servers {
       try {
         this.#answers = this.#makeAnswers();
       } catch (err) {
-        this.#answers = null;
+        this.#answers = this.#unread ?? null;
         this.#unreadable = visible(errorText(err), { tabs: true });
       }
     }

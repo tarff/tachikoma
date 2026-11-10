@@ -188,6 +188,12 @@ export const keyRouting = (ui: UI, fns: Fns) => {
       fns.stopReads();
       return ui.rerender((n) => n + 1);
     }
+    // While the first prompt waits for the MCP servers, Esc sends it without those still starting; Ctrl-C stops the turn
+    // as ever (release 8c design, "Starting and stopping servers"; plan, choice 25).
+    if (h.working && name === "Esc" && ui.session.waitingFor().length) {
+      ui.session.stopWaiting();
+      return ui.rerender((n) => n + 1);
+    }
     if (h.working && name) {
       if (name === "Ctrl-C") fns.restore();
       if (name !== "Ctrl-D") ui.abort.current?.abort();
