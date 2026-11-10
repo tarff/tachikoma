@@ -342,7 +342,20 @@ Each is marked in its task. The user approves them with the plan.
     the JSON left out, as the text is the server's own rendering of it.
 13. **A remote server whose connection drops** is tried once more at its next call: one new
     connection, then the call. If that fails, the server is `stopped` (design, "Starting and
-    stopping servers").
+    stopping servers"). Each drop gets its one new connection, so a server that reconnected can
+    drop and reconnect again later; only a failed new connection leaves it stopped until `/mcp`
+    (the user's choice, 2026-11-10, Task 4's review: "Once per drop").
+    - **A call that finds the drop** (a server answering in JSON keeps no open connection, so its
+      going away is seen only when a request fails; Task 4's build): when the call never reached
+      the server (its connection was refused, or the server answered 404 to the session, MCP's
+      word for a session it no longer knows), the server gets its one new connection and, if the
+      tool's definition is unchanged, the same call is sent once more without a new question, as
+      the approved call never ran; a changed tool gets the "changed" line, a failed connection the
+      stopped line. A drop that may have reached the server (a connection cut mid-answer) fails the
+      call with its reason, and the next call reconnects first (choice 33). (The user's choice,
+      2026-11-10: "Reconnect, then retry".)
+    - `<address>` in a remote server's reasons is its scheme, host and port only: a path or query
+      filled from `${VAR}` could hold a key (Task 4's build).
 
 **Approval**
 14. **The question** is the gate's yes/no, `Allow <server>: <tool> <input as JSON>?`, the input
@@ -674,7 +687,7 @@ tests' fake servers).
 ```ts
 export type State =
   | { is: "starting" } | { is: "ready"; tools: Tool[] } | { is: "failed"; reason: string }
-  | { is: "stopped"; reason: string; retry: boolean }   // retry: a remote one whose connection dropped, not yet tried again (choice 33)
+  | { is: "stopped"; reason: string; retry: boolean }   // retry: a remote one whose connection dropped, not yet tried again since this drop (choices 13, 33)
   | { is: "needs sign-in" } | { is: "waiting for your yes" } | { is: "you said no" } | { is: "off" };
 export class Server {
   constructor(config: ServerConfig, opts: { root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; onForm?: FormHandler });
@@ -683,7 +696,8 @@ export class Server {
   get connection(): number;                          // raised at each new connection (design, finding 4)
   start(): Promise<void>;                            // never throws; the state says how it went
   callTool(name: string, args: object, opts: { signal?: AbortSignal }): Promise<CallToolResult>;
-  reconnect(): Promise<boolean>;                     // a dropped remote one, once (choice 33)
+  reconnect(): Promise<boolean>;                     // a dropped remote one, once per drop (choices 13, 33)
+  // callTool throws NotReached (exported) when the request never reached the server: refused, or 404 to the session (choice 13)
   stop(): Promise<void>;                             // choice 3
   // Task 13 adds the resource and prompt calls.
 }
@@ -707,8 +721,10 @@ export class Server {
   `onChange`.
 - **A server that exits or drops** (the transport's `onclose`, the client's `onerror`) is
   `stopped`, with choices 5 and 6's reason, and `onChange` is called; a remote one gets `retry:
-  true`, and `reconnect()` (one new connection, `retry` then false whatever happens) is what
-  Task 6's run calls (choices 13, 33). Nothing restarts on its own.
+  true`, and `reconnect()` (one new connection; `retry` false while it tries and after a failure,
+  and a later drop of the new connection `retry: true` again) is what Task 6's run calls
+  (choices 13, 33). A call whose request never reached the server throws `NotReached`, so Task 6
+  can reconnect and send it once more (choice 13). Nothing restarts on its own.
 - **`stop`** is choice 3. `connection` goes up at each new connection.
 - **`tests/mcp/fake.ts`** writes a Node script that answers `initialize`, `tools/list`,
   `tools/call` (echo, error, picture, structured-only, slow, progress), can send
@@ -726,8 +742,10 @@ characters is in the state whole; a slow call that keeps sending progress still 
 entry's `timeout` (the test's own short one); a call stopped by its signal ends,
 and the server got `notifications/cancelled`; a list change updates the tools and calls
 `onChange`; `stop` kills a server that ignores its closed input, and on Windows its child too; a
-remote server that drops is `stopped` with `retry: true`, `reconnect()` works once, and a second
-drop's `reconnect()` is not tried.
+remote server that drops is `stopped` with `retry: true`, `reconnect()` works, a second drop of
+the new connection is `retry: true` again and reconnects too, and after a `reconnect()` that fails
+another is not tried (the fake counts `initialize`); a call to a server that refuses the
+connection, and one answered 404 to its session, each throw `NotReached`.
 
 Commit: `feat: one MCP server's connection: local or remote, started within 30 s, stopped with its tree`.
 
@@ -812,7 +830,9 @@ run(input: unknown, ctx: ToolContext): Promise<string | { text: string; pictures
   (Task 7).
 - **The run, after the question:** `servers.current(offered)`; `changed` or `restarted` gives the
   "changed while this call waited" line, as a failed call, without calling the server; `stopped`
-  gives the stopped line. Then `callTool` with the turn's signal.
+  gives the stopped line. Then `callTool` with the turn's signal. A `NotReached` from it
+  (choice 13) reconnects once: unchanged, the same call goes once more, with the grey line and
+  no new question; changed, the "changed" line; a failed connection, the stopped line.
 - **The answer:** text parts joined with blank lines and cut at 30,000 characters with the usual
   `[cut: N more characters]`; pictures per choice 10; other kinds per choice 11; structured data
   per choice 12; `isError` throws with the server's text, so it is a failed call and
@@ -834,7 +854,9 @@ a restart while a call runs ends it as stopped; Esc during a slow call, and the 
 Finding 3, through a whole Session call: a fake HTTP server drops its connection, the model's next
 call connects again, is asked, and reaches the server, with the grey line; the same with the
 tool's definition changed on the new connection gives the "changed" line and never reaches the
-server; with the reconnect failing, the stopped line. A tool's picture, after a resume, is not in
+server; with the reconnect failing, the stopped line. Choice 13: a fake HTTP server restarted
+between two calls (a JSON-only one, so the drop is unseen), the next call is asked once, finds
+the drop, reconnects and reaches the server once, with the grey line. A tool's picture, after a resume, is not in
 the resumed window's prompts nor the judge's messages.
 
 Commit: `feat: MCP tools in the session: each call on the tool the model was shown, answers cut, pictures passed on`.
