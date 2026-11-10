@@ -637,7 +637,7 @@ create `src/mcp/answers.ts`, `tests/mcp/answers.test.ts`.
 ```ts
 export function mcpProgram(command: string, env: NodeJS.ProcessEnv, platform?: NodeJS.Platform): string | null;   // choice 4
 export interface Answers { get(name: string): boolean | undefined; set(name: string, yes: boolean): void; reset(name: string): void }
-export function answersFor(root: string, dir?: string): Answers;   // choice 24
+export function answersFor(root: string, dir?: string, warn?: (message: string) => void): Answers;   // choice 24; warn gets readPrivate's notices
 ```
 
 **Behaviour:**
@@ -648,7 +648,9 @@ export function answersFor(root: string, dir?: string): Answers;   // choice 24
   project folder unless PATH names it.
 - `answersFor` reads `projectFile("mcp-answers", root)` line by line, the last line for a name
   winning, a damaged line skipped; `set` and `reset` append a line through `writePrivate`'s
-  folder rules. The file is written only when the user answers.
+  folder rules. The file is written only when the user answers. A file it cannot read or append to
+  throws (`readPrivate`'s refusals among them); Task 5 catches that, says it on the bus as an `mcp`
+  line, and asks again as if unanswered.
 
 **Tests:** with a made-up PATH of folders the test made: `npx` finds `npx.cmd`; `.exe` before
 `.cmd` in the default order; a PATHEXT of `.CMD;.EXE` finds `.cmd` first; `node.exe` finds
