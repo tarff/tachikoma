@@ -1146,7 +1146,11 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   seen as a drop, so that call waits out its limit, 60 s by default, and the next call finds the
   drop; `stop()` leaves a `Server`'s state as it was, so Task 5 replaces a stopped server rather
   than reading it; off Windows, a server's child that keeps its output open makes the library's
-  close wait about 4 s, within choice 3's limit for children); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
+  close wait about 4 s, within choice 3's limit for children; and Task 5's review: a root
+  `anyOf` or `oneOf` whose branches hold their own combinators or a `$ref` names no parameters
+  for them, and a root `$ref` is passed on as written; a schema marked draft-04 is left out with
+  the checker's own words; schemas are compiled but not checked against JSON Schema's own rules,
+  so a schema a provider refuses for another reason can still fail a request); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
 
