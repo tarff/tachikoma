@@ -17,6 +17,7 @@ const said = (server: unknown, env?: NodeJS.ProcessEnv) => read(server, env).war
 const left = (words: string) => [`settings.json: "mcpServers": "s"${words}`];
 const local = (more: Record<string, unknown> = {}) => ({ command: "node", args: ["server.js"], ...more });
 const remote = (more: Record<string, unknown> = {}) => ({ type: "http", url: "https://mcp.example.com/mcp", ...more });
+const TIMEOUT = "a whole number of milliseconds no more than 2,147,483,647, such as 600000";
 
 describe("readServers", () => {
   // Release 8c design, "The settings entry": Claude Code's shape, each server with its defaults.
@@ -37,7 +38,7 @@ describe("readServers", () => {
   });
 
   it("reads every field Claude Code's entry and Tachikoma's trust take", () => {
-    const oauth = { clientId: "my-app", callbackPort: 8080, scopes: ["read", "write"], authServerMetadataUrl: "https://auth.example.com/meta" };
+    const oauth = { clientId: "my-app", callbackPort: 8080, scopes: "channels:read chat:write", authServerMetadataUrl: "https://auth.example.com/meta" };
     const { kept, warnings } = read({ ...remote({ type: "sse", headers: { "X-Team": "a" }, timeout: 120000, oauth }), alwaysLoad: true, trusted: "read-only" });
     expect(warnings).toEqual([]);
     expect(kept).toEqual<ServerConfig[]>([{
@@ -82,9 +83,9 @@ describe("readServers", () => {
       [local({ args: [1] }), ': "args" must be a list of text in quotes (got [1]); it was left out'],
       [local({ env: ["A=1"] }), ': "env" must be an object of text in quotes, such as {"KEY": "value"} (got ["A=1"]); it was left out'],
       [local({ env: { A: 1 } }), ': "env.A" must be text in quotes (got 1); it was left out'],
-      [local({ timeout: 0 }), ': "timeout" must be a whole number of milliseconds from 1 (got 0); it was left out'],
-      [local({ timeout: 1.5 }), ': "timeout" must be a whole number of milliseconds from 1 (got 1.5); it was left out'],
-      [local({ timeout: "5000" }), ': "timeout" must be a whole number of milliseconds from 1 (got "5000"); it was left out'],
+      [local({ timeout: 1.5 }), `: "timeout" must be ${TIMEOUT} (got 1.5); it was left out`],
+      [local({ timeout: 2147483648 }), `: "timeout" must be ${TIMEOUT} (got 2147483648); it was left out`],
+      [local({ timeout: "5000" }), `: "timeout" must be ${TIMEOUT} (got "5000"); it was left out`],
       [local({ alwaysLoad: "true" }), ': "alwaysLoad" must be true or false, without quotes (got "true"); it was left out'],
       [local({ trusted: true }), ': "trusted" must be "read-only" (got true); it was left out'],
       [local({ trustedTools: "quote_get" }), ': "trustedTools" must be a list of tool names in quotes (got "quote_get"); it was left out'],
@@ -99,10 +100,27 @@ describe("readServers", () => {
       [remote({ oauth: { clientId: 1 } }), ': "oauth.clientId" must be text in quotes (got 1); it was left out'],
       [remote({ oauth: { callbackPort: 0 } }), ': "oauth.callbackPort" must be a port number from 1 to 65535 (got 0); it was left out'],
       [remote({ oauth: { callbackPort: 65536 } }), ': "oauth.callbackPort" must be a port number from 1 to 65535 (got 65536); it was left out'],
-      [remote({ oauth: { scopes: "read" } }), ': "oauth.scopes" must be a list of text in quotes (got "read"); it was left out'],
-      [remote({ oauth: { authServerMetadataUrl: 5 } }), ': "oauth.authServerMetadataUrl" must be text in quotes (got 5); it was left out'],
+      [
+        remote({ oauth: { scopes: ["read", "write"] } }),
+        ': "oauth.scopes" must be text in quotes, scopes split by spaces, such as "read write" (got ["read","write"]); it was left out',
+      ],
+      ...[5, "auth.example.com/meta", "http://auth.example.com/meta"].map((v): [unknown, string] => [
+        remote({ oauth: { authServerMetadataUrl: v } }),
+        ': "oauth.authServerMetadataUrl" must be an https:// address, such as "https://auth.example.com/.well-known/openid-configuration" ' +
+          `(got ${JSON.stringify(v)}); it was left out`,
+      ]),
     ];
     for (const [server, words] of cases) expect(read(server)).toEqual({ kept: [], warnings: left(words) });
+  });
+
+  // Claude Code's MCP page: below 1,000 ms the value is ignored, so it is not set; Node's longest timer is the most.
+  it("takes a timeout from 1,000 to 2,147,483,647 ms, and one below 1,000 as not set", () => {
+    const timeout = (ms: number) => read(local({ timeout: ms }));
+    const unset = { kind: "stdio", command: "node", args: ["server.js"], env: {} };
+    for (const ms of [999, 0, -5]) expect(timeout(ms)).toEqual({ kept: [expect.objectContaining({ entry: unset })], warnings: [] });
+    expect(timeout(1000).kept[0]!.entry).toMatchObject({ timeout: 1000 });
+    expect(timeout(2147483647).kept[0]!.entry).toMatchObject({ timeout: 2147483647 });
+    expect(read(remote({ timeout: 999 })).kept[0]!.entry).toEqual({ kind: "http", url: "https://mcp.example.com/mcp", headers: {} });
   });
 
   // Not one of the plan's lines: a server that is not an object at all (the builder's words, for the controller to check).

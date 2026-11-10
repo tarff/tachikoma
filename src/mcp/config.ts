@@ -12,7 +12,8 @@ import { errorText } from "../core/types.js";
 export type ServerEntry =
   | { kind: "stdio"; command: string; args: string[]; env: Record<string, string>; timeout?: number }
   | { kind: "http" | "sse"; url: string; headers: Record<string, string>; timeout?: number; oauth?: OAuthEntry };
-export interface OAuthEntry { clientId?: string; callbackPort?: number; scopes?: string[]; authServerMetadataUrl?: string }
+// scopes: one string, scopes split by spaces, as OAuth's scope parameter is (Claude Code's MCP page; RFC 6749, 3.3).
+export interface OAuthEntry { clientId?: string; callbackPort?: number; scopes?: string; authServerMetadataUrl?: string }
 export interface ServerConfig {
   name: string; safe: string; // safe: the name with each character but [A-Za-z0-9_-] made "_"
   entry: ServerEntry; where: "user" | "project";
@@ -39,6 +40,12 @@ const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 // A TCP port is a 16-bit number (RFC 9293, 3.1), and 0 asks the system for any free one, which a sign-in's fixed
 // callback address cannot be.
 const MAX_PORT = 65_535;
+// Node's setTimeout waits at most 2,147,483,647 ms, and past that fires after 1 ms (Node's docs for setTimeout), so a
+// longer timeout would end every call at once; refused, as a hook's is (hooks/config.ts, MAX_TIMER_MS). Below 1,000 ms
+// Claude Code ignores the value and its own MCP_TOOL_TIMEOUT applies (Claude Code's MCP page), so it counts as not set.
+const MAX_TIMER_MS = 2_147_483_647;
+const MIN_TIMEOUT_MS = 1_000;
+const TIMEOUT = `a whole number of milliseconds no more than ${MAX_TIMER_MS.toLocaleString("en-US")}, such as 600000`;
 
 // Each server's own fields, by kind; a field of the other kind is Claude Code's too and does nothing for this server, so
 // it is passed over without a line. Any other name is not a server field, and is ignored with one.
@@ -137,8 +144,8 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
       if (typeof v !== "boolean") throw bad(field, "true or false, without quotes", v);
       alwaysLoad = v;
     } else if (field === "timeout") {
-      if (!Number.isInteger(v) || (v as number) < 1) throw bad(field, "a whole number of milliseconds from 1", v);
-      timeout = v as number;
+      if (!Number.isInteger(v) || (v as number) > MAX_TIMER_MS) throw bad(field, TIMEOUT, v);
+      if ((v as number) >= MIN_TIMEOUT_MS) timeout = v as number;
     } else if (other.includes(field)) continue;
     else say(` has ${JSON.stringify(field)}, which is not a server field; it was ignored`);
   }
@@ -194,14 +201,20 @@ function oauthOf(value: unknown, say: (words: string) => void): OAuthEntry {
   const oauth: OAuthEntry = {};
   for (const [name, v] of Object.entries(value)) {
     const field = `oauth.${name}`;
-    if (name === "clientId" || name === "authServerMetadataUrl") {
+    if (name === "clientId") {
       if (typeof v !== "string") throw bad(field, TEXT, v);
-      oauth[name] = v;
+      oauth.clientId = v;
+    } else if (name === "authServerMetadataUrl") {
+      // "The URL must use https://" (Claude Code's MCP page). ${VAR} is not filled here, so it is checked as written.
+      if (typeof v !== "string" || URL.parse(v)?.protocol !== "https:") {
+        throw bad(field, 'an https:// address, such as "https://auth.example.com/.well-known/openid-configuration"', v);
+      }
+      oauth.authServerMetadataUrl = v;
     } else if (name === "callbackPort") {
       if (!Number.isInteger(v) || (v as number) < 1 || (v as number) > MAX_PORT) throw bad(field, `a port number from 1 to ${MAX_PORT}`, v);
       oauth.callbackPort = v as number;
     } else if (name === "scopes") {
-      if (!texts(v)) throw bad(field, LIST, v);
+      if (typeof v !== "string") throw bad(field, 'text in quotes, scopes split by spaces, such as "read write"', v);
       oauth.scopes = v;
     } else say(` has ${JSON.stringify(field)}, which is not a server field; it was ignored`);
   }
