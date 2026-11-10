@@ -12,11 +12,14 @@ export interface Answers {
 
 type Line = { name: string; yes: boolean } | { name: string; reset: true };
 
-// A killed process or a full disk can leave a half-written line; it is skipped, so the rest still count.
+// A killed process or a full disk can leave a half-written line; it is skipped, so the rest still count. Only a reset of
+// true is a reset, so a line with a yes and a reset of false is that yes.
 function parse(line: string): Line | undefined {
   try {
     const l = JSON.parse(line);
-    if (typeof l?.name === "string" && (typeof l.yes === "boolean" || l.reset === true)) return l;
+    if (typeof l?.name !== "string") return undefined;
+    if (l.reset === true) return { name: l.name, reset: true };
+    if (typeof l.yes === "boolean") return { name: l.name, yes: l.yes };
   } catch {}
   return undefined;
 }
@@ -34,9 +37,13 @@ export function answersFor(root: string, dir: string = dataDir(), warn: (message
     if ("reset" in l) answers.delete(l.name);
     else answers.set(l.name, l.yes);
   }
+  // A half-written last line is ended first, as the transcript's mend does, so the next answer is not joined to it and
+  // lost: a lost reset would leave the old yes in force.
+  let ended = text === "" || text.endsWith("\n");
   const append = (line: Line) => {
     privateDir(path.dirname(file));
-    appendFileSync(file, `${JSON.stringify(line)}\n`, { encoding: "utf8", mode: 0o600 });
+    appendFileSync(file, `${ended ? "" : "\n"}${JSON.stringify(line)}\n`, { encoding: "utf8", mode: 0o600 });
+    ended = true;
   };
   return {
     get: (name) => answers.get(name),

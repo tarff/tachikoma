@@ -55,6 +55,25 @@ describe("answersFor", { timeout: 15_000 }, () => {
     expect(answers.get("openmarket")).toBe(false);
   });
 
+  it("takes a line with a yes and a reset of false as that yes", () => {
+    const { data, root, file } = folders();
+    answersFor(root, data).set("sanity", false);
+    writeFileSync(file, `${readFileSync(file, "utf8")}{"name":"sanity","yes":true,"reset":false}\n`);
+    expect(answersFor(root, data).get("sanity")).toBe(true);
+  });
+
+  // As the transcript's mend: a half-written last line would otherwise swallow the next answer.
+  it("ends a half-written last line before the next answer", () => {
+    const { data, root, file } = folders();
+    answersFor(root, data).set("sanity", true);
+    writeFileSync(file, `${readFileSync(file, "utf8")}{"name":"a","yes":tr`);
+    answersFor(root, data).set("b", true);
+    const answers = answersFor(root, data);
+    expect(answers.get("b")).toBe(true);
+    expect(answers.get("sanity")).toBe(true);
+    expect(answers.get("a")).toBeUndefined();
+  });
+
   // On Windows a file others can read needs its permissions changed to set up, so this runs elsewhere only: there a
   // file the test makes with the usual mode, 0o644 after the usual umask, can be read by others.
   it("passes readPrivate's note that it made the file private to warn", (ctx) => {

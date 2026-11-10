@@ -1,4 +1,4 @@
-import { accessSync, constants, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, statSync } from "node:fs";
 import path from "node:path";
 
 // The API keys Tachikoma reads. Commands never see them, so one cannot print a key back to the model
@@ -68,8 +68,9 @@ const variable = (env: NodeJS.ProcessEnv, name: string, windows: boolean) =>
 function pathFolders(env: NodeJS.ProcessEnv, windows: boolean): string[] {
   return (variable(env, "PATH", windows) ?? "").split(windows ? ";" : ":").flatMap((entry) => {
     // Windows' PATH may hold a folder in quotes; "\folder" and "C:folder" depend on the working folder's drive or folder.
+    // A share needs its server's name: "\\" and "\\\" alone name the working folder's drive.
     const dir = windows ? entry.replace(/^"(.*)"$/, "$1") : entry;
-    return (windows ? /^([a-z]:[\\/]|\\\\)/i.test(dir) : dir.startsWith("/")) ? [dir] : [];
+    return (windows ? /^([a-z]:[\\/]|\\\\[^\\/])/i.test(dir) : dir.startsWith("/")) ? [dir] : [];
   });
 }
 
@@ -91,10 +92,26 @@ export function mcpProgram(command: string, env: NodeJS.ProcessEnv, platform: No
   for (const dir of pathFolders(env, windows)) {
     for (const ending of endings) {
       const file = path.join(dir, `${command}${ending}`);
-      if (runnable(file, windows)) return file;
+      if (windows ? startable(file) : runnable(file, false)) return file;
     }
   }
   return null;
+}
+
+// runnable's Windows check, but a Microsoft Store program's alias in %LOCALAPPDATA%\Microsoft\WindowsApps (winget, Store
+// Python) counts too: Node cannot follow it, so statSync fails with EACCES, while lstatSync sees a link (Task 3's review;
+// measured on this PC for winget.exe). Windows starts it all the same, so a link that cannot be followed counts as found,
+// and a broken one fails when it is started, with its line. A folder never counts. onPath keeps runnable.
+function startable(file: string): boolean {
+  try {
+    return statSync(file).isFile();
+  } catch {
+    try {
+      return !lstatSync(file).isDirectory();
+    } catch {
+      return false;
+    }
+  }
 }
 
 // Git Bash, where Claude Code looks for it, for hooks run by a shell on Windows (release 8b plan, choice 1): the file
