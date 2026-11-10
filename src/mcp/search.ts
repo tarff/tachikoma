@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { visible } from "../core/permissions.js";
 import type { ToolSpec } from "../core/types.js";
+import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { InvalidInput, type Tool } from "../tools/tool.js";
 import type { Offer, Offered, Servers } from "./servers.js";
 
@@ -39,20 +40,20 @@ export function searchSpec(offer: Offer): ToolSpec {
 }
 
 // Choice 38's ranking: a tool is found when one of the words is in its full name or its description, letter case
-// ignored; tools holding more of the words in their name come first, then those holding more in their description only,
-// then the order given. At most `max`, by full name.
+// ignored; tools holding more of the words, in either, each word counted once, come first; then those holding more of
+// them in their name; then the order given (the user's choice, Task 6b's spec review). At most `max`, by full name.
 export function find(query: string, max: number, tools: { full: string; description: string }[]): string[] {
   const words = [...new Set(query.toLowerCase().split(/\s+/).filter(Boolean))];
   return tools
     .map((t, i) => {
       const name = t.full.toLowerCase();
       const text = t.description.toLowerCase();
+      const held = words.filter((w) => name.includes(w) || text.includes(w)).length;
       const inName = words.filter((w) => name.includes(w)).length;
-      const inText = words.filter((w) => !name.includes(w) && text.includes(w)).length;
-      return { full: t.full, inName, inText, i };
+      return { full: t.full, held, inName, i };
     })
-    .filter((r) => r.inName + r.inText > 0)
-    .sort((a, b) => b.inName - a.inName || b.inText - a.inText || a.i - b.i)
+    .filter((r) => r.held > 0)
+    .sort((a, b) => b.held - a.held || b.inName - a.inName || a.i - b.i)
     .slice(0, max)
     .map((r) => r.full);
 }
@@ -90,16 +91,26 @@ export function searchTool(servers: Servers, loaded: Set<string>, opts: { truste
       } else {
         found = find(query, max_results, tools.map((t) => ({ full: t.spec.name, description: t.spec.description }))).map((n) => byName(n)!);
       }
-      for (const t of found) if (named.has(t.spec.name)) loaded.add(t.spec.name);
-      const n = found.length;
-      const shown = found.map((t) => `${t.spec.name}: ${t.spec.description}\nInput: ${JSON.stringify(t.spec.inputSchema)}`);
-      const parts = [
-        ...(n ? [`Loaded ${n} ${n === 1 ? "tool; call it" : "tools; call them"} from the next step on:\n${shown.join("\n\n")}`] : []),
-        ...(unknown.length ? [unknown.map((u) => `No MCP tool is named ${u}.`).join("\n")] : []),
-      ];
-      if (n) return parts.join("\n\n");
-      const none = unknown.length ? parts : [`No MCP tool matched "${query}".`];
-      return [...none, ...notReady(o)].join("\n");
+      const unknownLines = unknown.length ? [unknown.map((u) => `No MCP tool is named ${u}.`).join("\n")] : [];
+      if (!found.length) return [...(unknownLines.length ? unknownLines : [`No MCP tool matched "${query}".`]), ...notReady(o)].join("\n");
+      // The answer with `shown` loaded; a select's `left` out, named in its line (the user's words, Task 6b's spec review).
+      const answer = (shown: Offered[], left: Offered[]) => {
+        const n = shown.length;
+        const entries = shown.map((t) => `${t.spec.name}: ${t.spec.description}\nInput: ${JSON.stringify(t.spec.inputSchema)}`);
+        const full = left.map((t) => t.spec.name).join(", ");
+        return [
+          `Loaded ${n} ${n === 1 ? "tool; call it" : "tools; call them"} from the next step on:\n${entries.join("\n\n")}`,
+          ...unknownLines,
+          ...(select && left.length ? [`Not loaded, as the answer is full: ${full}; load them with another search.`] : []),
+        ].join("\n\n");
+      };
+      // The session cuts an answer at MAX_TOOL_OUTPUT, so the tools go in, in rank order, while the whole answer fits; the
+      // first always does, the session's cut then applying to it (choice 39; the user's choice, Task 6b's spec review).
+      let fits = 1;
+      while (fits < found.length && answer(found.slice(0, fits + 1), found.slice(fits + 1)).length <= MAX_TOOL_OUTPUT) fits++;
+      const shown = found.slice(0, fits);
+      for (const t of shown) if (named.has(t.spec.name)) loaded.add(t.spec.name);
+      return answer(shown, found.slice(fits));
     },
   };
 }

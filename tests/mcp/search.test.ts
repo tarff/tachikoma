@@ -12,6 +12,7 @@ import { Session, type SessionOptions } from "../../src/core/session.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { readTranscript, Transcript } from "../../src/core/transcript.js";
 import type { CompletionRequest, Provider, ToolSpec, Turn } from "../../src/core/types.js";
+import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import { matcherOf } from "../../src/hooks/config.js";
 import { Hooks } from "../../src/hooks/hooks.js";
@@ -211,6 +212,46 @@ describe("tool_search: searching", () => {
     expect(names((await searchTool(servers, new Set()).run({ query: "same", max_results: 1 }, t.ctx)) as string)).toEqual(["mcp__s__t1"]);
   });
 
+  // Choice 39 (Task 6b's spec review): the session cuts an answer at MAX_TOOL_OUTPUT, so only the tools that fit are loaded.
+  describe("fitting the answer", () => {
+    // Four tools of 12,000 characters each: two fit, a third would not.
+    const long = [1, 2, 3, 4].map((n) => tool(`l${n}`, `long ${"x".repeat(12_000)}`));
+    const full = (n: number) => `mcp__s__l${n}`;
+
+    it("loads by select: only the tools that fit, naming the rest in its line", async () => {
+      const t = await setup();
+      const servers = await t.ready([await t.local("s", { tools: long })]);
+      const loaded = new Set<string>();
+      const query = `select:${[1, 2, 3, 4].map(full).join(",")},mcp__s__nope`;
+      const text = (await searchTool(servers, loaded).run({ query }, t.ctx)) as string;
+      expect(text.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+      expect(text.startsWith("Loaded 2 tools; call them from the next step on:\n")).toBe(true);
+      expect(text.endsWith(`No MCP tool is named mcp__s__nope.\n\nNot loaded, as the answer is full: ${full(3)}, ${full(4)}; load them with another search.`)).toBe(true);
+      expect([...loaded]).toEqual([full(1), full(2)]);
+    });
+
+    it("stops a word search at the last tool that fits, with no line", async () => {
+      const t = await setup();
+      const servers = await t.ready([await t.local("s", { tools: long })]);
+      const loaded = new Set<string>();
+      const text = (await searchTool(servers, loaded).run({ query: "long" }, t.ctx)) as string;
+      expect(text).toBe(loadedLine([1, 2].map((n) => entry(full(n), long[n - 1]!.description))));
+      expect([...loaded]).toEqual([full(1), full(2)]);
+    });
+
+    it("still loads one tool whose entry alone is over the limit, the session cutting it", async () => {
+      const t = await setup();
+      const inputSchema = { type: "object", properties: { a: { type: "string", description: "y".repeat(MAX_TOOL_OUTPUT) } } };
+      const servers = await t.ready([await t.local("s", { tools: [{ ...tool("huge"), inputSchema }, tool("small")] })]);
+      const loaded = new Set<string>();
+      const text = (await searchTool(servers, loaded).run({ query: "select:mcp__s__huge,mcp__s__small" }, t.ctx)) as string;
+      expect(text.length).toBeGreaterThan(MAX_TOOL_OUTPUT);
+      expect(text.startsWith("Loaded 1 tool; call it from the next step on:\nmcp__s__huge: huge\n")).toBe(true);
+      expect(text.endsWith("Not loaded, as the answer is full: mcp__s__small; load them with another search.")).toBe(true);
+      expect([...loaded]).toEqual(["mcp__s__huge"]);
+    });
+  });
+
   it("says no tool matched, listing a failed server and one needing sign-in", async () => {
     const t = await setup();
     // No server needs a sign-in until Task 11, so this one's state is given.
@@ -255,7 +296,8 @@ describe("tool_search: searching", () => {
     await vi.waitFor(() => expect(t.notes).toEqual(["MCP server late is ready: 2 tools."]), { timeout: 5_000 });
   });
 
-  it("ranks by the words in a name first, then in a description, letter case ignored, ties in the order offered", () => {
+  // The user's choice (Task 6b's spec review): words held anywhere first, then words in the name, then the order offered.
+  it("ranks by the words held in a name or description, then by those in the name, letter case ignored, ties in the order offered", () => {
     const tools = [
       { full: "mcp__s__list", description: "Lists the files to read" },
       { full: "mcp__s__other", description: "Nothing here" },
@@ -263,10 +305,16 @@ describe("tool_search: searching", () => {
       { full: "mcp__s__read_file", description: "Reads a file" },
       { full: "mcp__s__file_size", description: "Sizes" },
     ];
-    expect(find("READ file", 5, tools)).toEqual(["mcp__s__read_file", "mcp__s__file_info", "mcp__s__file_size", "mcp__s__list"]);
+    expect(find("READ file", 5, tools)).toEqual(["mcp__s__read_file", "mcp__s__list", "mcp__s__file_info", "mcp__s__file_size"]);
     expect(find("read file", 1, tools)).toEqual(["mcp__s__read_file"]);
     expect(find("nothing", 5, tools)).toEqual(["mcp__s__other"]);
     expect(find("zebra", 5, tools)).toEqual([]);
+    // A description holding both words ranks above a name holding one.
+    const two = [
+      { full: "mcp__s__list", description: "Shows names" },
+      { full: "mcp__s__dir", description: "Lists the files here" },
+    ];
+    expect(find("list files", 5, two)).toEqual(["mcp__s__dir", "mcp__s__list"]);
   });
 });
 
