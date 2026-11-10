@@ -102,8 +102,10 @@ A project's `.mcp.json`, at its root, is read too (option chosen: "Settings + pr
 
 - **In the window,** Claude Code's way (option chosen: "Claude Code's way"): the user is asked once
   per server name, the question showing its command and arguments, or its address. The answer is
-  kept for that project until the user resets it in `/mcp`, and is not asked again when the entry
-  changes.
+  kept for that project until the user resets it in `/mcp`, or until the entry changes: an answer
+  holds the entry as written, so a pulled change to its command, arguments, environment or address
+  is asked about again (the user's choice, 2026-11-10, Task 3's review; Claude Code asks once per
+  name).
 - **In `-p`,** only servers the user has already said yes to in the window start; each other one is
   skipped, with a note on stderr (option chosen: "Window: Claude's way; -p: only yes'd"). Claude
   Code starts them all without asking; the user kept the window's way but not that, as a cloned

@@ -377,8 +377,11 @@ Each is marked in its task. The user approves them with the plan.
     `askAtStart` question per server not yet answered, before the window opens. A no is kept too,
     and the server is listed in `/mcp` as `you said no`.
 24. **The answers** go in `<data>/mcp-answers/<hash>.jsonl` (`projectFile`), one line per answer,
-    `{ "name", "yes": true | false }`, the last line for a name winning; Reset my answer writes
-    `{ "name", "reset": true }`.
+    `{ "name", "entry", "yes": true | false }`, the last line for a name winning; Reset my answer
+    writes `{ "name", "reset": true }`. `entry` is the SHA-256 of the entry's JSON text as written
+    in `.mcp.json`, before `${VAR}` is filled (`ServerConfig.written`, Task 2), so a changed
+    entry counts as unanswered and is asked about again, while a changed variable's value is not;
+    no value is kept in the file (the user's choice, 2026-11-10, Task 3's review).
 25. **The first prompt waits** for the servers through the same wait as SessionStart's, so one
     Esc stops both, and the waiting line names what it waits for.
 26. **MCP lines** go out as a new bus event, `mcp-note`, grey in the window, `note: <line>` on
@@ -590,6 +593,7 @@ export interface ServerConfig {
   name: string; safe: string;              // safe: the name with each character but [A-Za-z0-9_-] made "_"
   entry: ServerEntry; where: "user" | "project";
   trusted: "read-only" | null; trustedTools: string[];   // always none for a project's
+  written: string;                         // SHA-256 hex of JSON.stringify(the entry as written), for choice 24's answers
 }
 export function readServers(file: "settings.json" | ".mcp.json", value: unknown, env: NodeJS.ProcessEnv, warnings: string[]): ServerConfig[];
 export function mergeServers(user: ServerConfig[], project: ServerConfig[]): ServerConfig[];   // the user's wins whole
@@ -636,7 +640,7 @@ create `src/mcp/answers.ts`, `tests/mcp/answers.test.ts`.
 
 ```ts
 export function mcpProgram(command: string, env: NodeJS.ProcessEnv, platform?: NodeJS.Platform): string | null;   // choice 4
-export interface Answers { get(name: string): boolean | undefined; set(name: string, yes: boolean): void; reset(name: string): void }
+export interface Answers { get(name: string, entry: string): boolean | undefined; set(name: string, entry: string, yes: boolean): void; reset(name: string): void }   // entry: ServerConfig.written; another entry's answer is undefined
 export function answersFor(root: string, dir?: string, warn?: (message: string) => void): Answers;   // choice 24; warn gets readPrivate's notices
 ```
 
@@ -657,7 +661,8 @@ export function answersFor(root: string, dir?: string, warn?: (message: string) 
 `node.exe` and `npx.cmd` finds `npx.cmd` (never `node.exe.EXE` or `npx.cmd.CMD`), and `NPX.CMD`
 finds it too; a `npx.cmd` in the project folder is not found, by `npx` or by `npx.cmd`; a relative PATH entry is skipped; `node` with a folder is taken as
 written. Answers: yes, then no, then reset, then read again by a new `answersFor`; a damaged line
-in the middle.
+in the middle; a yes for one `entry` is undefined for another (choice 24), and Task 2's `written`
+is the same for an entry whose `${VAR}` value changed and differs when its command changed.
 
 Commit: `feat: MCP servers' programs found by full path, .cmd included, and the project's answers kept`.
 
@@ -1093,9 +1098,7 @@ built" section).
   line, as MCP itself has no WebSocket transport and the library none; the user's choice,
   2026-11-10; and Task 2's review: the refused-address line shows the address as written, so a key
   written right in it is shown; `.mcp.json` has no size limit; a UTF-16 file gives a garbled line,
-  as `settings.json` does; and Task 3's review: a project's server is answered by its name only,
-  so a `git pull` that changes the command of a server already said yes to starts it without
-  asking, as in Claude Code; with both `Path` and `PATH` set to different values, the lookup reads
+  as `settings.json` does; and Task 3's review: with both `Path` and `PATH` set to different values, the lookup reads
   the last one while Node's spawn keeps `PATH`; reading the answers on Windows starts PowerShell
   twice at launch, as the prompt history does); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
