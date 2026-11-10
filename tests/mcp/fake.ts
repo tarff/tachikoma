@@ -25,6 +25,7 @@ export interface FakeOptions {
   status?: number; // over HTTP, the status every POST is answered with
   tools?: object[]; // its tools/list, in place of its own tools (Task 5's names and schemas)
   added?: object[]; // what change adds, before the others, in place of "added"
+  results?: Record<string, object>; // a call to a tool named here is answered with this result (Task 6's answers)
 }
 
 // Its tools: echo says `text` back; error answers isError; picture answers a 1x1 PNG; structured answers structured
@@ -60,6 +61,7 @@ function answer(m, reply) {
   if (m.method !== "tools/call") return reply({ error: { code: -32601, message: "no such method" } });
   const args = m.params.arguments || {};
   const text = (t) => reply({ result: { content: [{ type: "text", text: t }] } });
+  if (O.results && Object.hasOwn(O.results, m.params.name)) return reply({ result: O.results[m.params.name] });
   switch (m.params.name) {
     case "echo": return text(String(args.text));
     case "error": return reply({ result: { content: [{ type: "text", text: "it went wrong" }], isError: true } });

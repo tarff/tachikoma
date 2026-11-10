@@ -11,8 +11,9 @@ export type Part =
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; callId: string; output: string; isError: boolean }
   // A picture the user added, the original as read, kept in memory for the session (release 6 plan, choice 9); `id` is
-  // its number, the N of its marker `[Image #N]` (release 6 design, "Pictures").
-  | { type: "image"; id: number; mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: Buffer };
+  // its number, the N of its marker `[Image #N]` (release 6 design, "Pictures"). `from: "server"`: one an MCP server
+  // supplied, such as a tool answer's, never part of the user's own words (release 8c plan, choice 34).
+  | { type: "image"; id: number; mediaType: "image/png" | "image/jpeg" | "image/gif" | "image/webp"; data: Buffer; from?: "server" };
 
 export type ToolCall = Extract<Part, { type: "tool_call" }>;
 export type ToolResult = Extract<Part, { type: "tool_result" }>;

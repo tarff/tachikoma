@@ -9,7 +9,7 @@ import type { Events } from "../../src/core/bus.js";
 import { callText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
 import { type Ask, Declined, type Judge, PermissionGate } from "../../src/core/permissions.js";
-import { type Conversation, Session, UNSAVED } from "../../src/core/session.js";
+import { type Conversation, Session, truncateLeaving, UNSAVED } from "../../src/core/session.js";
 import { CANCELLED, INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
 import { Tasks } from "../../src/core/tasks.js";
@@ -795,6 +795,38 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
     session.load(conversation({ messages: [other, said("seen")] }));
     await session.send("again");
     expect(sent).toEqual([a, b]);
+  });
+
+  // Release 8c plan, choices 10 and 34: a tool's pictures, such as an MCP answer's.
+  it("puts a tool's pictures after the results, numbered on past every picture the conversation had, the line ending its cut text", async () => {
+    const dot = Buffer.from([0x89, 0x50, 0x4e, 0x47, 3]);
+    const camera: Tool = {
+      spec: { name: "camera", description: "Takes a picture", inputSchema: { type: "object" } },
+      run: async () => ({ text: "y".repeat(MAX_TOOL_OUTPUT), pictures: [{ mediaType: "image/png", data: dot }] }),
+    };
+    const pictures = new Pictures();
+    const lead = new FakeProvider("a", [callTool("c1", "camera", {}), reply("seen")]);
+    const session = new Session({ lead, tools: [camera], system: "t", ctx: await tempContext(), bus: new Bus(), pictures });
+    // Its pictures up to 7 were used before a shortening, so none of them is in its history now.
+    session.load(conversation({ messages: [typed("before"), said("after")], nextPicture: 8 }));
+    await session.send("snap");
+    const line = "[The tool's answer has pictures: [Image #8]]";
+    const output = `${truncateLeaving("y".repeat(MAX_TOOL_OUTPUT), line.length + 1)}\n${line}`;
+    expect(output.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT);
+    expect(output).toContain("\n[cut: ");
+    const results = [
+      { type: "tool_result", callId: "c1", output, isError: false },
+      { type: "image", id: 8, mediaType: "image/png", data: dot, from: "server" },
+    ];
+    expect(session.messages.at(-2)!.parts).toEqual(results);
+    expect(lead.seen[1]!.at(-1)!.parts.map((p) => (p.type === "image" ? p.id : p.type))).toEqual(["tool_result", 8]); // as sent, cloned
+    expect([pictures.next(), session.prompts]).toEqual([9, ["snap"]]);
+  });
+
+  it("leaves a picture marked the server's out of the prompt's words", async () => {
+    const { session } = await setup([reply("ok")]);
+    await session.send([{ type: "text", text: "see " }, { type: "image", id: 1, mediaType: "image/png", data: Buffer.from([1]), from: "server" }]);
+    expect(session.prompts).toEqual(["see "]);
   });
 
   it("gives auto mode's judge the prompts and calls from before a shortening once read back and loaded, never the summary", async () => {

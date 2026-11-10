@@ -132,6 +132,27 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(r.nextPicture).toBe(2);
   });
 
+  // Release 8c plan, choice 34: a picture an MCP tool answered with is the server's, never the user's words.
+  it("saves a server's picture with its mark, reads it back marked, and leaves it out of the prompts", async () => {
+    const p = place();
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 3]);
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    const results: Message = {
+      role: "user",
+      parts: [
+        { type: "tool_result", callId: "c1", output: "[The tool's answer has pictures: [Image #1]]", isError: false },
+        { type: "image", id: 1, mediaType: "image/png", data: bytes, from: "server" },
+      ],
+    };
+    for (const message of [prompt("show it"), asks("c1", { path: "a.png" }), results]) t.write({ t: "message", message });
+    const line = JSON.parse(readFileSync(p.file, "utf8").split("\n")[3]!);
+    expect(line.message.parts[1]).toEqual({ type: "image", id: 1, mediaType: "image/png", file: "1.png", from: "server" });
+    const r = read(p);
+    expect(r.messages[2]).toEqual(results);
+    expect([r.prompts, r.nextPicture]).toEqual([["show it"], 2]);
+  });
+
   it("reads a picture whose file is gone as a note saying so", async () => {
     const p = place();
     const t = new Transcript(p.file, p.pictures);

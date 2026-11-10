@@ -108,7 +108,7 @@ export class Transcript {
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       }
-      return { type: "image", id: p.id, mediaType: p.mediaType, file };
+      return { type: "image", id: p.id, mediaType: p.mediaType, file, ...(p.from && { from: p.from }) };
     });
     return { ...m, parts };
   }
@@ -179,8 +179,10 @@ function cutOff(reply: SavedMessage, next: SavedMessage | undefined): boolean {
   );
 }
 
-// A part of a user message as the user typed it: its text, or a picture's marker; never a result or waiting text.
-const own = (p: SavedMessage["parts"][number]) => (p.type === "image" ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : []);
+// A part of a user message as the user typed it: its text, or a picture's marker; never a result, waiting text or what a
+// server supplied, such as a tool answer's picture (release 8c plan, choice 34).
+const own = (p: SavedMessage["parts"][number]) =>
+  p.type === "image" && p.from === undefined ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [];
 
 export function readTranscript(file: string, pictures: string): Read | { problem: string } {
   try {
@@ -368,7 +370,8 @@ function restore(m: SavedMessage, pictures: string): Message {
     const ext: string | undefined = EXT[p.mediaType];
     try {
       if (ext === undefined) throw new Error("not a format Tachikoma saves");
-      return { type: "image", id: p.id, mediaType: p.mediaType, data: readFileSync(path.join(pictures, `${p.id}.${ext}`)) };
+      const data = readFileSync(path.join(pictures, `${p.id}.${ext}`));
+      return { type: "image", id: p.id, mediaType: p.mediaType, data, ...(p.from === "server" && { from: p.from }) };
     } catch {
       return { type: "text", text: `[Image #${p.id}: not found]` };
     }
