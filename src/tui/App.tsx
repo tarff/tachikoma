@@ -787,10 +787,10 @@ export function App(props: AppProps) {
         // /mcp's list (release 8c plan, Task 10), where /resume's goes, in the same rows.
         ui.full ? (
           <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
-            <McpList servers={ui.mcp.servers} onAction={fns.mcpAction} onClose={fns.closeMcp} keys={ui.pickerKey} maxRows={pickerRows} />
+            <McpList servers={ui.mcp.servers} bindings={ui.table} onAction={fns.mcpAction} onClose={fns.closeMcp} keys={ui.pickerKey} maxRows={pickerRows} />
           </Box>
         ) : (
-          <McpList servers={ui.mcp.servers} onAction={fns.mcpAction} onClose={fns.closeMcp} keys={ui.pickerKey} maxRows={ui.height - 3} />
+          <McpList servers={ui.mcp.servers} bindings={ui.table} onAction={fns.mcpAction} onClose={fns.closeMcp} keys={ui.pickerKey} maxRows={ui.height - 3} />
         )
       ) : ui.question ? (
         // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8); auto mode's pause, a

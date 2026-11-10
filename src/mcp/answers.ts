@@ -60,9 +60,11 @@ export function answersFor(root: string, dir: string = dataDir(), warn: (message
       answers.set(name, { entry, yes });
       append({ name, entry, yes });
     },
+    // Forgotten only once its line is written, so a reset that cannot be written leaves the answer in force, here as in
+    // the file, which the next launch reads (choice 52).
     reset(name) {
-      answers.delete(name);
       append({ name, reset: true });
+      answers.delete(name);
     },
   };
 }

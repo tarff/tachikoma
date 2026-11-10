@@ -1,8 +1,11 @@
 import { Text, usePaste } from "ink";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { visible } from "../core/permissions.js";
 import type { Servers } from "../mcp/servers.js";
 import { shownFile } from "../settings.js";
+import { SESSION_WORDS } from "./app/constants.js";
+import type { Bindings } from "./bindings.js";
+import { both, named } from "./keys.js";
 import type { PickerKey } from "./ModelPicker.js";
 
 // `/mcp` (release 8c plan, Task 10; design, "What the user sees"; choice 27): the servers, a row each, in the prompt's
@@ -43,22 +46,27 @@ export function actionsOf(s: Listed, answered: boolean): Action[] {
 
 export function McpList({
   servers,
+  bindings,
   onAction,
   onClose,
   keys,
   maxRows,
 }: {
-  servers: Pick<Servers, "list" | "answered">;
+  servers: Pick<Servers, "list" | "answered" | "watch">;
+  bindings: Bindings; // the table of keys, for the names the hint gives Select's keys
   onAction: (name: string, action: Action) => void; // Reconnect keeps the list open, at the servers; the others close it
   onClose: () => void;
   keys: { current: ((k: PickerKey) => void) | null };
-  maxRows: number; // the rows for the heading and the list, the App's other rows drawn around them
+  maxRows: number; // the rows for the heading and the list, as SessionList's: the App's frame adds one for the hint
 }) {
-  // Read at each drawing, so a server's state shows as it changes. Each key reads and changes `state` at once, as in
-  // SessionList: several keys can arrive before the screen is drawn again. `server`: the one whose actions are shown.
+  // Each key reads and changes `state` at once, as in SessionList: several keys can arrive before the screen is drawn
+  // again. `server`: the one whose actions are shown.
   const state = useRef<{ at: number; first: number; server: string | null; action: number; done: boolean }>({ at: 0, first: 0, server: null, action: 0, done: false });
   const s = state.current;
   const [, redraw] = useState(0);
+  // Drawn again at each change of a server's state, as a start ending, which may say no line, so a row follows it with
+  // no key pressed (Servers, watch).
+  useEffect(() => servers.watch(() => redraw((n) => n + 1)), [servers]);
   // A server's row and its actions now, or none for one a live edit removed, or a change left with nothing to do.
   const opened = (name: string | null) => {
     const row = name === null ? undefined : servers.list().find((r) => r.name === name);
@@ -77,7 +85,7 @@ export function McpList({
       else if (a === "select:accept" && opened(list[s.at]?.name ?? null)) {
         s.server = list[s.at]!.name;
         s.action = 0;
-      } else if (a === "select:cancel" || a === "app:interrupt") {
+      } else if (a === "select:cancel") {
         s.done = true;
         return onClose();
       } else return;
@@ -89,7 +97,7 @@ export function McpList({
         s.server = null;
         if (action !== "Reconnect") s.done = true;
         return onAction(o.row.name, action);
-      } else if (a === "select:cancel" || a === "app:interrupt") s.server = null;
+      } else if (a === "select:cancel") s.server = null;
       else return;
     }
     redraw((n) => n + 1);
@@ -99,8 +107,15 @@ export function McpList({
   // Typed text has nothing to go into here.
   keys.current = (k) => act(typeof k === "object" && "action" in k ? k.action : null);
 
-  // The heading, then the rows in the room left, the window moved only as far as keeps the chosen row in it. Read at each
-  // drawing, so a server's state shows as it changes; a live edit can remove servers while the list is open.
+  // The keys' names, from the bindings, as SessionList's hint names them; a part with no key is left out (choice 51).
+  const key = (action: string, usual: string) => named(bindings, action, "Select", [usual])[0];
+  const moves = both(key("select:previous", "up"), key("select:next", "down"));
+  const [enter, esc] = [key("select:accept", "enter"), key("select:cancel", "escape")];
+  const hint = (opens: string, closes: string) =>
+    [moves && `${moves} move`, enter && `${enter} ${opens}`, esc && `${esc} ${closes}`].filter(Boolean).join(" · ");
+
+  // The heading, then the rows in the room left, the window moved only as far as keeps the chosen row in it, then the
+  // hint. Read at each drawing; a live edit can remove servers while the list is open.
   const list = servers.list();
   s.at = Math.max(0, Math.min(s.at, list.length - 1));
   const o = opened(s.server);
@@ -118,6 +133,9 @@ export function McpList({
           {row}
         </Text>
       ))}
+      <Text color="gray" wrap="truncate-end">
+        {o ? hint("runs", "back") : hint("opens", SESSION_WORDS.closes)}
+      </Text>
     </>
   );
 }

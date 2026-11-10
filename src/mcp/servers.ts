@@ -271,6 +271,9 @@ export class Servers {
       this.#sayUnreadable();
       for (const slot of added) this.#begin(slot);
     }
+    // Built again now, so a kept server's count and left-out lines follow the edit at once, a clash with a server
+    // removed cleared among them (Task 10's quality review); the new servers, still starting, offer nothing yet.
+    this.#table();
     this.#wake();
     const names = (slots: Slot[]) => slots.map((s) => s.config.name);
     return {
@@ -292,12 +295,20 @@ export class Servers {
   // and its left-out lines, each without its "MCP server <name>: " place, as /hooks's left-out rows leave out theirs.
   tools(name: string): { names: string[]; leftOut: string[] } {
     const rows = this.#table();
-    const place = `MCP server ${visible(name)}: `;
+    const place = `MCP server ${visible(name)}: `; // every left-out line starts so (#build)
     const said = [...(this.#slots.find((s) => s.config.name === name)?.said ?? [])];
     return {
       names: rows.filter((r) => r.offered.server === name).map((r) => r.offered.spec.name),
-      leftOut: said.map((line) => (line.startsWith(place) ? line.slice(place.length) : line)),
+      leftOut: said.map((line) => line.slice(place.length)),
     };
+  }
+
+  // Called at every change of a server's state or of the servers in force, until the returned function is called: /mcp's
+  // list redraws so (McpList.tsx; Task 10's review).
+  watch(changed: () => void): () => void {
+    const waiter = () => changed();
+    this.#waiters.add(waiter);
+    return () => this.#waiters.delete(waiter);
   }
 
   // /mcp's Reconnect (Task 10): the server stopped, then started again on the entry in force, its connection number

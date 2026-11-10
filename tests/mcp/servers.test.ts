@@ -5,6 +5,7 @@ import path from "node:path";
 import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/messages/messages";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { projectFile, SETTINGS } from "../../src/core/datadir.js";
+import { running } from "../../src/exec/local.js";
 import { type Answers, answersFor } from "../../src/mcp/answers.js";
 import { readServers, type ServerConfig } from "../../src/mcp/config.js";
 import { NotReached } from "../../src/mcp/server.js";
@@ -581,6 +582,39 @@ describe("Servers: starting, waiting and stopping", () => {
     const cPid = Number(readFileSync(pid, "utf8"));
     await vi.waitFor(() => expect(alive(cPid)).toBe(false), WAIT);
     expect(new Set(every(servers).map((o) => o.server))).toEqual(new Set(["a", "b", "d"]));
+  });
+
+  // Release 8c plan, Task 10's quality review: a new connection closes one still open, so two Reconnects close together
+  // leave one server running, and the exit's stop leaves none.
+  it("leaves one server running after two restarts at once, and none after stopAll", async () => {
+    const { config, make } = await setup();
+    const servers = make([await config("s")]);
+    const live = () => [...running].filter((c) => c.exitCode === null && c.signalCode === null).length;
+    servers.startAll();
+    await servers.ready();
+    await vi.waitFor(() => expect(live()).toBe(1), WAIT); // an earlier case's server may still be going
+    await Promise.all([servers.restart("s"), servers.restart("s")]);
+    expect(servers.list()[0]!.state.is).toBe("ready");
+    await vi.waitFor(() => expect(live()).toBe(1), WAIT);
+    await servers.stopAll();
+    await vi.waitFor(() => expect(live()).toBe(0), WAIT);
+  });
+
+  // Task 10's quality review: the table is built again after a live edit, so a kept server's count and left-out lines are
+  // current at once: here "a_b"'s tool, left out while "a.b" held its name, is offered once "a.b" is removed.
+  it("counts a kept server's tools again after a live edit removes the one whose name it clashed with", async () => {
+    const { notes, config, make } = await setup();
+    const [dotted, under] = [await config("a.b", { tools: [tool("t")] }), await config("a_b", { tools: [tool("t")] })];
+    const servers = make([dotted, under]);
+    servers.startAll();
+    await servers.ready();
+    every(servers);
+    expect(servers.list().map((s) => s.tools)).toEqual([1, 0]);
+    expect(notes).toEqual(['MCP server a_b: "t" was left out: its name mcp__a_b__t is already a.b\'s "t"']);
+    servers.set([under]);
+    expect(servers.list().map((s) => s.tools)).toEqual([1]);
+    expect(servers.tools("a_b")).toEqual({ names: ["mcp__a_b__t"], leftOut: [] });
+    expect(notes).toHaveLength(1);
   });
 });
 

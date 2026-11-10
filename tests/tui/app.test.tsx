@@ -24,6 +24,7 @@ import type { Executor } from "../../src/exec/executor.js";
 import { LocalWorkspace } from "../../src/exec/local.js";
 import type { Workspace } from "../../src/exec/workspace.js";
 import { Session, type SessionOptions } from "../../src/core/session.js";
+import { projectFile } from "../../src/core/datadir.js";
 import { attachErrorLog } from "../../src/core/errorlog.js";
 import { exportText } from "../../src/core/exportText.js";
 import { characters } from "../../src/core/fit.js";
@@ -10250,11 +10251,12 @@ describe("App's MCP", () => {
         "ends · stopped: it exited with code 3",
         "asks (project) · waiting for your yes",
         "nope (project) · you said no",
+        "↑↓ move · Enter opens · Esc closes", // choice 51's hint, as /resume's list ends
       ].join("\n"),
     );
-    // A ready server's actions; Esc goes back to the list.
+    // A ready server's actions, with their own hint; Esc goes back to the list.
     await press(app, "\r");
-    await shows(app, "ready · 2 tools · trusted\nReconnect\nShow tools\n");
+    await shows(app, "ready · 2 tools · trusted\nReconnect\nShow tools\n↑↓ move · Enter runs · Esc back\n");
     expect(app.lastFrame()).not.toContain(HEADING);
     await press(app, "\u001b");
     await shows(app, `${HEADING}\nready`);
@@ -10323,9 +10325,9 @@ describe("App's MCP", () => {
     await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
     await type(app, "/mcp");
     await shows(app, `${HEADING}\ns · 1 tool\n`);
-    expect(app.lastFrame()).toMatch(/s · 1 tool\n.*lead fake:a/);
+    expect(app.lastFrame()).toMatch(/s · 1 tool\n↑↓ move · Enter opens · Esc closes\n.*lead fake:a/);
     await press(app, "\r");
-    await shows(app, "s · 1 tool\nReconnect\nShow tools\n");
+    await shows(app, "s · 1 tool\nReconnect\nShow tools\n↑↓ move · Enter runs · Esc back\n");
     await press(app, "\u001b", "\u001b");
     await gone(app, HEADING);
   });
@@ -10365,6 +10367,45 @@ describe("App's MCP", () => {
     await askServers([c], () => answersFor(dir, data), async (q) => (asked.push(q), false), () => {});
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatch(/^Start the MCP server "proj" from this project's \.mcp\.json: /);
+  });
+
+  // Choice 52: the answer is forgotten only once the reset line is written. The answers folder is moved aside and a file
+  // the test makes put in its place, so the write fails; the answer holds, here and in the file, and Reset is still offered.
+  it("keeps a project server's answer when its reset cannot be written, and says the next launch still uses it", async () => {
+    const { dir, config, servers } = await mcpSetup();
+    const data = path.join(dir, "data", "tachi");
+    const c = await config("proj", {}, { where: "project", written: "w1" });
+    answersFor(dir, data).set("proj", "w1", true);
+    const folder = path.dirname(projectFile("mcp-answers", dir, data));
+    const { app, mcp } = await mount([], { mcp: servers([c], { answers: () => answersFor(dir, data) }) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["proj ready"]));
+    renameSync(folder, `${folder}-aside`);
+    writeFileSync(folder, "");
+    await type(app, "/mcp");
+    await press(app, "\r", DOWN, DOWN, "\r");
+    await soon(() => expect(flat(app)).toMatch(/Your answer for proj could not be reset \(.+\); the next launch still uses it\./));
+    expect(mcp!.servers.answered("proj")).toBe(true);
+    await type(app, "/mcp");
+    await press(app, "\r");
+    await shows(app, "Reconnect\nShow tools\nReset my answer\n");
+    await press(app, "\u001b", "\u001b");
+    unlinkSync(folder);
+    renameSync(`${folder}-aside`, folder);
+    expect(answersFor(dir, data).get("proj", "w1")).toBe(true);
+  });
+
+  // The list draws a server's state as it changes, with no key pressed: here a start the test lets finish.
+  it("redraws /mcp's list when a server's state changes", async () => {
+    const { dir, config, servers } = await mcpSetup();
+    const gate = path.join(dir, "gate");
+    // Looked for every 20 ms: a test's own pause, short beside the wait for a process (as tests/mcp/servers.test.ts's).
+    const start = `const fs = require("node:fs"); const pause = new Int32Array(new SharedArrayBuffer(4));
+      while (!fs.existsSync(${JSON.stringify(gate)})) Atomics.wait(pause, 0, 0, 20);`;
+    const { app } = await mount([], { mcp: servers([await config("s", { start, tools: [tool("one")] })]) });
+    await type(app, "/mcp");
+    await shows(app, `${HEADING}\ns · starting\n`);
+    await writeFile(gate, "");
+    await shows(app, `${HEADING}\ns · 1 tool\n`);
   });
 
   // Release 8c plan, Task 5's set(): an entry the edit changed restarts, a new one starts, a removed one stops, the others

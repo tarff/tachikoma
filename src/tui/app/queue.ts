@@ -266,16 +266,14 @@ export const queue = (ui: UI, fns: Fns) => {
     ui.setMcpList(false);
     fns.next();
   };
-  // A server's action, picked in /mcp's list. Reconnect keeps the list open, which shows the server starting, then how
-  // its start went; Show tools prints the server's tools into the conversation, as /hooks prints its list, then the ones
-  // left out, in their lines' words (Servers, tools); Reset my answer writes the reset (choice 24) and says so. What is
-  // said is asked for, shown at the bottom, as the model list's pick says (pick, below).
+  // A server's action, picked in /mcp's list. Reconnect keeps the list open, which redraws as the server starts, then as
+  // its start ends (McpList.tsx); Show tools prints the server's tools into the conversation, as /hooks prints its list,
+  // then the ones left out, in their lines' words (Servers, tools); Reset my answer writes the reset (choice 24) and says
+  // so, or, when it cannot be written, that the answer still holds (choice 52). What is said is asked for, shown at the
+  // bottom, as the model list's pick says (pick, below).
   const mcpAction = (name: string, action: Action) => {
     const servers = ui.mcp!.servers;
-    if (action === "Reconnect") {
-      void servers.restart(name).finally(() => ui.rerender((n) => n + 1));
-      return ui.rerender((n) => n + 1);
-    }
+    if (action === "Reconnect") return void servers.restart(name);
     ui.view.current = FOLLOWING;
     const shown = visible(name);
     if (action === "Show tools") {
@@ -286,7 +284,7 @@ export const queue = (ui: UI, fns: Fns) => {
         servers.reset(name);
         fns.say(gray(`Your answer for ${shown} was reset; Tachikoma asks again at the next launch.`));
       } catch (err) {
-        fns.say({ text: errorText(err), color: "red" });
+        fns.say({ text: `Your answer for ${shown} could not be reset (${visible(errorText(err), { tabs: true })}); the next launch still uses it.`, color: "red" });
       }
     }
     closeMcp();

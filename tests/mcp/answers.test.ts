@@ -123,9 +123,10 @@ describe("answersFor", { timeout: 15_000 }, () => {
     expect(existsSync(path.dirname(file))).toBe(false);
   });
 
-  // Release 8c plan, choice 50: an answer that cannot be written still holds for this launch, a reset too, and the write's
-  // failure is thrown for the launch to say. A file stands where the answers' folder goes; no permission is changed.
-  it("keeps an answer and a reset for this launch when they cannot be written, and throws", () => {
+  // Release 8c plan, choice 50: an answer that cannot be written still holds for this launch, and the write's failure is
+  // thrown for the launch to say; choice 52: a reset that cannot be written leaves the answer in force, as the file the
+  // next launch reads still holds it. A file stands where the answers' folder goes; no permission is changed.
+  it("keeps an answer for this launch when it cannot be written, keeps it when its reset cannot be, and throws", () => {
     const { data, root, file } = folders();
     const answers = answersFor(root, data);
     mkdirSync(data, { recursive: true });
@@ -133,6 +134,6 @@ describe("answersFor", { timeout: 15_000 }, () => {
     expect(() => answers.set("sanity", A, true)).toThrow();
     expect(answers.get("sanity", A)).toBe(true);
     expect(() => answers.reset("sanity")).toThrow();
-    expect(answers.get("sanity", A)).toBeUndefined();
+    expect(answers.get("sanity", A)).toBe(true);
   });
 });

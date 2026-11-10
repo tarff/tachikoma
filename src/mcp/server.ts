@@ -179,6 +179,10 @@ export class Server {
     const conn: Conn = { transport: made, client: undefined as unknown as Client, ready: false };
     if (made instanceof Stdio) conn.local = made;
     conn.client = this.#client(conn);
+    // One still open, as when two Reconnects come close together, is closed first, so only one server runs; its own start
+    // then finds it closed and leaves the state to this one (release 8c plan, Task 10's quality review).
+    const prev = this.#conn;
+    if (prev && !prev.closed) void this.#close(prev);
     this.#conn = conn;
 
     // The library's own limit on each request is passed too, so neither falls back to its 60 s.
