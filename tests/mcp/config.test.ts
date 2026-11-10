@@ -78,36 +78,39 @@ describe("readServers", () => {
   it("leaves out a server with a field of the wrong type, saying what it must be", () => {
     const cases: [unknown, string][] = [
       [local({ type: 3 }), ': "type" must be "stdio", "http" or "sse" (got 3); it was left out'],
-      [local({ command: ["node"] }), ': "command" must be text in quotes (got ["node"]); it was left out'],
-      [local({ args: "server.js" }), ': "args" must be a list of text in quotes (got "server.js"); it was left out'],
-      [local({ args: [1] }), ': "args" must be a list of text in quotes (got [1]); it was left out'],
-      [local({ env: ["A=1"] }), ': "env" must be an object of text in quotes, such as {"KEY": "value"} (got ["A=1"]); it was left out'],
-      [local({ env: { A: 1 } }), ': "env.A" must be text in quotes (got 1); it was left out'],
+      [local({ command: ["node"] }), ': "command" must be text in quotes (got a list); it was left out'],
+      [local({ args: "server.js" }), ': "args" must be a list of text in quotes (got text); it was left out'],
+      [local({ args: [1] }), ': "args" must be a list of text in quotes (got a list); it was left out'],
+      [local({ env: ["A=1"] }), ': "env" must be an object of text in quotes, such as {"KEY": "value"} (got a list); it was left out'],
+      [local({ env: { A: 1 } }), ': "env.A" must be text in quotes (got a number); it was left out'],
+      [local({ env: { A: true } }), ': "env.A" must be text in quotes (got true or false); it was left out'],
+      [local({ env: { A: null } }), ': "env.A" must be text in quotes (got null); it was left out'],
+      [local({ env: { A: {} } }), ': "env.A" must be text in quotes (got an object); it was left out'],
       [local({ timeout: 1.5 }), `: "timeout" must be ${TIMEOUT} (got 1.5); it was left out`],
       [local({ timeout: 2147483648 }), `: "timeout" must be ${TIMEOUT} (got 2147483648); it was left out`],
       [local({ timeout: "5000" }), `: "timeout" must be ${TIMEOUT} (got "5000"); it was left out`],
       [local({ alwaysLoad: "true" }), ': "alwaysLoad" must be true or false, without quotes (got "true"); it was left out'],
       [local({ trusted: true }), ': "trusted" must be "read-only" (got true); it was left out'],
       [local({ trustedTools: "quote_get" }), ': "trustedTools" must be a list of tool names in quotes (got "quote_get"); it was left out'],
-      [remote({ url: 3 }), ': "url" must be text in quotes (got 3); it was left out'],
-      [remote({ url: "not an address" }), ': "url" must be an address, such as "https://mcp.example.com/mcp" (got "not an address"); it was left out'],
+      [remote({ url: 3 }), ': "url" must be text in quotes (got a number); it was left out'],
+      [remote({ url: "not an address" }), ': "url" must be an address, such as "https://mcp.example.com/mcp" (got text); it was left out'],
       [
         remote({ headers: "Bearer x" }),
-        ': "headers" must be an object of text in quotes, such as {"Authorization": "Bearer ${TOKEN}"} (got "Bearer x"); it was left out',
+        ': "headers" must be an object of text in quotes, such as {"Authorization": "Bearer ${TOKEN}"} (got text); it was left out',
       ],
-      [remote({ headers: { "X-N": 2 } }), ': "headers.X-N" must be text in quotes (got 2); it was left out'],
-      [remote({ oauth: "my-app" }), ': "oauth" must be an object, such as {"clientId": "my-app"} (got "my-app"); it was left out'],
-      [remote({ oauth: { clientId: 1 } }), ': "oauth.clientId" must be text in quotes (got 1); it was left out'],
+      [remote({ headers: { "X-N": 2 } }), ': "headers.X-N" must be text in quotes (got a number); it was left out'],
+      [remote({ oauth: "my-app" }), ': "oauth" must be an object, such as {"clientId": "my-app"} (got text); it was left out'],
+      [remote({ oauth: { clientId: 1 } }), ': "oauth.clientId" must be text in quotes (got a number); it was left out'],
       [remote({ oauth: { callbackPort: 0 } }), ': "oauth.callbackPort" must be a port number from 1 to 65535 (got 0); it was left out'],
       [remote({ oauth: { callbackPort: 65536 } }), ': "oauth.callbackPort" must be a port number from 1 to 65535 (got 65536); it was left out'],
       [
         remote({ oauth: { scopes: ["read", "write"] } }),
-        ': "oauth.scopes" must be text in quotes, scopes split by spaces, such as "read write" (got ["read","write"]); it was left out',
+        ': "oauth.scopes" must be text in quotes, scopes split by spaces, such as "read write" (got a list); it was left out',
       ],
-      ...[5, "auth.example.com/meta", "http://auth.example.com/meta"].map((v): [unknown, string] => [
+      ...([[5, "a number"], ["auth.example.com/meta", "text"], ["http://auth.example.com/meta", "text"]] as const).map(([v, got]): [unknown, string] => [
         remote({ oauth: { authServerMetadataUrl: v } }),
         ': "oauth.authServerMetadataUrl" must be an https:// address, such as "https://auth.example.com/.well-known/openid-configuration" ' +
-          `(got ${JSON.stringify(v)}); it was left out`,
+          `(got ${got}); it was left out`,
       ]),
     ];
     for (const [server, words] of cases) expect(read(server)).toEqual({ kept: [], warnings: left(words) });
@@ -127,8 +130,68 @@ describe("readServers", () => {
   it("leaves out a server that is not an object", () => {
     expect(read("node server.js")).toEqual({
       kept: [],
-      warnings: left(' must be an object, such as {"command": "node", "args": ["server.js"]} (got "node server.js"); it was left out'),
+      warnings: left(' must be an object, such as {"command": "node", "args": ["server.js"]} (got text); it was left out'),
     });
+  });
+
+  // Task 2's code review: a wrong type is named by its type, as a server, its env, headers, args, command, address or
+  // oauth fields can hold a key.
+  it("never shows a key in a wrong-type line", () => {
+    const KEY = "sk-live-123";
+    const cases: unknown[] = [
+      `--api-key ${KEY}`,
+      local({ env: [`API_KEY=${KEY}`] }),
+      local({ env: { API_KEY: [KEY] } }),
+      local({ args: `--api-key ${KEY}` }),
+      local({ command: [KEY] }),
+      remote({ headers: `Authorization: Bearer ${KEY}` }),
+      remote({ headers: { Authorization: [`Bearer ${KEY}`] } }),
+      remote({ url: [`https://x/?key=${KEY}`] }),
+      remote({ url: `${KEY} not an address` }),
+      remote({ oauth: `clientId ${KEY}` }),
+      remote({ oauth: { clientId: [KEY] } }),
+      remote({ oauth: { scopes: [KEY] } }),
+      remote({ oauth: { authServerMetadataUrl: `http://auth.example.com/?k=${KEY}` } }),
+    ];
+    for (const server of cases) {
+      const words = said(server);
+      expect(words).toHaveLength(1);
+      expect(words[0]).toMatch(/\(got (a list|text|a number|true or false|null|an object)\); it was left out$/);
+      expect(words[0]).not.toContain("sk-");
+    }
+    const value = [{ command: "node", env: { API_KEY: KEY } }];
+    expect(() => readServers("settings.json", value, ENV, [])).toThrow(new Error('settings.json: "mcpServers" must be an object of servers (got a list)'));
+  });
+
+  // Task 2's code review: names and fields from a cloned repository's .mcp.json cannot carry escape codes, direction
+  // marks or C1 control codes onto the screen.
+  it("shows a server's name and a field's name with their control and direction characters escaped", () => {
+    const warnings: string[] = [];
+    readServers(".mcp.json", { "a\u202eb": { type: "ws" }, c: local({ "x\u0085\u2066": 1 }) }, ENV, warnings);
+    expect(warnings).toEqual([
+      '.mcp.json: "a\\u202eb" has "type" "ws", which Tachikoma does not support; it was left out',
+      '.mcp.json: "c" has "x\\u0085\\u2066", which is not a server field; it was ignored',
+    ]);
+    const other: string[] = [];
+    readServers("settings.json", { s: remote({ type: "w\u202es", oauth: { "y\u2069": 1 } }), t: remote({ headers: { "h\u009b": 1 } }) }, ENV, other);
+    expect(other).toEqual([
+      'settings.json: "mcpServers": "s" has "type" "w\\u202es", which is not "stdio", "http" or "sse"; it was left out',
+      'settings.json: "mcpServers": "t": "headers.h\\u009b" must be text in quotes (got a number); it was left out',
+    ]);
+  });
+
+  // Task 2's code review: only a variable's text counts, so what every object has is not a variable.
+  it("takes ${constructor}, ${toString} and ${__proto__} as not set", () => {
+    for (const name of ["constructor", "toString", "__proto__"]) {
+      expect(said(local({ command: `\${${name}}` }))).toEqual(left(` needs \${${name}}, which is not set; it was left out`));
+    }
+    expect(read(local({ command: "${constructor:-node}" })).kept[0]!.entry).toMatchObject({ command: "node" });
+  });
+
+  // process.env on Windows finds a variable whatever its letter case; the lookup keeps that.
+  it.runIf(process.platform === "win32")("finds a variable in process.env whatever its letter case, on Windows", () => {
+    const { kept } = read(local({ command: "${systemroot}" }), process.env);
+    expect(kept[0]!.entry).toMatchObject({ command: process.env.SystemRoot });
   });
 
   it("ignores a field that is not a server field, with its line, and keeps the server", () => {
@@ -217,8 +280,8 @@ describe("readServers", () => {
 
   // The plan's line for mcpServers of the wrong type: a problem, so the file is not applied (settings.ts).
   it("refuses mcpServers that is not an object of servers", () => {
-    for (const value of [[], "x", null, 3]) {
-      const words = `settings.json: "mcpServers" must be an object of servers (got ${JSON.stringify(value)})`;
+    for (const [value, got] of [[[], "a list"], ["x", "text"], [null, "null"], [3, "a number"], [true, "true or false"]]) {
+      const words = `settings.json: "mcpServers" must be an object of servers (got ${got})`;
       expect(() => readServers("settings.json", value, ENV, [])).toThrow(new Error(words));
     }
   });
@@ -307,8 +370,19 @@ describe("readProjectFile", () => {
     }
     const line = (reason: string) => [`.mcp.json could not be read (${reason}); its servers were left out`];
     expect(readIn(await project("{"))).toEqual({ kept: [], warnings: line(parser) });
-    expect(readIn(await project("[1]")).warnings).toEqual(line('it must be one object, such as {"mcpServers": {}} (got [1])'));
-    expect(readIn(await project('{"mcpServers": []}')).warnings).toEqual(line('"mcpServers" must be an object of servers (got [])'));
+    expect(readIn(await project('["sk-live-123"]')).warnings).toEqual(line('it must be one object, such as {"mcpServers": {}} (got a list)'));
+    expect(readIn(await project('{"mcpServers": ["sk-live-123"]}')).warnings).toEqual(line('"mcpServers" must be an object of servers (got a list)'));
+    expect(readIn(await project('"sk-live-123"')).warnings).toEqual(line('it must be one object, such as {"mcpServers": {}} (got text)'));
+  });
+
+  // Task 2's code review: V8's JSON.parse words quote the file as it is, so a cloned repository's file could put escape
+  // codes on the screen.
+  it("shows no escape code from a .mcp.json that is not JSON", async () => {
+    const { warnings } = readIn(await project("\u001b]0;x\u0007"));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/^\.mcp\.json could not be read \(.*\); its servers were left out$/);
+    expect(warnings[0]).not.toMatch(/[\u001b\u0007]/);
+    expect(warnings[0]).toContain("\\u001b");
   });
 
   it("says when .mcp.json is a folder", async () => {

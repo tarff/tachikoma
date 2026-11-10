@@ -24,8 +24,20 @@ export interface ServerConfig {
 const PROJECT = ".mcp.json";
 type File = typeof SETTINGS | typeof PROJECT;
 
-// As settings.ts's, whose words every entry's problems use; that module imports this one.
-const wrongType = (entry: string, what: string, value: unknown) => new Error(`${entry} must be ${what} (got ${JSON.stringify(value)})`);
+// What a value is, for a line that must not show it: a server, its env, headers, args or address can hold a key, and a
+// whole .mcp.json can be any size (Task 2's code review).
+const typeOf = (v: unknown) =>
+  Array.isArray(v) ? "a list"
+  : v === null ? "null"
+  : typeof v === "string" ? "text"
+  : typeof v === "number" ? "a number"
+  : typeof v === "boolean" ? "true or false"
+  : "an object";
+// As settings.ts's words, whose module imports this one, but naming the value's type, not the value.
+const wrongType = (entry: string, what: string, value: unknown) => new Error(`${entry} must be ${what} (got ${typeOf(value)})`);
+// A name from the file, quoted and escaped: JSON.stringify leaves direction marks and C1 control codes as they are, and
+// a cloned repository's .mcp.json writes these (Task 2's code review).
+const quoted = (name: string) => visible(JSON.stringify(name));
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === "string");
 
@@ -61,7 +73,7 @@ export function readServers(file: File, value: unknown, env: NodeJS.ProcessEnv, 
   const where = file === SETTINGS ? "user" : "project";
   const kept: ServerConfig[] = [];
   for (const [name, raw] of Object.entries(value)) {
-    const place = file === SETTINGS ? `${SETTINGS}: "mcpServers": ${JSON.stringify(name)}` : `${file}: ${JSON.stringify(name)}`;
+    const place = file === SETTINGS ? `${SETTINGS}: "mcpServers": ${quoted(name)}` : `${file}: ${quoted(name)}`;
     const say = (words: string) => warnings.push(`${place}${words}`);
     try {
       kept.push(serverOf(name, raw, where, env, say));
@@ -83,8 +95,9 @@ export function mergeServers(user: ServerConfig[], project: ServerConfig[]): Ser
 // The project's .mcp.json, at its root, read at the launch only (release 8c plan, Task 2: a known limit). None is no
 // servers; one that cannot be read leaves its servers out, with a line, and the user's still apply.
 export function readProjectFile(root: string, env: NodeJS.ProcessEnv, warnings: string[]): ServerConfig[] {
+  // V8's JSON.parse words quote the file as it is, escape codes and all (Task 2's code review).
   const broken = (reason: string) => {
-    warnings.push(`${PROJECT} could not be read (${reason}); its servers were left out`);
+    warnings.push(`${PROJECT} could not be read (${visible(reason)}); its servers were left out`);
     return [];
   };
   let text: string;
@@ -104,14 +117,14 @@ export function readProjectFile(root: string, env: NodeJS.ProcessEnv, warnings: 
   } catch (err) {
     return broken(errorText(err));
   }
-  if (!isObject(data)) return broken(`it must be one object, such as {"mcpServers": {}} (got ${JSON.stringify(data)})`);
+  if (!isObject(data)) return broken(`it must be one object, such as {"mcpServers": {}} (got ${typeOf(data)})`);
   if (data.mcpServers === undefined) return [];
-  if (!isObject(data.mcpServers)) return broken(`"mcpServers" must be ${SERVERS} (got ${JSON.stringify(data.mcpServers)})`);
+  if (!isObject(data.mcpServers)) return broken(`"mcpServers" must be ${SERVERS} (got ${typeOf(data.mcpServers)})`);
   return readServers(PROJECT, data.mcpServers, env, warnings);
 }
 
 function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env: NodeJS.ProcessEnv, say: (words: string) => void): ServerConfig {
-  if (!isObject(raw)) throw new Left(` must be an object, such as ${LOCAL_EXAMPLE} (got ${JSON.stringify(raw)})`);
+  if (!isObject(raw)) throw new Left(` must be an object, such as ${LOCAL_EXAMPLE} (got ${typeOf(raw)})`);
   // A "__" would make mcp__<server>__<tool> read two ways (release 8c design, finding 2).
   const safe = name.replace(/[^A-Za-z0-9_-]/g, "_");
   if (safe.includes("__")) throw new Left(' has a name that holds "__" once its characters are made safe, which tool names cannot carry');
@@ -132,31 +145,30 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
     else if (field === "trusted" || field === "trustedTools") {
       // Trust is the user's own word that the tools only read, so a project's file cannot give it (release 8c design,
       // "A project's servers").
-      if (where === "project") say(` has ${JSON.stringify(field)}; trust counts only in ${USER_FILE}, so it was ignored`);
+      if (where === "project") say(` has ${quoted(field)}; trust counts only in ${USER_FILE}, so it was ignored`);
       else if (field === "trusted") {
-        if (v !== "read-only") throw bad(field, '"read-only"', v);
+        if (v !== "read-only") throw badValue(field, '"read-only"', v);
         trusted = v;
       } else {
-        if (!texts(v)) throw bad(field, "a list of tool names in quotes", v);
+        if (!texts(v)) throw badValue(field, "a list of tool names in quotes", v);
         trustedTools = v;
       }
     } else if (field === "alwaysLoad") {
-      if (typeof v !== "boolean") throw bad(field, "true or false, without quotes", v);
+      if (typeof v !== "boolean") throw badValue(field, "true or false, without quotes", v);
       alwaysLoad = v;
     } else if (field === "timeout") {
-      if (!Number.isInteger(v) || (v as number) > MAX_TIMER_MS) throw bad(field, TIMEOUT, v);
+      if (!Number.isInteger(v) || (v as number) > MAX_TIMER_MS) throw badValue(field, TIMEOUT, v);
       if ((v as number) >= MIN_TIMEOUT_MS) timeout = v as number;
     } else if (other.includes(field)) continue;
-    else say(` has ${JSON.stringify(field)}, which is not a server field; it was ignored`);
+    else say(` has ${quoted(field)}, which is not a server field; it was ignored`);
   }
   const fill = filler(env);
-  const time = timeout !== undefined && { timeout };
   let entry: ServerEntry;
   if (kind === "stdio") {
     if (typeof raw.command !== "string") throw bad("command", TEXT, raw.command);
     if (raw.args !== undefined && !texts(raw.args)) throw bad("args", LIST, raw.args);
     const vars = textMap("env", raw.env, '{"KEY": "value"}');
-    entry = { kind, command: fill(raw.command), args: (raw.args ?? []).map(fill), env: mapValues(vars, fill), ...time };
+    entry = { kind, command: fill(raw.command), args: (raw.args ?? []).map(fill), env: mapValues(vars, fill), ...(timeout !== undefined && { timeout }) };
   } else {
     if (typeof raw.url !== "string") throw bad("url", TEXT, raw.url);
     const headers = textMap("headers", raw.headers, '{"Authorization": "Bearer ${TOKEN}"}');
@@ -164,12 +176,16 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
     const url = fill(raw.url);
     const filled = mapValues(headers, fill);
     address(raw.url, url);
-    entry = { kind, url, headers: filled, ...time, ...(oauth && { oauth }) };
+    entry = { kind, url, headers: filled, ...(timeout !== undefined && { timeout }), ...(oauth && { oauth }) };
   }
   return { name, safe, entry, where, trusted, trustedTools, alwaysLoad };
 }
 
-const bad = (field: string, what: string, value: unknown) => new Left(`: ${JSON.stringify(field)} must be ${what} (got ${JSON.stringify(value)})`);
+// A field of the wrong type, its value named by its type, as it may hold a key (typeOf); badValue shows the value, for the
+// short fields that carry none: type, timeout, alwaysLoad, trusted, trustedTools and oauth.callbackPort.
+const bad = (field: string, what: string, value: unknown) => new Left(`: ${quoted(field)} must be ${what} (got ${typeOf(value)})`);
+const badValue = (field: string, what: string, value: unknown) =>
+  new Left(`: ${quoted(field)} must be ${what} (got ${visible(JSON.stringify(value))})`);
 
 // Claude Code's types: stdio by default, http also spelled streamable-http, and sse. As in Claude Code, a url with no type
 // is a mistake, since no type means a local server.
@@ -179,11 +195,11 @@ function kindOf(raw: Record<string, unknown>): ServerEntry["kind"] {
     if (raw.url !== undefined) throw new Left(' has a "url" but no "type", so it would be a local server; add "type": "http" or "sse"');
     return "stdio";
   }
-  if (typeof type !== "string") throw bad("type", '"stdio", "http" or "sse"', type);
+  if (typeof type !== "string") throw badValue("type", '"stdio", "http" or "sse"', type);
   if (type === "stdio" || type === "http" || type === "sse") return type;
   if (type === "streamable-http") return "http";
   if (type === "ws") throw new Left(' has "type" "ws", which Tachikoma does not support');
-  throw new Left(` has "type" ${JSON.stringify(type)}, which is not "stdio", "http" or "sse"`);
+  throw new Left(` has "type" ${quoted(type)}, which is not "stdio", "http" or "sse"`);
 }
 
 // env and headers: text values, each wrong one named on its own, so the line never shows the others, a key among them.
@@ -211,25 +227,27 @@ function oauthOf(value: unknown, say: (words: string) => void): OAuthEntry {
       }
       oauth.authServerMetadataUrl = v;
     } else if (name === "callbackPort") {
-      if (!Number.isInteger(v) || (v as number) < 1 || (v as number) > MAX_PORT) throw bad(field, `a port number from 1 to ${MAX_PORT}`, v);
+      if (!Number.isInteger(v) || (v as number) < 1 || (v as number) > MAX_PORT) throw badValue(field, `a port number from 1 to ${MAX_PORT}`, v);
       oauth.callbackPort = v as number;
     } else if (name === "scopes") {
       if (typeof v !== "string") throw bad(field, 'text in quotes, scopes split by spaces, such as "read write"', v);
       oauth.scopes = v;
-    } else say(` has ${JSON.stringify(field)}, which is not a server field; it was ignored`);
+    } else say(` has ${quoted(field)}, which is not a server field; it was ignored`);
   }
   return oauth;
 }
 
 // ${VAR} and ${VAR:-default}, as Claude Code reads them: the name is all before the first ":-", and a variable set to
 // empty text is set. Unlike Claude Code, which passes an unset one through as its own text, the server is left out, so a
-// key header cannot go out as the text ${SANITY_TOKEN} (release 8c design, "The settings entry").
+// key header cannot go out as the text ${SANITY_TOKEN} (release 8c design, "The settings entry"). Only text counts as
+// set, so ${constructor} or ${__proto__} cannot fill in what every object has (Task 2's code review); process.env's own
+// lookup is kept, which on Windows ignores letter case.
 const filler = (env: NodeJS.ProcessEnv) => (text: string) =>
   text.replace(/\$\{([^}]+)\}/g, (_whole, body: string) => {
     const cut = body.indexOf(":-");
     const name = cut < 0 ? body : body.slice(0, cut);
-    const value = env[name];
-    if (value !== undefined) return value;
+    const value: unknown = env[name];
+    if (typeof value === "string") return value;
     if (cut >= 0) return body.slice(cut + 2);
     throw new Left(` needs \${${visible(name)}}, which is not set`);
   });

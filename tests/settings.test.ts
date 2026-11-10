@@ -346,7 +346,7 @@ describe("readSettings", () => {
 
     it("refuses mcpServers of the wrong type, so nothing in the file applies", () => {
       expect(read({ mode: "ask", mcpServers: [{ command: "node" }] })).toEqual({
-        problem: 'settings.json: "mcpServers" must be an object of servers (got [{"command":"node"}])',
+        problem: 'settings.json: "mcpServers" must be an object of servers (got a list)',
       });
     });
   });
