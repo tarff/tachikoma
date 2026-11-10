@@ -23,12 +23,15 @@ export interface FakeOptions {
   description?: string; // echo's description
   port?: number; // over HTTP, the port to listen on; any free one without it
   status?: number; // over HTTP, the status every POST is answered with
+  tools?: object[]; // its tools/list, in place of its own tools (Task 5's names and schemas)
+  added?: object[]; // what change adds, before the others, in place of "added"
 }
 
 // Its tools: echo says `text` back; error answers isError; picture answers a 1x1 PNG; structured answers structured
 // content only; slow never answers; progress sends progress and never answers; whoami tells its arguments, folder and
 // variables; ask sends the client a request (`method`, `params`) and answers with the client's answer; change adds a
-// tool and says the list changed; exit prints `stderr` and exits with `code`. Over HTTP, which answers in JSON only,
+// tool and says the list changed; exit prints `stderr` and exits with `code`. The tools are called by name whatever the
+// list says, so a fake with its own `tools` still answers change and exit. Over HTTP, which answers in JSON only,
 // nothing reaches the client between answers, so progress, ask and change's notice need stdio.
 const SCRIPT = String.raw`
 const fs = require("node:fs");
@@ -41,7 +44,7 @@ if (O.stubborn) {
 }
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const tool = (name, description = name) => ({ name, description, inputSchema: { type: "object" } });
-let tools = [
+let tools = O.tools || [
   { ...tool("echo", O.description || "Says it back"), inputSchema: { type: "object", properties: { text: { type: "string" } } } },
   ...["error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit"].map((name) => tool(name)),
 ];
@@ -75,7 +78,7 @@ function answer(m, reply) {
         mine: process.env.MINE ?? null, key: process.env.ANTHROPIC_API_KEY ?? null }));
     case "ask": return request(args.method, args.params, (r) => text(JSON.stringify(r.result ?? r.error)));
     case "change":
-      tools = [...tools, tool("added")];
+      tools = O.added ? [...O.added, ...tools] : [...tools, tool("added")];
       text("changed");
       return notify({ method: "notifications/tools/list_changed" });
     case "exit": return process.stderr.write(args.stderr || "", () => process.exit(args.code));
