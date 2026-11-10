@@ -1150,7 +1150,9 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   `anyOf` or `oneOf` whose branches hold their own combinators or a `$ref` names no parameters
   for them, and a root `$ref` is passed on as written; a schema marked draft-04 is left out with
   the checker's own words; schemas are compiled but not checked against JSON Schema's own rules,
-  so a schema a provider refuses for another reason can still fail a request); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
+  so a schema a provider refuses for another reason can still fail a request; a `pattern` that
+  plain JavaScript takes but strict Unicode mode does not, such as `^[\w-.]+$`, leaves its tool
+  out with the "could not be read" line, as the library compiles patterns that way); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
 
