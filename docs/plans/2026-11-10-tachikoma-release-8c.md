@@ -524,6 +524,20 @@ search, always on", "Own lookup tool, every provider")
     is bound to a different conversation. ... The `tools` list differs from the one this block
     was created with."; the same request through `keepThinking` was accepted; thinking kept
     under an unchanged set was accepted.
+47. **The question's note and the modes, as built** (Task 7's spec review; the user's choices,
+    2026-11-11):
+    - The grey note is the tool's own description, as the server sent it, never Tachikoma's
+      sentence for a flattened schema (choice 36), which the judge still gets; it is cut to one
+      screen row in every view, as full screen already does ("One screen row", "Tool's own
+      words").
+    - The input is escaped and shown whole, as the gate shows a shell command; a long question
+      moves into the conversation, as any does. Choice 14's "cut" has no cut to match.
+    - In `-p` with `auto`, the judge decides an MCP call, as it does other actions there; nobody is
+      asked ("Judge decides").
+    - In `never`, a PreToolUse hook's `ask` on an MCP call becomes the user's question, as in
+      `ask`; other actions in `never` keep refusing a hook's ask ("Ask you").
+    - The action is sent with `outside: true`: the server runs apart from the project. Only the
+      judge reads it for this kind.
 
 ## Lines this plan adds
 
@@ -981,6 +995,8 @@ never asked about a call that cannot run.
 **From Task 6b's build:** the judge is shown `o.forJudge`, the 4,096 cut, whichever way the tool
 was loaded; `tool_search` takes no gate (choice 44).
 
+**From Task 7's review:** choice 47 (the note, `-p` with `auto`, a hook's ask in `never`).
+
 Commit: `feat: approving MCP calls: asked, judged, or trusted, and subagents get only trusted read-only tools`.
 
 ## Task 8: Hooks
@@ -1060,8 +1076,9 @@ line (choice 25); the sandbox-network-off line. A tool's pictures already show a
 tool's answer). The other-kind line reads "a" or "an" by its word ("an audio part").
 
 **From Task 6b's build:** the lead's `SessionOptions.mcp` is one `mcpTools(servers, bus,
-approve)`; the subagents' `TasksOptions.mcp` is a factory, wired here to `mcpTools(servers, bus,
-approve, { trustedOnly: true })`, a new loaded set per subagent. `Session.load` takes the loaded
+approveOf(servers))` (Task 7); the subagents' `TasksOptions.mcp` is the `Servers` object itself,
+from which `Tasks` builds each subagent's `mcpTools(..., { trustedOnly: true })` with a new loaded
+set (Task 7's build), so no caller can give a subagent more. `Session.load` takes the loaded
 set from the transcript; a search while servers start waits with no line of its own. Choice 46
 at resume: once MCP is wired, the saved tool set holds `tool_search` and MCP tools, so `resumed()`
 comparing it with Tachikoma's own tools (clilib.ts) would strip all thinking and say the "tools
