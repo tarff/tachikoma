@@ -316,9 +316,13 @@ Each is marked in its task. The user approves them with the plan.
    in `src/exec/env.ts`); hooks keep `onPath`.
 5. **A server's error output** is kept in memory, its newest 30,000 characters, and its last line
    that is not blank is the reason a failure line gives. It is not written to a file. Node's own
-   closing lines are passed over: a last `Node.js v<version>` line and stack lines starting `at `,
-   so a crashed Node server's reason is its error, such as `Error: GITHUB_TOKEN is not set` (the
-   user's choice, 2026-11-10, Task 4's review: Node ends an uncaught error with its version).
+   closing lines are passed over: a last `Node.js v<version>` line, the `{ ... }` block of an
+   error's fields (`code`, `errno`, `cause`) that Node prints after the stack, and stack lines
+   (`at <place>:<line>:<col>`, or `(<anonymous>)`, `(native)`, `(index N)`), so a crashed Node
+   server's reason is its error, such as `Error: GITHUB_TOKEN is not set` or `Error: ENOENT: no
+   such file or directory, open '...'` (the user's choice, 2026-11-10, Task 4's review: Node ends
+   an uncaught error with its version; the fields block and the stack-line shape from the review's
+   re-check, so a real line such as `at least one of FOO or BAR must be set` is kept).
 6. **A local server that exits** gets its exit code, or its signal, in its line.
 
 **Names and tools**
