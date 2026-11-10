@@ -1238,7 +1238,12 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   the tool set changes, the model goes without its earlier thinking at that step; through
   OpenRouter to a Claude 5.x model, the reasoning OpenRouter returns is sent back as it came after
   a change of tools, as other models there need theirs, so an enforced upstream account may
-  refuse that step); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
+  refuse that step; and Task 8's review: an `mcp_tool` hook's answer that is only structured
+  content reaches the hook as its JSON text, which is read as the hook's JSON answer, as a
+  command's printed `{...}` is, so it is never plain context, and a field such as `"continue":
+  false` in it acts; when an earlier hook gives a non-string `updatedMCPToolOutput` and a later
+  one a string, the first in the file is kept and the string is lost, and Ctrl+O does not say so);
+  the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
 
