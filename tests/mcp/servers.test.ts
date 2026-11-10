@@ -170,6 +170,36 @@ describe("Servers: names", () => {
     expect(echo.definition).toContain("MARK");
     expect(echo.spec.inputSchema).toEqual({ type: "object", properties: { text: { type: "string" } } });
   });
+
+  // Task 5's code review: half an emoji is not valid text, which a provider may refuse with the whole request.
+  it("never ends the cut on the first half of an emoji", async () => {
+    const { config, make } = await setup();
+    const servers = make([await config("s", { description: `${"d".repeat(4_095)}${String.fromCodePoint(0x1f600)}after` })]);
+    servers.startAll();
+    await servers.ready();
+    expect(servers.offer().find((o) => o.tool === "echo")!.spec.description).toBe("d".repeat(4_095));
+  });
+
+  // Task 5's code review: lines are said at the start and when a list changes, not at each new connection; a live edit's
+  // restart is a server started anew, so it says its lines again.
+  it("says a left-out line once while its list stands, and again when a live edit restarts the server", async () => {
+    const { notes, config, make } = await setup();
+    const bad = tool("bad", { type: "object", properties: { "has space": {} } });
+    const s = await config("s", { tools: [plain, bad, tool("change")], added: [tool("other")] });
+    const servers = make([s]);
+    servers.startAll();
+    await servers.ready();
+    const line = 'MCP server s: "bad" was left out: its input schema has the property name "has space", which providers do not take ' +
+      '(1 to 64 letters, digits, "_", "." or "-")';
+    expect(notes).toEqual([line]);
+    await servers.server("s")!.callTool("change", {}, {});
+    await vi.waitFor(() => expect(servers.offer().map((o) => o.tool)).toEqual(["other", "plain", "change"]), WAIT);
+    expect(notes).toEqual([line]);
+    const entry = s.entry as Extract<ServerConfig["entry"], { kind: "stdio" }>;
+    servers.set([{ ...s, entry: { ...entry, args: [...entry.args, "again"] } }]);
+    await servers.ready();
+    expect(notes).toEqual([line, line]);
+  });
 });
 
 describe("Servers: schemas (choice 36)", () => {
@@ -214,6 +244,34 @@ describe("Servers: schemas (choice 36)", () => {
     await servers.ready();
     expect(servers.offer().map((o) => o.tool)).toEqual(["plain"]);
     expect(notes).toEqual(left);
+  });
+
+  // Task 5's code review: a sentence naming no parameter in any set tells the model nothing.
+  it("says no sentence when no branch requires anything", async () => {
+    const { config, make } = await setup();
+    const any = tool("any", { type: "object", anyOf: [branch({ a: {} }), branch({ b: {} })] }, "Any.");
+    const servers = make([await config("s", { tools: [any] })]);
+    servers.startAll();
+    await servers.ready();
+    expect(flattened(servers.offer())).toEqual({ any: { description: "Any.", schema: { type: "object", properties: { a: {}, b: {} } } } });
+  });
+
+  // Task 5's code review: for a format it does not know (Pydantic writes "path"), the library's checker warns on the
+  // console with the server's own text, which would reach the terminal raw; a compile that fails warns first too.
+  it("checks a schema with a format the checker does not know with nothing on the console, kept or left out", async () => {
+    const { notes, config, make } = await setup();
+    const warn = vi.spyOn(console, "warn");
+    onTestFinished(() => warn.mockRestore());
+    const path_ = { type: "string", format: "path" };
+    const where = tool("where", { type: "object", properties: { file: path_ } });
+    const failing = tool("failing", { type: "object", properties: { file: path_, n: { type: "nope" } } });
+    const servers = make([await config("s", { tools: [where, failing] })]);
+    servers.startAll();
+    await servers.ready();
+    expect(servers.offer().map((o) => o.tool)).toEqual(["where"]);
+    expect(notes).toEqual(['MCP server s: "failing" was left out: its input schema could not be read (type must be JSONType or JSONType[]: nope)']);
+    expect(warn).not.toHaveBeenCalled();
+    expect(console.warn).toBe(warn);
   });
 
   // The library's checker keeps each compiled schema by its $id, so a shared one would pass a broken schema reusing one.
@@ -304,7 +362,9 @@ describe("Servers: starting, waiting and stopping", () => {
   // so its drop says nothing; only a failed new connection says the stop, with that failure's reason.
   it("says nothing at a remote server's drop, nor when it connects again, and says the stop once when its new connection fails", async () => {
     const { dir, notes, errors, make } = await setup();
-    const first = await httpFake(dir);
+    // A tool left out, whose line is said at the start and not again at each new connection (Task 5's code review).
+    const tools = [plain, tool("bad", { type: "object", properties: { "has space": {} } })];
+    const first = await httpFake(dir, { tools });
     const remote: ServerConfig = {
       ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
       entry: { kind: "http", url: first.url, headers: {} },
@@ -317,10 +377,14 @@ describe("Servers: starting, waiting and stopping", () => {
     await drop();
     expect(stateOf(servers, "r")).toMatchObject({ is: "stopped", retry: true });
     expect(errors).toEqual([]);
-    // Back on the same port: connected again, without a line here (the grey line is Task 6's).
-    const back = await httpFake(dir, { port: first.port });
-    expect(await servers.reconnect("r")).toBe(true);
+    // Back on the same port: connected again, without a line here (the grey line is Task 6's); two callers at once share
+    // the one new connection.
+    const back = await httpFake(dir, { port: first.port, tools });
+    expect(await Promise.all([servers.reconnect("r"), servers.reconnect("r")])).toEqual([true, true]);
     expect(stateOf(servers, "r")?.is).toBe("ready");
+    expect(servers.offer().map((o) => o.tool)).toEqual(["plain"]);
+    // Ready, so there is nothing to reconnect: nothing is tried, and nothing said.
+    expect(await servers.reconnect("r")).toBe(false);
     // Gone again, and not back: the new connection fails, and its reason is the line's.
     await back.stop();
     await drop();
@@ -329,7 +393,25 @@ describe("Servers: starting, waiting and stopping", () => {
     expect(await servers.reconnect("r")).toBe(false);
     const line = `MCP server r stopped: connect ECONNREFUSED 127.0.0.1:${first.port}; reconnect it from /mcp.`;
     expect(errors).toEqual([{ kind: "mcp", attempted: "MCP server r", message: line, lead: "fake:a" }]);
-    expect(notes).toEqual([]);
+    expect(notes).toEqual([
+      'MCP server r: "bad" was left out: its input schema has the property name "has space", which providers do not take ' +
+        '(1 to 64 letters, digits, "_", "." or "-")',
+    ]);
+  });
+
+  // Task 5's code review: only a server stopped with retry has a new connection to try, so a failed one is not said again.
+  it("tries no reconnect, and says nothing more, for a server that failed, stopped for good, or is ready", async () => {
+    const { errors, config, make } = await setup();
+    const servers = make([await config("bad", { exit: 3 }), await config("gone"), await config("fine")]);
+    servers.startAll();
+    await servers.ready();
+    await servers.server("gone")!.callTool("exit", { code: 4 }, {}).catch(() => {});
+    await vi.waitFor(() => expect(errors).toHaveLength(2), WAIT);
+    expect(await Promise.all(["bad", "gone", "fine", "nobody"].map((name) => servers.reconnect(name)))).toEqual([false, false, false, false]);
+    expect(errors.map((e) => e.message)).toEqual([
+      "MCP server bad failed to start: it exited with code 3",
+      "MCP server gone stopped: it exited with code 4; reconnect it from /mcp.",
+    ]);
   });
 
   it("gives up the wait when its signal stops it, and then says the late server is ready", async () => {

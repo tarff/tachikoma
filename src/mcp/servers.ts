@@ -1,9 +1,9 @@
 import type { Tool } from "@modelcontextprotocol/client";
-import { AjvJsonSchemaValidator } from "@modelcontextprotocol/client/validators/ajv";
 import type { Bus } from "../core/bus.js";
 import { visible } from "../core/permissions.js";
 import { errorText, type ToolSpec } from "../core/types.js";
 import type { Answers } from "./answers.js";
+import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
 import { Server, type State } from "./server.js";
 
@@ -34,6 +34,10 @@ interface Slot {
   fixed?: State;
   late?: boolean; // still starting when a wait gave up on it, so its ready line is said (design, "Starting and stopping servers")
   stopSaid?: number; // the connection whose stop has been said, so each stop is said once
+  reconnecting?: Promise<boolean>;
+  // Its left-out lines said, kept while it is not ready, so a new connection with the same list says none again; a live
+  // edit's restart is a new slot, which says its own (Task 5's code review).
+  said: Set<string>;
 }
 
 export class Servers {
@@ -49,7 +53,6 @@ export class Servers {
   #unreadable: string | undefined; // why, until it is said
   #started = false;
   #offered = new Map<string, { server: string; tool: string }>(); // each name the last offer gave, with its owner (choice 7)
-  #said = new Set<string>(); // the left-out lines in force, each said once
   #waiters = new Set<() => void>();
   #prepared = new WeakMap<Tool, Prepared>();
   #ids = new WeakMap<Server, Map<number, number>>();
@@ -179,14 +182,23 @@ export class Servers {
   }
 
   // A dropped remote server's one new connection (choices 13, 33), for Task 6's run: through here, not the Server's own,
-  // as a Server tells nothing of how a reconnect ended, and a failed one is when its stop is said.
-  async reconnect(name: string): Promise<boolean> {
+  // as a Server tells nothing of how a reconnect ended, and a failed one is when its stop is said. Only a server stopped
+  // with retry has one to try, so any other is answered false with nothing said (Task 5's code review); a caller while it
+  // tries gets the same answer, as the Server's own callers do.
+  reconnect(name: string): Promise<boolean> {
     const slot = this.#slots.find((s) => s.config.name === name);
     const server = slot?.server;
-    if (!slot || !server) return false;
-    const connected = await server.reconnect();
-    this.#changed(slot, server);
-    return connected;
+    if (!slot || !server) return Promise.resolve(false);
+    if (slot.reconnecting) return slot.reconnecting;
+    if (server.state.is !== "stopped" || !server.state.retry) return Promise.resolve(false);
+    slot.reconnecting = server
+      .reconnect()
+      .then((connected) => {
+        this.#changed(slot, server);
+        return connected;
+      })
+      .finally(() => (slot.reconnecting = undefined));
+    return slot.reconnecting;
   }
 
   // At Tachikoma's exit: every server stopped (choice 3), all forgotten.
@@ -201,13 +213,13 @@ export class Servers {
   // network off none starts, as it would run on the user's machine with the web open (design, "Starting and stopping
   // servers").
   #slot(config: ServerConfig): Slot {
-    if (this.#network === "off") return { config, fixed: { is: "off" } };
+    const slot: Slot = { config, said: new Set() };
+    if (this.#network === "off") return { ...slot, fixed: { is: "off" } };
     if (config.where === "project") {
       const yes = this.#readAnswers()?.get(config.name, config.written);
-      if (yes === undefined) return { config, fixed: { is: "waiting for your yes" } };
-      if (!yes) return { config, fixed: { is: "you said no" } };
+      if (yes === undefined) return { ...slot, fixed: { is: "waiting for your yes" } };
+      if (!yes) return { ...slot, fixed: { is: "you said no" } };
     }
-    const slot: Slot = { config };
     const server = new Server(config, { root: this.#root, env: this.#env, startMs: this.#startMs, onChange: () => this.#changed(slot, server) });
     slot.server = server;
     return slot;
@@ -269,22 +281,25 @@ export class Servers {
   // The table of names, rebuilt from every ready server's list (choice 7): `mcp__<safe server>__<safe tool>`, each name
   // with one owner, given first to the owner the last offer gave it while that tool is still offered, then in the order
   // the configs are given and each list's order; a later tool with a name in force is left out (design, finding 2).
-  // Schemas are flattened or left out before a name is given (choice 36). `fresh`: the left-out lines not in force before.
+  // Schemas are flattened or left out before a name is given (choice 36). `fresh`: the left-out lines of each ready server
+  // that it had not said; one not ready keeps what it said (Slot.said).
   #build(): { offered: Offered[]; fresh: string[] } {
-    const lines: string[] = [];
+    const lines = new Map<Slot, string[]>(); // each ready server's left-out lines, by the server whose tool is left out
     const candidates: { slot: Slot; server: Server; tool: Tool; full: string; prepared: Extract<Prepared, { schema: unknown }>; who: string }[] = [];
     for (const slot of this.#slots) {
       const server = slot.server;
       if (server?.state.is !== "ready") continue;
+      const own: string[] = [];
+      lines.set(slot, own);
       for (const tool of server.state.tools) {
         const who = `MCP server ${visible(slot.config.name)}: "${visible(tool.name, { tabs: true })}" was left out: `;
         const prepared = this.#prepare(tool);
         if ("reason" in prepared) {
-          lines.push(`${who}its input schema ${prepared.reason}`);
+          own.push(`${who}its input schema ${prepared.reason}`);
           continue;
         }
         const full = `mcp__${slot.config.safe}__${tool.name.replace(/[^A-Za-z0-9_-]/g, "_")}`;
-        if (full.length > MAX_NAME) lines.push(`${who}its name ${full} is ${full.length} characters, over the ${MAX_NAME} every provider takes`);
+        if (full.length > MAX_NAME) own.push(`${who}its name ${full} is ${full.length} characters, over the ${MAX_NAME} every provider takes`);
         else candidates.push({ slot, server, tool, full, prepared, who });
       }
     }
@@ -297,7 +312,7 @@ export class Servers {
       const owner = owners.get(c.full);
       if (!owner) owners.set(c.full, c);
       else if (owner !== c) {
-        lines.push(`${c.who}its name ${c.full} is already ${visible(owner.slot.config.name)}'s "${visible(owner.tool.name, { tabs: true })}"`);
+        lines.get(c.slot)!.push(`${c.who}its name ${c.full} is already ${visible(owner.slot.config.name)}'s "${visible(owner.tool.name, { tabs: true })}"`);
       }
     }
     const offered = candidates
@@ -310,8 +325,11 @@ export class Servers {
         // The server's whole description and its own schema, never a cut view (choice 8).
         definition: JSON.stringify({ description: c.tool.description, inputSchema: c.tool.inputSchema }),
       }));
-    const fresh = [...new Set(lines)].filter((l) => !this.#said.has(l));
-    this.#said = new Set(lines);
+    const fresh: string[] = [];
+    for (const [slot, own] of lines) {
+      fresh.push(...new Set(own.filter((l) => !slot.said.has(l))));
+      slot.said = new Set(own);
+    }
     return { offered, fresh };
   }
 
@@ -350,7 +368,16 @@ export class Servers {
 // The sentence a flattened anyOf or oneOf puts before the server's description, then that text, cut at `max`.
 function describe(tool: Tool, sentence: string | undefined, max: number): string {
   const text = tool.description ?? "";
-  return (sentence ? (text ? `${sentence} ${text}` : sentence) : text).slice(0, max);
+  return cut(sentence ? (text ? `${sentence} ${text}` : sentence) : text, max);
+}
+
+// At most `max` UTF-16 code units, one fewer when the last would be the first half of a pair (a high surrogate, D800 to
+// DBFF in the Unicode Standard, "Surrogates Area"), as an emoji is: half a pair is not valid text, and a provider may
+// refuse the whole request for it (Task 5's code review).
+function cut(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
 }
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -390,7 +417,8 @@ function prepare(input: Tool["inputSchema"]): Prepared {
     const { required: _, ...rest } = root;
     const needed = [...new Set(required)];
     schema = { ...rest, type: "object", ...(needed.length ? { required: needed } : {}), properties: Object.fromEntries(properties) };
-    if (sets.length) {
+    // A sentence whose every set is "(none needed)" tells the model nothing, so there is none (Task 5's code review).
+    if (sets.some((set) => set.length)) {
       const said = sets.map((set) => (set.length ? set.join(", ") : "(none needed)"));
       const list = said.length > 1 ? `${said.slice(0, -1).join("; ")}; or ${said.at(-1)}` : said[0];
       sentence = `This tool takes one of these sets of parameters: ${list}.`;
@@ -404,9 +432,9 @@ function prepare(input: Tool["inputSchema"]): Prepared {
   // The library's own JSON Schema checker (choice 36), a new one for each schema: one checker keeps every schema it
   // compiled, by its $id, so a broken schema reusing an earlier one's $id would pass, and a long session's list changes
   // would pile up. A new one costs little: 180 schemas took 83 ms on this machine (measured 2026-11-10, Task 5's review),
-  // once per list, as each list's checks are kept until it changes.
+  // once per list, as each list's checks are kept until it changes. Checker keeps its warnings off the console.
   try {
-    new AjvJsonSchemaValidator().getValidator(schema as Parameters<AjvJsonSchemaValidator["getValidator"]>[0]);
+    new Checker().getValidator(schema as Parameters<Checker["getValidator"]>[0]);
   } catch (err) {
     return { reason: `could not be read (${visible(errorText(err), { tabs: true })})` };
   }

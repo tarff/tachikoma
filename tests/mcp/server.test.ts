@@ -232,6 +232,22 @@ describe("a local server", () => {
     await vi.waitFor(() => expect(readLog(log).find((m) => m.method === "notifications/cancelled")?.params.requestId).toBe(id), WAIT);
   });
 
+  // Task 5's code review: for a format it does not know, the library's checker warns on the console with the server's own
+  // text, which would reach the terminal raw. The Client checks a tool's outputSchema at its first call (2.4.0's
+  // callTool), whatever the answer.
+  it("calls a tool whose outputSchema has a format the checker does not know, with nothing on the console", async () => {
+    const { make, script } = await setup();
+    const warn = vi.spyOn(console, "warn");
+    onTestFinished(() => warn.mockRestore());
+    const outputSchema = { type: "object", properties: { file: { type: "string", format: "path" } } };
+    const server = make(local([await script({ tools: [{ name: "echo", inputSchema: { type: "object" }, outputSchema }] })]));
+    await server.start();
+    expect(names(server)).toEqual(["echo"]);
+    await server.callTool("echo", { text: "x" }, {}).catch(() => {}); // no structured answer, which the library may refuse
+    expect(warn).not.toHaveBeenCalled();
+    expect(console.warn).toBe(warn);
+  });
+
   it("takes a changed list of tools, and calls onChange", async () => {
     const { make, onChange, script } = await setup();
     const server = make(local([await script()]));

@@ -22,6 +22,7 @@ import { commandEnv, mcpProgram } from "../exec/env.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { killTree, running } from "../exec/local.js";
 import { MAX_TIMER_MS } from "../hooks/config.js";
+import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
 
 // One MCP server's connection, local or remote, through the library's own transports (release 8c plan, Task 4; choice 2).
@@ -223,6 +224,7 @@ export class Server {
       { name: "tachikoma", version: VERSION },
       {
         capabilities: CAPABILITIES,
+        jsonSchemaValidator: new Checker(), // a tool's outputSchema is checked without the library's console warnings
         listChanged: {
           tools: {
             onChanged: (err, tools) => {
