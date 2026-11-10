@@ -7,10 +7,11 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { projectFile, SETTINGS } from "../../src/core/datadir.js";
 import { type Answers, answersFor } from "../../src/mcp/answers.js";
 import { readServers, type ServerConfig } from "../../src/mcp/config.js";
+import { NotReached } from "../../src/mcp/server.js";
 import { type Offered, Servers } from "../../src/mcp/servers.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import { Bus, collectErrors, removeTree } from "../helpers.js";
-import { type FakeOptions, fakeServer, readLog } from "./fake.js";
+import { type FakeOptions, fakeServer, httpFake, readLog } from "./fake.js";
 
 // Release 8c plan, Task 5: the servers together, one table of unique names, against the fake servers of fake.ts.
 
@@ -215,6 +216,19 @@ describe("Servers: schemas (choice 36)", () => {
     expect(notes).toEqual(left);
   });
 
+  // The library's checker keeps each compiled schema by its $id, so a shared one would pass a broken schema reusing one.
+  it("checks each schema on its own, so a broken one reusing an earlier $id is still left out", async () => {
+    const { notes, config, make } = await setup();
+    const id = "https://example.com/schema";
+    const good = tool("good", { $id: id, type: "object", properties: { a: { type: "string" } } });
+    const reused = tool("reused", { $id: id, type: "object", properties: { a: { type: "nope" } } });
+    const servers = make([await config("s", { tools: [good, reused] })]);
+    servers.startAll();
+    await servers.ready();
+    expect(servers.offer().map((o) => o.tool)).toEqual(["good"]);
+    expect(notes).toEqual(['MCP server s: "reused" was left out: its input schema could not be read (type must be JSONType or JSONType[]: nope)']);
+  });
+
   it("does the same for tools arriving by a list change", async () => {
     const { notes, config, make } = await setup();
     const servers = make([await config("s", { tools: [plain, tool("change")], added: [pick, either, both, notObject, badName, broken] })]);
@@ -272,6 +286,50 @@ describe("Servers: starting, waiting and stopping", () => {
     expect(errors).toEqual([{ kind: "mcp", attempted: "MCP server bad", message: line, lead: "fake:a" }]);
     expect(notes).toEqual([]); // nobody waited past it, so no ready line
     expect(servers.offer()).toHaveLength(10);
+  });
+
+  // The error log's `attempted` is printed by /errors, so a name from the file is escaped there too.
+  it("escapes a server's name in a failure's attempted, as in its line", async () => {
+    const { errors, config, make } = await setup();
+    const bell = String.fromCharCode(7);
+    const servers = make([await config(`bad${bell}`, { exit: 3 })]);
+    servers.startAll();
+    await servers.ready();
+    const shown = `bad${"\\"}u0007`;
+    const line = `MCP server ${shown} failed to start: it exited with code 3`;
+    expect(errors).toEqual([{ kind: "mcp", attempted: `MCP server ${shown}`, message: line, lead: "fake:a" }]);
+  });
+
+  // The user's choice (plan commit 25eca39, "A server stopped"): a dropped remote server is tried again at its next call,
+  // so its drop says nothing; only a failed new connection says the stop, with that failure's reason.
+  it("says nothing at a remote server's drop, nor when it connects again, and says the stop once when its new connection fails", async () => {
+    const { dir, notes, errors, make } = await setup();
+    const first = await httpFake(dir);
+    const remote: ServerConfig = {
+      ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
+      entry: { kind: "http", url: first.url, headers: {} },
+    };
+    const servers = make([remote]);
+    servers.startAll();
+    await servers.ready();
+    const drop = () => expect(servers.server("r")!.callTool("echo", { text: "x" }, {})).rejects.toThrow(NotReached);
+    await first.stop();
+    await drop();
+    expect(stateOf(servers, "r")).toMatchObject({ is: "stopped", retry: true });
+    expect(errors).toEqual([]);
+    // Back on the same port: connected again, without a line here (the grey line is Task 6's).
+    const back = await httpFake(dir, { port: first.port });
+    expect(await servers.reconnect("r")).toBe(true);
+    expect(stateOf(servers, "r")?.is).toBe("ready");
+    // Gone again, and not back: the new connection fails, and its reason is the line's.
+    await back.stop();
+    await drop();
+    expect(errors).toEqual([]);
+    expect(await servers.reconnect("r")).toBe(false);
+    expect(await servers.reconnect("r")).toBe(false);
+    const line = `MCP server r stopped: connect ECONNREFUSED 127.0.0.1:${first.port}; reconnect it from /mcp.`;
+    expect(errors).toEqual([{ kind: "mcp", attempted: "MCP server r", message: line, lead: "fake:a" }]);
+    expect(notes).toEqual([]);
   });
 
   it("gives up the wait when its signal stops it, and then says the late server is ready", async () => {
@@ -339,7 +397,8 @@ describe("Servers: starting, waiting and stopping", () => {
     await servers.ready();
     expect(servers.trust("a", "echo")).toBe(false);
     const bEntry = b.entry as Extract<ServerConfig["entry"], { kind: "stdio" }>;
-    servers.set([{ ...a, trustedTools: ["echo"] }, { ...b, entry: { ...bEntry, args: [...bEntry.args, "again"] } }, d]);
+    // A user's entry as written holds its trust too, so a trust edit changes `written` and still restarts nothing.
+    servers.set([{ ...a, trustedTools: ["echo"], written: "trust edited" }, { ...b, entry: { ...bEntry, args: [...bEntry.args, "again"] } }, d]);
     expect(servers.list().map((s) => [s.name, s.state.is])).toEqual([["a", "ready"], ["b", "starting"], ["d", "starting"]]);
     expect(await servers.ready()).toBe(true);
     expect(["a", "b", "d"].map((name) => initializes(logs.get(name)!))).toEqual([1, 2, 1]);
@@ -371,6 +430,12 @@ describe("Servers: a project's servers and the network", () => {
     ];
     const servers = make(configs, { answers: given({ yes: ["w1", true], no: ["w2", false], other: ["old", true] }) });
     servers.startAll();
+    await servers.ready();
+    // Choice 24 at a live edit: the same filled-in entry, written another way, is asked about again.
+    servers.set(configs.map((c) => (c.name === "yes" ? { ...c, written: "w1, written again" } : c)));
+    expect(stateOf(servers, "yes")).toEqual({ is: "waiting for your yes" });
+    expect(servers.server("yes")).toBeUndefined();
+    servers.set(configs); // the yes's own entry back: started again
     await servers.ready();
     expect(servers.list().map((s) => [s.name, s.where, s.state.is])).toEqual([
       ["u", "user", "ready"],

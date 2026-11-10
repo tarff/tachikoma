@@ -18,9 +18,6 @@ const MAX_NAME = 64;
 const MAX_DESCRIPTION = 4_096;
 // A top-level property name the providers take: 1 to 64 letters, digits, "_", "." or "-" (Claude Code's rule; choice 36).
 const PROPERTY = /^[A-Za-z0-9_.-]{1,64}$/;
-// The library's own JSON Schema checker, which a schema must compile in (choice 36). One for all: it keeps no schema of
-// one compile that could refuse the next.
-const CHECKER = new AjvJsonSchemaValidator();
 
 // A tool as a request offers it: the spec the model is shown, the server and the tool's own name it calls, the connection
 // that offered it and its definition (design, finding 4; choice 9). `connection` is this object's own number, unique over
@@ -140,14 +137,18 @@ export class Servers {
   }
 
   // A live edit: an entry whose place or entry changed is stopped and started again as a new Server, a new one started,
-  // a removed one stopped; the others are untouched, their trust and alwaysLoad taken from the new config. A stopped Server
-  // keeps the state it had, so it is forgotten, never read again. The live-edit line is said by Task 10.
+  // a removed one stopped; the others are untouched, their trust and alwaysLoad taken from the new config. A project's
+  // entry as written counts too, as its answer holds it (choice 24): written another way, it is asked about again even
+  // when the filled-in entry is the same. A user's is not compared, as it also holds the trust and alwaysLoad that change
+  // in place. A stopped Server keeps the state it had, so it is forgotten, never read again. The live-edit line is said
+  // by Task 10.
   set(configs: ServerConfig[]): void {
+    const key = (c: ServerConfig) => JSON.stringify([c.where, c.entry, c.where === "project" ? c.written : ""]);
     const old = new Map(this.#slots.map((s) => [s.config.name, s]));
     const added: Slot[] = [];
     this.#slots = configs.map((config) => {
       const was = old.get(config.name);
-      if (was && JSON.stringify([was.config.where, was.config.entry]) === JSON.stringify([config.where, config.entry])) {
+      if (was && key(was.config) === key(config)) {
         old.delete(config.name);
         was.config = config;
         return was;
@@ -172,9 +173,20 @@ export class Servers {
     });
   }
 
-  // A server's connection, for Task 6's calls and reconnects.
+  // A server's connection, for Task 6's calls.
   server(name: string): Server | undefined {
     return this.#slots.find((s) => s.config.name === name)?.server;
+  }
+
+  // A dropped remote server's one new connection (choices 13, 33), for Task 6's run: through here, not the Server's own,
+  // as a Server tells nothing of how a reconnect ended, and a failed one is when its stop is said.
+  async reconnect(name: string): Promise<boolean> {
+    const slot = this.#slots.find((s) => s.config.name === name);
+    const server = slot?.server;
+    if (!slot || !server) return false;
+    const connected = await server.reconnect();
+    this.#changed(slot, server);
+    return connected;
   }
 
   // At Tachikoma's exit: every server stopped (choice 3), all forgotten.
@@ -232,10 +244,12 @@ export class Servers {
     const name = visible(slot.config.name);
     const state = server.state;
     const { offered, fresh } = this.#build();
-    if (state.is === "failed") this.#fail(`MCP server ${slot.config.name}`, `MCP server ${name} failed to start: ${visible(state.reason, { tabs: true })}`);
-    else if (state.is === "stopped" && slot.stopSaid !== server.connection) {
+    if (state.is === "failed") this.#fail(`MCP server ${name}`, `MCP server ${name} failed to start: ${visible(state.reason, { tabs: true })}`);
+    // A dropped remote server is tried again at its next call (choices 13, 33), so its drop says nothing; its stop is said
+    // when that new connection fails, with its reason (the user's choice, plan commit 25eca39, "A server stopped").
+    else if (state.is === "stopped" && !state.retry && slot.stopSaid !== server.connection) {
       slot.stopSaid = server.connection;
-      this.#fail(`MCP server ${slot.config.name}`, `MCP server ${name} stopped: ${visible(state.reason, { tabs: true })}; reconnect it from /mcp.`);
+      this.#fail(`MCP server ${name}`, `MCP server ${name} stopped: ${visible(state.reason, { tabs: true })}; reconnect it from /mcp.`);
     } else if (state.is === "ready" && slot.late) {
       const n = offered.filter((o) => o.server === slot.config.name).length;
       this.#bus.emit("mcp-note", `MCP server ${name} is ready: ${n} ${n === 1 ? "tool" : "tools"}.`);
@@ -387,8 +401,12 @@ function prepare(input: Tool["inputSchema"]): Prepared {
   if (bad !== undefined) {
     return { reason: `has the property name "${visible(bad, { tabs: true })}", which providers do not take (1 to 64 letters, digits, "_", "." or "-")` };
   }
+  // The library's own JSON Schema checker (choice 36), a new one for each schema: one checker keeps every schema it
+  // compiled, by its $id, so a broken schema reusing an earlier one's $id would pass, and a long session's list changes
+  // would pile up. A new one costs little: 180 schemas took 83 ms on this machine (measured 2026-11-10, Task 5's review),
+  // once per list, as each list's checks are kept until it changes.
   try {
-    CHECKER.getValidator(schema as Parameters<typeof CHECKER.getValidator>[0]);
+    new AjvJsonSchemaValidator().getValidator(schema as Parameters<AjvJsonSchemaValidator["getValidator"]>[0]);
   } catch (err) {
     return { reason: `could not be read (${visible(errorText(err), { tabs: true })})` };
   }
