@@ -510,6 +510,16 @@ search, always on", "Own lookup tool, every provider")
 45. **The cost,** a known limit for the README: a newly loaded tool, and a server's tools ready
     late, change the request's tool list, so the conversation is written to the provider's cache
     once more at that request.
+46. **Thinking across a change of tools** (Task 6b's quality review; the user's choice,
+    2026-11-10, "Drop older thinking"). Anthropic's 5.x models tie each thinking block to the
+    system prompt, the tool set (name-sorted) and every message before it, and allow removing
+    blocks only from the oldest end; since 2026-08-31 a new account's request that replays a
+    block made under another tool set is refused (the claude-api skill's model-migration.md,
+    "Breaking change 3"). So when a request's tool set differs from the one an earlier reply was
+    made under, the replies before the latest change go without their thinking, their words,
+    calls and results kept; the trailing run made under the current set keeps it. Resume uses the
+    same rule, and the session writes a `tools` line whenever the set changes. A live test, run
+    by the user with enforcement switched on by the request's own setting, confirms it.
 
 ## Lines this plan adds
 
@@ -1048,7 +1058,13 @@ tool's answer). The other-kind line reads "a" or "an" by its word ("an audio par
 **From Task 6b's build:** the lead's `SessionOptions.mcp` is one `mcpTools(servers, bus,
 approve)`; the subagents' `TasksOptions.mcp` is a factory, wired here to `mcpTools(servers, bus,
 approve, { trustedOnly: true })`, a new loaded set per subagent. `Session.load` takes the loaded
-set from the transcript; a search while servers start waits with no line of its own.
+set from the transcript; a search while servers start waits with no line of its own. Choice 46
+at resume: once MCP is wired, the saved tool set holds `tool_search` and MCP tools, so `resumed()`
+comparing it with Tachikoma's own tools (clilib.ts) would strip all thinking and say the "tools
+have changed" line at every resume. `resumed()` keeps the saved set as `Conversation.tools`,
+leaves the strip to the session's first request (`keepThinking`), and says the line only when
+Tachikoma's own tools changed. Each `tools` line holds the whole set, so a session with many
+searches grows its transcript by one tool list per change.
 
 Commit: `feat: MCP servers at the launch: project servers asked, the first prompt waits, -p's lines`.
 
@@ -1183,7 +1199,16 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   the checker's own words; schemas are compiled but not checked against JSON Schema's own rules,
   so a schema a provider refuses for another reason can still fail a request; a `pattern` that
   plain JavaScript takes but strict Unicode mode does not, such as `^[\w-.]+$`, leaves its tool
-  out with the "could not be read" line, as the library compiles patterns that way); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
+  out with the "could not be read" line, as the library compiles patterns that way; and Task 6b's
+  review: a server's instructions go into `tool_search`'s description as written, as tool
+  descriptions do, so a line break in them can look like another server's entry; a `loaded` line
+  is not saved if the round fails after a search, so a resume loses those loads; a first tool
+  over 30,000 characters on its own hides the lines after it in the answer; a subagent's
+  `Not ready:` lines name every server not ready, its trusted tools or not; and choice 46: after
+  the tool set changes, the model goes without its earlier thinking at that step; through
+  OpenRouter to a Claude 5.x model, the reasoning OpenRouter returns is sent back as it came after
+  a change of tools, as other models there need theirs, so an enforced upstream account may
+  refuse that step); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
 
