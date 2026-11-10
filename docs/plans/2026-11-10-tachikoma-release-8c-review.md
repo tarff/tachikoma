@@ -4,7 +4,21 @@ Reviewed: 2026-11-10
 
 Plan: [2026-11-10-tachikoma-release-8c.md](2026-11-10-tachikoma-release-8c.md)
 
-## Re-review: 2026-11-10
+## Latest re-review: tool search (2026-11-10)
+
+The initial five findings and the Windows explicit-extension finding are addressed. The new Task 6b adds one P2 issue:
+
+### [P2] Retain full descriptions until the tool's loading mode is known
+
+**Current plan lines: 686–687; conflicting requirements at 264, 459–461 and 855–856.**
+
+Task 4 cuts every description to 4,096 characters during discovery. Task 6b requires tools loaded through search to retain up to 16,384 characters in the search answer and their provider definition. Once discovery has discarded the suffix, neither search nor loading can recover it. A tool whose parameter guidance occurs after character 4,096 loses that guidance despite being within the search-loaded limit.
+
+Keep the original description in the server registry and apply the appropriate cut when building each view: 4,096 for upfront definitions and the judge, and 16,384 for search-loaded descriptions. Distinguish these view-specific cuts from the definition used for stale-call checks, so loading a tool does not itself appear to change the server's definition. Add a description longer than 4,096 characters to the test, checking that its suffix survives search/loading while the upfront view stays capped.
+
+No implementation changes or tests were run for this re-review.
+
+## Earlier re-review (historical; explicit-extension finding addressed)
 
 All five findings from the initial review below are addressed in the revised plan. One additional P2 issue remains:
 

@@ -255,7 +255,7 @@ drops Tachikoma's API keys (`env.ts:7-12, 36-43`); `MAX_TOOL_OUTPUT` = 30,000 (`
 | no limit | a local server's call, unless the entry sets `timeout`; passed to the library as 2,147,483,647 ms, the longest wait Node's `setTimeout` takes (as 8b's hook `timeout`) | the design, "Tools for the model"; Claude Code's `MCP_TOOL_TIMEOUT` is about 28 h |
 | 60 s | a remote server's single request, unless the entry's `timeout` is longer | Claude Code's MCP page; also the library's own default |
 | 300 ms | from closing a local server's input to killing its tree, at exit and at a restart | Claude Code's MCP page, Windows |
-| 4,096 characters | a tool's description, as sent to the model and the judge | Claude Code's MCP page; the design's **To confirm**, settled by the user's approval of this plan |
+| 4,096 characters | a tool's description, as sent to the model upfront and to the judge; the server's own text is kept whole and each view cuts its own copy (the tool-search re-review) | Claude Code's MCP page; the design's **To confirm**, settled by the user's approval of this plan |
 | 64 characters | the longest tool name, for every provider | OpenAI's Chat Completions reference (design, finding 1) |
 | 30,000 characters | a tool's text answer, a resource's text, a server's kept error output | `MAX_TOOL_OUTPUT`, executor.ts:3 (option chosen: "As a command's") |
 | 600 s, 30 s | an `mcp_tool` hook's limit; 30 s at UserPromptSubmit | Claude Code's hooks reference, "Common fields" |
@@ -322,8 +322,9 @@ Each is marked in its task. The user approves them with the plan.
 7. **The table of names** is rebuilt whenever a server's tools change; a name keeps its owner as
    long as that tool is offered, so a late server or a changed list never takes a name already in
    force (design, finding 2).
-8. **A tool's definition**, for finding 4's check, is the JSON text of its cut description and its
-   input schema. A server that sends the same tool with its fields in a new order counts as a
+8. **A tool's definition**, for finding 4's check, is the JSON text of its whole description, as
+   the server sent it, and its input schema; never a cut view, so loading a tool through search
+   (16,384) or upfront (4,096) never makes it look changed. A server that sends the same tool with its fields in a new order counts as a
    change; the call is refused once and the model looks again, which costs one round.
 9. **The tools a request carried** are kept with that request: the session takes
    `servers.offer()` once per request, sends its specs after Tachikoma's own, and runs each call
@@ -458,7 +459,8 @@ search, always on", "Own lookup tool, every provider")
     descriptions, then in the order offered; at most `max_results`, 5 by default.
 39. **Its answer** lists each tool found, `<full name>: <description, cut at 16,384>` and
     `Input: <its schema as JSON>`, and adds them to the loaded set, so the next request defines
-    them and the model can call them. A tool already loaded is listed again and changes nothing.
+    them, with the same 16,384 cut of the whole text, and the model can call them. Words are
+    matched against that same 16,384 cut, so a match is always in the answer. A tool already loaded is listed again and changes nothing.
     No match lists the servers that are not ready, as Claude Code's does.
 40. **A search while servers are still starting** waits for them, as Claude Code's does, within
     the 30 s start and stopped by Esc, then searches what is ready.
@@ -684,7 +686,8 @@ export class Server {
   project's folder, design "The folder a server is told it works in") and `elicitation` (`form`
   and `url`), never `sampling`. Until Task 12, a form is declined.
 - **Start:** `connect`, then `listTools`, within 30 s; past it the transport is closed and the
-  state is `failed` with its reason. Each description is cut at 4,096 characters.
+  state is `failed` with its reason. Each description is kept whole, as the server sent it; the
+  views cut their own copies (choices 8, 15, 39, 42).
 - **Calls:** `callTool` with `timeout` from the entry, or else 2,147,483,647 ms for a local server
   and 60 s for a remote one (an entry's `timeout` is used when longer), and
   `resetTimeoutOnProgress`. The `signal` stops it, and the library tells the server.
@@ -703,7 +706,8 @@ export class Server {
 **Tests:** start and list over stdio and over HTTP; `CLAUDE_PROJECT_DIR`, `env`, the folder and
 `roots/list` as the server sees them; a server that never answers fails at the test's own short
 limit (the 30 s passed in as a parameter for the test, not changed in the code), its process gone;
-an exit with code 3 and a last error line gives that reason; a call stopped by its signal ends,
+an exit with code 3 and a last error line gives that reason; a description longer than 4,096
+characters is in the state whole; a call stopped by its signal ends,
 and the server got `notifications/cancelled`; a list change updates the tools and calls
 `onChange`; `stop` kills a server that ignores its closed input, and on Windows its child too; a
 remote server that drops is `stopped` with `retry: true`, `reconnect()` works once, and a second
@@ -744,6 +748,8 @@ export class Servers {
 - **Schemas** (choice 36; the plan review, finding 5): each tool's input schema is flattened or
   left out before its name is given, at the start and at each list change, so one tool's schema
   never makes a provider refuse the whole request.
+- **Descriptions:** each offered spec carries the server's whole description cut at 4,096; the
+  offer's `definition` (choice 8) is built from the whole text. Task 6b gives loaded tools 16,384.
 - **Waiting and states:** a project's server without a yes is `waiting for your yes` (Task 9
   asks), one with a no `you said no`; with the sandbox's network off every server is `off`
   (`network: "off"`; `none` is the sandbox off).
@@ -839,7 +845,9 @@ export function find(query: string, max: number, tools: { full: string; descript
 
 **Behaviour** (choices 37-45): `tool_search` is built per session with its own loaded set; its
 description is rebuilt from the offer at each request. `defined` holds the loaded tools and the
-`alwaysLoad` ones; `named` the rest. A search adds names to the set and returns its answer; the
+`alwaysLoad` ones; `named` the rest. Each cut is made from the server's whole description when
+the offer is built: 16,384 for a tool loaded by search, 4,096 for an `alwaysLoad` one and for the
+judge; `definition` is the same whichever way a tool is loaded. A search adds names to the set and returns its answer; the
 next request defines them. The session saves the `loaded` line whenever the set grows, after the
 result's line. `/clear` starts a new set; a resume and `/branch` read it back.
 
@@ -852,8 +860,11 @@ result's line. `/clear` starts a new set; a resume and `/branch` read it back.
 - Ranking, the 5 default, and `max_results: 1`.
 - No match listing a failed server and one needing sign-in.
 - A search while a server starts waits for it; Esc stops the wait.
-- `alwaysLoad` on a server, and `_meta` on one tool, defined upfront with the 4,096 cut, and a
-  loaded tool's description cut at 16,384.
+- `alwaysLoad` on a server, and `_meta` on one tool, defined upfront with the 4,096 cut.
+- A description longer than 4,096 characters with a marker word past character 4,096: upfront
+  (`alwaysLoad`) its spec stops at 4,096 without the marker and the judge gets 4,096; a search for
+  the marker finds it, the answer and the next request's spec hold the marker; a call made after
+  loading gets `current()` "same", not "changed".
 - The loaded set after a resume and after `/clear`.
 - A subagent's search finds only trusted tools.
 - A PreToolUse hook with matcher `ToolSearch` sees `{ query, max_results }`.
