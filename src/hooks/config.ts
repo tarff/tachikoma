@@ -31,8 +31,8 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === "string");
 
 // Node's setTimeout waits at most 2,147,483,647 ms, and past that fires after 1 ms (Node's docs for setTimeout), so a
-// longer timeout would kill its hook at once (the user's choice at Task 2).
-const MAX_TIMER_MS = 2_147_483_647;
+// longer timeout would kill its hook at once (the user's choice at Task 2). An MCP call's limit uses it too (mcp/server.ts).
+export const MAX_TIMER_MS = 2_147_483_647;
 const MAX_SECONDS = Math.floor(MAX_TIMER_MS / 1000);
 const TIMEOUT = `a number of seconds above 0 and no more than ${MAX_SECONDS}, such as 30`;
 
