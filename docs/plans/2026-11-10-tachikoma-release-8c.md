@@ -40,8 +40,8 @@ and sees them fail, then writes the code, then commits. A spec reviewer and then
 check the commit before the next task starts. The plan has four parts:
 - **Part 1, groundwork (Tasks 1-4):** the library and the measurement, the settings entry, the
   project's answers and finding programs, and one server's connection.
-- **Part 2, tools (Tasks 5-8):** the `Servers` object and its names, tools in the session,
-  approval, and hooks.
+- **Part 2, tools (Tasks 5, 6, 6b, 7, 8):** the `Servers` object and its names, tools in the
+  session, tool search (added after Task 1's measurement), approval, and hooks.
 - **Part 3, the window and `-p` (Tasks 9-13):** the launch, `/mcp` and live edits, sign-in,
   forms, and resources and prompts.
 - **Part 4, the documents (Task 14).**
@@ -49,7 +49,9 @@ check the commit before the next task starts. The plan has four parts:
 **Two stops for the user.** Task 1 needs the user twice: to say yes to the install, and to run the
 measurement script in their own terminal, as it starts their servers and uses their keys. After
 it, the user decides tool search with the numbers (design, "Tool search"), and this plan is
-updated before Task 2 starts. Task 14's checklist is the user's too.
+updated before Task 2 starts. Task 14's checklist is the user's too. **Done 2026-11-10:** the
+library is in (a20dac6), the measurement is under "Numbers in this plan", and the user chose tool
+search, always on, through Tachikoma's own lookup tool for every provider (Task 6b).
 
 **The branch.** Build on the local branch `release-8c` (main 54a30f7 plus the design, head
 d3dccc2 or later). Do not push: every push needs the user's fresh say-so, and main takes changes
@@ -259,6 +261,32 @@ drops Tachikoma's API keys (`env.ts:7-12, 36-43`); `MAX_TOOL_OUTPUT` = 30,000 (`
 | 600 s, 30 s | an `mcp_tool` hook's limit; 30 s at UserPromptSubmit | Claude Code's hooks reference, "Common fields" |
 | 300 ms | the wait for more list changes before reading a list again | the library's `debounceMs` default |
 | 10 MB | a local server's longest single message | the library's `maxBufferSize` default |
+| 16,384 characters | a tool's description when it is loaded through `tool_search` (Task 6b); 4,096 stays for a tool loaded upfront (`alwaysLoad`) and for server instructions | Claude Code's MCP page, "Tool search for MCP server authors" |
+| 5 | how many tools a `tool_search` query returns unless it asks for another number | Claude Code's own ToolSearch tool, its `max_results` default |
+
+**Task 1's measurement** (2026-11-10, the user's own servers, run by the user; script and results
+in the session's scratchpad, `measure8c\`; tokens by Anthropic's `countTokens` on
+`claude-opus-5-5`, the tool list alone):
+
+| Server | Kind | Tools | Tokens | Characters | Longest name | Longest description |
+|---|---|---|---|---|---|---|
+| tradingview | local | 84 | 13,691 | 31,233 | 45 | 395 |
+| mempalace | local | 35 | 7,686 | 18,146 | 45 | 465 |
+| Sanity | remote, header | 61 | 36,703 | 90,816 | 51 | 1,561 |
+| together | | 180 | 58,080 | 140,195 | | |
+
+- No name is over 64 characters, no description over 4,096, and no schema has a root-level
+  `anyOf`, `oneOf` or `allOf`: choice 36 and the 64 rule leave none of these tools out.
+- Figma answered "Unauthorized": its plugin signs in, so it is measured with openmarket once
+  Task 11's sign-in is built.
+- Sent whole, the lists add about 58,000 tokens to every request, 29% of a 200,000-token window.
+  The user chose tool search, always on, through Tachikoma's own tool for every provider
+  (2026-11-10).
+- **Found by the script's dry run:** the library refuses a server's whole `tools/list` answer if
+  one tool's `inputSchema` lacks `"type": "object"` at its root ("Invalid result for tools/list ...
+  expected \"object\""). Task 5's schema checks therefore see only lists that passed that rule;
+  such a server fails to start with the library's words as its reason, a known limit (none of the
+  user's servers does this).
 
 No other number is set. Anywhere a builder feels a number is needed, they stop and ask the
 controller, who asks the user.
@@ -415,6 +443,42 @@ Each is marked in its task. The user approves them with the plan.
       meta-schema as it compiles it). The server's other tools stay.
     - The model is not told which tools were left out, which Claude Code does: a known limit.
 
+**Tool search** (Task 6b; the user's choices, 2026-11-10, after Task 1's measurement: "Build tool
+search, always on", "Own lookup tool, every provider")
+37. **Every request carries** Tachikoma's own tools, a new tool `tool_search`, and the MCP tools
+    loaded so far in this conversation. Every other MCP tool is named, not defined, in
+    `tool_search`'s description (its words below): per server its name, its instructions (the
+    library's `getInstructions()`, cut at 4,096 characters), and its tools' full names; then the
+    servers still starting, failed, or needing sign-in, with their state. With no MCP server in
+    force there is no `tool_search`.
+38. **`tool_search`'s input** is `{ query: string, max_results?: number }`, as Claude Code's
+    ToolSearch. A query `select:<name>,<name>` loads those full names exactly. Any other query is
+    words: a tool is found when one of them is in its full name or its description (letter case
+    ignored); tools are ranked by how many of the words they hold, names counting before
+    descriptions, then in the order offered; at most `max_results`, 5 by default.
+39. **Its answer** lists each tool found, `<full name>: <description, cut at 16,384>` and
+    `Input: <its schema as JSON>`, and adds them to the loaded set, so the next request defines
+    them and the model can call them. A tool already loaded is listed again and changes nothing.
+    No match lists the servers that are not ready, as Claude Code's does.
+40. **A search while servers are still starting** waits for them, as Claude Code's does, within
+    the 30 s start and stopped by Esc, then searches what is ready.
+41. **The loaded set** belongs to the conversation: saved in the transcript as a new line
+    `{ t: "loaded", names }` (in `valid()`), so a resume, a `/branch` and a shortening keep it;
+    `/clear` empties it. A loaded name its server no longer offers is not sent, and is loaded
+    again by a search once it is back. Finding 4's check is unchanged: a loaded tool's offer
+    carries its connection and definition, as any offered tool's does.
+42. **`alwaysLoad: true`** on a server's entry (Claude Code's field), or `_meta["anthropic/
+    alwaysLoad"]: true` on one of its tools, loads those tools upfront, defined in every request
+    with the 4,096-character cut. Task 2 reads the field.
+43. **Subagents** get `tool_search` over their trusted read-only tools only, starting with none
+    loaded; the lead's loaded set is not theirs.
+44. **`tool_search` needs no approval** (it reads Tachikoma's own list, never a server), runs
+    alongside other calls, and is `ToolSearch` to hooks, with `{ query, max_results }`; its
+    `tool_response` is its text.
+45. **The cost,** a known limit for the README: a newly loaded tool, and a server's tools ready
+    late, change the request's tool list, so the conversation is written to the provider's cache
+    once more at that request.
+
 ## Lines this plan adds
 
 The user approves these words with the plan. Each is checked word for word in a test. Grey lines
@@ -433,6 +497,8 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | A flattened `anyOf` or `oneOf` (before the description, to the model; choice 36) | `This tool takes one of these sets of parameters: <a, b>; or <c>.`, each set a branch's `required` names, a branch with none named `(none needed)` |
 | A remote server connected again (grey; choice 33) | `MCP server <name> was connected again.` |
 | Hook JSON reasons at Elicitation and ElicitationResult (choice 35), in 8b's `printed JSON that could not be read (<reason>)` | `"action" must be "accept", "decline" or "cancel"`; `"content" must be an object` |
+| `tool_search`'s description (to the model; choice 37) | `Finds MCP tools and loads them, so they can be called from the next step on. Search with words from a tool's name or what it does, or load tools by name with "select:<name>,<name>". MCP tools not loaded yet:` then per server, on its own lines, `<name>: <its instructions>` (without instructions, `<name>:`) and `  <full name>, <full name>, ...`; then, if any, `Not ready:` and a line each `<name>: <starting / failed: <reason> / needs sign-in, which the user does from /mcp>` |
+| `tool_search`'s answer (to the model; choice 39) | `Loaded <n> tools; call them from the next step on:` (singular for 1), then per tool `<full name>: <description>` and `Input: <schema as JSON>`, a blank line between; no match: `No MCP tool matched "<query>".`, then the `Not ready:` lines if any; a `select:` name unknown: `No MCP tool is named <name>.`, the found ones still loaded |
 | A name in use (grey) | `MCP server <name>: "<tool>" was left out: its name <full> is already <other>'s "<tool2>"` (a clash with one of Tachikoma's own tools cannot happen, as none starts `mcp__`) |
 | **Starting** (grey, the waiting line) | `Waiting for MCP servers: <names>...` (design) |
 | A server failed to start (red) | `MCP server <name> failed to start: <reason>` |
@@ -530,9 +596,10 @@ export function readProjectFile(root: string, env: NodeJS.ProcessEnv, warnings: 
 
 **Behaviour** (design, "The settings entry", "A project's servers"):
 - **Claude Code's fields:** `type` (`stdio` by default; `http`, also `streamable-http`; `sse`),
-  `command`, `args`, `env`, `url`, `headers`, `timeout` (ms, a whole number above 0), and `oauth`
-  with `clientId`, `callbackPort`, `scopes`, `authServerMetadataUrl`. A `url` with no `type` is
-  left out with its line.
+  `command`, `args`, `env`, `url`, `headers`, `timeout` (ms, a whole number above 0), `oauth`
+  with `clientId`, `callbackPort`, `scopes`, `authServerMetadataUrl`, and `alwaysLoad` (true or
+  false, choice 42; `ServerConfig` gains `alwaysLoad: boolean`). A `url` with no `type` is left
+  out with its line.
 - **`${VAR}` and `${VAR:-default}`** are filled from `env` in `command`, `args`, `env`, `url` and
   `headers`. An unset one with no default leaves the server out with its line, naming the
   variable. A warning never quotes a filled-in value.
@@ -750,6 +817,51 @@ the resumed window's prompts nor the judge's messages.
 
 Commit: `feat: MCP tools in the session: each call on the tool the model was shown, answers cut, pictures passed on`.
 
+Task 6 sends every MCP tool defined; Task 6b changes that to tool search, so Task 6's tests that
+look at a request's tools load them first, or use a server with `alwaysLoad`.
+
+## Task 6b: Tool search
+
+**Files:** create `src/mcp/search.ts`, `tests/mcp/search.test.ts`; modify `src/mcp/servers.ts`
+(`offer()` splits loaded from named, and `getInstructions()`), `src/core/session.ts` (the loaded
+set, `tool_search` in each request), `src/core/transcript.ts` (the `loaded` line),
+`src/core/tasks.ts` (subagents' own set), `src/hooks/tools.ts` (`ToolSearch`), `src/mcp/server.ts`
+(instructions, `_meta` alwaysLoad); tests in `tests/core/session.test.ts`,
+`tests/core/transcript.test.ts`, `tests/hooks/tools.test.ts`.
+
+```ts
+// servers.ts
+offer(opts: { loaded: ReadonlySet<string>; trustedOnly?: boolean }): { defined: Offered[]; named: { server: string; instructions?: string; names: string[] }[]; notReady: { server: string; state: State }[] };
+// search.ts
+export function searchTool(servers: Servers, loaded: Set<string>, opts?: { trustedOnly?: boolean }): Tool;   // choices 37-40
+export function find(query: string, max: number, tools: { full: string; description: string }[]): string[];  // choice 38's ranking
+```
+
+**Behaviour** (choices 37-45): `tool_search` is built per session with its own loaded set; its
+description is rebuilt from the offer at each request. `defined` holds the loaded tools and the
+`alwaysLoad` ones; `named` the rest. A search adds names to the set and returns its answer; the
+next request defines them. The session saves the `loaded` line whenever the set grows, after the
+result's line. `/clear` starts a new set; a resume and `/branch` read it back.
+
+**Tests:**
+- A request with two fake servers carries `tool_search` and no MCP definitions, the names in its
+  description, and a server's instructions.
+- A search by a word in a description loads the tool, the next request defines it, and the model's
+  call to it reaches the server.
+- `select:` with one known and one unknown name.
+- Ranking, the 5 default, and `max_results: 1`.
+- No match listing a failed server and one needing sign-in.
+- A search while a server starts waits for it; Esc stops the wait.
+- `alwaysLoad` on a server, and `_meta` on one tool, defined upfront with the 4,096 cut, and a
+  loaded tool's description cut at 16,384.
+- The loaded set after a resume and after `/clear`.
+- A subagent's search finds only trusted tools.
+- A PreToolUse hook with matcher `ToolSearch` sees `{ query, max_results }`.
+- The same request's tools after a `/lead` switch to an OpenAI-format stand-in.
+- With no MCP server, no `tool_search`.
+
+Commit: `feat: tool search: MCP tools named until the model loads them, on every provider`.
+
 ## Task 7: Approval
 
 **Files:** modify `src/core/permissions.ts` (the `mcp` kind, `description`), `src/safety/judge.ts`,
@@ -952,7 +1064,8 @@ built" section).
 
 **What changes:**
 - **The README:** an "MCP servers" section (the entry, `.mcp.json` and its question, trust, the
-  approval table, names and the 64-character rule, answers, sign-in, forms, resources, prompts,
+  approval table, names and the 64-character rule, tool search and `alwaysLoad`, answers,
+  sign-in, forms, resources, prompts,
   hooks, the sandbox rule, `/mcp`, `-p`); the known limits from the design and those the builds
   add; the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
@@ -971,6 +1084,8 @@ built" section).
 8. `tachi -p` with that project server unanswered: skipped, its note.
 9. A `PreToolUse` hook with matcher `mcp__tradingview__.*` that logs the call.
 10. Esc during the first prompt's wait.
+11. Tool search: ask for something only Sanity can do; Ctrl+O shows a `tool_search` call, then
+    the Sanity call.
 
 The checklist's entries are copied by the user into `~/.tachikoma/settings.json`; the plan's
 builder never writes the user's settings file.
