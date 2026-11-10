@@ -280,6 +280,18 @@ describe("signing in to a remote MCP server", () => {
     expect(t.states(servers)).toEqual(["om ready"]);
   });
 
+  // One that cannot be reached is a server with no sign-in details, not the server's own failure (Task 11's re-check).
+  it("takes an authServerMetadataUrl that cannot be reached as no sign-in details", async () => {
+    const t = await setup({ metadata: "elsewhere" });
+    const gone = http.createServer();
+    await new Promise<void>((done) => gone.listen(0, "127.0.0.1", done));
+    const port = (gone.address() as AddressInfo).port;
+    await new Promise<void>((done) => gone.close(() => done())); // nothing listens there now
+    const servers = t.make([remote("om", t.fake.url, { authServerMetadataUrl: `http://127.0.0.1:${port}/metadata` })]);
+    await servers.ready();
+    expect(servers.list()[0]!.state).toEqual({ is: "failed", reason: `${t.fake.base} answered 401` });
+  });
+
   // Choice 59: a sign-in lost mid-session, here a stale token with no refresh token to renew it.
   it("needs sign-in again when the sign-in is lost mid-session, and the call says so to the model", async () => {
     const t = await setup({ refresh: false });
@@ -366,11 +378,13 @@ describe("signing in to a remote MCP server", () => {
     const tokens = (n: number) => ({ access_token: `a${n}`, refresh_token: `r${n}`, token_type: "Bearer" });
     await store.change("om", t.fake.url, () => ({ tokens: tokens(1) }));
     const client = new McpAuth(store, remote("om", t.fake.url));
-    client.tokens();
+    const step = { issuer: t.fake.url }; // the library's sign-in steps pass this; a plain request's read does not
+    client.tokens(step);
     await store.change("om", t.fake.url, () => ({ tokens: tokens(2) }));
+    client.tokens(); // a request reading r2 meanwhile leaves the guard on r1 (Task 11's re-check)
     await client.invalidateCredentials("tokens");
     expect(store.get("om", t.fake.url)?.tokens?.refresh_token).toBe("r2");
-    client.tokens();
+    client.tokens(step);
     await client.invalidateCredentials("tokens");
     expect(store.get("om", t.fake.url)?.tokens).toBeUndefined();
   });

@@ -210,9 +210,11 @@ export class McpAuth implements OAuthClientProvider {
     return this.#store.change(this.#name, this.#url, (kept) => ({ ...kept, client }));
   }
 
-  tokens(): StoredOAuthTokens | undefined {
+  // Only the library's sign-in steps pass `ctx`, a refresh among them; a plain request's read leaves #refreshRead alone, so
+  // it cannot move the guard onto another window's newer refresh token (Task 11's re-check).
+  tokens(ctx?: OAuthClientInformationContext): StoredOAuthTokens | undefined {
     const tokens = this.#store.get(this.#name, this.#url)?.tokens;
-    this.#refreshRead = tokens?.refresh_token;
+    if (ctx) this.#refreshRead = tokens?.refresh_token;
     return tokens;
   }
 
@@ -246,8 +248,9 @@ export class McpAuth implements OAuthClientProvider {
     quiet();
     const at = this.#oauth?.authServerMetadataUrl;
     if (this.#discovery || at === undefined) return this.#discovery;
-    const res = await fetch(at, { headers: { accept: "application/json" }, redirect: "error" });
-    const metadata: unknown = res.ok ? await res.json().catch(() => undefined) : undefined;
+    // One that cannot be reached (no such host, refused, a redirect) is the same: not the server's own failure.
+    const res = await fetch(at, { headers: { accept: "application/json" }, redirect: "error" }).catch(() => undefined);
+    const metadata: unknown = res?.ok ? await res.json().catch(() => undefined) : undefined;
     if (!isSpecType.OAuthMetadata(metadata) && !isSpecType.OpenIdProviderDiscoveryMetadata(metadata)) throw new NoSignIn();
     const found = metadata as AuthorizationServerMetadata;
     return (this.#discovery = { authorizationServerUrl: found.issuer, authorizationServerMetadata: found });
