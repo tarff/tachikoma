@@ -585,7 +585,7 @@ Commit: `feat: the MCP client library, 2.4.0, pinned`.
 export type ServerEntry =
   | { kind: "stdio"; command: string; args: string[]; env: Record<string, string>; timeout?: number }
   | { kind: "http" | "sse"; url: string; headers: Record<string, string>; timeout?: number; oauth?: OAuthEntry };
-export interface OAuthEntry { clientId?: string; callbackPort?: number; scopes?: string[]; authServerMetadataUrl?: string }
+export interface OAuthEntry { clientId?: string; callbackPort?: number; scopes?: string; authServerMetadataUrl?: string }   // scopes: one string, split by spaces
 export interface ServerConfig {
   name: string; safe: string;              // safe: the name with each character but [A-Za-z0-9_-] made "_"
   entry: ServerEntry; where: "user" | "project";
@@ -598,9 +598,13 @@ export function readProjectFile(root: string, env: NodeJS.ProcessEnv, warnings: 
 
 **Behaviour** (design, "The settings entry", "A project's servers"):
 - **Claude Code's fields:** `type` (`stdio` by default; `http`, also `streamable-http`; `sse`),
-  `command`, `args`, `env`, `url`, `headers`, `timeout` (ms, a whole number above 0), `oauth`
+  `command`, `args`, `env`, `url`, `headers`, `timeout`, `oauth`
   with `clientId`, `callbackPort`, `scopes`, `authServerMetadataUrl`, and `alwaysLoad` (true or
-  false, choice 42; `ServerConfig` gains `alwaysLoad: boolean`). A `url` with no `type` is left
+  false, choice 42; `ServerConfig` gains `alwaysLoad: boolean`). As Claude Code's MCP page says
+  (read 2026-11-10, after Task 2's build): `timeout` is in ms, and a whole number below 1,000 is
+  ignored, as if unset; one above 2,147,483,647 (Node's longest timer) is refused. `scopes` is one
+  string, scopes split by spaces (RFC 6749 §3.3), not a list. `authServerMetadataUrl` must be an
+  `https://` address. A `url` with no `type` is left
   out with its line.
 - **`${VAR}` and `${VAR:-default}`** are filled from `env` in `command`, `args`, `env`, `url` and
   `headers`. An unset one with no default leaves the server out with its line, naming the
@@ -689,8 +693,9 @@ export class Server {
   state is `failed` with its reason. Each description is kept whole, as the server sent it; the
   views cut their own copies (choices 8, 15, 39, 42).
 - **Calls:** `callTool` with `timeout` from the entry, or else 2,147,483,647 ms for a local server
-  and 60 s for a remote one (an entry's `timeout` is used when longer), and
-  `resetTimeoutOnProgress`. The `signal` stops it, and the library tells the server.
+  and 60 s for a remote one (an entry's `timeout` is used when longer). The limit is hard:
+  progress never extends it, as Claude Code's MCP page says (the user's choice, 2026-11-10;
+  `resetTimeoutOnProgress` is not passed). The `signal` stops it, and the library tells the server.
 - **A list change** (the library's `listChanged.tools`) puts the new list in the state and calls
   `onChange`.
 - **A server that exits or drops** (the transport's `onclose`, the client's `onerror`) is
@@ -707,7 +712,8 @@ export class Server {
 `roots/list` as the server sees them; a server that never answers fails at the test's own short
 limit (the 30 s passed in as a parameter for the test, not changed in the code), its process gone;
 an exit with code 3 and a last error line gives that reason; a description longer than 4,096
-characters is in the state whole; a call stopped by its signal ends,
+characters is in the state whole; a slow call that keeps sending progress still ends at its
+entry's `timeout` (the test's own short one); a call stopped by its signal ends,
 and the server got `notifications/cancelled`; a list change updates the tools and calls
 `onChange`; `stop` kills a server that ignores its closed input, and on Windows its child too; a
 remote server that drops is `stopped` with `retry: true`, `reconnect()` works once, and a second
