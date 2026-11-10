@@ -159,6 +159,7 @@ describe("readServers", () => {
     const r = read(remote({ url: "https://${HOST:-mcp.example.com}/${TEAM}", headers: { Authorization: "Bearer ${TOKEN}", "X-Default": "${NONE:-x}" } }), env);
     expect(r.warnings).toEqual([]);
     expect(r.kept[0]!.entry).toEqual({ kind: "http", url: "https://mcp.example.com/core", headers: { Authorization: "Bearer t1", "X-Default": "x" } });
+    expect(read(local({ command: "${NODE:-node}" }), env).kept[0]!.entry).toMatchObject({ command: "node" });
   });
 
   it("leaves out a server needing a variable that is not set, naming it, in each field", () => {
