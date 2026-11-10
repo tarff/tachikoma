@@ -172,13 +172,14 @@ export class Tasks {
     // design, "Saving sessions"). The lead's line is written before the first wait; the subagent's own file only with its
     // first message or its ended line, and a missing file reads as unfinished. So from start, before delegate says it
     // started and while it waits for a place, a closed window's subagent is found lost, never its id handed out again. None once
-    // the lead's saving has stopped, so no file is saved that no line names. A subagent is never sent pictures, so its
-    // transcript never writes to that folder. The lead's write made the sessions folder private, so the subagents folder
-    // inside it inherits that permission, as transcript.ts's pictures folder does.
+    // the lead's saving has stopped, so no file is saved that no line names. A subagent numbers the pictures its tools
+    // answer with from its own 1, so they are saved in a folder of its own, <id>/subagents/<tN>/pictures, never over the
+    // lead's (release 8c plan, Task 6's code review). The lead's write made the sessions folder private, so the subagents
+    // folder inside it inherits that permission, as transcript.ts's pictures folder does.
     const lead = this.opts.transcript?.();
     lead?.write({ t: "subagent", id: t.id, description: t.description, file: `${t.id}.jsonl` });
     const file = (l: Transcript) => path.join(pathsOf(l.file).subagents, `${t.id}.jsonl`);
-    const own = lead && !lead.failed ? new Transcript(file(lead), lead.pictures, { inherits: true }) : undefined;
+    const own = lead && !lead.failed ? new Transcript(file(lead), pathsOf(file(lead)).pictures, { inherits: true }) : undefined;
     const result = (await this.#place(signal)) ? await this.#work(t, provider, fallback, signal, own) : null;
     const stopped = this.#stops.get(t.id)!;
     // A hook's stop comes with its own result and its stopReason (#work).

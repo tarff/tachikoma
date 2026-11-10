@@ -33,6 +33,23 @@ describe("exportText", () => {
     );
   });
 
+  // Release 8c plan, choice 34: a tool's pictures are named in its answer, under its call, never under "You:".
+  it("leaves a tool's pictures with its answer, never under You:", () => {
+    const line = "[The tool's answer has pictures: [Image #4], [Image #5]]";
+    const messages: Message[] = [
+      { role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "mcp__s__shot", input: {} }] },
+      {
+        role: "user",
+        parts: [
+          { type: "tool_result", callId: "c1", output: `two\n${line}`, isError: false },
+          { ...png, id: 4, from: "server" },
+          { ...png, id: 5, from: "server" },
+        ],
+      },
+    ];
+    expect(exportText(messages, "fake:a")).toBe(["Tachikoma (fake:a):", "● mcp__s__shot {}", "  ⎿ two", line, ""].join("\n"));
+  });
+
   // User, 2026-11-06: "Include, headed Subagents:". The session's notes for the lead, as the lead got them, where they
   // arrived: after a prompt, after the results they came with, or alone.
   it("puts the session's notes for the lead where they arrived, under Subagents:, and a call not finished says so", () => {

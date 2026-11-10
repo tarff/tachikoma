@@ -135,12 +135,13 @@ export class Servers {
   }
 
   // An offered tool on its server's connection now, for a call whose server was connected again (choices 13 and 33): the
-  // same tool, in the view it was offered under, with the same definition, so the call runs on what the model was shown;
-  // or "stopped" when its server is not running, "changed" otherwise (Task 6's spec review). It fixes no names, as the
-  // request's offer did that.
+  // same tool of the same server, in the view it was offered under, with the same definition, so the call runs on what
+  // the model was shown; or "stopped" when that server is not running, "changed" otherwise, a server a live edit replaced
+  // among them, as its entry is not the one shown (Task 6's spec and code reviews). It fixes no names, as the request's
+  // offer did that.
   rebind(o: Offered): { offered: Offered } | { reason: "changed" | "stopped" } {
     const server = this.#slots.find((s) => s.config.name === o.server)?.server;
-    if (!server) return { reason: "changed" };
+    if (!server || ![...(this.#ids.get(server)?.values() ?? [])].includes(o.connection)) return { reason: "changed" };
     if (server.state.is !== "ready") return { reason: "stopped" };
     const now = this.#now(o);
     return now ? { offered: now } : { reason: "changed" };

@@ -21,7 +21,8 @@ export function exportText(messages: Message[], lead: string): string {
     let block: (typeof blocks)[number] | undefined; // this message's latest
     let picture = false; // the last part put in it was a picture
     for (const p of m.parts) {
-      if (p.type === "tool_result") continue;
+      // A tool's pictures are named by the line ending its answer, under its call (release 8c plan, choices 10 and 34).
+      if (p.type === "tool_result" || (p.type === "image" && p.from === "server")) continue;
       const note = p.type === "text" && p.from === "tasks";
       // A hook's text for the model is shown as those notes are, under its own first line, `<Event> hook:` (release 8b
       // plan, Task 8).

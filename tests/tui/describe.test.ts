@@ -17,6 +17,23 @@ describe("describe", () => {
     };
     expect(lines(results)).toEqual([{ text: "  ⎿ ok", color: "gray", oneLine: true }]);
   });
+
+  // Release 8c plan, choice 34: a tool's pictures are the server's, so they are drawn under the results, never as a prompt.
+  it("draws a tool's pictures as a grey row under the results, never as the user's prompt", () => {
+    const png = { type: "image", mediaType: "image/png", data: Buffer.from("png"), from: "server" } as const;
+    const results: Message = {
+      role: "user",
+      parts: [
+        { type: "tool_result", callId: "c1", output: "two\n[The tool's answer has pictures: [Image #4], [Image #5]]", isError: false },
+        { ...png, id: 4 },
+        { ...png, id: 5 },
+      ],
+    };
+    expect(lines(results)).toEqual([
+      { text: "  ⎿ ok", color: "gray", oneLine: true },
+      { text: "  ⎿ [Image #4] [Image #5]", color: "gray", oneLine: true },
+    ]);
+  });
 });
 
 describe("lastTurn", () => {

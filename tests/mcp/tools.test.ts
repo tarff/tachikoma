@@ -48,19 +48,23 @@ const AGAIN = (server: string) => `MCP server ${server} was connected again.`;
 
 // A stand-in model: its turns in order, one made by a function when the test changes something once the request is made;
 // each request's tool names and messages kept, the messages as sent, as the history is never edited.
+// A TooLong error is its answer to a request too long for it, as a provider's tooLong() tells one.
 class Model implements Provider {
   readonly requests: { tools: string[]; messages: Message[] }[] = [];
   constructor(
     readonly id: string,
-    private readonly turns: (Turn | (() => Promise<Turn>))[],
+    private readonly turns: (Turn | Error | (() => Promise<Turn>))[],
   ) {}
   async complete(req: CompletionRequest): Promise<Turn> {
     this.requests.push({ tools: req.tools.map((t) => t.name), messages: [...req.messages] });
     const next = this.turns.shift();
     if (!next) throw new Error("the stand-in model ran out of turns");
+    if (next instanceof Error) throw next;
     return typeof next === "function" ? next() : next;
   }
+  tooLong = (err: unknown) => err instanceof TooLong;
 }
+class TooLong extends Error {}
 
 // The test's own folder, the project's root, and its Servers, each stopped before the folder is removed: on Windows a
 // running server holds the folder it works in.
@@ -201,7 +205,7 @@ describe("MCP tools in the session", () => {
     const content = [
       { type: "text", text: "two of them" },
       { type: "image", data: PNG, mimeType: "image/png" },
-      { type: "image", data: PNG, mimeType: "image/webp" },
+      { type: "image", data: PNG, mimeType: "image/webp" }, // a PNG, as its bytes say
     ];
     const servers = await t.ready([await t.local("s", { tools: [tool("pictures")], results: { pictures: { content } } })]);
     const pictures = new Pictures();
@@ -212,7 +216,7 @@ describe("MCP tools in the session", () => {
     expect(session.messages[2]!.parts).toEqual([
       { type: "tool_result", callId: "c1", output, isError: false },
       { type: "image", id: 4, mediaType: "image/png", data: png, from: "server" },
-      { type: "image", id: 5, mediaType: "image/webp", data: png, from: "server" },
+      { type: "image", id: 5, mediaType: "image/png", data: png, from: "server" },
     ]);
     expect([pictures.next(), session.prompts]).toEqual([6, ["see [Image #3]"]]);
     const asked = model.requests[1]!.messages;
@@ -224,7 +228,7 @@ describe("MCP tools in the session", () => {
         { type: "text", text: "[Image #4]" },
         { type: "image", source: { type: "base64", media_type: "image/png", data: base64 } },
         { type: "text", text: "[Image #5]" },
-        { type: "image", source: { type: "base64", media_type: "image/webp", data: base64 } },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: base64 } },
       ],
     });
     expect(toOpenAI("t", asked, "openai").slice(-2)).toEqual([
@@ -235,7 +239,7 @@ describe("MCP tools in the session", () => {
           { type: "text", text: "[Image #4]" },
           { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } },
           { type: "text", text: "[Image #5]" },
-          { type: "image_url", image_url: { url: `data:image/webp;base64,${base64}` } },
+          { type: "image_url", image_url: { url: `data:image/png;base64,${base64}` } },
         ],
       },
     ]);
@@ -250,7 +254,7 @@ describe("MCP tools in the session", () => {
       { type: "resource_link", uri: "file:///a.txt", name: "a.txt" },
       { type: "resource", resource: { uri: "file:///b.txt", text: "b's text" } },
       { type: "resource", resource: { uri: "file:///c.bin", blob: "AAAA" } },
-      { type: "image", data: PNG, mimeType: "image/bmp" },
+      { type: "image", data: "AAAA", mimeType: "image/bmp" },
     ];
     const results = { both: { content: [{ type: "text", text: "forty-two" }], structuredContent: { answer: 42 } }, kinds: { content: kinds } };
     const servers = await t.ready([await t.local("s", { tools: [tool("structured"), tool("both"), tool("kinds")], results })]);
@@ -267,6 +271,43 @@ describe("MCP tools in the session", () => {
       },
     ]);
     expect(session.messages[2]!.parts.every((p) => p.type === "tool_result")).toBe(true);
+  });
+
+  // Task 6's code review: as a pasted picture's (clipboard.ts, typeOf), never the type the server states.
+  it("takes a picture's type from its first bytes, and names one whose bytes are no picture it passes on", async () => {
+    const t = await setup();
+    const results = {
+      shot: { content: [{ type: "image", data: PNG, mimeType: "image/jpeg" }] },
+      junk: { content: [{ type: "image", data: "AAAA", mimeType: "image/png" }] },
+    };
+    const servers = await t.ready([await t.local("s", { tools: [tool("shot"), tool("junk")], results })]);
+    const { session } = t.session(servers, [many(["c1", "mcp__s__shot", {}], ["c2", "mcp__s__junk", {}]), reply("seen")]);
+    await session.send("go");
+    expect(session.messages[2]!.parts).toEqual([
+      { type: "tool_result", callId: "c1", output: "[The tool's answer has pictures: [Image #1]]", isError: false },
+      { type: "tool_result", callId: "c2", output: "[The tool's answer has an image part, which Tachikoma does not pass on]", isError: false },
+      { type: "image", id: 1, mediaType: "image/png", data: png, from: "server" },
+    ]);
+  });
+
+  // Task 6's code review: choice 9's one offer per request, which a shortening for the turn and a fallback's answer share.
+  it("sends the turn's MCP tools with a shortening's summary request and with a fallback's request", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s")]);
+    const names = ["own", ...TEN.map((n) => `mcp__s__${n}`)];
+    const folder = path.join(t.dir, "sessions", "project");
+    const transcript = new Transcript(path.join(folder, "s1.jsonl"), path.join(folder, "s1", "pictures"), { inherits: true });
+    const turns = [reply("noted"), new TooLong("prompt is too long"), reply("Summary."), reply("done")];
+    const { session, model } = t.session(servers, turns, { transcript });
+    await session.send("first");
+    await session.send("second");
+    expect(session.messages.at(-1)).toMatchObject({ role: "assistant", parts: [{ type: "text", text: "done" }] });
+    expect(model.requests.map((r) => r.tools)).toEqual([names, names, names, names]); // the third is the summary's
+    const refused: Turn = { ...reply(""), cutOff: { kind: "refusal", detail: "declined" } };
+    const rescue = new Model("fake:b", [reply("rescued")]);
+    const f = t.session(servers, [refused], { fallback: rescue });
+    await f.session.send("go");
+    expect([f.model.requests[0]!.tools, rescue.requests[0]!.tools]).toEqual([names, names]);
   });
 
   it("makes an isError answer a failed call, the server's own text to the model, and fires PostToolUseFailure", async () => {
@@ -378,11 +419,13 @@ describe("MCP tools in the session: a remote server's drop", () => {
   // comes first, by a call to "cut", a drop after the request reached the server, which leaves the server stopped with
   // its one new connection to come; it comes after the request, as Servers offers no stopped server's tools. An unseen
   // one (`unseen`) is a JSON-only server restarted after an earlier echo, the server still ready when the call runs.
-  async function dropped(change: (fake: Fake, log2: string) => Promise<unknown>, opts: { unseen?: true; signal?: AbortSignal } = {}) {
+  // `calls`: the reply's calls after the change, the echo by default.
+  async function dropped(change: (fake: Fake, log2: string) => Promise<unknown>, opts: { unseen?: true; signal?: AbortSignal; calls?: Turn } = {}) {
     const t = await setup();
     const [log, log2] = [t.log(), t.log()];
     const fake = await httpFake(t.dir, { log, tools });
-    const servers = await t.ready([t.remote("r", fake.url)]);
+    const remote = t.remote("r", fake.url);
+    const servers = await t.ready([remote]);
     const seen: string[] = []; // the server's state once the drop is seen
     const states: string[] = []; // the server's state at each question, with the grey lines said by then
     t.q.then = () => states.push(`${servers.server("r")!.state.is} ${t.notes.length}`);
@@ -392,12 +435,64 @@ describe("MCP tools in the session: a remote server's drop", () => {
         seen.push(servers.list()[0]!.state.is);
       }
       await change(fake, log2);
-      return echoCall;
+      return opts.calls ?? echoCall;
     };
     const turns = opts.unseen ? [callTool("c1", "mcp__r__echo", { text: "one" }), later, reply("done")] : [later, reply("done")];
     const { session } = t.session(servers, turns);
-    return { t, log, log2, fake, seen, states, session, turn: session.send("go", opts.signal) };
+    return { t, log, log2, fake, remote, servers, seen, states, session, turn: session.send("go", opts.signal) };
   }
+  const twoEchoes = many(["c2", "mcp__r__echo", { text: "a" }], ["c3", "mcp__r__echo", { text: "b" }]);
+  const two = [
+    { output: "a", isError: false },
+    { output: "b", isError: false },
+  ];
+
+  // Task 6's code review: both calls were offered on the old connection, and the first one's new connection serves both.
+  it("runs both of two calls to a server whose drop was seen, each asked once, the grey line said once", async () => {
+    const d = await dropped(async () => {}, { calls: twoEchoes });
+    await d.turn;
+    expect(d.t.results(d.session)).toEqual(two);
+    expect(d.t.q.asked).toEqual(['mcp__r__echo {"text":"a"}', 'mcp__r__echo {"text":"b"}']);
+    expect([d.t.notes, d.t.errors]).toEqual([[AGAIN("r")], []]);
+    expect(d.t.calls(d.log, "echo")).toHaveLength(2);
+  });
+
+  it("runs both of two calls to a server whose drop no answer showed, each asked once, the grey line said once", async () => {
+    const d = await dropped(
+      async (fake, log2) => {
+        await fake.stop();
+        await httpFake(path.dirname(log2), { port: fake.port, log: log2, tools });
+      },
+      { unseen: true, calls: twoEchoes },
+    );
+    await d.turn;
+    expect(d.t.results(d.session)).toEqual([{ output: "one", isError: false }, ...two]);
+    expect(d.t.q.asked).toEqual(['mcp__r__echo {"text":"one"}', 'mcp__r__echo {"text":"a"}', 'mcp__r__echo {"text":"b"}']);
+    const methods = d.t.sent(d.log2).flatMap((m) => (m.method === "initialize" || m.method === "tools/call" ? [m.method] : []));
+    expect(methods).toEqual(["tools/call", "initialize", "tools/call", "tools/call"]);
+    expect([d.t.notes, d.t.errors]).toEqual([[AGAIN("r")], []]);
+  });
+
+  // Task 6's code review: the approved call never ran, but the server it was approved for is gone, so it is not sent on.
+  it("gives a call that never reached its server the changed line, not a resend, when a live edit replaced the server meanwhile", async () => {
+    const d = await dropped(
+      async (fake, log2) => {
+        await fake.stop();
+        await httpFake(path.dirname(log2), { port: fake.port, log: log2, tools, silent: true }); // its new connection waits
+      },
+      { unseen: true },
+    );
+    await vi.waitFor(() => expect(d.t.sent(d.log2).map((m) => m.method)).toContain("initialize"), WAIT);
+    const entry = d.remote.entry as Exclude<ServerConfig["entry"], { kind: "stdio" }>;
+    d.servers.set([{ ...d.remote, entry: { ...entry, headers: { edited: "yes" } } }]);
+    await d.turn;
+    expect(d.t.results(d.session)).toEqual([
+      { output: "one", isError: false },
+      { output: changedLine("r", "echo"), isError: true },
+    ]);
+    expect(d.t.q.asked).toEqual(['mcp__r__echo {"text":"one"}', 'mcp__r__echo {"text":"back"}']);
+    expect(d.t.notes).toEqual([]);
+  });
 
   it("connects again before the question, says so, and the call reaches the server", async () => {
     const d = await dropped(async () => {});

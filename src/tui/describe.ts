@@ -43,9 +43,17 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
   const lines: Line[] = [];
   let typed: Line | null = null; // the user's prompt so far, its text and pictures one line
   let picture = false; // the last part put in it was a picture
+  let served: Line | null = null; // the row of a tool's pictures so far
   for (const p of m.parts) {
     if (p.type === "text" && p.from === "tasks") continue; // shown when it arrived, as "t3 finished"
     if (p.type === "text" && p.from === "hooks") continue; // for the model, not the conversation (release 8b design, "What a hook's answer does")
+    // A tool's pictures, which follow the results, are the server's, never the user's prompt (release 8c plan, choice 34):
+    // their markers on one grey row, as a result's.
+    if (p.type === "image" && p.from === "server") {
+      if (served) served.text += ` ${marker(p.id)}`;
+      else lines.push((served = { text: `  ⎿ ${marker(p.id)}`, color: "gray", oneLine: true }));
+      continue;
+    }
     // A picture is its marker in its place, in the line's colour (release 6 plan, choice 22). Two next to each other
     // get a space between, as the blanks between them were left out of the message (pictures.ts, messageParts).
     if (p.type === "text" || p.type === "image") {

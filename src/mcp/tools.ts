@@ -3,6 +3,7 @@ import type { Bus } from "../core/bus.js";
 import { visible } from "../core/permissions.js";
 import type { Picture } from "../core/types.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
+import { typeOf } from "../tui/clipboard.js";
 import { NotReached } from "./server.js";
 import type { Offered, Servers } from "./servers.js";
 
@@ -16,8 +17,6 @@ import type { Offered, Servers } from "./servers.js";
 // gives one that waits, to change things while a call waits for it.
 export type Approve = (o: Offered, input: Record<string, unknown>, ctx: ToolContext) => Promise<void>;
 
-// The kinds of a picture the session passes on, as a pasted one's (types.ts, Image).
-const FORMATS: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 // Choice 11's names for the kinds of content an answer can hold that are not passed on, in MCP's own types.
 const KINDS: Record<string, string> = { image: "image", audio: "audio", resource_link: "resource link", resource: "embedded resource" };
 
@@ -32,17 +31,21 @@ const restarted = (o: Offered) => `Stopped: the MCP server ${visible(o.server)} 
 export function mcpTools(servers: Servers, bus: Bus, approve: Approve): { offer(): Offered[]; tool(o: Offered): Tool } {
   const said = new WeakSet<Promise<boolean>>(); // each new connection's grey line is said once, however many calls shared it
 
-  // A dropped remote server's one new connection, through Servers, which says the stop when it fails (choices 13 and 33);
-  // then the call is bound to the new connection, if the tool the model was shown is still offered, in the same view, with
-  // the same definition (Servers.rebind). A stop ends the call's wait, and the connection goes on for the next call.
+  // The call bound to its server's connection now, if the tool the model was shown is still offered by the same server, in
+  // the same view, with the same definition (Servers.rebind): one another call connected again is taken as it is. A server
+  // not running gets its one new connection first, through Servers, which says the stop when it fails (choices 13 and 33);
+  // only the call whose new connection it was says the grey line. A stop ends the call's wait, and the connection goes on
+  // for the next call.
   async function again(o: Offered, signal?: AbortSignal): Promise<Offered> {
-    const trying = servers.reconnect(o.server);
-    // False also when another call's new connection was made first, which that call says; rebind then binds to it.
-    if ((await until(trying, signal)) && !said.has(trying)) {
-      said.add(trying);
-      bus.emit("mcp-note", `MCP server ${visible(o.server)} was connected again.`);
+    let bound = servers.rebind(o);
+    if ("reason" in bound && bound.reason === "stopped") {
+      const trying = servers.reconnect(o.server); // false for a server with none to try, or ready again meanwhile
+      if ((await until(trying, signal)) && !said.has(trying)) {
+        said.add(trying);
+        bus.emit("mcp-note", `MCP server ${visible(o.server)} was connected again.`);
+      }
+      bound = servers.rebind(o);
     }
-    const bound = servers.rebind(o);
     if ("reason" in bound) throw new Error(bound.reason === "stopped" ? stopped(o) : changed(o));
     return bound.offered;
   }
@@ -65,11 +68,11 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve): { offer(
       async run(given, ctx) {
         const input = given as Record<string, unknown>; // an object, as both providers' tool input is (openai.ts, parseArgs)
         let o = offered;
-        // First a dropped server's new connection (choice 33), then the question; a server that stopped for good has nothing
-        // to run the call, so nobody is asked (Task 6's spec review).
-        const state = servers.server(o.server)?.state;
-        if (state?.is === "stopped" && state.retry) o = await again(o, ctx.signal);
-        else if (servers.current(o) === "stopped") throw new Error(stopped(o));
+        // First the call is bound to its server's connection now: a dropped one's new connection (choice 33), or one an
+        // earlier call made (Task 6's code review); then the question. A server that stopped for good has nothing to run
+        // the call, and one a live edit replaced is not the one shown, so nobody is asked (Task 6's spec review).
+        const was = servers.current(o);
+        if (was === "stopped" || was === "restarted") o = await again(o, ctx.signal);
         await approve(o, input, ctx);
         // Nothing reaches the server unless its tool is still the one shown, on the connection that showed it (finding 4).
         const now = servers.current(o);
@@ -80,8 +83,9 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve): { offer(
           result = await call(o, input, ctx.signal);
         } catch (err) {
           // A request that never reached the server: the approved call never ran, so it goes once more on the new
-          // connection, without a new question (choice 13: "Reconnect, then retry"). Any other drop fails it, and the next
-          // call connects again first.
+          // connection, without a new question (choice 13: "Reconnect, then retry"), but only to the server it was approved
+          // for: rebind refuses one a live edit replaced meanwhile (Task 6's code review). Any other drop fails it, and the
+          // next call connects again first.
           if (!(err instanceof NotReached) || ctx.signal?.aborted) throw err;
           o = await again(o, ctx.signal);
           result = await call(o, input, ctx.signal);
@@ -116,9 +120,13 @@ function answer(r: CallToolResult): string | { text: string; pictures: Picture[]
     if (words !== undefined) {
       texts.push(words);
       worded = true;
-    } else if (c.type === "image" && FORMATS.includes(c.mimeType)) {
-      pictures.push({ mediaType: c.mimeType as Picture["mediaType"], data: Buffer.from(c.data, "base64") });
-    } else {
+      continue;
+    }
+    // A picture's type from its first bytes, as a pasted one's, never the type the server states (Task 6's code review).
+    const data = c.type === "image" ? Buffer.from(c.data, "base64") : undefined;
+    const mediaType = data && typeOf(data);
+    if (data && mediaType) pictures.push({ mediaType, data });
+    else {
       const kind = Object.hasOwn(KINDS, c.type) ? KINDS[c.type]! : visible(String(c.type), { tabs: true });
       texts.push(`[The tool's answer has ${/^[aeiou]/i.test(kind) ? "an" : "a"} ${kind} part, which Tachikoma does not pass on]`);
     }

@@ -453,6 +453,13 @@ describe("Servers: starting, waiting and stopping", () => {
     servers.set([{ ...remote, trustedTools: [] }]);
     expect(servers.rebind(trusted[0]!)).toEqual({ reason: "changed" });
     expect(servers.rebind(whole!)).toMatchObject({ offered: { tool: "plain" } });
+    // A live edit's restart is another server, whose entry is not the one shown: no tool of the old one is rebound to it,
+    // though the new one offers the same.
+    const entry = remote.entry as Exclude<ServerConfig["entry"], { kind: "stdio" }>;
+    servers.set([{ ...remote, entry: { ...entry, headers: { edited: "yes" } } }]);
+    await servers.ready();
+    expect(servers.offer().map((o) => o.definition)).toEqual([whole!.definition, other!.definition]);
+    expect(servers.rebind(whole!)).toEqual({ reason: "changed" });
   });
 
   it("rebinds no tool whose definition changed on the new connection", async () => {

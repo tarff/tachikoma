@@ -1475,6 +1475,23 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     expect(isSummary(worker.seen[2]!)).toBe(true);
   });
 
+  // Task 6's code review: a subagent numbers its pictures from its own 1, so they go in a folder of its own.
+  it("saves a subagent's tool picture in its own pictures folder, leaving the lead's picture of the same number as it was", async () => {
+    const lead = saving();
+    const mine = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1]);
+    const theirs = Buffer.from([0x89, 0x50, 0x4e, 0x47, 2]);
+    lead.write({ t: "message", message: { role: "user", parts: [{ type: "image", id: 1, mediaType: "image/png", data: mine }] } });
+    const camera: Tool = {
+      spec: { name: "camera", description: "Takes a picture", inputSchema: { type: "object" } },
+      run: async () => ({ text: "snap", pictures: [{ mediaType: "image/png", data: theirs }] }),
+    };
+    const worker = new FakeProvider("w", [callTool("c1", "camera", {}), reply("done")]);
+    const tasks = new Tasks({ bus: new Bus(), max: 8, worker: () => worker, system: "sub", tools: [camera], ctx: await tempContext(), transcript: () => lead });
+    expect(await tasks.start("brief", { background: false }).done).toEqual({ state: "done", text: "done" });
+    const own = pathsOf(path.join(pathsOf(lead.file).subagents, "t1.jsonl"));
+    expect([readFileSync(path.join(lead.pictures, "1.png")), readFileSync(path.join(own.pictures, "1.png"))]).toEqual([mine, theirs]);
+  });
+
   // Release 8b plan, Task 11 (choice 20): PreCompact before the summary request, PostCompact and SessionStart compact once
   // the summary is made, before it is saved.
   const sessionText = (text: string): Part => ({ type: "text", text: `SessionStart hook:\n${text}`, from: "hooks" });
