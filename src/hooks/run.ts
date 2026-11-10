@@ -2,20 +2,24 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { errorText } from "../core/types.js";
 import { commandEnv, gitBash, onPath } from "../exec/env.js";
 import { collect, killTree, running, shellFor } from "../exec/local.js";
-import type { Hook } from "./config.js";
+import type { Servers } from "../mcp/servers.js";
+import { type Hook, MAX_TIMER_MS, type McpCall } from "./config.js";
 
 // What one hook did: its exit code and what it printed, its stdout whole and its stderr cut as a command's is. `failed`
 // says it never started, or was killed at its time limit; Task 3 (answer.ts) reads the rest. `limit` is the limit in
-// force, kept with "time", and `signal` what ended a hook that left no exit code, both for the failure's line.
+// force, kept with "time", and `signal` what ended a hook that left no exit code, both for the failure's line. An
+// mcp_tool hook's (callHook) has two more: "call", its server could not be called, and "error", an error answer, each
+// with its `reason`, the words why or the answer's text.
 export interface Ran {
   code: number | null;
   stdout: string;
   stderr: string;
   ms: number;
-  failed?: "start" | "time";
+  failed?: "start" | "time" | "call" | "error";
   startError?: string;
   limit?: number;
   signal?: string;
+  reason?: string;
 }
 
 // The exit code, or the signal when there is none (the user's choice at Task 3: a failure names its signal).
@@ -118,3 +122,74 @@ export function runHook(hook: Hook, input: object, opts: { cwd: string; env: Nod
     child.stdin.end(JSON.stringify(input));
   });
 }
+
+// Runs one mcp_tool hook (release 8c plan, Task 8; design, "Hooks"): `call.tool` on the server `call.server`, straight
+// through `servers`, never the session's tool path, so no tool hook fires for it and nobody is asked (design, finding
+// 3). Only a running server is called; one is never started, signed in to or connected again here. On an event that can
+// block (`wait`) a server still starting is waited for within the hook's limit (choice 21); else it is not running. At
+// `limit` seconds the wait or the call is stopped, and a stop ends it the same way and rejects with Cancelled, as a
+// command does; the library tells the server of a call it stops (notifications/cancelled). Its text is read as a command
+// hook's printed output, with exit code 0 (choice 21; Claude Code's hooks reference).
+export function callHook(call: McpCall, input: object, opts: { servers?: Servers; limit: number; signal?: AbortSignal; wait: boolean }): Promise<Ran> {
+  if (opts.signal?.aborted) return Promise.reject(new Error("Cancelled"));
+  const start = Date.now();
+  const ran = (more: Partial<Ran>): Ran => ({ code: null, stdout: "", stderr: "", ms: Date.now() - start, ...more });
+  const notRunning = () => ran({ failed: "call", reason: `${call.server} is not running` });
+  const stop = new AbortController();
+  let late = false;
+  const timer = setTimeout(() => {
+    late = true;
+    stop.abort();
+  }, opts.limit * 1000);
+  const onAbort = () => stop.abort();
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
+  // A stop wins over the limit, as it is the user's.
+  const ended = () => {
+    if (opts.signal?.aborted) throw new Error("Cancelled");
+    return late ? ran({ failed: "time", limit: opts.limit }) : undefined;
+  };
+  return (async () => {
+    try {
+      const { servers } = opts;
+      if (opts.wait && servers?.server(call.server)?.state.is === "starting") await servers.started(call.server, stop.signal);
+      const over = ended();
+      if (over) return over;
+      const server = servers?.server(call.server);
+      if (server?.state.is !== "ready") return notRunning();
+      let result: Awaited<ReturnType<typeof server.callTool>>;
+      try {
+        // The hook's own timer is its limit, so the library is given the longest wait, not the server entry's.
+        result = await server.callTool(call.tool, fill(call.input, input) as object, { signal: stop.signal, timeout: MAX_TIMER_MS });
+      } catch (err) {
+        const over = ended();
+        if (over) return over;
+        // A server that stopped during the call, or a request that never reached it, is not running; anything else is the
+        // server's answer, such as MCP's error for a tool it does not have.
+        return server.state.is === "ready" ? ran({ failed: "error", reason: errorText(err) }) : notRunning();
+      }
+      // Its text parts joined as the model's view of an answer joins them (mcp/tools.ts).
+      const text = result.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n\n");
+      return result.isError ? ran({ failed: "error", reason: text }) : ran({ code: 0, stdout: text });
+    } finally {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+    }
+  })();
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+// Choice 22: each ${path} in the input's text is a dotted path into the hook's input, such as ${tool_input.file_path};
+// a path that is not there, or is null, becomes empty text, an object or a list its JSON text, anything else its text.
+// Keys and values that are not text are kept as written.
+function fill(value: unknown, from: object): unknown {
+  if (typeof value === "string") return value.replace(/\$\{([^}]*)\}/g, (_, p: string) => textOf(lookup(from, p)));
+  if (Array.isArray(value)) return value.map((v) => fill(v, from));
+  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, fill(v, from)]));
+  return value;
+}
+
+// Each step an own field, so "constructor" or "__proto__" in a path finds nothing.
+const has = (at: unknown, key: string): at is Record<string, unknown> => typeof at === "object" && at !== null && Object.hasOwn(at, key);
+const lookup = (from: unknown, p: string): unknown => p.split(".").reduce<unknown>((at, key) => (has(at, key) ? at[key] : undefined), from);
+const textOf = (v: unknown) => (v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v));

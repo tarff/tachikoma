@@ -1,19 +1,25 @@
 import { errorText } from "../core/types.js";
-import { hookName } from "./answer.js";
+import { commandOf, hookName } from "./answer.js";
 
 // The hooks entry of the settings file, in Claude Code's shape, so a hook made for Claude Code works unchanged (release 8b
 // design, "The settings entry"). What Tachikoma cannot run is left out with a warning and the rest applies; a value of the
 // wrong JSON type is a problem, as for every other entry (settings.ts), and the file is not applied.
 
-// Claude Code's names for the events Tachikoma runs hooks at (release 8b design, "What 8b covers").
+// Claude Code's names for the events Tachikoma runs hooks at (release 8b design, "What 8b covers"), and a server's forms'
+// two, matched on the server's name (release 8c plan, Task 8; Task 12 fires them).
 export const EVENTS = ["SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
-  "Stop", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact"] as const;
+  "Stop", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "Elicitation", "ElicitationResult"] as const;
 export type Event = (typeof EVENTS)[number];
+
+// An mcp_tool hook calls `tool` on the running server `server` with `input`, its ${path} parts filled in from the hook's
+// own input (release 8c design, "Hooks"; plan, choice 22). Such a hook's `command` is empty and never run.
+export interface McpCall { server: string; tool: string; input: Record<string, unknown> }
 
 export interface Hook {
   event: Event;
   matcher: Matcher;
   command: string;
+  mcp?: McpCall;
   args?: string[];
   shell?: "bash" | "powershell";
   timeout?: number;
@@ -96,31 +102,33 @@ function hookOf(place: string, h: unknown, leave: Leave): Omit<Hook, "event" | "
   const missing = (name: string) => new Error(`${place}: a hook must have ${JSON.stringify(name)}, such as ${EXAMPLE}`);
   if (h.type === undefined) throw missing("type");
   if (typeof h.type !== "string") throw wrongType(field("type"), 'text in quotes, such as "command"', h.type);
-  if (h.type !== "command") {
-    leave(`has a ${JSON.stringify(h.type)} hook; only "command" hooks run, so it was left out`);
+  if (h.type !== "command" && h.type !== "mcp_tool") {
+    leave(`has a ${JSON.stringify(h.type)} hook; only "command" and "mcp_tool" hooks run, so it was left out`);
     return undefined;
   }
-  // The command and its args come before the warnings below, which end with them so that two alike can be told apart
-  // (the user's words at Task 1's review).
-  if (h.command === undefined) throw missing("command");
-  if (typeof h.command !== "string") throw wrongType(field("command"), "text in quotes", h.command);
-  const args = h.args;
+  // The command and its args, or the server and tool, come before the warnings below, which end with them so that two
+  // alike can be told apart (the user's words at Task 1's review).
+  const mcp = h.type === "mcp_tool" ? mcpOf(place, h, field) : undefined;
+  if (!mcp && h.command === undefined) throw missing("command");
+  if (!mcp && typeof h.command !== "string") throw wrongType(field("command"), "text in quotes", h.command);
+  const args = mcp ? undefined : h.args;
   if (args !== undefined && !texts(args)) throw wrongType(field("args"), "a list of text in quotes", args);
-  const command = h.command;
+  const command = mcp ? "" : (h.command as string);
   const statusMessage = typeof h.statusMessage === "string" ? h.statusMessage : undefined;
-  const named = (words: string) =>
-    leave(`${words}: ${[command, ...(args ?? [])].join(" ")}`, `${words}: ${hookName({ command, args, statusMessage })}`);
+  const named = (words: string) => leave(`${words}: ${commandOf({ command, args, mcp })}`, `${words}: ${hookName({ command, args, statusMessage, mcp })}`);
   // Claude Code runs a hook with `if` only when its permission rule matches, which Tachikoma cannot check, and running it
   // every time would be wrong (release 8b design, "The settings entry").
   if ("if" in h) {
     named('has a hook with "if", which Tachikoma cannot check, so it was left out');
     return undefined;
   }
-  const hook: Omit<Hook, "event" | "matcher" | "where"> = { command: h.command, async: false };
+  const hook: Omit<Hook, "event" | "matcher" | "where"> = mcp ? { command, mcp, async: false } : { command, async: false };
   if (args !== undefined) hook.args = args;
+  // A command hook's own fields are not an mcp_tool hook's, so there they are fields it does not have.
+  const own = mcp ? ["server", "tool", "input"] : ["command", "args"];
   for (const [name, v] of Object.entries(h)) {
-    if (name === "type" || name === "command" || name === "args") continue;
-    else if (name === "shell") {
+    if (name === "type" || own.includes(name)) continue;
+    else if (name === "shell" && !mcp) {
       if (v !== "bash" && v !== "powershell") throw wrongType(field(name), '"bash" or "powershell"', v);
       hook.shell = v;
     } else if (name === "timeout") {
@@ -140,6 +148,18 @@ function hookOf(place: string, h: unknown, leave: Leave): Omit<Hook, "event" | "
     else named(`has a hook with ${JSON.stringify(name)}, which is not a hook field; it was left out`);
   }
   return hook;
+}
+
+// An mcp_tool hook's server, tool and input (release 8c plan, Task 8): both names are needed, and its input, an object
+// when given, is none when left out.
+const MCP_EXAMPLE = '{"type": "mcp_tool", "server": "memory", "tool": "search"}';
+function mcpOf(place: string, h: Record<string, unknown>, field: (name: string) => string): McpCall {
+  for (const name of ["server", "tool"]) {
+    if (h[name] === undefined) throw new Error(`${place}: an "mcp_tool" hook must have ${JSON.stringify(name)}, such as ${MCP_EXAMPLE}`);
+    if (typeof h[name] !== "string") throw wrongType(field(name), "text in quotes", h[name]);
+  }
+  if (h.input !== undefined && !isObject(h.input)) throw wrongType(field("input"), "an object", h.input);
+  return { server: h.server as string, tool: h.tool as string, input: (h.input as Record<string, unknown> | undefined) ?? {} };
 }
 
 // Claude Code's rules (release 8b design, "The settings entry"): empty, missing or * is every value; only letters,

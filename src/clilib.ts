@@ -273,9 +273,9 @@ export function networkLine(flags: Flags, sandbox: Sandbox): string | null {
 // says once, when such a hook is in force, and again in full screen (App.tsx); one that asks for PowerShell, or runs
 // without a shell (`args`), needs no Git Bash. Undefined when there is nothing to say. `bash` is the lookup (exec/env.ts),
 // which a test gives, as Git for Windows' install folder cannot be hidden from a child process (Windows sets ProgramFiles
-// for each one, seen 2026-11-10).
+// for each one, seen 2026-11-10). An mcp_tool hook calls a server, with no shell (release 8c plan, Task 8).
 export function gitBashLine(settings: Settings, platform: NodeJS.Platform = process.platform, bash: () => string | null = gitBash): string | undefined {
-  const shelled = !settings.disableAllHooks && (settings.hooks ?? []).some((h) => !h.args && h.shell !== "powershell");
+  const shelled = !settings.disableAllHooks && (settings.hooks ?? []).some((h) => !h.mcp && !h.args && h.shell !== "powershell");
   return platform === "win32" && shelled && bash() === null
     ? "Git Bash was not found, so hooks run by a shell use Windows PowerShell; set CLAUDE_CODE_GIT_BASH_PATH to its bash.exe to change that."
     : undefined;

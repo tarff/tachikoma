@@ -5,6 +5,7 @@ import type { Message } from "../core/types.js";
 import { combine, hookName } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Run } from "../hooks/hooks.js";
+import type { Ran } from "../hooks/run.js";
 import { outputFrom, tachikomaName } from "../hooks/tools.js";
 import { marker } from "./pictures.js";
 
@@ -101,11 +102,15 @@ const TOOL_EVENTS: readonly Event[] = ["PreToolUse", "PostToolUse", "PostToolUse
 // escapes a command, how it ended and its time; under it after ⎿ each text it handed the model (a Stop or
 // SubagentStop block's reason among them, which the model reads as feedback), its rewrite as JSON, or that its
 // updatedToolOutput was not used. A hook a signal ended names it, or says none is known, and a tool event's run names its
-// tool as the window does (the user's words, 2026-11-10; choice 10).
+// tool as the window does (the user's words, 2026-11-10; choice 10). An mcp_tool hook's call that failed ends in its red
+// line's words (release 8c plan, Task 8), and one that answered shows exit 0, as its answer is read (choice 21).
+const ENDS: Record<NonNullable<Ran["failed"]>, string> = {
+  time: "out of time", start: "could not start", call: "could not be called", error: "answered an error",
+};
 function runLine(r: Run): Line {
   const { ran } = r;
   const signal = ran.signal ? `ended by signal ${ran.signal}` : "ended by an unknown signal";
-  const end = ran.failed === "time" ? "out of time" : ran.failed === "start" ? "could not start" : ran.code === null ? signal : `exit ${ran.code}`;
+  const end = ran.failed ? ENDS[ran.failed] : ran.code === null ? signal : `exit ${ran.code}`;
   const c = combine(r.event, [r]);
   const tool = tachikomaName(r.match ?? "");
   const forTool = TOOL_EVENTS.includes(r.event) && r.match !== undefined ? ` for ${visible(tool)}` : "";

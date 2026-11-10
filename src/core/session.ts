@@ -2,7 +2,7 @@ import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { type Combined, commandOf } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Hooks } from "../hooks/hooks.js";
-import { errorOf, fromClaude, outputFrom, type Paths, pathsFor, responseOf, toClaude } from "../hooks/tools.js";
+import { errorOf, fromClaude, isMcp, outputFrom, type Paths, pathsFor, responseOf, toClaude } from "../hooks/tools.js";
 import type { Offered } from "../mcp/servers.js";
 import type { McpTools } from "../mcp/tools.js";
 import type { Cache } from "../providers/pictures.js";
@@ -964,6 +964,7 @@ export class Session {
     let started: number | undefined; // unset: the tool never started
     let text: string;
     let ms: number;
+    let pictures: Image[] = []; // this call's in the round, which a hook's replaced output drops (release 8c plan, choice 20)
     try {
       // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts).
       const pre = hooks ? await this.#preToolUse(call, entry, hooks, signal) : { input: call.input, gate: this.opts.ctx.gate };
@@ -983,7 +984,9 @@ export class Session {
       if (signal.aborted) return stopped(NOT_RUN);
       started = Date.now();
       const ran = await tool.run(pre.input, { ...this.opts.ctx, gate: pre.gate, signal, ...report });
+      const before = round.pictures.length; // #pictured adds this call's at once, so those after `before` are its own
       text = typeof ran === "string" ? truncate(ran) : this.#pictured(ran, round);
+      pictures = round.pictures.slice(before);
       ms = Date.now() - started;
     } catch (err) {
       // Ctrl-C at a question declines it and stops the turn: the call was cancelled, not declined.
@@ -1004,8 +1007,12 @@ export class Session {
     const fields = { tool_response: responseOf(call.name, text, parts, this.#hookPaths()), duration_ms: ms };
     const c = await this.#postToolUse(hooks, "PostToolUse", call, entry, fields, round);
     // updatedToolOutput replaces what the model reads where it can be turned back into it, and is ignored otherwise (choice
-    // 13). The outcome stays the call's own.
-    const output = c && "output" in c ? outputFrom(call.name, c.output) : null;
+    // 13). The outcome stays the call's own. An MCP call's own field, updatedMCPToolOutput, comes before it when both are
+    // given, and the text replaced takes the answer's pictures with it, as they were part of it (release 8c plan, choice
+    // 20); their numbers stay used, so no later picture takes one the hooks were sent.
+    const given = c && isMcp(call.name) && "mcpOutput" in c ? c.mcpOutput : c?.output;
+    const output = c && given !== undefined ? outputFrom(call.name, given) : null;
+    if (output !== null) for (const p of pictures) round.pictures.splice(round.pictures.indexOf(p), 1);
     return [result(call, output === null ? text : truncate(output), false), "ok"];
   }
 

@@ -226,6 +226,47 @@ describe("hookName", () => {
   ])("%s", (_, fields, name) => {
     expect(hookName(hookOf(fields))).toBe(name);
   });
+
+  // Release 8c design, "Hooks": an mcp_tool hook by its server and tool, or its statusMessage.
+  it("names an mcp_tool hook by its server and tool, or its statusMessage", () => {
+    const mcp = { command: "", args: undefined, mcp: { server: "tradingview", tool: "quote_get", input: {} } };
+    expect(hookName(hookOf(mcp))).toBe("tradingview quote_get");
+    expect(hookName(hookOf({ ...mcp, statusMessage: "Quoting" }))).toBe("Quoting");
+  });
+});
+
+// Release 8c plan, choice 21 and "Lines this plan adds": an mcp_tool hook's answer is read as a command hook's, and its
+// failures have lines of their own.
+describe("outcomeOf: an mcp_tool hook", () => {
+  const mcp = (fields: Partial<Hook> = {}) => hookOf({ command: "", args: undefined, mcp: { server: "memory", tool: "search", input: {} }, ...fields });
+  it.each<[string, Partial<Ran>, string]>([
+    ["an error answer, its first line", { failed: "error", reason: "\nboom\nmore\n" }, "memory search answered an error: boom"],
+    ["an error answer with no text", { failed: "error", reason: "" }, "memory search answered an error"],
+    ["a server not running", { failed: "call", reason: "memory is not running" }, "memory search could not be called: memory is not running"],
+    ["out of time", { failed: "time", limit: 600 }, "memory search ran out of time after 600 s"],
+  ])("%s", (_, ran, line) => {
+    expect(answer("Stop", ranOf({ code: null, ...ran }), mcp())).toEqual({ kind: "failed", line });
+  });
+
+  it("reads its text as a command hook's printed output", () => {
+    expect(answer("UserPromptSubmit", ranOf({ stdout: "remember this" }), mcp())).toEqual({ kind: "ok", text: "remember this" });
+    expect(answer("PreToolUse", ranOf({ stdout: READABLE }), mcp())).toEqual({ kind: "ok", json: JSON.parse(READABLE) });
+  });
+
+  // Claude Code's rule: an isError answer is a non-blocking error, whatever onFailure says; the server not running blocks
+  // with onFailure "block", as a command that could not start does.
+  it("never blocks for an error answer, and blocks for a server not running only with onFailure block", () => {
+    const hook = mcp({ onFailure: "block" });
+    expect(answer("PreToolUse", ranOf({ code: null, failed: "error", reason: "boom" }), hook)).toEqual({
+      kind: "failed", line: "memory search answered an error: boom" });
+    expect(answer("PreToolUse", ranOf({ code: null, failed: "call", reason: "memory is not running" }), hook)).toEqual({
+      kind: "block", reason: "memory is not running" });
+  });
+
+  it("is not a shell's hook, so Windows without Git Bash makes none of its failures a block", () => {
+    const ran = ranOf({ code: null, failed: "call", reason: "memory is not running" });
+    expect(outcomeOf("PreToolUse", mcp(), ran, "win32", false)).toEqual({ kind: "failed", line: "memory search could not be called: memory is not running" });
+  });
 });
 
 describe("outcomeOf: the events that cannot block (the design's table row)", () => {

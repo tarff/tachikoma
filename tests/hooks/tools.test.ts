@@ -54,6 +54,15 @@ describe("toClaude and fromClaude: every tool both ways", () => {
     expect(toClaude({ name: "search_files", input: { pattern: "x", path: "." } }, HOST).tool_input).toEqual({ pattern: "x", path: "/proj" });
   });
 
+  // Release 8c plan, choices 18 and 19: an MCP call under its own name, its arguments as they came, and a rewrite that is
+  // an object taken as its new arguments.
+  it("sends an MCP call by its own name with its arguments, and takes back a rewrite that is an object", () => {
+    const call = toClaude({ name: "mcp__s__echo", input: { text: "hi", n: [1] } }, HOST);
+    expect(call).toEqual({ tool_name: "mcp__s__echo", tool_input: { text: "hi", n: [1] } });
+    expect(fromClaude("mcp__s__echo", { text: "new", extra: null }, HOST)).toEqual({ input: { text: "new", extra: null } });
+    expect(fromClaude("mcp__s__echo", ["x"], HOST)).toEqual({ problem: '"updatedInput" must be an object' });
+  });
+
   it("sends a tool it does not know by its own name, with its input", () => {
     expect(toClaude({ name: "other", input: { a: 1 } }, HOST)).toEqual({ tool_name: "other", tool_input: { a: 1 } });
     expect(toClaude({ name: "other", input: "text" }, HOST)).toEqual({ tool_name: "other", tool_input: {} });
@@ -294,6 +303,13 @@ describe("outputFrom: a hook's updatedToolOutput, turned back into what the mode
     expect(outputFrom("delegate", { content: [] })).toBeNull();
     expect(outputFrom("write_file", { filePath: "a", type: "create" })).toBeNull();
     expect(outputFrom("other", "x")).toBeNull();
+  });
+
+  // Release 8c plan, choice 20; Task 6b: a search's answer is not a hook's to rewrite.
+  it("takes text for an MCP call, and nothing for ToolSearch", () => {
+    expect(outputFrom("mcp__s__echo", "new text")).toBe("new text");
+    expect(outputFrom("mcp__s__echo", { content: [{ type: "text", text: "x" }] })).toBeNull();
+    expect(outputFrom("tool_search", "x")).toBeNull();
   });
 });
 

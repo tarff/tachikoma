@@ -563,3 +563,75 @@ describe("Hooks", { timeout: 15_000 }, () => {
     expect(said.slice(2)).toEqual([["Waiting", true], ["Waiting", false]]);
   });
 });
+
+// Release 8c plan, choice 35 (the plan review, finding 4): the answers a form's hooks give, through the real fire. Task 12
+// fires these events; here they are fired as it will, matched on the server's name.
+describe.each(["Elicitation", "ElicitationResult"] as const)("Hooks at %s", { timeout: 15_000 }, (event) => {
+  const said = (fields: object) => JSON.stringify({ hookSpecificOutput: { hookEventName: event, ...fields } });
+  const answering = (p: Place, name: string, fields: object, more: { code?: number; stderr?: string } = {}) =>
+    p.hook(name, { event, matcher: { names: ["memory"] } }, { stdout: said(fields), ...more });
+  const fire = async (p: Place, hooks: Hook[]) => {
+    const s = setup(p, hooks);
+    return { c: await s.hooks.fire(event, { mcp_server_name: "memory", message: "Your name?" }, { match: "memory" }), ...s };
+  };
+
+  it("takes an accept with its content, a decline and a cancel, and leaves it to the user with none", async () => {
+    const p = await place();
+    expect((await fire(p, [answering(p, "a", { action: "accept", content: { name: "Ada" } })])).c.elicitation).toEqual({
+      action: "accept", content: { name: "Ada" } });
+    expect((await fire(p, [answering(p, "d", { action: "decline" })])).c.elicitation).toEqual({ action: "decline" });
+    expect((await fire(p, [answering(p, "c", { action: "cancel" })])).c.elicitation).toEqual({ action: "cancel" });
+    const none = await fire(p, [answering(p, "n", {})]);
+    expect([none.c.elicitation, none.errors]).toEqual([undefined, []]);
+    // Matched on the server's name: another server's form runs none.
+    const other = setup(p, [answering(p, "x", { action: "accept" })]);
+    expect((await other.hooks.fire(event, {}, { match: "sanity" })).elicitation).toBeUndefined();
+    expect(p.inputs("x")).toEqual([]);
+  });
+
+  it("takes exit code 2 as a decline, whatever was printed, and says no failure", async () => {
+    const p = await place();
+    const { c, errors } = await fire(p, [answering(p, "two", { action: "accept", content: { name: "Ada" } }, { code: 2, stderr: "no forms" })]);
+    expect([c.elicitation, c.failures, errors]).toEqual([{ action: "decline" }, [], []]);
+  });
+
+  it("lets a decline win over a cancel and an accept, and a cancel over an accept, in any order", async () => {
+    const p = await place();
+    const accept = answering(p, "accept", { action: "accept", content: { name: "Ada" } });
+    const cancel = answering(p, "cancel", { action: "cancel" });
+    const decline = answering(p, "decline", { action: "decline" });
+    expect((await fire(p, [accept, decline])).c.elicitation).toEqual({ action: "decline" });
+    expect((await fire(p, [decline, cancel, accept])).c.elicitation).toEqual({ action: "decline" });
+    expect((await fire(p, [accept, cancel])).c.elicitation).toEqual({ action: "cancel" });
+  });
+
+  it("takes the first accept's content in the file when two accept", async () => {
+    const p = await place();
+    const first = answering(p, "first", { action: "accept", content: { name: "Ada" } });
+    const second = answering(p, "second", { action: "accept", content: { name: "Bob" } });
+    expect((await fire(p, [first, second])).c.elicitation).toEqual({ action: "accept", content: { name: "Ada" } });
+    expect((await fire(p, [second, first])).c.elicitation).toEqual({ action: "accept", content: { name: "Bob" } });
+  });
+
+  it("says JSON whose action or content cannot be taken in the approved words, and answers nothing for it", async () => {
+    const p = await place();
+    const action = answering(p, "action", { action: "maybe" });
+    const content = answering(p, "content", { action: "accept", content: ["Ada"] });
+    const { c, errors } = await fire(p, [action, content]);
+    const lines = [
+      `${commandOf(action)} printed JSON that could not be read ("action" must be "accept", "decline" or "cancel")`,
+      `${commandOf(content)} printed JSON that could not be read ("content" must be an object)`,
+    ];
+    expect([c.elicitation, c.failures]).toEqual([undefined, lines]);
+    expect(errors.map((e) => e.message)).toEqual(lines.map((l) => `${event} hook failed: ${l}`));
+  });
+
+  // Choice 35: nothing else at these events changes 8b's rules; continue and additionalContext are not read.
+  it("reads no continue or additionalContext, and still says a systemMessage", async () => {
+    const p = await place();
+    const specific = { hookEventName: event, action: "cancel", additionalContext: "x" };
+    const stdout = JSON.stringify({ continue: false, systemMessage: "asked", hookSpecificOutput: specific });
+    const { c, notes } = await fire(p, [p.hook("h", { event }, { stdout })]);
+    expect([c.stop, c.context, c.elicitation, notes]).toEqual([undefined, [], { action: "cancel" }, [`${event} hook: asked`]]);
+  });
+});

@@ -137,6 +137,23 @@ export class Servers {
     });
   }
 
+  // Once the server `name` is no longer starting, or `signal` stops the wait: an mcp_tool hook at an event that can block
+  // waits so for its server (release 8c plan, choice 21). Nothing is said of a server still starting after it.
+  started(name: string, signal: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const check = () => {
+        const slot = this.#slots.find((s) => s.config.name === name);
+        if (!signal.aborted && slot && this.#state(slot).is === "starting") return;
+        this.#waiters.delete(check);
+        signal.removeEventListener("abort", check);
+        resolve();
+      };
+      this.#waiters.add(check);
+      signal.addEventListener("abort", check, { once: true });
+      check();
+    });
+  }
+
   // The names still starting, escaped, for the waiting line (choice 25).
   waitingFor(): string[] {
     return this.#slots.filter((s) => this.#state(s).is === "starting").map((s) => visible(s.config.name));

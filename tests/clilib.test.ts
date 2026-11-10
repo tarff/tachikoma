@@ -261,6 +261,8 @@ describe("gitBashLine", () => {
     expect(gitBashLine({ hooks: [hook()], disableAllHooks: true }, "win32", none)).toBeUndefined();
     expect(gitBashLine({ hooks: [hook({ args: ["x"] }), hook({ shell: "powershell" })] }, "win32", none)).toBeUndefined();
     expect(gitBashLine({}, "win32", none)).toBeUndefined();
+    // Release 8c plan, Task 8: an mcp_tool hook calls a server, with no shell.
+    expect(gitBashLine({ hooks: [hook({ command: "", mcp: { server: "s", tool: "t", input: {} } })] }, "win32", none)).toBeUndefined();
   });
 });
 

@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { Bus } from "../core/bus.js";
 import type { Mode } from "../core/permissions.js";
+import type { Servers } from "../mcp/servers.js";
 import type { Effort } from "../providers/anthropic.js";
-import { type Combined, combine, commandOf, type Outcome, outcomeOf } from "./answer.js";
+import { type Combined, canBlock, combine, commandOf, type Outcome, outcomeOf } from "./answer.js";
 import { type Event, type Hook, type HooksConfig, matches } from "./config.js";
-import { type Ran, runHook } from "./run.js";
+import { callHook, type Ran, runHook } from "./run.js";
 
 // The object a session fires events through (release 8b plan, Task 4): it picks the event's hooks, runs them at once,
 // sends each the common fields in Claude Code's names, combines their answers, and says their failures and messages.
@@ -41,7 +42,7 @@ export const limitOf = (hook: Hook): number =>
 
 // Two entries are the same hook when every field of the entry is (release 8b design, "Running a hook"; review,
 // 2026-11-09, finding 3); its event, matcher and place are not fields of the entry.
-const entry = (h: Hook) => JSON.stringify([h.command, h.args, h.shell, h.timeout, h.async, h.onFailure, h.statusMessage]);
+const entry = (h: Hook) => JSON.stringify([h.command, h.mcp, h.args, h.shell, h.timeout, h.async, h.onFailure, h.statusMessage]);
 
 // Whether `hook` runs at `event` for `match`; without one, only a hook that matches everything does.
 const runsFor = (hook: Hook, event: Event, match?: string) =>
@@ -49,11 +50,14 @@ const runsFor = (hook: Hook, event: Event, match?: string) =>
 
 // Held by the lead's Hooks and every subagent's, so a live edit reaches them all, and a subagent, which has no prompt of
 // its own, sends the lead's prompt id. `left` stops the async hooks still running as Tachikoma exits, a subagent's
-// among them (stopAsync).
+// among them (stopAsync). `servers`: the MCP servers mcp_tool hooks call (useServers). `launched`: the window's first
+// SessionStart, the launch's, has fired.
 interface Shared {
   config: HooksConfig;
   promptId?: string;
   left: AbortController;
+  servers?: Servers;
+  launched?: boolean;
 }
 
 export class Hooks {
@@ -75,6 +79,12 @@ export class Hooks {
 
   get config(): HooksConfig {
     return this.#shared.config;
+  }
+
+  // The window's MCP servers, which every mcp_tool hook calls, a subagent's too (release 8c plan, Task 8). Without them,
+  // no server is running for one.
+  useServers(servers: Servers): void {
+    this.#shared.servers = servers;
   }
 
   // This turn's runs, each added once it has answered, an async hook's to the turn it started in. A subagent's are its own,
@@ -133,9 +143,14 @@ export class Hooks {
   // on. Without one only a hook that matches everything runs; UserPromptSubmit's and Stop's always do (config.ts).
   async fire(event: Event, fields: object, opts: { match?: string; signal?: AbortSignal } = {}): Promise<Combined> {
     const { hooks, off } = this.#shared.config;
+    // Claude Code skips mcp_tool hooks at the launch's SessionStart, without a line, as its servers are still connecting
+    // (release 8c plan, choice 21): the window's first SessionStart, whatever its source, as -c, -r and --fork-session
+    // launch with another (cli.tsx).
+    const launch = event === "SessionStart" && !this.#shared.launched;
+    if (event === "SessionStart") this.#shared.launched = true;
     const seen = new Set<string>();
     const picked = off ? [] : hooks.filter((h) => {
-      if (!runsFor(h, event, opts.match)) return false;
+      if (!runsFor(h, event, opts.match) || (launch && h.mcp)) return false;
       const key = entry(h);
       if (seen.has(key)) return false;
       seen.add(key);
@@ -159,8 +174,12 @@ export class Hooks {
       if (status !== undefined) this.#bus.emit("hook-status", status, true);
       let ran: Ran;
       try {
-        // runHook adds commandEnv and CLAUDE_PROJECT_DIR; the folder is the project's root (release 8b plan, choice 3).
-        ran = await runHook(hook, input, { cwd: this.#where.root, env: process.env, limit, signal });
+        // runHook adds commandEnv and CLAUDE_PROJECT_DIR; the folder is the project's root (release 8b plan, choice 3). An
+        // mcp_tool hook calls its server under the same limit (release 8c plan, Task 8), waiting for one still starting only
+        // where its hooks can block (choice 21).
+        ran = hook.mcp
+          ? await callHook(hook.mcp, input, { servers: this.#shared.servers, limit, signal, wait: canBlock(event) })
+          : await runHook(hook, input, { cwd: this.#where.root, env: process.env, limit, signal });
       } finally {
         if (status !== undefined) this.#bus.emit("hook-status", status, false);
       }

@@ -77,6 +77,27 @@ describe("lastTurn", () => {
     ]);
   });
 
+  // Release 8c plan, Task 8: an mcp_tool hook by its server and tool, how its call ended in the words of its red lines.
+  it("lists an mcp_tool hook's runs by its server and tool: answered, an error answer, not called, out of time", () => {
+    const mcp = { server: "memory", tool: "search", input: {} };
+    const hook: Hook = { event: "Stop", matcher: { all: true }, command: "", mcp, async: false, where: '"Stop"' };
+    const ran = (more: Partial<Ran>): Ran => ({ code: null, stdout: "", stderr: "", ms: 12, ...more });
+    const ok = { kind: "ok" } as const;
+    const failed = { kind: "failed", line: "x" } as const;
+    const runs: Run[] = [
+      { event: "Stop", hook, ran: ran({ code: 0, stdout: "found" }), outcome: ok },
+      { event: "Stop", hook, ran: ran({ failed: "error", reason: "boom" }), outcome: failed },
+      { event: "Stop", hook, ran: ran({ failed: "call", reason: "memory is not running" }), outcome: failed },
+      { event: "Stop", hook, ran: ran({ failed: "time", limit: 600 }), outcome: failed },
+    ];
+    expect(lastTurn([{ role: "user", parts: [{ type: "text", text: "go" }] }], runs).slice(1).map((l) => l.text)).toEqual([
+      "◆ Stop hook memory search · exit 0 · 12 ms",
+      "◆ Stop hook memory search · answered an error · 12 ms",
+      "◆ Stop hook memory search · could not be called · 12 ms",
+      "◆ Stop hook memory search · out of time · 12 ms",
+    ]);
+  });
+
   // Task 12's code review: combine drops a rewrite and an updatedToolOutput beside a continue: false, as the call never
   // runs, so Ctrl+O shows neither.
   it("shows no rewrite, nor an unused updatedToolOutput, for a run that also stopped the turn", () => {

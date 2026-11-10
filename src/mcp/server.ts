@@ -146,12 +146,13 @@ export class Server {
   // hard: no progress is asked for and none extends it, as Claude Code's MCP page says (the user's choice, 2026-11-10).
   // The signal stops the call, and the library tells the server. A remote call that never reached the server throws
   // NotReached; one that may have (a connection cut mid-answer) fails with the library's error. Either way the server is
-  // stopped with retry by then (onerror), and the call is not sent again here.
-  async callTool(name: string, args: object, opts: { signal?: AbortSignal }): Promise<CallToolResult> {
+  // stopped with retry by then (onerror), and the call is not sent again here. `timeout`, in ms, is a caller's own limit in
+  // place of these: an mcp_tool hook's, whose own time limit ends its call (hooks/run.ts).
+  async callTool(name: string, args: object, opts: { signal?: AbortSignal; timeout?: number }): Promise<CallToolResult> {
     const conn = this.#conn;
     if (!conn?.ready || conn.closed || this.#state.is !== "ready") throw new Error("Not connected"); // stopped: not closed yet
     const entry = this.config.entry;
-    const timeout = entry.kind === "stdio" ? (entry.timeout ?? MAX_TIMER_MS) : Math.max(entry.timeout ?? 0, REMOTE_MS);
+    const timeout = opts.timeout ?? (entry.kind === "stdio" ? (entry.timeout ?? MAX_TIMER_MS) : Math.max(entry.timeout ?? 0, REMOTE_MS));
     try {
       return await conn.client.callTool({ name, arguments: args as Record<string, unknown> }, { signal: opts.signal, timeout });
     } catch (err) {
