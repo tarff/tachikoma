@@ -570,10 +570,14 @@ search, always on", "Own lookup tool, every provider")
 54. **An entry's headers go only to its server** (Task 11's spec review; the user's choice,
     2026-11-11, "Headers to server only"): the library's sign-in requests (discovery,
     registration, token, refresh) never carry the entry's `headers`, so a key in one never reaches
-    a host the server names.
-55. **An entry with its own headers is never signed in** (the user's choice, 2026-11-11, "Failed,
-    401"): a 401 to an entry that has `headers` keeps `failed: <address> answered 401`, which points
-    at its key; only an entry without headers is `needs sign-in`.
+    a host the server names. They are added only to requests for the server's own address (its
+    scheme, host, port and path), so a sign-in service at the same host gets none either.
+55. **An entry with its own `Authorization` header is never signed in** (the user's choice,
+    2026-11-11, "Failed, 401", narrowed the same day to "Only Authorization blocks", as the Figma
+    plugin's entry has one header and still signs in): a 401 to an entry whose `headers` hold
+    `Authorization`, in any letter case, keeps `failed: <address> answered 401`, which points at
+    its key; an entry with other headers or none is `needs sign-in`, its headers kept to the server
+    (choice 54).
 56. **A Sign out that cannot be written** (the user's choice, 2026-11-11, "Match sign-in's line"):
     red `Sign-out of <name> failed: <reason>`; the sign-in stays.
 57. **A damaged `mcp-auth.json`** (Task 11's spec review; the user's choice, 2026-11-11, "Empty,
