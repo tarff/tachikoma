@@ -10,11 +10,11 @@ import type { Offered, Servers } from "./servers.js";
 // each call runs on the connection and definition its request offered, or is refused with a line saying why (design,
 // finding 4).
 
-// The question for a call, Task 7's gate: until it is built every call passes as approved. It is asked after a dropped
-// server's new connection, so the approval is for the version that runs (choice 33), and before the check that nothing
-// changed while the call waited (finding 4). A test gives one that waits, to change things while a call waits for it.
+// The question for a call, Task 7's gate, which throws to refuse it. It has no default, so no MCP tool reaches a session
+// without one (Task 6's security check). It is asked after a dropped server's new connection, so the approval is for the
+// version that runs (choice 33), and before the check that nothing changed while the call waited (finding 4). A test
+// gives one that waits, to change things while a call waits for it.
 export type Approve = (o: Offered, input: Record<string, unknown>, ctx: ToolContext) => Promise<void>;
-const approved: Approve = async () => {};
 
 // The kinds of a picture the session passes on, as a pasted one's (types.ts, Image).
 const FORMATS: readonly string[] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -29,24 +29,22 @@ const changed = (o: Offered) =>
 const stopped = (o: Offered) => `The MCP server ${visible(o.server)} has stopped; the user can reconnect it from /mcp.`;
 const restarted = (o: Offered) => `Stopped: the MCP server ${visible(o.server)} restarted while the call ran.`;
 
-export function mcpTools(servers: Servers, bus: Bus, approve: Approve = approved): { offer(): Offered[]; tool(o: Offered): Tool } {
+export function mcpTools(servers: Servers, bus: Bus, approve: Approve): { offer(): Offered[]; tool(o: Offered): Tool } {
   const said = new WeakSet<Promise<boolean>>(); // each new connection's grey line is said once, however many calls shared it
 
   // A dropped remote server's one new connection, through Servers, which says the stop when it fails (choices 13 and 33);
-  // then the call is bound to the new connection, if the tool the model was shown is still offered with the same
-  // definition. A stop ends the call's wait, and the connection goes on for the next call.
+  // then the call is bound to the new connection, if the tool the model was shown is still offered, in the same view, with
+  // the same definition (Servers.rebind). A stop ends the call's wait, and the connection goes on for the next call.
   async function again(o: Offered, signal?: AbortSignal): Promise<Offered> {
     const trying = servers.reconnect(o.server);
-    const connected = await until(trying, signal);
-    // False also when another call's new connection was made first, which that call says, so the server's state says which.
-    if (!connected && servers.server(o.server)?.state.is !== "ready") throw new Error(stopped(o));
-    if (connected && !said.has(trying)) {
+    // False also when another call's new connection was made first, which that call says; rebind then binds to it.
+    if ((await until(trying, signal)) && !said.has(trying)) {
       said.add(trying);
       bus.emit("mcp-note", `MCP server ${visible(o.server)} was connected again.`);
     }
-    const now = servers.offer().find((n) => n.spec.name === o.spec.name && n.server === o.server && n.tool === o.tool);
-    if (now?.definition !== o.definition) throw new Error(changed(o));
-    return now;
+    const bound = servers.rebind(o);
+    if ("reason" in bound) throw new Error(bound.reason === "stopped" ? stopped(o) : changed(o));
+    return bound.offered;
   }
 
   // The call itself, ending as a restart says when its server restarted while it ran; a stop's error is left for the
@@ -67,9 +65,11 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve = approved
       async run(given, ctx) {
         const input = given as Record<string, unknown>; // an object, as both providers' tool input is (openai.ts, parseArgs)
         let o = offered;
-        // First a dropped server's new connection (choice 33), then the question.
+        // First a dropped server's new connection (choice 33), then the question; a server that stopped for good has nothing
+        // to run the call, so nobody is asked (Task 6's spec review).
         const state = servers.server(o.server)?.state;
         if (state?.is === "stopped" && state.retry) o = await again(o, ctx.signal);
+        else if (servers.current(o) === "stopped") throw new Error(stopped(o));
         await approve(o, input, ctx);
         // Nothing reaches the server unless its tool is still the one shown, on the connection that showed it (finding 4).
         const now = servers.current(o);

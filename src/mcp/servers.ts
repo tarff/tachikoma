@@ -21,8 +21,9 @@ const PROPERTY = /^[A-Za-z0-9_.-]{1,64}$/;
 
 // A tool as a request offers it: the spec the model is shown, the server and the tool's own name it calls, the connection
 // that offered it and its definition (design, finding 4; choice 9). `connection` is this object's own number, unique over
-// every server: a live edit's restart is a new Server, whose numbers start again.
-export interface Offered { spec: ToolSpec; server: string; tool: string; connection: number; definition: string }
+// every server: a live edit's restart is a new Server, whose numbers start again. `trustedOnly`: offered in a subagent's
+// view, the tools trusted as read-only, which a rebind keeps (Task 6's spec review).
+export interface Offered { spec: ToolSpec; server: string; tool: string; connection: number; definition: string; trustedOnly?: true }
 
 // A tool's schema, flattened, with the sentence a flattened anyOf or oneOf puts before its description; or why it is left
 // out (choice 36).
@@ -119,7 +120,7 @@ export class Servers {
   offer(opts: { trustedOnly?: boolean } = {}): Offered[] {
     const offered = this.#table();
     this.#offered = new Map(offered.map((o) => [o.spec.name, { server: o.server, tool: o.tool }]));
-    return opts.trustedOnly ? offered.filter((o) => this.trust(o.server, o.tool)) : offered;
+    return opts.trustedOnly ? this.#trusted(offered) : offered;
   }
 
   // An offered tool against its server now (design, finding 4): "restarted" when its connection is not the one that offered
@@ -130,8 +131,31 @@ export class Servers {
     if (!server) return "changed";
     if (this.#connectionOf(server) !== o.connection) return "restarted";
     if (server.state.is !== "ready") return "stopped";
-    const now = this.#table().find((n) => n.spec.name === o.spec.name);
-    return now?.server === o.server && now.tool === o.tool && now.definition === o.definition ? "same" : "changed";
+    return this.#now(o) ? "same" : "changed";
+  }
+
+  // An offered tool on its server's connection now, for a call whose server was connected again (choices 13 and 33): the
+  // same tool, in the view it was offered under, with the same definition, so the call runs on what the model was shown;
+  // or "stopped" when its server is not running, "changed" otherwise (Task 6's spec review). It fixes no names, as the
+  // request's offer did that.
+  rebind(o: Offered): { offered: Offered } | { reason: "changed" | "stopped" } {
+    const server = this.#slots.find((s) => s.config.name === o.server)?.server;
+    if (!server) return { reason: "changed" };
+    if (server.state.is !== "ready") return { reason: "stopped" };
+    const now = this.#now(o);
+    return now ? { offered: now } : { reason: "changed" };
+  }
+
+  // The tool `o` names as the table gives it now, when it is the same tool with the same definition, in `o`'s view.
+  #now(o: Offered): Offered | undefined {
+    const table = this.#table();
+    const now = (o.trustedOnly ? this.#trusted(table) : table).find((n) => n.spec.name === o.spec.name);
+    return now?.server === o.server && now.tool === o.tool && now.definition === o.definition ? now : undefined;
+  }
+
+  // A subagent's view: the tools trusted as read-only, each marked so (Task 7).
+  #trusted(offered: Offered[]): Offered[] {
+    return offered.filter((o) => this.trust(o.server, o.tool)).map((o) => ({ ...o, trustedOnly: true }));
   }
 
   // Read from the entry in force, which a live edit's set() replaces (choice 16). A project's entry never carries trust.
@@ -282,8 +306,9 @@ export class Servers {
   // The table of names, rebuilt from every ready server's list (choice 7), and the last list of a remote one whose
   // connection dropped and has its one new connection to come, which its next call makes at the start of its run (choices
   // 13 and 33), so the model still sees its tools; current() calls them stopped until then. One stopped for good, or
-  // failed, offers none. `mcp__<safe server>__<safe tool>`, each name with one owner, given first to the owner the last offer gave it while that tool is still offered, then in the order
-  // the configs are given and each list's order; a later tool with a name in force is left out (design, finding 2).
+  // failed, offers none. `mcp__<safe server>__<safe tool>`, each name with one owner, given first to the owner the last
+  // offer gave it while that tool is still offered, then in the order the configs are given and each list's order; a
+  // later tool with a name in force is left out (design, finding 2).
   // Schemas are flattened or left out before a name is given (choice 36). `fresh`: the left-out lines of each ready server
   // that it had not said; one not ready keeps what it said (Slot.said).
   #build(): { offered: Offered[]; fresh: string[] } {

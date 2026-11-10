@@ -173,6 +173,19 @@ describe("MCP tools in the session", () => {
     expect((openai.mock.calls[0]![0] as unknown as { tools: { function: { name: string } }[] }).tools.map((x) => x.function.name)).toEqual(names);
   });
 
+  // The security check of Task 6: the question has no default that passes every call.
+  it("takes MCP tools only with a question to ask, and without one, against the types, runs nothing", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s")]);
+    // @ts-expect-error: the question is required, so nothing wires MCP tools into a session without a gate.
+    const mcp = mcpTools(servers, t.bus);
+    const lead = new FakeProvider("a", [callTool("c1", "mcp__s__echo", { text: "hi" }), reply("ok")]);
+    const session = new Session({ lead, tools: [], system: "t", ctx: t.ctx, bus: t.bus, mcp });
+    await session.send("go");
+    expect(t.results(session)[0]!.isError).toBe(true);
+    expect(t.calls(t.logs.get("s")!, "echo")).toEqual([]);
+  });
+
   it("cuts a text answer at 30,000 characters, as a command's output is cut", async () => {
     const t = await setup();
     const servers = await t.ready([await t.local("s")]);
@@ -303,6 +316,25 @@ describe("MCP tools in the session: what changed while a call waited", () => {
     await session.send("go");
     expect(t.results(session)).toEqual([{ output: changedLine("s", "echo"), isError: true }]);
     expect(t.calls(t.logs.get("s")!, "echo")).toEqual([]);
+  });
+
+  // Task 6's spec review: a server stopped for good has nothing to run the call, so nobody is asked about it.
+  it("gives a call whose local server exited after the request the stopped line, without asking", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s")]);
+    const exited = async () => {
+      await servers.server("s")!.callTool("exit", { code: 4 }, {}).catch(() => {});
+      await vi.waitFor(() => expect(servers.list()[0]!.state).toMatchObject({ is: "stopped", retry: false }), WAIT);
+      return callTool("c1", "mcp__s__echo", { text: "hi" });
+    };
+    const { session } = t.session(servers, [exited, reply("ok")]);
+    await session.send("go");
+    expect(t.results(session)).toEqual([{ output: STOPPED("s"), isError: true }]);
+    expect(t.q.asked).toEqual([]);
+    expect(t.errors.map((e) => [e.kind, e.message])).toEqual([
+      ["mcp", "MCP server s stopped: it exited with code 4; reconnect it from /mcp."],
+      ["tool", STOPPED("s")],
+    ]);
   });
 
   it("ends a call running when its server restarts with the restart line", async () => {

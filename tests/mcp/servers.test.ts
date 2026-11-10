@@ -425,6 +425,54 @@ describe("Servers: starting, waiting and stopping", () => {
     expect(servers.current(now[0]!)).toBe("same");
   });
 
+  // Task 6's spec review: a call bound to the new connection keeps the view it was offered under (a subagent's trusted
+  // tools only), and only a tool with the same definition is bound.
+  it("rebinds an offered tool to its server's new connection, in the view it was offered under, or says why it cannot", async () => {
+    const { dir, make } = await setup();
+    const fake = await httpFake(dir, { tools: [plain, tool("other")] });
+    const remote: ServerConfig = {
+      ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: ["plain"], alwaysLoad: false, written: "" },
+      entry: { kind: "http", url: fake.url, headers: {} },
+    };
+    const servers = make([remote]);
+    servers.startAll();
+    await servers.ready();
+    const trusted = servers.offer({ trustedOnly: true });
+    expect(trusted.map((o) => [o.tool, o.trustedOnly])).toEqual([["plain", true]]);
+    const [whole, other] = servers.offer();
+    expect(whole!.trustedOnly).toBeUndefined();
+    await servers.server("r")!.callTool("cut", {}, {}).catch(() => {});
+    expect(servers.rebind(whole!)).toEqual({ reason: "stopped" });
+    expect(await servers.reconnect("r")).toBe(true);
+    const bound = servers.rebind(trusted[0]!);
+    if (!("offered" in bound)) throw new Error(`not bound: ${bound.reason}`);
+    expect(bound.offered).toMatchObject({ spec: trusted[0]!.spec, definition: trusted[0]!.definition, trustedOnly: true });
+    expect([servers.current(trusted[0]!), servers.current(bound.offered)]).toEqual(["restarted", "same"]);
+    expect(servers.rebind(other!)).toMatchObject({ offered: { tool: "other" } });
+    // Trust taken away by a live edit: the trusted view no longer holds the tool, the whole one still does.
+    servers.set([{ ...remote, trustedTools: [] }]);
+    expect(servers.rebind(trusted[0]!)).toEqual({ reason: "changed" });
+    expect(servers.rebind(whole!)).toMatchObject({ offered: { tool: "plain" } });
+  });
+
+  it("rebinds no tool whose definition changed on the new connection", async () => {
+    const { dir, make } = await setup();
+    const first = await httpFake(dir, { tools: [plain] });
+    const remote: ServerConfig = {
+      ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
+      entry: { kind: "http", url: first.url, headers: {} },
+    };
+    const servers = make([remote]);
+    servers.startAll();
+    await servers.ready();
+    const [was] = servers.offer();
+    await servers.server("r")!.callTool("cut", {}, {}).catch(() => {});
+    await first.stop();
+    await httpFake(dir, { port: first.port, tools: [{ ...plain, description: "a new plain" }] });
+    expect(await servers.reconnect("r")).toBe(true);
+    expect(servers.rebind(was!)).toEqual({ reason: "changed" });
+  });
+
   // Task 5's code review: only a server stopped with retry has a new connection to try, so a failed one is not said again.
   it("tries no reconnect, and says nothing more, for a server that failed, stopped for good, or is ready", async () => {
     const { errors, config, make } = await setup();
