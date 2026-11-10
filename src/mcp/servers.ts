@@ -359,6 +359,7 @@ export class Servers {
         return connected;
       })
       .finally(() => (slot.reconnecting = undefined));
+    this.#wake(); // it is starting now, as restart's is
     return slot.reconnecting;
   }
 
