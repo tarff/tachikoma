@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { SETTINGS } from "../core/datadir.js";
@@ -19,6 +20,10 @@ export interface ServerConfig {
   entry: ServerEntry; where: "user" | "project";
   trusted: "read-only" | null; trustedTools: string[]; // always none for a project's
   alwaysLoad: boolean; // its tools defined in every request, not found through tool_search (release 8c plan, choice 42)
+  // The SHA-256 of the entry as written, before ${VAR} is filled, which a project server's answer holds (choice 24): a
+  // git pull that changes its command cannot start it unasked, while a variable's new value asks nothing, and no value
+  // is kept.
+  written: string;
 }
 
 const PROJECT = ".mcp.json";
@@ -178,7 +183,8 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
     address(raw.url, url);
     entry = { kind, url, headers: filled, ...(timeout !== undefined && { timeout }), ...(oauth && { oauth }) };
   }
-  return { name, safe, entry, where, trusted, trustedTools, alwaysLoad };
+  const written = createHash("sha256").update(JSON.stringify(raw)).digest("hex");
+  return { name, safe, entry, where, trusted, trustedTools, alwaysLoad, written };
 }
 
 // A field of the wrong type, its value named by its type, as it may hold a key (typeOf); badValue shows the value, for the

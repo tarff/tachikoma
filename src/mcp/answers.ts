@@ -3,23 +3,27 @@ import path from "node:path";
 import { privateDir, readPrivate } from "../auth/private.js";
 import { dataDir, projectFile } from "../core/datadir.js";
 
-// The user's answers to whether a project's MCP server may start (release 8c plan, choice 24): yes, no, or none.
+// The user's answers to whether a project's MCP server may start (release 8c plan, choice 24): yes, no, or none. Each
+// answer holds the entry it was given for (ServerConfig.written), and counts only for that entry, so a git pull that
+// changes a server's command cannot start it unasked: the changed entry is asked about again.
 export interface Answers {
-  get(name: string): boolean | undefined;
-  set(name: string, yes: boolean): void;
+  get(name: string, entry: string): boolean | undefined;
+  set(name: string, entry: string, yes: boolean): void;
   reset(name: string): void;
 }
 
-type Line = { name: string; yes: boolean } | { name: string; reset: true };
+type Answer = { entry: string; yes: boolean };
+type Line = ({ name: string } & Answer) | { name: string; reset: true };
 
 // A killed process or a full disk can leave a half-written line; it is skipped, so the rest still count. Only a reset of
-// true is a reset, so a line with a yes and a reset of false is that yes.
+// true is a reset, so a line with a yes and a reset of false is that yes. An answer without its entry is damaged, as it
+// cannot say which entry it was given for.
 function parse(line: string): Line | undefined {
   try {
     const l = JSON.parse(line);
     if (typeof l?.name !== "string") return undefined;
     if (l.reset === true) return { name: l.name, reset: true };
-    if (typeof l.yes === "boolean") return { name: l.name, yes: l.yes };
+    if (typeof l.entry === "string" && typeof l.yes === "boolean") return { name: l.name, entry: l.entry, yes: l.yes };
   } catch {}
   return undefined;
 }
@@ -30,12 +34,12 @@ function parse(line: string): Line | undefined {
 // until the user answers. `warn` gets readPrivate's note that it made the file private, as the prompt history's does.
 export function answersFor(root: string, dir: string = dataDir(), warn: (message: string) => void = () => {}): Answers {
   const file = projectFile("mcp-answers", root, dir);
-  const answers = new Map<string, boolean>();
+  const answers = new Map<string, Answer>();
   const text = lstatSync(file, { throwIfNoEntry: false }) ? (readPrivate(file, warn) ?? "") : "";
   for (const l of text.split("\n").map(parse)) {
     if (!l) continue;
     if ("reset" in l) answers.delete(l.name);
-    else answers.set(l.name, l.yes);
+    else answers.set(l.name, { entry: l.entry, yes: l.yes });
   }
   // A half-written last line is ended first, as the transcript's mend does, so the next answer is not joined to it and
   // lost: a lost reset would leave the old yes in force.
@@ -46,10 +50,13 @@ export function answersFor(root: string, dir: string = dataDir(), warn: (message
     ended = true;
   };
   return {
-    get: (name) => answers.get(name),
-    set(name, yes) {
-      append({ name, yes });
-      answers.set(name, yes);
+    get(name, entry) {
+      const answer = answers.get(name);
+      return answer?.entry === entry ? answer.yes : undefined;
+    },
+    set(name, entry, yes) {
+      append({ name, entry, yes });
+      answers.set(name, { entry, yes });
     },
     reset(name) {
       append({ name, reset: true });

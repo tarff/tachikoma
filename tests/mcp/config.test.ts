@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -18,6 +19,8 @@ const left = (words: string) => [`settings.json: "mcpServers": "s"${words}`];
 const local = (more: Record<string, unknown> = {}) => ({ command: "node", args: ["server.js"], ...more });
 const remote = (more: Record<string, unknown> = {}) => ({ type: "http", url: "https://mcp.example.com/mcp", ...more });
 const TIMEOUT = "a whole number of milliseconds no more than 2,147,483,647, such as 600000";
+// ServerConfig.written: the entry as written, before ${VAR} is filled (release 8c plan, choice 24).
+const writtenOf = (raw: unknown) => createHash("sha256").update(JSON.stringify(raw)).digest("hex");
 
 describe("readServers", () => {
   // Release 8c design, "The settings entry": Claude Code's shape, each server with its defaults.
@@ -28,22 +31,23 @@ describe("readServers", () => {
     expect(kept).toEqual<ServerConfig[]>([
       {
         name: "tradingview", safe: "tradingview", where: "user", trusted: null, trustedTools: [], alwaysLoad: false,
-        entry: { kind: "stdio", command: "node", args: ["server.js"], env: {} },
+        entry: { kind: "stdio", command: "node", args: ["server.js"], env: {} }, written: writtenOf(local()),
       },
       {
         name: "sanity", safe: "sanity", where: "user", trusted: null, trustedTools: [], alwaysLoad: false,
-        entry: { kind: "http", url: "https://mcp.example.com/mcp", headers: {} },
+        entry: { kind: "http", url: "https://mcp.example.com/mcp", headers: {} }, written: writtenOf(remote()),
       },
     ]);
   });
 
   it("reads every field Claude Code's entry and Tachikoma's trust take", () => {
     const oauth = { clientId: "my-app", callbackPort: 8080, scopes: "channels:read chat:write", authServerMetadataUrl: "https://auth.example.com/meta" };
-    const { kept, warnings } = read({ ...remote({ type: "sse", headers: { "X-Team": "a" }, timeout: 120000, oauth }), alwaysLoad: true, trusted: "read-only" });
+    const raw = { ...remote({ type: "sse", headers: { "X-Team": "a" }, timeout: 120000, oauth }), alwaysLoad: true, trusted: "read-only" };
+    const { kept, warnings } = read(raw);
     expect(warnings).toEqual([]);
     expect(kept).toEqual<ServerConfig[]>([{
       name: "s", safe: "s", where: "user", trusted: "read-only", trustedTools: [], alwaysLoad: true,
-      entry: { kind: "sse", url: "https://mcp.example.com/mcp", headers: { "X-Team": "a" }, timeout: 120000, oauth },
+      entry: { kind: "sse", url: "https://mcp.example.com/mcp", headers: { "X-Team": "a" }, timeout: 120000, oauth }, written: writtenOf(raw),
     }]);
     const tools = read(local({ type: "stdio", env: { A: "1" }, timeout: 5000, trustedTools: ["quote_get", "chart_get_state"], alwaysLoad: false }));
     expect(tools.warnings).toEqual([]);
@@ -233,6 +237,18 @@ describe("readServers", () => {
     expect(read(local({ command: "${NODE:-node}" }), env).kept[0]!.entry).toMatchObject({ command: "node" });
   });
 
+  // Release 8c plan, choice 24: a project server's answer holds `written`, so a pulled change to its command is asked
+  // about again, while a variable's new value is not.
+  it("gives the same written for a new ${VAR} value, and another for a changed command, in either file", () => {
+    for (const file of ["settings.json", ".mcp.json"] as const) {
+      const of = (raw: unknown, env: NodeJS.ProcessEnv) => readServers(file, { s: raw }, env, [])[0]!.written;
+      const raw = local({ args: ["${DIR}/server.js"] });
+      expect(of(raw, { DIR: "a" })).toBe(writtenOf(raw));
+      expect(of(raw, { DIR: "b" })).toBe(of(raw, { DIR: "a" }));
+      expect(of(local({ command: "other", args: ["${DIR}/server.js"] }), { DIR: "a" })).not.toBe(of(raw, { DIR: "a" }));
+    }
+  });
+
   it("leaves out a server needing a variable that is not set, naming it, in each field", () => {
     const line = left(" needs ${MISSING}, which is not set; it was left out");
     expect(said(local({ command: "${MISSING}" }))).toEqual(line);
@@ -297,10 +313,11 @@ describe("readServers", () => {
   // Release 8c design, "A project's servers": trust marks in .mcp.json never count.
   it("drops trust from .mcp.json with its lines, and keeps the server", () => {
     const warnings: string[] = [];
-    const kept = readServers(".mcp.json", { s: local({ trusted: "read-only", trustedTools: ["x"], other: 1 }) }, ENV, warnings);
+    const raw = local({ trusted: "read-only", trustedTools: ["x"], other: 1 });
+    const kept = readServers(".mcp.json", { s: raw }, ENV, warnings);
     expect(kept).toEqual<ServerConfig[]>([{
       name: "s", safe: "s", where: "project", trusted: null, trustedTools: [], alwaysLoad: false,
-      entry: { kind: "stdio", command: "node", args: ["server.js"], env: {} },
+      entry: { kind: "stdio", command: "node", args: ["server.js"], env: {} }, written: writtenOf(raw),
     }]);
     expect(warnings).toEqual([
       '.mcp.json: "s" has "trusted"; trust counts only in ~/.tachikoma/settings.json, so it was ignored',
@@ -329,7 +346,7 @@ describe("mergeServers", () => {
     expect(mergeServers(user, project)).toEqual([user[0], project[1]]);
     expect(mergeServers(user, project)[0]).toEqual({
       name: "sanity", safe: "sanity", where: "user", trusted: "read-only", trustedTools: [], alwaysLoad: false,
-      entry: { kind: "http", url: "https://mcp.example.com/mcp", headers: {} },
+      entry: { kind: "http", url: "https://mcp.example.com/mcp", headers: {} }, written: writtenOf(remote({ trusted: "read-only" })),
     });
     expect(mergeServers([], project)).toEqual(project);
   });
@@ -352,7 +369,7 @@ describe("readProjectFile", () => {
     expect(readIn(root)).toEqual({
       kept: [{
         name: "tools", safe: "tools", where: "project", trusted: null, trustedTools: [], alwaysLoad: false,
-        entry: { kind: "stdio", command: "node", args: ["example.com.js"], env: {} },
+        entry: { kind: "stdio", command: "node", args: ["example.com.js"], env: {} }, written: writtenOf(local({ args: ["${HOST}.js"] })),
       }],
       warnings: [],
     });
