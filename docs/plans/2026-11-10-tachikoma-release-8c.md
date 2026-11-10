@@ -554,6 +554,14 @@ search, always on", "Own lookup tool, every provider")
     "Match the reset line"): the answer still holds for this launch, and one red line says
     `Your answer for <name> could not be saved (<reason>); Tachikoma asks again at the next
     launch.`; the launch goes on. Before this a failed write crashed every launch in that project.
+51. **`/mcp`'s hint rows** (Task 10's build; the user's choice, 2026-11-11, "Add hints"): the
+    server list ends `<keys> move · <key> opens · <key> closes`, as `/resume`'s in-window list
+    does; a server's actions end `<keys> move · <key> runs · <key> back`; the keys named from the
+    bindings, as those hints name them.
+52. **A reset that cannot be written** (Task 10's spec review; the user's choice, 2026-11-11,
+    "Says it still holds"): the answer is forgotten only once the reset line is written; when the
+    write fails the answer stays, in memory and in the file, and one red line says `Your answer
+    for <name> could not be reset (<reason>); the next launch still uses it.`
 
 ## Lines this plan adds
 
@@ -604,6 +612,8 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | `/mcp` actions | `Reconnect`, `Sign in`, `Sign out`, `Show tools`, `Reset my answer`, each only where it applies |
 | Show tools | `<name>'s tools:` then a row each `  <full name>`, then `Left out:` and the name lines' words |
 | Reset my answer (grey) | `Your answer for <name> was reset; Tachikoma asks again at the next launch.` |
+| A reset that cannot be written (red; choice 52) | `Your answer for <name> could not be reset (<reason>); the next launch still uses it.` |
+| `/mcp`'s hints (choice 51) | the list: `<keys> move · <key> opens · <key> closes`; a server's actions: `<keys> move · <key> runs · <key> back` |
 | The `/` menu's note, HELP | `List the MCP servers`; HELP: `/mcp lists the MCP servers`, after the `/hooks` part |
 | **Sign-in**: the question | `Open your browser to sign in to <name> at <host>?` |
 | Waiting (grey) | `Waiting for the sign-in in your browser. If it did not open, go to: <url>` |
@@ -1127,7 +1137,7 @@ Commit: `feat: MCP servers at the launch: project servers asked, the first promp
 ## Task 10: `/mcp` and live edits
 
 **Files:** create `src/tui/McpList.tsx`; modify `src/tui/app/queue.ts` (`/mcp`, Show tools),
-`src/tui/app/constants.ts` (the name), `src/tui/app/menus.ts` (the menu), `src/cli.tsx` (HELP),
+`src/tui/app/constants.ts` (the name), `src/tui/menus.ts` (the menu), `src/cli.tsx` (HELP),
 `src/tui/app/liveEdits.ts` (`mcpServers`), `src/tui/App.tsx` (the picker); tests in
 `tests/tui/app.test.tsx` ("App's MCP").
 
@@ -1142,6 +1152,14 @@ Commit: `feat: MCP servers at the launch: project servers asked, the first promp
 **Tests:** each row kind; Reconnect of a stopped server; Show tools with a left-out name; Reset
 then the next launch asks again; a live edit restarting one server and adding one, with the line;
 a trust removed by a live edit (asked next call).
+
+**From Task 10's build and reviews:** choices 51 and 52. One tool reads `1 tool`, `1 trusted
+tool`; a row's count is the tools offered to the model, the left-out ones under Show tools.
+Reconnect is offered for a ready, failed or stopped server; Show tools when its tools are offered;
+Reset my answer for a project's server with an answer. Reconnect keeps the list open; Show tools
+and Reset close it. Left-out rows drop their `MCP server <name>: `, as `/hooks`'s do. The list
+redraws when a server's state changes, so `starting` turns into its count without a key. A new
+connection closes one still open, so two Reconnects close together leave one server running.
 
 Commit: `feat: /mcp lists the servers and their actions, and a live edit restarts only what changed`.
 
@@ -1195,7 +1213,7 @@ Commit: `feat: forms from MCP servers, asked field by field, with their hooks`.
 
 ## Task 13: Resources and prompts
 
-**Files:** modify `src/mcp/server.ts` (lists and reads), `src/tui/app/menus.ts` (the `@` and `/`
+**Files:** modify `src/mcp/server.ts` (lists and reads), `src/tui/menus.ts` (the `@` and `/`
 menus), `src/tui/app/constants.ts` (`isCommand` for `/<server>:<prompt>`), `src/tui/app/queue.ts`
 (sending), `src/core/types.ts` and `src/core/transcript.ts` (`from: "server"` text, choice 34);
 tests in `tests/mcp/server.test.ts`, `tests/core/session.test.ts`, `tests/core/transcript.test.ts`,
@@ -1271,7 +1289,11 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   one a string, the first in the file is kept and the string is lost, and Ctrl+O does not say so;
   and Task 9's reviews: servers run on the host in the real project folder, in copy mode too, so
   what a server changes there is outside the copy and its review (until 8c-2); a question's
-  `(sets ...)` names the variables but not their values);
+  `(sets ...)` names the variables but not their values; and Task 10's reviews: the live-edit
+  line says `restarted` for a changed entry that then does not start (the sandbox's network off,
+  or a removed user entry uncovering a project's one that waits for a yes); with the sandbox's
+  network off, `/mcp` may read a project's answers for the first time, so their notes or the
+  unreadable line can come then or at a later live edit);
   the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
