@@ -315,7 +315,10 @@ Each is marked in its task. The user approves them with the plan.
    does. A command with a folder in it is used as written. This lookup is MCP's own (`mcpProgram`
    in `src/exec/env.ts`); hooks keep `onPath`.
 5. **A server's error output** is kept in memory, its newest 30,000 characters, and its last line
-   that is not blank is the reason a failure line gives. It is not written to a file.
+   that is not blank is the reason a failure line gives. It is not written to a file. Node's own
+   closing lines are passed over: a last `Node.js v<version>` line and stack lines starting `at `,
+   so a crashed Node server's reason is its error, such as `Error: GITHUB_TOKEN is not set` (the
+   user's choice, 2026-11-10, Task 4's review: Node ends an uncaught error with its version).
 6. **A local server that exits** gets its exit code, or its signal, in its line.
 
 **Names and tools**
@@ -628,6 +631,12 @@ export function readProjectFile(root: string, env: NodeJS.ProcessEnv, warnings: 
   variable. A warning never quotes a filled-in value.
 - **Addresses:** `http://` only for `localhost`, `127.0.0.1` or `[::1]`, else `https://`; checked
   after `${VAR}` is filled.
+- **Values Node would refuse,** checked after `${VAR}` is filled (Task 4's review: Node's own
+  error quotes the value, which can be a key): a `headers` value holding a line break (CR or LF)
+  or NUL is `"headers.<key>" must be text without line breaks (got text)`, and an `env` value or
+  an argument holding NUL is `"env.<key>" must be text without NUL characters (got text)` (an
+  argument named `"args"`), each leaving the server out (the user approved these words,
+  2026-11-10).
 - **Trust** (`trusted`, `trustedTools`) counts only in the user's file; in `.mcp.json` it gives its
   line and is dropped.
 - **A bad entry is left out with a warning;** `mcpServers` itself of the wrong type is a problem,
@@ -1124,7 +1133,12 @@ built" section).
   the last one while Node's spawn keeps `PATH`; reading the answers on Windows starts PowerShell
   twice at launch, as the prompt history does; a yes covers the entry, not the files it runs (a
 pulled `server.js`, or an `npx` package with no version), as in Claude Code; a broken link with
-the program's name in an earlier PATH folder is taken, and fails at start with its line); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
+the program's name in an earlier PATH folder is taken, and fails at start with its line; and Task
+  4's review: a remote server that answers a call as an event stream and is cut mid-answer is not
+  seen as a drop, so that call waits out its limit, 60 s by default, and the next call finds the
+  drop; `stop()` leaves a `Server`'s state as it was, so Task 5 replaces a stopped server rather
+  than reading it; off Windows, a server's child that keeps its output open makes the library's
+  close wait about 4 s, within choice 3's limit for children); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
 
