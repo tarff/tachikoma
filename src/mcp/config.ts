@@ -173,13 +173,18 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
     if (typeof raw.command !== "string") throw bad("command", TEXT, raw.command);
     if (raw.args !== undefined && !texts(raw.args)) throw bad("args", LIST, raw.args);
     const vars = textMap("env", raw.env, '{"KEY": "value"}');
-    entry = { kind, command: fill(raw.command), args: (raw.args ?? []).map(fill), env: mapValues(vars, fill), ...(timeout !== undefined && { timeout }) };
+    const args = (raw.args ?? []).map(fill);
+    const filledEnv = mapValues(vars, fill);
+    if (args.some((a) => a.includes(NUL))) throw bad("args", NO_NUL, "");
+    for (const [key, v] of Object.entries(filledEnv)) if (v.includes(NUL)) throw bad(`env.${key}`, NO_NUL, v);
+    entry = { kind, command: fill(raw.command), args, env: filledEnv, ...(timeout !== undefined && { timeout }) };
   } else {
     if (typeof raw.url !== "string") throw bad("url", TEXT, raw.url);
     const headers = textMap("headers", raw.headers, '{"Authorization": "Bearer ${TOKEN}"}');
     const oauth = raw.oauth === undefined ? undefined : oauthOf(raw.oauth, say);
     const url = fill(raw.url);
     const filled = mapValues(headers, fill);
+    for (const [key, v] of Object.entries(filled)) if (BREAKS.test(v) || v.includes(NUL)) throw bad(`headers.${key}`, NO_BREAKS, v);
     address(raw.url, url);
     entry = { kind, url, headers: filled, ...(timeout !== undefined && { timeout }), ...(oauth && { oauth }) };
   }
@@ -192,6 +197,13 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
 // text of the right type is wrong with, for an address.
 const bad = (field: string, what: string, value: unknown, got = typeOf(value)) => new Left(`: ${quoted(field)} must be ${what} (got ${got})`);
 const NOT_ADDRESS = "text that is not an address";
+// Values Node refuses when the server starts, in an error that quotes them, and one may be a key: a header value with a
+// line break or NUL (Headers), an env value or an argument with NUL (spawn). Each is checked once ${VAR} is filled, and
+// named by its field only (release 8c plan, Task 2, "Values Node would refuse"; Task 4's review).
+const NUL = String.fromCharCode(0);
+const BREAKS = /[\r\n]/;
+const NO_NUL = "text without NUL characters";
+const NO_BREAKS = "text without line breaks";
 const badValue = (field: string, what: string, value: unknown) =>
   new Left(`: ${quoted(field)} must be ${what} (got ${visible(JSON.stringify(value))})`);
 

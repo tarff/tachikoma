@@ -270,6 +270,34 @@ describe("readServers", () => {
     for (const w of words) expect(w).not.toContain(ENV.TOKEN);
   });
 
+  // Release 8c plan, Task 2, "Values Node would refuse": Node's own error would quote the value, which can be a key, so the
+  // server is left out with a line naming only the field, checked after ${VAR} is filled (Task 4's review).
+  it("leaves out a header with a line break or NUL, and an env value or argument with NUL, never showing the value", () => {
+    const NUL = String.fromCharCode(0);
+    const env = { ...ENV, BROKEN: "sk-secret-456\nx", NULLED: `sk-secret-789${NUL}x` };
+    const header = left(': "headers.Authorization" must be text without line breaks (got text); it was left out');
+    const cases: [unknown, string[]][] = [
+      [remote({ headers: { Authorization: "Bearer sk-secret-1\rx" } }), header],
+      [remote({ headers: { Authorization: "Bearer sk-secret-2\nx" } }), header],
+      [remote({ headers: { Authorization: `Bearer sk-secret-3${NUL}` } }), header],
+      [remote({ headers: { Authorization: "Bearer ${BROKEN}" } }), header],
+      [local({ env: { K: `sk-secret-4${NUL}` } }), left(': "env.K" must be text without NUL characters (got text); it was left out')],
+      [local({ env: { K: "${NULLED}" } }), left(': "env.K" must be text without NUL characters (got text); it was left out')],
+      [local({ args: ["--key=${NULLED}"] }), left(': "args" must be text without NUL characters (got text); it was left out')],
+    ];
+    for (const [server, line] of cases) {
+      const { kept, warnings } = read(server, env);
+      expect(kept).toEqual([]);
+      expect(warnings).toEqual(line);
+      expect(warnings.join("")).not.toContain("sk-secret");
+    }
+    // A line break is fine in an env value or an argument, which Node passes on.
+    expect(read(local({ env: { K: "${BROKEN}" }, args: ["${BROKEN}"] }), env).kept).toHaveLength(1);
+    const warnings: string[] = [];
+    readServers(".mcp.json", { s: local({ args: ["${NULLED}"] }) }, env, warnings);
+    expect(warnings).toEqual(['.mcp.json: "s": "args" must be text without NUL characters (got text); it was left out']);
+  });
+
   // Release 8c design, "The settings entry": http:// only for this machine, checked after ${VAR} is filled.
   it("takes http:// only for localhost, 127.0.0.1 or ::1", () => {
     for (const url of ["http://127.0.0.1:3000", "http://localhost:8080/mcp", "http://[::1]:9000", "HTTP://LOCALHOST/mcp", "https://example.com"]) {

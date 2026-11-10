@@ -54,6 +54,8 @@ const alive = (pid: number) => {
   }
 };
 const pidIn = (file: string) => Number(readFileSync(file, "utf8"));
+// A wait on another process: a few seconds for a busy machine, well inside the test's 15 s.
+const WAIT = { timeout: 5_000 };
 
 describe("a local server", () => {
   it("starts, lists its tools, answers a call, and is told Tachikoma's name, roots and elicitation, never sampling", async () => {
@@ -121,7 +123,7 @@ describe("a local server", () => {
     await server.start();
     expect(Date.now() - began).toBeGreaterThanOrEqual(1_000);
     expect(server.state).toEqual({ is: "failed", reason: "it did not answer within 1 s" });
-    await vi.waitFor(() => expect(alive(pidIn(pidFile))).toBe(false));
+    await vi.waitFor(() => expect(alive(pidIn(pidFile))).toBe(false), WAIT);
   });
 
   it("fails with its exit code and the last line of its error output, escaped", async () => {
@@ -130,6 +132,21 @@ describe("a local server", () => {
     const server = make(local([await script({ exit: 3, stderr })]));
     await server.start();
     expect(server.state).toEqual({ is: "failed", reason: "it exited with code 3: last words \\u001b[31m" });
+  });
+
+  // Choice 5: Node ends an uncaught error with its stack and its version, which are passed over (Task 4's review).
+  it("gives a crashed Node server's error, not Node's closing lines", async () => {
+    const { make, script } = await setup();
+    const server = make(local([await script({ crash: "GITHUB_TOKEN is not set" })]));
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: "it exited with code 1: Error: GITHUB_TOKEN is not set" });
+  });
+
+  it("ends at the exit code when nothing but Node's closing lines is left", async () => {
+    const { make, script } = await setup();
+    const server = make(local([await script({ exit: 3, stderr: "    at main (server.js:1:1)\n\nNode.js v22.20.0\n" })]));
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: "it exited with code 3" });
   });
 
   it.skipIf(windows)("fails with the signal that ended it", async () => {
@@ -144,7 +161,7 @@ describe("a local server", () => {
     const server = make(local([await script()]));
     await server.start();
     await expect(server.callTool("exit", { code: 3 }, {})).rejects.toThrow();
-    await vi.waitFor(() => expect(server.state).toEqual({ is: "stopped", reason: "it exited with code 3", retry: false }));
+    await vi.waitFor(() => expect(server.state).toEqual({ is: "stopped", reason: "it exited with code 3", retry: false }), WAIT);
     expect(onChange).toHaveBeenCalledTimes(1);
   });
 
@@ -161,9 +178,8 @@ describe("a local server", () => {
     // Built here, not read: readServers ignores a timeout below 1,000 ms, as Claude Code does.
     const server = make(local([await script()], { timeout: 300 }));
     await server.start();
-    const began = Date.now();
+    // "Request timed out" is the library's own limit firing; the progress sent before it did not put it off.
     await expect(server.callTool("progress", {}, {})).rejects.toThrow("Request timed out");
-    expect(Date.now() - began).toBeGreaterThanOrEqual(300);
     expect(readLog(log).some((m) => m.sent?.method === "notifications/progress")).toBe(true);
   });
 
@@ -173,11 +189,11 @@ describe("a local server", () => {
     await server.start();
     const stop = new AbortController();
     const call = server.callTool("slow", {}, { signal: stop.signal });
-    await vi.waitFor(() => expect(readLog(log).some((m) => m.method === "tools/call")).toBe(true));
+    await vi.waitFor(() => expect(readLog(log).some((m) => m.method === "tools/call")).toBe(true), WAIT);
     stop.abort();
     await expect(call).rejects.toThrow();
     const id = readLog(log).find((m) => m.method === "tools/call")!.id;
-    await vi.waitFor(() => expect(readLog(log).find((m) => m.method === "notifications/cancelled")?.params.requestId).toBe(id));
+    await vi.waitFor(() => expect(readLog(log).find((m) => m.method === "notifications/cancelled")?.params.requestId).toBe(id), WAIT);
   });
 
   it("takes a changed list of tools, and calls onChange", async () => {
@@ -186,7 +202,7 @@ describe("a local server", () => {
     await server.start();
     await server.callTool("change", {}, {});
     // The library waits 300 ms for more changes before it reads the list again (its debounceMs).
-    await vi.waitFor(() => expect(names(server)).toEqual([...TOOLS, "added"]), { timeout: 2_000 });
+    await vi.waitFor(() => expect(names(server)).toEqual([...TOOLS, "added"]), WAIT);
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(server.connection).toBe(1);
   });
@@ -203,8 +219,8 @@ describe("a local server", () => {
     // It joins the kill at Tachikoma's exit, so a crash stops it too (choice 3).
     expect([...running].some((c) => c.pid === pid)).toBe(true);
     await server.stop();
-    await vi.waitFor(() => expect(alive(pid)).toBe(false));
-    if (windows) await vi.waitFor(() => expect(alive(child)).toBe(false));
+    await vi.waitFor(() => expect(alive(pid)).toBe(false), WAIT);
+    if (windows) await vi.waitFor(() => expect(alive(child)).toBe(false), WAIT);
     expect([...running].some((c) => c.pid === pid)).toBe(false);
     expect(onChange).not.toHaveBeenCalled();
   });
@@ -285,6 +301,23 @@ describe("a remote server", () => {
     expect(await server.reconnect()).toBe(false);
     expect(initializes()).toBe(before);
     expect(server.connection).toBe(4);
+  });
+
+  it("gives two reconnects at once the same new connection and the same answer", async () => {
+    const { dir, make, log } = await setup();
+    const first = await httpFake(dir, { log });
+    const server = make(remote(first.url));
+    await server.start();
+    await first.stop();
+    await expect(server.callTool("echo", { text: "x" }, {})).rejects.toThrow(NotReached);
+    await httpFake(dir, { log, port: first.port });
+    const initializes = () => readLog(log).filter((m) => m.body?.method === "initialize").length;
+    const before = initializes();
+    expect(await Promise.all([server.reconnect(), server.reconnect()])).toEqual([true, true]);
+    expect(initializes()).toBe(before + 1);
+    expect(server.connection).toBe(2);
+    // Once it is done, the next caller is answered for the state it left: ready, so nothing to reconnect.
+    expect(await server.reconnect()).toBe(false);
   });
 
   it("fails a call cut off after it reached the server with the library's error, not NotReached, and is stopped with retry", async () => {

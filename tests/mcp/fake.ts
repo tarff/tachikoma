@@ -14,6 +14,7 @@ export interface FakeOptions {
   stderr?: string; // printed to its error output at the start
   exit?: number; // the code it exits with at the start, after `stderr`
   signal?: NodeJS.Signals; // the signal it ends itself with at the start
+  crash?: string; // the message of an Error it throws at the start, uncaught, as a crashed Node server ends
   silent?: boolean; // answers nothing
   stubborn?: boolean; // keeps running when its input closes, with a child of its own
   pidFile?: string; // where it writes its process id
@@ -83,6 +84,7 @@ function answer(m, reply) {
 
 function begin() {
   if (O.signal) return process.kill(process.pid, O.signal);
+  if (O.crash) throw new Error(O.crash);
   if (O.exit !== undefined) return process.stderr.write(O.stderr || "", () => process.exit(O.exit));
   if (O.stderr) process.stderr.write(O.stderr);
   if (O.mode === "http") serveHttp();
@@ -130,6 +132,8 @@ function serveHttp() {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       log({ http: req.method, headers: req.headers, body: body ? JSON.parse(body) : null });
+      // Each connection ends with its answer, so no call goes out on an open one after the fake has stopped.
+      res.setHeader("Connection", "close");
       if (req.method !== "POST") return res.writeHead(405).end();
       if (O.status) return res.writeHead(O.status).end("refused");
       const m = JSON.parse(body);

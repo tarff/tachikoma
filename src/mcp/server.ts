@@ -97,6 +97,7 @@ export class Server {
   #state: State = { is: "starting" };
   #connection = 0;
   #conn: Conn | undefined;
+  #reconnecting: Promise<boolean> | undefined;
 
   // `startMs` is the start's limit, 30 s unless a test gives a short one.
   constructor(config: ServerConfig, opts: { root: string; env: NodeJS.ProcessEnv; onChange(): void; startMs?: number }) {
@@ -122,12 +123,14 @@ export class Server {
   }
 
   // A remote server whose connection dropped gets one new connection per drop (choices 13 and 33; the user's choice,
-  // 2026-11-10, "Once per drop"): while it tries the state is starting, so no second try begins; once connected, a later
-  // drop gets its own; a failed one leaves it stopped without retry, until /mcp. Nothing restarts on its own; Task 6's
-  // run calls this.
-  async reconnect(): Promise<boolean> {
-    if (this.#state.is !== "stopped" || !this.#state.retry) return false;
-    return this.#connect((reason) => ({ is: "stopped", reason, retry: false }));
+  // 2026-11-10, "Once per drop"): a caller while it tries waits for the same one and gets its answer; once connected, a
+  // later drop gets its own; a failed one leaves it stopped without retry, until /mcp. Nothing restarts on its own;
+  // Task 6's run calls this.
+  reconnect(): Promise<boolean> {
+    if (this.#reconnecting) return this.#reconnecting;
+    if (this.#state.is !== "stopped" || !this.#state.retry) return Promise.resolve(false);
+    this.#reconnecting = this.#connect((reason) => ({ is: "stopped", reason, retry: false })).finally(() => (this.#reconnecting = undefined));
+    return this.#reconnecting;
   }
 
   // The entry's timeout, or else Node's longest wait for a local server and 60 s for a remote one, whose entry's timeout
@@ -293,11 +296,16 @@ export class Server {
   #address = () => (this.config.entry.kind === "stdio" ? "" : new URL(this.config.entry.url).origin);
 }
 
-// Choice 6: the exit code, with the last line of the error output that is not blank (choice 5), or the signal.
+// Choice 6: the exit code, with the last line of the error output that is not blank (choice 5), or the signal. Node ends
+// an uncaught error with its stack and then its version, which are passed over, so a crashed Node server's reason is its
+// error (choice 5; the user's choice, 2026-11-10, Task 4's review: "Pass over them").
 function exitReason(local: Stdio): string {
   const { exitCode, signalCode } = local.child!;
   if (exitCode === null) return `it was ended by signal ${signalCode}`;
-  const line = local.errors.split(/\r?\n/).findLast((l) => l.trim())?.trim();
+  const lines = local.errors.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (/^Node\.js v\d/.test(lines.at(-1) ?? "")) lines.pop();
+  while (lines.at(-1)?.startsWith("at ")) lines.pop();
+  const line = lines.at(-1);
   return line ? `it exited with code ${exitCode}: ${visible(line, { tabs: true })}` : `it exited with code ${exitCode}`;
 }
 
