@@ -627,8 +627,13 @@ const servers = new Servers(mcpConfigs, {
   // Read only when a line is said, from startAll on, once the session below exists.
   lead: () => session.lead.id,
   // The remote servers' sign-ins, kept in the data folder (release 8c plan, Task 11); readPrivate's note that it made the
-  // file private is grey, as the servers' other notes are. -p cannot sign in, and says so of a server that needs it.
-  auth: new AuthStore(data, (line) => bus.emit("mcp-note", line)),
+  // file private is grey, as the servers' other notes are, and a damaged file's line red, as their failures are (choice
+  // 57). -p cannot sign in, and says so of a server that needs it.
+  auth: new AuthStore(
+    data,
+    (line) => bus.emit("mcp-note", line),
+    (message) => bus.emit("error", { kind: "mcp", attempted: "MCP sign-ins", message, lead: session.lead.id }),
+  ),
   headless: !interactive,
 });
 mcpServers = servers;

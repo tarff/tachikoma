@@ -23,7 +23,7 @@ import { commandEnv, mcpProgram } from "../exec/env.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { killTree, running } from "../exec/local.js";
 import { MAX_TIMER_MS } from "../hooks/config.js";
-import { type AuthStore, McpAuth, type SignInIO } from "./auth.js";
+import { type AuthStore, McpAuth, NoSignIn, type SignInIO } from "./auth.js";
 import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
 
@@ -52,6 +52,9 @@ const CAPABILITIES = { roots: {}, elicitation: { form: {}, url: {} } };
 // The server is then stopped with retry, and Task 6's run connects again and sends the same call once more, as the
 // approved call never ran (release 8c plan, choice 13: "Reconnect, then retry"). Its message is the stopped reason.
 export class NotReached extends Error {}
+
+// What a call to a server that needs sign-in answers the model (release 8c plan, choice 59).
+export const needsSignIn = (name: string) => `The MCP server ${visible(name)} needs sign-in, which the user does from /mcp.`;
 
 const alive = (child: ChildProcess) => child.exitCode === null && child.signalCode === null;
 
@@ -106,14 +109,16 @@ export class Server {
   readonly #auth: McpAuth | undefined;
 
   // `startMs` is the start's limit, 30 s unless a test gives a short one. `auth` keeps sign-ins: with it a remote server
-  // has its own OAuth client (Task 11); without it, as in most tests, a 401 is an answer like any other.
+  // has its own OAuth client (Task 11), unless its entry has headers of its own, which is never signed in, so its 401 says
+  // to look at its key (choice 55); without it, as in most tests, a 401 is an answer like any other.
   constructor(config: ServerConfig, opts: { root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; startMs?: number }) {
     this.config = config;
     this.#root = opts.root;
     this.#env = opts.env;
     this.#onChange = opts.onChange;
     this.#startMs = opts.startMs ?? START_MS;
-    this.#auth = opts.auth && config.entry.kind !== "stdio" ? new McpAuth(opts.auth, config) : undefined;
+    const signs = opts.auth && config.entry.kind !== "stdio" && !Object.keys(config.entry.headers).length;
+    this.#auth = signs ? new McpAuth(opts.auth!, config) : undefined;
   }
 
   get state(): State {
@@ -163,6 +168,11 @@ export class Server {
       return await conn.client.callTool({ name, arguments: args as Record<string, unknown> }, { signal: opts.signal, timeout });
     } catch (err) {
       if (!conn.local && notReached(err)) throw new NotReached(remoteReason(this.#address(), err), { cause: err });
+      // A sign-in lost mid-session: a refused refresh, a Sign out in another window (choice 59).
+      if (this.#auth && UnauthorizedError.isInstance(err)) {
+        this.#lostSignIn(conn);
+        throw new Error(needsSignIn(this.config.name), { cause: err });
+      }
       throw err;
     }
   }
@@ -218,9 +228,10 @@ export class Server {
       if (got === "late") reason = this.#late();
       else tools = got;
     } catch (err) {
-      // A start the server refused for want of a sign-in, which only /mcp starts (Task 11).
+      // A start the server refused for want of a sign-in, which only /mcp starts (Task 11); one that publishes no sign-in
+      // details keeps its 401 (choice 59).
       if (this.#auth && UnauthorizedError.isInstance(err)) signIn = true;
-      else reason = this.#startReason(conn, err);
+      else reason = err instanceof NoSignIn ? `${this.#address()} answered 401` : this.#startReason(conn, err);
     } finally {
       clearTimeout(timer);
     }
@@ -279,9 +290,18 @@ export class Server {
       if (local) this.#dropped(conn, () => exitReason(local));
     };
     client.onerror = (err) => {
-      if (!conn.local && isDrop(err)) this.#dropped(conn, () => remoteReason(this.#address(), err));
+      if (this.#auth && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
+      else if (!conn.local && isDrop(err)) this.#dropped(conn, () => remoteReason(this.#address(), err));
     };
     return client;
+  }
+
+  // A ready server's sign-in that no longer holds: `needs sign-in`, its connection closed, as a drop's is (#dropped).
+  #lostSignIn(conn: Conn): void {
+    if (conn !== this.#conn || !conn.ready || conn.closed) return;
+    this.#state = { is: "needs sign-in" };
+    setImmediate(() => void this.#close(conn));
+    this.#onChange();
   }
 
   // A ready server that exits or drops is stopped, with its reason (choices 5, 6), its connection closed; a remote one

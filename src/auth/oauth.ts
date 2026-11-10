@@ -112,45 +112,80 @@ export interface Listener {
 
 // Waits on 127.0.0.1, on any free port, at /auth/callback: the docs require that address form and
 // rule out `localhost`. A reply with another attempt's state is turned away and the wait goes on; the
-// first matching reply ends it, and the listener closes. `port` is a fixed one instead, such as an MCP
-// server entry's callbackPort (release 8c plan, Task 11).
-export async function listen(state: string, signal?: AbortSignal, port = 0): Promise<Listener> {
+// first matching reply ends it, and the listener closes.
+// `local` is an MCP server's sign-in instead (release 8c plan, choice 53): Claude Code's return address,
+// http://localhost:<port>/callback, the start address /start beside it, listened for on each of `hosts`
+// at one port, a free one or the entry's callbackPort. A host the machine does not have (no IPv6 has
+// no ::1) is passed over once the first is listening; a free port the first got that another program
+// holds on a later host is given back, and another tried, as the browser could reach either. A fixed
+// port in use is EADDRINUSE, for the caller to say.
+export async function listen(state: string, signal?: AbortSignal, local?: { port: number; hosts?: readonly string[] }): Promise<Listener> {
   let settle!: { resolve: (q: URLSearchParams) => void; reject: (e: Error) => void };
   const reply = new Promise<URLSearchParams>((resolve, reject) => (settle = { resolve, reject }));
   reply.catch(() => {}); // Ctrl-C may come before anyone waits for it
   let target: string | undefined;
   let started = false;
-  const server = http.createServer((req, res) => {
+  const [callback, start] = local ? ["/callback", "/start"] : ["/auth/callback", "/auth/start"];
+  let servers: http.Server[] = [];
+  const handle = (req: http.IncomingMessage, res: http.ServerResponse) => {
     // Any program here can send a request line that is not an address; it is turned away, not thrown.
     const url = URL.parse(req.url ?? "/", "http://127.0.0.1");
     if (!url) return void res.writeHead(400).end();
     // Once only: the address holds the ID token sent as a hint, and any program here could ask for it.
-    if (req.method === "GET" && url.pathname === "/auth/start" && target) {
+    if (req.method === "GET" && url.pathname === start && target) {
       if (started) return void res.writeHead(410, HTML).end(USED);
       started = true;
       return void res.writeHead(302, { location: target, "cache-control": "no-store" }).end();
     }
-    if (req.method !== "GET" || url.pathname !== "/auth/callback") return void res.writeHead(404).end();
+    if (req.method !== "GET" || url.pathname !== callback) return void res.writeHead(404).end();
     if (url.searchParams.get("state") !== state) return void res.writeHead(400, { "content-type": "text/plain" }).end("This reply is not for the sign-in Tachikoma is waiting for.");
     // Once the page is sent, a browser's spare connection is closed too.
-    res.writeHead(200, { ...HTML, connection: "close" }).end(PAGE, () => server.closeAllConnections());
+    res.writeHead(200, { ...HTML, connection: "close" }).end(PAGE, () => servers.forEach((s) => s.closeAllConnections()));
     settle.resolve(url.searchParams);
     close();
-  });
+  };
   const close = () => {
-    server.close();
-    server.closeIdleConnections();
+    for (const server of servers) {
+      server.close();
+      server.closeIdleConnections();
+    }
     signal?.removeEventListener("abort", onAbort);
   };
   const onAbort = () => {
     settle.reject(new OAuthError("Sign-in was cancelled."));
     close();
   };
-  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(port, "127.0.0.1", resolve));
+  const on = (port: number, host: string) => {
+    const server = http.createServer(handle);
+    return new Promise<http.Server>((resolve, reject) => server.once("error", reject).listen(port, host, () => resolve(server)));
+  };
+  let port: number;
+  if (!local) {
+    servers = [await on(0, "127.0.0.1")];
+    port = (servers[0]!.address() as AddressInfo).port;
+  } else {
+    const [first = "127.0.0.1", ...rest] = local.hosts ?? ["127.0.0.1", "::1"];
+    for (let taken: unknown; ; taken = undefined) {
+      servers = [await on(local.port, first)];
+      port = (servers[0]!.address() as AddressInfo).port;
+      for (const host of rest) {
+        try {
+          servers.push(await on(port, host));
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") continue; // a host this machine does not have
+          taken = err;
+          break;
+        }
+      }
+      if (taken === undefined) break;
+      for (const server of servers) server.close();
+      if (local.port !== 0) throw taken;
+    }
+  }
   signal?.addEventListener("abort", onAbort, { once: true });
   if (signal?.aborted) onAbort();
-  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/auth`;
-  return { redirectUri: `${base}/callback`, startUri: `${base}/start`, begin: (url) => (target = url), reply, close };
+  const base = `http://${local ? "localhost" : "127.0.0.1"}:${port}`;
+  return { redirectUri: `${base}${callback}`, startUri: `${base}${start}`, begin: (url) => (target = url), reply, close };
 }
 
 // The token reference page lists these fields. `earliest_refresh_at` is kept as sent (see store.ts).

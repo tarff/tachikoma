@@ -10471,11 +10471,13 @@ describe("App's MCP", () => {
       name: "om", safe: "om", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "",
       entry: { kind: "http", url, headers: {} }, asWritten: { url },
     };
-    const auth = new AuthStore(path.join(m.dir, "data", "tachi"));
+    const data = path.join(m.dir, "data", "tachi");
+    const auth = new AuthStore(data);
     const mcp = m.servers([config], { auth, openBrowser: (u) => (opened.push(u), browser(u)) });
     const question = `Open your browser to sign in to om at ${new URL(fake.base).host}? [y/n]`;
     const waiting = (at: string) => `Waiting for the sign-in in your browser. If it did not open, go to: ${at}`;
-    return { fake, opened, mcp, question, waiting, setBrowser: (b: (u: string) => void) => (browser = b) };
+    const lock = path.join(data, "mcp-auth.lock");
+    return { fake, opened, mcp, question, waiting, lock, setBrowser: (b: (u: string) => void) => (browser = b) };
   }
 
   it("signs in from /mcp, asking before the browser opens, then signs out, each with its line", async () => {
@@ -10508,7 +10510,7 @@ describe("App's MCP", () => {
   // The service's own words when it refuses; Esc stops the wait and says nothing more, as the user stopped it.
   it("says why a sign-in failed, and stops waiting for the browser on Esc", async () => {
     const t = await signInSetup();
-    t.setBrowser(t.fake.refusing("The user said no"));
+    t.setBrowser(t.fake.sendsBack({ error: "access_denied", error_description: "The user said no" }));
     const { app, mcp } = await mount([], { mcp: t.mcp });
     await soon(() => expect(states(mcp!.servers)).toEqual(["om needs sign-in"]));
     await type(app, "/mcp");
@@ -10516,6 +10518,12 @@ describe("App's MCP", () => {
     await soon(() => expect(flat(app)).toContain(t.question));
     await press(app, "y");
     await shows(app, "Sign-in to om failed: The user said no");
+    // A client was registered before the question, but no tokens are kept, so there is nothing to sign out of (choice 58).
+    await type(app, "/mcp");
+    await press(app, "\r");
+    await shows(app, "om · needs sign-in\nSign in\n↑↓ move");
+    await press(app, "\u001b", "\u001b");
+    await gone(app, HEADING);
     // A browser that never comes back.
     t.setBrowser(() => {});
     await type(app, "/mcp");
@@ -10528,5 +10536,30 @@ describe("App's MCP", () => {
     await gone(app, "Waiting for the browser · ");
     expect(flat(app).split("Sign-in to om failed").length).toBe(2);
     expect(states(mcp!.servers)).toEqual(["om needs sign-in"]);
+  });
+
+  // Choice 56: a Sign out that cannot be written says so, and the sign-in stays. The test puts a folder of its own where
+  // the sign-ins' lock file goes, so the change cannot take the lock.
+  it("says a Sign out that cannot be written, and keeps the sign-in", async () => {
+    const t = await signInSetup();
+    const { app, mcp } = await mount([], { mcp: t.mcp });
+    const s = mcp!.servers;
+    await soon(() => expect(states(s)).toEqual(["om needs sign-in"]));
+    await type(app, "/mcp");
+    await press(app, "\r", "\r");
+    await soon(() => expect(flat(app)).toContain(t.question));
+    await press(app, "y");
+    await shows(app, "Signed in to om.");
+    await soon(() => expect(states(s)).toEqual(["om ready"]));
+    mkdirSync(t.lock);
+    try {
+      await type(app, "/mcp");
+      await press(app, "\r", DOWN, "\r");
+      await soon(() => expect(flat(app)).toMatch(/Sign-out of om failed: .+/));
+      expect(s.signedIn("om")).toBe(true);
+      expect(states(s)).toEqual(["om ready"]);
+    } finally {
+      rmSync(t.lock, { recursive: true }); // the empty folder the test made
+    }
   });
 });

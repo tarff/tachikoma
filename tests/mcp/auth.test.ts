@@ -3,12 +3,13 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { commandEnv, system32 } from "../../src/exec/env.js";
 import { launchAnswers } from "../../src/mcp/answers.js";
-import { AuthStore } from "../../src/mcp/auth.js";
+import { listen } from "../../src/auth/oauth.js";
+import { AuthStore, McpAuth } from "../../src/mcp/auth.js";
 import type { OAuthEntry, ServerConfig } from "../../src/mcp/config.js";
 import { Servers } from "../../src/mcp/servers.js";
 import { Bus, removeTree } from "../helpers.js";
@@ -21,14 +22,15 @@ const windows = process.platform === "win32";
 // A wait on a request to the fake: a few seconds for a busy machine, well inside the test's 15 s.
 const WAIT = { timeout: 5_000 };
 
-const remote = (name: string, url: string, oauth?: OAuthEntry): ServerConfig => ({
+const remote = (name: string, url: string, oauth?: OAuthEntry, headers: Record<string, string> = {}): ServerConfig => ({
   name, safe: name, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "",
-  entry: { kind: "http", url, headers: {}, ...(oauth && { oauth }) }, asWritten: { url },
+  entry: { kind: "http", url, headers, ...(oauth && { oauth }) }, asWritten: { url },
 });
 
 // The test's own folder, the data folder two levels inside it, the fake, and Servers that use that data folder's
-// sign-ins, each stopped before the folder is removed. `opened` holds each address the browser was given.
-async function setup() {
+// sign-ins, each stopped before the folder is removed. `opened` holds each address the browser was given, `damaged` each
+// damaged file's line. `fakeOpts` are the fake's.
+async function setup(fakeOpts: Parameters<typeof signInFake>[0] = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-auth-"));
   const made: Servers[] = [];
   onTestFinished(async () => {
@@ -36,16 +38,17 @@ async function setup() {
     await removeTree(dir);
   });
   const data = path.join(dir, "data", "tachi");
-  const fake = await signInFake();
+  const fake = await signInFake(fakeOpts);
   const bus = new Bus();
   const notes: string[] = [];
   bus.on("mcp-note", (line) => notes.push(line));
   const opened: string[] = [];
+  const damaged: string[] = [];
   let browser: (url: string) => void = fake.browser;
   const make = (configs: ServerConfig[], opts: { headless?: boolean } = {}) => {
     const servers = new Servers(configs, {
       root: dir, env: process.env, bus, answers: launchAnswers, network: "none", lead: () => "fake:a",
-      auth: new AuthStore(data), openBrowser: (url) => (opened.push(url), browser(url)), ...opts,
+      auth: new AuthStore(data, () => {}, (line) => damaged.push(line)), openBrowser: (url) => (opened.push(url), browser(url)), ...opts,
     });
     made.push(servers);
     servers.startAll();
@@ -59,7 +62,7 @@ async function setup() {
     say: (l: string) => said.push(l),
     signal,
   });
-  return { dir, data, fake, notes, opened, make, states, asked, said, io, setBrowser: (b: (url: string) => void) => (browser = b) };
+  return { dir, data, fake, notes, opened, damaged, make, states, asked, said, io, setBrowser: (b: (url: string) => void) => (browser = b) };
 }
 
 // Every SID in a file's permissions, read as tests/auth/private.test.ts reads them; nothing is changed.
@@ -69,6 +72,14 @@ function sids(file: string): string[] {
     .trim()
     .split(/\r?\n/);
 }
+// A port the system says is free now: one it gives for port 0, let go again.
+const freePort = () =>
+  new Promise<number>((resolve) => {
+    const s = http.createServer().listen(0, "127.0.0.1", () => {
+      const p = (s.address() as AddressInfo).port;
+      s.close(() => resolve(p));
+    });
+  });
 const me = () => execFileSync(system32("whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" }).trim().split(",")[1]!.replaceAll('"', "");
 
 describe("signing in to a remote MCP server", () => {
@@ -86,14 +97,14 @@ describe("signing in to a remote MCP server", () => {
     expect(await servers.signIn("om", t.io())).toBe(true);
     expect(t.asked).toEqual([`Open your browser to sign in to om at ${new URL(t.fake.base).host}`]);
     expect(t.opened).toHaveLength(1);
-    expect(t.opened[0]).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/auth\/start$/);
+    expect(t.opened[0]).toMatch(/^http:\/\/localhost:\d+\/start$/); // Claude Code's form (choice 53)
     expect(t.said).toEqual([`Waiting for the sign-in in your browser. If it did not open, go to: ${t.opened[0]}`]);
     expect(t.states(servers)).toEqual(["om ready"]);
     expect(servers.signedIn("om")).toBe(true);
     // One registration, for the address the sign-in waited at, and one code exchanged.
     expect(t.fake.seen.registered).toBe(1);
     expect(t.fake.seen.grants).toEqual(["authorization_code"]);
-    expect(t.fake.seen.authorized[0]!.get("redirect_uri")).toBe(t.opened[0]!.replace("/auth/start", "/auth/callback"));
+    expect(t.fake.seen.authorized[0]!.get("redirect_uri")).toBe(t.opened[0]!.replace("/start", "/callback"));
 
     const file = path.join(t.data, "mcp-auth.json");
     const saved = JSON.parse(readFileSync(file, "utf8"));
@@ -169,6 +180,9 @@ describe("signing in to a remote MCP server", () => {
     expect(t.opened).toEqual([]);
     expect(t.said).toEqual([]);
     expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    // The client registered before the question is not a sign-in, so there is nothing to sign out of (choice 58).
+    expect(t.fake.seen.registered).toBe(1);
+    expect(servers.signedIn("om")).toBe(false);
     // A browser that never comes back; Esc once the waiting line is said.
     t.setBrowser(() => {});
     const esc = new AbortController();
@@ -184,7 +198,7 @@ describe("signing in to a remote MCP server", () => {
     const t = await setup();
     const servers = t.make([remote("om", t.fake.url)]);
     await servers.ready();
-    t.setBrowser(t.fake.refusing("The user said no"));
+    t.setBrowser(t.fake.sendsBack({ error: "access_denied", error_description: "The user said no" }));
     await expect(servers.signIn("om", t.io())).rejects.toThrow("The user said no");
     expect(t.states(servers)).toEqual(["om needs sign-in"]);
   });
@@ -192,20 +206,14 @@ describe("signing in to a remote MCP server", () => {
   // The entry's oauth fields (Claude Code's): a clientId registers nothing, and callbackPort is where Tachikoma waits.
   it("signs in with the entry's clientId and waits at its callbackPort", async () => {
     const t = await setup();
-    // A port the system says is free now: one it gives for port 0, let go again.
-    const port = await new Promise<number>((resolve) => {
-      const s = http.createServer().listen(0, "127.0.0.1", () => {
-        const p = (s.address() as AddressInfo).port;
-        s.close(() => resolve(p));
-      });
-    });
+    const port = await freePort();
     const servers = t.make([remote("om", t.fake.url, { clientId: "given-id", callbackPort: port })]);
     await servers.ready();
     expect(t.states(servers)).toEqual(["om needs sign-in"]);
     expect(await servers.signIn("om", t.io())).toBe(true);
     expect(t.fake.seen.registered).toBe(0);
     expect(t.fake.seen.authorized[0]!.get("client_id")).toBe("given-id");
-    expect(t.opened[0]).toBe(`http://127.0.0.1:${port}/auth/start`);
+    expect(t.opened[0]).toBe(`http://localhost:${port}/start`);
     expect(t.states(servers)).toEqual(["om ready"]);
   });
 
@@ -229,8 +237,174 @@ describe("signing in to a remote MCP server", () => {
     const servers = t.make([remote("om", t.fake.url)]);
     await servers.ready();
     expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    const inHome = path.relative(homedir(), file);
+    const named = inHome.startsWith("..") || path.isAbsolute(inHome) ? file : path.join("~", inHome);
+    expect(t.damaged).toEqual([`MCP sign-ins in ${named} could not be read, so they were left out; signing in again replaces them.`]);
     await servers.signIn("om", t.io());
     await vi.waitFor(() => expect(t.states(servers)).toEqual(["om ready"]), WAIT);
+    expect(t.damaged).toHaveLength(1);
     expect(JSON.parse(readFileSync(file, "utf8")).servers.map((r: { name: string }) => r.name)).toEqual(["om"]);
+  });
+
+  // Choices 54 and 55: an entry with headers of its own is never signed in: its 401 points at its key, and nothing, its
+  // headers least of all, goes to a sign-in service.
+  it("keeps a 401 to an entry with its own headers as a failure, its headers going only to the server", async () => {
+    const t = await setup();
+    const servers = t.make([remote("om", t.fake.url, undefined, { "X-Key": "the-key" })]);
+    await servers.ready();
+    expect(servers.list()[0]!.state).toEqual({ is: "failed", reason: `${t.fake.base} answered 401` });
+    expect(t.fake.seen.requests.length).toBeGreaterThan(0);
+    expect(t.fake.seen.requests.filter((r) => r.path !== "/mcp")).toEqual([]);
+    expect(t.fake.seen.registered).toBe(0);
+  });
+
+  // Choice 59: a server that answers 401 but publishes no sign-in details cannot be signed in to.
+  it("keeps a 401 from a server with no sign-in details as a failure", async () => {
+    const t = await setup({ metadata: "none" });
+    const servers = t.make([remote("om", t.fake.url)]);
+    await servers.ready();
+    expect(servers.list()[0]!.state).toEqual({ is: "failed", reason: `${t.fake.base} answered 401` });
+    expect(t.fake.seen.registered).toBe(0);
+  });
+
+  // Choice 58: the entry's authServerMetadataUrl gives the sign-in service's metadata where discovery finds none.
+  it("signs in through the entry's authServerMetadataUrl", async () => {
+    const t = await setup({ metadata: "elsewhere" });
+    const plain = t.make([remote("plain", t.fake.url)]);
+    await plain.ready();
+    expect(plain.list()[0]!.state).toEqual({ is: "failed", reason: `${t.fake.base} answered 401` });
+    const servers = t.make([remote("om", t.fake.url, { authServerMetadataUrl: `${t.fake.base}/elsewhere/metadata` })]);
+    await servers.ready();
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    expect(await servers.signIn("om", t.io())).toBe(true);
+    expect(t.states(servers)).toEqual(["om ready"]);
+  });
+
+  // Choice 59: a sign-in lost mid-session, here a stale token with no refresh token to renew it.
+  it("needs sign-in again when the sign-in is lost mid-session, and the call says so to the model", async () => {
+    const t = await setup({ refresh: false });
+    const servers = t.make([remote("om", t.fake.url)]);
+    await servers.ready();
+    await servers.signIn("om", t.io());
+    expect(t.states(servers)).toEqual(["om ready"]);
+    t.fake.expire();
+    const call = servers.server("om")!.callTool("echo", {}, {});
+    await expect(call).rejects.toThrow(new Error("The MCP server om needs sign-in, which the user does from /mcp."));
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+  });
+
+  // Choice 59: the entry's clientId wins over a client kept under another id, such as a mistyped one since fixed.
+  it("signs in with the entry's clientId over a client kept under another id", async () => {
+    const t = await setup();
+    await new AuthStore(t.data).change("om", t.fake.url, () => ({ client: { client_id: "mistyped-id", issuer: t.fake.base } }));
+    const servers = t.make([remote("om", t.fake.url, { clientId: "given-id" })]);
+    await servers.ready();
+    expect(await servers.signIn("om", t.io())).toBe(true);
+    expect(t.fake.seen.authorized.map((q) => q.get("client_id"))).toEqual(["given-id"]);
+    expect(t.fake.seen.registered).toBe(0);
+  });
+
+  // Choice 59: nothing is registered at the launch, even when a kept client's sign-in service is not the one found now.
+  it("registers nothing at the launch when a kept client's sign-in service has changed", async () => {
+    const t = await setup();
+    await new AuthStore(t.data).change("om", t.fake.url, () => ({ client: { client_id: "old-id", issuer: "https://elsewhere.example" } }));
+    const servers = t.make([remote("om", t.fake.url)]);
+    await servers.ready();
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    expect(t.fake.seen.registered).toBe(0);
+  });
+
+  // Choice 59's reasons, in "Sign-in to <name> failed: <reason>".
+  it("says why a sign-in failed: no code, the entry's callbackPort in use, no client id to sign in with", async () => {
+    const t = await setup();
+    const servers = t.make([remote("om", t.fake.url)]);
+    await servers.ready();
+    t.setBrowser(t.fake.sendsBack({}));
+    await expect(servers.signIn("om", t.io())).rejects.toThrow(new Error("the sign-in page sent back no code"));
+    const port = await freePort();
+    const held = http.createServer();
+    await new Promise<void>((resolve) => held.listen(port, "127.0.0.1", resolve));
+    onTestFinished(() => void held.close());
+    const busy = t.make([remote("busy", t.fake.url, { callbackPort: port })]);
+    await busy.ready();
+    await expect(busy.signIn("busy", t.io())).rejects.toThrow(new Error(`port ${port}, the entry's callbackPort, is in use`));
+    const u = await setup({ registration: false });
+    const none = u.make([remote("om", u.fake.url)]);
+    await none.ready();
+    expect(u.states(none)).toEqual(["om needs sign-in"]);
+    const needsId = 'the sign-in service needs a client id; set "oauth": {"clientId": ...} in the server\'s entry';
+    await expect(none.signIn("om", u.io())).rejects.toThrow(new Error(needsId));
+  });
+
+  // A refresh the service refuses: the tokens go, and the library's warning never reaches the screen (Task 11's review).
+  it("drops a refused refresh's tokens and needs sign-in, writing none of the library's warnings", async () => {
+    const t = await setup();
+    const first = t.make([remote("om", t.fake.url)]);
+    await first.ready();
+    await first.signIn("om", t.io());
+    t.fake.expire();
+    t.fake.revoke();
+    // A console.warn of its own in place, as the window's Ink puts one in place as it starts.
+    const before = console.warn;
+    const warned: unknown[][] = [];
+    console.warn = (...args: unknown[]) => void warned.push(args);
+    onTestFinished(() => void (console.warn = before));
+    const next = t.make([remote("om", t.fake.url)]);
+    await next.ready();
+    expect(t.states(next)).toEqual(["om needs sign-in"]);
+    expect(t.fake.seen.grants).toContain("refresh_token");
+    expect(new AuthStore(t.data).get("om", t.fake.url)?.tokens).toBeUndefined();
+    expect(warned).toEqual([]);
+    console.warn("other words");
+    expect(warned).toEqual([["other words"]]); // anything else still gets there
+  });
+
+  // A refused refresh token drops only itself: tokens another window refreshed meanwhile stay (Task 11's review).
+  it("keeps the tokens another window refreshed meanwhile when a refresh token is refused", async () => {
+    const t = await setup();
+    const store = new AuthStore(t.data);
+    const tokens = (n: number) => ({ access_token: `a${n}`, refresh_token: `r${n}`, token_type: "Bearer" });
+    await store.change("om", t.fake.url, () => ({ tokens: tokens(1) }));
+    const client = new McpAuth(store, remote("om", t.fake.url));
+    client.tokens();
+    await store.change("om", t.fake.url, () => ({ tokens: tokens(2) }));
+    await client.invalidateCredentials("tokens");
+    expect(store.get("om", t.fake.url)?.tokens?.refresh_token).toBe("r2");
+    client.tokens();
+    await client.invalidateCredentials("tokens");
+    expect(store.get("om", t.fake.url)?.tokens).toBeUndefined();
+  });
+});
+
+// Choice 53: the sign-in's own address, Claude Code's form, on both of this machine's own addresses at one port; and
+// /login chatgpt's, as it was.
+describe("the sign-in's own address", () => {
+  // Whether this machine has ::1 to listen on.
+  const ipv6 = () =>
+    new Promise<boolean>((resolve) => {
+      const s = http.createServer();
+      s.once("error", () => resolve(false)).listen(0, "::1", () => s.close(() => resolve(true)));
+    });
+  const answered = async (local: { port: number; hosts?: string[] }, at: string) => {
+    const l = await listen("s", undefined, local);
+    onTestFinished(l.close);
+    const port = new URL(l.redirectUri).port;
+    expect([l.redirectUri, l.startUri]).toEqual([`http://localhost:${port}/callback`, `http://localhost:${port}/start`]);
+    await fetch(`http://${at}:${port}/callback?state=s&code=c`).then((r) => r.text());
+    return (await l.reply).get("code");
+  };
+
+  it("answers at localhost on 127.0.0.1 and ::1, and on 127.0.0.1 alone where the machine has no other", async () => {
+    expect(await answered({ port: 0 }, "127.0.0.1")).toBe("c");
+    if (await ipv6()) expect(await answered({ port: 0 }, "[::1]")).toBe("c");
+    // 192.0.2.1 (TEST-NET-1, RFC 5737) is no address of this machine's: it stands for a missing ::1.
+    expect(await answered({ port: 0, hosts: ["127.0.0.1", "192.0.2.1"] }, "127.0.0.1")).toBe("c");
+  });
+
+  it("keeps /login chatgpt's address", async () => {
+    const l = await listen("s");
+    onTestFinished(l.close);
+    expect(l.redirectUri).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/auth\/callback$/);
+    expect(l.startUri).toBe(l.redirectUri.replace("/callback", "/start"));
   });
 });

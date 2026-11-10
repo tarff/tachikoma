@@ -5,7 +5,7 @@ import type { Picture } from "../core/types.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import { typeOf } from "../tui/clipboard.js";
 import { searchSpec, searchTool } from "./search.js";
-import { NotReached } from "./server.js";
+import { NotReached, needsSignIn } from "./server.js";
 import type { Offered, Servers } from "./servers.js";
 
 // The MCP servers' tools in the session (release 8c plan, Task 6; design, "Tools for the model"; choices 9-13 and 33):
@@ -78,9 +78,12 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
       }
       bound = servers.rebind(o);
     }
-    if ("reason" in bound) throw new Error(bound.reason === "stopped" ? stopped(o) : changed(o));
+    if ("reason" in bound) throw new Error(bound.reason === "stopped" ? notRunning(o) : changed(o));
     return bound.offered;
   }
+
+  // Why a call cannot run on a server not running: it stopped, or its sign-in is needed (choice 59).
+  const notRunning = (o: Offered) => (servers.server(o.server)?.state.is === "needs sign-in" ? needsSignIn(o.server) : stopped(o));
 
   // The call itself, ending as a restart says when its server restarted while it ran; a stop's error is left for the
   // session, which tells a stop by its signal.
@@ -118,7 +121,7 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
         // Nothing reaches the server unless its tool is still the one shown, on the connection that showed it (finding 4).
         const now = servers.current(o);
         if (now === "changed" || now === "restarted") throw new Error(changed(o));
-        if (now === "stopped") throw new Error(stopped(o));
+        if (now === "stopped") throw new Error(notRunning(o));
         let result: CallToolResult;
         try {
           result = await call(o, input, ctx.signal);

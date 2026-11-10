@@ -292,8 +292,8 @@ export const queue = (ui: UI, fns: Fns) => {
   };
   // /mcp's Sign in and Sign out (Task 11), run as /login and /logout are: their working line, what is typed waiting in the
   // queue, Esc stopping a sign-in through its own signal, which also cancels its question, the window's own yes/no. The
-  // lines are the plan's; Esc says nothing more, as the user stopped it, and a sign-out that cannot be written says why,
-  // as a command's failure does (perform).
+  // lines are the plan's; Esc says nothing more, as the user stopped it; a sign-out that cannot be written says so, and the
+  // sign-in stays (choice 56).
   const account = async (name: string, action: "Sign in" | "Sign out") => {
     const servers = ui.mcp!.servers;
     const shown = visible(name);
@@ -313,7 +313,7 @@ export const queue = (ui: UI, fns: Fns) => {
       }
     } catch (err) {
       const why = visible(errorText(err), { tabs: true });
-      if (action === "Sign out") fns.say({ text: why, color: "red" });
+      if (action === "Sign out") fns.say({ text: `Sign-out of ${shown} failed: ${why}`, color: "red" });
       else if (!signal.aborted) fns.say({ text: `Sign-in to ${shown} failed: ${why}`, color: "red" });
     } finally {
       ui.setBusy(false);

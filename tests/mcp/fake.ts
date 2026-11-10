@@ -208,13 +208,19 @@ export async function httpFake(dir: string, opts: FakeOptions = {}): Promise<{ u
 // S256 check, or by refresh token. Its MCP endpoint, at any path ending /mcp, answers only a live access token, and
 // otherwise 401 with the address of its discovery document; it offers one tool, echo. `browser` stands for the user's
 // browser: it follows the address it is given, redirects and all. `expire` makes every access token given so far stale,
-// so the next request needs a refresh.
-export async function signInFake() {
+// so the next request needs a refresh. `seen.requests` holds each request's path and headers. Its options: `refresh:
+// false` gives no refresh tokens; `registration: false` publishes no registration; `metadata` "none" publishes no
+// sign-in details at all, and "elsewhere" publishes the service's metadata only at /elsewhere/metadata, for an entry's
+// authServerMetadataUrl.
+export async function signInFake(opts: { refresh?: false; registration?: false; metadata?: "none" | "elsewhere" } = {}) {
   const clients = new Map<string, { redirect_uris: string[] }>();
   const codes = new Map<string, { client: string; challenge: string; redirect: string }>();
   const live = new Set<string>();
   const refresh = new Set<string>();
-  const seen = { registered: 0, grants: [] as string[], bearer: [] as (string | null)[], authorized: [] as URLSearchParams[] };
+  const seen = {
+    registered: 0, grants: [] as string[], bearer: [] as (string | null)[], authorized: [] as URLSearchParams[],
+    requests: [] as { path: string; headers: http.IncomingHttpHeaders }[],
+  };
   let issued = 0;
   const server = http.createServer((req, res) => {
     let body = "";
@@ -224,17 +230,20 @@ export async function signInFake() {
       const url = new URL(req.url ?? "/", base);
       const json = (status: number, value: object, headers: Record<string, string> = {}) =>
         res.writeHead(status, { "content-type": "application/json", connection: "close", ...headers }).end(JSON.stringify(value));
+      seen.requests.push({ path: url.pathname, headers: req.headers });
+      const metadata = {
+        issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`,
+        ...(opts.registration !== false && { registration_endpoint: `${base}/register` }),
+        response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], grant_types_supported: ["authorization_code", "refresh_token"],
+        token_endpoint_auth_methods_supported: ["none"],
+      };
+      if (opts.metadata === "none" && url.pathname.startsWith("/.well-known/")) return res.writeHead(404, { connection: "close" }).end();
+      if (opts.metadata === "elsewhere" && url.pathname === "/elsewhere/metadata") return json(200, metadata);
       if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
         return json(200, { resource: `${base}${url.pathname.slice("/.well-known/oauth-protected-resource".length) || "/mcp"}`, authorization_servers: [base] });
       }
-      if (url.pathname === "/.well-known/oauth-authorization-server") {
-        return json(200, {
-          issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`, registration_endpoint: `${base}/register`,
-          response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], grant_types_supported: ["authorization_code", "refresh_token"],
-          token_endpoint_auth_methods_supported: ["none"],
-        });
-      }
-      if (url.pathname === "/register" && req.method === "POST") {
+      if (url.pathname === "/.well-known/oauth-authorization-server" && opts.metadata === undefined) return json(200, metadata);
+      if (url.pathname === "/register" && req.method === "POST" && opts.registration !== false) {
         const metadata = JSON.parse(body);
         const id = `client-${++seen.registered}`;
         clients.set(id, metadata);
@@ -260,7 +269,8 @@ export async function signInFake() {
           const n = ++issued;
           live.add(`access-${n}`);
           refresh.add(`refresh-${n}`);
-          return json(200, { access_token: `access-${n}`, refresh_token: `refresh-${n}`, token_type: "Bearer", expires_in: 3600 });
+          const again = opts.refresh === false ? {} : { refresh_token: `refresh-${n}` };
+          return json(200, { access_token: `access-${n}`, ...again, token_type: "Bearer", expires_in: 3600 });
         };
         if (grant === "authorization_code") {
           const c = codes.get(form.get("code") ?? "");
@@ -276,8 +286,8 @@ export async function signInFake() {
         const bearer = req.headers.authorization ?? null;
         seen.bearer.push(bearer);
         if (!bearer || !live.has(bearer.replace(/^Bearer /, ""))) {
-          const metadata = `${base}/.well-known/oauth-protected-resource${url.pathname}`;
-          return json(401, { error: "invalid_token" }, { "www-authenticate": `Bearer resource_metadata="${metadata}"` });
+          const resource = `${base}/.well-known/oauth-protected-resource${url.pathname}`;
+          return json(401, { error: "invalid_token" }, { "www-authenticate": `Bearer resource_metadata="${resource}"` });
         }
         if (req.method !== "POST") return res.writeHead(405, { connection: "close" }).end();
         const m = JSON.parse(body);
@@ -304,18 +314,21 @@ export async function signInFake() {
     base,
     seen,
     expire: () => live.clear(),
-    // The user's browser: each redirect followed, to the sign-in's own address on this machine at the end.
-    browser: (address: string): void => void fetch(address).then((r) => r.text()),
-    // A browser whose user turned the sign-in down: the service's error goes back to the sign-in's own address instead.
-    refusing:
-      (description: string) =>
+    revoke: () => refresh.clear(), // every refresh token given so far refused
+    // The user's browser: each redirect followed, to the sign-in's own address on this machine at the end. Nothing waits for
+    // it, so a failure is dropped, as a browser's is.
+    browser: (address: string): void => void fetch(address).then((r) => r.text()).catch(() => {}),
+    // A browser that brings the sign-in's own address `params` in place of a code, with the attempt's state: a user who
+    // turned it down, the service's error; or a page that sends back nothing.
+    sendsBack:
+      (params: Record<string, string>) =>
       (address: string): void =>
         void (async () => {
           const authorize = new URL((await fetch(address, { redirect: "manual" })).headers.get("location")!);
           const back = new URL(authorize.searchParams.get("redirect_uri")!);
-          back.search = new URLSearchParams({ error: "access_denied", error_description: description, state: authorize.searchParams.get("state")! }).toString();
+          back.search = new URLSearchParams({ ...params, state: authorize.searchParams.get("state")! }).toString();
           await fetch(back);
-        })(),
+        })().catch(() => {}),
   };
 }
 
