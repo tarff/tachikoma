@@ -7123,6 +7123,19 @@ describe("App's live settings", () => {
     expect(top()).toBe(from - 1);
   });
 
+  // Release 8c plan, Task 2: mcpServers is LIVE, and until Task 10 applies it an edit does nothing and says nothing, so it
+  // cannot fall through to scrollSpeed's branch as hooks' once did.
+  it("leaves the scroll speed as it is on a live edit of mcpServers, and says no line for it", async () => {
+    const { app, mouse, write } = await watching([], {}, { full: true, intro: said(80), scrollSpeed: 1 }, { scrollSpeed: "--scroll-speed" });
+    const top = () => Number(/^said (\d+)\.$/.exec(shown(app)[0]!)![1]);
+    write({ mode: "project", mcpServers: { tv: { command: "node", args: ["server.js"] } } });
+    await sees(app, PINNED("ask")); // the edit was read, its entries in LIVE's order, mcpServers after mode
+    expect(flat(app)).not.toContain("mcpServers is now");
+    const from = top();
+    await wheel(mouse, "up");
+    expect(top()).toBe(from - 1);
+  });
+
   // Review fixes plan, fix 6: 0.99 leaves 99 hundredths over, which speed 3 once read as 99 rows.
   it("starts a new scrollSpeed's first notch with nothing left over from the old one", async () => {
     const { app, mouse, write } = await watching([], { scrollSpeed: 0.99 }, { full: true, intro: said(80), scrollSpeed: 0.99 });

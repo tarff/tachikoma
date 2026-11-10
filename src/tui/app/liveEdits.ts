@@ -156,6 +156,9 @@ export const liveEdits = (ui: UI, fns: Fns) => {
               : "Hooks changed: none in force.",
         ),
       );
+    } else if (key === "mcpServers") {
+      // Nothing yet: release 8c plan, Task 10 applies it. Without this branch an edit would fall through to scrollSpeed's,
+      // as hooks' once did (release 8b, 9920095).
     } else {
       // scrollSpeed. The wheel's carried fraction is in the old speed's units, so the new one starts with none (review
       // fixes plan, fix 6).

@@ -328,6 +328,29 @@ describe("readSettings", () => {
     });
   });
 
+  // Release 8c plan, Task 2: the servers themselves are read in src/mcp/config.ts (tests/mcp/config.test.ts).
+  describe("mcpServers", () => {
+    it("reads the servers, filling ${VAR} from the environment it is given, and applies the other entries", () => {
+      const r = readSettings(JSON.stringify({ mode: "ask", mcpServers: { tv: { command: "${BIN}" }, w: { type: "ws" } } }), { BIN: "node" });
+      expect(r).toEqual({
+        settings: {
+          mode: "ask",
+          mcpServers: [{
+            name: "tv", safe: "tv", where: "user", trusted: null, trustedTools: [], alwaysLoad: false,
+            entry: { kind: "stdio", command: "node", args: [], env: {} },
+          }],
+        },
+        warnings: ['settings.json: "mcpServers": "w" has "type" "ws", which Tachikoma does not support; it was left out'],
+      });
+    });
+
+    it("refuses mcpServers of the wrong type, so nothing in the file applies", () => {
+      expect(read({ mode: "ask", mcpServers: [{ command: "node" }] })).toEqual({
+        problem: 'settings.json: "mcpServers" must be an object of servers (got [{"command":"node"}])',
+      });
+    });
+  });
+
   it("says when the file is not valid JSON, in the parser's words", () => {
     let words = "";
     try {

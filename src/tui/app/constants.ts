@@ -112,11 +112,12 @@ export const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.
 // are here for their lines (plan, Tasks 12 and 21). dangerousCommands is release 7's (release 7 plan, Task 4), and so are
 // sandbox, network and judge, here for their lines too, as each waits for the next launch (Task 7). autoCompactWindow is
 // release 8a's (release 8a plan, choice 26). hooks and disableAllHooks are release 8b's (release 8b design, "What the
-// user sees"; its plan's Task 12 applies them).
+// user sees"; its plan's Task 12 applies them). mcpServers is release 8c's (release 8c design, "The settings entry"; its
+// plan's Task 10 applies it).
 export const LIVE = [
   "lead", "mode", "sandbox", "network", "judge", "effort", "fallback", "worker", "maxTasks",
   "status", "screen", "scrollSpeed", "editorMode", "vimInsertModeRemaps", "editor", "dangerousCommands", "autoCompactWindow",
-  "hooks", "disableAllHooks",
+  "hooks", "disableAllHooks", "mcpServers",
 ] as const;
 export const FROM = ` (from ${SETTINGS})`;
 
