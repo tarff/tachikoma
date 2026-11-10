@@ -1084,7 +1084,9 @@ built" section).
   approval table, names and the 64-character rule, tool search and `alwaysLoad`, answers,
   sign-in, forms, resources, prompts,
   hooks, the sandbox rule, `/mcp`, `-p`); the known limits from the design and those the builds
-  add; the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
+  add (among them: Claude Code's `ws` kind is not supported, left out with the unsupported-kind
+  line, as MCP itself has no WebSocket transport and the library none; the user's choice,
+  2026-11-10); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
 
