@@ -480,19 +480,24 @@ search, always on", "Own lookup tool, every provider")
 38. **`tool_search`'s input** is `{ query: string, max_results?: number }`, as Claude Code's
     ToolSearch. A query `select:<name>,<name>` loads those full names exactly. Any other query is
     words: a tool is found when one of them is in its full name or its description (letter case
-    ignored); tools are ranked by how many of the words they hold, names counting before
-    descriptions, then in the order offered; at most `max_results`, 5 by default.
+    ignored); tools are ranked by how many of the words they hold anywhere, a word in the name
+    breaking ties, then in the order offered (the user's choice, 2026-11-10, Task 6b's review); at
+    most `max_results`, 5 by default.
 39. **Its answer** lists each tool found, `<full name>: <description, cut at 16,384>` and
     `Input: <its schema as JSON>`, and adds them to the loaded set, so the next request defines
     them, with the same 16,384 cut of the whole text, and the model can call them. Words are
     matched against that same 16,384 cut, so a match is always in the answer. A tool already loaded is listed again and changes nothing.
+    The answer holds as many found tools as fit in the 30,000 cut of a tool's answer, in rank
+    order, the first always; only those are loaded and counted. A word search stops there with
+    no line; a `select:` names the ones left out (the user's choice, 2026-11-10, Task 6b's
+    review).
     No match lists the servers that are not ready, as Claude Code's does.
 40. **A search while servers are still starting** waits for them, as Claude Code's does, within
     the 30 s start and stopped by Esc, then searches what is ready.
 41. **The loaded set** belongs to the conversation: saved in the transcript as a new line
     `{ t: "loaded", names }` (in `valid()`), so a resume, a `/branch` and a shortening keep it;
-    `/clear` empties it. A loaded name its server no longer offers is not sent, and is loaded
-    again by a search once it is back. Finding 4's check is unchanged: a loaded tool's offer
+    `/clear` empties it. A loaded name its server no longer offers is not sent, and stays in the
+    set, so it is defined again once its server offers it (the user's choice, 2026-11-10). Finding 4's check is unchanged: a loaded tool's offer
     carries its connection and definition, as any offered tool's does.
 42. **`alwaysLoad: true`** on a server's entry (Claude Code's field), or `_meta["anthropic/
     alwaysLoad"]: true` on one of its tools, loads those tools upfront, defined in every request
@@ -525,7 +530,7 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | A remote server connected again (grey; choice 33) | `MCP server <name> was connected again.` |
 | Hook JSON reasons at Elicitation and ElicitationResult (choice 35), in 8b's `printed JSON that could not be read (<reason>)` | `"action" must be "accept", "decline" or "cancel"`; `"content" must be an object` |
 | `tool_search`'s description (to the model; choice 37) | `Finds MCP tools and loads them, so they can be called from the next step on. Search with words from a tool's name or what it does, or load tools by name with "select:<name>,<name>". MCP tools not loaded yet:` then per server, on its own lines, `<name>: <its instructions>` (without instructions, `<name>:`) and `  <full name>, <full name>, ...`; then, if any, `Not ready:` and a line each `<name>: <starting / failed: <reason> / needs sign-in, which the user does from /mcp>` |
-| `tool_search`'s answer (to the model; choice 39) | `Loaded <n> tools; call them from the next step on:` (singular for 1), then per tool `<full name>: <description>` and `Input: <schema as JSON>`, a blank line between; no match: `No MCP tool matched "<query>".`, then the `Not ready:` lines if any; a `select:` name unknown: `No MCP tool is named <name>.`, the found ones still loaded |
+| `tool_search`'s answer (to the model; choice 39) | `Loaded <n> tools; call them from the next step on:` (for 1: `Loaded 1 tool; call it from the next step on:`), then per tool `<full name>: <description>` and `Input: <schema as JSON>`, a blank line between; no match: `No MCP tool matched "<query>".`, then the `Not ready:` lines if any; a `select:` name unknown: `No MCP tool is named <name>.`, the found ones still loaded; a `select:` with names past the 30,000 cut: `Not loaded, as the answer is full: <names>; load them with another search.` |
 | A name in use (grey) | `MCP server <name>: "<tool>" was left out: its name <full> is already <other>'s "<tool2>"` (a clash with one of Tachikoma's own tools cannot happen, as none starts `mcp__`) |
 | **Starting** (grey, the waiting line) | `Waiting for MCP servers: <names>...` (design) |
 | A server failed to start (red) | `MCP server <name> failed to start: <reason>` |
@@ -959,6 +964,9 @@ which runs after the start-of-run reconnect and before the "did anything change"
 to a server stopped for good, or failed, gets its stopped line before the question, so the user is
 never asked about a call that cannot run.
 
+**From Task 6b's build:** the judge is shown `o.forJudge`, the 4,096 cut, whichever way the tool
+was loaded; `tool_search` takes no gate (choice 44).
+
 Commit: `feat: approving MCP calls: asked, judged, or trusted, and subagents get only trusted read-only tools`.
 
 ## Task 8: Hooks
@@ -998,6 +1006,9 @@ two accepts, the first's `content`; each new JSON reason's line; the same at Eli
 **From Task 6's build:** a PostToolUse `updatedToolOutput` today replaces the text and keeps the
 tool's pictures; choice 20 drops them with it.
 
+**From Task 6b's build:** `tool_search` is `ToolSearch` to hooks; it is not among the tools whose
+output `updatedToolOutput` may replace, so a hook cannot rewrite a search's answer.
+
 Commit: `feat: MCP calls in hooks, and mcp_tool hooks that call a server directly`.
 
 **End of Part 2:** the whole suite, once.
@@ -1030,10 +1041,14 @@ without the slow server; the sandbox's line; the server's process gone after the
 **From Tasks 5 and 6's builds:** `SessionOptions.mcp` is wired in `cli.tsx` here; `-p` must not
 count an `mcp` error as a failed run (choice 26); the window and `-p` print `mcp-note` lines and
 the red `mcp` ones; the waiting line's words are built here from `waitingFor()`, as the status
-line (choice 25); the sandbox-network-off line. The window's history (`describe.ts`) and
-`/export` (`exportText.ts`) must show a tool's pictures (`from: "server"`) as the tool's, not as
-`> [Image #4]` typed by the user. The other-kind line reads "a" or "an" by its word ("an audio
-part").
+line (choice 25); the sandbox-network-off line. A tool's pictures already show as the tool's
+(Task 6's review: `  ⎿ [Image #4] [Image #5]` under the results, and in `/export` with the
+tool's answer). The other-kind line reads "a" or "an" by its word ("an audio part").
+
+**From Task 6b's build:** the lead's `SessionOptions.mcp` is one `mcpTools(servers, bus,
+approve)`; the subagents' `TasksOptions.mcp` is a factory, wired here to `mcpTools(servers, bus,
+approve, { trustedOnly: true })`, a new loaded set per subagent. `Session.load` takes the loaded
+set from the transcript; a search while servers start waits with no line of its own.
 
 Commit: `feat: MCP servers at the launch: project servers asked, the first prompt waits, -p's lines`.
 
