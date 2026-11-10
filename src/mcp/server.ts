@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import {
   type CallToolResult,
   Client,
+  type FetchLike,
   SdkError,
   SdkErrorCode,
   SdkHttpError,
@@ -109,15 +110,17 @@ export class Server {
   readonly #auth: McpAuth | undefined;
 
   // `startMs` is the start's limit, 30 s unless a test gives a short one. `auth` keeps sign-ins: with it a remote server
-  // has its own OAuth client (Task 11), unless its entry has headers of its own, which is never signed in, so its 401 says
-  // to look at its key (choice 55); without it, as in most tests, a 401 is an answer like any other.
+  // has its own OAuth client (Task 11), unless its entry has an Authorization header of its own, in any letter case, which
+  // is never signed in, so its 401 says to look at its key (choice 55); without it, as in most tests, a 401 is an answer
+  // like any other.
   constructor(config: ServerConfig, opts: { root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; startMs?: number }) {
     this.config = config;
     this.#root = opts.root;
     this.#env = opts.env;
     this.#onChange = opts.onChange;
     this.#startMs = opts.startMs ?? START_MS;
-    const signs = opts.auth && config.entry.kind !== "stdio" && !Object.keys(config.entry.headers).length;
+    const keyed = config.entry.kind !== "stdio" && Object.keys(config.entry.headers).some((k) => k.toLowerCase() === "authorization");
+    const signs = opts.auth && config.entry.kind !== "stdio" && !keyed;
     this.#auth = signs ? new McpAuth(opts.auth!, config) : undefined;
   }
 
@@ -249,7 +252,9 @@ export class Server {
 
   // Local: the program by its full path (choice 4), with the commands' environment, which never holds Tachikoma's keys,
   // CLAUDE_PROJECT_DIR as Claude Code sets it, then the entry's env, in the project's folder (choice 2). Remote: the
-  // entry's headers with each request, and its OAuth client (Task 11). A reason instead when the program is not on PATH.
+  // entry's headers with each request, and its OAuth client (Task 11); with a client, the headers go only to the server's
+  // own address (choice 54, toServer), as the library's sign-in requests would carry requestInit's too. A reason instead
+  // when the program is not on PATH.
   #transport(): Transport | string {
     const entry = this.config.entry;
     if (entry.kind === "stdio") {
@@ -258,9 +263,16 @@ export class Server {
       const env = { ...commandEnv(this.#env), CLAUDE_PROJECT_DIR: this.#root, ...entry.env } as Record<string, string>;
       return new Stdio({ command: program, args: entry.args, env, cwd: this.#root, stderr: "pipe" });
     }
-    const opts = { requestInit: { headers: entry.headers }, ...(this.#auth && { authProvider: this.#auth }) };
     const url = new URL(entry.url);
-    return entry.kind === "http" ? new StreamableHTTPClientTransport(url, opts) : new SSEClientTransport(url, opts);
+    let made: Transport | undefined;
+    // An sse server's messages go to the address its event stream names, at the same host (the library checks it), so
+    // that is its own address too; the library keeps it as _endpoint, read when each request is made.
+    const endpoint = () => (made as { _endpoint?: URL } | undefined)?._endpoint;
+    const opts = this.#auth
+      ? { authProvider: this.#auth, ...(Object.keys(entry.headers).length && { fetch: toServer(url, endpoint, entry.headers) }) }
+      : { requestInit: { headers: entry.headers } };
+    made = entry.kind === "http" ? new StreamableHTTPClientTransport(url, opts) : new SSEClientTransport(url, opts);
+    return made;
   }
 
   // One client per connection, so nothing of an old one's lists or handlers reaches the new one.
@@ -350,6 +362,20 @@ export class Server {
   // The address's scheme, host and port only: a ${VAR} filled into its path or query may be a key, and the reason is
   // shown on screen.
   #address = () => (this.config.entry.kind === "stdio" ? "" : new URL(this.config.entry.url).origin);
+}
+
+// Choice 54: the entry's headers on a request for the server's own address only, its scheme, host, port and path, the query
+// aside (a request there is the server's whatever it asks), so a sign-in service at the same host gets none; a header the
+// library set, the sign-in's Authorization among them, is kept.
+function toServer(url: URL, endpoint: () => URL | undefined, headers: Record<string, string>): FetchLike {
+  const same = (a: URL, b: URL | undefined) => b !== undefined && a.origin === b.origin && a.pathname === b.pathname;
+  return (input, init) => {
+    const at = new URL(input);
+    if (!same(at, url) && !same(at, endpoint())) return fetch(input, init);
+    const sent = new Headers(init?.headers);
+    for (const [name, value] of Object.entries(headers)) if (!sent.has(name)) sent.set(name, value);
+    return fetch(input, { ...init, headers: sent });
+  };
 }
 
 // Choice 6: the exit code, with the last line of the error output that is not blank (choice 5), or the signal.

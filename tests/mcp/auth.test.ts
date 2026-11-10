@@ -246,16 +246,37 @@ describe("signing in to a remote MCP server", () => {
     expect(JSON.parse(readFileSync(file, "utf8")).servers.map((r: { name: string }) => r.name)).toEqual(["om"]);
   });
 
-  // Choices 54 and 55: an entry with headers of its own is never signed in: its 401 points at its key, and nothing, its
-  // headers least of all, goes to a sign-in service.
-  it("keeps a 401 to an entry with its own headers as a failure, its headers going only to the server", async () => {
+  // Choice 55: an entry with its own Authorization header, in any letter case, is never signed in: its 401 points at its
+  // key, and nothing goes to a sign-in service.
+  it("keeps a 401 to an entry with its own Authorization header as a failure, in any letter case", async () => {
+    for (const name of ["Authorization", "authorization"]) {
+      const t = await setup();
+      const servers = t.make([remote("om", t.fake.url, undefined, { [name]: "Bearer the-key" })]);
+      await servers.ready();
+      expect(servers.list()[0]!.state).toEqual({ is: "failed", reason: `${t.fake.base} answered 401` });
+      expect(t.fake.seen.requests.length).toBeGreaterThan(0);
+      expect(t.fake.seen.requests.filter((r) => r.path !== "/mcp")).toEqual([]);
+      expect(t.fake.seen.registered).toBe(0);
+    }
+  });
+
+  // Choices 54 and 55: an entry with other headers signs in, as the Figma plugin's does; its headers go only to requests for
+  // the server's own address, never to the sign-in service, here at the same host.
+  it("signs in an entry with other headers, which go only to the server's own address", async () => {
     const t = await setup();
-    const servers = t.make([remote("om", t.fake.url, undefined, { "X-Key": "the-key" })]);
+    const servers = t.make([remote("om", t.fake.url, undefined, { "X-Region": "eu" })]);
     await servers.ready();
-    expect(servers.list()[0]!.state).toEqual({ is: "failed", reason: `${t.fake.base} answered 401` });
-    expect(t.fake.seen.requests.length).toBeGreaterThan(0);
-    expect(t.fake.seen.requests.filter((r) => r.path !== "/mcp")).toEqual([]);
-    expect(t.fake.seen.registered).toBe(0);
+    expect(t.states(servers)).toEqual(["om needs sign-in"]);
+    expect(await servers.signIn("om", t.io())).toBe(true);
+    expect(t.states(servers)).toEqual(["om ready"]);
+    const toServer = t.fake.seen.requests.filter((r) => r.path === "/mcp");
+    const signIn = t.fake.seen.requests.filter((r) => r.path !== "/mcp");
+    expect(signIn.map((r) => r.path)).toEqual(expect.arrayContaining(["/.well-known/oauth-authorization-server", "/register", "/authorize", "/token"]));
+    expect(signIn.filter((r) => "x-region" in r.headers)).toEqual([]);
+    expect(toServer.length).toBeGreaterThan(0);
+    expect(toServer.every((r) => r.headers["x-region"] === "eu")).toBe(true);
+    // The server's own calls carry the sign-in's token beside it.
+    expect(toServer.at(-1)!.headers.authorization).toMatch(/^Bearer access-\d+$/);
   });
 
   // Choice 59: a server that answers 401 but publishes no sign-in details cannot be signed in to.
