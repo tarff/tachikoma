@@ -26,9 +26,10 @@ export interface Action {
   // path as the question names it, for the refusal in `never` (Task 8).
   protectedPart?: string;
   path?: string;
-  // An MCP tool's description, cut at 4,096 as the judge is shown it (release 8c plan, choice 15), and its own words, as the
-  // server sent them, whose first line is its question's grey note, on one screen row (choices 14 and 47).
+  // An MCP tool's description, cut at 4,096 as the judge is shown it (release 8c plan, choice 15).
   description?: string;
+  // An MCP tool's own description, as the server sent it; its first line is the question's grey note, on one screen row
+  // (choices 14 and 47).
   note?: string;
 }
 
