@@ -538,6 +538,22 @@ search, always on", "Own lookup tool, every provider")
       `ask`; other actions in `never` keep refusing a hook's ask ("Ask you").
     - The action is sent with `outside: true`: the server runs apart from the project. Only the
       judge reads it for this kind.
+48. **The project's question shows the entry as written** (Task 9's build and spec review; the
+    user's choice, 2026-11-11, "As written"): the command, arguments and address are shown as
+    `.mcp.json` writes them, `${VAR}` unfilled, so a key filled from the environment never reaches
+    the screen, as the refused-address line and `<address>` already keep it off (Task 2, Task 4);
+    and the answer, tied to the entry as written (choice 24), covers just what was shown.
+    `ServerConfig` keeps the written command, arguments and address beside `written`.
+49. **The question names the variables the entry sets** (Task 9's security check; the user's
+    choice, 2026-11-11, "Show names only"): a project entry's `env` could make a known program
+    load the project's own code (`NODE_OPTIONS`, for one), so a local server's question ends
+    `<command> <args> (sets <NAME>, <NAME>)? [y/n]`, names only, in the file's order, escaped as
+    the command is; no `env`, no brackets. Values are never shown: they may hold keys. A remote
+    server's headers are not named: they go only to the address shown.
+50. **An answer that cannot be saved** (Task 9's quality review; the user's choice, 2026-11-11,
+    "Match the reset line"): the answer still holds for this launch, and one red line says
+    `Your answer for <name> could not be saved (<reason>); Tachikoma asks again at the next
+    launch.`; the launch goes on. Before this a failed write crashed every launch in that project.
 
 ## Lines this plan adds
 
@@ -577,7 +593,8 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | A left-out kind (launch warning; replaces 8b's) | `settings.json: "hooks": "<Event>" has a "<type>" hook; only "command" and "mcp_tool" hooks run, so it was left out` |
 | An `mcp_tool` hook without `server` or `tool` (problem) | `settings.json: "hooks": "<Event>": an "mcp_tool" hook must have "server", such as {"type": "mcp_tool", "server": "memory", "tool": "search"}`, and the same with `"tool"` |
 | `/hooks` and Ctrl+O | the hook's name is `<server> <tool>`, such as `tradingview quote_get` (design) |
-| **The project's question** (at the launch) | `Start the MCP server "<name>" from this project's .mcp.json: <command> <args>? [y/n]`, or for a remote one `Connect to the MCP server "<name>" from this project's .mcp.json at <url>? [y/n]` |
+| **The project's question** (at the launch) | `Start the MCP server "<name>" from this project's .mcp.json: <command> <args>? [y/n]`, with ` (sets <NAME>, <NAME>)` before `?` when the entry has `env` (choice 49), or for a remote one `Connect to the MCP server "<name>" from this project's .mcp.json at <url>? [y/n]`; all as written, `${VAR}` unfilled (choice 48) |
+| An answer that cannot be saved (red; choice 50) | `Your answer for <name> could not be saved (<reason>); Tachikoma asks again at the next launch.` |
 | The answers unreadable (red, `mcp`; Task 3's throw, caught in Task 5) | `MCP answers for this project could not be read (<reason>), so its servers are asked about again.` (the user approved these words, 2026-11-10) |
 | A project's server in `-p` (note) | `MCP server <name> from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.` |
 | **Live edits** (grey) | `MCP servers changed: <name> restarted, <name> added, <name> removed.`, only the parts that apply (design: `MCP servers changed: tradingview restarted`) |
@@ -1096,6 +1113,15 @@ nothing is wired again. At exit, SessionEnd fires before `servers.stopAll()`, or
 the window's first, whatever its source, so a `-c`, `-r` or `--fork-session` launch skips them
 too.
 
+**From Task 9's build and reviews:** choices 48-50. Answers that cannot be read: the window asks
+each project server again and the answer holds for this launch only (`launchAnswers()`, Servers'
+`unread`); `-p` skips them with the note. With the sandbox's network off, the window asks no
+server question, as none could start. In `-p`, every project server without a yes gets the skip
+note, one answered no included (the plan's line above). A signal runs `stopAll` before the exit,
+as the plan says, so local servers get choice 3's close and remote ones are closed. In the window
+`startAll` runs right after Ink's first render, so the bus's listeners are on first; still before
+a prompt can be typed. `askAtStart` resumes stdin, so a second start-up question hears its key.
+
 Commit: `feat: MCP servers at the launch: project servers asked, the first prompt waits, -p's lines`.
 
 ## Task 10: `/mcp` and live edits
@@ -1242,7 +1268,10 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   content reaches the hook as its JSON text, which is read as the hook's JSON answer, as a
   command's printed `{...}` is, so it is never plain context, and a field such as `"continue":
   false` in it acts; when an earlier hook gives a non-string `updatedMCPToolOutput` and a later
-  one a string, the first in the file is kept and the string is lost, and Ctrl+O does not say so);
+  one a string, the first in the file is kept and the string is lost, and Ctrl+O does not say so;
+  and Task 9's reviews: servers run on the host in the real project folder, in copy mode too, so
+  what a server changes there is outside the copy and its review (until 8c-2); a question's
+  `(sets ...)` names the variables but not their values);
   the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
