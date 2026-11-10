@@ -21,6 +21,7 @@ import type { Fns } from "../App.js";
 import { unquoted } from "../clipboard.js";
 import { callLines, conversationLines, type Line } from "../describe.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
+import type { Action } from "../McpList.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
@@ -73,8 +74,9 @@ export const queue = (ui: UI, fns: Fns) => {
     const q = ui.queue.current;
     const command = q.findIndex((d) => isCommand(d.text));
     if (!h.queued) return;
-    // /resume's list too, which would open under the printed view (release 8a plan, Task 7).
-    if (h.phase.kind === "printed" && command === 0 && (fns.recordToOpen(q[0]!.text) || /^\/(screen|resume)$/i.test(q[0]!.text))) return;
+    // /resume's list too, which would open under the printed view (release 8a plan, Task 7), and /mcp's (release 8c plan,
+    // Task 10).
+    if (h.phase.kind === "printed" && command === 0 && (fns.recordToOpen(q[0]!.text) || /^\/(screen|resume|mcp)$/i.test(q[0]!.text))) return;
     if (ui.owner.busy && command === 0 && /^\/(screen|settings|keybindings)$/i.test(q[0]!.text)) return;
     ui.view.current = FOLLOWING; // sending a prompt goes to the bottom (release 5 design, "Scrolling")
     void fns.submit(joined(q.splice(0, command === 0 ? 1 : command === -1 ? q.length : command), "\n\n"));
@@ -105,6 +107,7 @@ export const queue = (ui: UI, fns: Fns) => {
       }
       if (alone("/errors")) return fns.say(...summarize(ui.errorFile).map((row) => ({ text: row, oneLine: true })));
       if (alone("/hooks")) return fns.say(...hooksList());
+      if (alone("/mcp")) return mcpOpen();
       // Not to full screen where it can't draw: classic, as at the start (clilib.ts, screenMode).
       if (alone("/screen") && !ui.fullNow.current && !ui.fullPossible)
         return fns.say({ text: "Full screen needs a terminal (the output is not one, or CI is set)", color: "gray" });
@@ -158,7 +161,7 @@ export const queue = (ui: UI, fns: Fns) => {
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
       if (!account && !listing && /^\/[a-z]+$/i.test(text)) return fns.say({ text: `Unknown command: ${text}. Commands: ${COMMANDS}`, color: "red" });
-      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings", "/clear", "/resume", "/hooks"].includes(command))
+      if (words.length && ["/exit", "/errors", "/model", "/screen", "/settings", "/keybindings", "/clear", "/resume", "/hooks", "/mcp"].includes(command))
         return fns.say({ text: `${command} takes nothing after it.`, color: "red" });
       ui.abort.current = new AbortController();
       const turn = !account && !listing;
@@ -248,6 +251,45 @@ export const queue = (ui: UI, fns: Fns) => {
       ? [`Hooks in force, from ${shownFile()}:`, ...[...events].flatMap(([event, rows]) => [event, ...rows])]
       : [`No hooks in force. They go in "hooks" in ${shownFile()}.`];
     return [...listed, ...(leftOut.length ? ["Left out:", ...leftOut.map((w) => `  ${visible(w)}`)] : [])].map(gray);
+  };
+  // `/mcp` (release 8c plan, Task 10; choice 27): the servers' list (McpList.tsx), holding the queue until it closes, as
+  // /resume's does; with none, where they go, the file named as the launch names it (settings.ts, shownFile). True when
+  // it opened.
+  const mcpOpen = (): boolean | void => {
+    if (!ui.mcp?.servers.list().length) return fns.say(gray(`No MCP servers. They go in "mcpServers" in ${shownFile()}, or in a project's .mcp.json.`));
+    ui.listOpen.current = true;
+    ui.setMcpList(true);
+    return true;
+  };
+  const closeMcp = () => {
+    ui.listOpen.current = false;
+    ui.setMcpList(false);
+    fns.next();
+  };
+  // A server's action, picked in /mcp's list. Reconnect keeps the list open, which shows the server starting, then how
+  // its start went; Show tools prints the server's tools into the conversation, as /hooks prints its list, then the ones
+  // left out, in their lines' words (Servers, tools); Reset my answer writes the reset (choice 24) and says so. What is
+  // said is asked for, shown at the bottom, as the model list's pick says (pick, below).
+  const mcpAction = (name: string, action: Action) => {
+    const servers = ui.mcp!.servers;
+    if (action === "Reconnect") {
+      void servers.restart(name).finally(() => ui.rerender((n) => n + 1));
+      return ui.rerender((n) => n + 1);
+    }
+    ui.view.current = FOLLOWING;
+    const shown = visible(name);
+    if (action === "Show tools") {
+      const { names: full, leftOut } = servers.tools(name);
+      fns.say(...[`${shown}'s tools:`, ...full.map((n) => `  ${visible(n)}`), ...(leftOut.length ? ["Left out:", ...leftOut.map((w) => `  ${visible(w)}`)] : [])].map(gray));
+    } else {
+      try {
+        servers.reset(name);
+        fns.say(gray(`Your answer for ${shown} was reset; Tachikoma asks again at the next launch.`));
+      } catch (err) {
+        fns.say({ text: errorText(err), color: "red" });
+      }
+    }
+    closeMcp();
   };
   // `/tasks t3`'s record: the subagent's tool calls and answer in full.
   const recordOf = (t: Task): Line[] => {
@@ -566,6 +608,6 @@ export const queue = (ui: UI, fns: Fns) => {
   };
   return {
     submit, next, recordToOpen, perform, tasksCommand, recordOf, pick, closePicker, leave, subagentsRunning, startFresh, resume,
-    pickSession, closeSessions, branch, rename, exportTo,
+    pickSession, closeSessions, branch, rename, exportTo, mcpAction, closeMcp,
   };
 };

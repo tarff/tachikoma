@@ -13,7 +13,11 @@ import { type BetaMessage, Messages } from "@anthropic-ai/sdk/resources/beta/mes
 import { Models } from "@anthropic-ai/sdk/resources/models";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { privateDir } from "../../src/auth/private.js";
-import { type Given, newSaved, WindowSessions } from "../../src/clilib.js";
+import { askServers, type Given, newSaved, WindowSessions } from "../../src/clilib.js";
+import { type Answers, answersFor, launchAnswers } from "../../src/mcp/answers.js";
+import { mergeServers, type ServerConfig } from "../../src/mcp/config.js";
+import { Servers } from "../../src/mcp/servers.js";
+import { approveOf, mcpTools } from "../../src/mcp/tools.js";
 import { type Ask, type Mode, type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { system32 } from "../../src/exec/env.js";
 import type { Executor } from "../../src/exec/executor.js";
@@ -46,12 +50,14 @@ import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
 import { conversationLines } from "../../src/tui/describe.js";
+import { mcpRow } from "../../src/tui/McpList.js";
 import { Pictures, type Read } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
 import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, texts, usage } from "../helpers.js";
+import { type FakeOptions, fakeServer } from "../mcp/fake.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 // How long a test waits for the settings watcher: fs.watch reported each of 400 writes within 5 ms on this machine
@@ -161,6 +167,9 @@ async function mount(
     hooks?: Hook[] | HooksConfig;
     leftLines?: AppProps["leftLines"]; // takes SessionEnd's lines at the window's exit, in full screen or copy mode (Task 10)
     servers?: SessionOptions["servers"]; // the MCP servers the first prompt waits for (release 8c plan, Task 9); none when not given
+    // Real MCP servers made on the mount's bus, as cli.tsx hands them to the session and the App, started once the App
+    // listens and stopped at the test's end, with the project's from .mcp.json for live edits (Task 10); none when not given.
+    mcp?: (bus: Bus) => { servers: Servers; project?: ServerConfig[] };
   } = {},
 ) {
   // Two levels inside a temp folder of the mount's own, so no mount saves into the user's data folder, and a case can
@@ -209,6 +218,8 @@ async function mount(
   const start = { project: ctx.root, version: "test", tools: tools.map((t) => t.spec) };
   const opened = opts.save ? newSaved(sessions, { id: randomUUID(), ...start, lead: lead.id, print: false, system: "t", box: false }) : undefined;
   const windowSessions = new WindowSessions(sessions, start, { box: false, full: "t" }, opened);
+  const mcp = opts.mcp && { project: [], ...opts.mcp(bus) };
+  if (mcp) onTestFinished(() => mcp.servers.stopAll());
   const session = new Session({
     lead,
     tools,
@@ -222,6 +233,7 @@ async function mount(
     ask: (...a) => ask(...a), // as cli.tsx gives it
     ...(hooks ? { hooks } : {}),
     ...(opts.servers ? { servers: opts.servers } : {}),
+    ...(mcp ? { servers: mcp.servers, mcp: mcpTools(mcp.servers, bus, approveOf(mcp.servers)) } : {}),
   });
   const historyFile = opts.historyFile ?? path.join(histories, `${nextHistory++}.jsonl`);
   if (opts.past) writeFileSync(historyFile, opts.past.map((p) => `${JSON.stringify(p)}\n`).join(""));
@@ -287,15 +299,17 @@ async function mount(
       copy={opts.copy}
       leftLines={opts.leftLines}
       hooks={hooks}
+      {...(mcp ? { mcp } : {})}
     />,
   );
   mounted.push(app);
+  mcp?.servers.startAll(); // once the App listens, as cli.tsx starts them
   // ink-testing-library's terminal has no height; 24 rows is Ink's own default size (getWindowSize).
   Object.assign(app.stdout, { rows: opts.rows ?? 24 });
   app.stdout.emit("resize");
   if (opened) session.load(opened.conversation); // once the App listens, as cli.tsx loads it
   await tick();
-  return { app, session, ctx, bus, tasks, historyFile, sessions, mouse, copies, gate, pictures, hooks, ask: (...a: Parameters<Ask>) => ask(...a) };
+  return { app, session, ctx, bus, tasks, historyFile, sessions, mouse, copies, gate, pictures, hooks, mcp, ask: (...a: Parameters<Ask>) => ask(...a) };
 }
 
 async function type(app: ReturnType<typeof render>, text: string) {
@@ -10155,5 +10169,248 @@ describe("App's MCP", () => {
       expect(frame).toContain("\u001b[90mMCP server tv is ready: 3 tools.\\u0007");
       expect(frame).toContain("\u001b[31m✗ MCP server tv failed to start: it exited with code 3: bad\\u001b[2J");
     });
+  });
+
+  // Release 8c plan, Task 10: /mcp and its actions, and live edits of "mcpServers", on real Servers running the fake
+  // servers of tests/mcp/fake.ts in a folder of the test's own.
+  const DOWN = "\u001b[B";
+  const HEADING = `MCP servers, from ${shownFile()} and .mcp.json:`;
+  const tool = (name: string) => ({ name, description: name, inputSchema: { type: "object" } });
+  // A long line wraps, and Ink can carry the space it broke at onto the next row.
+  const flat = (app: ReturnType<typeof render>) => app.lastFrame()!.replaceAll(/ *\n */g, " ");
+  // A wait on another process: a few seconds for a busy machine, well inside the test's 15 s.
+  const soon = (check: () => void) => vi.waitFor(check, { timeout: 5_000 });
+  const shows = (app: ReturnType<typeof render>, text: string) => soon(() => expect(app.lastFrame()).toContain(text));
+
+  // The test's folder, the project's root; `config` names a server running a fake with `fake`'s options; `servers` makes
+  // the mount's Servers, each stopped before the folder is removed, as on Windows a running server holds the folder it
+  // works in.
+  async function mcpSetup() {
+    const dir = await mkdtemp(path.join(tmpdir(), "tachi-app-mcp-"));
+    const made: Servers[] = [];
+    onTestFinished(async () => {
+      await Promise.all(made.map((s) => s.stopAll()));
+      await removeTree(dir);
+    });
+    const config = async (name: string, fake: FakeOptions = {}, over: Partial<ServerConfig> = {}): Promise<ServerConfig> => {
+      const entry = { kind: "stdio" as const, command: process.execPath, args: [await fakeServer(dir, fake)], env: {} };
+      return { name, safe: name, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry, asWritten: entry, ...over };
+    };
+    const servers =
+      (configs: ServerConfig[], opts: { answers?: () => Answers; network?: "on" | "off" | "none" } = {}) =>
+      (bus: Bus) => {
+        const answers = opts.answers ?? launchAnswers;
+        const s = new Servers(configs, { root: dir, env: process.env, bus, answers, network: opts.network ?? "none", lead: () => "fake:a" });
+        made.push(s);
+        return { servers: s };
+      };
+    // A settings file in a home of the test's own, holding `file`, read as the launch reads it, for the App to watch.
+    const settings = (file: object) => {
+      const home = mkdtempSync(path.join(tmpdir(), "tachi-home-"));
+      onTestFinished(() => removeTree(home));
+      const where = path.join(settingsDir(home), "settings.json");
+      mkdirSync(settingsDir(home), { recursive: true });
+      writeFileSync(where, JSON.stringify(file));
+      const loaded = readSettings(JSON.stringify(file)) as { settings: Settings; warnings: string[] };
+      return { home, where, live: { loaded, given: {} }, configs: loaded.settings.mcpServers ?? [] };
+    };
+    return { dir, config, servers, settings };
+  }
+  const states = (servers: Servers) => servers.list().map((s) => `${s.name} ${s.state.is}`);
+
+  // "Lines this plan adds": the heading, then a row each, as the design draws them; Enter shows the actions that apply,
+  // Esc goes back, then closes (choice 27).
+  it("lists each server on /mcp in a row of its own, with its state, the project's mark and its trust", async () => {
+    const { config, servers } = await mcpSetup();
+    const answers = launchAnswers();
+    answers.set("nope", "w-nope", false);
+    const configs = [
+      await config("ready", { tools: [tool("one"), tool("two")] }, { trusted: "read-only" }),
+      await config("some", { tools: [tool("one")] }, { trustedTools: ["one", "two"] }),
+      await config("slow", { silent: true }),
+      await config("gone", {}, { entry: { kind: "stdio", command: "tachi-test-no-such-program", args: [], env: {} } }),
+      await config("ends"),
+      await config("asks", {}, { where: "project", written: "w-asks" }),
+      await config("nope", {}, { where: "project", written: "w-nope" }),
+    ];
+    const { app, mcp } = await mount([], { mcp: servers(configs, { answers: () => answers }) });
+    const s = mcp!.servers;
+    await soon(() => expect(states(s).slice(0, 5)).toEqual(["ready ready", "some ready", "slow starting", "gone failed", "ends ready"]));
+    await s.server("ends")!.callTool("exit", { code: 3 }, {}).catch(() => {});
+    await shows(app, "MCP server ends stopped: it exited with code 3; reconnect it from /mcp.");
+    await type(app, "/mcp");
+    await shows(app, HEADING);
+    expect(app.lastFrame()).toContain(
+      [
+        HEADING,
+        "ready · 2 tools · trusted",
+        "some · 1 tool · 2 trusted tools",
+        "slow · starting",
+        "gone · failed: tachi-test-no-such-program was not found on PATH",
+        "ends · stopped: it exited with code 3",
+        "asks (project) · waiting for your yes",
+        "nope (project) · you said no",
+      ].join("\n"),
+    );
+    // A ready server's actions; Esc goes back to the list.
+    await press(app, "\r");
+    await shows(app, "ready · 2 tools · trusted\nReconnect\nShow tools\n");
+    expect(app.lastFrame()).not.toContain(HEADING);
+    await press(app, "\u001b");
+    await shows(app, `${HEADING}\nready`);
+    // A failed server and a stopped one can be reconnected; their tools are not offered, so there are none to show.
+    await press(app, DOWN, DOWN, DOWN, "\r");
+    await shows(app, "gone · failed: tachi-test-no-such-program was not found on PATH\nReconnect\n");
+    expect(app.lastFrame()).not.toContain("Show tools");
+    await press(app, "\u001b", DOWN, "\r");
+    await shows(app, "ends · stopped: it exited with code 3\nReconnect\n");
+    // A project's server without an answer has nothing to do yet; one answered has its answer to reset.
+    await press(app, "\u001b", DOWN, "\r");
+    await shows(app, `${HEADING}\n`);
+    expect(app.lastFrame()).toContain("asks (project) · waiting for your yes");
+    await press(app, DOWN, "\r");
+    await shows(app, "nope (project) · you said no\nReset my answer\n");
+    // Esc twice: back to the list, then the list closes and the prompt is back.
+    await press(app, "\u001b", "\u001b");
+    await gone(app, HEADING);
+    expect(app.lastFrame()).toContain("›");
+  });
+
+  it("shows a server the sandbox's network keeps off, its name escaped, and the rows Task 11 reaches", async () => {
+    const { config, servers } = await mcpSetup();
+    const { app } = await mount([], { mcp: servers([await config("far\u0007")], { network: "off" }) });
+    await type(app, "/mcp");
+    await shows(app, `${HEADING}\nfar\\u0007 · off: the sandbox's network is off`);
+    // Sign-in comes with Task 11, so no server reaches this state yet; its row's words are checked here.
+    const row = { name: "om", where: "user" as const, state: { is: "needs sign-in" as const }, trusted: null, trustedTools: [], tools: 0 };
+    expect(mcpRow(row)).toBe("om · needs sign-in");
+  });
+
+  it("says where servers go on /mcp when there are none, and that /mcp takes nothing after it", async () => {
+    const { app } = await mount([]);
+    await type(app, "/mcp");
+    await until(app, `No MCP servers. They go in "mcpServers" in ${shownFile()}, or in a project's .mcp.json.`);
+    await type(app, "/mcp now");
+    await until(app, "/mcp takes nothing after it.");
+  });
+
+  // Reconnect stops the server and starts it again, its connection number raised (design, finding 4), and the list shows
+  // it as it starts and once it is ready.
+  it("reconnects a stopped server from /mcp, its connection number raised, and goes back to the list", async () => {
+    const { config, servers } = await mcpSetup();
+    const { app, mcp } = await mount([], { mcp: servers([await config("ends", { tools: [tool("one")] })]) });
+    const s = mcp!.servers;
+    await soon(() => expect(states(s)).toEqual(["ends ready"]));
+    const server = s.server("ends")!;
+    expect(server.connection).toBe(1);
+    await server.callTool("exit", { code: 3 }, {}).catch(() => {});
+    await shows(app, "reconnect it from /mcp.");
+    await type(app, "/mcp");
+    await shows(app, `${HEADING}\nends · stopped: it exited with code 3`);
+    await press(app, "\r");
+    await shows(app, "ends · stopped: it exited with code 3\nReconnect\n");
+    await press(app, "\r");
+    await shows(app, `${HEADING}\nends · 1 tool`);
+    expect(server.connection).toBe(2);
+    expect(s.server("ends")).toBe(server);
+    await press(app, "\u001b");
+    await gone(app, HEADING);
+  });
+
+  it("draws /mcp's list and a server's actions in full screen, above the status line", async () => {
+    const { config, servers } = await mcpSetup();
+    const { app, mcp } = await mount([], { full: true, mcp: servers([await config("s", { tools: [tool("one")] })]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    await type(app, "/mcp");
+    await shows(app, `${HEADING}\ns · 1 tool\n`);
+    expect(app.lastFrame()).toMatch(/s · 1 tool\n.*lead fake:a/);
+    await press(app, "\r");
+    await shows(app, "s · 1 tool\nReconnect\nShow tools\n");
+    await press(app, "\u001b", "\u001b");
+    await gone(app, HEADING);
+  });
+
+  // Show tools prints the server's tools into the conversation, as /hooks prints its list, the ones left out after them in
+  // the name lines' words (choice 27).
+  it("prints a server's tools on Show tools, and the ones left out", async () => {
+    const { config, servers } = await mcpSetup();
+    const { app, mcp } = await mount([], { mcp: servers([await config("s", { tools: [tool("foo.bar"), tool("foo_bar"), tool("plain")] })]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    await type(app, "/mcp");
+    await shows(app, `${HEADING}\ns · 2 tools`);
+    await press(app, "\r", DOWN, "\r");
+    await gone(app, HEADING);
+    expect(app.lastFrame()).toContain(
+      ["s's tools:", "  mcp__s__foo_bar", "  mcp__s__plain", "Left out:", '  "foo_bar" was left out: its name mcp__s__foo_bar is already s\'s "foo.bar"'].join("\n"),
+    );
+  });
+
+  // Choice 24: the reset is a line in the project's answers file, so the next launch asks again; this launch's server runs on.
+  it("resets a project server's answer on Reset my answer, with its line, so the next launch asks again", async () => {
+    const { dir, config, servers } = await mcpSetup();
+    const data = path.join(dir, "data", "tachi");
+    const c = await config("proj", {}, { where: "project", written: "w1" });
+    answersFor(dir, data).set("proj", "w1", true);
+    const { app, mcp } = await mount([], { mcp: servers([c], { answers: () => answersFor(dir, data) }) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["proj ready"]));
+    await type(app, "/mcp");
+    await shows(app, `${HEADING}\nproj (project) · 10 tools`);
+    await press(app, "\r");
+    await shows(app, "proj (project) · 10 tools\nReconnect\nShow tools\nReset my answer\n");
+    await press(app, DOWN, DOWN, "\r");
+    await shows(app, "Your answer for proj was reset; Tachikoma asks again at the next launch.");
+    expect(app.lastFrame()).not.toContain(HEADING);
+    expect(states(mcp!.servers)).toEqual(["proj ready"]);
+    const asked: string[] = [];
+    await askServers([c], () => answersFor(dir, data), async (q) => (asked.push(q), false), () => {});
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatch(/^Start the MCP server "proj" from this project's \.mcp\.json: /);
+  });
+
+  // Release 8c plan, Task 5's set(): an entry the edit changed restarts, a new one starts, a removed one stops, the others
+  // untouched; a broken file keeps the servers in force (release 6 design, "Live edits").
+  it("restarts only the server a live edit changed, with the line, and keeps the servers when the file breaks", async () => {
+    const { dir, servers, settings } = await mcpSetup();
+    const script = await fakeServer(dir, { tools: [tool("one")] });
+    const entry = (...args: string[]) => ({ command: process.execPath, args: [script, ...args] });
+    const { home, where, live, configs } = settings({ mcpServers: { a: entry(), b: entry(), c: entry() } });
+    const { app, mcp } = await mount([], { home, live, mcp: servers(configs) });
+    const s = mcp!.servers;
+    await soon(() => expect(states(s)).toEqual(["a ready", "b ready", "c ready"]));
+    const [a, b] = [s.server("a"), s.server("b")];
+    writeFileSync(where, JSON.stringify({ mcpServers: { a: entry("again"), b: entry(), d: entry() } }));
+    await soon(() => expect(flat(app)).toContain("MCP servers changed: a restarted, d added, c removed."));
+    await soon(() => expect(states(s)).toEqual(["a ready", "b ready", "d ready"]));
+    expect(s.server("a")).not.toBe(a);
+    expect(s.server("b")).toBe(b);
+    expect(b!.connection).toBe(1);
+    writeFileSync(where, "{");
+    await soon(() => expect(flat(app)).toContain("the last good settings still apply"));
+    expect(states(s)).toEqual(["a ready", "b ready", "d ready"]);
+  });
+
+  // Choice 16: trust is read when the gate would decide, so a live edit that removes it takes effect at the next call,
+  // which is asked; the server is not restarted, and no line says a server changed.
+  it("asks at the next call once a live edit removes a server's trust, restarting nothing", async () => {
+    const { dir, servers, settings } = await mcpSetup();
+    const script = await fakeServer(dir);
+    const file = (trusted: boolean) => ({ mcpServers: { s: { command: process.execPath, args: [script], alwaysLoad: true, ...(trusted && { trusted: "read-only" }) } } });
+    const { home, where, live, configs } = settings(file(true));
+    const turns = [callTool("c1", "mcp__s__echo", { text: "hi" }), reply("first answer"), callTool("c2", "mcp__s__echo", { text: "again" }), reply("second answer")];
+    const { app, mcp } = await mount(turns, { home, live, mcp: servers(configs) });
+    const s = mcp!.servers;
+    await type(app, "go");
+    await shows(app, "first answer");
+    expect(app.lastFrame()).not.toContain("Allow s:");
+    const server = s.server("s")!;
+    writeFileSync(where, JSON.stringify(file(false)));
+    await soon(() => expect(s.trust("s", "echo")).toBe(false));
+    await type(app, "and again");
+    await soon(() => expect(flat(app)).toContain('Allow s: echo {"text":"again"}?'));
+    await press(app, "y");
+    await shows(app, "second answer");
+    expect(s.server("s")).toBe(server);
+    expect(server.connection).toBe(1);
+    expect(flat(app)).not.toContain("MCP servers changed");
   });
 });

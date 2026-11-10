@@ -16,11 +16,11 @@ describe("commandMenu", () => {
     expect(labels(m)).toEqual([
       ...["/lead <provider:model>", "/model", "/login chatgpt", "/logout chatgpt"],
       ...["/clear", "/resume", "/branch [name]", "/rename <name>", "/export [file]", "/compact [words]", "/autocompact <tokens>"],
-      ...["/tasks", "/hooks", "/errors", "/screen", "/settings", "/keybindings", "/vim", "/exit"],
+      ...["/tasks", "/hooks", "/mcp", "/errors", "/screen", "/settings", "/keybindings", "/vim", "/exit"],
     ]);
     expect(m!.entries[0]).toMatchObject({ note: "Switch the lead model; alone, pick it from a list", fill: "/lead ", run: "/lead" });
-    expect(m!.entries[15]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
-    expect(m!.entries[16]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
+    expect(m!.entries[16]).toMatchObject({ note: "Open the settings file in your editor", fill: "/settings ", run: "/settings" });
+    expect(m!.entries[17]).toMatchObject({ note: "Open the keys file in your editor", fill: "/keybindings ", run: "/keybindings" });
   });
 
   // Release 8a plan, Task 13 (choice 25; constants.ts, SHORTEN_WORDS).
@@ -61,6 +61,11 @@ describe("commandMenu", () => {
   // Release 8b plan, Task 12; the note in the user's words, 2026-11-10.
   it("lists /hooks after /tasks, saying what it does", () => {
     expect(commandMenu("/", 1)!.entries[12]).toEqual({ label: "/hooks", note: "List the hooks in force", fill: "/hooks ", run: "/hooks" });
+  });
+
+  // Release 8c plan, Task 10 ("Lines this plan adds": the / menu's note).
+  it("lists /mcp after /hooks, saying what it does", () => {
+    expect(commandMenu("/", 1)!.entries[13]).toEqual({ label: "/mcp", note: "List the MCP servers", fill: "/mcp ", run: "/mcp" });
   });
 
   it("narrows as the command is typed, in any case", () => {

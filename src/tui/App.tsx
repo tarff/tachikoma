@@ -11,6 +11,8 @@ import { errorText, type Message, type Provider } from "../core/types.js";
 import type { Workspace } from "../exec/workspace.js";
 import type { Hooks } from "../hooks/hooks.js";
 import { KEYBINDINGS } from "../keybindings.js";
+import type { ServerConfig } from "../mcp/config.js";
+import type { Servers } from "../mcp/servers.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { UserRules } from "../safety/rules.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
@@ -35,6 +37,7 @@ import { History } from "./history.js";
 import type { Mouse } from "./input.js";
 import { both, named } from "./keys.js";
 import { frame as frameOf, layout } from "./layout.js";
+import { ACTIONS, McpList } from "./McpList.js";
 import { Menu } from "./Menu.js";
 import { ModelPicker, rows as listRows } from "./ModelPicker.js";
 import type { Hand } from "./owner.js";
@@ -128,6 +131,9 @@ export interface AppProps {
   // The user's hooks, the session's and its subagents' (cli.tsx), for Ctrl+O's runs, /hooks and live edits (release 8b plan,
   // Task 12); without them, as in most tests, /hooks has none in force.
   hooks?: Hooks;
+  // The MCP servers (cli.tsx), for /mcp and live edits of "mcpServers", with the project's from .mcp.json, which is read
+  // at the launch only (release 8c plan, Tasks 2 and 10); without them, as in most tests, /mcp has none.
+  mcp?: { servers: Servers; project: ServerConfig[] };
 }
 
 type OutputArea = ReturnType<typeof output>;
@@ -149,7 +155,7 @@ export interface Fns {
   pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"]; subagentsRunning: QueueArea["subagentsRunning"];
   startFresh: QueueArea["startFresh"]; resume: QueueArea["resume"];
   pickSession: QueueArea["pickSession"]; closeSessions: QueueArea["closeSessions"]; branch: QueueArea["branch"];
-  rename: QueueArea["rename"]; exportTo: QueueArea["exportTo"];
+  rename: QueueArea["rename"]; exportTo: QueueArea["exportTo"]; mcpAction: QueueArea["mcpAction"]; closeMcp: QueueArea["closeMcp"];
   readsEnded: PictureReadsArea["readsEnded"]; stopReads: PictureReadsArea["stopReads"];
   settle: PictureReadsArea["settle"]; newPicture: PictureReadsArea["newPicture"];
   imagePaste: PictureReadsArea["imagePaste"]; pastePictures: PictureReadsArea["pastePictures"];
@@ -465,7 +471,7 @@ export function App(props: AppProps) {
       else fns.run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       ui.rerender((n) => n + 1);
     },
-    { isActive: !ui.picker && !ui.sessions }, // the sessions' list drops a paste itself (SessionList.tsx)
+    { isActive: !ui.picker && !ui.sessions && !ui.mcpList }, // the sessions' list and /mcp's drop a paste themselves (SessionList.tsx, McpList.tsx)
   );
 
   // What the listeners set up once, at mount (the bus's, bindAsk's and the mouse's), call: the latest drawing's
@@ -496,8 +502,9 @@ export function App(props: AppProps) {
   const prompt = ui.search.current ? fns.shown() : ui.editor.current;
   fns.staleVim(); // while drawing too, for a change no key made (a picture's read ending), safe as `copied` below says
   const highlight = ui.search.current ? undefined : visualSelection(ui.vim.current, prompt);
-  // The model list or /resume's list of sessions, drawn in the prompt's place: the picker phase (phase.ts).
-  const picking = ui.picker !== null || ui.sessions !== null;
+  // The model list, /resume's list of sessions or /mcp's of the MCP servers, drawn in the prompt's place: the picker phase
+  // (phase.ts).
+  const picking = ui.picker !== null || ui.sessions !== null || ui.mcpList;
   const menu = picking || ui.question || d ? null : fns.menuFor(prompt);
   if (menu?.kind !== "path") ui.listed.current = null;
 
@@ -609,8 +616,15 @@ export function App(props: AppProps) {
     taskRows: (rows) => taskRows(ui.tasks.all, rows, ui.now),
     todoRows: (rows) => (!ui.todos.current.hidden && unfinished(ui.todos.current.items) ? todoRows(ui.todos.current.items, rows) : []),
     queued: ui.queue.current.length,
-    // The sessions' list: its heading and a row each.
-    pickerNeeded: ui.picker ? offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1) : ui.sessions ? ui.sessions.rows.length + 1 : null,
+    // The sessions' list: its heading and a row each; /mcp's, its heading and a row for each server, or for each action
+    // when a server's are shown, whichever is more, so the frame stays put between the two.
+    pickerNeeded: ui.picker
+      ? offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1)
+      : ui.sessions
+        ? ui.sessions.rows.length + 1
+        : ui.mcpList
+          ? Math.max(ui.mcp?.servers.list().length ?? 0, ACTIONS.length) + 1
+          : null,
     question: ui.question !== null,
     askedText: ui.full && ui.question && !picking ? allow(ui.question.short ?? ui.question.text, ui.question.plain) : null,
     askedShort: movable ? allow(shortOf(ui.question), ui.question.plain) : null,
@@ -768,6 +782,15 @@ export function App(props: AppProps) {
           </Box>
         ) : (
           <SessionList {...ui.sessions} bindings={ui.table} onPick={pickSession} onClose={fns.closeSessions} keys={ui.pickerKey} maxRows={ui.height - 3} />
+        )
+      ) : ui.mcpList && ui.mcp ? (
+        // /mcp's list (release 8c plan, Task 10), where /resume's goes, in the same rows.
+        ui.full ? (
+          <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
+            <McpList servers={ui.mcp.servers} onAction={fns.mcpAction} onClose={fns.closeMcp} keys={ui.pickerKey} maxRows={pickerRows} />
+          </Box>
+        ) : (
+          <McpList servers={ui.mcp.servers} onAction={fns.mcpAction} onClose={fns.closeMcp} keys={ui.pickerKey} maxRows={ui.height - 3} />
         )
       ) : ui.question ? (
         // A dangerous command's red lines above the question, one per danger (release 7 plan, Task 8); auto mode's pause, a

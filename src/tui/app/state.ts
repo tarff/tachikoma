@@ -61,6 +61,7 @@ export function useAppState({
   saved,
   leftLines,
   hooks,
+  mcp,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -214,6 +215,8 @@ export function useAppState({
   // /resume's list of the folder's other saved sessions, and when it was read, for how long ago each was used: the picker
   // phase too, with Select's keys (release 8a plan, choice 14).
   const [sessions, setSessions] = useState<{ rows: Row[]; now: number } | null>(null);
+  // /mcp's list of the MCP servers, open or not: the picker phase too, with Select's keys (release 8c plan, Task 10).
+  const [mcpList, setMcpList] = useState(false);
   const listOpen = useRef(false); // the picker or the sessions' list, for keys and answers read before the screen is drawn again
   const announced = useRef(new Set<string>()); // background subagents whose ending has been shown
   const [, rerender] = useState(0);
@@ -298,7 +301,7 @@ export function useAppState({
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
     happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
-    editingBack, leftLines, hooks, hookStatus,
+    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList,
   } as const;
 }
 

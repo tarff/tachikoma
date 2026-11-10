@@ -1,6 +1,8 @@
 import { resolve } from "../../clilib.js";
+import { visible } from "../../core/permissions.js";
 import { errorText, type Provider } from "../../core/types.js";
 import { KEYBINDINGS, type KeysLoaded } from "../../keybindings.js";
+import { mergeServers } from "../../mcp/config.js";
 import { NO_RULES } from "../../safety/rules.js";
 import { hooksOf, type Loaded, SETTINGS, type Settings } from "../../settings.js";
 import type { Fns } from "../App.js";
@@ -157,8 +159,14 @@ export const liveEdits = (ui: UI, fns: Fns) => {
         ),
       );
     } else if (key === "mcpServers") {
-      // Nothing yet: release 8c plan, Task 10 applies it. Without this branch an edit would fall through to scrollSpeed's,
-      // as hooks' once did (release 8b, 9920095).
+      // Release 8c plan, Task 10: only the servers whose entries the edit changed restart, the user's entry winning a
+      // name .mcp.json gives too, as at launch (cli.tsx); .mcp.json is read at the launch only (Task 2). Trust and
+      // alwaysLoad apply from the next call, restarting nothing (choice 16), so their edit has no line.
+      const m = ui.mcp;
+      if (!m) return;
+      const { restarted, added, removed } = m.servers.set(mergeServers(s.mcpServers ?? [], m.project));
+      const parts = [...restarted.map((n) => `${visible(n)} restarted`), ...added.map((n) => `${visible(n)} added`), ...removed.map((n) => `${visible(n)} removed`)];
+      if (parts.length) fns.note(gray(`MCP servers changed: ${parts.join(", ")}.`));
     } else {
       // scrollSpeed. The wheel's carried fraction is in the old speed's units, so the new one starts with none (review
       // fixes plan, fix 6).

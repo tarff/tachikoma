@@ -147,9 +147,9 @@ In a session: /lead <provider:model> switches the lead model, /lead or /model pi
 it, /compact [words] shortens it into a summary now, /autocompact <tokens> shortens it once it
 passes that many tokens (/autocompact off: only when a request would not fit), /tasks lists the
 subagents (/tasks t1 shows one, /tasks stop stops them), /hooks lists the hooks in force,
-/errors summarises the error log, /screen switches between full screen and classic,
-/settings opens the settings file in your editor, /keybindings opens the keys file in your editor,
-/vim switches vim mode in this window, /exit quits.
+/mcp lists the MCP servers, /errors summarises the error log, /screen switches between full screen
+and classic, /settings opens the settings file in your editor, /keybindings opens the
+keys file in your editor, /vim switches vim mode in this window, /exit quits.
 Esc or Ctrl-C stops the current turn. When idle, Ctrl-C clears the prompt, and twice on an empty
 prompt quits. Ctrl+T hides or shows the to-do list. Esc and Ctrl+T can be moved in the keys file;
 Ctrl-C and Ctrl-D cannot. ? on an empty prompt lists every key.`;
@@ -900,6 +900,7 @@ if (parsed.print !== undefined) {
       saved={windowSessions}
       leftLines={(lines) => left.push(...lines)}
       hooks={hooks}
+      mcp={{ servers, project: projectServers }}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing

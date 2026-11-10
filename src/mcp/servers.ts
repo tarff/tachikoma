@@ -67,6 +67,7 @@ interface Slot {
   // Its left-out lines said, kept while it is not ready, so a new connection with the same list says none again; a live
   // edit's restart is a new slot, which says its own (Task 5's code review).
   said: Set<string>;
+  offered?: number; // how many of its tools the table last offered, for /mcp's row (Task 10), read without building it
 }
 
 export class Servers {
@@ -245,11 +246,13 @@ export class Servers {
   // a removed one stopped; the others are untouched, their trust and alwaysLoad taken from the new config. A project's
   // entry as written counts too, as its answer holds it (choice 24): written another way, it is asked about again even
   // when the filled-in entry is the same. A user's is not compared, as it also holds the trust and alwaysLoad that change
-  // in place. A stopped Server keeps the state it had, so it is forgotten, never read again. The live-edit line is said
-  // by Task 10.
-  set(configs: ServerConfig[]): void {
+  // in place. A stopped Server keeps the state it had, so it is forgotten, never read again. The names restarted, added
+  // and removed are given back, for the live-edit line (Task 10, liveEdits.ts).
+  set(configs: ServerConfig[]): { restarted: string[]; added: string[]; removed: string[] } {
     const key = (c: ServerConfig) => JSON.stringify([c.where, c.entry, c.where === "project" ? c.written : ""]);
     const old = new Map(this.#slots.map((s) => [s.config.name, s]));
+    const before = new Set(old.keys());
+    const now = new Set(configs.map((c) => c.name));
     const added: Slot[] = [];
     this.#slots = configs.map((config) => {
       const was = old.get(config.name);
@@ -262,20 +265,65 @@ export class Servers {
       added.push(slot);
       return slot;
     });
-    for (const slot of old.values()) void slot.server?.stop();
+    const gone = [...old.values()];
+    for (const slot of gone) void slot.server?.stop();
     if (this.#started) {
       this.#sayUnreadable();
       for (const slot of added) this.#begin(slot);
     }
     this.#wake();
+    const names = (slots: Slot[]) => slots.map((s) => s.config.name);
+    return {
+      restarted: names(added.filter((s) => before.has(s.config.name))),
+      added: names(added.filter((s) => !before.has(s.config.name))),
+      removed: names(gone.filter((s) => !now.has(s.config.name))),
+    };
   }
 
-  // For /mcp (Task 10): each server, its file, its state, and its trust.
-  list(): { name: string; where: "user" | "project"; state: State; trusted: ServerConfig["trusted"]; trustedTools: string[] }[] {
+  // For /mcp (Task 10): each server, its file, its state, its trust, and how many of its tools the table last offered.
+  list(): { name: string; where: "user" | "project"; state: State; trusted: ServerConfig["trusted"]; trustedTools: string[]; tools: number }[] {
     return this.#slots.map((slot) => {
       const { name, where, trusted, trustedTools } = slot.config;
-      return { name, where, state: this.#state(slot), trusted, trustedTools };
+      return { name, where, state: this.#state(slot), trusted, trustedTools, tools: slot.offered ?? 0 };
     });
+  }
+
+  // /mcp's Show tools (Task 10; choice 27): the server's tools the table offers now, by their full names, in its order,
+  // and its left-out lines, each without its "MCP server <name>: " place, as /hooks's left-out rows leave out theirs.
+  tools(name: string): { names: string[]; leftOut: string[] } {
+    const rows = this.#table();
+    const place = `MCP server ${visible(name)}: `;
+    const said = [...(this.#slots.find((s) => s.config.name === name)?.said ?? [])];
+    return {
+      names: rows.filter((r) => r.offered.server === name).map((r) => r.offered.spec.name),
+      leftOut: said.map((line) => (line.startsWith(place) ? line.slice(place.length) : line)),
+    };
+  }
+
+  // /mcp's Reconnect (Task 10): the server stopped, then started again on the entry in force, its connection number
+  // raised, so a call offered before is refused as restarted (design, finding 4); a failed start is said as at the launch.
+  // A server never started (waiting for a yes, said no, off) has nothing to reconnect.
+  async restart(name: string): Promise<void> {
+    const slot = this.#slots.find((s) => s.config.name === name);
+    const server = slot?.server;
+    if (!slot || !server) return;
+    await server.stop();
+    if (slot.server !== server || !this.#slots.includes(slot)) return; // a live edit or the exit replaced it meanwhile
+    const started = server.start();
+    this.#wake(); // it is starting now
+    await started;
+    this.#changed(slot, server);
+  }
+
+  // /mcp's Reset my answer (Task 10; choice 24): whether a project's server has an answer for its entry as written, and
+  // its reset, a line in the project's answers, which throws when it cannot be written. The server stays as it is until
+  // the next launch, which asks again.
+  answered(name: string): boolean {
+    const config = this.#slots.find((s) => s.config.name === name)?.config;
+    return config?.where === "project" && this.#readAnswers()?.get(config.name, config.written) !== undefined;
+  }
+  reset(name: string): void {
+    this.#readAnswers()?.reset(name);
   }
 
   // A server's connection, for Task 6's calls.
@@ -445,6 +493,7 @@ export class Servers {
         };
         return { offered, searched: cut(text, MAX_SEARCHED), upfront: c.slot.config.alwaysLoad || c.tool._meta?.["anthropic/alwaysLoad"] === true };
       });
+    for (const slot of this.#slots) slot.offered = rows.filter((r) => r.offered.server === slot.config.name).length;
     const fresh: string[] = [];
     for (const [slot, own] of lines) {
       fresh.push(...new Set(own.filter((l) => !slot.said.has(l))));
