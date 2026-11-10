@@ -119,7 +119,8 @@ function serveStdio() {
 }
 
 // One session per initialize; a request with another session id is answered 404, as MCP's Streamable HTTP transport has
-// a server that no longer knows the session answer. A GET for an event stream is answered 405: there is none.
+// a server that no longer knows the session answer. A GET for an event stream is answered 405: there is none. A call to
+// the unlisted tool "cut" is read and its connection cut, with no answer: a drop after the request reached the server.
 function serveHttp() {
   const sessions = new Set();
   let next = 0;
@@ -135,6 +136,7 @@ function serveHttp() {
       if (m.method !== "initialize" && !sessions.has(req.headers["mcp-session-id"])) return res.writeHead(404).end();
       if (m.id === undefined) return res.writeHead(202).end();
       if (O.silent) return;
+      if (m.method === "tools/call" && m.params.name === "cut") return req.socket.destroy();
       const headers = { "content-type": "application/json" };
       if (m.method === "initialize") {
         const id = "session-" + ++next;

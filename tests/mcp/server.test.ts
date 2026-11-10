@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { running } from "../../src/exec/local.js";
 import type { ServerConfig, ServerEntry } from "../../src/mcp/config.js";
-import { Server } from "../../src/mcp/server.js";
+import { NotReached, Server } from "../../src/mcp/server.js";
 import { removeTree } from "../helpers.js";
 import { type FakeOptions, fakeServer, httpFake, readLog } from "./fake.js";
 
@@ -240,17 +240,20 @@ describe("a remote server", () => {
     expect(server.state).toEqual({ is: "failed", reason: "it did not answer within 1 s" });
   });
 
-  it("is stopped with retry when it drops, reconnects once, and after a second drop is not tried again", async () => {
+  it("is stopped with retry at each drop and reconnects each time, until a reconnect fails, after which none is tried", async () => {
     const { dir, make, onChange, log } = await setup();
     const first = await httpFake(dir, { log });
     const server = make(remote(first.url));
     await server.start();
     expect(server.connection).toBe(1);
+    const refused = `connect ECONNREFUSED 127.0.0.1:${first.port}`;
 
-    // Gone: the next request cannot reach it.
+    // Gone: the call's request is refused, so it never reached the server (choice 13).
     await first.stop();
-    await expect(server.callTool("echo", { text: "x" }, {})).rejects.toThrow();
-    expect(server.state).toEqual({ is: "stopped", reason: `connect ECONNREFUSED 127.0.0.1:${first.port}`, retry: true });
+    const call = server.callTool("echo", { text: "x" }, {});
+    await expect(call).rejects.toThrow(NotReached);
+    await expect(call).rejects.toThrow(refused);
+    expect(server.state).toEqual({ is: "stopped", reason: refused, retry: true });
     expect(onChange).toHaveBeenCalledTimes(1);
 
     // Back on the same port: one new connection.
@@ -260,17 +263,39 @@ describe("a remote server", () => {
     expect(server.connection).toBe(2);
     expect(textOf(await server.callTool("echo", { text: "again" }, {}))).toBe("again");
 
-    // Restarted, it no longer knows the session (404): stopped, and not tried again.
+    // Restarted, it no longer knows the session (404), so this call never reached it either; this drop gets its own
+    // new connection.
     await second.stop();
     const third = await httpFake(dir, { log, port: first.port });
-    await expect(server.callTool("echo", { text: "x" }, {})).rejects.toThrow();
-    expect(server.state).toEqual({ is: "stopped", reason: `http://127.0.0.1:${first.port} answered 404`, retry: false });
+    await expect(server.callTool("echo", { text: "x" }, {})).rejects.toThrow(NotReached);
+    expect(server.state).toEqual({ is: "stopped", reason: `http://127.0.0.1:${first.port} answered 404`, retry: true });
     expect(onChange).toHaveBeenCalledTimes(2);
+    expect(await server.reconnect()).toBe(true);
+    expect(server.connection).toBe(3);
+
+    // Gone again, and not back: the reconnect fails, and no other is tried.
+    await third.stop();
+    await expect(server.callTool("echo", { text: "x" }, {})).rejects.toThrow(NotReached);
+    expect(server.state).toEqual({ is: "stopped", reason: refused, retry: true });
+    expect(await server.reconnect()).toBe(false);
+    expect(server.state).toEqual({ is: "stopped", reason: refused, retry: false });
+    expect(server.connection).toBe(4);
     const initializes = () => readLog(log).filter((m) => m.body?.method === "initialize").length;
     const before = initializes();
     expect(await server.reconnect()).toBe(false);
     expect(initializes()).toBe(before);
-    expect(server.connection).toBe(2);
-    await third.stop();
+    expect(server.connection).toBe(4);
+  });
+
+  it("fails a call cut off after it reached the server with the library's error, not NotReached, and is stopped with retry", async () => {
+    const { dir, make, onChange } = await setup();
+    const fake = await httpFake(dir);
+    const server = make(remote(fake.url));
+    await server.start();
+    const call = server.callTool("cut", {}, {});
+    await expect(call).rejects.toThrow();
+    await expect(call).rejects.not.toBeInstanceOf(NotReached);
+    expect(server.state.is === "stopped" && server.state.retry).toBe(true);
+    expect(onChange).toHaveBeenCalledTimes(1);
   });
 });

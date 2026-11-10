@@ -28,7 +28,7 @@ import type { ServerConfig } from "./config.js";
 // `Tool` is the library's tool, as tools/list sends it, each description whole: the views cut their own copies.
 export type State =
   | { is: "starting" } | { is: "ready"; tools: Tool[] } | { is: "failed"; reason: string }
-  | { is: "stopped"; reason: string; retry: boolean } // retry: a remote one whose connection dropped, not yet tried again (choice 33)
+  | { is: "stopped"; reason: string; retry: boolean } // retry: a remote one whose connection dropped, not yet tried again since this drop (choices 13, 33)
   | { is: "needs sign-in" } | { is: "waiting for your yes" } | { is: "you said no" } | { is: "off" };
 
 // Claude Code's MCP_TIMEOUT: a server has 30 s to connect and send its first list (choice 1; "Numbers in this plan").
@@ -43,6 +43,11 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", im
 // The project's folder as the server's roots (design, "The folder a server is told it works in"), and forms of both kinds;
 // never sampling, which would spend the user's provider credit for the server (design, "Tools for the model").
 const CAPABILITIES = { roots: {}, elicitation: { form: {}, url: {} } };
+
+// A call whose request never reached the server: its connection was refused, or the server answered 404 to the session.
+// The server is then stopped with retry, and Task 6's run connects again and sends the same call once more, as the
+// approved call never ran (release 8c plan, choice 13: "Reconnect, then retry"). Its message is the stopped reason.
+export class NotReached extends Error {}
 
 const alive = (child: ChildProcess) => child.exitCode === null && child.signalCode === null;
 
@@ -92,7 +97,6 @@ export class Server {
   #state: State = { is: "starting" };
   #connection = 0;
   #conn: Conn | undefined;
-  #retried = false; // a dropped remote one was given its one new connection (choices 13, 33)
 
   // `startMs` is the start's limit, 30 s unless a test gives a short one.
   constructor(config: ServerConfig, opts: { root: string; env: NodeJS.ProcessEnv; onChange(): void; startMs?: number }) {
@@ -114,28 +118,35 @@ export class Server {
 
   // Never throws: the state says how it went.
   async start(): Promise<void> {
-    this.#retried = false;
     await this.#connect((reason) => ({ is: "failed", reason }));
   }
 
-  // A remote server whose connection dropped gets one new connection, and only once: whatever happens, `retry` is then
-  // false (choices 13 and 33). Nothing restarts on its own; Task 6's run calls this.
+  // A remote server whose connection dropped gets one new connection per drop (choices 13 and 33; the user's choice,
+  // 2026-11-10, "Once per drop"): while it tries the state is starting, so no second try begins; once connected, a later
+  // drop gets its own; a failed one leaves it stopped without retry, until /mcp. Nothing restarts on its own; Task 6's
+  // run calls this.
   async reconnect(): Promise<boolean> {
     if (this.#state.is !== "stopped" || !this.#state.retry) return false;
-    this.#retried = true;
     return this.#connect((reason) => ({ is: "stopped", reason, retry: false }));
   }
 
   // The entry's timeout, or else Node's longest wait for a local server and 60 s for a remote one, whose entry's timeout
   // counts only when longer ("Numbers in this plan"); always passed, as the library's own default is 60 s. The limit is
   // hard: no progress is asked for and none extends it, as Claude Code's MCP page says (the user's choice, 2026-11-10).
-  // The signal stops the call, and the library tells the server.
-  callTool(name: string, args: object, opts: { signal?: AbortSignal }): Promise<CallToolResult> {
+  // The signal stops the call, and the library tells the server. A remote call that never reached the server throws
+  // NotReached; one that may have (a connection cut mid-answer) fails with the library's error. Either way the server is
+  // stopped with retry by then (onerror), and the call is not sent again here.
+  async callTool(name: string, args: object, opts: { signal?: AbortSignal }): Promise<CallToolResult> {
     const conn = this.#conn;
-    if (!conn?.ready || conn.closed) return Promise.reject(new Error("Not connected"));
+    if (!conn?.ready || conn.closed || this.#state.is !== "ready") throw new Error("Not connected"); // stopped: not closed yet
     const entry = this.config.entry;
     const timeout = entry.kind === "stdio" ? (entry.timeout ?? MAX_TIMER_MS) : Math.max(entry.timeout ?? 0, REMOTE_MS);
-    return conn.client.callTool({ name, arguments: args as Record<string, unknown> }, { signal: opts.signal, timeout });
+    try {
+      return await conn.client.callTool({ name, arguments: args as Record<string, unknown> }, { signal: opts.signal, timeout });
+    } catch (err) {
+      if (!conn.local && notReached(err)) throw new NotReached(remoteReason(this.#address(), err), { cause: err });
+      throw err;
+    }
   }
 
   // At Tachikoma's exit, a restart or a removal (choice 3).
@@ -235,12 +246,14 @@ export class Server {
   }
 
   // A ready server that exits or drops is stopped, with its reason (choices 5, 6), its connection closed; a remote one
-  // gets one more try unless it had it (choice 13). The reason is read only then: a process that never started has no
-  // exit to tell.
+  // gets one new connection for this drop (choice 13). The reason is read only then: a process that never started has no
+  // exit to tell. The connection is closed once the request that found the drop has its own error, as the client's close
+  // would fail it with "Connection closed" first, and NotReached reads that error; any other call still waiting then
+  // fails as closed, as it may have reached the server.
   #dropped(conn: Conn, reason: () => string): void {
     if (conn !== this.#conn || !conn.ready || conn.closed) return;
-    this.#state = { is: "stopped", reason: reason(), retry: !conn.local && !this.#retried };
-    void this.#close(conn);
+    this.#state = { is: "stopped", reason: reason(), retry: !conn.local };
+    setImmediate(() => void this.#close(conn));
     this.#onChange();
   }
 
@@ -298,7 +311,19 @@ function remoteReason(address: string, err: unknown): string {
 // no longer knows the session (404: MCP's Streamable HTTP transport, "Session Management", has the client start a new
 // one; a 404 for the optional event stream is left out, as a server without one may answer so), or when an sse server's
 // event stream fails (the library's SseError).
-const isDrop = (err: Error) =>
-  err instanceof TypeError ||
-  err instanceof SseError ||
-  (err instanceof SdkHttpError && err.status === 404 && err.code !== SdkErrorCode.ClientHttpFailedToOpenStream);
+const lostSession = (err: unknown) => err instanceof SdkHttpError && err.status === 404 && err.code !== SdkErrorCode.ClientHttpFailedToOpenStream;
+const isDrop = (err: Error) => err instanceof TypeError || err instanceof SseError || lostSession(err);
+
+// Of those, the ones whose request never reached the server (choice 13): the session it no longer knows, and a refused
+// connection, which fetch's TypeError says by its cause's code (an AggregateError of one try per address carries it
+// too, for localhost; seen 2026-11-10). A connection cut after the request was sent says UND_ERR_SOCKET instead.
+function notReached(err: unknown): boolean {
+  if (lostSession(err)) return true;
+  if (!(err instanceof TypeError)) return false;
+  const seen = new Set<unknown>(); // a chain that loops back on itself would never end
+  for (let e: unknown = err.cause; e instanceof Error && !seen.has(e); e = e.cause) {
+    seen.add(e);
+    if ((e as NodeJS.ErrnoException).code === "ECONNREFUSED") return true;
+  }
+  return false;
+}
