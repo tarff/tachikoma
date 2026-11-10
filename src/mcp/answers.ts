@@ -54,13 +54,15 @@ export function answersFor(root: string, dir: string = dataDir(), warn: (message
       const answer = answers.get(name);
       return answer?.entry === entry ? answer.yes : undefined;
     },
+    // Kept here first, so an answer whose line cannot be written still holds for this launch; the write's failure is
+    // thrown for the launch to say (release 8c plan, choice 50).
     set(name, entry, yes) {
-      append({ name, entry, yes });
       answers.set(name, { entry, yes });
+      append({ name, entry, yes });
     },
     reset(name) {
-      append({ name, reset: true });
       answers.delete(name);
+      append({ name, reset: true });
     },
   };
 }

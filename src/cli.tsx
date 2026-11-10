@@ -47,7 +47,9 @@ import {
   sandboxStart,
   screenMode,
   type Started,
+  stopSoon,
   systemAgain,
+  turnAnswer,
   WindowSessions,
 } from "./clilib.js";
 import { Bus } from "./core/bus.js";
@@ -486,7 +488,11 @@ let ready: Ready | undefined;
 // The executor stops running commands, and the sandbox's box is removed (src/sandbox/executor.ts), from "exit" handlers,
 // which dying by a signal skips. SIGQUIT is ignored while the editor has the terminal (clilib.ts, exitOn). Set before the
 // sandbox's launch, so a SIGTERM or SIGHUP during it, the copy among them, runs them too (Task 21's quality review).
-for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning));
+// Once the MCP servers are made (below), a signal stops them first, as the window's and -p's exits do, waiting at most
+// choice 3's wait (stopSoon; release 8c plan, Task 9).
+let mcpServers: Servers | undefined;
+const stopServers = () => (mcpServers ? stopSoon(mcpServers) : Promise.resolve());
+for (const sig of exitSignals(process.platform)) process.on(sig, exitOn(sig, programRunning, stopServers));
 // Copy mode's copy is removed when the launch ends before the session starts, however it ends (clilib.ts, dropOnExit).
 // From the image's steps until the box has started, Ctrl-C, with raw mode off, ends the launch through process.exit, so
 // the exit handlers remove the copy and any box already started (executor.ts); at the instruction files' question, it
@@ -576,15 +582,19 @@ const projectAnswers = (): Answers => {
 };
 const launchOnly = launchAnswers();
 // In the window, after the instruction files' question, one question per project server not yet answered (choice 23);
-// none with the network off, as none could start. -p asks nothing: it starts only those already said yes to.
+// none with the network off, as none could start. -p asks nothing: it starts only those already said yes to. An answer
+// that could not be saved still holds for this launch; its red line is said in the window, as the unreadable answers'
+// is (choice 50).
+const unsaved: string[] = [];
 if (interactive && mcpNetwork !== "off") {
-  await askServers(mcpConfigs, () => {
+  const answersNow = () => {
     try {
       return projectAnswers();
     } catch {
       return launchOnly;
     }
-  }, askAtStart);
+  };
+  await askServers(mcpConfigs, answersNow, askAtStart, (line) => unsaved.push(line));
 }
 // Then the box: leftover boxes removed, the box started and its node checked (sandboxStart). From here the model works in
 // it, on /work (choice 19). Its launch lines are grey in the interface, and on stderr with -p.
@@ -613,8 +623,10 @@ const servers = new Servers(mcpConfigs, {
   answers: projectAnswers,
   unread: launchOnly,
   network: mcpNetwork,
+  // Read only when a line is said, from startAll on, once the session below exists.
   lead: () => session.lead.id,
 });
+mcpServers = servers;
 
 let declined = false;
 let ask: Ask = async (summary, _detail, owner, _plain, warnings) => {
@@ -757,21 +769,20 @@ if (parsed.print !== undefined) {
   const stop = new AbortController();
   process.once("SIGINT", () => stop.abort());
   // A prompt a UserPromptSubmit hook blocked, and a hook's continue: false, end the run with exit code 1, as its work was
-  // cut short (release 8b plan, Task 8 and choice 9). A blocked prompt, or one a stop left unsent, leaves the history as it
-  // was, so a resumed session's last answer is not printed as this run's; a stop later in the turn prints the answer it
-  // came after, as a Stop hook's does (Task 9).
+  // cut short (release 8b plan, Task 8 and choice 9). Only the reply this turn added is printed (turnAnswer): a blocked
+  // prompt, one a stop left unsent, and one stopped while it waited for SessionStart or the MCP servers add none, so a
+  // resumed session's last answer is not printed as this run's (release 8c plan, Task 9's review); a stop later in the
+  // turn prints the answer it came after, as a Stop hook's does (release 8b plan, Task 9).
+  const before = session.messages.at(-1);
   const ended = await session.send(parsed.print, stop.signal);
   // Read now: a Ctrl-C during SessionEnd or copy mode's step below comes after the run's work, so it does not mark the run
   // stopped (Task 10's code review).
   const aborted = stop.signal.aborted;
-  if (!parsed.json && !(ended && ("blocked" in ended || ended.unsent))) {
-    const last = session.messages.at(-1);
-    if (last?.role === "assistant") {
-      const text = last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
-      const { out, note } = headlessAnswer(text, { raw: parsed.raw === true, tty: process.stdout.isTTY === true });
-      console.log(out);
-      if (note) console.error(note);
-    }
+  const text = parsed.json ? undefined : turnAnswer(before, session.messages);
+  if (text !== undefined) {
+    const { out, note } = headlessAnswer(text, { raw: parsed.raw === true, tty: process.stdout.isTTY === true });
+    console.log(out);
+    if (note) console.error(note);
   }
   // The run's session ends here, after its answer, however its turn ended, a stop by Ctrl-C too (release 8b plan, Task 10).
   // Then the MCP servers stop, after SessionEnd, whose mcp_tool hooks call them (release 8c plan, Task 8's code review).
@@ -801,7 +812,7 @@ if (parsed.print !== undefined) {
   // Ctrl-C reaches the interface as a key, as raw mode is on, so a SIGINT here came from outside (`kill -INT`), or from
   // Ctrl-C typed while the editor has the terminal, with raw mode off: that one is ignored, as Git ignores it, and the
   // turn goes on (clilib.ts, exitOn; release 6 plan, choice 31).
-  process.on("SIGINT", exitOn("SIGINT", programRunning));
+  process.on("SIGINT", exitOn("SIGINT", programRunning, stopServers));
   // After the instruction files' question, which stays on the normal screen, and before Ink's first frame, which goes to
   // the second (release 5 design, "The two modes"). restoreOnExit is set up in every mode, as /screen can enter full
   // screen later. tests/tui/terminal.test.tsx ("restoreOnExit") copies this order from here to restoreWhenInkEnds: keep
@@ -901,6 +912,7 @@ if (parsed.print !== undefined) {
   // typed, which waits for them (choice 25).
   servers.startAll();
   for (const line of mcpLines(servers, { print: false })) bus.emit("mcp-note", line);
+  for (const message of unsaved) bus.emit("error", { kind: "mcp", attempted: "MCP answers", message, lead: session.lead.id });
   session.load(opened.conversation);
   session.start(source);
   const exited = ink.waitUntilExit();

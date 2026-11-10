@@ -15,12 +15,15 @@ import { type FakeOptions, fakeServer, httpFake, readLog } from "./fake.js";
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;
 const windows = process.platform === "win32";
 
-const base: Omit<ServerConfig, "entry"> = { name: "fake", safe: "fake", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" };
+const base: Omit<ServerConfig, "entry" | "asWritten"> = {
+  name: "fake", safe: "fake", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "",
+};
 const local = (args: string[], over: Partial<Extract<ServerEntry, { kind: "stdio" }>> = {}): ServerConfig => ({
   ...base,
   entry: { kind: "stdio", command: process.execPath, args, env: {}, ...over },
+  asWritten: { command: process.execPath, args },
 });
-const remote = (url: string, headers: Record<string, string> = {}): ServerConfig => ({ ...base, entry: { kind: "http", url, headers } });
+const remote = (url: string, headers: Record<string, string> = {}): ServerConfig => ({ ...base, entry: { kind: "http", url, headers }, asWritten: { url } });
 
 // The test's own folder, the project's root, and its servers, each stopped before the folder is removed: on Windows a
 // running server holds the folder it works in.

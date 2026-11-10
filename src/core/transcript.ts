@@ -169,8 +169,8 @@ export interface Read {
   // The history for a launch with these tools and system prompt: a reply keeps its provider's own content only when the
   // tools and system prompt it was saved under are these, as Anthropic refuses a thinking block once either changed
   // before it (release 8a design, "Before the build", check 2; plan, choice 4). `dropped`: whether any reply's was left
-  // out; `otherTools`: whether any of those was saved under other tools and this system prompt.
-  withTools(tools: ToolSpec[], system: string): { messages: Message[]; dropped: boolean; otherTools: boolean };
+  // out.
+  withTools(tools: ToolSpec[], system: string): { messages: Message[]; dropped: boolean };
 }
 
 // The result given to a call left without one (release 8a design, "Resuming"; approved as worded).
@@ -257,16 +257,13 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     const nextPicture = Math.max(0, ...used, ...numbered(pictures, /^(\d+)\.(png|jpg|gif|webp)$/)) + 1;
     const nextTask = Math.max(0, ...subagents.map((s) => Number(/^t(\d+)$/.exec(s.id)?.[1] ?? 0)), ...numbered(subagentsDir, /^t(\d+)\.jsonl$/)) + 1;
     // Each reply with the tools and system prompt it was saved under; pair() keeps a reply as the same object.
-    const restored = history.map((h) => ({ m: restore(h.m, pictures), tools: madeUnder("", h.tools), system: h.system, under: madeUnder(h.system, h.tools) }));
+    const restored = history.map((h) => ({ m: restore(h.m, pictures), under: madeUnder(h.system, h.tools) }));
     const savedUnder = new Map(restored.map((h) => [h.m, h]));
     const messages = pair(restored.map((h) => h.m));
     // The session's own rule (keepThinking), so a resume sends what the live session would have.
     const withTools = (now: ToolSpec[], nowSystem: string) => {
       const kept = keepThinking(messages, (m) => savedUnder.get(m)?.under, madeUnder(nowSystem, now));
-      const left = messages.filter((m, i) => kept[i] !== m);
-      // Under an older system prompt, the resume that changed it said so; a sandbox switch changes the shell tool too.
-      const otherTools = left.some((m) => savedUnder.get(m)?.system === nowSystem && savedUnder.get(m)?.tools !== madeUnder("", now));
-      return { messages: kept, dropped: left.length > 0, otherTools };
+      return { messages: kept, dropped: kept.some((m, i) => m !== messages[i]) };
     };
     return {
       start,

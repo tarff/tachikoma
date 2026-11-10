@@ -10124,18 +10124,22 @@ describe("App's MCP", () => {
     await until(app, "done");
   });
 
-  // Ctrl-C stops the turn as ever, the wait with it, so nothing is sent and the prompt comes back.
-  it("sends nothing when Ctrl-C stops the first prompt's wait", async () => {
+  // Ctrl-C stops the turn as ever, the wait with it, so nothing is sent, and a prompt queued behind it comes back into the
+  // prompt box, as Ctrl-C brings the queue back during any turn (keyRouting.ts). The stopped prompt itself does not, as
+  // during SessionStart's wait (release 8b plan, Task 10).
+  it("sends nothing when Ctrl-C stops the first prompt's wait, and gives back the prompt queued behind it", async () => {
     const s = starting(["tradingview"]);
     const lead = new Held();
     const { app, session } = await mount([], { lead, servers: s.servers });
     await type(app, "first");
     await until(app, "Waiting for MCP servers: tradingview... · ");
+    await type(app, "second");
     await press(app, "\u0003");
     await gone(app, "Waiting for MCP servers");
     expect(s.waits.map((w) => w.aborted)).toEqual([true]);
     expect(lead.asked).toEqual([]);
     expect(session.messages).toEqual([]);
+    expect(app.lastFrame()).toContain("› second");
   });
 
   // Choice 26: an MCP grey line is grey, a failure red, each line alone, as it names what failed, as a hook's is; both

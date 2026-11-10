@@ -91,9 +91,10 @@ async function setup() {
     const file = log();
     logs.set(name, file);
     const script = await fakeServer(dir, { log: file, ...fake });
-    return { ...user, name, safe: name, entry: { kind: "stdio", command: process.execPath, args: [script], env: {} } };
+    const entry = { kind: "stdio" as const, command: process.execPath, args: [script], env: {} };
+    return { ...user, name, safe: name, entry, asWritten: entry };
   };
-  const remote = (name: string, url: string): ServerConfig => ({ ...user, name, safe: name, entry: { kind: "http", url, headers: {} } });
+  const remote = (name: string, url: string): ServerConfig => ({ ...user, name, safe: name, entry: { kind: "http", url, headers: {} }, asWritten: { url } });
   const make = (configs: ServerConfig[]) => {
     const answers = () => {
       throw new Error("no project server here, so no answers are read");

@@ -89,7 +89,8 @@ async function setup() {
     const file = path.join(dir, `log-${++files}.jsonl`);
     logs.set(name, file);
     const script = await fakeServer(dir, { log: file, ...fake });
-    return { ...user, name, safe: name, entry: { kind: "stdio", command: process.execPath, args: [script], env: {} }, ...over };
+    const entry = { kind: "stdio" as const, command: process.execPath, args: [script], env: {} };
+    return { ...user, name, safe: name, entry, asWritten: entry, ...over };
   };
   const make = (configs: ServerConfig[]) => {
     const answers = () => {

@@ -280,7 +280,9 @@ describe("Tasks", () => {
     const log = path.join(dir, "log.jsonl");
     const script = await fakeServer(dir, { log });
     const entry = { kind: "stdio" as const, command: process.execPath, args: [script], env: {} };
-    const config: ServerConfig = { name: "s", safe: "s", where: "user", trusted: null, trustedTools: ["echo"], alwaysLoad: true, written: "", entry };
+    const config: ServerConfig = {
+      name: "s", safe: "s", where: "user", trusted: null, trustedTools: ["echo"], alwaysLoad: true, written: "", entry, asWritten: entry,
+    };
     const bus = new Bus();
     const answers = () => {
       throw new Error("no project server here, so no answers are read");

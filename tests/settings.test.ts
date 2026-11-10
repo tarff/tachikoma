@@ -340,6 +340,7 @@ describe("readSettings", () => {
             name: "tv", safe: "tv", where: "user", trusted: null, trustedTools: [], alwaysLoad: false,
             entry: { kind: "stdio", command: "node", args: [], env: {} },
             written: createHash("sha256").update(JSON.stringify({ command: "${BIN}" })).digest("hex"),
+            asWritten: { command: "${BIN}", args: [] },
           }],
         },
         warnings: ['settings.json: "mcpServers": "w" has "type" "ws", which Tachikoma does not support; it was left out'],

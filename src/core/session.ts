@@ -470,7 +470,11 @@ export class Session {
     // The launch's first prompt waits for the MCP servers too, through the same wait, so one stop ends both, those still
     // starting saying when they are ready (choice 25); an Esc during the servers' wait alone sends the prompt without them.
     if (this.#starting && !(await settled(this.#starting, signal))) {
-      if (this.#serversFirst) void this.#serversReady(signal);
+      // The wait made with the stop's signal ends at once (Servers, ready).
+      if (this.#serversFirst) {
+        this.#serversFirst = false;
+        void this.opts.servers!.ready(signal);
+      }
       return;
     }
     if (this.#serversFirst && !(await this.#serversReady(signal))) return;

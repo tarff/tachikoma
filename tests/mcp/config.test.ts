@@ -32,10 +32,12 @@ describe("readServers", () => {
       {
         name: "tradingview", safe: "tradingview", where: "user", trusted: null, trustedTools: [], alwaysLoad: false,
         entry: { kind: "stdio", command: "node", args: ["server.js"], env: {} }, written: writtenOf(local()),
+        asWritten: { command: "node", args: ["server.js"] },
       },
       {
         name: "sanity", safe: "sanity", where: "user", trusted: null, trustedTools: [], alwaysLoad: false,
         entry: { kind: "http", url: "https://mcp.example.com/mcp", headers: {} }, written: writtenOf(remote()),
+        asWritten: { url: "https://mcp.example.com/mcp" },
       },
     ]);
   });
@@ -48,6 +50,7 @@ describe("readServers", () => {
     expect(kept).toEqual<ServerConfig[]>([{
       name: "s", safe: "s", where: "user", trusted: "read-only", trustedTools: [], alwaysLoad: true,
       entry: { kind: "sse", url: "https://mcp.example.com/mcp", headers: { "X-Team": "a" }, timeout: 120000, oauth }, written: writtenOf(raw),
+      asWritten: { url: "https://mcp.example.com/mcp" },
     }]);
     const tools = read(local({ type: "stdio", env: { A: "1" }, timeout: 5000, trustedTools: ["quote_get", "chart_get_state"], alwaysLoad: false }));
     expect(tools.warnings).toEqual([]);
@@ -249,6 +252,16 @@ describe("readServers", () => {
     }
   });
 
+  // Release 8c plan, choice 48: the project's question shows the entry as written, so a key filled in never reaches it.
+  it("keeps the command, arguments and address as written, ${VAR} unfilled, beside the filled entry", () => {
+    const [stdio] = read(local({ command: "${HOST}-node", args: ["--key=${TOKEN}"] })).kept;
+    expect(stdio!.entry).toMatchObject({ command: "example.com-node", args: ["--key=sk-secret-123"] });
+    expect(stdio!.asWritten).toEqual({ command: "${HOST}-node", args: ["--key=${TOKEN}"] });
+    const [http] = read(remote({ url: "https://mcp.example.com/mcp?key=${TOKEN}" })).kept;
+    expect(http!.entry).toMatchObject({ url: "https://mcp.example.com/mcp?key=sk-secret-123" });
+    expect(http!.asWritten).toEqual({ url: "https://mcp.example.com/mcp?key=${TOKEN}" });
+  });
+
   it("leaves out a server needing a variable that is not set, naming it, in each field", () => {
     const line = left(" needs ${MISSING}, which is not set; it was left out");
     expect(said(local({ command: "${MISSING}" }))).toEqual(line);
@@ -346,6 +359,7 @@ describe("readServers", () => {
     expect(kept).toEqual<ServerConfig[]>([{
       name: "s", safe: "s", where: "project", trusted: null, trustedTools: [], alwaysLoad: false,
       entry: { kind: "stdio", command: "node", args: ["server.js"], env: {} }, written: writtenOf(raw),
+      asWritten: { command: "node", args: ["server.js"] },
     }]);
     expect(warnings).toEqual([
       '.mcp.json: "s" has "trusted"; trust counts only in ~/.tachikoma/settings.json, so it was ignored',
@@ -375,6 +389,7 @@ describe("mergeServers", () => {
     expect(mergeServers(user, project)[0]).toEqual({
       name: "sanity", safe: "sanity", where: "user", trusted: "read-only", trustedTools: [], alwaysLoad: false,
       entry: { kind: "http", url: "https://mcp.example.com/mcp", headers: {} }, written: writtenOf(remote({ trusted: "read-only" })),
+      asWritten: { url: "https://mcp.example.com/mcp" },
     });
     expect(mergeServers([], project)).toEqual(project);
   });
@@ -398,6 +413,7 @@ describe("readProjectFile", () => {
       kept: [{
         name: "tools", safe: "tools", where: "project", trusted: null, trustedTools: [], alwaysLoad: false,
         entry: { kind: "stdio", command: "node", args: ["example.com.js"], env: {} }, written: writtenOf(local({ args: ["${HOST}.js"] })),
+        asWritten: { command: "node", args: ["${HOST}.js"] },
       }],
       warnings: [],
     });

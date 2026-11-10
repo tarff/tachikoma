@@ -24,6 +24,9 @@ export interface ServerConfig {
   // git pull that changes its command cannot start it unasked, while a variable's new value asks nothing, and no value
   // is kept.
   written: string;
+  // The command and arguments, or the address, as written, ${VAR} unfilled, which the project's question shows, so a key
+  // filled in from the environment never reaches the screen (release 8c plan, choice 48).
+  asWritten: { command: string; args: string[] } | { url: string };
 }
 
 const PROJECT = ".mcp.json";
@@ -169,6 +172,7 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
   }
   const fill = filler(env);
   let entry: ServerEntry;
+  let asWritten: ServerConfig["asWritten"];
   if (kind === "stdio") {
     if (typeof raw.command !== "string") throw bad("command", TEXT, raw.command);
     if (raw.args !== undefined && !texts(raw.args)) throw bad("args", LIST, raw.args);
@@ -178,6 +182,7 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
     if (args.some((a) => a.includes(NUL))) throw bad("args", NO_NUL, "");
     for (const [key, v] of Object.entries(filledEnv)) if (v.includes(NUL)) throw bad(`env.${key}`, NO_NUL, v);
     entry = { kind, command: fill(raw.command), args, env: filledEnv, ...(timeout !== undefined && { timeout }) };
+    asWritten = { command: raw.command, args: raw.args ?? [] };
   } else {
     if (typeof raw.url !== "string") throw bad("url", TEXT, raw.url);
     const headers = textMap("headers", raw.headers, '{"Authorization": "Bearer ${TOKEN}"}');
@@ -187,9 +192,10 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
     for (const [key, v] of Object.entries(filled)) if (BREAKS.test(v) || v.includes(NUL)) throw bad(`headers.${key}`, NO_BREAKS, v);
     address(raw.url, url);
     entry = { kind, url, headers: filled, ...(timeout !== undefined && { timeout }), ...(oauth && { oauth }) };
+    asWritten = { url: raw.url };
   }
   const written = createHash("sha256").update(JSON.stringify(raw)).digest("hex");
-  return { name, safe, entry, where, trusted, trustedTools, alwaysLoad, written };
+  return { name, safe, entry, where, trusted, trustedTools, alwaysLoad, written, asWritten };
 }
 
 // A field of the wrong type, its value named by its type, as it may hold a key (typeOf); badValue shows the value, for the

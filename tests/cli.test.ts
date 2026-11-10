@@ -1219,8 +1219,10 @@ function windowLater(...args: (string | Record<string, string>)[]) {
 // Release 8c plan, Task 9: the MCP servers at the launch. Each server is a fake of tests/mcp/fake.ts, a Node script written
 // into the case's own folder, logging what it is sent and writing its process id; the lead is a stand-in for OpenAI's
 // chat completions served on the loopback address, as above, answering "done" and keeping what each request was sent.
-describe("tachi's MCP servers", { timeout: 30_000 }, () => {
-  // A wait on another process: several seconds for a busy machine, inside the case's 30 s.
+// 60 s, as the copy-mode end-to-end cases below have: the window's case, two launches, took 17.2 s run alone (measured
+// 2026-11-11, Task 9's review), too near 30 s under load.
+describe("tachi's MCP servers", { timeout: 60_000 }, () => {
+  // A wait on another process: several seconds for a busy machine, inside the case's 60 s.
   const WAIT = { timeout: 15_000 };
   const SKIPPED = (name: string) => `MCP server ${name} from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.`;
   const alive = (pid: number) => {

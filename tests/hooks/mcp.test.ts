@@ -39,6 +39,7 @@ async function setup(fake: FakeOptions = {}, wait = true) {
   const config: ServerConfig = {
     name: "fake", safe: "fake", where: "user", trusted: null, trustedTools: [], alwaysLoad: true, written: "",
     entry: { kind: "stdio", command: process.execPath, args: [await fakeServer(dir, { log, ...fake })], env: {} },
+    asWritten: { command: process.execPath, args: [] }, // a user server: only a project one is asked about
   };
   const answers = () => {
     throw new Error("no project server here, so no answers are read");

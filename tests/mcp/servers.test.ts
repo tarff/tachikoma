@@ -46,7 +46,7 @@ async function setup() {
     const script = await fakeServer(dir, { log, ...fake });
     const safe = name.replace(/[^A-Za-z0-9_-]/g, "_");
     const entry = { kind: "stdio" as const, command: process.execPath, args: [script], env: {} };
-    return { name, safe, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry, ...over };
+    return { name, safe, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry, asWritten: entry, ...over };
   };
   const make = (configs: ServerConfig[], opts: { answers?: () => Answers; unread?: Answers; network?: "on" | "off" | "none" } = {}) => {
     const answers = opts.answers ?? nobody;
@@ -375,6 +375,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const remote: ServerConfig = {
       ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
       entry: { kind: "http", url: first.url, headers: {} },
+      asWritten: { url: first.url },
     };
     const servers = make([remote]);
     servers.startAll();
@@ -414,6 +415,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const remote: ServerConfig = {
       ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
       entry: { kind: "http", url: fake.url, headers: {} },
+      asWritten: { url: fake.url },
     };
     const servers = make([remote, await config("gone"), await config("bad", { exit: 3 })]);
     servers.startAll();
@@ -440,6 +442,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const remote: ServerConfig = {
       ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: ["plain"], alwaysLoad: false, written: "" },
       entry: { kind: "http", url: fake.url, headers: {} },
+      asWritten: { url: fake.url },
     };
     const servers = make([remote]);
     servers.startAll();
@@ -475,6 +478,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const remote: ServerConfig = {
       ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
       entry: { kind: "http", url: first.url, headers: {} },
+      asWritten: { url: first.url },
     };
     const servers = make([remote]);
     servers.startAll();

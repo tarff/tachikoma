@@ -36,8 +36,9 @@ export type State =
 const START_MS = 30_000;
 // A remote server's single request, unless the entry's timeout is longer (Claude Code's MCP page; "Numbers in this plan").
 const REMOTE_MS = 60_000;
-// From closing a local server's input to killing it (Claude Code's MCP page, Windows; choice 3).
-const KILL_MS = 300;
+// From closing a local server's input to killing it (Claude Code's MCP page, Windows; choice 3); a signal's exit waits
+// this long for every server's stop (clilib.ts, stopSoon).
+export const KILL_MS = 300;
 
 // Tachikoma's version, read as cli.tsx reads it: package.json is two folders up from both src/mcp/ and dist/mcp/.
 const VERSION: string = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")).version;

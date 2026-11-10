@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "v
 import path from "node:path";
 import { privateDir } from "../src/auth/private.js";
 import { Bus } from "../src/core/bus.js";
+import { projectFile } from "../src/core/datadir.js";
 import { readInstructions } from "../src/core/instructions.js";
 import { PermissionGate } from "../src/core/permissions.js";
 import { listSessions, openSession, sessionsDir } from "../src/core/sessions.js";
@@ -12,6 +13,7 @@ import type { Message, ToolSpec } from "../src/core/types.js";
 import type { Hook } from "../src/hooks/config.js";
 import { type Answers, answersFor } from "../src/mcp/answers.js";
 import type { ServerConfig } from "../src/mcp/config.js";
+import { KILL_MS } from "../src/mcp/server.js";
 import { Servers } from "../src/mcp/servers.js";
 import {
   approvalQuestion,
@@ -42,6 +44,8 @@ import {
   scrollSpeed,
   serverQuestion,
   statusSegments,
+  stopSoon,
+  turnAnswer,
   systemAgain,
   WindowSessions,
 } from "../src/clilib.js";
@@ -89,14 +93,16 @@ describe("the instruction files on screen", () => {
   });
 });
 
-// Release 8c plan, Task 9 (choices 23, 24 and 26; "Lines this plan adds"): a project's MCP servers asked about at the
-// launch, and the launch's MCP lines. No server is started here: a Servers made without startAll starts none.
+// Release 8c plan, Task 9 (choices 23, 24, 26 and 48-50; "Lines this plan adds"): a project's MCP servers asked about at
+// the launch, and the launch's MCP lines. No server is started here: a Servers made without startAll starts none.
 describe("MCP servers at the launch", { timeout: 15_000 }, () => {
-  const server = (name: string, entry: ServerConfig["entry"], where: ServerConfig["where"] = "project"): ServerConfig => ({
+  // An entry as the settings give it, filled in, with `asWritten` the file's own words: the entry's when not given.
+  const server = (name: string, entry: ServerConfig["entry"], where: ServerConfig["where"] = "project", asWritten?: ServerConfig["asWritten"]) => ({
     name, safe: name.replace(/[^A-Za-z0-9_-]/g, "_"), entry, where, trusted: null, trustedTools: [], alwaysLoad: false, written: `as written: ${name}`,
-  });
-  const local = (name: string, args: string[] = [], where: ServerConfig["where"] = "project") =>
-    server(name, { kind: "stdio", command: "npx", args, env: {} }, where);
+    asWritten: asWritten ?? (entry.kind === "stdio" ? { command: entry.command, args: entry.args } : { url: entry.url }),
+  }) satisfies ServerConfig;
+  const local = (name: string, args: string[] = [], where: ServerConfig["where"] = "project", env: Record<string, string> = {}) =>
+    server(name, { kind: "stdio", command: "npx", args, env }, where);
   const servers = (configs: ServerConfig[], network: "on" | "off" | "none", answers: () => Answers) =>
     new Servers(configs, { root: tmpdir(), env: {}, bus: new Bus(), answers, network, lead: () => "fake:a" });
   const none = (): Answers => ({ get: () => undefined, set: () => {}, reset: () => {} });
@@ -113,6 +119,30 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
     expect(serverQuestion(remote)).toBe('Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.sanity.io/\\u202e? [y/n]');
   });
 
+  // Choice 48: as .mcp.json writes it, so a key filled in from the environment never reaches the screen.
+  it("shows the entry as written, ${VAR} unfilled, never the value filled in", () => {
+    const filled = { kind: "stdio" as const, command: "npx", args: ["--key=sk-secret-123"], env: {} };
+    const tv = server("tv", filled, "project", { command: "npx", args: ["--key=${TOKEN}"] });
+    expect(serverQuestion(tv)).toBe('Start the MCP server "tv" from this project\'s .mcp.json: npx --key=${TOKEN}? [y/n]');
+    const url = { kind: "http" as const, url: "https://mcp.example.com/mcp?key=sk-secret-123", headers: {} };
+    const sanity = server("sanity", url, "project", { url: "https://mcp.example.com/mcp?key=${TOKEN}" });
+    expect(serverQuestion(sanity)).toBe('Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.example.com/mcp?key=${TOKEN}? [y/n]');
+    for (const c of [tv, sanity]) expect(serverQuestion(c)).not.toContain("sk-secret-123");
+  });
+
+  // Choice 49: the variables a local entry sets, names only, in the file's order, escaped and quoted as the command is; a
+  // remote server's headers go only to the address shown, so they are not named.
+  it("names the variables a local server's entry sets, never their values, and no headers", () => {
+    const env = { NODE_OPTIONS: "--require ./steal.js", "MY KEY\u001b": "sk-secret-123" };
+    expect(serverQuestion(local("tv", ["server.js"], "project", env))).toBe(
+      'Start the MCP server "tv" from this project\'s .mcp.json: npx server.js (sets NODE_OPTIONS, "MY KEY\\u001b")? [y/n]',
+    );
+    const headers = { kind: "http" as const, url: "https://mcp.example.com/mcp", headers: { Authorization: "Bearer sk-secret-123" } };
+    expect(serverQuestion(server("sanity", headers))).toBe(
+      'Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.example.com/mcp? [y/n]',
+    );
+  });
+
   it("asks about each project server not yet answered for its entry, in order, and keeps a yes and a no for the next launch", async () => {
     const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
     onTestFinished(() => removeTree(top));
@@ -121,21 +151,48 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
     const asked: string[] = [];
     const replies = [true, false];
     const configs = [local("mine", [], "user"), local("old"), local("yes"), local("no")];
-    await askServers(configs, () => answersFor(top, data), async (question) => (asked.push(question), replies.shift()!));
+    const failed: string[] = [];
+    await askServers(configs, () => answersFor(top, data), async (question) => (asked.push(question), replies.shift()!), (line) => failed.push(line));
     expect(asked).toEqual([serverQuestion(local("yes")), serverQuestion(local("no"))]);
+    expect(failed).toEqual([]);
     const kept = answersFor(top, data);
     expect(["old", "yes", "no"].map((name) => kept.get(name, `as written: ${name}`))).toEqual([true, true, false]);
     // Nothing read nor asked without a project server.
-    await askServers([local("mine", [], "user")], () => expect.unreachable("no project server, so no answers are read"), async () => expect.unreachable());
+    const never = async () => expect.unreachable();
+    await askServers([local("mine", [], "user")], () => expect.unreachable("no project server, so no answers are read"), never, never);
   });
 
-  it("says once that the sandbox's network keeps every server off, and in -p names each project server not answered yes", () => {
+  // Choice 50: an answer that cannot be written holds for this launch, with one red line each, and the launch goes on. The
+  // data folder cannot be written as a file stands where the answers' folder goes, which the test made itself; no
+  // permission is changed.
+  it("says an answer that could not be saved, and keeps it for this launch", async () => {
+    const top = mkdtempSync(path.join(tmpdir(), "tachi-clilib-mcp-"));
+    onTestFinished(() => removeTree(top));
+    const data = path.join(top, "data", "tachikoma");
+    let answers: Answers | undefined;
+    const blocked = () => {
+      answers = answersFor(top, data); // read first: nothing is there yet
+      mkdirSync(data, { recursive: true });
+      writeFileSync(path.dirname(projectFile("mcp-answers", top, data)), "a file where the answers' folder goes");
+      return answers;
+    };
+    const failed: string[] = [];
+    const replies = [true, false];
+    await askServers([local("yes"), local("no\u001b")], blocked, async () => replies.shift()!, (line) => failed.push(line));
+    const unsaved = (name: string) => new RegExp(`^Your answer for ${name} could not be saved \\(.+\\); Tachikoma asks again at the next launch\\.$`);
+    expect(failed).toEqual([expect.stringMatching(unsaved("yes")), expect.stringMatching(unsaved("no\\\\u001b"))]);
+    expect([answers!.get("yes", "as written: yes"), answers!.get("no\u001b", "as written: no\u001b")]).toEqual([true, false]);
+  });
+
+  // In -p every project server without a yes, one answered no included (the plan's line, Task 9's spec review).
+  it("says once that the sandbox's network keeps every server off, and in -p names each project server without a yes", () => {
     const configs = [local("mine", [], "user"), local("yes"), local("no"), local("new")];
     expect(mcpLines(servers(configs, "off", none), { print: true })).toEqual([
       "MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them.",
     ]);
     const given = (): Answers => ({ get: (name) => ({ yes: true, no: false })[name], set: () => {}, reset: () => {} });
     expect(mcpLines(servers(configs, "none", given), { print: true })).toEqual([
+      "MCP server no from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.",
       "MCP server new from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.",
     ]);
     expect(mcpLines(servers(configs, "none", given), { print: false })).toEqual([]);
@@ -378,6 +435,52 @@ describe("exitOn", () => {
       exitOn(sig, () => true)();
       expect(exit).toHaveBeenLastCalledWith(128 + constants.signals[sig]);
     }
+  });
+
+  // Release 8c plan, Task 9's spec review: a signal stops the MCP servers before the exit, which comes however the stop
+  // ends; one ignored while a program has the terminal stops nothing.
+  it("exits once `before` has settled, ended or failed, and runs none for a signal it ignores", async () => {
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as typeof process.exit);
+    onTestFinished(() => exit.mockRestore());
+    let end!: () => void;
+    exitOn("SIGTERM", () => false, () => new Promise<void>((resolve) => (end = resolve)))();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(exit).not.toHaveBeenCalled();
+    end();
+    await vi.waitFor(() => expect(exit).toHaveBeenLastCalledWith(128 + constants.signals.SIGTERM));
+    exitOn("SIGHUP", () => false, () => Promise.reject(new Error("made-up failure")))();
+    await vi.waitFor(() => expect(exit).toHaveBeenLastCalledWith(128 + constants.signals.SIGHUP));
+    exit.mockClear();
+    const before = vi.fn(async () => {});
+    exitOn("SIGINT", () => true, before)();
+    expect(before).not.toHaveBeenCalled();
+  });
+});
+
+// Choice 3's wait bounds a signal's stop of the MCP servers, so a hung one cannot hold the exit (Task 9's spec review).
+describe("stopSoon", () => {
+  it("ends when the servers have stopped, or after choice 3's wait for one that never does", async () => {
+    let stopped = false;
+    await stopSoon({ stopAll: async () => void (stopped = true) });
+    expect(stopped).toBe(true);
+    const at = performance.now();
+    await stopSoon({ stopAll: () => new Promise<void>(() => {}) });
+    // Less 1 ms: the timer runs on the event loop's whole-millisecond clock, which can round its start down.
+    expect(performance.now() - at).toBeGreaterThanOrEqual(KILL_MS - 1);
+  });
+});
+
+// Release 8c plan, Task 9's review: a -p run prints only the reply its turn added, so a resumed one stopped before it sent
+// anything does not print the saved session's last answer.
+describe("turnAnswer", () => {
+  const user = (text: string): Message => ({ role: "user", parts: [{ type: "text", text }] });
+  const model = (...texts: string[]): Message => ({ role: "assistant", parts: texts.map((text) => ({ type: "text" as const, text })) });
+  it("gives the reply the turn added, its text parts joined by line breaks, and none when the turn added none", () => {
+    const saved = [user("hi"), model("the saved answer")];
+    expect(turnAnswer(saved.at(-1), saved)).toBeUndefined();
+    expect(turnAnswer(saved.at(-1), [...saved, user("again")])).toBeUndefined();
+    expect(turnAnswer(saved.at(-1), [...saved, user("again"), model("a", "b")])).toBe("a\nb");
+    expect(turnAnswer(undefined, [user("hi"), model("new")])).toBe("new");
   });
 });
 

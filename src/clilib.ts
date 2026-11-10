@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, renameSync } from "node:fs";
 import { constants } from "node:os";
 import path from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { privateDir } from "./auth/private.js";
 import { type Instructions, type Reached, readInstructions, type Where } from "./core/instructions.js";
 import { MODES, type Mode, OFFERED, type Protection, visible } from "./core/permissions.js";
@@ -10,12 +11,13 @@ import { subagentPrompt, systemPrompt } from "./core/prompt.js";
 import { type Conversation, Session, type SessionOptions } from "./core/session.js";
 import { copySession, entryOf, findSession, listSessions, openSession, removeSession, type Row, sessionPaths, Unreadable } from "./core/sessions.js";
 import { type Line, pathsOf, type Read, readTranscript, Transcript } from "./core/transcript.js";
-import { errorText, madeUnder, type ToolSpec } from "./core/types.js";
+import { errorText, madeUnder, type Message, type ToolSpec } from "./core/types.js";
 import { gitBash } from "./exec/env.js";
 import type { Executor } from "./exec/executor.js";
 import type { Answers } from "./mcp/answers.js";
 import type { ServerConfig } from "./mcp/config.js";
 import { SEARCH } from "./mcp/search.js";
+import { KILL_MS } from "./mcp/server.js";
 import type { Servers } from "./mcp/servers.js";
 import { EFFORTS, type Effort } from "./providers/anthropic.js";
 import { gitFolderOutside, type GitSettings, gitSettings, hasSubmodules, within } from "./safety/gitconfig.js";
@@ -234,10 +236,30 @@ export function exitSignals(platform: NodeJS.Platform): NodeJS.Signals[] {
 // (owner.ts, programRunning: the editor), raw mode is off, so Ctrl-C and Ctrl-\ come as SIGINT and SIGQUIT; they are
 // the program's keys then and are ignored here, as Git's launch_specified_editor ignores both while the editor runs
 // (editor.c, its sigchain_push(SIGINT, SIG_IGN), read 2026-10-29). The turn goes on (release 6 plan, choice 31).
-export function exitOn(sig: NodeJS.Signals, programRunning: () => boolean): () => void {
+// `before` runs first, the exit coming however it ends: the launch's stop of the MCP servers (release 8c plan, Task 9).
+export function exitOn(sig: NodeJS.Signals, programRunning: () => boolean, before?: () => Promise<void>): () => void {
   return () => {
-    if (!(programRunning() && (sig === "SIGINT" || sig === "SIGQUIT"))) process.exit(128 + constants.signals[sig]);
+    if (programRunning() && (sig === "SIGINT" || sig === "SIGQUIT")) return;
+    const exit = () => process.exit(128 + constants.signals[sig]);
+    if (before) void before().then(exit, exit);
+    else exit();
   };
+}
+
+// The MCP servers stopped for a signal's exit, waiting at most choice 3's wait, so a hung one cannot hold the exit; the
+// exit's kill then takes any local one left (exec/local.ts, running), as a remote one has nothing left to run (release 8c
+// plan, Task 9's spec review).
+export function stopSoon(servers: Pick<Servers, "stopAll">): Promise<void> {
+  return Promise.race([servers.stopAll(), sleep(KILL_MS)]);
+}
+
+// The answer a -p run prints: the reply its turn added, the last message, when it is the model's, its text parts joined;
+// none when the turn added none, as one blocked, left unsent, or stopped before it sent anything, so a resumed run never
+// prints the saved session's last answer as its own (Task 9's review). `before` is the last message before the turn.
+export function turnAnswer(before: Message | undefined, messages: Message[]): string | undefined {
+  const last = messages.at(-1);
+  if (!last || last === before || last.role !== "assistant") return undefined;
+  return last.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n");
 }
 
 // A reader such as `head` that stops early is a normal end, not a crash.
@@ -577,29 +599,47 @@ export function approvalQuestion(reached: Reached[]): string {
 }
 
 // The question for a project's MCP server at the launch (release 8c plan, choice 23; "Lines this plan adds"): its command
-// and arguments as they will run, or its address, escaped. A command or argument that is empty or holds a space or a
-// quote is shown in quotes, a quote in it as \", so where each one ends can be seen.
+// and arguments, or its address, as .mcp.json writes them, ${VAR} unfilled, so a key filled in never reaches the screen,
+// and the answer covers just what was shown (choice 48); a local one's then names the variables its entry sets, names
+// only, as a value may hold a key (choice 49). A command, argument or name that is empty or holds a space or a quote is
+// shown in quotes, a quote in it as \", so where each one ends can be seen; all of it escaped.
 export function serverQuestion(c: ServerConfig): string {
   const name = visible(c.name);
-  const e = c.entry;
-  if (e.kind !== "stdio") return `Connect to the MCP server "${name}" from this project's .mcp.json at ${visible(e.url)}? [y/n]`;
+  const w = c.asWritten;
+  if (!("command" in w)) return `Connect to the MCP server "${name}" from this project's .mcp.json at ${visible(w.url)}? [y/n]`;
   const shown = (word: string) => (word === "" || /[\s"]/.test(word) ? `"${word.replaceAll('"', '\\"')}"` : word);
-  return `Start the MCP server "${name}" from this project's .mcp.json: ${visible([e.command, ...e.args].map(shown).join(" "))}? [y/n]`;
+  const vars = c.entry.kind === "stdio" ? Object.keys(c.entry.env) : [];
+  const sets = vars.length ? ` (sets ${vars.map(shown).join(", ")})` : "";
+  return `Start the MCP server "${name}" from this project's .mcp.json: ${visible([w.command, ...w.args].map(shown).join(" ") + sets)}? [y/n]`;
 }
 
 // Each project server not yet answered for its entry as written, asked about one at a time, in the order the file gives
 // them, its answer kept, a no too (choices 23 and 24). `answers` is called only when a project's server needs one, as
-// reading the project's answers throws on a file it cannot read (answersFor).
-export async function askServers(configs: ServerConfig[], answers: () => Answers, ask: (question: string) => Promise<boolean>): Promise<void> {
+// reading the project's answers throws on a file it cannot read (answersFor). An answer that cannot be saved still holds
+// for this launch, as answersFor keeps it before writing; `failed` gets its red line, and the launch goes on (choice 50).
+export async function askServers(
+  configs: ServerConfig[],
+  answers: () => Answers,
+  ask: (question: string) => Promise<boolean>,
+  failed: (line: string) => void,
+): Promise<void> {
   const project = configs.filter((c) => c.where === "project");
   if (!project.length) return;
   const given = answers();
-  for (const c of project) if (given.get(c.name, c.written) === undefined) given.set(c.name, c.written, await ask(serverQuestion(c)));
+  for (const c of project) {
+    if (given.get(c.name, c.written) !== undefined) continue;
+    const yes = await ask(serverQuestion(c));
+    try {
+      given.set(c.name, c.written, yes);
+    } catch (err) {
+      failed(`Your answer for ${visible(c.name)} could not be saved (${visible(errorText(err), { tabs: true })}); Tachikoma asks again at the next launch.`);
+    }
+  }
 }
 
 // The launch's MCP lines, said once the bus has its listeners (release 8c plan, Task 9; "Lines this plan adds"): with the
-// sandbox's network off, once, that every server is off; in -p, each project server not answered yes in the window, which
-// is skipped (design, "A project's servers"). One the user said no to is skipped without a line, as in the window.
+// sandbox's network off, once, that every server is off; in -p, each project server without a yes in the window, one
+// answered no included, which is skipped (design, "A project's servers"; Task 9's spec review).
 export function mcpLines(servers: Servers, opts: { print: boolean }): string[] {
   const list = servers.list();
   if (list.some((s) => s.state.is === "off")) {
@@ -607,7 +647,7 @@ export function mcpLines(servers: Servers, opts: { print: boolean }): string[] {
   }
   if (!opts.print) return [];
   return list
-    .filter((s) => s.where === "project" && s.state.is === "waiting for your yes")
+    .filter((s) => s.where === "project" && (s.state.is === "waiting for your yes" || s.state.is === "you said no"))
     .map((s) => `MCP server ${visible(s.name)} from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.`);
 }
 

@@ -380,6 +380,38 @@ describe("Session tool events", () => {
   });
 });
 
+// Release 8c plan, choice 25 (Task 9's quality review): the first prompt waits for SessionStart's hooks, then the MCP
+// servers, through one wait, so a stop while SessionStart's hooks run ends the servers' wait too and sends nothing. The
+// hooks and the servers are stand-ins: SessionStart's fire never answers, and a server is still starting.
+describe("Session, the first prompt's wait", () => {
+  it("ends the MCP servers' wait too when a stop comes during SessionStart's, sending nothing", async () => {
+    const waits: AbortSignal[] = [];
+    const servers = {
+      waitingFor: () => ["tv"],
+      ready: (signal?: AbortSignal) =>
+        new Promise<boolean>((resolve) => {
+          waits.push(signal!);
+          if (signal?.aborted) return resolve(false);
+          signal?.addEventListener("abort", () => resolve(false), { once: true });
+        }),
+    };
+    const hooks = { fire: () => new Promise(() => {}) } as unknown as Hooks;
+    const lead = new Held();
+    const session = new Session({ lead, tools: [echo], system: "test", ctx: await tempContext(), bus: new Bus(), hooks, servers });
+    session.start("startup");
+    const stop = new AbortController();
+    const sent = session.send("hi", stop.signal);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(waits).toEqual([]); // SessionStart's hooks are waited for first
+    expect(session.waitingFor()).toEqual([]); // so the waiting line does not name the servers yet
+    stop.abort();
+    await sent;
+    expect(waits.map((w) => w.aborted)).toEqual([true]);
+    expect(lead.asked).toEqual([]);
+    expect(session.messages).toEqual([]);
+  });
+});
+
 describe("Session, for subagents", () => {
   const calls = (...c: [string, string, unknown][]) => ({ parts: c.map(([id, name, input]) => ({ type: "tool_call" as const, id, name, input })), usage });
   const note = (text: string) => ({ type: "text" as const, text, from: "tasks" as const });

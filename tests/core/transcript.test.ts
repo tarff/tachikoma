@@ -472,7 +472,7 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(r.messages[1]!.native).toBeDefined();
     const kept = (tools: typeof other, from = r) => from.withTools(tools, start.system).messages.map((m) => m.native !== undefined);
     const first = r.withTools(start.tools, start.system);
-    expect(first).toMatchObject({ dropped: true, otherTools: true });
+    expect(first.dropped).toBe(true);
     expect(kept(start.tools)).toEqual([false, false, false, false]);
     expect(kept(other)).toEqual([false, false, false, true]);
     expect(kept([...other].reverse())).toEqual([false, false, false, true]);
@@ -502,9 +502,9 @@ describe("transcript", { timeout: 15_000 }, () => {
     const r = read(p);
     expect(r).toMatchObject({ system: "In the box.", box: true });
     const box = r.withTools(start.tools, "In the box.");
-    expect(box).toMatchObject({ dropped: true, otherTools: false });
+    expect(box.dropped).toBe(true);
     expect(box.messages.map((m) => m.native !== undefined)).toEqual([false, false, false, true]);
-    expect(r.withTools(start.tools, start.system)).toMatchObject({ dropped: true, otherTools: false });
+    expect(r.withTools(start.tools, start.system).dropped).toBe(true);
     // The reply under the box's prompt comes after it, so the first one's is left out too (Task 6b's quality review).
     expect(r.withTools(start.tools, start.system).messages.map((m) => m.native !== undefined)).toEqual([false, false, false, false]);
   });
