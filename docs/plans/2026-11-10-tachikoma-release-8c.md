@@ -954,6 +954,11 @@ description; a trusted tool runs without a question in `ask` and in `-p`; trust 
 edit while a call waits for its PreToolUse hook, then asked (the lead) or refused (a subagent); a
 PreToolUse `allow` skips the question; a subagent's request carries only trusted tools.
 
+**From Task 6's build:** the gate goes in `mcpTools(servers, bus, approve?)`'s `approve` seam,
+which runs after the start-of-run reconnect and before the "did anything change" check. A call
+to a server stopped for good, or failed, gets its stopped line before the question, so the user is
+never asked about a call that cannot run.
+
 Commit: `feat: approving MCP calls: asked, judged, or trusted, and subagents get only trusted read-only tools`.
 
 ## Task 8: Hooks
@@ -990,6 +995,9 @@ answers through the real `Hooks.fire` (finding 4): an accept with `content`; a d
 exit code 2 as a decline; a decline in one hook beside an accept in another, the decline winning;
 two accepts, the first's `content`; each new JSON reason's line; the same at ElicitationResult.
 
+**From Task 6's build:** a PostToolUse `updatedToolOutput` today replaces the text and keeps the
+tool's pictures; choice 20 drops them with it.
+
 Commit: `feat: MCP calls in hooks, and mcp_tool hooks that call a server directly`.
 
 **End of Part 2:** the whole suite, once.
@@ -1018,6 +1026,14 @@ starting the server and a no skipping it, both kept for the next launch; `-p` sk
 unanswered project server with its note and starting a yes'd one; a server that fails to start in
 `-p` gives its line and exit code 0; `--json`'s `mcp-note`; the waiting line, then Esc sending
 without the slow server; the sandbox's line; the server's process gone after the window exits.
+
+**From Tasks 5 and 6's builds:** `SessionOptions.mcp` is wired in `cli.tsx` here; `-p` must not
+count an `mcp` error as a failed run (choice 26); the window and `-p` print `mcp-note` lines and
+the red `mcp` ones; the waiting line's words are built here from `waitingFor()`, as the status
+line (choice 25); the sandbox-network-off line. The window's history (`describe.ts`) and
+`/export` (`exportText.ts`) must show a tool's pictures (`from: "server"`) as the tool's, not as
+`> [Image #4]` typed by the user. The other-kind line reads "a" or "an" by its word ("an audio
+part").
 
 Commit: `feat: MCP servers at the launch: project servers asked, the first prompt waits, -p's lines`.
 
