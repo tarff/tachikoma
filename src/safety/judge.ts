@@ -53,14 +53,15 @@ const line = (value: unknown) => JSON.stringify(value).replace(RAW, (ch) => `\\u
 
 // The one user message: each part under a fixed label line, its content on the next line, in choice 6's order. The
 // action is shown by its kind, whether it is outside the project, its summary, detail, command and protected part, so
-// the judge knows a read or write outside the project and a protected write (Task 9 review); JSON leaves out the ones
-// it does not have. The action keeps its whole detail; only the calls block is shortened.
+// the judge knows a read or write outside the project and a protected write (Task 9 review), and an MCP call's tool
+// description, as the gate cut it (release 8c plan, choice 15); JSON leaves out the ones it does not have. The action
+// keeps its whole detail; only the calls block is shortened.
 function request({ prompts, calls, action, instructions }: JudgeInput): string {
-  const { kind, outside, summary, detail, command, protectedPart } = action;
+  const { kind, outside, summary, detail, command, protectedPart, description } = action;
   return [
     ["The user's own messages, in order, each a JSON string:", line(prompts)],
     ["The agent's tool calls so far, in order, each its tool's name and input, as JSON:", line(calls.map(shortened))],
-    ["The action to judge, as JSON:", line({ kind, outside, summary, detail, command, protectedPart })],
+    ["The action to judge, as JSON:", line({ kind, outside, summary, detail, command, protectedPart, description })],
     ["The instruction files' text, as read at launch, as a JSON string:", line(instructions)],
   ]
     .map((block) => block.join("\n"))

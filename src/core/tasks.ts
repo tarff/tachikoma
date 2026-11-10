@@ -1,7 +1,8 @@
 import path from "node:path";
 import type { Hooks } from "../hooks/hooks.js";
 import type { Paths } from "../hooks/tools.js";
-import type { McpTools } from "../mcp/tools.js";
+import type { Servers } from "../mcp/servers.js";
+import { approveOf, mcpTools } from "../mcp/tools.js";
 import { cost } from "../providers/pricing.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import { Bus, type ErrorEvent } from "./bus.js";
@@ -58,9 +59,10 @@ export interface TasksOptions {
   // through hooks.for(itself), so its input carries its agent_id (release 8b plan, Task 6).
   hooks?: Hooks;
   paths?: Paths;
-  // Each subagent's own MCP tools: its trusted read-only ones, with a tool_search and a loaded set of its own, starting
-  // with none, never the lead's (release 8c plan, choice 43).
-  mcp?: () => McpTools;
+  // The servers each subagent's own MCP tools are made from here: its trusted read-only ones only, so no caller can give a
+  // subagent more (release 8c plan, Task 7 and choice 17), with a tool_search and a loaded set of its own, starting with
+  // none, never the lead's (choice 43).
+  mcp?: Servers;
 }
 
 // The task manager (release 4 design, "How it is built"): starts subagents, each its own Session,
@@ -262,7 +264,8 @@ export class Tasks {
       ...(own ? { transcript: own } : {}),
       ...(hooks ? { hooks } : {}),
       ...(this.opts.paths ? { paths: this.opts.paths } : {}),
-      ...(this.opts.mcp ? { mcp: this.opts.mcp() } : {}),
+      // A reconnect's grey line goes to the lead's bus, which shows it, as the servers' own lines do.
+      ...(this.opts.mcp ? { mcp: mcpTools(this.opts.mcp, this.opts.bus, approveOf(this.opts.mcp), { trustedOnly: true }) } : {}),
     });
     t.messages = session.messages;
     t.state = "running";

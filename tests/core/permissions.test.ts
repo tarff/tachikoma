@@ -23,6 +23,11 @@ describe("needsApproval", () => {
     ["auto", act("shell"), true],
     ["auto", act("read", true), true],
     ["auto", act("write", true), true],
+    // Release 8c plan, choice 32: an MCP call by its kind, in every mode, never included, whatever `outside` says.
+    ["ask", act("mcp"), true],
+    ["project", act("mcp"), true],
+    ["auto", act("mcp"), true],
+    ["never", act("mcp"), true],
   ] as const)("%s mode, %o -> %s", (mode, action, expected) => {
     expect(needsApproval(mode, action)).toBe(expected);
   });
@@ -397,6 +402,58 @@ describe("a gate for one call a hook allowed", () => {
     expect(asked.map((a) => a.owner)).toEqual(["t2 (look)"]);
     gate.mode = "never";
     await expect(child.require(run(push))).rejects.toThrow(/^Not allowed: this command/);
+  });
+});
+
+// Release 8c plan, Task 7 and choices 14, 15 and 32: an MCP call goes past never's branch to the question, which has the
+// tool's description's first line as its grey note; auto's judge decides it; -p's ask says no; a hook's allow skips it.
+describe("the gate's MCP calls", () => {
+  type Asked = { summary: string; note?: string };
+  const gateIn = (mode: Mode, answer: boolean, options: ConstructorParameters<typeof PermissionGate>[3] = {}, refusal?: string) => {
+    const asked: Asked[] = [];
+    const judged: Action[] = [];
+    const ask: Ask = async (summary, _detail, _owner, _plain, _warnings, note) => (asked.push({ summary, ...(note ? { note } : {}) }), answer);
+    const judge = async (action: Action) => (judged.push(action), { allow: false as const, reason: "the judge says no" });
+    return { gate: new PermissionGate(mode, ask, refusal, { judge, ...options }), asked, judged };
+  };
+  const RLO = String.fromCharCode(0x202e); // a right-to-left override, made from its code (visible escapes it)
+  const mcp = (description: string): Action => ({ kind: "mcp", outside: true, summary: 's: echo {"text":"hi"}', description });
+
+  it("asks in ask, project and never, the description's first line, escaped, as its note, and declines on a no", async () => {
+    for (const mode of ["ask", "project", "never"] as const) {
+      const { gate, asked } = gateIn(mode, false);
+      await expect(gate.require(mcp(`\n  Says it back${RLO} \nand more`))).rejects.toThrow(new Declined('The user declined: s: echo {"text":"hi"}'));
+      expect([mode, asked]).toEqual([mode, [{ summary: 's: echo {"text":"hi"}', note: "Says it back\\u202e" }]]);
+    }
+  });
+
+  it("asks with no note for a tool with no description, and goes ahead on a yes", async () => {
+    const { gate, asked } = gateIn("never", true);
+    await gate.require(mcp(""));
+    expect(asked).toEqual([{ summary: 's: echo {"text":"hi"}' }]);
+  });
+
+  it("sends it to the judge in auto, its description with it, and asks nobody", async () => {
+    const { gate, asked, judged } = gateIn("auto", true);
+    await expect(gate.require(mcp("Says it back"))).rejects.toThrow(new Declined("The judge refused: the judge says no"));
+    expect([asked, judged]).toEqual([[], [mcp("Says it back")]]);
+  });
+
+  it("refuses it in -p, through the ask, in never and project alike", async () => {
+    const p = "Not allowed in -p mode, where nobody can approve it";
+    for (const mode of ["never", "project"] as const) {
+      const { gate, asked } = gateIn(mode, false, { headless: true }, p);
+      await expect(gate.require(mcp("Says it back"))).rejects.toThrow(new Declined(`${p}: s: echo {"text":"hi"}`));
+      expect(asked).toHaveLength(1);
+    }
+  });
+
+  it("skips the question and the judge for one call a hook allowed, in every mode", async () => {
+    for (const mode of ["ask", "project", "auto", "never"] as const) {
+      const { gate, asked, judged } = gateIn(mode, false);
+      await gate.withHook({ allow: true }).require(mcp("Says it back"));
+      expect([mode, asked, judged]).toEqual([mode, [], []]);
+    }
   });
 });
 

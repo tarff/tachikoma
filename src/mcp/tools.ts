@@ -12,7 +12,7 @@ import type { Offered, Servers } from "./servers.js";
 // each call runs on the connection and definition its request offered, or is refused with a line saying why (design,
 // finding 4).
 
-// The question for a call, Task 7's gate, which throws to refuse it. It has no default, so no MCP tool reaches a session
+// The question for a call, Task 7's gate (approveOf), which throws to refuse it. It has no default, so no MCP tool reaches a session
 // without one (Task 6's security check). It is asked after a dropped server's new connection, so the approval is for the
 // version that runs (choice 33), and before the check that nothing changed while the call waited (finding 4). A test
 // gives one that waits, to change things while a call waits for it.
@@ -28,6 +28,24 @@ const changed = (o: Offered) =>
   "look at its definition in this request's tools, if it is still there, and call it again.";
 const stopped = (o: Offered) => `The MCP server ${visible(o.server)} has stopped; the user can reconnect it from /mcp.`;
 const restarted = (o: Offered) => `Stopped: the MCP server ${visible(o.server)} restarted while the call ran.`;
+const untrusted = (o: Offered) =>
+  `Not run: ${visible(o.server)}'s "${visible(o.tool, { tabs: true })}" is no longer trusted as read-only, and subagents only read.`;
+
+// The launch's question for every call, the lead's and its subagents' (release 8c plan, Task 7; design, "Approval";
+// choices 14-17). Trust is read here, from the entry in force, right before the gate would decide, so a live edit applies
+// to every call not yet decided; a trusted call skips the gate's question and the judge in every mode (choice 16). A
+// subagent's call to a tool no longer trusted is refused, as subagents only read (choice 17). Else the gate decides:
+// the question is the server, the tool and its input as JSON, which the gate escapes, its grey note the description's
+// first line (choice 14), and the judge is shown the 4,096 cut (choice 15; Task 6b). `outside`: the server runs apart
+// from the project, as only the judge reads it; the gate decides an MCP call by its kind (choice 32).
+export function approveOf(servers: Servers): Approve {
+  return async (o, input, ctx) => {
+    if (servers.trust(o.server, o.tool)) return;
+    if (o.trustedOnly) throw new Error(untrusted(o));
+    const summary = `${o.server}: ${o.tool} ${JSON.stringify(input)}`;
+    await ctx.gate.require({ kind: "mcp", outside: true, summary, description: o.forJudge }, ctx.signal);
+  };
+}
 
 // A session's MCP tools (Task 6b; choices 37-43): `loaded`, the conversation's loaded set, which the session saves and a
 // load replaces; `offer()`, the tools one request defines, and tool_search with its description for that request, none

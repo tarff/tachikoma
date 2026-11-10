@@ -401,7 +401,7 @@ describe("tool_search: the loaded set", () => {
       system: "sub",
       tools: [],
       ctx: t.ctx,
-      mcp: () => mcpTools(servers, t.bus, t.approve, { trustedOnly: true }),
+      mcp: servers, // Tasks makes each subagent's trusted-only tools itself (Task 7)
     });
     const task = tasks.start("look", { background: false });
     expect(await task.done).toEqual({ state: "done", text: "found it" });

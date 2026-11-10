@@ -115,6 +115,16 @@ describe("judge", () => {
     ]);
   });
 
+  // Release 8c plan, choice 15: an MCP call is shown with its tool's description, which the gate cut at 4,096.
+  it("shows an MCP call's tool description", async () => {
+    const j = new FakeProvider("judge", [reply('{"allow": true}')]);
+    const call: Action = { kind: "mcp", outside: true, summary: 's: draw {"shape":"line"}', description: "Draws a shape\non the chart" };
+    await judge(j, { ...input, action: call }, new AbortController().signal, new Bus());
+    expect(texts(j.seen[0]![0]!)[0]!.split("\n")[7]).toBe(
+      '{"kind":"mcp","outside":true,"summary":"s: draw {\\"shape\\":\\"line\\"}","description":"Draws a shape\\non the chart"}',
+    );
+  });
+
   it("refuses with a fixed reason when the answer cannot be read", async () => {
     const unreadable = [
       "Sure, go ahead.",

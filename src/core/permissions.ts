@@ -9,14 +9,15 @@ import type { Bus } from "./bus.js";
 // auto:    reads and edits in the project run, the judge decides the rest, and dangerous commands ask the user (release 7
 //          design, "Auto mode"; release 7 plan, Task 10)
 // never:   never ask; only with --sandbox copy, so nothing reaches the folder before the user has reviewed it
-//          (release 7 design, "Launching")
+//          (release 7 design, "Launching"); but an MCP call asks, as its server is outside the box (release 8c plan,
+//          choice 32)
 export type Mode = "ask" | "project" | "auto" | "never";
 export const MODES: Mode[] = ["ask", "project", "auto", "never"];
 // The modes a mistake's words offer: all four, now that copy mode, which `never` needs, is built (release 7 plan, Task 21).
 export const OFFERED: Mode[] = ["ask", "project", "auto", "never"];
 
 export interface Action {
-  kind: "read" | "write" | "shell";
+  kind: "read" | "write" | "shell" | "mcp";
   outside: boolean;
   summary: string;
   detail?: string; // what a write puts in the file, shown above the question; not escaped here
@@ -25,6 +26,9 @@ export interface Action {
   // path as the question names it, for the refusal in `never` (Task 8).
   protectedPart?: string;
   path?: string;
+  // An MCP tool's description, cut at 4,096 as the judge is shown it (release 8c plan, choice 15); its question shows only
+  // the first line, as its grey note (choice 14).
+  description?: string;
 }
 
 // The git settings' paths the protected paths add, read once at launch (release 7 plan, Task 8; choices 57 and 59):
@@ -39,6 +43,9 @@ export interface Protection {
 // In auto, true is what its fast path does not pass, a read or a write outside the project and a shell command, which the
 // judge decides (release 7 plan, Task 10); a protected write and a danger the gate checks itself.
 export function needsApproval(mode: Mode, action: Action): boolean {
+  // An MCP call by its kind, never by `outside`: the user is asked in every mode, never included, as the server is outside
+  // the box, and in auto the judge decides (release 8c plan, choice 32; design, "Approval").
+  if (action.kind === "mcp") return true;
   if (mode === "never") return false;
   if (action.outside) return true;
   if (mode === "ask") return action.kind !== "read";
@@ -109,6 +116,12 @@ const hookReason = (reason: string) => (reason ? ` (${visible(reason)})` : "");
 const hookNeverRefusal = (reason: string) => `Not allowed in never mode: a PreToolUse hook asked for this call to be approved${hookReason(reason)}.`;
 const hookHeadlessRefusal = (reason: string) => `Not allowed: a PreToolUse hook asked for this call to be approved${hookReason(reason)}, and -p cannot ask.`;
 const hookNote = (reason: string) => (reason ? `A hook asks: ${visible(reason)}` : "A hook asks.");
+// An MCP call's grey note: its tool's description cut to its first line, escaped; none for a tool with none (release 8c
+// plan, choice 14).
+const descriptionNote = (description = "") => {
+  const first = description.trim().split(/\r\n|\r|\n/, 1)[0]!.trim();
+  return first ? visible(first) : undefined;
+};
 
 // `root`: the project's, for the dangerous-command check; `headless`: -p mode, where a danger is refused (Task 8);
 // `judge`: auto mode's (Task 10), which cli.tsx always gives. `home` and `shell` are the box's in the sandbox, its
@@ -236,7 +249,9 @@ export class PermissionGate {
     const mode = this.mode;
     const found = action.command === undefined ? [] : dangers(action.command, this.#context, this.rules);
     const part = action.protectedPart;
-    if (mode === "never") {
+    // These refusals and passes are for the box's own actions; an MCP call goes on to the question (release 8c plan,
+    // choice 32; the plan review, finding 1).
+    if (mode === "never" && action.kind !== "mcp") {
       if (part !== undefined) throw new Declined(protectedRefusal(action.path ?? action.summary, part));
       // A write outside the project, one whose real place cannot be told among them (a link that leads nowhere has no
       // protected part to find), could reach the folder unreviewed (Task 21, from Task 8's spec review).
@@ -255,7 +270,9 @@ export class PermissionGate {
     if (mode === "auto" && !found.length && pause === null) return this.#judged(action, signal ?? new AbortController().signal);
     const shown = visible(action.summary);
     const warnings = found.map((d) => visible(`Danger: ${named(d)}`));
-    const note = pause === null ? undefined : `Auto mode paused after ${pause.count} refusals; approving this resumes it.`;
+    // The question has one grey row: under a pause, the pause's line, as approving resumes auto mode; else an MCP call's
+    // description.
+    const note = pause === null ? descriptionNote(action.description) : `Auto mode paused after ${pause.count} refusals; approving this resumes it.`;
     const yes = await this.ask(shown, action.detail, undefined, undefined, warnings, note);
     // Headless, the ask is the launch's report of a refusal (cli.tsx), so the run fails and says so; a danger is
     // refused whatever it answers.

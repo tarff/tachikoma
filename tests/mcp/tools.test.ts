@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,7 +8,7 @@ import { Completions } from "openai/resources/chat/completions";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { z } from "zod";
 import { privateDir } from "../../src/auth/private.js";
-import { PermissionGate } from "../../src/core/permissions.js";
+import { type Action, type Judge, type Mode, PermissionGate } from "../../src/core/permissions.js";
 import { Session, type SessionOptions } from "../../src/core/session.js";
 import { readTranscript, Transcript } from "../../src/core/transcript.js";
 import type { CompletionRequest, Message, Provider, Turn } from "../../src/core/types.js";
@@ -17,7 +17,7 @@ import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import { Hooks } from "../../src/hooks/hooks.js";
 import type { ServerConfig } from "../../src/mcp/config.js";
 import { type Offered, Servers } from "../../src/mcp/servers.js";
-import { type Approve, mcpTools } from "../../src/mcp/tools.js";
+import { type Approve, approveOf, mcpTools } from "../../src/mcp/tools.js";
 import { AnthropicProvider, toAnthropic } from "../../src/providers/anthropic.js";
 import { OpenAIProvider, toOpenAI } from "../../src/providers/openai.js";
 import { judgeOf } from "../../src/safety/judge.js";
@@ -585,6 +585,163 @@ describe("MCP tools in the session: a remote server's drop", () => {
     await d.turn;
     expect(d.t.results(d.session)).toEqual([{ output: "Cancelled by the user.", isError: true }]);
     expect([d.t.outcomes, d.t.q.asked, d.t.errors]).toEqual([["cancelled"], [], []]);
+  });
+});
+
+// Release 8c plan, Task 7 (design, "Approval"; choices 14-17 and 32): each call through the real gate, as cli.tsx makes
+// it, and approveOf, as the launch gives it; the fake server's log counts the calls that reached it.
+describe("MCP tools in the session: approval", () => {
+  type Setup = Awaited<ReturnType<typeof setup>>;
+  const P = "Not allowed in -p mode, where nobody can approve it"; // cli.tsx's refusal in -p
+  const ECHO = "Says it back\nto whoever asked"; // echo's description, two lines: the question's note is its first
+  const asking = (text: string) => ({ summary: `s: echo {"text":"${text}"}`, note: "Says it back" });
+  const ALLOW = JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } });
+  // A PreToolUse hook, as tests/core/session.test.ts's SCRIPT: it adds its input to the file `out` names, waits for the
+  // file `go` names, when there is one, looked for every 20 ms as that test's is, then prints `stdout`.
+  const HOOK = `const fs = require("fs");
+const [out, stdout, go] = process.argv.slice(2);
+let text = "";
+process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () => {
+  fs.appendFileSync(out, text + "\\n");
+  const poll = () => (!go || fs.existsSync(go) ? process.stdout.write(stdout) : setTimeout(poll, 20));
+  poll();
+});`;
+
+  // The gate in `mode`, headless as -p makes it with `headless`: its questions kept, with their grey notes, answered by
+  // `answers` in turn and no once they run out, as -p's ask says no to each; auto's judge keeps each action it is shown
+  // and allows those `allows` passes.
+  function gated(t: Setup, mode: Mode, o: { headless?: true; answers?: boolean[]; allows?: (a: Action) => boolean } = {}) {
+    const asked: { summary: string; note?: string }[] = [];
+    const judged: Action[] = [];
+    const answers = [...(o.answers ?? [])];
+    const judge: Judge = async (action) => (judged.push(action), o.allows?.(action) ? { allow: true } : { allow: false, reason: "not asked for" });
+    const ask = async (summary: string, _d?: string, _o?: unknown, _p?: boolean, _w?: string[], note?: string) => {
+      asked.push({ summary, ...(note ? { note } : {}) });
+      return answers.shift() ?? false;
+    };
+    const gate = new PermissionGate(mode, ask, o.headless ? P : undefined, { root: t.dir, headless: o.headless ?? false, judge });
+    return { gate, asked, judged };
+  }
+  // The lead's session, its MCP tools approved as the launch's are.
+  const lead = (t: Setup, servers: Servers, gate: PermissionGate, turns: ConstructorParameters<typeof Model>[1], over: Partial<SessionOptions> = {}) =>
+    t.session(servers, turns, { ctx: { ...t.ctx, gate }, mcp: mcpTools(servers, t.bus, approveOf(servers)), ...over });
+  // The hook in `gate`'s window, printing `stdout`, waiting for `go` when given; `out` holds its inputs.
+  function hooked(t: Setup, gate: PermissionGate, stdout: string, go = "") {
+    const script = path.join(t.dir, "pre.cjs");
+    writeFileSync(script, HOOK);
+    const out = t.log();
+    const args = [script, out, stdout, go];
+    const hook = { event: "PreToolUse" as const, matcher: { all: true as const }, command: process.execPath, args, async: false, where: '"PreToolUse"' };
+    const where = { sessionId: () => "s1", transcript: () => undefined, root: t.dir, mode: () => gate.mode, effort: () => undefined, lead: () => "fake:a" };
+    return { hooks: new Hooks({ hooks: [hook], off: false, leftOut: [] }, where, t.bus), out };
+  }
+  const two = many(["c1", "mcp__s__echo", { text: "one" }], ["c2", "mcp__s__echo", { text: "two" }]);
+
+  // Choice 32: in never too, as a server on the user's machine is outside the box.
+  const asks = "asks in %s, its note the description's first line: a no refuses before the server, a yes runs it";
+  it.each(["never", "ask", "project"] as const)(asks, async (mode) => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s", { description: ECHO })]);
+    const g = gated(t, mode, { answers: [false, true] });
+    const { session } = lead(t, servers, g.gate, [two, reply("done")]);
+    await session.send("go");
+    expect(g.asked).toEqual([asking("one"), asking("two")]);
+    expect(t.results(session)).toEqual([
+      { output: 'The user declined: s: echo {"text":"one"}', isError: true },
+      { output: "two", isError: false },
+    ]);
+    expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "two" }]);
+    expect(t.outcomes).toEqual(["declined", "ok"]);
+  });
+
+  it.each(["never", "project"] as const)("refuses in -p, in %s mode, as nobody can approve it, never reaching the server", async (mode) => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s", { description: ECHO })]);
+    const g = gated(t, mode, { headless: true });
+    const { session } = lead(t, servers, g.gate, [callTool("c1", "mcp__s__echo", { text: "hi" }), reply("ok")]);
+    await session.send("go");
+    expect(t.results(session)).toEqual([{ output: `${P}: s: echo {"text":"hi"}`, isError: true }]);
+    expect(g.asked).toEqual([asking("hi")]);
+    expect(t.calls(t.logs.get("s")!, "echo")).toEqual([]);
+  });
+
+  // Choice 15 and Task 6b: the judge is shown the description's 4,096 cut, and asks nobody.
+  it("lets the judge decide in auto, shown the tool's description cut at 4,096, and asks nobody", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s", { description: "d".repeat(5_000) })]);
+    const g = gated(t, "auto", { allows: (a) => a.summary.includes('"two"') });
+    const { session } = lead(t, servers, g.gate, [two, reply("done")]);
+    await session.send("go");
+    const shown = (text: string): Action => ({ kind: "mcp", outside: true, summary: `s: echo {"text":"${text}"}`, description: "d".repeat(4_096) });
+    expect([g.judged, g.asked]).toEqual([[shown("one"), shown("two")], []]);
+    expect(t.results(session)).toEqual([
+      { output: "The judge refused: not asked for", isError: true },
+      { output: "two", isError: false },
+    ]);
+    expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "two" }]);
+  });
+
+  // Choice 16: trust skips the gate in every mode.
+  it("runs a tool the user trusts with no question and no judge, in every mode and in -p", async () => {
+    const t = await setup();
+    const servers = await t.ready([{ ...(await t.local("s")), trustedTools: ["echo"] }]);
+    const modes = [["ask"], ["project"], ["auto"], ["never"], ["project", true]] as const;
+    for (const [mode, headless] of modes) {
+      const g = gated(t, mode, headless ? { headless } : {});
+      const { session } = lead(t, servers, g.gate, [callTool("c1", "mcp__s__echo", { text: mode }), reply("ok")]);
+      await session.send("go");
+      expect([mode, t.results(session), g.asked, g.judged]).toEqual([mode, [{ output: mode, isError: false }], [], []]);
+    }
+    expect(t.calls(t.logs.get("s")!, "echo")).toHaveLength(modes.length);
+  });
+
+  it.each(["ask", "never"] as const)("skips the question in %s for a call a PreToolUse hook allowed", async (mode) => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s")]);
+    const g = gated(t, mode);
+    const { hooks } = hooked(t, g.gate, ALLOW);
+    const { session } = lead(t, servers, g.gate, [callTool("c1", "mcp__s__echo", { text: "hi" }), reply("ok")], { hooks });
+    await session.send("go");
+    expect([t.results(session), g.asked]).toEqual([[{ output: "hi", isError: false }], []]);
+  });
+
+  // Choices 16 and 17: trust is read in run, so a live edit made while the call waits for its hook applies to it.
+  it("asks the lead, and refuses a subagent, about a call whose trust a live edit removed while its PreToolUse hook ran", async () => {
+    const t = await setup();
+    const s = { ...(await t.local("s", { description: ECHO })), trustedTools: ["echo"] };
+    const servers = await t.ready([s]);
+    // Once the hook has its input, the trust goes, and then the hook ends.
+    const untrust = async (out: string, go: string) => {
+      await vi.waitFor(() => expect(existsSync(out)).toBe(true), WAIT);
+      servers.set([{ ...s, trustedTools: [] }]);
+      writeFileSync(go, "");
+    };
+    const g = gated(t, "ask", { answers: [true] });
+    const go = path.join(t.dir, "go-lead");
+    const h = hooked(t, g.gate, "", go);
+    const { session } = lead(t, servers, g.gate, [callTool("c1", "mcp__s__echo", { text: "lead" }), reply("ok")], { hooks: h.hooks });
+    const turn = session.send("go");
+    await untrust(h.out, go);
+    await turn;
+    expect([t.results(session), g.asked]).toEqual([[{ output: "lead", isError: false }], [asking("lead")]]);
+
+    servers.set([s]); // trusted again, so the subagent's request offers it
+    const sub = gated(t, "ask", { answers: [true] });
+    const subGo = path.join(t.dir, "go-sub");
+    const sh = hooked(t, sub.gate, "", subGo);
+    const owner = { name: "t1 (look)", signal: new AbortController().signal, stop: () => {} };
+    const { session: subagent } = lead(t, servers, sub.gate, [callTool("c2", "mcp__s__echo", { text: "sub" }), reply("ok")], {
+      ctx: { ...t.ctx, gate: sub.gate.for(owner) },
+      subagent: true,
+      hooks: sh.hooks.for({ id: "t1" }, t.bus),
+      mcp: mcpTools(servers, t.bus, approveOf(servers), { trustedOnly: true }),
+    });
+    const subTurn = subagent.send("look");
+    await untrust(sh.out, subGo);
+    await subTurn;
+    const line = `Not run: s's "echo" is no longer trusted as read-only, and subagents only read.`;
+    expect([t.results(subagent), sub.asked]).toEqual([[{ output: line, isError: true }], []]);
+    expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "lead" }]);
   });
 });
 
