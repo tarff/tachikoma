@@ -1066,6 +1066,43 @@ describe("App", () => {
     });
   });
 
+  // Release 8c plan, choice 47: an MCP call's grey note, its tool's description, is one screen row in every view, as full
+  // screen already drew every note; another note, auto mode's pause, still wraps outside full screen.
+  const LONG_NOTE = `Draws ${"a shape ".repeat(20).trimEnd()}`; // 166 columns: more than the test screen's 100
+  it("cuts an MCP call's grey note to one row in classic, and wraps another note there as before", async () => {
+    const { app, ask } = await mount([]);
+    const first = ask('tv: draw {"shape":"line"}', undefined, undefined, undefined, [], LONG_NOTE, true);
+    await until(app, "Allow tv: draw");
+    let rows = app.lastFrame()!.split("\n");
+    const at = rows.findIndex((r) => r.startsWith("Draws a shape"));
+    expect(rows[at]).toMatch(/^Draws a shape.*…$/);
+    expect(rows[at]!.length).toBeLessThanOrEqual(100); // the test screen's width
+    expect(rows[at + 1]).toMatch(/^Allow tv: draw/);
+    await press(app, "n");
+    expect(await first).toBe(false);
+    const second = ask('tv: draw {"shape":"line"}', undefined, undefined, undefined, [], LONG_NOTE);
+    await until(app, "Allow tv: draw");
+    rows = app.lastFrame()!.split("\n");
+    const from = rows.findIndex((r) => r.startsWith("Draws a shape"));
+    expect(rows[from]).not.toContain("…");
+    expect(rows[from + 1]).not.toMatch(/^Allow/); // the rest of the note, on a row of its own
+    await press(app, "n");
+    expect(await second).toBe(false);
+  });
+
+  it("cuts a moved question's MCP note to one row in the conversation", async () => {
+    const input = `{"text":"${"x".repeat(900)}"}`;
+    const { app, ask } = await mount([], { full: true, rows: 12 });
+    const asking = ask(`tv: draw ${input}`, undefined, undefined, undefined, [], LONG_NOTE, true);
+    await until(app, "Allow tv (shown above)?");
+    const rows = app.lastFrame()!.split("\n");
+    const heading = rows.findIndex((r) => r.includes("┌ tv ("));
+    expect(rows[heading + 1]).toMatch(/^Draws a shape.*…┃$/); // ┃: the scroll bar's column
+    expect(rows[heading + 2]).toMatch(/^tv: draw/);
+    await press(app, "n");
+    expect(await asking).toBe(false);
+  });
+
   it("fits a question's grey line in a small terminal, with red lines given too, keeping a red row", async () => {
     await inColour(async () => {
       const warnings = Array.from({ length: 7 }, (_, i) => `Danger: rewriting or deleting git history: git push --force origin b${i + 1}`);

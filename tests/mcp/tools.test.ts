@@ -672,7 +672,10 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const g = gated(t, "auto", { allows: (a) => a.summary.includes('"two"') });
     const { session } = lead(t, servers, g.gate, [two, reply("done")]);
     await session.send("go");
-    const shown = (text: string): Action => ({ kind: "mcp", outside: true, summary: `s: echo {"text":"${text}"}`, description: "d".repeat(4_096) });
+    const shown = (text: string): Action => ({
+      ...{ kind: "mcp", outside: true, summary: `s: echo {"text":"${text}"}` },
+      ...{ description: "d".repeat(4_096), note: "d".repeat(5_000) }, // the note is the server's own words, cut by the gate
+    });
     expect([g.judged, g.asked]).toEqual([[shown("one"), shown("two")], []]);
     expect(t.results(session)).toEqual([
       { output: "The judge refused: not asked for", isError: true },
@@ -742,6 +745,98 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     const line = `Not run: s's "echo" is no longer trusted as read-only, and subagents only read.`;
     expect([t.results(subagent), sub.asked]).toEqual([[{ output: line, isError: true }], []]);
     expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "lead" }]);
+  });
+
+  // Choice 47: the note is the server's own words; the judge still gets Tachikoma's sentence for a flattened schema.
+  it("notes the tool's own description, not the sentence for its flattened schema, which the judge still gets", async () => {
+    const t = await setup();
+    const branch = (p: string) => ({ properties: { [p]: { type: "string" } }, required: [p] });
+    const either = { type: "object", anyOf: [branch("a"), branch("b")] };
+    const results = { pick: { content: [{ type: "text", text: "picked" }] } };
+    const servers = await t.ready([await t.local("s", { tools: [tool("pick", either, "Picks one\nof two")], results })]);
+    const asked = gated(t, "ask", { answers: [true] });
+    await lead(t, servers, asked.gate, [callTool("c1", "mcp__s__pick", { a: "x" }), reply("ok")]).session.send("go");
+    expect(asked.asked).toEqual([{ summary: 's: pick {"a":"x"}', note: "Picks one" }]);
+    const judged = gated(t, "auto", { allows: () => true });
+    await lead(t, servers, judged.gate, [callTool("c2", "mcp__s__pick", { b: "y" }), reply("ok")]).session.send("go");
+    expect(judged.judged.map((a) => a.description)).toEqual(["This tool takes one of these sets of parameters: a; or b. Picks one\nof two"]);
+  });
+
+  // Choice 47: in -p with auto, the judge decides, as it does other actions there.
+  it("lets the judge decide in -p with auto: its yes runs the call, its no refuses it, and nobody is asked", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s")]);
+    const g = gated(t, "auto", { headless: true, allows: (a) => a.summary.includes('"two"') });
+    const { session } = lead(t, servers, g.gate, [two, reply("done")]);
+    await session.send("go");
+    expect([g.judged.map((a) => a.summary), g.asked]).toEqual([['s: echo {"text":"one"}', 's: echo {"text":"two"}'], []]);
+    expect(t.results(session)).toEqual([
+      { output: "The judge refused: not asked for", isError: true },
+      { output: "two", isError: false },
+    ]);
+    expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "two" }]);
+  });
+
+  // Choice 47: a hook's ask on an MCP call in never is the user's question, the hook's question's words; another
+  // action's is still refused there, and -p refuses both.
+  const ASK = JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: "Sure?" } });
+  it("asks a hook's ask on an MCP call in never, a no refusing it before the server, a yes running it, and refuses one on another tool", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s")]);
+    const g = gated(t, "never", { answers: [false, true] });
+    const { hooks } = hooked(t, g.gate, ASK);
+    const calls = many(["c1", "mcp__s__echo", { text: "one" }], ["c2", "mcp__s__echo", { text: "two" }], ["c3", "own", {}]);
+    const { session } = lead(t, servers, g.gate, [calls, reply("done")], { hooks });
+    await session.send("go");
+    const question = (text: string) => ({ summary: `mcp__s__echo {"text":"${text}"}`, note: "A hook asks: Sure?" });
+    expect(g.asked).toEqual([question("one"), question("two")]);
+    expect(t.results(session)).toEqual([
+      { output: 'The user declined: mcp__s__echo {"text":"one"}', isError: true },
+      { output: "two", isError: false },
+      { output: "Not allowed in never mode: a PreToolUse hook asked for this call to be approved (Sure?).", isError: true },
+    ]);
+    expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "two" }]);
+  });
+
+  it.each(["never", "project"] as const)("refuses a hook's ask on an MCP call in -p, in %s mode, never reaching the server", async (mode) => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s")]);
+    const g = gated(t, mode, { headless: true });
+    const { hooks } = hooked(t, g.gate, ASK);
+    const { session } = lead(t, servers, g.gate, [callTool("c1", "mcp__s__echo", { text: "hi" }), reply("ok")], { hooks });
+    await session.send("go");
+    const line = "Not allowed: a PreToolUse hook asked for this call to be approved (Sure?), and -p cannot ask.";
+    expect([t.results(session), g.asked]).toEqual([[{ output: line, isError: true }], []]);
+    expect(t.calls(t.logs.get("s")!, "echo")).toEqual([]);
+  });
+
+  // Task 7's code review: a tool already changed when its call runs is refused before the question, so nobody is asked
+  // about a call that cannot run.
+  it("refuses a call whose tool changed after the request with the changed line, without asking", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s", { added: [tool("echo", echoSchema, "a new echo")] })]);
+    const changes = async () => {
+      await servers.server("s")!.callTool("change", {}, {});
+      await vi.waitFor(() => expect(servers.offer({ loaded: new Set() }).defined.find((o) => o.tool === "echo")!.spec.description).toBe("a new echo"), WAIT);
+      return callTool("c1", "mcp__s__echo", { text: "hi" });
+    };
+    const g = gated(t, "ask", { answers: [true] });
+    const { session } = lead(t, servers, g.gate, [changes, reply("ok")]);
+    await session.send("go");
+    expect([t.results(session), g.asked]).toEqual([[{ output: changedLine("s", "echo"), isError: true }], []]);
+    expect(t.calls(t.logs.get("s")!, "echo")).toEqual([]);
+  });
+
+  // Task 7's code review: a yes given after the turn was stopped runs nothing.
+  it("runs nothing when the turn is stopped while its question waits, though the answer is yes", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("s")]);
+    const stop = new AbortController();
+    const gate = new PermissionGate("ask", async () => (stop.abort(), true), undefined, { root: t.dir });
+    const { session } = lead(t, servers, gate, [callTool("c1", "mcp__s__echo", { text: "hi" })]);
+    await session.send("go", stop.signal);
+    expect([t.results(session), t.outcomes]).toEqual([[{ output: "Cancelled by the user.", isError: true }], ["cancelled"]]);
+    expect(t.calls(t.logs.get("s")!, "echo")).toEqual([]);
   });
 });
 

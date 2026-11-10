@@ -27,6 +27,7 @@ export type Question = {
   plain?: boolean; // a question of its own, asked without "Allow" (permissions.ts, Ask)
   warnings: string[]; // the red lines drawn above it, one per danger, escaped (permissions.ts, Ask; release 7 plan, Task 8)
   note?: string; // a grey row, auto mode's pause, drawn above any red lines, which the gate never sends with it (permissions.ts, Ask; Task 10)
+  oneRow?: true; // the note is cut to one screen row in every view, an MCP call's (permissions.ts, Ask; release 8c plan, choice 47)
   call?: string; // the lead's call that asks it, from its tool-start, so its answer can go under its tool line (choice 66)
   answer: (ok: boolean, how: string) => void;
 };

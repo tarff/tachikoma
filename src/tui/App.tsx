@@ -195,7 +195,7 @@ export function App(props: AppProps) {
   ui.history.current ??= new History(ui.historyFile, (line) => fns.say({ text: line, color: "magenta" }));
 
   useEffect(() => {
-    ui.bindAsk((text, detail, owner, plain, warnings, note) => {
+    ui.bindAsk((text, detail, owner, plain, warnings, note, oneRow) => {
       // A tool still finishing after Ctrl-C must not ask about a turn the user has stopped, nor a
       // stopped subagent about anything.
       const signal = owner ? owner.signal : ui.abort.current?.signal;
@@ -227,6 +227,7 @@ export function App(props: AppProps) {
           ...(plain ? { plain } : {}),
           warnings: warnings ?? [],
           ...(note !== undefined ? { note } : {}), // auto mode's pause, a row of the question's own (release 7 plan, Task 10)
+          ...(note !== undefined && oneRow ? { oneRow: true as const } : {}),
           ...(asking && !asking.outcome ? { call: asking.id } : {}),
           answer: (ok, how) => {
             if (!open) return;
@@ -641,7 +642,7 @@ export function App(props: AppProps) {
       // does its grey line, auto mode's pause, above any red lines, which the gate never sends with it today (Task 10).
       fns.say(
         { text: `┌ ${ui.question.label} (${n} character${n === 1 ? "" : "s"})`, color: "gray" },
-        ...(ui.question.note === undefined ? [] : [{ text: ui.question.note, color: "gray" }]),
+        ...(ui.question.note === undefined ? [] : [{ text: ui.question.note, color: "gray", ...(ui.question.oneRow ? { oneLine: true } : {}) }]),
         ...ui.question.warnings.map((text): Line => ({ text, color: "red" })),
         { text: ui.question.text, color: "gray" },
       );
@@ -776,7 +777,11 @@ export function App(props: AppProps) {
           </>
         ) : (
           <>
-            {ui.question.note !== undefined && <Text color="gray">{ui.question.note}</Text>}
+            {ui.question.note !== undefined && (
+              <Text color="gray" wrap={ui.question.oneRow ? "truncate-end" : "wrap"}>
+                {ui.question.note}
+              </Text>
+            )}
             {ui.question.warnings.map((w, i) => (
               <Text key={i} color="red">
                 {w}

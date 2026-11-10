@@ -1139,8 +1139,9 @@ export class Session {
     let gate = this.opts.ctx.gate;
     if (c.decision === "ask") {
       // Where nobody can be asked, in never and -p, the refusal is a grey line too, as a deny's is (the user's choice,
-      // 2026-11-09).
-      const cannot = gate.hookCannotAsk(c.reason ?? "");
+      // 2026-11-09); an MCP call's, the request's own MCP tool, is asked in never (release 8c plan, choice 47).
+      const mcp = !this.opts.tools.some((t) => t.spec.name === call.name) && this.#offered.some((o) => o.spec.name === call.name);
+      const cannot = gate.hookCannotAsk(c.reason ?? "", mcp);
       if (cannot !== undefined) return refused(cannot);
       await gate.hookAsks(`${call.name} ${JSON.stringify(input)}`, c.reason ?? "");
       gate = gate.withHook({ asked: true });

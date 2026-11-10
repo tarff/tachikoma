@@ -26,9 +26,10 @@ export interface Action {
   // path as the question names it, for the refusal in `never` (Task 8).
   protectedPart?: string;
   path?: string;
-  // An MCP tool's description, cut at 4,096 as the judge is shown it (release 8c plan, choice 15); its question shows only
-  // the first line, as its grey note (choice 14).
+  // An MCP tool's description, cut at 4,096 as the judge is shown it (release 8c plan, choice 15), and its own words, as the
+  // server sent them, whose first line is its question's grey note, on one screen row (choices 14 and 47).
   description?: string;
+  note?: string;
 }
 
 // The git settings' paths the protected paths add, read once at launch (release 7 plan, Task 8; choices 57 and 59):
@@ -88,8 +89,9 @@ export interface Owner {
 // `plain`: the summary is a question of its own, not an action to allow, such as the session's "Send again without the
 // pictures" (release 6 plan, Task 18), so it is asked without "Allow" before it. `warnings`: the red lines above it, one
 // per danger the dangerous-command check found, escaped (release 7 plan, Task 8). `note`: a grey line said with it, auto
-// mode's pause (Task 10).
-export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, warnings?: string[], note?: string) => Promise<boolean>;
+// mode's pause (Task 10). `oneRow`: the note is cut to one screen row in every view, as an MCP call's description is
+// (release 8c plan, choice 47); another wraps outside full screen, as before.
+export type Ask = (summary: string, detail?: string, owner?: Owner, plain?: boolean, warnings?: string[], note?: string, oneRow?: boolean) => Promise<boolean>;
 
 // Auto mode's judge, which cli.tsx gives the gate (release 7 plan, Task 10; safety/judge.ts, judgeOf). `own` is what a
 // subagent's gate adds: its own session's calls, which follow the lead's, and its bus, so the judge's spend and errors
@@ -199,7 +201,7 @@ export class PermissionGate {
   // A subagent's gate: the lead's mode, rules, protection and auto mode's counts, questions that name the subagent, and
   // what it adds for the judge (Own).
   for(owner: Owner, own?: Own): PermissionGate {
-    const ask: Ask = (summary, detail, _owner, plain, warnings, note) => this.ask(summary, detail, owner, plain, warnings, note);
+    const ask: Ask = (summary, detail, _owner, plain, warnings, note, oneRow) => this.ask(summary, detail, owner, plain, warnings, note, oneRow);
     const gate = new PermissionGate(this.#mode, ask, this.refusal, this.options);
     gate.#parent = this;
     if (own) gate.#own = own;
@@ -220,9 +222,10 @@ export class PermissionGate {
 
   // Where a PreToolUse hook's ask cannot be put, in never and headless, where nobody can answer it, the words of the
   // call's refusal (release 8b plan, choice 15; design, "Tool hooks"), which the session says and tells the model; else
-  // undefined, and the question is put (hookAsks).
-  hookCannotAsk(reason: string): string | undefined {
-    if (this.mode === "never") return hookNeverRefusal(reason);
+  // undefined, and the question is put (hookAsks). `mcp`: the call is an MCP tool's, whose hook's ask is put in never too,
+  // as the gate asks about such a call there (release 8c plan, choice 47).
+  hookCannotAsk(reason: string, mcp = false): string | undefined {
+    if (this.mode === "never" && !mcp) return hookNeverRefusal(reason);
     if (this.options.headless) return hookHeadlessRefusal(reason);
     return undefined;
   }
@@ -271,9 +274,9 @@ export class PermissionGate {
     const shown = visible(action.summary);
     const warnings = found.map((d) => visible(`Danger: ${named(d)}`));
     // The question has one grey row: under a pause, the pause's line, as approving resumes auto mode; else an MCP call's
-    // description.
-    const note = pause === null ? descriptionNote(action.description) : `Auto mode paused after ${pause.count} refusals; approving this resumes it.`;
-    const yes = await this.ask(shown, action.detail, undefined, undefined, warnings, note);
+    // tool's own words, cut to one screen row (choice 47).
+    const note = pause === null ? descriptionNote(action.note) : `Auto mode paused after ${pause.count} refusals; approving this resumes it.`;
+    const yes = await this.ask(shown, action.detail, undefined, undefined, warnings, note, pause === null && action.kind === "mcp");
     // Headless, the ask is the launch's report of a refusal (cli.tsx), so the run fails and says so; a danger is
     // refused whatever it answers.
     if (this.options.headless && found.length) throw new Declined(dangerRefusal(found));

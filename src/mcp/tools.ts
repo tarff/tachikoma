@@ -12,10 +12,10 @@ import type { Offered, Servers } from "./servers.js";
 // each call runs on the connection and definition its request offered, or is refused with a line saying why (design,
 // finding 4).
 
-// The question for a call, Task 7's gate (approveOf), which throws to refuse it. It has no default, so no MCP tool reaches a session
-// without one (Task 6's security check). It is asked after a dropped server's new connection, so the approval is for the
-// version that runs (choice 33), and before the check that nothing changed while the call waited (finding 4). A test
-// gives one that waits, to change things while a call waits for it.
+// The question for a call, Task 7's gate (approveOf), which throws to refuse it. It has no default, so no MCP tool
+// reaches a session without one (Task 6's security check). It is asked after a dropped server's new connection, so the
+// approval is for the version that runs (choice 33), and before the check that nothing changed while the call waited
+// (finding 4). A test gives one that waits, to change things while a call waits for it.
 export type Approve = (o: Offered, input: Record<string, unknown>, ctx: ToolContext) => Promise<void>;
 
 // Choice 11's names for the kinds of content an answer can hold that are not passed on, in MCP's own types.
@@ -35,15 +35,16 @@ const untrusted = (o: Offered) =>
 // choices 14-17). Trust is read here, from the entry in force, right before the gate would decide, so a live edit applies
 // to every call not yet decided; a trusted call skips the gate's question and the judge in every mode (choice 16). A
 // subagent's call to a tool no longer trusted is refused, as subagents only read (choice 17). Else the gate decides:
-// the question is the server, the tool and its input as JSON, which the gate escapes, its grey note the description's
-// first line (choice 14), and the judge is shown the 4,096 cut (choice 15; Task 6b). `outside`: the server runs apart
-// from the project, as only the judge reads it; the gate decides an MCP call by its kind (choice 32).
+// the question is the server, the tool and its input as JSON, which the gate escapes, its grey note the first line of
+// the tool's own description, as the server sent it (choices 14 and 47), and the judge is shown the 4,096 cut (choice 15;
+// Task 6b). `outside` is true, as the server runs apart from the project; only the judge reads it, since the gate decides
+// an MCP call by its kind (release 8c plan, choice 32).
 export function approveOf(servers: Servers): Approve {
   return async (o, input, ctx) => {
     if (servers.trust(o.server, o.tool)) return;
     if (o.trustedOnly) throw new Error(untrusted(o));
     const summary = `${o.server}: ${o.tool} ${JSON.stringify(input)}`;
-    await ctx.gate.require({ kind: "mcp", outside: true, summary, description: o.forJudge }, ctx.signal);
+    await ctx.gate.require({ kind: "mcp", outside: true, summary, description: o.forJudge, note: o.forNote }, ctx.signal);
   };
 }
 
@@ -110,6 +111,9 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
         // the call, and one a live edit replaced is not the one shown, so nobody is asked (Task 6's spec review).
         const was = servers.current(o);
         if (was === "stopped" || was === "restarted") o = await again(o, ctx.signal);
+        // A tool already changed, or whose server left the settings, cannot run, so nobody is asked about it (Task 7's code
+        // review). A subagent's view also calls a tool whose trust has gone "changed"; approve's own line says why.
+        if (!o.trustedOnly && servers.current(o) === "changed") throw new Error(changed(o));
         await approve(o, input, ctx);
         // Nothing reaches the server unless its tool is still the one shown, on the connection that showed it (finding 4).
         const now = servers.current(o);

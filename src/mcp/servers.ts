@@ -26,7 +26,8 @@ const PROPERTY = /^[A-Za-z0-9_.-]{1,64}$/;
 // that offered it and its definition (design, finding 4; choice 9). `connection` is this object's own number, unique over
 // every server: a live edit's restart is a new Server, whose numbers start again. `trustedOnly`: offered in a subagent's
 // view, the tools trusted as read-only, which a rebind keeps (Task 6's spec review). `forJudge`: its description cut at
-// 4,096, as the judge is shown it however the tool was loaded (Task 6b; Task 7 shows it).
+// 4,096, as the judge is shown it however the tool was loaded (Task 6b; Task 7 shows it). `forNote`: the server's own
+// description, never a flattened schema's sentence, for the question's grey note (choice 47).
 export interface Offered {
   spec: ToolSpec;
   server: string;
@@ -34,6 +35,7 @@ export interface Offered {
   connection: number;
   definition: string;
   forJudge: string;
+  forNote: string;
   trustedOnly?: true;
 }
 
@@ -416,6 +418,7 @@ export class Servers {
           // The server's whole description and its own schema, never a cut view (choice 8).
           definition: JSON.stringify({ description: c.tool.description, inputSchema: c.tool.inputSchema }),
           forJudge: upfront,
+          forNote: c.tool.description ?? "",
         };
         return { offered, searched: cut(text, MAX_SEARCHED), upfront: c.slot.config.alwaysLoad || c.tool._meta?.["anthropic/alwaysLoad"] === true };
       });
