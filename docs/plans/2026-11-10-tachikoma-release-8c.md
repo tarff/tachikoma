@@ -463,8 +463,10 @@ Each is marked in its task. The user approves them with the plan.
     - A tool is left out, with its line, when after that its schema is not an object schema, a
       top-level property name is not 1 to 64 letters, digits, `_`, `.` or `-` (Claude Code's
       rule), or the schema cannot be compiled by the library's own JSON Schema checker
-      (`@modelcontextprotocol/client/validators/ajv`, which checks a schema against its
-      meta-schema as it compiles it). The server's other tools stay.
+      (`@modelcontextprotocol/client/validators/ajv`). The server's other tools stay. That checker
+      is built with `validateSchema: false`, so only what compiling itself refuses (a bad `type`,
+      say) leaves a tool out; a schema the providers might still refuse for other reasons is a
+      known limit (Task 5's spec review, measured).
     - The model is not told which tools were left out, which Claude Code does: a known limit.
 
 **Tool search** (Task 6b; the user's choices, 2026-11-10, after Task 1's measurement: "Build tool
@@ -839,7 +841,8 @@ run(input: unknown, ctx: ToolContext): Promise<string | { text: string; pictures
   reply's calls are looked up in that request's list (Tachikoma's own first, then the offer), so
   a call runs on the tool the model was shown. The parallel check runs MCP calls one at a time.
 - **The run, first** (choice 33; the plan review, finding 3): a server `stopped` with `retry` is
-  connected again; on success the call is bound to the new connection if the tool's definition
+  connected again, through `servers.reconnect(name)`, never `Server.reconnect()`, so a failed one
+  says its stopped line (Task 5's fix); on success the call is bound to the new connection if the tool's definition
   is unchanged, else it gets the "changed" line; on failure the stopped line. Then the gate
   (Task 7).
 - **The run, after the question:** `servers.current(offered)`; `changed` or `restarted` gives the
