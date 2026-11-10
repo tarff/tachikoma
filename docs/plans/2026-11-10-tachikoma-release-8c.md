@@ -1087,6 +1087,15 @@ leaves the strip to the session's first request (`keepThinking`), and says the l
 Tachikoma's own tools changed. Each `tools` line holds the whole set, so a session with many
 searches grows its transcript by one tool list per change.
 
+**From Task 8's build:** `mcp_tool` hooks reach the servers only through
+`hooks.useServers(servers)`, which the lead's Hooks shares with every subagent's (`for()`); call
+it once `Servers` is made, beside `new Hooks`, before `session.start(source)`. Without it every
+`mcp_tool` hook fails with "is not running". A live edit keeps the same `Servers` object, so
+nothing is wired again. At exit, SessionEnd fires before `servers.stopAll()`, or every SessionEnd
+`mcp_tool` hook fails with "is not running" (Task 8's code review). The launch's SessionStart, which skips `mcp_tool` hooks (choice 21), is
+the window's first, whatever its source, so a `-c`, `-r` or `--fork-session` launch skips them
+too.
+
 Commit: `feat: MCP servers at the launch: project servers asked, the first prompt waits, -p's lines`.
 
 ## Task 10: `/mcp` and live edits
