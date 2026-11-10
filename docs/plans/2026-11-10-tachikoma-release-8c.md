@@ -711,7 +711,10 @@ export class Server {
   starts a `127.0.0.1` HTTP server answering the same in JSON. It uses no package.
 
 **Tests:** start and list over stdio and over HTTP; `CLAUDE_PROJECT_DIR`, `env`, the folder and
-`roots/list` as the server sees them; a server that never answers fails at the test's own short
+`roots/list` as the server sees them; on Windows, a `.cmd` server (a fake `x.cmd` the test makes,
+in a folder with a space in its name) started through `mcpProgram`'s full path, with an argument
+holding a space, `&`, `^` and `%`, which arrives whole (Task 3's review: Node refuses a bare
+`.cmd` without a shell, so this checks how the library's spawn handles it); a server that never answers fails at the test's own short
 limit (the 30 s passed in as a parameter for the test, not changed in the code), its process gone;
 an exit with code 3 and a last error line gives that reason; a description longer than 4,096
 characters is in the state whole; a slow call that keeps sending progress still ends at its
@@ -1090,7 +1093,11 @@ built" section).
   line, as MCP itself has no WebSocket transport and the library none; the user's choice,
   2026-11-10; and Task 2's review: the refused-address line shows the address as written, so a key
   written right in it is shown; `.mcp.json` has no size limit; a UTF-16 file gives a garbled line,
-  as `settings.json` does); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
+  as `settings.json` does; and Task 3's review: a project's server is answered by its name only,
+  so a `git pull` that changes the command of a server already said yes to starts it without
+  asking, as in Claude Code; with both `Path` and `PATH` set to different values, the lookup reads
+  the last one while Node's spawn keeps `PATH`; reading the answers on Windows starts PowerShell
+  twice at launch, as the prompt history does); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
 
