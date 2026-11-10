@@ -142,11 +142,47 @@ describe("a local server", () => {
     expect(server.state).toEqual({ is: "failed", reason: "it exited with code 1: Error: GITHUB_TOKEN is not set" });
   });
 
+  // Node prints a system error's fields (errno, code, syscall, path) in a block after its stack.
+  it("gives a crashed Node server's error, not the block of its fields", async () => {
+    const { dir, make, script } = await setup();
+    const server = make(local([await script({ start: 'require("node:fs").readFileSync("no-such-config.json")' })]));
+    await server.start();
+    const open = `Error: ENOENT: no such file or directory, open '${path.join(dir, "no-such-config.json")}'`;
+    expect(server.state).toEqual({ is: "failed", reason: `it exited with code 1: ${open}` });
+  });
+
+  // The cause is printed inside the block, with a stack and a block of its own, and the outer stack holds Node's
+  // "... N lines matching cause stack trace ..." line.
+  it("gives the outer error of a crash with a cause", async () => {
+    const { make, script } = await setup();
+    const start = 'throw new Error("outer", { cause: Object.assign(new Error("inner"), { code: "E_INNER" }) })';
+    const server = make(local([await script({ start })]));
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: "it exited with code 1: Error: outer" });
+  });
+
+  it("gives the error a server logged with console.error before it exited", async () => {
+    const { dir, make, script } = await setup();
+    const start = 'try { require("node:fs").readFileSync("no-such-config.json") } catch (err) { console.error(err); process.exit(1) }';
+    const server = make(local([await script({ start })]));
+    await server.start();
+    const open = `Error: ENOENT: no such file or directory, open '${path.join(dir, "no-such-config.json")}'`;
+    expect(server.state).toEqual({ is: "failed", reason: `it exited with code 1: ${open}` });
+  });
+
   it("ends at the exit code when nothing but Node's closing lines is left", async () => {
     const { make, script } = await setup();
-    const server = make(local([await script({ exit: 3, stderr: "    at main (server.js:1:1)\n\nNode.js v22.20.0\n" })]));
+    const stack = ["at main (server.js:1:1)", "at Array.map (<anonymous>)", "at Promise.all (index 0)", "at JSON.parse (native)"];
+    const server = make(local([await script({ exit: 3, stderr: `${stack.map((l) => `    ${l}\n`).join("")}\nNode.js v22.20.0\n` })]));
     await server.start();
     expect(server.state).toEqual({ is: "failed", reason: "it exited with code 3" });
+  });
+
+  it("keeps a last line that starts with at but is not a stack line", async () => {
+    const { make, script } = await setup();
+    const server = make(local([await script({ exit: 2, stderr: "at least one of FOO or BAR must be set\n" })]));
+    await server.start();
+    expect(server.state).toEqual({ is: "failed", reason: "it exited with code 2: at least one of FOO or BAR must be set" });
   });
 
   it.skipIf(windows)("fails with the signal that ended it", async () => {

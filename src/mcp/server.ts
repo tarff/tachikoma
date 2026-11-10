@@ -296,17 +296,41 @@ export class Server {
   #address = () => (this.config.entry.kind === "stdio" ? "" : new URL(this.config.entry.url).origin);
 }
 
-// Choice 6: the exit code, with the last line of the error output that is not blank (choice 5), or the signal. Node ends
-// an uncaught error with its stack and then its version, which are passed over, so a crashed Node server's reason is its
-// error (choice 5; the user's choice, 2026-11-10, Task 4's review: "Pass over them").
+// Choice 6: the exit code, with the last line of the error output that is not blank (choice 5), or the signal.
 function exitReason(local: Stdio): string {
   const { exitCode, signalCode } = local.child!;
   if (exitCode === null) return `it was ended by signal ${signalCode}`;
-  const lines = local.errors.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-  if (/^Node\.js v\d/.test(lines.at(-1) ?? "")) lines.pop();
-  while (lines.at(-1)?.startsWith("at ")) lines.pop();
-  const line = lines.at(-1);
+  const line = lastLine(local.errors);
   return line ? `it exited with code ${exitCode}: ${visible(line, { tabs: true })}` : `it exited with code ${exitCode}`;
+}
+
+// A stack line as Node prints one: "at " and a place ending :line:col, perhaps in brackets, or a place without one; and
+// the line standing for the stack lines an error shares with its cause.
+const STACK = /^at .*(:\d+:\d+\)?|\((<anonymous>|native|index \d+)\))$/;
+const SHARED = /^\.\.\. \d+ lines? matching cause stack trace \.\.\.$/;
+const stackLine = (line: string) => STACK.test(line) || SHARED.test(line);
+
+// The last line that is not blank, Node's own closing lines passed over, so a crashed Node server's reason is its error
+// (choice 5; the user's choices, 2026-11-10, Task 4's review and its re-check): a last "Node.js v<version>"; the block of
+// the error's fields (errno, code, cause, with the cause's own stack and block) that Node prints after the stack, from
+// its closing "}" back to the last stack line, which ends " {"; then the stack. A block that does not open on a stack
+// line is not Node's, and is kept.
+function lastLine(errors: string): string | undefined {
+  const lines = errors.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (/^Node\.js v\d/.test(lines.at(-1) ?? "")) lines.pop();
+  if (lines.at(-1) === "}") {
+    let depth = 0;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]!;
+      if (line.startsWith("}")) depth++;
+      else if (line.endsWith("{")) depth--;
+      if (depth > 0) continue;
+      if (line.endsWith(" {") && stackLine(line.slice(0, -2))) lines.length = i;
+      break;
+    }
+  }
+  while (lines.length && stackLine(lines.at(-1)!)) lines.pop();
+  return lines.at(-1);
 }
 
 // The status a remote server answered, or the library's words, with a refused connection's own reason (connectReason).

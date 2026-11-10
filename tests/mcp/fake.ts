@@ -15,6 +15,7 @@ export interface FakeOptions {
   exit?: number; // the code it exits with at the start, after `stderr`
   signal?: NodeJS.Signals; // the signal it ends itself with at the start
   crash?: string; // the message of an Error it throws at the start, uncaught, as a crashed Node server ends
+  start?: string; // code it runs at the start, with `require`, such as a crash of another shape
   silent?: boolean; // answers nothing
   stubborn?: boolean; // keeps running when its input closes, with a child of its own
   pidFile?: string; // where it writes its process id
@@ -85,6 +86,7 @@ function answer(m, reply) {
 function begin() {
   if (O.signal) return process.kill(process.pid, O.signal);
   if (O.crash) throw new Error(O.crash);
+  if (O.start) new Function("require", O.start)(require);
   if (O.exit !== undefined) return process.stderr.write(O.stderr || "", () => process.exit(O.exit));
   if (O.stderr) process.stderr.write(O.stderr);
   if (O.mode === "http") serveHttp();
