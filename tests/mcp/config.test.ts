@@ -93,7 +93,10 @@ describe("readServers", () => {
       [local({ trusted: true }), ': "trusted" must be "read-only" (got true); it was left out'],
       [local({ trustedTools: "quote_get" }), ': "trustedTools" must be a list of tool names in quotes (got "quote_get"); it was left out'],
       [remote({ url: 3 }), ': "url" must be text in quotes (got a number); it was left out'],
-      [remote({ url: "not an address" }), ': "url" must be an address, such as "https://mcp.example.com/mcp" (got text); it was left out'],
+      [
+        remote({ url: "not an address" }),
+        ': "url" must be an address, such as "https://mcp.example.com/mcp" (got text that is not an address); it was left out',
+      ],
       [
         remote({ headers: "Bearer x" }),
         ': "headers" must be an object of text in quotes, such as {"Authorization": "Bearer ${TOKEN}"} (got text); it was left out',
@@ -107,7 +110,11 @@ describe("readServers", () => {
         remote({ oauth: { scopes: ["read", "write"] } }),
         ': "oauth.scopes" must be text in quotes, scopes split by spaces, such as "read write" (got a list); it was left out',
       ],
-      ...([[5, "a number"], ["auth.example.com/meta", "text"], ["http://auth.example.com/meta", "text"]] as const).map(([v, got]): [unknown, string] => [
+      ...([
+        [5, "a number"],
+        ["auth.example.com/meta", "text that is not an address"],
+        ["http://auth.example.com/meta", "an address that does not start with https://"],
+      ] as const).map(([v, got]): [unknown, string] => [
         remote({ oauth: { authServerMetadataUrl: v } }),
         ': "oauth.authServerMetadataUrl" must be an https:// address, such as "https://auth.example.com/.well-known/openid-configuration" ' +
           `(got ${got}); it was left out`,
@@ -156,7 +163,8 @@ describe("readServers", () => {
     for (const server of cases) {
       const words = said(server);
       expect(words).toHaveLength(1);
-      expect(words[0]).toMatch(/\(got (a list|text|a number|true or false|null|an object)\); it was left out$/);
+      const got = /\(got (a list|text|a number|true or false|null|an object|text that is not an address|an address that does not start with https:\/\/)\)/;
+      expect(words[0]).toMatch(new RegExp(`${got.source}; it was left out$`));
       expect(words[0]).not.toContain("sk-");
     }
     const value = [{ command: "node", env: { API_KEY: KEY } }];

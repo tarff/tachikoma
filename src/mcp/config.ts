@@ -182,8 +182,10 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
 }
 
 // A field of the wrong type, its value named by its type, as it may hold a key (typeOf); badValue shows the value, for the
-// short fields that carry none: type, timeout, alwaysLoad, trusted, trustedTools and oauth.callbackPort.
-const bad = (field: string, what: string, value: unknown) => new Left(`: ${quoted(field)} must be ${what} (got ${typeOf(value)})`);
+// short fields that carry none: type, timeout, alwaysLoad, trusted, trustedTools and oauth.callbackPort. `got` says what
+// text of the right type is wrong with, for an address.
+const bad = (field: string, what: string, value: unknown, got = typeOf(value)) => new Left(`: ${quoted(field)} must be ${what} (got ${got})`);
+const NOT_ADDRESS = "text that is not an address";
 const badValue = (field: string, what: string, value: unknown) =>
   new Left(`: ${quoted(field)} must be ${what} (got ${visible(JSON.stringify(value))})`);
 
@@ -222,10 +224,12 @@ function oauthOf(value: unknown, say: (words: string) => void): OAuthEntry {
       oauth.clientId = v;
     } else if (name === "authServerMetadataUrl") {
       // "The URL must use https://" (Claude Code's MCP page). ${VAR} is not filled here, so it is checked as written.
-      if (typeof v !== "string" || URL.parse(v)?.protocol !== "https:") {
-        throw bad(field, 'an https:// address, such as "https://auth.example.com/.well-known/openid-configuration"', v);
+      const parsed = typeof v === "string" ? URL.parse(v) : null;
+      if (parsed?.protocol !== "https:") {
+        const got = typeof v !== "string" ? typeOf(v) : parsed ? "an address that does not start with https://" : NOT_ADDRESS;
+        throw bad(field, 'an https:// address, such as "https://auth.example.com/.well-known/openid-configuration"', v, got);
       }
-      oauth.authServerMetadataUrl = v;
+      oauth.authServerMetadataUrl = v as string; // parsed, so text
     } else if (name === "callbackPort") {
       if (!Number.isInteger(v) || (v as number) < 1 || (v as number) > MAX_PORT) throw badValue(field, `a port number from 1 to ${MAX_PORT}`, v);
       oauth.callbackPort = v as number;
@@ -259,7 +263,7 @@ function address(written: string, url: string): void {
   try {
     parsed = new URL(url);
   } catch {
-    throw bad("url", 'an address, such as "https://mcp.example.com/mcp"', written);
+    throw bad("url", 'an address, such as "https://mcp.example.com/mcp"', written, NOT_ADDRESS);
   }
   if (parsed.protocol === "https:" || (parsed.protocol === "http:" && LOCAL_HOSTS.includes(parsed.hostname))) return;
   throw new Left(` has the address ${visible(written)}, which must start with https:// (http:// is only for localhost, 127.0.0.1 or ::1)`);
