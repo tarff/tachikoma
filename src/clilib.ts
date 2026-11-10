@@ -636,7 +636,7 @@ export function newSaved(dir: string, start: Omit<Extract<Line, { t: "start" }>,
   transcript.write({ t: "start", v: 1, ...start });
   if (name) transcript.write({ t: "name", name });
   const lock = transcript.failed ? null : openSession(dir, start.id);
-  const conversation = { id: start.id, messages: [], system: start.system, transcript, prompts: [], calls: [], nextPicture: 1, nextTask: 1 };
+  const conversation = { id: start.id, messages: [], system: start.system, transcript, prompts: [], calls: [], nextPicture: 1, nextTask: 1, tools: start.tools };
   return { conversation, lines: [], lost: [], reported: () => {}, release: () => lock?.release() };
 }
 
@@ -753,6 +753,7 @@ export function resumed(
       nextPicture: read.nextPicture,
       nextTask: read.nextTask,
       loaded: read.loaded, // a resume's and /branch's (release 8c plan, choice 41)
+      tools: o.tools, // the tools saved last, by the tools line above when they changed (Task 6b's quality review)
     },
     lines,
     lost: read.unfinished.map((u) => `Subagent ${u.id} (${u.description}) had not finished when the session ended; its answer was lost.`),

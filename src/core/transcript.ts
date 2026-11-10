@@ -1,7 +1,18 @@
 import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { privateDir } from "../auth/private.js";
-import { errorText, type Image, type Message, marker, type Part, type ToolCall, type ToolResult, type ToolSpec } from "./types.js";
+import {
+  errorText,
+  type Image,
+  keepThinking,
+  madeUnder,
+  type Message,
+  marker,
+  type Part,
+  type ToolCall,
+  type ToolResult,
+  type ToolSpec,
+} from "./types.js";
 
 // A session's transcript (release 8a design, "Saving sessions"): one JSON line per event, appended as it happens, as the
 // error log writes its rows, so two windows in one project never clash and a crash costs at most the line being written.
@@ -246,22 +257,16 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     const nextPicture = Math.max(0, ...used, ...numbered(pictures, /^(\d+)\.(png|jpg|gif|webp)$/)) + 1;
     const nextTask = Math.max(0, ...subagents.map((s) => Number(/^t(\d+)$/.exec(s.id)?.[1] ?? 0)), ...numbered(subagentsDir, /^t(\d+)\.jsonl$/)) + 1;
     // Each reply with the tools and system prompt it was saved under; pair() keeps a reply as the same object.
-    const restored = history.map((h) => ({ m: restore(h.m, pictures), tools: JSON.stringify(h.tools), system: h.system }));
+    const restored = history.map((h) => ({ m: restore(h.m, pictures), tools: madeUnder("", h.tools), system: h.system, under: madeUnder(h.system, h.tools) }));
     const savedUnder = new Map(restored.map((h) => [h.m, h]));
     const messages = pair(restored.map((h) => h.m));
+    // The session's own rule (keepThinking), so a resume sends what the live session would have.
     const withTools = (now: ToolSpec[], nowSystem: string) => {
-      let dropped = false;
-      let otherTools = false;
-      const kept = messages.map((m) => {
-        const under = savedUnder.get(m);
-        if (m.native === undefined || (under?.tools === JSON.stringify(now) && under.system === nowSystem)) return m;
-        dropped = true;
-        // Under an older system prompt, the resume that changed it said so; a sandbox switch changes the shell tool too.
-        if (under?.system === nowSystem && under.tools !== JSON.stringify(now)) otherTools = true;
-        const { native: _, ...rest } = m;
-        return rest;
-      });
-      return { messages: kept, dropped, otherTools };
+      const kept = keepThinking(messages, (m) => savedUnder.get(m)?.under, madeUnder(nowSystem, now));
+      const left = messages.filter((m, i) => kept[i] !== m);
+      // Under an older system prompt, the resume that changed it said so; a sandbox switch changes the shell tool too.
+      const otherTools = left.some((m) => savedUnder.get(m)?.system === nowSystem && savedUnder.get(m)?.tools !== madeUnder("", now));
+      return { messages: kept, dropped: left.length > 0, otherTools };
     };
     return {
       start,

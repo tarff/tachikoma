@@ -67,6 +67,28 @@ export interface ToolSpec {
   inputSchema: Record<string, unknown>;
 }
 
+// What a reply was made under, for keepThinking: the system prompt and the tools as a set, sorted by name, as Anthropic
+// binds them, so a new order is the same set and any change to a spec is another (claude-api skill, model-migration.md,
+// "Breaking change 3").
+export function madeUnder(system: string, tools: ToolSpec[]): string {
+  return JSON.stringify([system, [...tools].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))]);
+}
+
+// Anthropic binds each thinking block to the system prompt, the set of tools and every message before it, and lets
+// thinking be left out only as a leading run, oldest first. So a reply keeps its own content only in the trailing run of
+// replies made under `now`: every reply at or before the last one made under anything else is sent without it, its
+// words, calls and results kept, so nothing is ever left out from the middle (release 8c plan, Task 6b's quality review:
+// the user's choice, "Drop older thinking"; release 8a design, "Before the build", check 2). `under` gives what a reply
+// was made under; `bound`, which replies' own content to leave out, every one's unless given.
+export function keepThinking(messages: Message[], under: (m: Message) => string | undefined, now: string, bound: (m: Message) => boolean = () => true): Message[] {
+  const last = messages.findLastIndex((m) => m.role === "assistant" && under(m) !== now);
+  return messages.map((m, i) => {
+    if (i > last || !m.native || !bound(m)) return m;
+    const { native: _, ...rest } = m;
+    return rest;
+  });
+}
+
 // Token counts for one request. `input` excludes tokens read from or written to the prompt cache.
 export interface Usage {
   input: number;

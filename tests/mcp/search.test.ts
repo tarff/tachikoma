@@ -11,7 +11,7 @@ import { PermissionGate } from "../../src/core/permissions.js";
 import { Session, type SessionOptions } from "../../src/core/session.js";
 import { Tasks } from "../../src/core/tasks.js";
 import { readTranscript, Transcript } from "../../src/core/transcript.js";
-import type { CompletionRequest, Provider, ToolSpec, Turn } from "../../src/core/types.js";
+import type { CompletionRequest, Message, Provider, ToolSpec, Turn } from "../../src/core/types.js";
 import { MAX_TOOL_OUTPUT } from "../../src/exec/executor.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import { matcherOf } from "../../src/hooks/config.js";
@@ -19,7 +19,7 @@ import { Hooks } from "../../src/hooks/hooks.js";
 import type { ServerConfig } from "../../src/mcp/config.js";
 import { find, searchTool } from "../../src/mcp/search.js";
 import { type Offer, Servers } from "../../src/mcp/servers.js";
-import { type Approve, mcpTools } from "../../src/mcp/tools.js";
+import { type Approve, type McpTools, mcpTools } from "../../src/mcp/tools.js";
 import { AnthropicProvider } from "../../src/providers/anthropic.js";
 import { OpenAIProvider } from "../../src/providers/openai.js";
 import { defineTool } from "../../src/tools/tool.js";
@@ -47,18 +47,26 @@ const entry = (full: string, description: string) => `${full}: ${description}\nI
 // each request's tools kept whole.
 class Model implements Provider {
   readonly requests: ToolSpec[][] = [];
+  readonly sent: Message[][] = [];
   constructor(
     readonly id: string,
     private readonly turns: (Turn | (() => Promise<Turn>))[],
   ) {}
   async complete(req: CompletionRequest): Promise<Turn> {
     this.requests.push(req.tools);
+    this.sent.push(req.messages);
     const next = this.turns.shift();
     if (!next) throw new Error("the stand-in model ran out of turns");
     return typeof next === "function" ? next() : next;
   }
   names = (i: number) => this.requests[i]!.map((t) => t.name);
+  // Each reply request `i` sends, by the label of its thinking, or "-" for one sent without it.
+  thinking = (i: number) =>
+    this.sent[i]!.filter((m) => m.role === "assistant").map((m) => (m.native ? (m.native.content as { thinking: string }[])[0]!.thinking : "-"));
 }
+
+// A turn as Anthropic's adapter gives one back, its thinking in its own content, labelled.
+const thought = (turn: Turn, label: string): Turn => ({ ...turn, native: { provider: "anthropic", content: [{ type: "thinking", thinking: label, signature: "s" }] } });
 
 async function setup() {
   const dir = await mkdtemp(path.join(tmpdir(), "tachi-mcp-search-"));
@@ -357,9 +365,14 @@ describe("tool_search: the loaded set", () => {
     const first = t.session(servers, [callTool("c1", "tool_search", { query: "select:mcp__a__peel" }), reply("ok")], { transcript });
     await first.session.send("go");
     const kinds = readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    expect(kinds.map((l) => l.t)).toEqual(["start", "message", "message", "message", "loaded", "message"]);
-    expect(kinds[3]!.message.parts[0].type).toBe("tool_result");
-    expect(kinds[4]!.names).toEqual(["mcp__a__peel"]);
+    // Each request whose tools differ from the last saved writes a tools line before its reply (the quality review).
+    expect(kinds.map((l) => l.t)).toEqual(["start", "message", "tools", "message", "message", "loaded", "tools", "message"]);
+    expect(kinds[4]!.message.parts[0].type).toBe("tool_result");
+    expect(kinds[5]!.names).toEqual(["mcp__a__peel"]);
+    expect([kinds[2], kinds[6]].map((l) => l.tools.map((s: ToolSpec) => s.name))).toEqual([
+      ["own", "tool_search"],
+      ["own", "tool_search", "mcp__a__peel"],
+    ]);
     const r = readTranscript(file, pictures);
     if ("problem" in r) throw new Error(r.problem);
     expect(r.loaded).toEqual(["mcp__a__peel"]);
@@ -447,5 +460,113 @@ describe("tool_search: hooks and providers", () => {
     const names = ["own", "tool_search", "mcp__a__peel"];
     expect((anthropic.mock.calls[0]![0] as unknown as { tools: { name: string }[] }).tools.map((x) => x.name)).toEqual(names);
     expect((openai.mock.calls[0]![0] as unknown as { tools: { function: { name: string } }[] }).tools.map((x) => x.function.name)).toEqual(names);
+  });
+});
+
+// Task 6b's quality review (the user's choice, "Drop older thinking"): Anthropic binds each thinking block to the system
+// prompt, the set of tools and the messages before it, and lets thinking be removed only as a leading run, so a reply
+// keeps its thinking only in the trailing run of replies made under the request's own set.
+describe("tool_search: thinking under a changed tool set", () => {
+  it("sends the replies made before a search's change without their thinking, keeping it from the new set's first step on", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("a", { tools: apples, results: fruit(apples) })]);
+    const turns = [
+      thought(callTool("c1", "tool_search", { query: "select:mcp__a__peel" }), "r1"),
+      thought(callTool("c2", "mcp__a__peel", {}), "r2"),
+      thought(reply("peeled"), "r3"),
+      thought(reply("again"), "r4"),
+    ];
+    const { session, model } = t.session(servers, turns);
+    await session.send("peel one");
+    await session.send("and again");
+    expect([0, 1, 2, 3].map((i) => model.thinking(i))).toEqual([[], ["-"], ["-", "r2"], ["-", "r2", "r3"]]);
+    // Its words and calls stay, so every call keeps its result.
+    expect(model.sent[1]![1]).toMatchObject({ role: "assistant", parts: [{ type: "tool_call", id: "c1", name: "tool_search" }] });
+    expect(model.sent[1]![2]!.parts[0]).toMatchObject({ type: "tool_result", callId: "c1" });
+  });
+
+  it("does the same when a server ready late changes the set", async () => {
+    const t = await setup();
+    const gate = t.gated();
+    const servers = t.make([await t.local("a", { tools: apples }), await t.local("late", { tools: [tool("echo")], start: gate.start })]);
+    servers.startAll();
+    await vi.waitFor(() => expect(servers.list()[0]!.state.is).toBe("ready"), { timeout: 5_000 });
+    // The late server is ready once the first request is made, so the second's set has its tools.
+    const late = async () => {
+      await gate.open();
+      await servers.ready();
+      return thought(callTool("c1", "own", {}), "r1");
+    };
+    const { session, model } = t.session(servers, [late, thought(callTool("c2", "own", {}), "r2"), thought(reply("done"), "r3")]);
+    await session.send("go");
+    expect(model.requests[0]![1]!.description).toContain("Not ready:\nlate: starting");
+    expect(model.requests[1]![1]!.description).toContain("late:\n  mcp__late__echo");
+    expect([1, 2].map((i) => model.thinking(i))).toEqual([["-"], ["-", "r2"]]);
+  });
+
+  it("keeps every reply's thinking while the set does not change", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("a", { tools: apples })]);
+    const { session, model } = t.session(servers, [thought(callTool("c1", "own", {}), "r1"), thought(reply("one"), "r2"), thought(reply("two"), "r3")]);
+    await session.send("go");
+    await session.send("more");
+    expect([1, 2].map((i) => model.thinking(i))).toEqual([["r1"], ["r1", "r2"]]);
+  });
+
+  // A set that changes and changes back: the replies made under the first A lose theirs too, as the B replies after them
+  // do, so nothing is removed from the middle.
+  it("strips nothing from the middle when the set goes from A to B and back to A", async () => {
+    const t = await setup();
+    let set = "A";
+    const mcp: McpTools = {
+      loaded: new Set(),
+      offer: () => ({ defined: [], search: { spec: { name: "tool_search", description: set, inputSchema: OBJECT }, run: async () => "" } }),
+      tool: () => {
+        throw new Error("no MCP tool here");
+      },
+    };
+    // The reply, and the set the next request is made under.
+    const then = (next: string, turn: Turn) => async () => {
+      set = next;
+      return turn;
+    };
+    const model = new Model("fake:a", [
+      then("B", thought(callTool("c1", "own", {}), "a1")),
+      then("A", thought(callTool("c2", "own", {}), "b1")),
+      thought(callTool("c3", "own", {}), "a2"),
+      thought(reply("done"), "a3"),
+    ]);
+    const session = new Session({ lead: model, tools: [own], system: "t", ctx: t.ctx, bus: t.bus, mcp });
+    await session.send("go");
+    expect([1, 2, 3].map((i) => model.thinking(i))).toEqual([["-"], ["-", "-"], ["-", "-", "a2"]]);
+  });
+
+  // Release 8a's resume rule is the same one, so a resume sends what the live session would have.
+  it("sends after a resume what the live session sends, the change before it included", async () => {
+    const t = await setup();
+    const servers = await t.ready([await t.local("a", { tools: apples, results: fruit(apples) })]);
+    const folder = path.join(t.dir, "sessions", "project");
+    const [file, pictures] = [path.join(folder, "s1.jsonl"), path.join(folder, "s1", "pictures")];
+    const transcript = new Transcript(file, pictures, { inherits: true });
+    transcript.write({ t: "start", v: 1, id: "s1", project: t.dir, lead: "fake:a", version: "0.8.0", print: false, system: "t", tools: [] });
+    const turns = [
+      thought(callTool("c1", "tool_search", { query: "select:mcp__a__peel" }), "r1"),
+      thought(callTool("c2", "mcp__a__peel", {}), "r2"),
+      thought(reply("peeled"), "r3"),
+      thought(reply("again"), "r4"),
+    ];
+    const live = t.session(servers, turns, { transcript });
+    await live.session.send("peel one");
+    const r = readTranscript(file, pictures);
+    if ("problem" in r) throw new Error(r.problem);
+    await live.session.send("and again");
+
+    const resumed = t.session(servers, [thought(reply("again"), "r4")]);
+    const { messages } = r.withTools(r.tools, r.system);
+    const { system, prompts, calls, nextPicture, nextTask, loaded, tools } = r;
+    resumed.session.load({ id: "s1", messages, system, prompts, calls, nextPicture, nextTask, loaded, tools });
+    await resumed.session.send("and again");
+    expect(resumed.model.thinking(0)).toEqual(["-", "r2", "r3"]);
+    expect([resumed.model.thinking(0), resumed.model.names(0)]).toEqual([live.model.thinking(3), live.model.names(3)]);
   });
 });

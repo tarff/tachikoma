@@ -17,6 +17,8 @@ import {
   type CompletionRequest,
   errorText,
   type Image,
+  keepThinking,
+  madeUnder,
   type Message,
   marker,
   type Part,
@@ -141,7 +143,8 @@ export interface SessionOptions {
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
 // transcript's whole record, before and after its shortenings (choice 6); `nextPicture` and `nextTask` are the numbers
 // its pictures and subagents leave free (choices 4 and 5). `loaded`: the MCP tools it loaded through tool_search, none
-// when absent (release 8c plan, choice 41).
+// when absent (release 8c plan, choice 41). `tools`: the tools its transcript was last saved under, which its replies kept
+// with their thinking were made under; Tachikoma's own tools when absent (Task 6b's quality review).
 export interface Conversation {
   id: string;
   messages: Message[];
@@ -152,6 +155,7 @@ export interface Conversation {
   nextPicture: number;
   nextTask: number;
   loaded?: string[];
+  tools?: ToolSpec[];
 }
 
 export class Session {
@@ -202,6 +206,12 @@ export class Session {
   // (release 8c plan, choices 9 and 37).
   #offered: Offered[] = [];
   #search: Tool | undefined;
+  // What each reply was made under, its request's system prompt and tools (types.ts, madeUnder), so each request sends
+  // thinking only on the trailing run of replies made under its own (keepThinking); and the tools the transcript was last
+  // saved under, so a request under others writes its tools line first, which a resume reads each reply's from (release
+  // 8c plan, Task 6b's quality review: the user's choice, "Drop older thinking").
+  readonly #under = new WeakMap<Message, string>();
+  #savedTools: string;
   // The highest picture number the conversation has used, before and after its shortenings, so a tool's pictures are
   // numbered on from it and no number is used twice, as the transcript saves each picture under its number once (release
   // 8c plan, choice 10; release 8a plan, choice 5).
@@ -213,6 +223,12 @@ export class Session {
     this.id = opts.id ?? "";
     this.system = opts.system;
     this.#transcript = opts.transcript;
+    // A launch's start line holds Tachikoma's own tools.
+    this.#savedTools = madeUnder("", this.#own());
+  }
+
+  #own(): ToolSpec[] {
+    return this.opts.tools.map((t) => t.spec);
   }
 
   get lead(): Provider {
@@ -258,6 +274,10 @@ export class Session {
     // plan, choice 41).
     this.opts.mcp?.loaded.clear();
     for (const name of c.loaded ?? []) this.opts.mcp?.loaded.add(name);
+    // Its replies that kept their thinking were made under the tools it was last saved under (Task 6b's quality review).
+    const tools = c.tools ?? this.#own();
+    this.#savedTools = madeUnder("", tools);
+    for (const m of c.messages) if (m.role === "assistant") this.#under.set(m, madeUnder(c.system, tools));
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();
     this.#sizes = new Sizes();
@@ -546,8 +566,11 @@ export class Session {
       for (const f of turn.fallbacks ?? []) {
         bus.emit("error", { kind: "fallback", attempted: `response from ${answeredBy.id}`, message: `${f.from} declined; ${f.to} answered instead (Anthropic's fallback)`, lead: lead.id });
       }
-      // With the lead that answered: the fallback that rescued a refusal, or the model the provider says served it.
-      this.#push({ role: "assistant", parts: turn.parts, native: turn.native, lead: turn.servedBy ?? answeredBy.id });
+      // With the lead that answered: the fallback that rescued a refusal, or the model the provider says served it. Made
+      // under this request's system prompt and tools, which this request's offer still gives (Task 6b's quality review).
+      const answer: Message = { role: "assistant", parts: turn.parts, native: turn.native, lead: turn.servedBy ?? answeredBy.id };
+      this.#under.set(answer, madeUnder(this.system, this.#specs()));
+      this.#push(answer);
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
       if (turn.cutOff) {
@@ -648,6 +671,14 @@ export class Session {
     const { bus } = this.opts;
     const refused = this.#refusedPictures.has(provider.id);
     const req = this.#req(provider, signal);
+    // Its tools, when they are not the ones last saved, before its reply's line, so a resume reads what each reply was made
+    // under (Task 6b's quality review), in 8a's tools line.
+    const tools = madeUnder("", req.tools);
+    if (tools !== this.#savedTools) {
+      this.#transcript?.write({ t: "tools", tools: req.tools });
+      this.#savedTools = tools;
+      this.#saving();
+    }
     // Counted once, beside the request, from exactly what is sent, before the reply joins the history (plan, Task 12).
     const chars = characters(req.system, req.messages, req.tools);
     try {
@@ -696,10 +727,11 @@ export class Session {
 
   // The request the conversation makes now to `provider`, as it is sent, measured and counted.
   #req(provider: Provider, signal?: AbortSignal): CompletionRequest {
+    const tools = this.#specs();
     return {
       system: this.system,
-      messages: sentAll(this.messages),
-      tools: this.#specs(),
+      messages: sentAll(this.#kept(tools)),
+      tools,
       signal,
       shrunk: this.#shrunk,
       ...(this.#refusedPictures.has(provider.id) ? { refusedBy: provider.id } : {}),
@@ -710,6 +742,14 @@ export class Session {
   // and 37).
   #specs(): ToolSpec[] {
     return [...this.opts.tools.map((t) => t.spec), ...(this.#search ? [this.#search.spec] : []), ...this.#offered.map((o) => o.spec)];
+  }
+
+  // The history as a request under `tools` sends it: Anthropic's thinking only on the trailing run of replies made under
+  // them and this system prompt (keepThinking). Only Anthropic's is left out: the OpenAI-format providers' own content is
+  // not bound so, and some of them want a tool call's reasoning sent back with it.
+  #kept(tools: ToolSpec[]): Message[] {
+    const now = madeUnder(this.system, tools);
+    return keepThinking(this.messages, (m) => this.#under.get(m), now, (m) => m.native?.provider === "anthropic");
   }
 
   // The MCP tools for the request about to be made, taken once for it (choice 9).
@@ -796,13 +836,15 @@ export class Session {
       instructions = c.instructions;
     }
     const focused = [focus, ...instructions].filter(Boolean).join("\n\n");
+    const tools = this.#specs(); // the same offer as the request it is made for (release 8c plan, choice 9)
     const s: Shortening = {
       lead,
       system: this.system,
-      messages: this.messages,
+      // Its summary requests replay the history, so their thinking goes as the request's would (Task 6b's quality review).
+      messages: this.#kept(tools),
       ...(asked ? { asked } : {}),
       ...(focused ? { focus: focused } : {}),
-      tools: this.#specs(), // the same offer as the request it is made for (release 8c plan, choice 9)
+      tools,
       calls: this.calls,
       workspace: this.opts.ctx.workspace,
       sizes: this.#sizes,

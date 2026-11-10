@@ -656,9 +656,10 @@ describe("saved sessions at launch", { timeout: 15_000 }, () => {
       b.conversation.transcript!.write({ t: "message", message: prompt("again") });
       b.conversation.transcript!.write({ t: "message", message: said("Done again.", native) });
       b.release();
-      // Back under the first tools: the first reply's thinking goes again, and the other tools' does not.
+      // Back under the first tools: neither goes, as the other tools' reply comes after the first, and thinking is left out
+      // only from the front (release 8c plan, Task 6b's quality review).
       const a = open("thought");
-      expect(a.conversation.messages).toEqual([prompt("hi"), said("Done.", native), prompt("again"), said("Done again.")]);
+      expect(a.conversation.messages).toEqual([prompt("hi"), said("Done."), prompt("again"), said("Done again.")]);
       expect(a.lines.map((l) => l.text)).toEqual(["Resumed: hi.", changed]);
       expect(open("plain", { as: other }).lines.map((l) => l.text)).toEqual(["Resumed: hi."]);
     });

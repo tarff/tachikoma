@@ -452,10 +452,13 @@ describe("transcript", { timeout: 15_000 }, () => {
   });
 
   // Release 8a plan, choice 4 (Task 6 spec review): a reply keeps its provider's own content only under the tools it was
-  // saved under, the last start or tools line before it.
-  it("keeps a reply's own content only for the tools it was saved under", async () => {
+  // saved under, the last start or tools line before it; and only in the trailing run of replies saved under them, as
+  // Anthropic lets thinking be removed only from the front (release 8c plan, Task 6b's quality review: the user's choice,
+  // "Drop older thinking"). The tools are compared as a set by name, as Anthropic binds them.
+  it("keeps a reply's own content only in the trailing run of replies saved under these tools, A to B and back to A too", async () => {
     const p = place();
-    const other = [{ name: "write_file", description: "Writes a file", inputSchema: { type: "object" } }];
+    const write = { name: "write_file", description: "Writes a file", inputSchema: { type: "object" } };
+    const other = [...start.tools, write];
     const thought = (text: string): Message => ({ ...said(text), native: { provider: "anthropic", content: [{ type: "thinking", thinking: text }] } });
     const t = new Transcript(p.file, p.pictures);
     t.write(start);
@@ -467,11 +470,19 @@ describe("transcript", { timeout: 15_000 }, () => {
     const r = read(p);
     expect(r.tools).toEqual(other);
     expect(r.messages[1]!.native).toBeDefined();
+    const kept = (tools: typeof other, from = r) => from.withTools(tools, start.system).messages.map((m) => m.native !== undefined);
     const first = r.withTools(start.tools, start.system);
     expect(first).toMatchObject({ dropped: true, otherTools: true });
-    expect(first.messages.map((m) => m.native !== undefined)).toEqual([false, true, false, false]);
-    expect(r.withTools(other, start.system).messages.map((m) => m.native !== undefined)).toEqual([false, false, false, true]);
+    expect(kept(start.tools)).toEqual([false, false, false, false]);
+    expect(kept(other)).toEqual([false, false, false, true]);
+    expect(kept([...other].reverse())).toEqual([false, false, false, true]);
     expect(r.withTools(other, start.system).dropped).toBe(true);
+    // Back under the first tools: only the reply made since keeps its own.
+    t.write({ t: "tools", tools: start.tools });
+    t.write({ t: "message", message: prompt("three") });
+    t.write({ t: "message", message: thought("under the first again") });
+    expect(kept(start.tools, read(p))).toEqual([false, false, false, false, false, true]);
+    expect(kept(other, read(p))).toEqual([false, false, false, false, false, false]);
   });
 
   // Release 8a final review (user, 2026-11-07: "Rebuild it", "Save the setting"): a system line, as a resume under another
@@ -494,7 +505,8 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(box).toMatchObject({ dropped: true, otherTools: false });
     expect(box.messages.map((m) => m.native !== undefined)).toEqual([false, false, false, true]);
     expect(r.withTools(start.tools, start.system)).toMatchObject({ dropped: true, otherTools: false });
-    expect(r.withTools(start.tools, start.system).messages.map((m) => m.native !== undefined)).toEqual([false, true, false, false]);
+    // The reply under the box's prompt comes after it, so the first one's is left out too (Task 6b's quality review).
+    expect(r.withTools(start.tools, start.system).messages.map((m) => m.native !== undefined)).toEqual([false, false, false, false]);
   });
 
   // Release 8a final review (user, 2026-11-07: "Becomes normal"): a -p run opened in the window is a session as any other.

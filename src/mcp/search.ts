@@ -60,15 +60,11 @@ export function find(query: string, max: number, tools: { full: string; descript
 
 // The session's tool_search over `servers` (choices 37-40, 43 and 44): `loaded` is its conversation's set, which a search
 // adds to, so the next request defines what it found; `trustedOnly`, a subagent's, over its trusted read-only tools. It
-// reads Tachikoma's own list, never a server, so it asks nothing and runs alongside other calls. Its spec is built from the
-// offer as it is read.
-export function searchTool(servers: Servers, loaded: Set<string>, opts: { trustedOnly?: boolean } = {}): Tool {
+// reads Tachikoma's own list, never a server, so it asks nothing and runs alongside other calls. Its spec is each
+// request's own, searchSpec of that request's offer (mcp/tools.ts).
+export function searchTool(servers: Servers, loaded: Set<string>, opts: { trustedOnly?: boolean } = {}): Pick<Tool, "run"> {
   const offer = () => servers.offer({ loaded, ...opts });
   return {
-    get spec() {
-      return searchSpec(offer());
-    },
-    parallel: true,
     async run(given, ctx) {
       const parsed = INPUT.safeParse(given);
       if (!parsed.success) throw new InvalidInput(`Invalid input for ${SEARCH}: ${z.prettifyError(parsed.error)}`);
