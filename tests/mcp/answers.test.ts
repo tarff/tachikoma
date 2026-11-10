@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
@@ -53,6 +53,20 @@ describe("answersFor", { timeout: 15_000 }, () => {
     expect(answers.get("sanity")).toBe(true);
     expect(answers.get("figma")).toBeUndefined();
     expect(answers.get("openmarket")).toBe(false);
+  });
+
+  // On Windows a file others can read needs its permissions changed to set up, so this runs elsewhere only: there a
+  // file the test makes with the usual mode, 0o644 after the usual umask, can be read by others.
+  it("passes readPrivate's note that it made the file private to warn", (ctx) => {
+    if (process.platform === "win32") return ctx.skip("outside Windows only: setting it up on Windows changes permissions");
+    const { data, root, file } = folders();
+    answersFor(root, data).set("sanity", true);
+    const text = readFileSync(file, "utf8");
+    rmSync(file);
+    writeFileSync(file, text, { mode: 0o644 });
+    const said: string[] = [];
+    expect(answersFor(root, data, (m) => said.push(m)).get("sanity")).toBe(true);
+    expect(said).toEqual([`${file} could be read by others; it is now private to you.`]);
   });
 
   it("writes nothing, not even its folder, until an answer is given", () => {

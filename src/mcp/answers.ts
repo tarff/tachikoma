@@ -24,12 +24,11 @@ function parse(line: string): Line | undefined {
 // The project's answers, in a private file in the data folder named after the project's real path, one line per answer,
 // the last line for a name winning. Read once here; each answer is one line appended, as the error log's rows are, so two
 // windows in one project keep each other's. Nothing is written, nor its folder made (which starts PowerShell on Windows),
-// until the user answers.
-export function answersFor(root: string, dir: string = dataDir()): Answers {
+// until the user answers. `warn` gets readPrivate's note that it made the file private, as the prompt history's does.
+export function answersFor(root: string, dir: string = dataDir(), warn: (message: string) => void = () => {}): Answers {
   const file = projectFile("mcp-answers", root, dir);
   const answers = new Map<string, boolean>();
-  // readPrivate's note that it made the file private has no place to go here; the file is made private all the same.
-  const text = lstatSync(file, { throwIfNoEntry: false }) ? (readPrivate(file, () => {}) ?? "") : "";
+  const text = lstatSync(file, { throwIfNoEntry: false }) ? (readPrivate(file, warn) ?? "") : "";
   for (const l of text.split("\n").map(parse)) {
     if (!l) continue;
     if ("reset" in l) answers.delete(l.name);
