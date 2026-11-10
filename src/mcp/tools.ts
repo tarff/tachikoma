@@ -153,8 +153,28 @@ function until<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
 // structured content as its JSON only when there is no text, as the text is the server's own rendering of it. An isError
 // answer is a failed call, its text the error (Claude Code's MCP page), so PostToolUseFailure runs.
 function answer(r: CallToolResult): string | { text: string; pictures: Picture[] } {
-  const texts: string[] = [];
   const pictures: Picture[] = [];
+  const text = answerText(r, (c) => {
+    // A picture's type from its first bytes, as a pasted one's, never the type the server states (Task 6's code review).
+    const data = c.type === "image" ? Buffer.from(c.data, "base64") : undefined;
+    const mediaType = data && typeOf(data);
+    if (data && mediaType) {
+      pictures.push({ mediaType, data });
+      return undefined;
+    }
+    const kind = Object.hasOwn(KINDS, c.type) ? KINDS[c.type]! : visible(String(c.type), { tabs: true });
+    return `[The tool's answer has ${/^[aeiou]/i.test(kind) ? "an" : "a"} ${kind} part, which Tachikoma does not pass on]`;
+  });
+  if (r.isError) throw new Error(text);
+  return pictures.length ? { text, pictures } : text;
+}
+
+// An answer's text, for the model and for an mcp_tool hook alike (release 8c plan, choices 10-12 and 21): the text parts
+// and a resource's text, joined with blank lines; structured content as its JSON only when there is no text. `other`
+// gives each other part's line in its place, or none: the model's view names the kinds it does not pass on, and a hook
+// reads the text alone.
+export function answerText(r: CallToolResult, other: (c: CallToolResult["content"][number]) => string | undefined = () => undefined): string {
+  const texts: string[] = [];
   let worded = false;
   for (const c of r.content) {
     const words = c.type === "text" ? c.text : c.type === "resource" && "text" in c.resource ? c.resource.text : undefined;
@@ -163,17 +183,9 @@ function answer(r: CallToolResult): string | { text: string; pictures: Picture[]
       worded = true;
       continue;
     }
-    // A picture's type from its first bytes, as a pasted one's, never the type the server states (Task 6's code review).
-    const data = c.type === "image" ? Buffer.from(c.data, "base64") : undefined;
-    const mediaType = data && typeOf(data);
-    if (data && mediaType) pictures.push({ mediaType, data });
-    else {
-      const kind = Object.hasOwn(KINDS, c.type) ? KINDS[c.type]! : visible(String(c.type), { tabs: true });
-      texts.push(`[The tool's answer has ${/^[aeiou]/i.test(kind) ? "an" : "a"} ${kind} part, which Tachikoma does not pass on]`);
-    }
+    const line = other(c);
+    if (line !== undefined) texts.push(line);
   }
   if (!worded && r.structuredContent !== undefined) texts.push(JSON.stringify(r.structuredContent));
-  const text = texts.join("\n\n");
-  if (r.isError) throw new Error(text);
-  return pictures.length ? { text, pictures } : text;
+  return texts.join("\n\n");
 }

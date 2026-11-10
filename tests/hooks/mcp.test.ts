@@ -100,14 +100,17 @@ describe("MCP calls in hooks", { timeout: 15_000 }, () => {
     expect(t.results(session)).toEqual([{ output: "rewritten", isError: false }]);
   });
 
-  // Choice 20: a string replaces the text the model reads, and the answer's pictures go with it; anything else is ignored.
-  it.each<[string, unknown, boolean]>([
-    ["updatedMCPToolOutput", "replaced", true],
-    ["updatedToolOutput", "replaced", true],
-    ["updatedMCPToolOutput", { text: "replaced" }, false],
-  ])("takes a PostToolUse %s of %j for an MCP call's text, its pictures dropped with it", async (field, value, taken) => {
+  // Choice 20: a string in either field replaces the text the model reads, updatedMCPToolOutput's first, and the answer's
+  // pictures go with it; anything else is ignored.
+  it.each<[string, object, boolean]>([
+    ["a string updatedMCPToolOutput", { updatedMCPToolOutput: "replaced" }, true],
+    ["a string updatedToolOutput", { updatedToolOutput: "replaced" }, true],
+    ["a string updatedToolOutput beside an updatedMCPToolOutput that is not", { updatedMCPToolOutput: { text: "no" }, updatedToolOutput: "replaced" }, true],
+    ["a string updatedMCPToolOutput beside another", { updatedMCPToolOutput: "replaced", updatedToolOutput: "other" }, true],
+    ["an updatedMCPToolOutput that is not a string", { updatedMCPToolOutput: { text: "replaced" } }, false],
+  ])("takes %s for an MCP call's text, its pictures dropped with it", async (_, fields, taken) => {
     const t = await setup();
-    const hooks = t.hooksOf([mcpHook("PostToolUse", "echo", { text: answer("PostToolUse", { [field]: value }) })]);
+    const hooks = t.hooksOf([mcpHook("PostToolUse", "echo", { text: answer("PostToolUse", fields) })]);
     const { session, model } = t.session(hooks, [callTool("c1", "mcp__fake__picture", {}), reply("done")]);
     await session.send("go");
     const [result] = t.results(session);
@@ -149,6 +152,27 @@ describe("MCP calls in hooks", { timeout: 15_000 }, () => {
     expect(t.results(session)).toEqual([{ output: "hi", isError: false }]);
   });
 
+  // An error the call throws while its server runs, such as MCP's own for a tool the server does not have, is its answer.
+  it("says an error thrown by a call to a running server as an error answer, in the approved line", async () => {
+    const t = await setup();
+    const hooks = t.hooksOf([mcpHook("Stop", "nosuch")]);
+    expect((await hooks.fire("Stop", {})).failures).toEqual(["fake nosuch answered an error: no such tool"]);
+    expect(t.hookErrors()).toEqual(["Stop hook failed: fake nosuch answered an error: no such tool"]);
+    expect(t.servers.server("fake")!.state.is).toBe("ready");
+  });
+
+  // A hook reads an answer's text as the model does (mcp/tools.ts, answerText): structured content's JSON when there is no
+  // text, and an embedded resource's text.
+  it("reads structured content alone as its JSON, and an embedded resource as its text", async () => {
+    const resource = { content: [{ type: "resource", resource: { uri: "doc://a", text: "the doc" } }] };
+    const t = await setup({ results: { resource } });
+    const hooks = t.hooksOf([mcpHook("UserPromptSubmit", "structured"), mcpHook("UserPromptSubmit", "resource")]);
+    const c = await hooks.fire("UserPromptSubmit", { prompt: "go" });
+    expect(hooks.runs.map((r) => [r.ran.code, r.ran.stdout])).toEqual([[0, '{"answer":42}'], [0, "the doc"]]);
+    // The JSON is read as a command's printed JSON is, so only the resource's plain text goes to the model.
+    expect([c.context.map((x) => x.text), t.hookErrors()]).toEqual([["the doc"], []]);
+  });
+
   it("says a server that stopped, one not in the settings, and any without servers given, not running", async () => {
     const t = await setup();
     await t.servers.server("fake")!.callTool("exit", { code: 3 }, {}).catch(() => {});
@@ -165,13 +189,15 @@ describe("MCP calls in hooks", { timeout: 15_000 }, () => {
   // Choice 22, and a subagent's hooks calling through the lead's servers.
   it("fills ${path} in the input's text from the hook's input, a missing path empty and a whole object as its JSON", async () => {
     const t = await setup();
+    // Each step an own field: a name every object has finds nothing.
     const input = {
-      text: "${tool_input.file_path}|${tool_input.nope}|${tool_response}", whole: "${tool_input}", list: ["${tool_name}", 3], deep: { n: "${duration_ms}" },
+      text: "${tool_input.file_path}|${tool_input.nope}|${tool_response}|${tool_input.constructor}|${__proto__}", whole: "${tool_input}",
+      list: ["${tool_name}", 3], deep: { n: "${duration_ms}" },
     };
     const hooks = t.hooksOf([mcpHook("PostToolUse", "echo", input)]);
     const fields = { tool_name: "Read", tool_input: { file_path: "/p/a.ts" }, tool_response: "text", duration_ms: 5 };
     await hooks.fire("PostToolUse", fields, { match: "Read" });
-    const filled = { text: "/p/a.ts||text", whole: '{"file_path":"/p/a.ts"}', list: ["Read", 3], deep: { n: "5" } };
+    const filled = { text: "/p/a.ts||text||", whole: '{"file_path":"/p/a.ts"}', list: ["Read", 3], deep: { n: "5" } };
     expect(t.calls()).toEqual([["echo", filled]]);
     await hooks.for({ id: "t1" }, t.bus).fire("PostToolUse", fields, { match: "Read" });
     expect(t.calls()).toEqual([["echo", filled], ["echo", filled]]);

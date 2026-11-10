@@ -33,7 +33,7 @@ export interface HooksConfig { hooks: Hook[]; off: boolean; leftOut: string[] } 
 
 // As settings.ts's, whose words every entry's problems use; that module imports this one.
 const wrongType = (entry: string, what: string, value: unknown) => new Error(`${entry} must be ${what} (got ${JSON.stringify(value)})`);
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const texts = (value: unknown): value is string[] => Array.isArray(value) && value.every((v) => typeof v === "string");
 
 // Node's setTimeout waits at most 2,147,483,647 ms, and past that fires after 1 ms (Node's docs for setTimeout), so a

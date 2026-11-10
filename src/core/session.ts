@@ -1007,12 +1007,12 @@ export class Session {
     const fields = { tool_response: responseOf(call.name, text, parts, this.#hookPaths()), duration_ms: ms };
     const c = await this.#postToolUse(hooks, "PostToolUse", call, entry, fields, round);
     // updatedToolOutput replaces what the model reads where it can be turned back into it, and is ignored otherwise (choice
-    // 13). The outcome stays the call's own. An MCP call's own field, updatedMCPToolOutput, comes before it when both are
-    // given, and the text replaced takes the answer's pictures with it, as they were part of it (release 8c plan, choice
+    // 13). The outcome stays the call's own. For an MCP call a string in either field replaces it, updatedMCPToolOutput's
+    // first, and the text replaced takes the answer's pictures with it, as they were part of it (release 8c plan, choice
     // 20); their numbers stay used, so no later picture takes one the hooks were sent.
-    const given = c && isMcp(call.name) && "mcpOutput" in c ? c.mcpOutput : c?.output;
-    const output = c && given !== undefined ? outputFrom(call.name, given) : null;
-    if (output !== null) for (const p of pictures) round.pictures.splice(round.pictures.indexOf(p), 1);
+    const mcp = c && isMcp(call.name) ? outputFrom(call.name, c.mcpOutput) : null;
+    const output = mcp ?? (c && "output" in c ? outputFrom(call.name, c.output) : null);
+    if (output !== null) round.pictures = round.pictures.filter((p) => !pictures.includes(p));
     return [result(call, output === null ? text : truncate(output), false), "ok"];
   }
 

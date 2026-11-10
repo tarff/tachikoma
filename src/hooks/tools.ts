@@ -149,7 +149,7 @@ const TODO_FIELDS = ["content", "status", "activeForm"];
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 // A table's own entry: a plain lookup would find "constructor" or "toString" too (registry.ts does the same).
-const own = <T>(table: Record<string, T> | undefined, key: string): T | undefined => (table && Object.hasOwn(table, key) ? table[key] : undefined);
+export const own = <T>(table: Record<string, T> | undefined, key: string): T | undefined => (table && Object.hasOwn(table, key) ? table[key] : undefined);
 
 // An MCP server's tool, by the name the session gives it, mcp__<server>__<tool> (mcp/servers.ts). Hooks see it under that
 // name with its arguments as they came (release 8c plan, choice 18), as toClaude sends a tool it has no entry for.

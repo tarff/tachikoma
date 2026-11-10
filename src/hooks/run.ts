@@ -3,7 +3,9 @@ import { errorText } from "../core/types.js";
 import { commandEnv, gitBash, onPath } from "../exec/env.js";
 import { collect, killTree, running, shellFor } from "../exec/local.js";
 import type { Servers } from "../mcp/servers.js";
-import { type Hook, MAX_TIMER_MS, type McpCall } from "./config.js";
+import { answerText } from "../mcp/tools.js";
+import { type Hook, isObject, MAX_TIMER_MS, type McpCall } from "./config.js";
+import { own } from "./tools.js";
 
 // What one hook did: its exit code and what it printed, its stdout whole and its stderr cut as a command's is. `failed`
 // says it never started, or was killed at its time limit; Task 3 (answer.ts) reads the rest. `limit` is the limit in
@@ -167,8 +169,8 @@ export function callHook(call: McpCall, input: object, opts: { servers?: Servers
         // server's answer, such as MCP's error for a tool it does not have.
         return server.state.is === "ready" ? ran({ failed: "error", reason: errorText(err) }) : notRunning();
       }
-      // Its text parts joined as the model's view of an answer joins them (mcp/tools.ts).
-      const text = result.content.flatMap((c) => (c.type === "text" ? [c.text] : [])).join("\n\n");
+      // Its text as the model reads an answer's, without the pictures and the lines naming the other kinds (mcp/tools.ts).
+      const text = answerText(result);
       return result.isError ? ran({ failed: "error", reason: text }) : ran({ code: 0, stdout: text });
     } finally {
       clearTimeout(timer);
@@ -176,8 +178,6 @@ export function callHook(call: McpCall, input: object, opts: { servers?: Servers
     }
   })();
 }
-
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 // Choice 22: each ${path} in the input's text is a dotted path into the hook's input, such as ${tool_input.file_path};
 // a path that is not there, or is null, becomes empty text, an object or a list its JSON text, anything else its text.
@@ -189,7 +189,7 @@ function fill(value: unknown, from: object): unknown {
   return value;
 }
 
-// Each step an own field, so "constructor" or "__proto__" in a path finds nothing.
-const has = (at: unknown, key: string): at is Record<string, unknown> => typeof at === "object" && at !== null && Object.hasOwn(at, key);
-const lookup = (from: unknown, p: string): unknown => p.split(".").reduce<unknown>((at, key) => (has(at, key) ? at[key] : undefined), from);
+// Each step an own field, as tools.ts looks one up, so "constructor" or "__proto__" in a path finds nothing.
+const lookup = (from: unknown, p: string): unknown =>
+  p.split(".").reduce<unknown>((at, key) => (typeof at === "object" && at !== null ? own(at as Record<string, unknown>, key) : undefined), from);
 const textOf = (v: unknown) => (v == null ? "" : typeof v === "object" ? JSON.stringify(v) : String(v));
