@@ -518,8 +518,12 @@ search, always on", "Own lookup tool, every provider")
     "Breaking change 3"). So when a request's tool set differs from the one an earlier reply was
     made under, the replies before the latest change go without their thinking, their words,
     calls and results kept; the trailing run made under the current set keeps it. Resume uses the
-    same rule, and the session writes a `tools` line whenever the set changes. A live test, run
-    by the user with enforcement switched on by the request's own setting, confirms it.
+    same rule, and the session writes a `tools` line whenever the set changes. **Live test, run
+    by the user 2026-11-11** (claude-opus-5-5, enforcement switched on by the request's own
+    setting): a reply's thinking sent back under a changed tool set was refused, 400 "The block
+    is bound to a different conversation. ... The `tools` list differs from the one this block
+    was created with."; the same request through `keepThinking` was accepted; thinking kept
+    under an unchanged set was accepted.
 
 ## Lines this plan adds
 
