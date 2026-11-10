@@ -138,8 +138,9 @@ function quiet(): void {
   console.warn = Object.assign(filtered, { [QUIET]: true as const });
 }
 
-// One remote server's OAuth client, handed to its transport as `authProvider`; only an entry without headers has one, as
-// an entry with its own headers is never signed in (choice 55), so its headers never reach a sign-in service (choice 54).
+// One remote server's OAuth client, handed to its transport as `authProvider`; only an entry without an Authorization
+// header has one, as an entry with its own is never signed in (choice 55); its other headers go only to the server's own
+// address, never to a sign-in service (choice 54).
 // At the launch and every request the library sends its saved access token, and on a 401 refreshes it (saved through
 // saveTokens) or, with nothing to refresh, asks to open the browser: this one does nothing then, so the start ends in
 // UnauthorizedError, `needs sign-in`, and the launch never waits (design, "Remote servers and sign-in"). Nor does it

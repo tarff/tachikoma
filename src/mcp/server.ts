@@ -371,7 +371,9 @@ function toServer(url: URL, endpoint: () => URL | undefined, headers: Record<str
   const same = (a: URL, b: URL | undefined) => b !== undefined && a.origin === b.origin && a.pathname === b.pathname;
   return (input, init) => {
     const at = new URL(input);
-    if (!same(at, url) && !same(at, endpoint())) return fetch(input, init);
+    // An SSE server's endpoint counts only at the entry's own origin: the library keeps a foreign one it refused.
+    const own = endpoint();
+    if (!same(at, url) && !(own?.origin === url.origin && same(at, own))) return fetch(input, init);
     const sent = new Headers(init?.headers);
     for (const [name, value] of Object.entries(headers)) if (!sent.has(name)) sent.set(name, value);
     return fetch(input, { ...init, headers: sent });

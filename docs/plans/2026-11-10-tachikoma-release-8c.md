@@ -1341,7 +1341,12 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   lose that sign-in; Esc after the code came back may still save the sign-in, kept at the next
   launch; tokens are keyed by the address as written, so a changed slash, case or `:443` means
   signing in again; another program on this computer could open the printed start address
-  first, as with `/login chatgpt`; clients that need a secret are not supported);
+  first, as with `/login chatgpt`; clients that need a secret are not supported; the library's
+  `[mcp-sdk]` warnings are kept off the screen for the whole run; a scope a server asks to widen
+  (a 403 `insufficient_scope`) is not widened, as a sign-in never starts in the background; for
+  an entry that can sign in, its own `Accept` header gives way to the library's, and a redirect to
+  another path or from http to https carries none of its headers; sign-in details gone between
+  the launch and Sign in give `Sign-in to <name> failed: ` with no reason);
   the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
