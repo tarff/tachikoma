@@ -127,6 +127,14 @@ const TOOLS: Record<string, Spec> = {
     },
   },
   todo: { claude: "TodoWrite", fields: [{ ours: "items", theirs: "todos", kind: "todos", required: true }] },
+  // Its tool_response is its text, the default (release 8c plan, choice 44).
+  tool_search: {
+    claude: "ToolSearch",
+    fields: [
+      { ours: "query", theirs: "query", kind: "text", required: true },
+      { ours: "max_results", theirs: "max_results", kind: "count" },
+    ],
+  },
 };
 
 // The Tachikoma tool Claude Code's name stands for, or the name itself for a tool it does not know, for the lines, which

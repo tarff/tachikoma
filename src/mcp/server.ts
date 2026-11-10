@@ -99,6 +99,7 @@ export class Server {
   #connection = 0;
   #conn: Conn | undefined;
   #reconnecting: Promise<boolean> | undefined;
+  #instructions: string | undefined;
 
   // `startMs` is the start's limit, 30 s unless a test gives a short one.
   constructor(config: ServerConfig, opts: { root: string; env: NodeJS.ProcessEnv; onChange(): void; startMs?: number }) {
@@ -116,6 +117,12 @@ export class Server {
   // Raised at each new connection, so a call keeps the number of the one that offered its tool (design, finding 4).
   get connection(): number {
     return this.#connection;
+  }
+
+  // What the server said of itself when its last connection began (the library's getInstructions()), whole: tool_search's
+  // description cuts its own copy (release 8c plan, choice 37).
+  get instructions(): string | undefined {
+    return this.#instructions;
   }
 
   // Never throws: the state says how it went.
@@ -198,6 +205,7 @@ export class Server {
       return false;
     }
     conn.ready = true;
+    this.#instructions = conn.client.getInstructions();
     this.#state = { is: "ready", tools };
     return true;
   }

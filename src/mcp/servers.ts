@@ -13,17 +13,41 @@ import { Server, type State } from "./server.js";
 // One length for every provider: OpenAI's Chat Completions takes a tool name of at most 64 characters (design, finding 1;
 // "Numbers in this plan").
 const MAX_NAME = 64;
-// A tool's description as sent upfront, Claude Code's cut (choice 1; "Numbers in this plan"). Task 6b gives a tool loaded
-// through tool_search its own longer cut of the same whole text.
+// A tool's description as sent upfront and to the judge, and a server's instructions, Claude Code's cut (choice 1;
+// "Numbers in this plan").
 const MAX_DESCRIPTION = 4_096;
+// A tool's description when it is loaded through tool_search, Claude Code's longer cut of the same whole text (choice 39;
+// "Numbers in this plan": Claude Code's MCP page, "Tool search for MCP server authors").
+const MAX_SEARCHED = 16_384;
 // A top-level property name the providers take: 1 to 64 letters, digits, "_", "." or "-" (Claude Code's rule; choice 36).
 const PROPERTY = /^[A-Za-z0-9_.-]{1,64}$/;
 
 // A tool as a request offers it: the spec the model is shown, the server and the tool's own name it calls, the connection
 // that offered it and its definition (design, finding 4; choice 9). `connection` is this object's own number, unique over
 // every server: a live edit's restart is a new Server, whose numbers start again. `trustedOnly`: offered in a subagent's
-// view, the tools trusted as read-only, which a rebind keeps (Task 6's spec review).
-export interface Offered { spec: ToolSpec; server: string; tool: string; connection: number; definition: string; trustedOnly?: true }
+// view, the tools trusted as read-only, which a rebind keeps (Task 6's spec review). `forJudge`: its description cut at
+// 4,096, as the judge is shown it however the tool was loaded (Task 6b; Task 7 shows it).
+export interface Offered {
+  spec: ToolSpec;
+  server: string;
+  tool: string;
+  connection: number;
+  definition: string;
+  forJudge: string;
+  trustedOnly?: true;
+}
+
+// What a request is offered (Task 6b; choices 37-42): `defined`, the tools it defines, those loaded upfront (alwaysLoad)
+// and those loaded through tool_search; `named`, each server's other tools, which tool_search's description names, each
+// in the view a search would load it in; `notReady`, the servers still starting, failed or needing sign-in.
+export interface Offer {
+  defined: Offered[];
+  named: { server: string; instructions?: string; tools: Offered[] }[];
+  notReady: { server: string; state: State }[];
+}
+
+// A tool in the table: as offered upfront, its description as a search loads it, and whether it is loaded upfront.
+interface Row { offered: Offered; searched: string; upfront: boolean }
 
 // A tool's schema, flattened, with the sentence a flattened anyOf or oneOf puts before its description; or why it is left
 // out (choice 36).
@@ -37,6 +61,7 @@ interface Slot {
   stopSaid?: number; // the connection whose stop has been said, so each stop is said once
   reconnecting?: Promise<boolean>;
   last?: Tool[]; // its list when it was last ready, offered while it is stopped with retry (choices 13 and 33)
+  instructions?: string; // its instructions when it was last ready, kept with `last`
   // Its left-out lines said, kept while it is not ready, so a new connection with the same list says none again; a live
   // edit's restart is a new slot, which says its own (Task 5's code review).
   said: Set<string>;
@@ -116,11 +141,37 @@ export class Servers {
   }
 
   // The tools a request carries (choice 9): every ready server's, each under its name in the table, which this offer
-  // fixes for its owners (choice 7). `trustedOnly`: a subagent's, only the tools trusted as read-only.
-  offer(opts: { trustedOnly?: boolean } = {}): Offered[] {
-    const offered = this.#table();
-    this.#offered = new Map(offered.map((o) => [o.spec.name, { server: o.server, tool: o.tool }]));
-    return opts.trustedOnly ? this.#trusted(offered) : offered;
+  // fixes for its owners (choice 7), defined when loaded upfront or named in `loaded`, else named (choices 37 and 42); a
+  // loaded name its server no longer offers is not sent (choice 41). `trustedOnly`: a subagent's, only the tools trusted
+  // as read-only.
+  offer(opts: { loaded: ReadonlySet<string>; trustedOnly?: boolean }): Offer {
+    const rows = this.#table();
+    this.#offered = new Map(rows.map(({ offered: o }) => [o.spec.name, { server: o.server, tool: o.tool }]));
+    const offer: Offer = { defined: [], named: [], notReady: [] };
+    for (const row of rows) {
+      const [o] = opts.trustedOnly ? this.#trusted([row.offered]) : [row.offered];
+      if (!o) continue;
+      if (row.upfront) {
+        offer.defined.push(o);
+        continue;
+      }
+      const searched = { ...o, spec: { ...o.spec, description: row.searched } };
+      if (opts.loaded.has(o.spec.name)) {
+        offer.defined.push(searched);
+        continue;
+      }
+      let named = offer.named.find((n) => n.server === o.server);
+      if (!named) {
+        const instructions = this.#slots.find((s) => s.config.name === o.server)?.instructions;
+        offer.named.push((named = { server: o.server, ...(instructions && { instructions: cut(instructions, MAX_DESCRIPTION) }), tools: [] }));
+      }
+      named.tools.push(searched);
+    }
+    for (const slot of this.#slots) {
+      const state = this.#state(slot);
+      if (state.is === "starting" || state.is === "failed" || state.is === "needs sign-in") offer.notReady.push({ server: slot.config.name, state });
+    }
+    return offer;
   }
 
   // An offered tool against its server now (design, finding 4): "restarted" when its connection is not the one that offered
@@ -138,18 +189,18 @@ export class Servers {
   // same tool of the same server, in the view it was offered under, with the same definition, so the call runs on what
   // the model was shown; or "stopped" when that server is not running, "changed" otherwise, a server a live edit replaced
   // among them, as its entry is not the one shown (Task 6's spec and code reviews). It fixes no names, as the request's
-  // offer did that.
+  // offer did that. The spec stays the one shown, loaded upfront or through a search, as the definition is the same.
   rebind(o: Offered): { offered: Offered } | { reason: "changed" | "stopped" } {
     const server = this.#slots.find((s) => s.config.name === o.server)?.server;
     if (!server || ![...(this.#ids.get(server)?.values() ?? [])].includes(o.connection)) return { reason: "changed" };
     if (server.state.is !== "ready") return { reason: "stopped" };
     const now = this.#now(o);
-    return now ? { offered: now } : { reason: "changed" };
+    return now ? { offered: { ...now, spec: o.spec } } : { reason: "changed" };
   }
 
   // The tool `o` names as the table gives it now, when it is the same tool with the same definition, in `o`'s view.
   #now(o: Offered): Offered | undefined {
-    const table = this.#table();
+    const table = this.#table().map((row) => row.offered);
     const now = (o.trustedOnly ? this.#trusted(table) : table).find((n) => n.spec.name === o.spec.name);
     return now?.server === o.server && now.tool === o.tool && now.definition === o.definition ? now : undefined;
   }
@@ -281,7 +332,7 @@ export class Servers {
     if (slot.server !== server || !this.#slots.includes(slot)) return;
     const name = visible(slot.config.name);
     const state = server.state;
-    const { offered, fresh } = this.#build();
+    const { rows, fresh } = this.#build();
     if (state.is === "failed") this.#fail(`MCP server ${name}`, `MCP server ${name} failed to start: ${visible(state.reason, { tabs: true })}`);
     // A dropped remote server is tried again at its next call (choices 13, 33), so its drop says nothing; its stop is said
     // when that new connection fails, with its reason (the user's choice, plan commit 25eca39, "A server stopped").
@@ -289,7 +340,7 @@ export class Servers {
       slot.stopSaid = server.connection;
       this.#fail(`MCP server ${name}`, `MCP server ${name} stopped: ${visible(state.reason, { tabs: true })}; reconnect it from /mcp.`);
     } else if (state.is === "ready" && slot.late) {
-      const n = offered.filter((o) => o.server === slot.config.name).length;
+      const n = rows.filter((r) => r.offered.server === slot.config.name).length;
       this.#bus.emit("mcp-note", `MCP server ${name} is ready: ${n} ${n === 1 ? "tool" : "tools"}.`);
     }
     if (state.is !== "starting") slot.late = false;
@@ -298,10 +349,10 @@ export class Servers {
   }
 
   // The table now, its new left-out lines said.
-  #table(): Offered[] {
-    const { offered, fresh } = this.#build();
+  #table(): Row[] {
+    const { rows, fresh } = this.#build();
     this.#note(fresh);
-    return offered;
+    return rows;
   }
 
   // The table of names, rebuilt from every ready server's list (choice 7), and the last list of a remote one whose
@@ -311,14 +362,18 @@ export class Servers {
   // offer gave it while that tool is still offered, then in the order the configs are given and each list's order; a
   // later tool with a name in force is left out (design, finding 2).
   // Schemas are flattened or left out before a name is given (choice 36). `fresh`: the left-out lines of each ready server
-  // that it had not said; one not ready keeps what it said (Slot.said).
-  #build(): { offered: Offered[]; fresh: string[] } {
+  // that it had not said; one not ready keeps what it said (Slot.said). A tool is loaded upfront when its server's entry
+  // has alwaysLoad, or the tool's own _meta["anthropic/alwaysLoad"] is true (choice 42).
+  #build(): { rows: Row[]; fresh: string[] } {
     const lines = new Map<Slot, string[]>(); // each ready server's left-out lines, by the server whose tool is left out
     const candidates: { slot: Slot; server: Server; tool: Tool; full: string; prepared: Extract<Prepared, { schema: unknown }>; who: string }[] = [];
     for (const slot of this.#slots) {
       const server = slot.server;
       const state = server?.state;
-      if (state?.is === "ready") slot.last = state.tools;
+      if (state?.is === "ready") {
+        slot.last = state.tools;
+        slot.instructions = server!.instructions;
+      }
       const tools = state?.is === "ready" ? state.tools : state?.is === "stopped" && state.retry ? slot.last : undefined;
       if (!server || !tools) continue;
       const own: string[] = [];
@@ -347,22 +402,29 @@ export class Servers {
         lines.get(c.slot)!.push(`${c.who}its name ${c.full} is already ${visible(owner.slot.config.name)}'s "${visible(owner.tool.name, { tabs: true })}"`);
       }
     }
-    const offered = candidates
+    const rows = candidates
       .filter((c) => owners.get(c.full) === c)
-      .map((c) => ({
-        spec: { name: c.full, description: describe(c.tool, c.prepared.sentence, MAX_DESCRIPTION), inputSchema: c.prepared.schema },
-        server: c.slot.config.name,
-        tool: c.tool.name,
-        connection: this.#connectionOf(c.server),
-        // The server's whole description and its own schema, never a cut view (choice 8).
-        definition: JSON.stringify({ description: c.tool.description, inputSchema: c.tool.inputSchema }),
-      }));
+      .map((c): Row => {
+        // Each cut is made from the whole text (choices 8 and 39).
+        const text = describe(c.tool, c.prepared.sentence);
+        const upfront = cut(text, MAX_DESCRIPTION);
+        const offered = {
+          spec: { name: c.full, description: upfront, inputSchema: c.prepared.schema },
+          server: c.slot.config.name,
+          tool: c.tool.name,
+          connection: this.#connectionOf(c.server),
+          // The server's whole description and its own schema, never a cut view (choice 8).
+          definition: JSON.stringify({ description: c.tool.description, inputSchema: c.tool.inputSchema }),
+          forJudge: upfront,
+        };
+        return { offered, searched: cut(text, MAX_SEARCHED), upfront: c.slot.config.alwaysLoad || c.tool._meta?.["anthropic/alwaysLoad"] === true };
+      });
     const fresh: string[] = [];
     for (const [slot, own] of lines) {
       fresh.push(...new Set(own.filter((l) => !slot.said.has(l))));
       slot.said = new Set(own);
     }
-    return { offered, fresh };
+    return { rows, fresh };
   }
 
   // Each list's tools are kept until the list changes, so each schema is checked once.
@@ -397,10 +459,10 @@ export class Servers {
   }
 }
 
-// The sentence a flattened anyOf or oneOf puts before the server's description, then that text, cut at `max`.
-function describe(tool: Tool, sentence: string | undefined, max: number): string {
+// The sentence a flattened anyOf or oneOf puts before the server's description, then that text, whole: each view cuts it.
+function describe(tool: Tool, sentence: string | undefined): string {
   const text = tool.description ?? "";
-  return cut(sentence ? (text ? `${sentence} ${text}` : sentence) : text, max);
+  return sentence ? (text ? `${sentence} ${text}` : sentence) : text;
 }
 
 // At most `max` UTF-16 code units, one fewer when the last would be the first half of a pair (a high surrogate, D800 to

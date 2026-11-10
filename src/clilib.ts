@@ -752,6 +752,7 @@ export function resumed(
       calls: read.calls,
       nextPicture: read.nextPicture,
       nextTask: read.nextTask,
+      loaded: read.loaded, // a resume's and /branch's (release 8c plan, choice 41)
     },
     lines,
     lost: read.unfinished.map((u) => `Subagent ${u.id} (${u.description}) had not finished when the session ended; its answer was lost.`),

@@ -84,7 +84,8 @@ async function setup() {
   let files = 0;
   const logs = new Map<string, string>();
   const log = () => path.join(dir, `log-${++files}.jsonl`);
-  const user = { safe: "", where: "user" as const, trusted: null, trustedTools: [], alwaysLoad: false, written: "" };
+  // Loaded upfront, so each request defines the servers' tools, as Task 6 sent them before tool search (Task 6b).
+  const user = { safe: "", where: "user" as const, trusted: null, trustedTools: [], alwaysLoad: true, written: "" };
   // A local server named `name` running a fake with `fake`'s options, logging to its own file, kept in `logs` by its name.
   const local = async (name: string, fake: FakeOptions = {}): Promise<ServerConfig> => {
     const file = log();
@@ -140,7 +141,7 @@ describe("MCP tools in the session", () => {
     const servers = await t.ready([await t.local("s")]);
     const { session, model } = t.session(servers, [callTool("c1", "mcp__s__echo", { text: "hi" }), reply("done")]);
     await session.send("go");
-    expect(model.requests[0]!.tools).toEqual(["own", ...TEN.map((n) => `mcp__s__${n}`)]);
+    expect(model.requests[0]!.tools).toEqual(["own", "tool_search", ...TEN.map((n) => `mcp__s__${n}`)]);
     expect(t.results(session)).toEqual([{ output: "hi", isError: false }]);
     expect(t.q.asked).toEqual(['mcp__s__echo {"text":"hi"}']);
     expect(t.calls(t.logs.get("s")!, "echo").map((m) => m.params.arguments)).toEqual([{ text: "hi" }]);
@@ -172,7 +173,7 @@ describe("MCP tools in the session", () => {
     await session.send("one");
     session.setLead(new OpenAIProvider("openai", "gpt-5"));
     await session.send("two");
-    const names = ["own", ...TEN.map((n) => `mcp__s__${n}`)];
+    const names = ["own", "tool_search", ...TEN.map((n) => `mcp__s__${n}`)];
     expect((anthropic.mock.calls[0]![0] as unknown as { tools: { name: string }[] }).tools.map((x) => x.name)).toEqual(names);
     expect((openai.mock.calls[0]![0] as unknown as { tools: { function: { name: string } }[] }).tools.map((x) => x.function.name)).toEqual(names);
   });
@@ -294,7 +295,7 @@ describe("MCP tools in the session", () => {
   it("sends the turn's MCP tools with a shortening's summary request and with a fallback's request", async () => {
     const t = await setup();
     const servers = await t.ready([await t.local("s")]);
-    const names = ["own", ...TEN.map((n) => `mcp__s__${n}`)];
+    const names = ["own", "tool_search", ...TEN.map((n) => `mcp__s__${n}`)];
     const folder = path.join(t.dir, "sessions", "project");
     const transcript = new Transcript(path.join(folder, "s1.jsonl"), path.join(folder, "s1", "pictures"), { inherits: true });
     const turns = [reply("noted"), new TooLong("prompt is too long"), reply("Summary."), reply("done")];
@@ -518,7 +519,7 @@ describe("MCP tools in the session: a remote server's drop", () => {
     t.q.then = () => states.push(`${servers.server("r")!.state.is} ${t.notes.length}`);
     const { session, model } = t.session(servers, [echoCall, reply("done")]);
     await session.send("go");
-    expect(model.requests[0]!.tools).toEqual(["own", "mcp__r__cut", "mcp__r__echo"]);
+    expect(model.requests[0]!.tools).toEqual(["own", "tool_search", "mcp__r__cut", "mcp__r__echo"]);
     expect(t.results(session)).toEqual([{ output: "back", isError: false }]);
     expect([t.q.asked, states, t.notes, t.errors]).toEqual([['mcp__r__echo {"text":"back"}'], ["ready 1"], [AGAIN("r")], []]);
     expect(t.calls(log, "echo")).toHaveLength(1);

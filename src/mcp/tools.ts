@@ -4,6 +4,7 @@ import { visible } from "../core/permissions.js";
 import type { Picture } from "../core/types.js";
 import type { Tool, ToolContext } from "../tools/tool.js";
 import { typeOf } from "../tui/clipboard.js";
+import { searchSpec, searchTool } from "./search.js";
 import { NotReached } from "./server.js";
 import type { Offered, Servers } from "./servers.js";
 
@@ -28,8 +29,20 @@ const changed = (o: Offered) =>
 const stopped = (o: Offered) => `The MCP server ${visible(o.server)} has stopped; the user can reconnect it from /mcp.`;
 const restarted = (o: Offered) => `Stopped: the MCP server ${visible(o.server)} restarted while the call ran.`;
 
-export function mcpTools(servers: Servers, bus: Bus, approve: Approve): { offer(): Offered[]; tool(o: Offered): Tool } {
+// A session's MCP tools (Task 6b; choices 37-43): `loaded`, the conversation's loaded set, which the session saves and a
+// load replaces; `offer()`, the tools one request defines, and tool_search with its description for that request, none
+// with no MCP server in force; `tool`, the tool for one offered.
+export interface McpTools {
+  loaded: Set<string>;
+  offer(): { defined: Offered[]; search?: Tool };
+  tool(o: Offered): Tool;
+}
+
+// `trustedOnly`: a subagent's, its trusted read-only tools only, with its own loaded set (choice 43).
+export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { trustedOnly?: boolean } = {}): McpTools {
   const said = new WeakSet<Promise<boolean>>(); // each new connection's grey line is said once, however many calls shared it
+  const loaded = new Set<string>();
+  const search = searchTool(servers, loaded, opts);
 
   // The call bound to its server's connection now, if the tool the model was shown is still offered by the same server, in
   // the same view, with the same definition (Servers.rebind): one another call connected again is taken as it is. A server
@@ -62,7 +75,13 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve): { offer(
   }
 
   return {
-    offer: () => servers.offer(),
+    loaded,
+    // One offer for both, so tool_search names exactly the tools this request does not define.
+    offer() {
+      const o = servers.offer({ loaded, ...opts });
+      if (!servers.list().length) return { defined: o.defined };
+      return { defined: o.defined, search: { spec: searchSpec(o), run: (input, ctx) => search.run(input, ctx), parallel: true } };
+    },
     tool: (offered) => ({
       spec: offered.spec,
       async run(given, ctx) {

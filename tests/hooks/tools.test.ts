@@ -29,6 +29,8 @@ const CASES: [string, Record<string, unknown>, string, Record<string, unknown>][
     description: "find x", prompt: "Find where x is set.", run_in_background: true, subagent_type: "Explore" }],
   ["todo", { items: [{ text: "one", status: "done" }, { text: "two", status: "in_progress" }] }, "TodoWrite", {
     todos: [{ content: "one", status: "completed" }, { content: "two", status: "in_progress" }] }],
+  // Release 8c plan, choice 44.
+  ["tool_search", { query: "select:mcp__a__b", max_results: 2 }, "ToolSearch", { query: "select:mcp__a__b", max_results: 2 }],
 ];
 
 describe("toClaude and fromClaude: every tool both ways", () => {
@@ -250,7 +252,9 @@ describe("responseOf and errorOf: what PostToolUse and PostToolUseFailure are se
   });
 
   it("gives the text the model reads for the other tools, and for a tool that reported nothing", () => {
-    for (const name of ["read_file", "edit_file", "find_files", "search_files", "todo", "other"]) expect(responseOf(name, "the text")).toBe("the text");
+    for (const name of ["read_file", "edit_file", "find_files", "search_files", "todo", "tool_search", "other"]) {
+      expect(responseOf(name, "the text")).toBe("the text");
+    }
     expect(responseOf("shell", "the text")).toBe("the text");
   });
 

@@ -65,6 +65,11 @@ async function setup() {
   return { dir, bus, notes, errors, logs, config, make, gated };
 }
 
+// Every tool an offer gives, none loaded through a search (Task 6b): those loaded upfront, then the ones it names.
+const every = (servers: Servers, opts: { trustedOnly?: boolean } = {}) => {
+  const o = servers.offer({ loaded: new Set(), ...opts });
+  return [...o.defined, ...o.named.flatMap((n) => n.tools)];
+};
 const names = (offered: Offered[]) => offered.map((o) => o.spec.name);
 const owner = (offered: Offered[], name: string) => offered.filter((o) => o.spec.name === name).map((o) => `${o.server} ${o.tool}`);
 const stateOf = (servers: Servers, name: string) => servers.list().find((s) => s.name === name)?.state;
@@ -79,7 +84,7 @@ describe("Servers: names", () => {
     const servers = make([await config("s", { tools: [tool(t64), tool(t65), plain] })]);
     servers.startAll();
     expect(await servers.ready()).toBe(true);
-    expect(names(servers.offer())).toEqual([`mcp__s__${t64}`, "mcp__s__plain"]);
+    expect(names(every(servers))).toEqual([`mcp__s__${t64}`, "mcp__s__plain"]);
     expect(`mcp__s__${t64}`).toHaveLength(64);
     expect(notes).toEqual([`MCP server s: "${t65}" was left out: its name mcp__s__${t65} is 65 characters, over the 64 every provider takes`]);
     expect(errors).toEqual([]);
@@ -91,7 +96,7 @@ describe("Servers: names", () => {
     const servers = make([await config("s", { tools: [tool("foo.bar"), tool("foo_bar"), plain, tool("plain", { type: "object" }, "again")] })]);
     servers.startAll();
     await servers.ready();
-    const offered = servers.offer();
+    const offered = every(servers);
     expect(names(offered)).toEqual(["mcp__s__foo_bar", "mcp__s__plain"]);
     expect(owner(offered, "mcp__s__foo_bar")).toEqual(["s foo.bar"]);
     expect(offered[1]!.spec.description).toBe("plain");
@@ -115,7 +120,7 @@ describe("Servers: names", () => {
     const servers = make(configs);
     servers.startAll();
     await servers.ready();
-    expect(servers.offer().map((o) => [o.spec.name, o.server, o.tool])).toEqual([["mcp__a__b__c", "a", "b__c"]]);
+    expect(every(servers).map((o) => [o.spec.name, o.server, o.tool])).toEqual([["mcp__a__b__c", "a", "b__c"]]);
     expect(notes).toEqual([]);
   });
 
@@ -124,7 +129,7 @@ describe("Servers: names", () => {
     const servers = make([await config("x.y"), await config("x_y")]);
     servers.startAll();
     await servers.ready();
-    const offered = servers.offer();
+    const offered = every(servers);
     expect(owner(offered, "mcp__x_y__echo")).toEqual(["x.y echo"]);
     expect(offered).toHaveLength(10);
     expect(notes).toEqual(TEN.map((t) => `MCP server x_y: "${t}" was left out: its name mcp__x_y__${t} is already x.y's "${t}"`));
@@ -137,10 +142,10 @@ describe("Servers: names", () => {
     const servers = make([await config("x.y", { start: gate.start }), await config("x_y")]);
     servers.startAll();
     await vi.waitFor(() => expect(stateOf(servers, "x_y")?.is).toBe("ready"), WAIT);
-    expect(owner(servers.offer(), "mcp__x_y__echo")).toEqual(["x_y echo"]);
+    expect(owner(every(servers), "mcp__x_y__echo")).toEqual(["x_y echo"]);
     await gate.open();
     expect(await servers.ready()).toBe(true);
-    expect(owner(servers.offer(), "mcp__x_y__echo")).toEqual(["x_y echo"]);
+    expect(owner(every(servers), "mcp__x_y__echo")).toEqual(["x_y echo"]);
     expect(notes).toEqual(TEN.map((t) => `MCP server x.y: "${t}" was left out: its name mcp__x_y__${t} is already x_y's "${t}"`));
   });
 
@@ -150,22 +155,23 @@ describe("Servers: names", () => {
     const servers = make([await config("s", { tools: [tool("foo_bar"), tool("change")], added: [tool("foo.bar"), plain] })]);
     servers.startAll();
     await servers.ready();
-    expect(names(servers.offer())).toEqual(["mcp__s__foo_bar", "mcp__s__change"]);
+    expect(names(every(servers))).toEqual(["mcp__s__foo_bar", "mcp__s__change"]);
     await servers.server("s")!.callTool("change", {}, {});
     await vi.waitFor(() => expect(notes).toEqual(['MCP server s: "foo.bar" was left out: its name mcp__s__foo_bar is already s\'s "foo_bar"']), WAIT);
-    const offered = servers.offer();
+    const offered = every(servers);
     expect(names(offered)).toEqual(["mcp__s__plain", "mcp__s__foo_bar", "mcp__s__change"]);
     expect(owner(offered, "mcp__s__foo_bar")).toEqual(["s foo_bar"]);
     expect(notes).toHaveLength(1); // said once, not again at the next offer
   });
 
   // Choice 1 and choice 8: the spec is cut, the definition is the whole text, so a view's cut never looks like a change.
+  // Loaded upfront, as a search's load has its own cut (Task 6b).
   it("cuts each description at 4,096 characters, and builds the definition from the whole text", async () => {
     const { config, make } = await setup();
-    const servers = make([await config("s", { description: `${"d".repeat(4_096)}MARK` })]);
+    const servers = make([await config("s", { description: `${"d".repeat(4_096)}MARK` }, { alwaysLoad: true })]);
     servers.startAll();
     await servers.ready();
-    const echo = servers.offer().find((o) => o.tool === "echo")!;
+    const echo = every(servers).find((o) => o.tool === "echo")!;
     expect(echo.spec.description).toBe("d".repeat(4_096));
     expect(echo.definition).toContain("MARK");
     expect(echo.spec.inputSchema).toEqual({ type: "object", properties: { text: { type: "string" } } });
@@ -174,10 +180,10 @@ describe("Servers: names", () => {
   // Task 5's code review: half an emoji is not valid text, which a provider may refuse with the whole request.
   it("never ends the cut on the first half of an emoji", async () => {
     const { config, make } = await setup();
-    const servers = make([await config("s", { description: `${"d".repeat(4_095)}${String.fromCodePoint(0x1f600)}after` })]);
+    const servers = make([await config("s", { description: `${"d".repeat(4_095)}${String.fromCodePoint(0x1f600)}after` }, { alwaysLoad: true })]);
     servers.startAll();
     await servers.ready();
-    expect(servers.offer().find((o) => o.tool === "echo")!.spec.description).toBe("d".repeat(4_095));
+    expect(every(servers).find((o) => o.tool === "echo")!.spec.description).toBe("d".repeat(4_095));
   });
 
   // Task 5's code review: lines are said at the start and when a list changes, not at each new connection; a live edit's
@@ -193,7 +199,7 @@ describe("Servers: names", () => {
       '(1 to 64 letters, digits, "_", "." or "-")';
     expect(notes).toEqual([line]);
     await servers.server("s")!.callTool("change", {}, {});
-    await vi.waitFor(() => expect(servers.offer().map((o) => o.tool)).toEqual(["other", "plain", "change"]), WAIT);
+    await vi.waitFor(() => expect(every(servers).map((o) => o.tool)).toEqual(["other", "plain", "change"]), WAIT);
     expect(notes).toEqual([line]);
     const entry = s.entry as Extract<ServerConfig["entry"], { kind: "stdio" }>;
     servers.set([{ ...s, entry: { ...entry, args: [...entry.args, "again"] } }]);
@@ -233,7 +239,7 @@ describe("Servers: schemas (choice 36)", () => {
     const servers = make([await config("s", { tools: [pick, either, both, plain] })]);
     servers.startAll();
     await servers.ready();
-    expect(flattened(servers.offer())).toEqual(expected);
+    expect(flattened(every(servers))).toEqual(expected);
     expect(notes).toEqual([]);
   });
 
@@ -242,7 +248,7 @@ describe("Servers: schemas (choice 36)", () => {
     const servers = make([await config("s", { tools: [notObject, badName, broken, plain] })]);
     servers.startAll();
     await servers.ready();
-    expect(servers.offer().map((o) => o.tool)).toEqual(["plain"]);
+    expect(every(servers).map((o) => o.tool)).toEqual(["plain"]);
     expect(notes).toEqual(left);
   });
 
@@ -253,7 +259,7 @@ describe("Servers: schemas (choice 36)", () => {
     const servers = make([await config("s", { tools: [any] })]);
     servers.startAll();
     await servers.ready();
-    expect(flattened(servers.offer())).toEqual({ any: { description: "Any.", schema: { type: "object", properties: { a: {}, b: {} } } } });
+    expect(flattened(every(servers))).toEqual({ any: { description: "Any.", schema: { type: "object", properties: { a: {}, b: {} } } } });
   });
 
   // Task 5's code review: for a format it does not know (Pydantic writes "path"), the library's checker warns on the
@@ -268,7 +274,7 @@ describe("Servers: schemas (choice 36)", () => {
     const servers = make([await config("s", { tools: [where, failing] })]);
     servers.startAll();
     await servers.ready();
-    expect(servers.offer().map((o) => o.tool)).toEqual(["where"]);
+    expect(every(servers).map((o) => o.tool)).toEqual(["where"]);
     expect(notes).toEqual(['MCP server s: "failing" was left out: its input schema could not be read (type must be JSONType or JSONType[]: nope)']);
     expect(warn).not.toHaveBeenCalled();
     expect(console.warn).toBe(warn);
@@ -283,7 +289,7 @@ describe("Servers: schemas (choice 36)", () => {
     const servers = make([await config("s", { tools: [good, reused] })]);
     servers.startAll();
     await servers.ready();
-    expect(servers.offer().map((o) => o.tool)).toEqual(["good"]);
+    expect(every(servers).map((o) => o.tool)).toEqual(["good"]);
     expect(notes).toEqual(['MCP server s: "reused" was left out: its input schema could not be read (type must be JSONType or JSONType[]: nope)']);
   });
 
@@ -292,10 +298,10 @@ describe("Servers: schemas (choice 36)", () => {
     const servers = make([await config("s", { tools: [plain, tool("change")], added: [pick, either, both, notObject, badName, broken] })]);
     servers.startAll();
     await servers.ready();
-    expect(servers.offer().map((o) => o.tool)).toEqual(["plain", "change"]);
+    expect(every(servers).map((o) => o.tool)).toEqual(["plain", "change"]);
     await servers.server("s")!.callTool("change", {}, {});
     await vi.waitFor(() => expect(notes).toEqual(left), WAIT);
-    expect(flattened(servers.offer())).toEqual({ ...expected, change: { description: "change", schema: { type: "object" } } });
+    expect(flattened(every(servers))).toEqual({ ...expected, change: { description: "change", schema: { type: "object" } } });
   });
 
   // The session is wired to Servers in Task 6, so this is shown where the request is built: Anthropic's adapter.
@@ -321,7 +327,7 @@ describe("Servers: schemas (choice 36)", () => {
     const servers = make([await config("s", { tools: [pick, either, both, notObject, badName, broken, plain] })]);
     servers.startAll();
     await servers.ready();
-    await new AnthropicProvider("claude-opus-5-5").complete({ system: "s", messages: [], tools: servers.offer().map((o) => o.spec) });
+    await new AnthropicProvider("claude-opus-5-5").complete({ system: "s", messages: [], tools: every(servers).map((o) => o.spec) });
     const sent = (stream.mock.calls[0]![0] as unknown as { tools: { name: string; input_schema: Record<string, unknown> }[] }).tools;
     expect(sent.map((t) => t.name)).toEqual(["mcp__s__pick", "mcp__s__either", "mcp__s__both", "mcp__s__plain"]);
     for (const t of sent) {
@@ -343,7 +349,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const line = "MCP server bad failed to start: it exited with code 3: boom";
     expect(errors).toEqual([{ kind: "mcp", attempted: "MCP server bad", message: line, lead: "fake:a" }]);
     expect(notes).toEqual([]); // nobody waited past it, so no ready line
-    expect(servers.offer()).toHaveLength(10);
+    expect(every(servers)).toHaveLength(10);
   });
 
   // The error log's `attempted` is printed by /errors, so a name from the file is escaped there too.
@@ -382,7 +388,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const back = await httpFake(dir, { port: first.port, tools });
     expect(await Promise.all([servers.reconnect("r"), servers.reconnect("r")])).toEqual([true, true]);
     expect(stateOf(servers, "r")?.is).toBe("ready");
-    expect(servers.offer().map((o) => o.tool)).toEqual(["plain"]);
+    expect(every(servers).map((o) => o.tool)).toEqual(["plain"]);
     // Ready, so there is nothing to reconnect: nothing is tried, and nothing said.
     expect(await servers.reconnect("r")).toBe(false);
     // Gone again, and not back: the new connection fails, and its reason is the line's.
@@ -415,12 +421,12 @@ describe("Servers: starting, waiting and stopping", () => {
     await vi.waitFor(() => expect(stateOf(servers, "gone")?.is).toBe("stopped"), WAIT);
     await servers.server("r")!.callTool("cut", {}, {}).catch(() => {});
     expect(stateOf(servers, "r")).toMatchObject({ is: "stopped", retry: true });
-    const dropped = servers.offer();
+    const dropped = every(servers);
     expect(dropped.map((o) => `${o.server} ${o.tool}`)).toEqual(["r plain"]);
     expect(servers.current(dropped[0]!)).toBe("stopped");
     expect(await servers.reconnect("r")).toBe(true);
     expect(servers.current(dropped[0]!)).toBe("restarted");
-    const now = servers.offer();
+    const now = every(servers);
     expect(now.map((o) => [o.spec.name, o.definition])).toEqual(dropped.map((o) => [o.spec.name, o.definition]));
     expect(servers.current(now[0]!)).toBe("same");
   });
@@ -437,9 +443,9 @@ describe("Servers: starting, waiting and stopping", () => {
     const servers = make([remote]);
     servers.startAll();
     await servers.ready();
-    const trusted = servers.offer({ trustedOnly: true });
+    const trusted = every(servers, { trustedOnly: true });
     expect(trusted.map((o) => [o.tool, o.trustedOnly])).toEqual([["plain", true]]);
-    const [whole, other] = servers.offer();
+    const [whole, other] = every(servers);
     expect(whole!.trustedOnly).toBeUndefined();
     await servers.server("r")!.callTool("cut", {}, {}).catch(() => {});
     expect(servers.rebind(whole!)).toEqual({ reason: "stopped" });
@@ -458,7 +464,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const entry = remote.entry as Exclude<ServerConfig["entry"], { kind: "stdio" }>;
     servers.set([{ ...remote, entry: { ...entry, headers: { edited: "yes" } } }]);
     await servers.ready();
-    expect(servers.offer().map((o) => o.definition)).toEqual([whole!.definition, other!.definition]);
+    expect(every(servers).map((o) => o.definition)).toEqual([whole!.definition, other!.definition]);
     expect(servers.rebind(whole!)).toEqual({ reason: "changed" });
   });
 
@@ -472,7 +478,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const servers = make([remote]);
     servers.startAll();
     await servers.ready();
-    const [was] = servers.offer();
+    const [was] = every(servers);
     await servers.server("r")!.callTool("cut", {}, {}).catch(() => {});
     await first.stop();
     await httpFake(dir, { port: first.port, tools: [{ ...plain, description: "a new plain" }] });
@@ -519,12 +525,12 @@ describe("Servers: starting, waiting and stopping", () => {
     const servers = make([await config("s"), await config("t")]);
     servers.startAll();
     await servers.ready();
-    const echo = servers.offer().find((o) => o.spec.name === "mcp__s__echo")!;
+    const echo = every(servers).find((o) => o.spec.name === "mcp__s__echo")!;
     await servers.server("s")!.callTool("exit", { code: 4, stderr: "gone\n" }, {}).catch(() => {});
     const line = "MCP server s stopped: it exited with code 4: gone; reconnect it from /mcp.";
     await vi.waitFor(() => expect(errors.map((e) => e.message)).toEqual([line]), WAIT);
     expect(errors[0]).toMatchObject({ kind: "mcp", attempted: "MCP server s" });
-    expect(servers.offer().map((o) => o.server)).toEqual(Array(10).fill("t"));
+    expect(every(servers).map((o) => o.server)).toEqual(Array(10).fill("t"));
     expect(servers.current(echo)).toBe("stopped");
     expect(errors).toHaveLength(1);
   });
@@ -536,7 +542,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const servers = make([s, r]);
     servers.startAll();
     await servers.ready();
-    const first = servers.offer();
+    const first = every(servers);
     const echo = first.find((o) => o.spec.name === "mcp__s__echo")!;
     const other = first.find((o) => o.spec.name === "mcp__r__echo")!;
     expect([servers.current(echo), servers.current(other)]).toEqual(["same", "same"]);
@@ -548,7 +554,7 @@ describe("Servers: starting, waiting and stopping", () => {
     expect(servers.current(other)).toBe("restarted");
     await servers.ready();
     expect(servers.current(other)).toBe("restarted");
-    expect(servers.current(servers.offer().find((o) => o.spec.name === "mcp__r__echo")!)).toBe("same");
+    expect(servers.current(every(servers).find((o) => o.spec.name === "mcp__r__echo")!)).toBe("same");
   });
 
   it("restarts only a changed server on a live edit, starts a new one, stops a removed one, and changes trust without a restart", async () => {
@@ -569,7 +575,7 @@ describe("Servers: starting, waiting and stopping", () => {
     expect(servers.trust("a", "error")).toBe(false);
     const cPid = Number(readFileSync(pid, "utf8"));
     await vi.waitFor(() => expect(alive(cPid)).toBe(false), WAIT);
-    expect(new Set(servers.offer().map((o) => o.server))).toEqual(new Set(["a", "b", "d"]));
+    expect(new Set(every(servers).map((o) => o.server))).toEqual(new Set(["a", "b", "d"]));
   });
 });
 
@@ -607,7 +613,7 @@ describe("Servers: a project's servers and the network", () => {
       ["none", "project", "waiting for your yes"],
       ["other", "project", "waiting for your yes"],
     ]);
-    expect(new Set(servers.offer().map((o) => o.server))).toEqual(new Set(["u", "yes"]));
+    expect(new Set(every(servers).map((o) => o.server))).toEqual(new Set(["u", "yes"]));
     expect(errors).toEqual([]);
   });
 
@@ -636,7 +642,7 @@ describe("Servers: a project's servers and the network", () => {
     servers.startAll();
     expect(await servers.ready()).toBe(true);
     expect(servers.list().map((s) => s.state)).toEqual([{ is: "off" }, { is: "off" }]);
-    expect(servers.offer()).toEqual([]);
+    expect(every(servers)).toEqual([]);
   });
 });
 

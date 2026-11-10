@@ -4,6 +4,7 @@ import type { Event } from "../hooks/config.js";
 import type { Hooks } from "../hooks/hooks.js";
 import { errorOf, fromClaude, outputFrom, type Paths, pathsFor, responseOf, toClaude } from "../hooks/tools.js";
 import type { Offered } from "../mcp/servers.js";
+import type { McpTools } from "../mcp/tools.js";
 import type { Cache } from "../providers/pictures.js";
 import { InvalidInput, type Tool, type ToolContext } from "../tools/tool.js";
 import type { Bus, ToolOutcome } from "./bus.js";
@@ -132,12 +133,15 @@ export interface SessionOptions {
   // The MCP servers' tools (release 8c plan, Task 6; choice 9): each request takes one offer and sends its specs after
   // Tachikoma's own, and a reply's calls run on the tools that request offered, so each runs on the tool the model was
   // shown. `tool` makes the tool for one offered. The lead's offer holds every tool; a subagent's only trusted ones (Task 7).
-  mcp?: { offer(): Offered[]; tool(o: Offered): Tool };
+  // The offer defines the tools loaded so far and gives tool_search, which loads the rest; `loaded` is the conversation's
+  // set, saved here and replaced by a load (Task 6b; choices 37 and 41).
+  mcp?: McpTools;
 }
 
 // A saved or new conversation for the session to take (release 8a plan, choice 1). `prompts` and `calls` come from the
 // transcript's whole record, before and after its shortenings (choice 6); `nextPicture` and `nextTask` are the numbers
-// its pictures and subagents leave free (choices 4 and 5).
+// its pictures and subagents leave free (choices 4 and 5). `loaded`: the MCP tools it loaded through tool_search, none
+// when absent (release 8c plan, choice 41).
 export interface Conversation {
   id: string;
   messages: Message[];
@@ -147,6 +151,7 @@ export interface Conversation {
   calls: { name: string; input: unknown }[];
   nextPicture: number;
   nextTask: number;
+  loaded?: string[];
 }
 
 export class Session {
@@ -193,8 +198,10 @@ export class Session {
   // its sync hooks take the stop: async ones are left running, as every event's are but SessionEnd's (hooks.ts).
   #starting: Promise<void> | undefined;
   #stopStart: AbortController | undefined;
-  // The MCP tools the request being made, or last made, offered: its reply's calls run on these (release 8c plan, choice 9).
+  // The MCP tools the request being made, or last made, offered, and its tool_search: its reply's calls run on these
+  // (release 8c plan, choices 9 and 37).
   #offered: Offered[] = [];
+  #search: Tool | undefined;
   // The highest picture number the conversation has used, before and after its shortenings, so a tool's pictures are
   // numbered on from it and no number is used twice, as the transcript saves each picture under its number once (release
   // 8c plan, choice 10; release 8a plan, choice 5).
@@ -247,6 +254,10 @@ export class Session {
     // sends none.
     if (!this.opts.subagent) this.opts.hooks?.forgetPrompt();
     this.calls.splice(0, this.calls.length, ...c.calls);
+    // Its MCP tools loaded through tool_search, so a resume and /branch keep them and /clear starts with none (release 8c
+    // plan, choice 41).
+    this.opts.mcp?.loaded.clear();
+    for (const name of c.loaded ?? []) this.opts.mcp?.loaded.add(name);
     // Its copies are keyed by picture number, so kept they would send the last conversation's picture 1 for this one's.
     this.#shrunk.clear();
     this.#sizes = new Sizes();
@@ -599,10 +610,12 @@ export class Session {
       // choice 10), then the hooks' text for the model, so a stopped turn's text is never the next one's (Task 6's review),
       // then whatever is waiting for the lead, after the last tool result, as the providers want it.
       const results: ToolResult[] = new Array(calls.length);
+      // The loaded set before the calls, so a search that grows it is saved (release 8c plan, choice 41).
+      const loaded = this.opts.mcp?.loaded.size;
       try {
-        const together = calls.map((c, i) =>
-          this.opts.tools.find((t) => t.spec.name === c.name)?.parallel ? this.#runTool(c, entries[i]!, round).then((r) => (results[i] = r)) : null,
-        );
+        // tool_search runs alongside the others too (release 8c plan, choice 44).
+        const parallel = (name: string) => (this.opts.tools.find((t) => t.spec.name === name) ?? (this.#search?.spec.name === name ? this.#search : undefined))?.parallel;
+        const together = calls.map((c, i) => (parallel(c.name) ? this.#runTool(c, entries[i]!, round).then((r) => (results[i] = r)) : null));
         // Each is handled now, so one that fails while a call after it runs is no unhandled rejection; Promise.all below
         // still rejects with it (Task 7's code review).
         for (const p of together) p?.catch(() => {});
@@ -612,6 +625,11 @@ export class Session {
         signal?.removeEventListener("abort", join);
       }
       this.#push({ role: "user", parts: [...results, ...round.pictures, ...this.#hookParts(), ...this.#waiting()] });
+      // The set whenever a search grew it, after the results' line (release 8c plan, Task 6b).
+      if (this.opts.mcp && this.opts.mcp.loaded.size !== loaded) {
+        this.#transcript?.write({ t: "loaded", names: [...this.opts.mcp.loaded] });
+        this.#saving();
+      }
       // Every call has its one result, saved, before the turn ends (design, review finding 1).
       if (round.stopped) {
         const { event, reason } = round.stopped;
@@ -688,21 +706,25 @@ export class Session {
     };
   }
 
-  // Tachikoma's own tools' specs, then the MCP tools' this request offers (release 8c plan, choice 9).
+  // Tachikoma's own tools' specs, then tool_search's, then the MCP tools' this request defines (release 8c plan, choices 9
+  // and 37).
   #specs(): ToolSpec[] {
-    return [...this.opts.tools.map((t) => t.spec), ...this.#offered.map((o) => o.spec)];
+    return [...this.opts.tools.map((t) => t.spec), ...(this.#search ? [this.#search.spec] : []), ...this.#offered.map((o) => o.spec)];
   }
 
   // The MCP tools for the request about to be made, taken once for it (choice 9).
   #offer(): void {
-    this.#offered = this.opts.mcp?.offer() ?? [];
+    const offer = this.opts.mcp?.offer();
+    this.#offered = offer?.defined ?? [];
+    this.#search = offer?.search;
   }
 
-  // A call's tool: Tachikoma's own first, then the MCP tool the request offered under that name, so the call runs on the
-  // tool the model was shown (release 8c plan, choice 9; design, finding 4).
+  // A call's tool: Tachikoma's own first, then the request's tool_search, then the MCP tool the request offered under that
+  // name, so the call runs on the tool the model was shown (release 8c plan, choice 9; design, finding 4).
   #tool(name: string): Tool | undefined {
     const own = this.opts.tools.find((t) => t.spec.name === name);
     if (own) return own;
+    if (this.#search?.spec.name === name) return this.#search;
     const offered = this.#offered.find((o) => o.spec.name === name);
     return offered && this.opts.mcp?.tool(offered);
   }

@@ -26,6 +26,7 @@ export interface FakeOptions {
   tools?: object[]; // its tools/list, in place of its own tools (Task 5's names and schemas)
   added?: object[]; // what change adds, before the others, in place of "added"
   results?: Record<string, object>; // a call to a tool named here is answered with this result (Task 6's answers)
+  instructions?: string; // what its initialize answer says of it (Task 6b's tool search)
 }
 
 // Its tools: echo says `text` back; error answers isError; picture answers a 1x1 PNG; structured answers structured
@@ -55,7 +56,8 @@ let request = () => {};
 function answer(m, reply) {
   if (m.method === "initialize") {
     const capabilities = { tools: { listChanged: true } };
-    return reply({ result: { protocolVersion: m.params.protocolVersion, capabilities, serverInfo: { name: "fake", version: "1.0.0" } } });
+    const info = { protocolVersion: m.params.protocolVersion, capabilities, serverInfo: { name: "fake", version: "1.0.0" } };
+    return reply({ result: O.instructions === undefined ? info : { ...info, instructions: O.instructions } });
   }
   if (m.method === "tools/list") return reply({ result: { tools } });
   if (m.method !== "tools/call") return reply({ error: { code: -32601, message: "no such method" } });

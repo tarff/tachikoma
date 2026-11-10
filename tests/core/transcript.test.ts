@@ -235,6 +235,21 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect(r.system).toBe("Third prompt.");
   });
 
+  // Release 8c plan, choice 41: the loaded set belongs to the conversation, so a shortening keeps it.
+  it("reads back the last loaded line's MCP tools, kept by a shortening after it, a damaged one skipped", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    expect(read(p).loaded).toEqual([]);
+    t.write({ t: "loaded", names: ["mcp__a__one"] });
+    t.write({ t: "message", message: prompt("one") });
+    t.write({ t: "loaded", names: ["mcp__a__one", "mcp__b__two"] });
+    t.write({ t: "shortened", system: "Second prompt.", message: prompt("summary") });
+    appendFileSync(p.file, `${JSON.stringify({ t: "loaded", at: "2026-11-10T00:00:00.000Z", names: [3] })}\n`);
+    const r = read(p);
+    expect([r.loaded, r.damaged]).toEqual([["mcp__a__one", "mcp__b__two"], 1]);
+  });
+
   describe("an interrupted shortening", () => {
     function shortenedOnce() {
       const p = place();

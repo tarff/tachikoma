@@ -44,7 +44,10 @@ export type Line<M = SavedMessage> =
   | { t: "ended"; at: string; state: "failed" | "stopped" | "lost" }
   // A PreToolUse hook's rewrite of the call `id` of the reply before it, in Tachikoma's fields, written before the call
   // runs (release 8b plan, choice 16).
-  | { t: "rewritten"; at: string; id: string; input: unknown };
+  | { t: "rewritten"; at: string; id: string; input: unknown }
+  // The MCP tools loaded through tool_search so far, all of them, written whenever a search adds to them (release 8c plan,
+  // choice 41).
+  | { t: "loaded"; at: string; names: string[] };
 
 // Omit on a union keeps only the shared fields, so each variant is omitted on its own, as boxWorkspace.ts:106 does.
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
@@ -151,6 +154,7 @@ export interface Read {
   tools: ToolSpec[]; // the tools the history was last saved under: the last start or tools line
   print: boolean; // a -p run not opened in the window since, as the session list reads it (readOutline)
   box: boolean; // whether the sandbox was on: the last start or system line's setting
+  loaded: string[]; // the MCP tools loaded through tool_search: the last loaded line's, kept by a shortening (release 8c plan, choice 41)
   // The history for a launch with these tools and system prompt: a reply keeps its provider's own content only when the
   // tools and system prompt it was saved under are these, as Anthropic refuses a thinking block once either changed
   // before it (release 8a design, "Before the build", check 2; plan, choice 4). `dropped`: whether any reply's was left
@@ -195,6 +199,7 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     let { system, lead, tools, print } = start;
     let box = start.box === true;
     let name: string | undefined;
+    let loaded: string[] = [];
     let history: { m: SavedMessage; tools: ToolSpec[]; system: string }[] = [];
     const prompts: string[] = [];
     const calls: { name: string; input: unknown }[] = [];
@@ -232,6 +237,7 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       }
       if (l.t === "lead") lead = l.lead;
       if (l.t === "name") name = l.name;
+      if (l.t === "loaded") loaded = l.names;
       if (l.t === "subagent") subagents.push(l);
       if ("message" in l) for (const p of l.message.parts) if (p.type === "image") used.push(p.id);
     }
@@ -274,6 +280,7 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       tools,
       print,
       box,
+      loaded,
       withTools,
     };
   } catch (err) {
@@ -359,6 +366,7 @@ function valid(l: unknown): l is Line {
   if (r.t === "subagent") return strings("id", "description", "file");
   if (r.t === "ended") return r.state === "failed" || r.state === "stopped" || r.state === "lost";
   if (r.t === "rewritten") return strings("id") && typeof r.input === "object" && r.input !== null && !Array.isArray(r.input);
+  if (r.t === "loaded") return Array.isArray(r.names) && r.names.every((n) => typeof n === "string");
   return false;
 }
 
