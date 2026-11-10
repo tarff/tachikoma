@@ -529,7 +529,7 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | A server failed to start (red) | `MCP server <name> failed to start: <reason>` |
 | Its `<reason>` | `<command> was not found on PATH`; `<command> could not start (<the system's words>)`; `it did not answer within 30 s`; `it exited with code <n>: <last line of its error output>` (without one, ending at `<n>`); `it was ended by signal <SIGNAME>`; for a remote server, `<address> answered <status>` or the library's own words |
 | A late server ready (grey) | `MCP server <name> is ready: <n> tools.` (singular for 1) |
-| A server stopped (red) | `MCP server <name> stopped: <reason>; reconnect it from /mcp.` |
+| A server stopped (red) | `MCP server <name> stopped: <reason>; reconnect it from /mcp.`; for a remote server whose connection dropped, said only when its one new connection (choice 13) fails, with that failure's reason, as until then the next call reconnects it by itself (the user's choice, 2026-11-10, Task 5's build) |
 | A call to a stopped server (to the model) | `The MCP server <name> has stopped; the user can reconnect it from /mcp.` |
 | The sandbox's network off (grey, at the launch) | `MCP servers are off: the sandbox's network is off, and servers run outside the box until a later release. Start with --network on to use them.` |
 | **Calls** (to the model): the tool changed while the call waited | `Not run: <name>'s tool "<tool>" changed while this call waited; look at its definition in this request's tools, if it is still there, and call it again.` |
