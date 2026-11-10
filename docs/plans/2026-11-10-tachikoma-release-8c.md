@@ -1100,7 +1100,9 @@ built" section).
   written right in it is shown; `.mcp.json` has no size limit; a UTF-16 file gives a garbled line,
   as `settings.json` does; and Task 3's review: with both `Path` and `PATH` set to different values, the lookup reads
   the last one while Node's spawn keeps `PATH`; reading the answers on Windows starts PowerShell
-  twice at launch, as the prompt history does); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
+  twice at launch, as the prompt history does; a yes covers the entry, not the files it runs (a
+pulled `server.js`, or an `npx` package with no version), as in Claude Code; a broken link with
+the program's name in an earlier PATH folder is taken, and fails at start with its line); the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
 
