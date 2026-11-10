@@ -543,6 +543,7 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | An `mcp_tool` hook without `server` or `tool` (problem) | `settings.json: "hooks": "<Event>": an "mcp_tool" hook must have "server", such as {"type": "mcp_tool", "server": "memory", "tool": "search"}`, and the same with `"tool"` |
 | `/hooks` and Ctrl+O | the hook's name is `<server> <tool>`, such as `tradingview quote_get` (design) |
 | **The project's question** (at the launch) | `Start the MCP server "<name>" from this project's .mcp.json: <command> <args>? [y/n]`, or for a remote one `Connect to the MCP server "<name>" from this project's .mcp.json at <url>? [y/n]` |
+| The answers unreadable (red, `mcp`; Task 3's throw, caught in Task 5) | `MCP answers for this project could not be read (<reason>), so its servers are asked about again.` (the user approved these words, 2026-11-10) |
 | A project's server in `-p` (note) | `MCP server <name> from .mcp.json was skipped: -p starts only the project's servers you said yes to in the window.` |
 | **Live edits** (grey) | `MCP servers changed: <name> restarted, <name> added, <name> removed.`, only the parts that apply (design: `MCP servers changed: tradingview restarted`) |
 | **`/mcp`** heading | `MCP servers, from ~/.tachikoma/settings.json and .mcp.json:` (the file named as `shownFile()` names it) |
