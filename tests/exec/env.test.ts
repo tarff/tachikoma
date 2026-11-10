@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
-import { API_KEYS, commandEnv, onPath } from "../../src/exec/env.js";
+import { API_KEYS, commandEnv, mcpProgram, onPath } from "../../src/exec/env.js";
 import { PRESETS } from "../../src/providers/openai.js";
 
 describe("commandEnv", () => {
@@ -125,5 +125,82 @@ describe("onPath", () => {
     const [dir] = folders("dir");
     writeFileSync(path.join(dir!, "tool"), "");
     expect(onPath("tool", { PATH: dir })).toBeUndefined();
+  });
+});
+
+// Release 8c plan, choice 4: an MCP server's program, by its full path, a .cmd such as npx's included. The programs are
+// empty files the test made, looked for and never run.
+describe("mcpProgram", () => {
+  const windows = process.platform === "win32";
+  function folders(...names: string[]) {
+    const dir = mkdtempSync(path.join(tmpdir(), "tachi-mcpprogram-"));
+    onTestFinished(() => rmSync(dir, { recursive: true, force: true }));
+    return names.map((name) => {
+      mkdirSync(path.join(dir, name));
+      return path.join(dir, name);
+    });
+  }
+  const files = (dir: string, ...names: string[]) => names.forEach((name) => writeFileSync(path.join(dir, name), ""));
+
+  it("finds npx.cmd for npx on Windows, .exe before .cmd when PATHEXT is unset", (ctx) => {
+    if (!windows) return ctx.skip("Windows only: PATHEXT");
+    const [first, second] = folders("first", "second");
+    files(first!, "npx.cmd");
+    files(second!, "npx.exe");
+    expect(mcpProgram("npx", { PATH: [first, second].join(";") }, "win32")).toBe(path.join(first!, "npx.cmd"));
+    files(first!, "npx.exe");
+    expect(mcpProgram("npx", { PATH: [first, second].join(";") }, "win32")).toBe(path.join(first!, "npx.exe"));
+    files(first!, "npx.com");
+    expect(mcpProgram("npx", { PATH: first }, "win32")).toBe(path.join(first!, "npx.com"));
+  });
+
+  it("follows PATHEXT's order, in any case, and only its .com, .exe, .bat and .cmd", (ctx) => {
+    if (!windows) return ctx.skip("Windows only: PATHEXT");
+    const [dir] = folders("dir");
+    files(dir!, "npx.exe", "npx.cmd", "npx.js");
+    expect(mcpProgram("npx", { PATH: dir, PATHEXT: ".CMD;.EXE" }, "win32")).toBe(path.join(dir!, "npx.cmd"));
+    expect(mcpProgram("npx", { Path: dir, pathext: ".JS;.Exe" }, "win32")).toBe(path.join(dir!, "npx.exe"));
+  });
+
+  it("looks for a name already ending in one of those endings as written, in any case", (ctx) => {
+    if (!windows) return ctx.skip("Windows only: PATHEXT");
+    const [dir] = folders("dir");
+    // node.exe.EXE and npx.cmd.CMD are there too, so adding an ending would find them first.
+    files(dir!, "node.exe", "node.exe.exe", "npx.cmd", "npx.cmd.cmd");
+    expect(mcpProgram("node.exe", { PATH: dir, PATHEXT: ".EXE;.CMD" }, "win32")).toBe(path.join(dir!, "node.exe"));
+    expect(mcpProgram("npx.cmd", { PATH: dir, PATHEXT: ".EXE;.CMD" }, "win32")).toBe(path.join(dir!, "npx.cmd"));
+    expect(mcpProgram("NPX.CMD", { PATH: dir }, "win32")?.toLowerCase()).toBe(path.join(dir!, "npx.cmd").toLowerCase());
+  });
+
+  it("never finds a program in the working folder, by npx or npx.cmd, nor through a relative PATH entry", (ctx) => {
+    if (!windows) return ctx.skip("Windows only: its own lookup starts in the working folder");
+    const [project, empty] = folders("project", "empty");
+    files(project!, "npx.cmd");
+    const before = process.cwd();
+    process.chdir(project!);
+    try {
+      for (const name of ["npx", "npx.cmd"]) expect(mcpProgram(name, { PATH: [empty, "", ".", "sub"].join(";") }, "win32")).toBeNull();
+    } finally {
+      process.chdir(before);
+    }
+  });
+
+  it("passes over a relative PATH entry", () => {
+    const [rel, next] = folders("rel", "next");
+    const name = windows ? "tool.exe" : "tool";
+    files(rel!, name);
+    writeFileSync(path.join(next!, name), "", { mode: 0o755 }); // outside Windows, made so it may be run
+    // As onPath's test: no relative path reaches another drive, so there `rel` is left out.
+    const relative = path.relative(process.cwd(), rel!);
+    const PATH = [...(path.isAbsolute(relative) ? [] : [relative]), next].join(path.delimiter);
+    expect(mcpProgram("tool", { PATH })).toBe(path.join(next!, name));
+  });
+
+  it("takes a command with a folder in it as written, and gives null when nothing is found", () => {
+    const [dir] = folders("dir");
+    expect(mcpProgram(path.join("tools", "node"), { PATH: dir })).toBe(path.join("tools", "node"));
+    expect(mcpProgram("./node", { PATH: dir })).toBe("./node");
+    expect(mcpProgram("node", { PATH: dir })).toBeNull();
+    expect(mcpProgram("node", {})).toBeNull();
   });
 });
