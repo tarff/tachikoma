@@ -11,10 +11,10 @@ import type { PickerKey } from "./ModelPicker.js";
 // `/mcp` (release 8c plan, Task 10; design, "What the user sees"; choice 27): the servers, a row each, in the prompt's
 // place; Enter shows the chosen server's actions, only those that apply, under its row; Esc goes back, then closes. Up and
 // Down move, as Select's keys are bound; the App hands it the keys it finds in the table, as /resume's list gets its own
-// (SessionList.tsx). Sign in and Sign out are Task 11's. The words are the plan's ("Lines this plan adds").
+// (SessionList.tsx). The words are the plan's ("Lines this plan adds").
 
 export type Listed = ReturnType<Servers["list"]>[number];
-export const ACTIONS = ["Reconnect", "Show tools", "Reset my answer"] as const;
+export const ACTIONS = ["Reconnect", "Sign in", "Sign out", "Show tools", "Reset my answer"] as const;
 export type Action = (typeof ACTIONS)[number];
 
 const count = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
@@ -32,13 +32,16 @@ export function mcpRow(s: Listed): string {
   return visible(`${s.name}${s.where === "project" ? " (project)" : ""} · ${state}${trust}`);
 }
 
-// What applies to a server: Reconnect to one that was started, whatever came of it; Show tools to one whose tools are
-// offered, a remote one whose connection dropped among them, as its next call connects it again (choices 13 and 33);
-// Reset my answer to a project's server the user has answered.
-export function actionsOf(s: Listed, answered: boolean): Action[] {
+// What applies to a server: Reconnect to one that was started, whatever came of it; Sign in to one that needs it, and
+// Sign out to one with a sign-in kept (Task 11); Show tools to one whose tools are offered, a remote one whose connection
+// dropped among them, as its next call connects it again (choices 13 and 33); Reset my answer to a project's server the
+// user has answered.
+export function actionsOf(s: Listed, answered: boolean, signedIn: boolean): Action[] {
   const st = s.state;
   return [
     ...(st.is === "ready" || st.is === "failed" || st.is === "stopped" ? (["Reconnect"] as const) : []),
+    ...(st.is === "needs sign-in" ? (["Sign in"] as const) : []),
+    ...(signedIn ? (["Sign out"] as const) : []),
     ...(st.is === "ready" || (st.is === "stopped" && st.retry) ? (["Show tools"] as const) : []),
     ...(s.where === "project" && answered ? (["Reset my answer"] as const) : []),
   ];
@@ -52,7 +55,7 @@ export function McpList({
   keys,
   maxRows,
 }: {
-  servers: Pick<Servers, "list" | "answered" | "watch">;
+  servers: Pick<Servers, "list" | "answered" | "signedIn" | "watch">;
   bindings: Bindings; // the table of keys, for the names the hint gives Select's keys
   onAction: (name: string, action: Action) => void; // Reconnect keeps the list open, at the servers; the others close it
   onClose: () => void;
@@ -70,7 +73,7 @@ export function McpList({
   // A server's row and its actions now, or none for one a live edit removed, or a change left with nothing to do.
   const opened = (name: string | null) => {
     const row = name === null ? undefined : servers.list().find((r) => r.name === name);
-    const actions = row ? actionsOf(row, servers.answered(row.name)) : [];
+    const actions = row ? actionsOf(row, servers.answered(row.name), servers.signedIn(row.name)) : [];
     return row && actions.length ? { row, actions } : null;
   };
 

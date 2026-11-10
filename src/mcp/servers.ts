@@ -1,8 +1,10 @@
 import type { Tool } from "@modelcontextprotocol/client";
+import { openBrowser } from "../auth/chatgpt.js";
 import type { Bus } from "../core/bus.js";
 import { visible } from "../core/permissions.js";
 import { errorText, type ToolSpec } from "../core/types.js";
 import type { Answers } from "./answers.js";
+import type { AuthStore, SignInIO } from "./auth.js";
 import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
 import { Server, type State } from "./server.js";
@@ -79,6 +81,9 @@ export class Servers {
   readonly #network: "on" | "off" | "none";
   readonly #lead: () => string;
   readonly #startMs?: number;
+  readonly #auth?: AuthStore;
+  readonly #openBrowser: (url: string) => void;
+  readonly #headless: boolean;
   #slots: Slot[];
   #answers: Answers | null | undefined; // null: they could not be read, and none were given in their place; undefined: not read yet
   #unreadable: string | undefined; // why, until it is said
@@ -93,11 +98,14 @@ export class Servers {
   // file it cannot read; that is caught here, and `unread` answers in its place: the ones the window's launch asked for
   // then, kept for that launch only (Task 9). `network` is the sandbox's: "none" when it is off. `lead` names the model
   // leading, which every error on the bus carries. `startMs` is a server's start limit, 30 s unless a test gives one.
+  // `auth` keeps the remote servers' sign-ins, and `openBrowser` opens a sign-in's page, the system's browser unless a test
+  // gives its own (Task 11); `headless` is -p, which cannot sign in, and says so of a server that needs it.
   constructor(
     configs: ServerConfig[],
     opts: {
       root: string; env: NodeJS.ProcessEnv; bus: Bus; answers: () => Answers; unread?: Answers;
       network: "on" | "off" | "none"; lead: () => string; startMs?: number;
+      auth?: AuthStore; openBrowser?: (url: string) => void; headless?: boolean;
     },
   ) {
     this.#root = opts.root;
@@ -108,6 +116,9 @@ export class Servers {
     this.#network = opts.network;
     this.#lead = opts.lead;
     this.#startMs = opts.startMs;
+    this.#auth = opts.auth;
+    this.#openBrowser = opts.openBrowser ?? openBrowser;
+    this.#headless = opts.headless ?? false;
     this.#slots = configs.map((c) => this.#slot(c));
   }
 
@@ -337,6 +348,24 @@ export class Servers {
     this.#readAnswers()?.reset(name);
   }
 
+  // /mcp's Sign in (Task 11; choice 28): the server's sign-in, then the server connected again on its new tokens, as a
+  // Reconnect is. True when signed in, false on a no; throws why it failed, and on Esc.
+  async signIn(name: string, io: Omit<SignInIO, "openBrowser">): Promise<boolean> {
+    const server = this.server(name);
+    if (!server || !(await server.signIn({ ...io, openBrowser: this.#openBrowser }))) return false;
+    await this.restart(name);
+    return true;
+  }
+  // /mcp's Sign out: its tokens and client forgotten, then connected again, so it shows needs sign-in.
+  async signOut(name: string): Promise<void> {
+    await this.server(name)?.signOut();
+    await this.restart(name);
+  }
+  // Whether a sign-in is kept for the server, so Sign out applies.
+  signedIn(name: string): boolean {
+    return this.server(name)?.signedIn ?? false;
+  }
+
   // A server's connection, for Task 6's calls.
   server(name: string): Server | undefined {
     return this.#slots.find((s) => s.config.name === name)?.server;
@@ -382,7 +411,9 @@ export class Servers {
       if (yes === undefined) return { ...slot, fixed: { is: "waiting for your yes" } };
       if (!yes) return { ...slot, fixed: { is: "you said no" } };
     }
-    const server = new Server(config, { root: this.#root, env: this.#env, startMs: this.#startMs, onChange: () => this.#changed(slot, server) });
+    const server = new Server(config, {
+      root: this.#root, env: this.#env, auth: this.#auth, startMs: this.#startMs, onChange: () => this.#changed(slot, server),
+    });
     slot.server = server;
     return slot;
   }
@@ -427,6 +458,9 @@ export class Servers {
     } else if (state.is === "ready" && slot.late) {
       const n = rows.filter((r) => r.offered.server === slot.config.name).length;
       this.#bus.emit("mcp-note", `MCP server ${name} is ready: ${n} ${n === 1 ? "tool" : "tools"}.`);
+    } else if (state.is === "needs sign-in" && this.#headless) {
+      // -p never signs in (Task 11); the window needs no line, as /mcp shows it.
+      this.#bus.emit("mcp-note", `MCP server ${name} needs sign-in, which -p cannot do; sign in from /mcp in the window.`);
     }
     if (state.is !== "starting") slot.late = false;
     this.#note(fresh);

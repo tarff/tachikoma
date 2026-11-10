@@ -112,8 +112,9 @@ export interface Listener {
 
 // Waits on 127.0.0.1, on any free port, at /auth/callback: the docs require that address form and
 // rule out `localhost`. A reply with another attempt's state is turned away and the wait goes on; the
-// first matching reply ends it, and the listener closes.
-export async function listen(state: string, signal?: AbortSignal): Promise<Listener> {
+// first matching reply ends it, and the listener closes. `port` is a fixed one instead, such as an MCP
+// server entry's callbackPort (release 8c plan, Task 11).
+export async function listen(state: string, signal?: AbortSignal, port = 0): Promise<Listener> {
   let settle!: { resolve: (q: URLSearchParams) => void; reject: (e: Error) => void };
   const reply = new Promise<URLSearchParams>((resolve, reject) => (settle = { resolve, reject }));
   reply.catch(() => {}); // Ctrl-C may come before anyone waits for it
@@ -145,7 +146,7 @@ export async function listen(state: string, signal?: AbortSignal): Promise<Liste
     settle.reject(new OAuthError("Sign-in was cancelled."));
     close();
   };
-  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve, reject) => server.once("error", reject).listen(port, "127.0.0.1", resolve));
   signal?.addEventListener("abort", onAbort, { once: true });
   if (signal?.aborted) onAbort();
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/auth`;

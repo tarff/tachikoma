@@ -14,6 +14,7 @@ import {
   StreamableHTTPClientTransport,
   type Tool,
   type Transport,
+  UnauthorizedError,
 } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { visible } from "../core/permissions.js";
@@ -22,6 +23,7 @@ import { commandEnv, mcpProgram } from "../exec/env.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
 import { killTree, running } from "../exec/local.js";
 import { MAX_TIMER_MS } from "../hooks/config.js";
+import { type AuthStore, McpAuth, type SignInIO } from "./auth.js";
 import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
 
@@ -101,14 +103,17 @@ export class Server {
   #conn: Conn | undefined;
   #reconnecting: Promise<boolean> | undefined;
   #instructions: string | undefined;
+  readonly #auth: McpAuth | undefined;
 
-  // `startMs` is the start's limit, 30 s unless a test gives a short one.
-  constructor(config: ServerConfig, opts: { root: string; env: NodeJS.ProcessEnv; onChange(): void; startMs?: number }) {
+  // `startMs` is the start's limit, 30 s unless a test gives a short one. `auth` keeps sign-ins: with it a remote server
+  // has its own OAuth client (Task 11); without it, as in most tests, a 401 is an answer like any other.
+  constructor(config: ServerConfig, opts: { root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; startMs?: number }) {
     this.config = config;
     this.#root = opts.root;
     this.#env = opts.env;
     this.#onChange = opts.onChange;
     this.#startMs = opts.startMs ?? START_MS;
+    this.#auth = opts.auth && config.entry.kind !== "stdio" ? new McpAuth(opts.auth, config) : undefined;
   }
 
   get state(): State {
@@ -167,6 +172,18 @@ export class Server {
     if (this.#conn) await this.#close(this.#conn);
   }
 
+  // /mcp's Sign in and Sign out (Task 11), for a remote server that has its own OAuth client; the caller connects again.
+  signIn(io: SignInIO): Promise<boolean> {
+    return this.#auth ? this.#auth.signIn(io) : Promise.resolve(false);
+  }
+  async signOut(): Promise<void> {
+    await this.#auth?.forget();
+  }
+  // Whether a sign-in is kept for it, so Sign out applies.
+  get signedIn(): boolean {
+    return this.#auth?.kept ?? false;
+  }
+
   // A new connection: connected and its tools listed within the start's limit. `failed` gives the state for a reason.
   async #connect(failed: (reason: string) => State): Promise<boolean> {
     this.#connection++;
@@ -194,19 +211,22 @@ export class Server {
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), this.#startMs)));
     let reason: string | undefined;
+    let signIn = false;
     let tools: Tool[] = [];
     try {
       const got = await Promise.race([work, late]);
       if (got === "late") reason = this.#late();
       else tools = got;
     } catch (err) {
-      reason = this.#startReason(conn, err);
+      // A start the server refused for want of a sign-in, which only /mcp starts (Task 11).
+      if (this.#auth && UnauthorizedError.isInstance(err)) signIn = true;
+      else reason = this.#startReason(conn, err);
     } finally {
       clearTimeout(timer);
     }
     if (conn.closed) return false; // stopped meanwhile: the stop's caller owns the state
-    if (reason !== undefined) {
-      this.#state = failed(reason);
+    if (reason !== undefined || signIn) {
+      this.#state = signIn ? { is: "needs sign-in" } : failed(reason!);
       await this.#close(conn);
       return false;
     }
@@ -218,7 +238,7 @@ export class Server {
 
   // Local: the program by its full path (choice 4), with the commands' environment, which never holds Tachikoma's keys,
   // CLAUDE_PROJECT_DIR as Claude Code sets it, then the entry's env, in the project's folder (choice 2). Remote: the
-  // entry's headers with each request. A reason instead when the program is not on PATH.
+  // entry's headers with each request, and its OAuth client (Task 11). A reason instead when the program is not on PATH.
   #transport(): Transport | string {
     const entry = this.config.entry;
     if (entry.kind === "stdio") {
@@ -227,7 +247,7 @@ export class Server {
       const env = { ...commandEnv(this.#env), CLAUDE_PROJECT_DIR: this.#root, ...entry.env } as Record<string, string>;
       return new Stdio({ command: program, args: entry.args, env, cwd: this.#root, stderr: "pipe" });
     }
-    const opts = { requestInit: { headers: entry.headers } };
+    const opts = { requestInit: { headers: entry.headers }, ...(this.#auth && { authProvider: this.#auth }) };
     const url = new URL(entry.url);
     return entry.kind === "http" ? new StreamableHTTPClientTransport(url, opts) : new SSEClientTransport(url, opts);
   }

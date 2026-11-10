@@ -13,11 +13,12 @@ import { openSession, sessionsDir } from "../src/core/sessions.js";
 import { readTranscript } from "../src/core/transcript.js";
 import { onPath } from "../src/exec/env.js";
 import { answersFor } from "../src/mcp/answers.js";
-import { readProjectFile } from "../src/mcp/config.js";
+import { AuthStore, McpAuth } from "../src/mcp/auth.js";
+import { readProjectFile, readServers } from "../src/mcp/config.js";
 import type { DockerRun } from "../src/sandbox/docker.js";
 import { NOT_BUILT, NOT_INSTALLED, NOT_RUNNING } from "../src/sandbox/image.js";
 import { removeTree } from "./helpers.js";
-import { type FakeOptions, fakeServer, readLog } from "./mcp/fake.js";
+import { type FakeOptions, fakeServer, readLog, signInFake } from "./mcp/fake.js";
 
 // Docker's answer for an image with no bash (node:22-alpine, as the quality review gave it).
 const NO_BASH = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "bash": executable file not found in $PATH: unknown';
@@ -1325,6 +1326,25 @@ describe("tachi's MCP servers", { timeout: 60_000 }, () => {
     const r = await tachiLater("--lead", "openai:lead", "-p", "hi", "--json", p.env);
     expect(r.code).toBe(0);
     expect(r.stdout.trim().split("\n").map((l) => JSON.parse(l))).toContainEqual({ event: "mcp-note", data: SKIPPED("new") });
+  });
+
+  // Release 8c plan, Task 11: -p never signs in, and says so; a sign-in kept in the data folder, as /mcp's Sign in keeps
+  // it in the window, works there.
+  it("with -p, says a server needs sign-in, and uses a sign-in the window kept", async () => {
+    const p = await project();
+    const fake = await signInFake();
+    const mcpServers = { om: { type: "http", url: fake.url } };
+    const home = homeWith(JSON.stringify({ mcpServers }));
+    const first = await tachiLater("--lead", "openai:lead", "-p", "hi", { ...p.env, ...home });
+    expect(first).toEqual({ code: 0, stdout: "done\n", stderr: "note: MCP server om needs sign-in, which -p cannot do; sign in from /mcp in the window.\n" });
+    expect(fake.seen.registered).toBe(0);
+    const config = readServers("settings.json", mcpServers, {}, [])[0]!;
+    const io = { ask: async () => true, openBrowser: fake.browser, say: () => {}, signal: new AbortController().signal };
+    expect(await new McpAuth(new AuthStore(p.data), config).signIn(io)).toBe(true);
+    const again = await tachiLater("--lead", "openai:lead", "-p", "hi", { ...p.env, ...home });
+    expect(again).toEqual({ code: 0, stdout: "done\n", stderr: "" });
+    const search = p.asked.at(-1)!.tools!.find((t) => t.function.name === "tool_search")!;
+    expect(search.function.description).toContain("mcp__om__echo");
   });
 
   // Choices 23 and 24: one question per project server not yet answered, after the instruction files' question; a yes

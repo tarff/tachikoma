@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTes
 import { privateDir } from "../../src/auth/private.js";
 import { askServers, type Given, newSaved, WindowSessions } from "../../src/clilib.js";
 import { type Answers, answersFor, launchAnswers } from "../../src/mcp/answers.js";
+import { AuthStore } from "../../src/mcp/auth.js";
 import { mergeServers, type ServerConfig } from "../../src/mcp/config.js";
 import { Servers } from "../../src/mcp/servers.js";
 import { approveOf, mcpTools } from "../../src/mcp/tools.js";
@@ -58,7 +59,7 @@ import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, texts, usage } from "../helpers.js";
-import { type FakeOptions, fakeServer } from "../mcp/fake.js";
+import { type FakeOptions, fakeServer, signInFake } from "../mcp/fake.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 // How long a test waits for the settings watcher: fs.watch reported each of 400 writes within 5 ms on this machine
@@ -10198,10 +10199,13 @@ describe("App's MCP", () => {
       return { name, safe: name, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "", entry, asWritten: entry, ...over };
     };
     const servers =
-      (configs: ServerConfig[], opts: { answers?: () => Answers; network?: "on" | "off" | "none" } = {}) =>
+      (
+        configs: ServerConfig[],
+        opts: { answers?: () => Answers; network?: "on" | "off" | "none"; auth?: AuthStore; openBrowser?: (url: string) => void } = {},
+      ) =>
       (bus: Bus) => {
-        const answers = opts.answers ?? launchAnswers;
-        const s = new Servers(configs, { root: dir, env: process.env, bus, answers, network: opts.network ?? "none", lead: () => "fake:a" });
+        const { answers = launchAnswers, network = "none", ...signIn } = opts;
+        const s = new Servers(configs, { root: dir, env: process.env, bus, answers, network, lead: () => "fake:a", ...signIn });
         made.push(s);
         return { servers: s };
       };
@@ -10283,7 +10287,7 @@ describe("App's MCP", () => {
     const { app } = await mount([], { mcp: servers([await config("far\u0007")], { network: "off" }) });
     await type(app, "/mcp");
     await shows(app, `${HEADING}\nfar\\u0007 · off: the sandbox's network is off`);
-    // Sign-in comes with Task 11, so no server reaches this state yet; its row's words are checked here.
+    // Its row's words; Task 11's tests below reach the state on a real server.
     const row = { name: "om", where: "user" as const, state: { is: "needs sign-in" as const }, trusted: null, trustedTools: [], tools: 0 };
     expect(mcpRow(row)).toBe("om · needs sign-in");
   });
@@ -10453,5 +10457,76 @@ describe("App's MCP", () => {
     expect(s.server("s")).toBe(server);
     expect(server.connection).toBe(1);
     expect(flat(app)).not.toContain("MCP servers changed");
+  });
+
+  // Release 8c plan, Task 11: Sign in and Sign out from /mcp, on the fake sign-in service of tests/mcp/fake.ts, the browser
+  // a function of the test's own, the sign-ins kept in a data folder of the test's own.
+  async function signInSetup() {
+    const m = await mcpSetup();
+    const fake = await signInFake();
+    const opened: string[] = [];
+    let browser: (u: string) => void = fake.browser;
+    const url = fake.url;
+    const config: ServerConfig = {
+      name: "om", safe: "om", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "",
+      entry: { kind: "http", url, headers: {} }, asWritten: { url },
+    };
+    const auth = new AuthStore(path.join(m.dir, "data", "tachi"));
+    const mcp = m.servers([config], { auth, openBrowser: (u) => (opened.push(u), browser(u)) });
+    const question = `Open your browser to sign in to om at ${new URL(fake.base).host}? [y/n]`;
+    const waiting = (at: string) => `Waiting for the sign-in in your browser. If it did not open, go to: ${at}`;
+    return { fake, opened, mcp, question, waiting, setBrowser: (b: (u: string) => void) => (browser = b) };
+  }
+
+  it("signs in from /mcp, asking before the browser opens, then signs out, each with its line", async () => {
+    const t = await signInSetup();
+    const { app, mcp } = await mount([], { mcp: t.mcp });
+    const s = mcp!.servers;
+    await soon(() => expect(states(s)).toEqual(["om needs sign-in"]));
+    await type(app, "/mcp");
+    await shows(app, `${HEADING}\nom · needs sign-in\n`);
+    await press(app, "\r");
+    await shows(app, "om · needs sign-in\nSign in\n↑↓ move");
+    await press(app, "\r");
+    await soon(() => expect(flat(app)).toContain(t.question));
+    expect(t.opened).toEqual([]);
+    await press(app, "y");
+    await shows(app, "Signed in to om.");
+    expect(flat(app)).toContain(t.waiting(t.opened[0]!));
+    await soon(() => expect(states(s)).toEqual(["om ready"]));
+    // Signed in, it offers Sign out, which forgets the sign-in, so the server needs it again.
+    await type(app, "/mcp");
+    await shows(app, `${HEADING}\nom · 1 tool\n`);
+    await press(app, "\r");
+    await shows(app, "om · 1 tool\nReconnect\nSign out\nShow tools\n");
+    await press(app, DOWN, "\r");
+    await shows(app, "Signed out of om.");
+    expect(states(s)).toEqual(["om needs sign-in"]);
+    expect(s.signedIn("om")).toBe(false);
+  });
+
+  // The service's own words when it refuses; Esc stops the wait and says nothing more, as the user stopped it.
+  it("says why a sign-in failed, and stops waiting for the browser on Esc", async () => {
+    const t = await signInSetup();
+    t.setBrowser(t.fake.refusing("The user said no"));
+    const { app, mcp } = await mount([], { mcp: t.mcp });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["om needs sign-in"]));
+    await type(app, "/mcp");
+    await press(app, "\r", "\r");
+    await soon(() => expect(flat(app)).toContain(t.question));
+    await press(app, "y");
+    await shows(app, "Sign-in to om failed: The user said no");
+    // A browser that never comes back.
+    t.setBrowser(() => {});
+    await type(app, "/mcp");
+    await press(app, "\r", "\r");
+    await soon(() => expect(flat(app)).toContain(t.question)); // the first one, answered, is gone from the prompt's place
+    await press(app, "y");
+    await soon(() => expect(flat(app)).toContain(t.waiting(t.opened[1]!)));
+    await until(app, "Waiting for the browser · ");
+    await press(app, "\u001b");
+    await gone(app, "Waiting for the browser · ");
+    expect(flat(app).split("Sign-in to om failed").length).toBe(2);
+    expect(states(mcp!.servers)).toEqual(["om needs sign-in"]);
   });
 });

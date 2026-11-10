@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { onTestFinished } from "vitest";
 
@@ -197,6 +200,123 @@ export async function httpFake(dir: string, opts: FakeOptions = {}): Promise<{ u
     child.once("exit", (code) => reject(new Error(`the fake HTTP server exited with code ${code}`)));
   });
   return { url: `http://127.0.0.1:${port}/mcp`, port, stop };
+}
+
+// A remote MCP server that needs sign-in, and its own sign-in service, in the test's process on 127.0.0.1 (release 8c
+// plan, Task 11): the resource's and the service's discovery documents, registration, authorize (which sends the browser
+// straight back to the redirect address, with a code, as a user who said yes would be), and tokens, by code with PKCE's
+// S256 check, or by refresh token. Its MCP endpoint, at any path ending /mcp, answers only a live access token, and
+// otherwise 401 with the address of its discovery document; it offers one tool, echo. `browser` stands for the user's
+// browser: it follows the address it is given, redirects and all. `expire` makes every access token given so far stale,
+// so the next request needs a refresh.
+export async function signInFake() {
+  const clients = new Map<string, { redirect_uris: string[] }>();
+  const codes = new Map<string, { client: string; challenge: string; redirect: string }>();
+  const live = new Set<string>();
+  const refresh = new Set<string>();
+  const seen = { registered: 0, grants: [] as string[], bearer: [] as (string | null)[], authorized: [] as URLSearchParams[] };
+  let issued = 0;
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (c: string) => (body += c));
+    req.on("end", () => {
+      const url = new URL(req.url ?? "/", base);
+      const json = (status: number, value: object, headers: Record<string, string> = {}) =>
+        res.writeHead(status, { "content-type": "application/json", connection: "close", ...headers }).end(JSON.stringify(value));
+      if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
+        return json(200, { resource: `${base}${url.pathname.slice("/.well-known/oauth-protected-resource".length) || "/mcp"}`, authorization_servers: [base] });
+      }
+      if (url.pathname === "/.well-known/oauth-authorization-server") {
+        return json(200, {
+          issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`, registration_endpoint: `${base}/register`,
+          response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], grant_types_supported: ["authorization_code", "refresh_token"],
+          token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+      if (url.pathname === "/register" && req.method === "POST") {
+        const metadata = JSON.parse(body);
+        const id = `client-${++seen.registered}`;
+        clients.set(id, metadata);
+        return json(201, { ...metadata, client_id: id });
+      }
+      if (url.pathname === "/authorize") {
+        const q = url.searchParams;
+        seen.authorized.push(q);
+        const client = clients.get(q.get("client_id") ?? "") ?? (q.get("client_id") === "given-id" ? { redirect_uris: [q.get("redirect_uri")!] } : undefined);
+        if (!client || !client.redirect_uris.includes(q.get("redirect_uri") ?? "")) return res.writeHead(400, { connection: "close" }).end("bad client");
+        const code = `code-${++issued}`;
+        codes.set(code, { client: q.get("client_id")!, challenge: q.get("code_challenge")!, redirect: q.get("redirect_uri")! });
+        const back = new URL(q.get("redirect_uri")!);
+        back.searchParams.set("code", code);
+        back.searchParams.set("state", q.get("state") ?? "");
+        return res.writeHead(302, { location: back.href, connection: "close" }).end();
+      }
+      if (url.pathname === "/token" && req.method === "POST") {
+        const form = new URLSearchParams(body);
+        const grant = form.get("grant_type") ?? "";
+        seen.grants.push(grant);
+        const give = () => {
+          const n = ++issued;
+          live.add(`access-${n}`);
+          refresh.add(`refresh-${n}`);
+          return json(200, { access_token: `access-${n}`, refresh_token: `refresh-${n}`, token_type: "Bearer", expires_in: 3600 });
+        };
+        if (grant === "authorization_code") {
+          const c = codes.get(form.get("code") ?? "");
+          codes.delete(form.get("code") ?? "");
+          const verified = c && createHash("sha256").update(form.get("code_verifier") ?? "").digest("base64url") === c.challenge;
+          if (!c || !verified || c.redirect !== form.get("redirect_uri") || c.client !== form.get("client_id")) return json(400, { error: "invalid_grant" });
+          return give();
+        }
+        if (grant === "refresh_token" && refresh.delete(form.get("refresh_token") ?? "")) return give();
+        return json(400, { error: "invalid_grant" });
+      }
+      if (url.pathname.endsWith("/mcp")) {
+        const bearer = req.headers.authorization ?? null;
+        seen.bearer.push(bearer);
+        if (!bearer || !live.has(bearer.replace(/^Bearer /, ""))) {
+          const metadata = `${base}/.well-known/oauth-protected-resource${url.pathname}`;
+          return json(401, { error: "invalid_token" }, { "www-authenticate": `Bearer resource_metadata="${metadata}"` });
+        }
+        if (req.method !== "POST") return res.writeHead(405, { connection: "close" }).end();
+        const m = JSON.parse(body);
+        if (m.id === undefined) return res.writeHead(202, { connection: "close" }).end();
+        const result =
+          m.method === "initialize"
+            ? { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1.0.0" } }
+            : m.method === "tools/list"
+              ? { tools: [{ name: "echo", description: "Says it back", inputSchema: { type: "object" } }] }
+              : { content: [{ type: "text", text: "echoed" }] };
+        return json(200, { jsonrpc: "2.0", id: m.id, result }, { "mcp-session-id": "session" });
+      }
+      res.writeHead(404, { connection: "close" }).end();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  onTestFinished(() => {
+    server.close();
+    server.closeAllConnections();
+  });
+  return {
+    url: `${base}/mcp`,
+    base,
+    seen,
+    expire: () => live.clear(),
+    // The user's browser: each redirect followed, to the sign-in's own address on this machine at the end.
+    browser: (address: string): void => void fetch(address).then((r) => r.text()),
+    // A browser whose user turned the sign-in down: the service's error goes back to the sign-in's own address instead.
+    refusing:
+      (description: string) =>
+      (address: string): void =>
+        void (async () => {
+          const authorize = new URL((await fetch(address, { redirect: "manual" })).headers.get("location")!);
+          const back = new URL(authorize.searchParams.get("redirect_uri")!);
+          back.search = new URLSearchParams({ error: "access_denied", error_description: description, state: authorize.searchParams.get("state")! }).toString();
+          await fetch(back);
+        })(),
+  };
 }
 
 // The fake's log, one entry per line; none before its first message.

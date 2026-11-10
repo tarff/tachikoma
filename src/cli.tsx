@@ -67,6 +67,7 @@ import { Hooks } from "./hooks/hooks.js";
 import { pathsFor } from "./hooks/tools.js";
 import { readKeybindings } from "./keybindings.js";
 import { type Answers, answersFor, launchAnswers } from "./mcp/answers.js";
+import { AuthStore } from "./mcp/auth.js";
 import { mergeServers, readProjectFile } from "./mcp/config.js";
 import { Servers } from "./mcp/servers.js";
 import { approveOf, mcpTools } from "./mcp/tools.js";
@@ -625,6 +626,10 @@ const servers = new Servers(mcpConfigs, {
   network: mcpNetwork,
   // Read only when a line is said, from startAll on, once the session below exists.
   lead: () => session.lead.id,
+  // The remote servers' sign-ins, kept in the data folder (release 8c plan, Task 11); readPrivate's note that it made the
+  // file private is grey, as the servers' other notes are. -p cannot sign in, and says so of a server that needs it.
+  auth: new AuthStore(data, (line) => bus.emit("mcp-note", line)),
+  headless: !interactive,
 });
 mcpServers = servers;
 

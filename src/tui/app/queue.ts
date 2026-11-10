@@ -275,6 +275,7 @@ export const queue = (ui: UI, fns: Fns) => {
     const servers = ui.mcp!.servers;
     if (action === "Reconnect") return void servers.restart(name);
     ui.view.current = FOLLOWING;
+    if (action === "Sign in" || action === "Sign out") return void account(name, action);
     const shown = visible(name);
     if (action === "Show tools") {
       const { names: full, leftOut } = servers.tools(name);
@@ -288,6 +289,37 @@ export const queue = (ui: UI, fns: Fns) => {
       }
     }
     closeMcp();
+  };
+  // /mcp's Sign in and Sign out (Task 11), run as /login and /logout are: their working line, what is typed waiting in the
+  // queue, Esc stopping a sign-in through its own signal, which also cancels its question, the window's own yes/no. The
+  // lines are the plan's; Esc says nothing more, as the user stopped it, and a sign-out that cannot be written says why,
+  // as a command's failure does (perform).
+  const account = async (name: string, action: "Sign in" | "Sign out") => {
+    const servers = ui.mcp!.servers;
+    const shown = visible(name);
+    const { signal } = (ui.abort.current = new AbortController());
+    ui.doing.current = { label: action === "Sign in" ? "Waiting for the browser" : "Signing out", at: Date.now(), from: null };
+    ui.setNow(ui.doing.current.at);
+    ui.setBusy(true);
+    ui.working.current = true;
+    closeMcp(); // the queue waits for this, as it works
+    try {
+      if (action === "Sign out") {
+        await servers.signOut(name);
+        fns.say(gray(`Signed out of ${shown}.`));
+      } else {
+        const ask = (question: string) => ui.asking.current?.(question, undefined, undefined, true) ?? Promise.resolve(false);
+        if (await servers.signIn(name, { ask, say: (line) => fns.say(gray(line)), signal })) fns.say(gray(`Signed in to ${shown}.`));
+      }
+    } catch (err) {
+      const why = visible(errorText(err), { tabs: true });
+      if (action === "Sign out") fns.say({ text: why, color: "red" });
+      else if (!signal.aborted) fns.say({ text: `Sign-in to ${shown} failed: ${why}`, color: "red" });
+    } finally {
+      ui.setBusy(false);
+      ui.working.current = false;
+      fns.next();
+    }
   };
   // `/tasks t3`'s record: the subagent's tool calls and answer in full.
   const recordOf = (t: Task): Line[] => {

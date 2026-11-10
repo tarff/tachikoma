@@ -1,6 +1,6 @@
 import { useApp, useWindowSize } from "ink";
 import { useRef, useState } from "react";
-import { type Mode, type Protection, visible } from "../../core/permissions.js";
+import { type Ask, type Mode, type Protection, visible } from "../../core/permissions.js";
 import type { Row } from "../../core/sessions.js";
 import type { Effort } from "../../providers/anthropic.js";
 import type { ModelGroup } from "../../providers/models.js";
@@ -242,6 +242,13 @@ export function useAppState({
   const [now, setNow] = useState(started.current);
   const [branch, setBranch] = useState(firstBranch);
   const abort = useRef<AbortController | null>(null);
+  // The window's own question, as bound for the session and the gate (App.tsx), which /mcp's Sign in asks too (release
+  // 8c plan, Task 11).
+  const asking = useRef<Ask | null>(null);
+  const bindAskHere = (ask: Ask) => {
+    asking.current = ask;
+    bindAsk(ask);
+  };
   const nextId = useRef(0);
   const printUpTo = useRef<number | null>(null); // while an editor has the terminal in classic mode (away, handover.tsx)
   const lookups = useRef(0);
@@ -291,7 +298,7 @@ export function useAppState({
   // own `question`.
   return {
     session, tasks, bus, stats, mode, onMode, onRules, project, root, workspace, historyFile, intro, errorFile, segments,
-    makeProvider, bindAsk, login, listModels, screen, fullPossible, mouse, scrollSpeed, clipboard, input, bindings,
+    makeProvider, bindAsk: bindAskHere, asking, login, listModels, screen, fullPossible, mouse, scrollSpeed, clipboard, input, bindings,
     home, live, picturesGiven, readPicture, exit, suspendTerminal, lines, setLines, editor, goal, vim, vimText, first,
     table, setTable, chordTimer, keyOf, pickerKey, step, search, stash, chosen, closed, listed, columns, height, full,
     setFull, switching, setSwitching, kept, unkept, view, detail, pane, printed, dropping, waitingList, ended, owner,
