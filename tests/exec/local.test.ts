@@ -108,6 +108,23 @@ describe("LocalExecutor", () => {
     expect(r.stdout).not.toContain("�");
     expect(kept).toBe("€".repeat(MAX_TOOL_OUTPUT));
   }, 15_000);
+  // Windows PowerShell exits 1 for any program that failed, so the model read 1 for every failure (PR #14's review, seen
+  // 2026-11-10). A failed PowerShell command still exits 1, a note at the end hides nothing, and the command's own
+  // `exit` is kept.
+  it.runIf(process.platform === "win32")("keeps a program's exit code in PowerShell", async () => {
+    const root = await script(`process.exit(Number(process.argv[2]));`);
+    const cases: [string, number][] = [
+      ["node script.js 2", 2],
+      ["node script.js 0 # a note", 0],
+      ["Get-Item tachi-no-such-file", 1],
+      ["exit 5", 5],
+    ];
+    for (const [command, code] of cases) {
+      const r = await new LocalExecutor().exec(command, root);
+      expect([command, r.code]).toEqual([command, code]);
+    }
+  }, 30_000);
+
   // Review fixes plan, fix 1: Windows looks in the working folder before PATH, so a plain "powershell.exe" there ran first.
   it("starts PowerShell by its System32 path", () => {
     expect(shellFor("win32").argv("x")[0]).toBe(system32("WindowsPowerShell/v1.0/powershell.exe"));
