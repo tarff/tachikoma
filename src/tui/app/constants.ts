@@ -34,7 +34,8 @@ export type Question = {
 // While the left button is held after a press in the conversation: what the press took (the pressed character, or a
 // double or triple click's word or line); `copy`: a drag, or a double or triple click, made a selection to copy on release;
 // `top`: the press was on the conversation's top row.
-export type Held = { press: [Pos, Pos]; copy: boolean; top: boolean };
+// `fold`: the line of a folded tool row a plain click pressed, which its release opens or closes (release 8c plan, Task 15).
+export type Held = { press: [Pos, Pos]; copy: boolean; top: boolean; fold?: number };
 export type Printed = { handover?: Handover; resume?: () => Promise<void>; paste?: string };
 
 // The system's clipboard reader as a read, or null where there is none (release 6 plan, choice 11).

@@ -81,6 +81,7 @@ import { copyLock } from "./sandbox/snapshot.js";
 import { gitSettings } from "./safety/gitconfig.js";
 import { judgeOf } from "./safety/judge.js";
 import { NO_RULES } from "./safety/rules.js";
+import { shellOf } from "./safety/split.js";
 import { hooksOf, loadSettings, SETTINGS, shownFile } from "./settings.js";
 import { delegateTool } from "./tools/delegate.js";
 import { SUBAGENT_TOOLS, TOOLS } from "./tools/index.js";
@@ -90,7 +91,7 @@ import { App } from "./tui/App.js";
 import { NOT_GONE } from "./tui/app/constants.js";
 import { Bindings, DEFAULTS, tableOf } from "./tui/bindings.js";
 import { Clipboard, runTool, systemTool } from "./tui/clipboard.js";
-import { conversationLines } from "./tui/describe.js";
+import { conversationLines, serverNames } from "./tui/fold.js";
 import { historyFile } from "./tui/history.js";
 import { InputFilter } from "./tui/input.js";
 import { programRunning } from "./tui/owner.js";
@@ -653,6 +654,7 @@ const gate = new PermissionGate(mode, (...a) => ask(...a), interactive ? undefin
   ...(interactive ? {} : { hookRefused: () => void (declined = true) }),
 });
 gate.rules = rules;
+const shell = box?.gate.shell ?? shellOf("host"); // the shell tool's, which the window's rows fold by (release 8c plan, Task 15)
 gate.protection = box?.protection ?? protection;
 // The user's hooks, one object for the window, handed to the lead's session and, through Tasks, each subagent's (release
 // 8b plan, "Architecture"; Task 6). They run in the project's real folder, and are sent its real paths, or the box's in
@@ -879,10 +881,10 @@ if (parsed.print !== undefined) {
       branch={await workspace.branch().catch(() => null)}
       historyFile={historyFile(root)}
       // A resumed conversation is drawn as a live one is, above the lines saying how it was resumed (release 8a plan,
-      // Task 6).
+      // Task 6), its tool rows folded as they were live (release 8c plan, Task 15).
       intro={[
         ...[instructionsLine(instructions, os.homedir()), ...(box?.lines ?? [])].flatMap((text) => (text === null ? [] : [{ text, color: "gray" as const }])),
-        ...conversationLines(opened.conversation.messages),
+        ...conversationLines(opened.conversation.messages, { asked: new Set(opened.conversation.asked), shell, server: serverNames(servers) }),
         ...said.map((l) => ({ ...l, color: "gray" as const })),
       ]}
       pictures={pictures}
@@ -913,6 +915,7 @@ if (parsed.print !== undefined) {
       leftLines={(lines) => left.push(...lines)}
       hooks={hooks}
       mcp={{ servers, project: projectServers }}
+      shell={shell}
     />,
     // The kitty keyboard protocol, where the terminal has it, tells Shift+Enter from Enter. 60 frames a second, not Ink's
     // 30: at 30 the wheel felt jumpy beside Claude Code, at 60 as smooth, in the user's terminal check (2026-10-28; drawing

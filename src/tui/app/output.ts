@@ -32,6 +32,13 @@ export const output = (ui: UI, fns: Fns) => {
     ui.newEdit.current = true;
     fns.note(line);
   };
+  // The open run of quiet calls said, at a question, the turn's end or Esc (release 8c plan, choice 65): its row, then the
+  // asked call's own row, which the question's answer goes under (App.tsx, bindAsk).
+  const endRun = (asked?: string) => {
+    const { lines, under } = ui.run.question(asked);
+    if (lines.length) fns.say(...lines);
+    if (under) ui.toolLine.current = asked!;
+  };
   // Every model made in the session takes a changed effort (release 6 plan, Task 9).
   const make = (spec: string) => {
     const provider = ui.makeProvider(spec);
@@ -49,5 +56,5 @@ export const output = (ui: UI, fns: Fns) => {
       .then((n) => asked === ui.lookups.current && ui.setContextWindow(n))
       .catch(() => {}); // stays unknown
   };
-  return { say, show, note, noteAlone, make, lookUpWindow };
+  return { say, show, note, noteAlone, endRun, make, lookUpWindow };
 };

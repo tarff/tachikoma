@@ -51,7 +51,7 @@ import { readSettings, type Settings, settingsDir, shownFile } from "../../src/s
 import { App, type AppProps } from "../../src/tui/App.js";
 import { Bindings, type Context, DEFAULTS, tableOf } from "../../src/tui/bindings.js";
 import { Clipboard, type Reader, readImage } from "../../src/tui/clipboard.js";
-import { conversationLines } from "../../src/tui/describe.js";
+import { conversationLines } from "../../src/tui/fold.js";
 import { mcpRow } from "../../src/tui/McpList.js";
 import { Pictures, type Read } from "../../src/tui/pictures.js";
 import type { Mouse } from "../../src/tui/input.js";
@@ -374,7 +374,7 @@ describe("App", () => {
   });
 
   // Release 8a plan, Task 6 (user, 2026-11-06: "Show it"): a resumed conversation is drawn as a live one, above the lines
-  // saying how it was resumed, as cli.tsx gives them.
+  // saying how it was resumed, as cli.tsx gives them, its quiet calls folded (release 8c plan, Task 15).
   it("draws a resumed conversation's prompts, replies and tool rows above the resume lines", async () => {
     const history: Message[] = [
       { role: "user", parts: [{ type: "text", text: "read the notes" }] },
@@ -382,9 +382,10 @@ describe("App", () => {
       { role: "user", parts: [{ type: "tool_result", callId: "c1", output: "the notes", isError: false }] },
       { role: "assistant", parts: [{ type: "text", text: "They say hello." }] },
     ];
-    const { app } = await mount([], { intro: [...conversationLines(history), { text: "Resumed: read the notes.", color: "gray" }] });
+    const folded = { asked: new Set<string>(), shell: "powershell" as const, server: (safe: string) => safe };
+    const { app } = await mount([], { intro: [...conversationLines(history, folded), { text: "Resumed: read the notes.", color: "gray" }] });
     const frame = app.lastFrame()!;
-    expect(frame).toMatch(/^> read the notes\n● read_file notes\.txt\n {2}⎿ ok\nThey say hello\.\nResumed: read the notes\.\n/);
+    expect(frame).toMatch(/^> read the notes\nRead 1 file\nThey say hello\.\nResumed: read the notes\.\n/);
   });
 
   it("sends what the user types and shows the reply", async () => {
@@ -2052,6 +2053,8 @@ describe("App's answers", () => {
     expect(existsSync(target)).toBe(false);
   });
 
+  // Both commands only read, so each row comes at its question (release 8c plan, Task 15): the first's answer under it,
+  // as nothing has a row before it; the second's naming its call, as the first's result comes after it.
   it("names each of a reply's calls in its answer when another's line comes between", async () => {
     const { ran, executor } = noShell();
     const parts = [...callTool("c1", "shell", { command: "git status" }).parts, ...callTool("c2", "shell", { command: "git log" }).parts];
@@ -2064,8 +2067,8 @@ describe("App's answers", () => {
     await until(app, "done");
     expect(from(app, false, "● shell git status").slice(0, 6)).toEqual([
       "● shell git status",
+      "  ⎿ You allowed this.",
       "● shell git log",
-      "run: git status: You allowed this.",
       "run: git log: You declined this.",
       "  ⎿ ok",
       "  ⎿ You declined this.", // in call order, so the ok above is not read as git log's (choice 67)
@@ -2073,9 +2076,9 @@ describe("App's answers", () => {
     expect(ran).toEqual(["git status"]);
   });
 
-  // A call that asks nothing prints nothing, so a reply's last tool line is not under its question's answer when an
-  // earlier call of the reply came first: the answer names its call, and each result keeps its place (choice 67).
-  it("names a reply's last call in its answer when an earlier call asked nothing", async () => {
+  // An earlier call of the reply that only reads folds into a row said before the last call's (release 8c plan, Task 15),
+  // and its result row is folded too, so the last call's answer goes under its row, as nothing comes between.
+  it("puts a reply's last call's answer under its row when the calls before it fold", async () => {
     const { ran, executor } = noShell();
     const parts = [...callTool("c1", "read_file", { path: "a.txt" }).parts, ...callTool("c2", "shell", { command: "git push --force" }).parts];
     const { app, ctx } = await mount([{ parts, usage }, reply("done")], { executor });
@@ -2084,13 +2087,11 @@ describe("App's answers", () => {
     await until(app, "Allow run: git push --force?");
     await press(app, "n");
     await until(app, "done");
-    expect(from(app, false, "● read_file a.txt").slice(0, 6)).toEqual([
-      "● read_file a.txt",
+    expect(from(app, false, "Read 1 file").slice(0, 4)).toEqual([
+      "Read 1 file",
       "● shell git push --force",
-      "run: git push --force: You declined this. Danger: rewriting or deleting git history: git push", // wrapped
-      "--force",
-      "  ⎿ ok",
-      "  ⎿ You declined this.",
+      "  ⎿ You declined this. Danger: rewriting or deleting git history: git push --force",
+      "done",
     ]);
     expect(ran).toEqual([]);
   });
@@ -2153,6 +2154,104 @@ describe("App's answers", () => {
     expect(never.app.lastFrame()).toContain("  ⎿ Not allowed: this command matches the dangerous-command check");
     expect(never.app.lastFrame()).not.toContain("You declined");
     expect(ran).toEqual([]);
+  });
+});
+
+// Release 8c plan, choice 65 and Task 15: a run of quiet calls is one grey row of counts, as Claude Code's, said once the
+// run ends, so full screen and --classic fold alike.
+describe("App's folded tool rows", () => {
+  const rows = (app: ReturnType<typeof render>, full: boolean) =>
+    stripVTControlCharacters(app.lastFrame()!).split("\n").map((r) => (full ? r.slice(0, 99) : r).trimEnd());
+  // The rows from the one that is `first` on, up to the first empty one.
+  const from = (app: ReturnType<typeof render>, full: boolean, first: string) => {
+    const r = rows(app, full);
+    const at = r.indexOf(first);
+    expect(at).toBeGreaterThanOrEqual(0);
+    const end = r.indexOf("", at);
+    return r.slice(at, end === -1 ? undefined : end);
+  };
+  const both = (...calls: Turn[]): Turn => ({ parts: calls.flatMap((c) => c.parts), usage });
+
+  it.each([true, false])("folds quiet calls across replies into one grey row, said before the text that ends the run (full screen: %s)", async (full) => {
+    await inColour(async () => {
+      const turns = [
+        callTool("c1", "read_file", { path: "a.txt" }),
+        both(callTool("c2", "find_files", { pattern: "*.txt" }), callTool("c3", "read_file", { path: "b.txt" })),
+        reply("They match."),
+      ];
+      const { app, ctx } = await mount(turns, { full });
+      writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+      writeFileSync(path.join(ctx.root, "b.txt"), "a\n");
+      await type(app, "compare");
+      await until(app, "They match.");
+      expect(from(app, full, "> compare").slice(0, 3)).toEqual(["> compare", "Searched for 1 pattern, read 2 files", "They match."]);
+      expect(app.lastFrame()).toContain("\u001b[90mSearched for 1 pattern, read 2 files");
+      expect(app.lastFrame()).not.toContain("● read_file");
+    });
+  });
+
+  // A call that fails leaves the run open at the time, its row said where the run ends, red, as its first line stays seen.
+  it("says a quiet call that fails while its run is open as its own red row, the run's count without it", async () => {
+    await inColour(async () => {
+      const reads = both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "gone.txt" }));
+      const { app, ctx } = await mount([reads, reply("One is missing.")]);
+      writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+      await type(app, "look");
+      await until(app, "One is missing.");
+      const r = from(app, false, "> look");
+      expect(r.slice(0, 3)).toEqual(["> look", "Read 1 file", "● read_file gone.txt"]);
+      expect(r[3]).toMatch(/^ {2}⎿ \S/);
+      expect(r[4]).toBe("One is missing.");
+      expect(app.lastFrame()).toContain("\u001b[31m  ⎿ ");
+    });
+  });
+
+  // The run's row comes before the question's call, so its answer goes under the call's own row.
+  it("says the open run at a question, then the asked call's row with its answer under it, then the rest", async () => {
+    const { ran, executor } = noShell();
+    const calls = both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "shell", { command: "git status" }));
+    const { app, ctx } = await mount([calls, reply("done")], { executor });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    await type(app, "look");
+    await until(app, "Allow run: git status?");
+    expect(from(app, false, "> look").slice(0, 4)).toEqual(["> look", "Read 1 file", "● shell git status", "Allow run: git status? [y/n] · Esc to decline"]);
+    await press(app, "y");
+    await until(app, "done");
+    expect(from(app, false, "> look").slice(0, 6)).toEqual(["> look", "Read 1 file", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "done"]);
+    expect(ran).toEqual(["git status"]);
+  });
+
+  it("says the open run when Esc stops the turn", async () => {
+    const lead = new Held();
+    const { app, ctx } = await mount([], { lead });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    await type(app, "look");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(callTool("c1", "read_file", { path: "a.txt" }));
+    await waitFor(() => lead.asked.length === 2); // the call ran, and its result went back
+    expect(app.lastFrame()).not.toContain("Read 1 file"); // the run is still open
+    await press(app, "\u001b");
+    await gone(app, "Esc to stop");
+    expect(from(app, false, "> look")[1]).toBe("Read 1 file");
+  });
+
+  it("opens a folded row in place on a click, as its calls' rows, and closes it on another", async () => {
+    const reads = both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "b.txt" }));
+    const { app, ctx, mouse } = await mount([reads, reply("Both read.")], { full: true });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    writeFileSync(path.join(ctx.root, "b.txt"), "b\n");
+    await type(app, "read both");
+    await until(app, "Both read.");
+    const row = shown(app).indexOf("Read 2 files");
+    expect(row).toBeGreaterThan(-1);
+    await pointer(mouse, ...click(3, row));
+    const opened = ["● read_file a.txt", "  ⎿ ok", "● read_file b.txt", "  ⎿ ok", "Both read."];
+    expect(shown(app).slice(row, row + 5)).toEqual(opened);
+    expect(app.lastFrame()).not.toContain("Copied"); // a click, not a selection
+    await pointer(mouse, ...click(3, row + 2)); // any of its rows closes it
+    expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
+    await pointer(mouse, ...click(3, row + 1)); // a row of no fold does nothing
+    expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
   });
 });
 
@@ -2461,12 +2560,12 @@ describe("App's working line and tool lines", () => {
     expect(app.lastFrame()).toMatch(/Reading the model lists · \d+s · Esc to stop/);
   });
 
-  it("shows a call's main detail, and counts the turn's calls under the status line until the next turn starts", async () => {
+  it("folds the calls' rows, and counts the turn's calls under the status line until the next turn starts", async () => {
     const { app, ctx } = await mount([callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "a.txt" }), reply("done"), reply("again")]);
     await writeFile(path.join(ctx.root, "a.txt"), "x");
     await type(app, "go");
     await until(app, "done");
-    expect(app.lastFrame()).toContain("● read_file a.txt\n");
+    expect(app.lastFrame()).toContain("\nRead 2 files\n"); // the calls' rows fold (release 8c plan, Task 15)
     expect(app.lastFrame()).toMatch(/⏱[^\n]*\n✓ read_file ×2$/);
     await type(app, "more");
     await until(app, "again");
@@ -10458,6 +10557,44 @@ describe("App's MCP", () => {
     expect(s.server("s")).toBe(server);
     expect(server.connection).toBe(1);
     expect(flat(app)).not.toContain("MCP servers changed");
+  });
+
+  // Release 8c plan, Task 15: an MCP call the user approved keeps its own row, with its answer under it, live and again
+  // once resumed, by its asked line; a transcript from before that line folds it (a known limit).
+  it("keeps an approved MCP call's own row live and after a resume, and folds it from a transcript without the asked mark", async () => {
+    const { config, servers } = await mcpSetup();
+    const sessions = path.join(mkdtempSync(path.join(tmpdir(), "tachi-app-data-")), "data", "sessions");
+    onTestFinished(() => removeTree(path.dirname(path.dirname(sessions))));
+    const both = { parts: [...callTool("c1", "read_file", { path: "a.txt" }).parts, ...callTool("c2", "mcp__s__echo", { text: "hi" }).parts], usage };
+    const first = await mount([both, reply("done")], { mcp: servers([await config("s", {}, { alwaysLoad: true })]), save: true, sessions });
+    writeFileSync(path.join(first.ctx.root, "a.txt"), "a\n");
+    await soon(() => expect(states(first.mcp!.servers)).toEqual(["s ready"]));
+    await type(first.app, "go");
+    await soon(() => expect(flat(first.app)).toContain('Allow s: echo {"text":"hi"}?'));
+    await press(first.app, "y");
+    await shows(first.app, "done");
+    const rows = (app: ReturnType<typeof render>) => {
+      const r = stripVTControlCharacters(app.lastFrame()!).split("\n").map((x) => x.trimEnd());
+      return r.slice(r.indexOf("> go"));
+    };
+    expect(rows(first.app).slice(0, 6)).toEqual(["> go", "Read 1 file", '● mcp__s__echo {"text":"hi"}', "  ⎿ You allowed this.", "  ⎿ ok", "done"]);
+    const file = sessionPaths(sessions, first.session.id).file;
+    first.app.unmount();
+    // Resumed, the asked line keeps its row; the answer line was the window's, not the conversation's.
+    const resumed = async () => {
+      const m = await mount([], { save: true, sessions });
+      await type(m.app, "/resume");
+      await shows(m.app, "Saved sessions in this folder, newest first:");
+      await press(m.app, "\r");
+      await shows(m.app, "Resumed: go.");
+      return m;
+    };
+    const again = await resumed();
+    expect(rows(again.app).slice(0, 5)).toEqual(["> go", "Read 1 file", '● mcp__s__echo {"text":"hi"}', "  ⎿ ok", "done"]);
+    again.app.unmount();
+    writeFileSync(file, readFileSync(file, "utf8").split("\n").filter((l) => !l.includes('"t":"asked"')).join("\n"));
+    const before = await resumed();
+    expect(rows(before.app).slice(0, 3)).toEqual(["> go", "Read 1 file, called s", "done"]);
   });
 
   // Release 8c plan, Task 11: Sign in and Sign out from /mcp, on the fake sign-in service of tests/mcp/fake.ts, the browser

@@ -275,6 +275,22 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect([r.loaded, r.damaged]).toEqual([["mcp__a__one", "mcp__b__two"], 1]);
   });
 
+  // Release 8c plan, Task 15: every call the user was asked about, from the whole file, as a shortening keeps the calls'
+  // ids; a file from before the line has none.
+  it("reads back the asked marks of the whole file, a damaged one skipped", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    expect(read(p).asked).toEqual([]);
+    t.write({ t: "message", message: asks("c1", { path: "a" }) });
+    t.write({ t: "asked", id: "c1" });
+    t.write({ t: "shortened", system: "Second prompt.", message: prompt("summary") });
+    t.write({ t: "asked", id: "c2" });
+    appendFileSync(p.file, `${JSON.stringify({ t: "asked", at: "2026-11-12T00:00:00.000Z", id: 3 })}\n`);
+    const r = read(p);
+    expect([r.asked, r.damaged]).toEqual([["c1", "c2"], 1]);
+  });
+
   describe("an interrupted shortening", () => {
     function shortenedOnce() {
       const p = place();

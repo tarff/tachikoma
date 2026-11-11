@@ -1,18 +1,20 @@
 import { callText } from "../core/exportText.js";
 import { visible } from "../core/permissions.js";
 import { FEEDBACK } from "../core/session.js";
-import type { Message } from "../core/types.js";
+import type { Message, ToolCall, ToolResult } from "../core/types.js";
 import { combine, hookName } from "../hooks/answer.js";
 import type { Event } from "../hooks/config.js";
 import type { Run } from "../hooks/hooks.js";
 import type { Ran } from "../hooks/run.js";
 import { outputFrom, tachikomaName } from "../hooks/tools.js";
+import type { Fold, OpenRun } from "./fold.js";
 import { marker } from "./pictures.js";
 
 export interface Line {
   text: string;
   color?: string;
   oneLine?: boolean; // shown on one line, cut to the screen's width (App.tsx)
+  fold?: Fold; // a folded tool row, or a row of one opened, which a click opens or closes (release 8c plan, Task 15)
 }
 
 const firstLine = (s: string) => s.split(/\r?\n/)[0] ?? "";
@@ -34,13 +36,22 @@ export function brief(name: string, input: unknown): string | null {
 // terminal columns, so the escapes and wide characters count toward the width.
 export function screen(l: Line): Line {
   const text = l.oneLine ? visible(l.text) : l.text.split(/\r?\n/).map((s) => visible(s, { tabs: true })).join("\n");
-  return { text, ...(l.color === undefined ? {} : { color: l.color }), ...(l.oneLine ? { oneLine: true } : {}) };
+  return { text, ...(l.color === undefined ? {} : { color: l.color }), ...(l.oneLine ? { oneLine: true } : {}), ...(l.fold ? { fold: l.fold } : {}) };
 }
+
+// A call's row and its result's, as the scrollback shows them unfolded (fold.ts opens a folded row into these).
+export const callRow = (p: ToolCall): Line => ({ text: `● ${p.name} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
+export const resultRow = (p: ToolResult): Line => ({
+  text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`,
+  color: p.isError ? "red" : "gray",
+  oneLine: true,
+});
 
 // How one message appears in the scrollback. `answered`: the calls a question was declined for, each with the short row
 // that takes its result row's place, or null for none, as its answer line under the tool line says what came of it
-// (release 7 plan, choices 66 and 67; App.tsx).
-export function describe(m: Message, answered?: ReadonlyMap<string, string | null>): Line[] {
+// (release 7 plan, choices 66 and 67; App.tsx). `run`: the open run of quiet calls (fold.ts), which takes them, and which
+// what is shown next ends, its row said first (release 8c plan, Task 15).
+export function describe(m: Message, answered?: ReadonlyMap<string, string | null>, run?: OpenRun): Line[] {
   const lines: Line[] = [];
   let typed: Line | null = null; // the user's prompt so far, its text and pictures one line
   let picture = false; // the last part put in it was a picture
@@ -51,6 +62,8 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
     // A picked resource's text and a prompt command's messages, which follow the typed line: the server's, never the
     // user's prompt (release 8c plan, choice 34), and for the model, as a hook's text is.
     if (p.type === "text" && p.from === "server") continue;
+    // Shown, text and pictures end the open run: its row comes first, so nothing it counts is said under them (Task 15).
+    if (p.type === "text" || p.type === "image") lines.push(...(run?.end() ?? []));
     // A tool's pictures, which follow the results, are the server's, never the user's prompt (release 8c plan, choice 34):
     // their markers on one grey row, as a result's.
     if (p.type === "image" && p.from === "server") {
@@ -66,11 +79,12 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
       if (m.role !== "user") lines.push({ text });
       else if (typed) typed.text += text;
       else lines.push((typed = { text: `> ${text}`, color: "cyan" }));
-    } else if (p.type === "tool_call")
-      lines.push({ text: `● ${p.name} ${brief(p.name, p.input) ?? JSON.stringify(p.input)}`, color: "yellow", oneLine: true });
+    } else if (p.type === "tool_call") lines.push(...(run ? run.call(p) : [callRow(p)]));
     else if (p.type === "tool_result") {
+      const folded = run?.result(p) ?? null;
       const short = answered?.get(p.callId);
-      if (short === undefined) lines.push({ text: `  ⎿ ${p.isError ? firstLine(p.output) : "ok"}`, color: p.isError ? "red" : "gray", oneLine: true });
+      if (folded) lines.push(...folded);
+      else if (short === undefined) lines.push(resultRow(p));
       else if (short !== null) lines.push({ text: `  ⎿ ${short}`, color: "gray", oneLine: true });
     } else {
       const _: never = p; // a new kind of part must be given its own line here
@@ -78,10 +92,6 @@ export function describe(m: Message, answered?: ReadonlyMap<string, string | nul
   }
   return lines;
 }
-
-// A resumed conversation as the scrollback shows a live one, message by message (release 8a plan, Task 6; user,
-// 2026-11-06: "Show it").
-export const conversationLines = (messages: Message[]): Line[] => messages.flatMap((m) => describe(m));
 
 // Ctrl+O: every tool call of the latest turn, from its prompt on, with its full input and result,
 // under a heading. A call of a turn still running may have no result yet. A turn starts with a user

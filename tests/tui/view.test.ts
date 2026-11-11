@@ -94,6 +94,19 @@ describe("Rows", () => {
     expect(rows.row(2)).toEqual({ line: 1, start: 0, end: 30, text: `${"x".repeat(9)}…` });
   });
 
+  // Release 8c plan, Task 15: a folded tool row opens in place into its calls' rows, and closes back.
+  it("replaces lines in place, the rows after them moving, each split and wrapped as added", () => {
+    const rows = new Rows(10);
+    rows.add([{ text: "a" }, { text: "Read 2 files", oneLine: true }, { text: "b c d e f g h" }]);
+    rows.replace(1, 1, [{ text: "● one\n● two" }, { text: "  ⎿ ok", color: "gray" }]);
+    expect(rows.lines.map((l) => l.text)).toEqual(["a", "● one", "● two", "  ⎿ ok", "b c d e f g h"]);
+    expect(rows.total).toBe(6); // the last line's two rows
+    expect(rows.row(5)).toEqual({ line: 4, start: 10, end: 13, text: "g h" });
+    rows.replace(1, 3, [{ text: "Read 2 files", oneLine: true }]);
+    expect(rows.lines.map((l) => l.text)).toEqual(["a", "Read 2 files", "b c d e f g h"]);
+    expect(rows.total).toBe(4);
+  });
+
   it("has no row before the first or after the last", () => {
     const rows = new Rows(10);
     rows.add(lines(3));

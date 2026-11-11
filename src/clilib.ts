@@ -844,6 +844,7 @@ export function resumed(
       nextPicture: read.nextPicture,
       nextTask: read.nextTask,
       loaded: read.loaded, // a resume's and /branch's (release 8c plan, choice 41)
+      asked: read.asked, // so its rows fold as they did live (Task 15)
       tools: read.tools, // the tools saved last, which its replies were made under (Task 6b's quality review; choice 46)
     },
     lines,

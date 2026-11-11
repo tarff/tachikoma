@@ -165,6 +165,7 @@ export interface Conversation {
   nextTask: number;
   loaded?: string[];
   tools?: ToolSpec[];
+  asked?: string[]; // the calls the user was asked about, read back from the transcript (release 8c plan, Task 15)
 }
 
 export class Session {
@@ -181,6 +182,9 @@ export class Session {
   // of a reply that is run, in the reply's order, by name and input, never its result.
   readonly prompts: string[] = [];
   readonly calls: { name: string; input: unknown }[] = [];
+  // The calls of the conversation the user was asked about, by id, each saved as an asked line when its question opened,
+  // so the window keeps their rows unfolded, live and once resumed (release 8c plan, Task 15). Refilled in place by a load.
+  readonly asked = new Set<string>();
   #lead: Provider;
   #fallback: Provider | undefined;
   #running = false;
@@ -273,6 +277,8 @@ export class Session {
     this.#transcript = c.transcript;
     this.messages.splice(0, this.messages.length, ...c.messages);
     this.prompts.splice(0, this.prompts.length, ...c.prompts);
+    this.asked.clear();
+    for (const id of c.asked ?? []) this.asked.add(id);
     this.#hookText.splice(0); // the last conversation's hook text, not yet sent, is not this one's (Task 6's code review)
     this.#nextText.splice(0); // nor is the text waiting for its next request: SessionStart fires after the load (Task 10)
     this.#stopStarting(); // nor the text of SessionStart's hooks still running for it, which are stopped (Task 10's code review)
@@ -1028,8 +1034,10 @@ export class Session {
     let ms: number;
     let pictures: Image[] = []; // this call's in the round, which a hook's replaced output drops (release 8c plan, choice 20)
     try {
-      // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts).
-      const pre = hooks ? await this.#preToolUse(call, entry, hooks, signal) : { input: call.input, gate: this.opts.ctx.gate };
+      // A stop while a PreToolUse hook runs kills it and rejects, so the call is cancelled below, as any stop (run.ts). The
+      // call's own gate marks it asked when a question about it opens (Task 15).
+      const own = this.opts.ctx.gate.noting(() => this.#asked(call.id));
+      const pre = hooks ? await this.#preToolUse(call, entry, hooks, own, signal) : { input: call.input, gate: own };
       if ("stop" in pre) {
         round.stop("PreToolUse", pre.stop);
         return stopped(NOT_RUN);
@@ -1175,6 +1183,7 @@ export class Session {
     call: ToolCall,
     entry: { name: string; input: unknown },
     hooks: Hooks,
+    given: PermissionGate,
     signal?: AbortSignal,
   ): Promise<{ input: unknown; gate: PermissionGate } | { refused: string } | { stop: string }> {
     const paths = this.#hookPaths();
@@ -1205,7 +1214,7 @@ export class Session {
       input = back.input;
     }
     // The question names the call that would run, by its name and input, as Ctrl+O does (choice 15).
-    let gate = this.opts.ctx.gate;
+    let gate = given;
     if (c.decision === "ask") {
       // Where nobody can be asked, in never and -p, the refusal is a grey line too, as a deny's is (the user's choice,
       // 2026-11-09); an MCP call's, the request's own MCP tool, is asked in never (release 8c plan, choice 47).
@@ -1226,6 +1235,14 @@ export class Session {
       }
     }
     return { input, gate };
+  }
+
+  // A call the user is shown a question for, saved once (Task 15).
+  #asked(id: string): void {
+    if (this.asked.has(id)) return;
+    this.asked.add(id);
+    this.#transcript?.write({ t: "asked", id });
+    this.#saving();
   }
 
   #waiting(): Part[] {

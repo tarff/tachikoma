@@ -5,6 +5,7 @@ import type { Row } from "../../core/sessions.js";
 import type { Effort } from "../../providers/anthropic.js";
 import type { ModelGroup } from "../../providers/models.js";
 import { NO_RULES } from "../../safety/rules.js";
+import { shellOf } from "../../safety/split.js";
 import type { ToReview } from "../../sandbox/apply.js";
 import type { TodoItem } from "../../tools/todo.js";
 import type { AppProps, Fns } from "../App.js";
@@ -14,6 +15,7 @@ import type { Line } from "../describe.js";
 import type { Detail } from "../DetailView.js";
 import { type Editor, empty } from "../editor.js";
 import type { Asked } from "../Field.js";
+import { OpenRun, serverNames } from "../fold.js";
 import type { History } from "../history.js";
 import { named } from "../keys.js";
 import type { Listing } from "../menus.js";
@@ -63,6 +65,7 @@ export function useAppState({
   leftLines,
   hooks,
   mcp,
+  shell,
 }: AppProps) {
   const { exit, suspendTerminal } = useApp();
   const [lines, setLines] = useState<(Line & { id: number })[]>([]);
@@ -202,6 +205,8 @@ export function useAppState({
   // when its answer is under its tool line (release 7 plan, choices 66 and 67; describe.ts).
   const toolLine = useRef<string | null>(null);
   const answered = useRef(new Map<string, string | null>());
+  // The lead's quiet calls not yet said, and the runs said, for their results (fold.ts; release 8c plan, Task 15).
+  const [run] = useState(() => new OpenRun({ asked: session.asked, shell: shell ?? shellOf("host"), server: serverNames(mcp?.servers) }));
   // The lead's to-do list, and whether Ctrl+T has hidden it; a new list shows again.
   const todos = useRef<{ items: TodoItem[]; hidden: boolean }>({ items: [], hidden: false });
   // Shift+Tab's modes: `never` only for a session started in it, so no key turns off the checks a
@@ -311,7 +316,7 @@ export function useAppState({
     picker, setPicker, listOpen, announced, rerender, board, clearCopied, started, now, setNow, branch, setBranch,
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
-    happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
+    happening, late, toolLine, answered, run, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
     editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm,
   } as const;
 }

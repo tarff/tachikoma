@@ -15,6 +15,7 @@ import type { ServerConfig } from "../mcp/config.js";
 import type { Servers } from "../mcp/servers.js";
 import type { ModelGroup } from "../providers/models.js";
 import type { UserRules } from "../safety/rules.js";
+import type { Shell } from "../safety/split.js";
 import { SETTINGS, type Settings, shownFile } from "../settings.js";
 import { watchSettings } from "../settingsWatch.js";
 import type { TodoItem } from "../tools/todo.js";
@@ -135,6 +136,9 @@ export interface AppProps {
   // The MCP servers (cli.tsx), for /mcp and live edits of "mcpServers", with the project's from .mcp.json, which is read
   // at the launch only (release 8c plan, Tasks 2 and 10); without them, as in most tests, /mcp has none.
   mcp?: { servers: Servers; project: ServerConfig[] };
+  // The shell the shell tool runs in (split.ts, shellOf), by which its commands' rows fold (release 8c plan, Task 15); the
+  // host's when not given.
+  shell?: Shell;
 }
 
 type OutputArea = ReturnType<typeof output>;
@@ -150,7 +154,7 @@ type PromptKeysArea = ReturnType<typeof promptKeys>;
 // to work out theirs (TS2456).
 export interface Fns {
   say: OutputArea["say"]; show: OutputArea["show"]; note: OutputArea["note"]; noteAlone: OutputArea["noteAlone"];
-  make: OutputArea["make"]; lookUpWindow: OutputArea["lookUpWindow"];
+  endRun: OutputArea["endRun"]; make: OutputArea["make"]; lookUpWindow: OutputArea["lookUpWindow"];
   submit: QueueArea["submit"]; next: QueueArea["next"]; recordToOpen: QueueArea["recordToOpen"]; leave: QueueArea["leave"];
   perform: QueueArea["perform"]; tasksCommand: QueueArea["tasksCommand"]; recordOf: QueueArea["recordOf"];
   pick: QueueArea["pick"]; closePicker: QueueArea["closePicker"]; subagentsRunning: QueueArea["subagentsRunning"];
@@ -172,7 +176,7 @@ export interface Fns {
   promptKey: KeyRoutingArea["promptKey"]; vimTakes: KeyRoutingArea["vimTakes"]; staleVim: KeyRoutingArea["staleVim"];
   vimFirst: KeyRoutingArea["vimFirst"]; dropRemap: KeyRoutingArea["dropRemap"]; freshText: KeyRoutingArea["freshText"];
   detailKey: KeyRoutingArea["detailKey"]; remember: KeyRoutingArea["remember"]; forget: KeyRoutingArea["forget"];
-  scroll: MouseArea["scroll"]; selected: MouseArea["selected"]; copy: MouseArea["copy"]; onMouse: MouseArea["onMouse"];
+  scroll: MouseArea["scroll"]; selected: MouseArea["selected"]; copy: MouseArea["copy"]; onMouse: MouseArea["onMouse"]; toggleFold: MouseArea["toggleFold"];
   cellAt: MouseArea["cellAt"]; textRows: MouseArea["textRows"]; pressAt: MouseArea["pressAt"];
   clickAt: MouseArea["clickAt"]; dragTo: MouseArea["dragTo"];
   run: PromptKeysArea["run"]; command: PromptKeysArea["command"]; send: PromptKeysArea["send"];
@@ -207,6 +211,13 @@ export function App(props: AppProps) {
       // stopped subagent about anything.
       const signal = owner ? owner.signal : ui.abort.current?.signal;
       if (signal?.aborted) return Promise.resolve(false);
+      // The lead's own question comes from its call running now, the last to start: delegate's calls, which ask only
+      // through their subagents, start before the rest (session.ts; release 7 plan, choice 66).
+      const asking = owner || plain ? undefined : ui.calls.current.at(-1);
+      const call = asking && !asking.outcome ? asking.id : undefined;
+      // A question ends the open run of quiet calls before anything of its own is said, the asked call taken out of it for
+      // a row of its own (release 8c plan, choice 65).
+      latest.current.endRun(call);
       // In the scrollback, not the prompt: a whole file would not fit in the part Ink redraws.
       // Grey, under a heading, so file text cannot pass for the conversation or the interface.
       let range: [number, number] | undefined;
@@ -221,9 +232,6 @@ export function App(props: AppProps) {
         // When its owner stops (Esc or Ctrl-C for the lead's turn, /tasks stop, a failure), the
         // question goes from the line, on screen or not, answered as cancelled.
         const cancel = () => q.answer(false, plain ? "cancelled" : "This was cancelled.");
-        // The lead's own question comes from its call running now, the last to start: delegate's calls, which ask only
-        // through their subagents, start before the rest (session.ts; release 7 plan, choice 66).
-        const asking = owner || plain ? undefined : ui.calls.current.at(-1);
         // A subagent's plain question, only an MCP server's visit request (release 8c plan, Task 12's re-check), names the
         // subagent itself, its id first, so it is not named again here; its owner still stops and cancels it.
         const named = owner && !plain;
@@ -238,7 +246,7 @@ export function App(props: AppProps) {
           warnings: warnings ?? [],
           ...(note !== undefined ? { note } : {}), // auto mode's pause, a row of the question's own (release 7 plan, Task 10)
           ...(note !== undefined && oneRow ? { oneRow: true as const } : {}),
-          ...(asking && !asking.outcome ? { call: asking.id } : {}),
+          ...(call !== undefined ? { call } : {}),
           answer: (ok, how) => {
             if (!open) return;
             open = false;
@@ -285,15 +293,18 @@ export function App(props: AppProps) {
         void latest.current.comeBack();
       });
     });
-    // A message ending in its one tool call leaves that call's tool line the last said, for its question's answer to go
-    // under (release 7 plan, choice 66). With more calls than one, none does: an earlier call that asks nothing prints
-    // nothing before the last one's question, and its result comes first, so each answer names its call and each result
-    // keeps its place (choice 67). An answered call's id is let go with its result, as a provider may use an id again.
+    // A message ending in its one tool call with a row of its own leaves that call's tool line the last said, for its
+    // question's answer to go under (release 7 plan, choice 66). With more such calls than one, none does: an earlier call
+    // that asks nothing prints nothing before the last one's question, and its result comes first, so each answer names its
+    // call and each result keeps its place (choice 67). The quiet calls go to the open run, saying nothing and no result
+    // row until their row is said (release 8c plan, Task 15), so they come between nothing. An answered call's id is let go
+    // with its result, as a provider may use an id again.
     const onMessage = (m: Message) => {
-      latest.current.say(...describe(m, ui.answered.current));
+      latest.current.say(...describe(m, ui.answered.current, ui.run));
       for (const p of m.parts) if (p.type === "tool_result") ui.answered.current.delete(p.callId);
       const last = m.parts.at(-1);
-      if (last?.type === "tool_call" && m.parts.filter((p) => p.type === "tool_call").length === 1) ui.toolLine.current = last.id;
+      const rows = m.parts.filter((p) => p.type === "tool_call" && ui.run.own(p));
+      if (last?.type === "tool_call" && rows.length === 1 && rows[0] === last) ui.toolLine.current = last.id;
     };
     const onError = (e: ErrorEvent) => {
       if (e.kind === "tool") ui.rerender((n) => n + 1);
@@ -510,7 +521,7 @@ export function App(props: AppProps) {
   // (release 6 design, "Tidying the screen code first"). Set while drawing, safe with Ink's non-concurrent root
   // (state.ts).
   const handlers = {
-    say: fns.say, note: fns.note, noteAlone: fns.noteAlone, closeDetail: fns.closeDetail, comeBack: fns.comeBack,
+    say: fns.say, note: fns.note, noteAlone: fns.noteAlone, endRun: fns.endRun, closeDetail: fns.closeDetail, comeBack: fns.comeBack,
     next: fns.next, lookUpWindow: fns.lookUpWindow, onMouse: fns.onMouse, onSettings: fns.onSettings,
     onKeys: fns.onKeys, settle: fns.settle, dropChord: fns.dropChords,
   };

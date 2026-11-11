@@ -230,6 +230,21 @@ export class PermissionGate {
     return gate;
   }
 
+  // A gate for one call, which tells `asked` as it puts the user a question for it, its own or a PreToolUse hook's, and
+  // otherwise this gate (release 8c plan, Task 15). Not in -p, where the ask only reports a refusal and nobody is asked.
+  noting(asked: () => void): PermissionGate {
+    const ask: Ask = (...a) => {
+      if (!this.options.headless) asked();
+      return this.ask(...a);
+    };
+    const gate = new PermissionGate(this.#mode, ask, this.refusal, this.options);
+    gate.#parent = this.#parent ?? this;
+    if (this.#own) gate.#own = this.#own;
+    gate.#owner = this.#owner;
+    gate.#hook = this.#hook;
+    return gate;
+  }
+
   // Where a PreToolUse hook's ask cannot be put, in never and headless, where nobody can answer it, the words of the
   // call's refusal (release 8b plan, choice 15; design, "Tool hooks"), which the session says and tells the model; else
   // undefined, and the question is put (hookAsks). `mcp`: the call is an MCP tool's, whose hook's ask is put in never too,

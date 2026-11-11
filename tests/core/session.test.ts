@@ -702,6 +702,54 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
     expect(lines(p.file)).toEqual([{ t: "message", at: expect.any(String), message: typed("go") }]);
   });
 
+  // Release 8c plan, Task 15 (the plan review, finding 1): a call the user was asked about keeps its own row, live and once
+  // resumed, so the session marks it when the gate puts the question, whatever the answer; never for the judge's answer in
+  // auto, nor in -p, where nobody is asked.
+  describe("the asked mark", () => {
+    const run = defineTool("run", "Runs a command", z.object({ command: z.string() }), async ({ command }, ctx) => {
+      await ctx.gate.require({ kind: "shell", outside: false, summary: `run: ${command}`, command });
+      return "ran";
+    });
+    const runs = (id: string, command: string) => callTool(id, "run", { command });
+    const calls = [callTool("c1", "echo", { text: "quiet" }), runs("c2", "git log"), runs("c3", "git status"), reply("done")];
+    const marks = (file: string) => lines(file).flatMap((l) => (l.t === "asked" ? [l.id] : []));
+    const sent = async (gate: PermissionGate) => {
+      const p = place();
+      const ctx = { ...(await tempContext()), gate };
+      const transcript = new Transcript(p.file, p.pictures);
+      transcript.write(start(p.id));
+      const session = new Session({ lead: new FakeProvider("a", calls), tools: [echo, run], system: "t", ctx, bus: new Bus(), transcript });
+      await session.send("go");
+      return { p, session };
+    };
+
+    it("writes an asked line for each call the user was asked about, yes or no, and a load reads them back", async () => {
+      const answers = [true, false];
+      const { p, session } = await sent(new PermissionGate("ask", async () => answers.shift()!));
+      expect(marks(p.file)).toEqual(["c2", "c3"]);
+      expect([...session.asked]).toEqual(["c2", "c3"]);
+      // Written as the question opens, before the calls' results.
+      const order = lines(p.file).map((l) => (l.t === "message" ? l.message.role : l.t));
+      expect(order).toEqual(["start", "user", "assistant", "user", "assistant", "asked", "user", "assistant", "asked", "user", "assistant"]);
+      const r = read(p);
+      expect(r.asked).toEqual(["c2", "c3"]);
+      const again = new Session({ lead: new FakeProvider("a", []), tools: [], system: "t", ctx: await tempContext(), bus: new Bus() });
+      again.load({ ...loaded(r, new Transcript(p.file, p.pictures)), asked: r.asked });
+      expect([...again.asked]).toEqual(["c2", "c3"]);
+      again.load(conversation()); // another conversation's calls are not this one's
+      expect([...again.asked]).toEqual([]);
+    });
+
+    it("writes none for the judge's answer in auto, nor in -p", async () => {
+      const judge: Judge = async () => ({ allow: true, reason: "fine" });
+      const auto = await sent(new PermissionGate("auto", async () => true, undefined, { judge }));
+      expect(marks(auto.p.file)).toEqual([]);
+      const headless = await sent(new PermissionGate("ask", async () => false, "Not allowed in -p mode", { headless: true }));
+      expect(marks(headless.p.file)).toEqual([]);
+      expect([...headless.session.asked]).toEqual([]);
+    });
+  });
+
   it("writes a line for a new lead", async () => {
     const p = place();
     const transcript = new Transcript(p.file, p.pictures);
@@ -2009,6 +2057,22 @@ process.stdin.setEncoding("utf8").on("data", (d) => (text += d)).on("end", () =>
     await s.session.send("go");
     expect(s.asked).toEqual([{ summary: 'shell {"command":"echo two"}', note: "A hook asks." }]);
     expect(s.ran).toEqual(["echo two"]);
+  });
+
+  // Release 8c plan, Task 15: a hook's question is one the user was asked about the call, so it marks it asked.
+  it("marks a call asked when a hook's question about it is put", async () => {
+    const top = await folder();
+    const dir = path.join(top, "sessions", "project");
+    privateDir(dir);
+    const file = path.join(dir, "s1.jsonl");
+    const transcript = new Transcript(file, path.join(dir, "s1", "pictures"));
+    const says = [{ stdout: decide("ask", "Check this") }];
+    const s = await setup({ mode: "project", says, turns: oneCall("read_file", { path: "a.txt" }), answers: [true], transcript });
+    await s.session.send("go");
+    expect(s.asked).toEqual([{ summary: 'read_file {"path":"a.txt"}', note: "A hook asks: Check this" }]);
+    const saved = readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
+    expect(saved.flatMap((l) => (l.t === "asked" ? [l.id] : []))).toEqual(["c1"]);
+    expect([...s.session.asked]).toEqual(["c1"]);
   });
 
   // Choice 16 and the design's review finding 4: the record of calls takes the input that ran, kept over a resume.

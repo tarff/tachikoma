@@ -133,10 +133,14 @@ export function readProjectFile(root: string, env: NodeJS.ProcessEnv, warnings: 
   return readServers(PROJECT, data.mcpServers, env, warnings);
 }
 
+// A server's name as its tools' names carry it (ServerConfig, safe), which a folded tool row reads back (release 8c plan,
+// Task 15).
+export const safeName = (name: string) => name.replace(/[^A-Za-z0-9_-]/g, "_");
+
 function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env: NodeJS.ProcessEnv, say: (words: string) => void): ServerConfig {
   if (!isObject(raw)) throw new Left(` must be an object, such as ${LOCAL_EXAMPLE} (got ${typeOf(raw)})`);
   // A "__" would make mcp__<server>__<tool> read two ways (release 8c design, finding 2).
-  const safe = name.replace(/[^A-Za-z0-9_-]/g, "_");
+  const safe = safeName(name);
   if (safe.includes("__")) throw new Left(' has a name that holds "__" once its characters are made safe, which tool names cannot carry');
   const kind = kindOf(raw);
   const remote = kind !== "stdio";

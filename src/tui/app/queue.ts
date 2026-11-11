@@ -22,7 +22,8 @@ import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS, shownFile } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { typeOf, unquoted } from "../clipboard.js";
-import { callLines, conversationLines, type Line } from "../describe.js";
+import { callLines, type Line } from "../describe.js";
+import { conversationLines } from "../fold.js";
 import { offers } from "../menus.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
 import { type Action, stateText } from "../McpList.js";
@@ -222,6 +223,7 @@ export const queue = (ui: UI, fns: Fns) => {
           else if (ended && ("blocked" in ended || ended.unsent)) fns.giveBack(read.draft, before);
         }
       } finally {
+        fns.endRun(); // the turn's end, Esc's among them, says the open run of quiet calls (release 8c plan, choice 65)
         ui.setBusy(false);
         ui.working.current = false;
         // The model may have switched branches. Through the Workspace, so it lands just after the turn ends (release 7
@@ -667,7 +669,8 @@ export const queue = (ui: UI, fns: Fns) => {
       ui.answered.current.clear();
       ui.stats.context = 0;
     }
-    fns.say(...(branched ? [] : conversationLines(next.conversation.messages)), ...lines);
+    // Folded by the window's rules, the session's asked calls now the loaded conversation's (release 8c plan, Task 15).
+    fns.say(...(branched ? [] : conversationLines(next.conversation.messages, ui.run.options)), ...lines);
     ui.rerender((n) => n + 1);
     if (how.lead) {
       ui.waiting.current.lead = undefined; // it wins over a lead the settings file set meanwhile, as a /lead typed then would
