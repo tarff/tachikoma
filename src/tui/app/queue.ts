@@ -11,19 +11,21 @@ import { cannot, truncate } from "../../core/session.js";
 import { listSessions } from "../../core/sessions.js";
 import { CANCELLED } from "../../core/shorten.js";
 import type { Task } from "../../core/tasks.js";
-import { errorText, type Part, type Provider } from "../../core/types.js";
+import { errorText, type Part, type Picture, type Provider } from "../../core/types.js";
 import { hookName } from "../../hooks/answer.js";
 import { limitOf } from "../../hooks/hooks.js";
 import { KEYBINDINGS } from "../../keybindings.js";
+import { NotReached, type Server } from "../../mcp/server.js";
+import { until } from "../../mcp/tools.js";
 import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS, shownFile } from "../../settings.js";
 import type { Fns } from "../App.js";
 import { typeOf, unquoted } from "../clipboard.js";
 import { callLines, conversationLines, type Line } from "../describe.js";
-import { type Offers, offers } from "../menus.js";
+import { offers } from "../menus.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
-import type { Action } from "../McpList.js";
+import { type Action, stateText } from "../McpList.js";
 import { kept, type ReviewEnd } from "../Review.js";
 import { taskRow } from "../TaskPanel.js";
 import { FOLLOWING } from "../view.js";
@@ -159,16 +161,6 @@ export const queue = (ui: UI, fns: Fns) => {
           ui.working.current = false;
         }
       }
-      // An MCP server's prompt, `/<name>:<prompt> <words>`, as the `/` menu lists it (release 8c plan, Task 13; choice 31):
-      // its words fill the prompt's arguments, and a needed one not given says so, nothing sent. Any other `/<name>:...`
-      // is a message.
-      const served = offers(ui.mcp?.servers);
-      const prompt = served.prompts.find((p) => p.command === first);
-      const filled = prompt && argumentsOf(prompt.prompt, text.slice(first.length));
-      if (prompt && "missing" in filled!) {
-        const usage = [prompt.command, ...(prompt.prompt.arguments ?? []).map((a) => a.name)].map((w) => visible(w)).join(" ");
-        return fns.say({ text: `${visible(prompt.command)} needs ${visible(filled.missing)}: ${usage}`, color: "red" });
-      }
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
@@ -210,20 +202,24 @@ export const queue = (ui: UI, fns: Fns) => {
           // The message's pictures sent before it, which a blocked prompt's words do not take back (promptKeys.ts, giveBack).
           const before = new Set(message.spans.flatMap((s) => (ui.pictures.sent(s.id) ? [s.id] : [])));
           const read = await fns.readsEnded(message, signal);
-          // What the MCP servers supply goes after the typed words, marked the server's (choice 34); one that cannot be got
-          // stops the send, its line said and the words back in the prompt box (choices 30, 31), or nothing said when the
-          // turn was stopped meanwhile, as a stop says nothing.
-          const supplied = await supply(served, prompt && filled && "args" in filled ? { prompt, args: filled.args } : undefined, read.draft.text, signal);
-          if (typeof supplied === "string") {
-            if (!signal.aborted) {
-              fns.say({ text: supplied, color: "red" });
-              fns.giveBack(read.draft, before, false);
-            }
-            return;
+          // What the MCP servers supply goes after the typed words, marked the server's (choice 34), got by the session once
+          // the first prompt's wait and UserPromptSubmit are done (Task 13's fix round). One that cannot be got stops the
+          // send, its line said; a stop meanwhile says nothing. Either way the words and their pictures come back into the
+          // prompt box (choices 30, 31).
+          let refused: Refused | undefined;
+          const got = async (): Promise<Part[] | null> => {
+            const supplied = await supply(read.draft.text, signal);
+            if (Array.isArray(supplied)) return supplied;
+            if (!signal.aborted) refused = supplied;
+            return null;
+          };
+          const ended = await ui.session.send(read.parts, signal, ui.mcp ? got : undefined);
+          if (ended && "unsupplied" in ended) {
+            if (refused) fns.say({ text: refused.line, color: "red" });
+            fns.giveBack(read.draft, before, refused?.said ?? false);
           }
-          const ended = await ui.session.send([...read.parts, ...supplied], signal);
           // A prompt a UserPromptSubmit hook blocked or stopped was not sent (approved by the user, 2026-11-09).
-          if (ended && ("blocked" in ended || ended.unsent)) fns.giveBack(read.draft, before);
+          else if (ended && ("blocked" in ended || ended.unsent)) fns.giveBack(read.draft, before);
         }
       } finally {
         ui.setBusy(false);
@@ -241,57 +237,122 @@ export const queue = (ui: UI, fns: Fns) => {
   // prompt command's messages, each text and picture, an assistant's headed `(assistant)` (choice 31); then each resource
   // picked in the words, `@<name>:<uri>` as `@` completes it, once, in the order picked: its text headed `Resource
   // @<name>:<uri>:` and cut as a tool's answer is (choice 30; "Numbers in this plan"), then its pictures, numbered as
-  // pasted ones are. A picture's type is read from its first bytes, as a tool answer's is; any other content is left out.
-  // The red line instead, for the first that cannot be got, the reason escaped.
-  const supply = async (o: Offers, asked: { prompt: Offers["prompts"][number]; args: Record<string, string> } | undefined, text: string, signal: AbortSignal) => {
-    const on = (name: string) => {
-      const server = ui.mcp?.servers.server(name);
-      if (!server) throw new Error("Not connected"); // left the settings since the prompt was typed, as Server says of one not ready
-      return server;
+  // pasted ones are once every one has been got, so a send that stops takes no numbers. A picture's type is read from its
+  // first bytes, as a tool answer's is; any other content is left out. A name and what follows it match in their letter
+  // case first, then in any, as the menus narrow in any (the fix round).
+  // The server named is made ready if it can be: a remote one whose connection dropped is connected again first, and a
+  // request that never reached it connects again and goes once more, as a tool call's does (choices 13, 33); it is safe,
+  // as reading changes nothing. A configured server that is still not ready stops the send, saying so in /mcp's words
+  // for its state (the user's words, the fix round). A ready one whose list lacks what was typed leaves it plain words.
+  // The red line instead, for the first that cannot be got, the reason escaped; `said`: whether the grey line saying the
+  // words are back is said after it, as the missing argument's line does not say so.
+  const supply = async (text: string, signal: AbortSignal): Promise<Part[] | Refused> => {
+    const servers = ui.mcp!.servers;
+    const why = (err: unknown) => visible(errorText(err), { tabs: true });
+    const back = "Your words are back in the prompt box.";
+    const listed = (name: string) => servers.list().find((s) => s.name === name)!;
+    const notReady = (name: string) => `${visible(name)} is not ready (${visible(stateText(listed(name).state), { tabs: true })})`;
+    // The configured server `typed` names, ready if it can be made so.
+    const readied = async (typed: string): Promise<string | undefined> => {
+      const s = named(servers.list(), typed, (x) => x.name);
+      if (!s) return undefined;
+      if (s.state.is === "stopped" && s.state.retry) await reconnect(s.name, signal);
+      const server = servers.server(s.name);
+      if (server?.state.is === "ready") await until(server.listed, signal);
+      return s.name;
     };
-    const pictured = (base64: string): Part[] => {
+    const ask = async <T>(name: string, send: (server: Server) => Promise<T>): Promise<T> => {
+      const ready = () => {
+        const server = servers.server(name);
+        if (server?.state.is !== "ready") throw new Error(notReady(name));
+        return server;
+      };
+      try {
+        return await send(ready());
+      } catch (err) {
+        if (!(err instanceof NotReached) || signal.aborted || !(await reconnect(name, signal))) throw err;
+        return await send(ready());
+      }
+    };
+    const pending: (Part | Picture)[] = [];
+    const pictured = (base64: string): Picture[] => {
       const data = Buffer.from(base64, "base64");
       const mediaType = typeOf(data);
-      if (!mediaType) return [];
-      const id = ui.pictures.next();
-      ui.pictures.set(id, { mediaType, data });
-      ui.pictures.markSent(id);
-      return [{ type: "image", id, mediaType, data, from: "server" }];
+      return mediaType ? [{ mediaType, data }] : [];
     };
-    const why = (err: unknown) => visible(errorText(err), { tabs: true });
-    const parts: Part[] = [];
-    if (asked) {
-      try {
-        const got = await on(asked.prompt.server).getPrompt(asked.prompt.prompt.name, asked.args, { signal });
-        for (const m of got.messages) {
-          const head = m.role === "assistant" ? "(assistant)" : undefined;
-          const c = m.content;
-          if (c.type === "text") parts.push({ type: "text", text: head ? `${head}\n${c.text}` : c.text, from: "server" });
-          else if (c.type === "image") {
-            const picture = pictured(c.data);
-            if (head && picture.length) parts.push({ type: "text", text: head, from: "server" });
-            parts.push(...picture);
+    try {
+      const [first = ""] = text.split(/\s+/);
+      const command = /^\/([^\s/:]+):\S/.exec(first);
+      const server = command && (await readied(command[1]!));
+      if (server) {
+        const p = named(offers(servers).prompts, first, (x) => x.command);
+        if (!p && servers.server(server)?.state.is !== "ready") return { line: `Could not get the prompt ${visible(first)}: ${notReady(server)}. ${back}`, said: false };
+        if (p) {
+          const filled = argumentsOf(p.prompt, text.slice(first.length));
+          if ("missing" in filled) {
+            const usage = [p.command, ...(p.prompt.arguments ?? []).map((a) => a.name)].map((w) => visible(w)).join(" ");
+            return { line: `${visible(p.command)} needs ${visible(filled.missing)}: ${usage}`, said: true };
+          }
+          try {
+            const got = await ask(p.server, (s) => s.getPrompt(p.prompt.name, filled.args, { signal }));
+            for (const m of got.messages) {
+              const head = m.role === "assistant" ? "(assistant)" : undefined;
+              const c = m.content;
+              if (c.type === "text") pending.push({ type: "text", text: head ? `${head}\n${c.text}` : c.text, from: "server" });
+              else if (c.type === "image") {
+                const picture = pictured(c.data);
+                if (head && picture.length) pending.push({ type: "text", text: head, from: "server" });
+                pending.push(...picture);
+              }
+            }
+          } catch (err) {
+            if (signal.aborted) throw err;
+            return { line: `Could not get the prompt ${visible(p.command)}: ${why(err)}. ${back}`, said: false };
           }
         }
-      } catch (err) {
-        return `Could not get the prompt ${visible(asked.prompt.command)}: ${why(err)}. Your words are back in the prompt box.`;
       }
-    }
-    const picked = new Set([...text.matchAll(/(?:^|\s)@(\S+)/g)].map((m) => m[1]!));
-    for (const key of picked) {
-      const r = o.resources.find((x) => x.key === key);
-      if (!r) continue;
-      try {
-        const got = await on(r.server).readResource(r.uri, { signal });
-        const texts = got.contents.flatMap((c) => ("text" in c ? [c.text] : []));
-        const head = `Resource @${r.key}:`;
-        parts.push({ type: "text", text: texts.length ? `${head}\n${truncate(texts.join("\n\n"))}` : head, from: "server" });
-        for (const c of got.contents) if ("blob" in c) parts.push(...pictured(c.blob));
-      } catch (err) {
-        return `Could not read @${visible(r.key)}: ${why(err)}. Your words are back in the prompt box.`;
+      const done = new Set<string>();
+      for (const typed of new Set([...text.matchAll(/(?:^|\s)@(\S+)/g)].map((m) => m[1]!))) {
+        const colon = typed.indexOf(":");
+        const server = colon > 0 ? await readied(typed.slice(0, colon)) : undefined;
+        if (!server) continue;
+        const r = named(offers(servers).resources, typed, (x) => x.key);
+        if (!r && servers.server(server)?.state.is !== "ready") return { line: `Could not read @${visible(typed)}: ${notReady(server)}. ${back}`, said: false };
+        if (!r || done.has(r.key)) continue;
+        done.add(r.key);
+        try {
+          const got = await ask(r.server, (s) => s.readResource(r.uri, { signal }));
+          const texts = got.contents.flatMap((c) => ("text" in c ? [c.text] : []));
+          const head = `Resource @${r.key}:`;
+          pending.push({ type: "text", text: texts.length ? `${head}\n${truncate(texts.join("\n\n"))}` : head, from: "server" });
+          for (const c of got.contents) if ("blob" in c) pending.push(...pictured(c.blob));
+        } catch (err) {
+          if (signal.aborted) throw err;
+          return { line: `Could not read @${visible(r.key)}: ${why(err)}. ${back}`, said: false };
+        }
       }
+    } catch (err) {
+      if (signal.aborted) return { line: "", said: false }; // the caller says nothing for a stop
+      throw err;
     }
-    return parts;
+    return pending.map((p): Part => {
+      if ("type" in p) return p;
+      const id = ui.pictures.next();
+      ui.pictures.set(id, p);
+      return { type: "image", id, ...p, from: "server" };
+    });
+  };
+  // A dropped remote server's one new connection (choices 13, 33), with the grey line a tool call's says, once for each new
+  // connection; false when it did not connect, or a stop ended the wait.
+  const reconnected = new WeakSet<Promise<boolean>>();
+  const reconnect = async (name: string, signal: AbortSignal): Promise<boolean> => {
+    const trying = ui.mcp!.servers.reconnect(name);
+    if (!(await until(trying, signal))) return false;
+    if (!reconnected.has(trying)) {
+      reconnected.add(trying);
+      ui.bus.emit("mcp-note", `MCP server ${visible(name)} was connected again.`);
+    }
+    return true;
   };
 
   // `/tasks` lists the session's subagents, `/tasks t3` prints one's tool calls and answer in full,
@@ -721,6 +782,14 @@ export const queue = (ui: UI, fns: Fns) => {
     pickSession, closeSessions, branch, rename, exportTo, mcpAction, closeMcp,
   };
 };
+
+// Why what the MCP servers supply for a prompt was not got: its red line, and whether the grey line saying the words are
+// back follows it (supply, above).
+type Refused = { line: string; said: boolean };
+
+// The item `typed` names: by its key in the same letter case first, then in any (Task 13's fix round).
+const named = <T>(items: T[], typed: string, key: (t: T) => string): T | undefined =>
+  items.find((t) => key(t) === typed) ?? items.find((t) => key(t).toLowerCase() === typed.toLowerCase());
 
 // A prompt command's words as its arguments (release 8c plan, choice 31): split at blanks, each word the next argument's,
 // the last argument taking the rest as typed, line breaks and all; or the first needed one that is not given.

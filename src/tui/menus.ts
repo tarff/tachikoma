@@ -52,7 +52,9 @@ const COMMANDS: { label: string; run: string; note: string }[] = [
 // What the ready MCP servers offer the prompt (release 8c plan, Task 13): each resource as `<name>:<uri>`, which `@`
 // lists, and each prompt as the command `/<name>:<prompt>`, in the servers' order and each list's. One whose name or uri
 // holds a blank or a character visible() escapes is left out, as it could be neither typed nor read back from the prompt
-// as one word.
+// as one word; so is every server whose name holds ":" or "/", which would make a key that reads as another server's,
+// and any key two servers share in any letter case, as a key is matched in any when its own case is not found (the fix
+// round).
 export interface Offers {
   resources: { server: string; uri: string; key: string }[];
   prompts: { server: string; prompt: Prompt; command: string }[];
@@ -61,11 +63,14 @@ export function offers(servers: Pick<Servers, "list" | "server"> | undefined): O
   const plain = (s: string) => !/\s/.test(s) && visible(s) === s;
   const o: Offers = { resources: [], prompts: [] };
   for (const { name } of servers?.list() ?? []) {
+    if (/[:/]/.test(name)) continue;
     const server = servers!.server(name);
     for (const r of server?.resources ?? []) if (plain(`${name}:${r.uri}`)) o.resources.push({ server: name, uri: r.uri, key: `${name}:${r.uri}` });
     for (const p of server?.prompts ?? []) if (plain(`/${name}:${p.name}`)) o.prompts.push({ server: name, prompt: p, command: `/${name}:${p.name}` });
   }
-  return o;
+  const once = <T extends { server: string }>(items: T[], key: (t: T) => string) =>
+    items.filter((t) => !items.some((u) => u.server !== t.server && key(u).toLowerCase() === key(t).toLowerCase()));
+  return { resources: once(o.resources, (r) => r.key), prompts: once(o.prompts, (p) => p.command) };
 }
 
 // A slash at the start of the prompt and the word after it, with the cursor at the end: commands

@@ -1,6 +1,7 @@
 import { Text, usePaste } from "ink";
 import { useEffect, useRef, useState } from "react";
 import { visible } from "../core/permissions.js";
+import type { State } from "../mcp/server.js";
 import type { Servers } from "../mcp/servers.js";
 import { shownFile } from "../settings.js";
 import { SESSION_WORDS } from "./app/constants.js";
@@ -19,15 +20,16 @@ export type Action = (typeof ACTIONS)[number];
 
 const count = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
 
+// A state as a row says it, a ready one by its tool count aside, not escaped; a prompt's resource or prompt command whose
+// server is not ready says it too (tui/app/queue.ts, supply; Task 13's fix round).
+export const stateText = (st: State): string =>
+  st.is === "failed" || st.is === "stopped" ? `${st.is}: ${st.reason}` : st.is === "off" ? "off: the sandbox's network is off" : st.is;
+
 // One server's row: its name, " (project)" for a project's, its state, then its trust; escaped whole, as the name comes
 // from the settings and a reason from the server or the system.
 export function mcpRow(s: Listed): string {
   const st = s.state;
-  const state =
-    st.is === "ready" ? count(s.tools, "tool")
-    : st.is === "failed" || st.is === "stopped" ? `${st.is}: ${st.reason}`
-    : st.is === "off" ? "off: the sandbox's network is off"
-    : st.is;
+  const state = st.is === "ready" ? count(s.tools, "tool") : stateText(st);
   const trust = s.trusted === "read-only" ? " · trusted" : s.trustedTools.length ? ` · ${count(s.trustedTools.length, "trusted tool")}` : "";
   return visible(`${s.name}${s.where === "project" ? " (project)" : ""} · ${state}${trust}`);
 }

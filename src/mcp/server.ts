@@ -99,6 +99,10 @@ interface Conn {
   local?: Stdio;
   ready: boolean;
   closed?: Promise<void>; // set once closing has begun, by a stop, a failed start or a drop
+  // Its resources and prompts (Task 13), empty until they answer, and `listed` once both have answered or failed.
+  resources: Resource[];
+  prompts: Prompt[];
+  listed: Promise<void>;
 }
 
 export class Server {
@@ -112,9 +116,6 @@ export class Server {
   #conn: Conn | undefined;
   #reconnecting: Promise<boolean> | undefined;
   #instructions: string | undefined;
-  // Its resources and prompts, as its last connection listed them (Task 13).
-  #resources: Resource[] = [];
-  #prompts: Prompt[] = [];
   readonly #auth: McpAuth | undefined;
   readonly #onForm: FormHandler | undefined;
   readonly #calls = new Set<{ owner?: Owner }>(); // the calls running, each with the subagent that made it, if one did
@@ -153,12 +154,17 @@ export class Server {
     return this.#instructions;
   }
 
-  // The resources `@` lists and the prompts the `/` menu lists (release 8c plan, Task 13), only while it is ready.
+  // The resources `@` lists and the prompts the `/` menu lists (release 8c plan, Task 13), only while it is ready, each
+  // empty until its list answers; `listed`, once both lists have answered or failed, so a prompt sent as the server
+  // becomes ready finds what it picked.
   get resources(): Resource[] {
-    return this.#state.is === "ready" ? this.#resources : [];
+    return this.#state.is === "ready" ? (this.#conn?.resources ?? []) : [];
   }
   get prompts(): Prompt[] {
-    return this.#state.is === "ready" ? this.#prompts : [];
+    return this.#state.is === "ready" ? (this.#conn?.prompts ?? []) : [];
+  }
+  get listed(): Promise<void> {
+    return this.#conn?.listed ?? Promise.resolve();
   }
 
   // Never throws: the state says how it went.
@@ -209,7 +215,9 @@ export class Server {
   // A picked resource read, and a prompt fetched with its arguments, as a prompt is sent (Task 13; choices 30, 31): each
   // read afresh, never from the library's cache, under a call's limit. The lead's, as only the window's prompt sends them,
   // so a form the server asks for meanwhile is the lead's when no subagent's call runs beside it (choice 29). A sign-in
-  // lost meanwhile is taken as a call's is (choice 59), its error the library's own.
+  // lost meanwhile is taken as a call's is (choice 59), its error the library's own. A remote request that never reached
+  // the server throws NotReached, as a call does, for the caller to connect again and read once more, as a read changes
+  // nothing; one that failed on the way says so as a start's reason does (remoteReason), never a bare "fetch failed".
   readResource(uri: string, opts: { signal?: AbortSignal }): Promise<ReadResourceResult> {
     return this.#request((client, timeout) => client.readResource({ uri }, { signal: opts.signal, timeout, cacheMode: "bypass" }));
   }
@@ -225,7 +233,11 @@ export class Server {
     try {
       return await send(conn.client, this.#limit());
     } catch (err) {
+      if (!conn.local && notReached(err)) throw new NotReached(remoteReason(this.#address(), err), { cause: err });
       if (this.#auth && UnauthorizedError.isInstance(err)) this.#lostSignIn(conn);
+      else if (!conn.local && (err instanceof TypeError || err instanceof SdkHttpError || err instanceof SseError)) {
+        throw new Error(remoteReason(this.#address(), err), { cause: err });
+      }
       throw err;
     } finally {
       this.#calls.delete(call);
@@ -258,7 +270,7 @@ export class Server {
       this.#state = failed(made);
       return false;
     }
-    const conn: Conn = { transport: made, client: undefined as unknown as Client, ready: false };
+    const conn: Conn = { transport: made, client: undefined as unknown as Client, ready: false, resources: [], prompts: [], listed: Promise.resolve() };
     if (made instanceof Stdio) conn.local = made;
     conn.client = this.#client(conn);
     // One still open, as when two Reconnects come close together, is closed first, so only one server runs; its own start
@@ -267,28 +279,35 @@ export class Server {
     if (prev && !prev.closed) void this.#close(prev);
     this.#conn = conn;
 
-    // The library's own limit on each request is passed too, so neither falls back to its 60 s. Then its resources and
-    // prompts (Task 13), within the same limit: one it cannot list is left empty, as its tools still work. The library asks
-    // only a server that offers them, and answers an empty list for one that does not.
+    // The library's own limit on each request is passed too, so neither falls back to its 60 s. Its resources and prompts
+    // (Task 13) are asked for beside its tools, only of a server that offers them, as the library would otherwise print
+    // that it does not onto the window; the start never waits for them, and one that fails stays empty, as the tools still
+    // work. Each fills in when it answers, under the library's own limit.
     const work = (async () => {
       await conn.client.connect(made, { timeout: this.#startMs });
-      const { tools } = await conn.client.listTools(undefined, { timeout: this.#startMs });
-      const [resources, prompts] = await Promise.all([
-        conn.client.listResources(undefined, { timeout: this.#startMs }).then((r) => r.resources, (): Resource[] => []),
-        conn.client.listPrompts(undefined, { timeout: this.#startMs }).then((r) => r.prompts, (): Prompt[] => []),
-      ]);
-      return { tools, resources, prompts };
+      const offers = conn.client.getServerCapabilities();
+      const list = <T>(asked: Promise<T[]>, take: (items: T[]) => void) =>
+        asked.then((items) => {
+          if (conn !== this.#conn || conn.closed) return;
+          take(items);
+          if (conn.ready) this.#onChange();
+        }, () => {});
+      conn.listed = Promise.all([
+        offers?.resources && list(conn.client.listResources().then((r) => r.resources), (r) => (conn.resources = r)),
+        offers?.prompts && list(conn.client.listPrompts().then((r) => r.prompts), (p) => (conn.prompts = p)),
+      ]).then(() => {});
+      return (await conn.client.listTools(undefined, { timeout: this.#startMs })).tools;
     })();
     work.catch(() => {}); // a late answer, or the close at the limit, comes after the race below is settled
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), this.#startMs)));
     let reason: string | undefined;
     let signIn = false;
-    let listed: Awaited<typeof work> = { tools: [], resources: [], prompts: [] };
+    let tools: Tool[] = [];
     try {
       const got = await Promise.race([work, late]);
       if (got === "late") reason = this.#late();
-      else listed = got;
+      else tools = got;
     } catch (err) {
       // A start the server refused for want of a sign-in, which only /mcp starts (Task 11); one that publishes no sign-in
       // details keeps its 401 (choice 59).
@@ -305,9 +324,7 @@ export class Server {
     }
     conn.ready = true;
     this.#instructions = conn.client.getInstructions();
-    this.#resources = listed.resources;
-    this.#prompts = listed.prompts;
-    this.#state = { is: "ready", tools: listed.tools };
+    this.#state = { is: "ready", tools };
     return true;
   }
 
@@ -355,14 +372,14 @@ export class Server {
           resources: {
             onChanged: (err, resources) => {
               if (err || !resources || conn !== this.#conn || !conn.ready || conn.closed) return;
-              this.#resources = resources;
+              conn.resources = resources;
               this.#onChange();
             },
           },
           prompts: {
             onChanged: (err, prompts) => {
               if (err || !prompts || conn !== this.#conn || !conn.ready || conn.closed) return;
-              this.#prompts = prompts;
+              conn.prompts = prompts;
               this.#onChange();
             },
           },

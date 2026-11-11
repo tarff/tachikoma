@@ -141,8 +141,9 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
   };
 }
 
-// `p`'s answer, or the stop's reason when `signal` stops the wait first.
-function until<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+// `p`'s answer, or the stop's reason when `signal` stops the wait first; a prompt's resources and prompt commands wait so
+// too (tui/app/queue.ts, supply).
+export function until<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return p;
   return new Promise((resolve, reject) => {
     const stop = () => reject(signal.reason);

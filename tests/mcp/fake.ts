@@ -31,8 +31,9 @@ export interface FakeOptions {
   results?: Record<string, object>; // a call to a tool named here is answered with this result (Task 6's answers)
   instructions?: string; // what its initialize answer says of it (Task 6b's tool search)
   // Its resources (Task 13): each listed by uri, name and mimeType, and read as its `text`, or as its `blob` (base64)
-  // with its mimeType, or answered an error with `fails` as its message.
-  resources?: { uri: string; name: string; text?: string; blob?: string; mimeType?: string; fails?: string }[];
+  // with its mimeType, or answered an error with `fails` as its message, or with `hangs` never answered.
+  resources?: { uri: string; name: string; text?: string; blob?: string; mimeType?: string; fails?: string; hangs?: true }[];
+  lists?: "never" | "error"; // its resources/list and prompts/list never answered, or answered with an error
   // Its prompts (Task 13): each listed without its messages, which prompts/get sends with each {argument} in a text
   // filled in, or answered an error with `fails` as its message.
   prompts?: { name: string; description?: string; arguments?: object[]; messages?: object[]; fails?: string }[];
@@ -74,9 +75,11 @@ function answer(m, reply) {
     return reply({ result: O.instructions === undefined ? info : { ...info, instructions: O.instructions } });
   }
   if (m.method === "tools/list") return reply({ result: { tools } });
+  if (O.lists && /^(resources|prompts)\/list$/.test(m.method)) return O.lists === "error" ? reply({ error: { code: -32603, message: "no list" } }) : undefined;
   if (m.method === "resources/list") return reply({ result: { resources: resources.map((r) => ({ uri: r.uri, name: r.name, mimeType: r.mimeType })) } });
   if (m.method === "resources/read") {
     const r = resources.find((x) => x.uri === m.params.uri);
+    if (r && r.hangs) return;
     if (!r || r.fails) return reply({ error: { code: -32002, message: r ? r.fails : "no such resource" } });
     return reply({ result: { contents: [r.blob === undefined ? { uri: r.uri, text: r.text } : { uri: r.uri, mimeType: r.mimeType, blob: r.blob }] } });
   }

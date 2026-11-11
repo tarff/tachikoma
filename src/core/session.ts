@@ -89,8 +89,14 @@ const settled = (p: Promise<void>, signal?: AbortSignal) =>
     });
   });
 
-// How a turn ended, when a hook ended it (Session.send).
-export type Ended = { blocked: string } | { stopped: string; unsent?: true };
+// How a turn ended, when a hook ended it (Session.send); `unsupplied`, when what the MCP servers supply for the prompt was
+// not got, or a stop came while it was being got, so nothing was sent or saved (release 8c plan, Task 13).
+export type Ended = { blocked: string } | { stopped: string; unsent?: true } | { unsupplied: true };
+
+// What the MCP servers supply for a prompt, after its typed words (release 8c plan, Task 13; choice 34): a picked
+// resource's text and pictures and a prompt command's messages, got under the turn's signal once the first prompt's wait
+// for the servers and UserPromptSubmit are done; null when they could not be got, the caller saying why.
+export type Supply = (signal?: AbortSignal) => Promise<Part[] | null>;
 
 // One reply's calls (release 8b plan, Task 7): they run under `signal`, the reply's own, joined to the turn's; `stop` is a
 // hook's continue: false, which stops them as a user's stop does, and `stopped` the first hook that said it. `pictures`:
@@ -452,18 +458,19 @@ export class Session {
   // among its text (release 6 plan, Task 14). How the turn ended: `blocked`, a UserPromptSubmit hook's block, with its
   // reason, nothing sent or saved; `stopped`, a hook's continue: false, with its stopReason ("" when none), and `unsent`
   // when it came at UserPromptSubmit, nothing sent or saved either; nothing otherwise (release 8b plan, choice 17).
-  async send(text: string | Part[], signal?: AbortSignal): Promise<Ended | void> {
+  // `supply`: the MCP servers' parts for the prompt (release 8c plan, Task 13), the window's only.
+  async send(text: string | Part[], signal?: AbortSignal, supply?: Supply): Promise<Ended | void> {
     // Two turns at once would interleave their messages and tool results in the history.
     if (this.#running) throw new Error("A turn is already running");
     this.#running = true;
     try {
-      return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal);
+      return await this.#turn(typeof text === "string" ? (text ? [{ type: "text", text }] : []) : text, signal, supply);
     } finally {
       this.#running = false;
     }
   }
 
-  async #turn(typed: Part[], signal?: AbortSignal): Promise<Ended | void> {
+  async #turn(typed: Part[], signal?: AbortSignal, supply?: Supply): Promise<Ended | void> {
     const { bus, hooks } = this.opts;
     // SessionStart's hooks answer first, so their text goes with this request; a stop meanwhile sends and saves nothing and
     // says nothing, as a stop during UserPromptSubmit's does, and their text waits for the next one (Task 10).
@@ -498,8 +505,15 @@ export class Session {
       if (before) hooks!.restoreRuns(before);
       return prompted;
     }
+    // Got only now, once the servers the first prompt waits for have started and a hook has let the prompt through, so a
+    // blocked prompt asks no server for anything (Task 13); one not got sends and saves nothing, as a block does.
+    const supplied = supply ? await supply(signal) : [];
+    if (supply && (supplied === null || signal?.aborted)) {
+      if (before) hooks!.restoreRuns(before);
+      return { unsupplied: true };
+    }
     if (words && !this.opts.subagent) this.prompts.push(words);
-    const own: Part[] = [...typed, ...prompted, ...this.#waiting()];
+    const own: Part[] = [...typed, ...(supplied ?? []), ...prompted, ...this.#waiting()];
     if (!own.length) return;
     // The text waiting for the next request goes first (Task 8), taken so it goes into exactly one message.
     const parts: Part[] = [...this.#hookParts(this.#nextText), ...own];

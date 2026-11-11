@@ -59,7 +59,7 @@ import { type Segment, SEGMENTS } from "../../src/tui/StatusLine.js";
 import { FIRST_SCREEN, MOUSE_OFF, MOUSE_ON, PASTE_OFF, PASTE_ON, SECOND_SCREEN, Screen } from "../../src/tui/terminal.js";
 import { wrap } from "../../src/tui/view.js";
 import { Bus, FakeProvider, Held, callTool, fakeWorkspace, removeTree, reply, standInEditor, tempContext, texts, usage } from "../helpers.js";
-import { type FakeOptions, fakeServer, signInFake } from "../mcp/fake.js";
+import { type FakeOptions, fakeServer, httpFake, readLog, signInFake } from "../mcp/fake.js";
 
 const tick = () => new Promise((r) => setTimeout(r, 50));
 // How long a test waits for the settings watcher: fs.watch reported each of 400 writes within 5 ms on this machine
@@ -10875,14 +10875,17 @@ describe("App's MCP", () => {
     expect(app.lastFrame()).toContain("> /fake:greet Ann\n");
   });
 
-  it("says in red which argument a prompt needs, sending nothing", async () => {
+  // The fix round: the check is made once the prompt is let through, so its words come back, with the grey line saying so.
+  it("says in red which argument a prompt needs, sending nothing, and gives the words back", async () => {
     await inColour(async () => {
       const { config, servers } = await mcpSetup();
       const lead = new FakeProvider("a", [reply("never")]);
       const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", { prompts: [GREET] })]) });
       await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
       await type(app, "/fake:greet");
-      await shows(app, "\u001b[31m/fake:greet needs name: /fake:greet name");
+      await soon(() => expect(plain(app)).toContain(`/fake:greet needs name: /fake:greet name ${BACK}`));
+      expect(app.lastFrame()).toContain("\u001b[31m/fake:greet needs name: /fake:greet name");
+      expect(app.lastFrame()).toContain("› /fake:greet");
       expect(lead.seen).toEqual([]);
     });
   });
@@ -10949,5 +10952,146 @@ describe("App's MCP", () => {
     await until(app, "three");
     expect(own(judged)[0]).toContain(`${heading}["read @fake:note://auth now","/fake:auth","carry on"]\n`);
     expect(own(judged).join("")).not.toContain(SAYS);
+  });
+
+  // Task 13's fix round: what the servers supply is got once the first prompt's wait and UserPromptSubmit are done.
+  it("gets a resource picked in the first prompt, sent while its server still starts", async () => {
+    const { config, servers } = await mcpSetup();
+    const lead = new FakeProvider("a", [reply("read it")]);
+    const slow = "const began = Date.now(); while (Date.now() - began < 1500) {}"; // it answers nothing for 1.5 s
+    const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", { resources: [NOTE], start: slow })]) });
+    expect(states(mcp!.servers)).toEqual(["fake starting"]);
+    await type(app, "read @fake:note://a now");
+    await shows(app, "Waiting for MCP servers: fake...");
+    await shows(app, "read it");
+    expect(lastSent(lead)).toEqual([
+      { type: "text", text: "read @fake:note://a now" },
+      { type: "text", text: "Resource @fake:note://a:\nthe note's text", from: "server" },
+    ]);
+  });
+
+  it("reads nothing from the server for a prompt a UserPromptSubmit hook blocks", async () => {
+    const { dir, config, servers } = await mcpSetup();
+    const log = path.join(dir, "log.jsonl");
+    const script = path.join(dir, "block.cjs");
+    writeFileSync(script, `process.stdin.resume().on("end", () => process.stdout.write(JSON.stringify({ decision: "block", reason: "not yet" })));`);
+    const hooks: Hook[] = [{ event: "UserPromptSubmit", matcher: { all: true }, command: process.execPath, args: [script], async: false, where: "" }];
+    const lead = new FakeProvider("a", [reply("never")]);
+    const { app, mcp } = await mount([], { lead, hooks, mcp: servers([await config("fake", { resources: [NOTE], prompts: [GREET], log })]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
+    await type(app, "read @fake:note://a now");
+    await soon(() => expect(plain(app)).toContain("A UserPromptSubmit hook blocked the prompt: not yet"));
+    await press(app, "\u0015"); // Ctrl+U empties the prompt of the words given back
+    await type(app, "/fake:greet Ann");
+    await soon(() => expect(plain(app).split("A UserPromptSubmit hook blocked the prompt: not yet")).toHaveLength(3));
+    expect(app.lastFrame()).toContain("› /fake:greet Ann");
+    expect(readLog(log).map((m) => m.method).filter((m) => m === "resources/read" || m === "prompts/get")).toEqual([]);
+    expect(lead.seen).toEqual([]);
+  });
+
+  // A dropped remote server is connected again before the read, and a read that never reached it goes once more on a new
+  // connection, as a tool call does (choices 13, 33).
+  it("connects a dropped remote server again before reading from it, and reads once more when the read never reached it", async () => {
+    const { dir, config, servers } = await mcpSetup();
+    const resources = [NOTE];
+    const first = await httpFake(dir, { resources });
+    const entry = { kind: "http" as const, url: first.url, headers: {} };
+    const lead = new FakeProvider("a", [reply("one"), reply("two")]);
+    const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", {}, { entry, asWritten: { url: first.url } })]) });
+    const s = mcp!.servers;
+    await soon(() => expect(states(s)).toEqual(["fake ready"]));
+    await first.stop();
+    await s.server("fake")!.callTool("echo", { text: "x" }, {}).catch(() => {});
+    expect(s.server("fake")!.state).toMatchObject({ is: "stopped", retry: true });
+    const second = await httpFake(dir, { resources, port: first.port });
+    await type(app, "read @fake:note://a now");
+    await shows(app, "one");
+    expect(app.lastFrame()).toContain("MCP server fake was connected again.");
+    expect(lastSent(lead, 0)[1]).toEqual({ type: "text", text: "Resource @fake:note://a:\nthe note's text", from: "server" });
+    // Restarted, it no longer knows the session (404): the read never reached it, so it goes once more.
+    await second.stop();
+    await httpFake(dir, { resources, port: first.port });
+    await type(app, "read @fake:note://a again");
+    await shows(app, "two");
+    expect(lastSent(lead, 1)[1]).toEqual({ type: "text", text: "Resource @fake:note://a:\nthe note's text", from: "server" });
+  });
+
+  // The user's words for a server that is not ready (the fix round): /mcp's own state text.
+  it("says a server that needs sign-in is not ready, for a resource and a prompt, and gives the words back", async () => {
+    const t = await signInSetup();
+    const lead = new FakeProvider("a", [reply("never")]);
+    const { app, mcp } = await mount([], { lead, mcp: t.mcp });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["om needs sign-in"]));
+    await type(app, "read @om:note://a now");
+    await soon(() => expect(plain(app)).toContain(`Could not read @om:note://a: om is not ready (needs sign-in). ${BACK}`));
+    expect(app.lastFrame()).toContain("› read @om:note://a now");
+    await press(app, "\u0015"); // Ctrl+U empties the prompt of the words given back
+    await type(app, "/om:summarise it");
+    await soon(() => expect(plain(app)).toContain(`Could not get the prompt /om:summarise: om is not ready (needs sign-in). ${BACK}`));
+    expect(app.lastFrame()).toContain("› /om:summarise it");
+    expect(lead.seen).toEqual([]);
+  });
+
+  it("matches a resource and a prompt in their own letter case first, then in any", async () => {
+    const { config, servers } = await mcpSetup();
+    const lead = new FakeProvider("a", [reply("one"), reply("two")]);
+    const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", { resources: [NOTE], prompts: [GREET] })]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
+    await type(app, "read @FAKE:NOTE://A now");
+    await shows(app, "one");
+    expect(lastSent(lead, 0)[1]).toEqual({ type: "text", text: "Resource @fake:note://a:\nthe note's text", from: "server" });
+    await type(app, "/Fake:Greet Ann");
+    await shows(app, "two");
+    expect(lastSent(lead, 1)).toEqual([
+      { type: "text", text: "/Fake:Greet Ann" },
+      { type: "text", text: "Say hello to Ann.", from: "server" },
+    ]);
+  });
+
+  it("gives the words and their pictures back, saying nothing, when Esc stops a read", async () => {
+    const { dir, config, servers } = await mcpSetup();
+    const log = path.join(dir, "log.jsonl");
+    const pictures = new Pictures();
+    const lead = new FakeProvider("a", [reply("never")]);
+    const { app, mcp } = await mount([], { lead, pictures, mcp: servers([await config("fake", { resources: [{ ...NOTE, hangs: true }], log })]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
+    await press(app, "look at ", process.platform === "win32" ? "\u001bv" : "\u0016"); // chat:imagePaste
+    pictures.set(1, { mediaType: "image/png", data: Buffer.from([0x89, 0x50, 0x4e, 0x47]) });
+    await type(app, " @fake:note://a now");
+    await soon(() => expect(readLog(log).some((m) => m.method === "resources/read")).toBe(true));
+    await press(app, "\u001b");
+    await shows(app, "› look at [Image #1] @fake:note://a now");
+    expect(plain(app)).not.toContain(BACK);
+    expect(pictures.sent(1)).toBe(false);
+    expect(lead.seen).toEqual([]);
+  });
+
+  it("numbers no picture when a later read fails, so the next paste is #1", async () => {
+    const { config, servers } = await mcpSetup();
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const resources = [{ uri: "pic://dot", name: "dot", blob: png, mimeType: "image/png" }, { ...NOTE, fails: "it is gone" }];
+    const { app, mcp } = await mount([], { mcp: servers([await config("fake", { resources })]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
+    await type(app, "@fake:pic://dot @fake:note://a now");
+    await soon(() => expect(plain(app)).toContain(`Could not read @fake:note://a: it is gone. ${BACK}`));
+    await press(app, " ", process.platform === "win32" ? "\u001bv" : "\u0016"); // chat:imagePaste
+    expect(app.lastFrame()).toContain("› @fake:pic://dot @fake:note://a now [Image #1]");
+  });
+
+  // The fix round: a key two servers share in any letter case, and a server whose name holds ":" or "/", are left out.
+  it("leaves out of @ a key two servers share and a server whose name holds a colon", async () => {
+    const { config, servers } = await mcpSetup();
+    const configs = [
+      await config("docs", { resources: [NOTE] }),
+      await config("Docs", { resources: [NOTE] }),
+      await config("a:b", { resources: [{ uri: "c", name: "c" }] }),
+      await config("other", { resources: [{ uri: "x://y", name: "y" }] }),
+    ];
+    const { app, mcp } = await mount([], { mcp: servers(configs) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["docs ready", "Docs ready", "a:b ready", "other ready"]));
+    await soon(() => expect(mcp!.servers.server("other")!.resources).toHaveLength(1));
+    await press(app, "@");
+    await shows(app, "  @other:x://y\n");
+    expect(app.lastFrame()).not.toMatch(/@docs:|@Docs:|@a:b:/);
   });
 });

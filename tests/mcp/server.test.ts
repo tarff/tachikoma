@@ -277,6 +277,7 @@ describe("a local server", () => {
     const server = make(local([await script({ resources: [NOTE], prompts: [GREET] })]));
     expect([server.resources, server.prompts]).toEqual([[], []]); // nothing until it is ready
     await server.start();
+    await server.listed;
     expect(server.resources).toEqual([{ uri: "note://a", name: "a note" }]);
     expect(server.prompts).toEqual([{ name: "greet", description: "Greets someone", arguments: [{ name: "name", required: true }] }]);
     expect((await server.readResource("note://a", {})).contents).toEqual([{ uri: "note://a", text: "the note's text" }]);
@@ -284,12 +285,29 @@ describe("a local server", () => {
     expect(readLog(log).find((m) => m.method === "prompts/get")!.params.arguments).toEqual({ name: "Ann" });
   });
 
-  it("reads a server without resources or prompts as having none, asking it for neither", async () => {
+  // The library prints a console.debug line for each list asked of a server that does not offer it, which would land on
+  // the window (the fix round's quality review).
+  it("reads a server without resources or prompts as having none, asking it for neither, with nothing on the console", async () => {
     const { make, log, script } = await setup();
+    const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+    onTestFinished(() => debug.mockRestore());
     const server = make(local([await script()]));
     await server.start();
+    await server.listed;
     expect([server.resources, server.prompts]).toEqual([[], []]);
     expect(readLog(log).map((m) => m.method).filter((m) => /^(resources|prompts)\//.test(m ?? ""))).toEqual([]);
+    expect(debug).not.toHaveBeenCalled();
+  });
+
+  // The fix round: a list that never answers, or fails, neither holds nor fails the start; the tools are there at once.
+  it.each(["never", "error"] as const)("starts at once when its lists are answered %s, with none of them", async (lists) => {
+    const { make, script } = await setup();
+    const server = make(local([await script({ resources: [NOTE], prompts: [GREET], lists })]), { startMs: 2_000 });
+    const began = Date.now();
+    await server.start();
+    expect(names(server)).toEqual(TOOLS);
+    expect(Date.now() - began).toBeLessThan(2_000);
+    expect([server.resources, server.prompts]).toEqual([[], []]);
   });
 
   it("fails a read the server answers with an error, with its words", async () => {
@@ -303,6 +321,8 @@ describe("a local server", () => {
     const { make, onChange, script } = await setup();
     const server = make(local([await script({ resources: [NOTE] })]));
     await server.start();
+    await server.listed;
+    onChange.mockClear(); // a list that answers after the start calls it too
     await server.callTool("add-resource", { resource: { uri: "note://b", name: "b" } }, {});
     await vi.waitFor(() => expect(server.resources.map((r) => r.uri)).toEqual(["note://a", "note://b"]), WAIT);
     expect(onChange).toHaveBeenCalledTimes(1);
@@ -402,6 +422,20 @@ describe("a remote server", () => {
     expect(await server.reconnect()).toBe(false);
     expect(initializes()).toBe(before);
     expect(server.connection).toBe(4);
+  });
+
+  // The fix round: a read whose request never reached a remote server throws NotReached, with the reason a call's has,
+  // for the caller to connect again and read once more.
+  it("throws NotReached for a read the server never got, with its reason, and is stopped with retry", async () => {
+    const { dir, make } = await setup();
+    const fake = await httpFake(dir, { resources: [{ uri: "note://a", name: "a", text: "hi" }] });
+    const server = make(remote(fake.url));
+    await server.start();
+    await fake.stop();
+    const read = server.readResource("note://a", {});
+    await expect(read).rejects.toThrow(NotReached);
+    await expect(read).rejects.toThrow(`connect ECONNREFUSED 127.0.0.1:${fake.port}`);
+    expect(server.state).toMatchObject({ is: "stopped", retry: true });
   });
 
   it("gives two reconnects at once the same new connection and the same answer", async () => {
