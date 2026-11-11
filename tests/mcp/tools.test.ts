@@ -94,7 +94,7 @@ async function setup() {
     const entry = { kind: "stdio" as const, command: process.execPath, args: [script], env: {} };
     return { ...user, name, safe: name, entry, asWritten: entry };
   };
-  const remote = (name: string, url: string): ServerConfig => ({ ...user, name, safe: name, entry: { kind: "http", url, headers: {} }, asWritten: { url } });
+  const remote = (name: string, url: string): ServerConfig => ({ ...user, name, safe: name, entry: { kind: "http", url, headers: {} }, asWritten: { url, headers: {} } });
   const make = (configs: ServerConfig[]) => {
     const answers = () => {
       throw new Error("no project server here, so no answers are read");

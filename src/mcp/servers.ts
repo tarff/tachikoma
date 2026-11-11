@@ -281,10 +281,16 @@ export class Servers {
       return slot;
     });
     const gone = [...old.values()];
-    for (const slot of gone) void slot.server?.stop();
+    const stopping = new Map(gone.map((slot) => [slot.config.name, slot.server?.stop()]));
     if (this.#started) {
       this.#sayUnreadable();
-      for (const slot of added) this.#begin(slot);
+      // A restarted name's new server starts once its old one has stopped, as restart()'s does, so the two never run at
+      // once, holding one lock file or port (the whole-release review); one replaced or forgotten meanwhile never starts.
+      for (const slot of added) {
+        const stopped = stopping.get(slot.config.name);
+        if (stopped) void stopped.then(() => this.#slots.includes(slot) && this.#begin(slot));
+        else this.#begin(slot);
+      }
     }
     // Built again now, so a kept server's count and left-out lines follow the edit at once, a clash with a server
     // removed cleared among them (Task 10's quality review); the new servers, still starting, offer nothing yet.

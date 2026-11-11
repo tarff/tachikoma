@@ -15,7 +15,7 @@ import { errorText, madeUnder, type Message, type ToolSpec } from "./core/types.
 import { gitBash } from "./exec/env.js";
 import type { Executor } from "./exec/executor.js";
 import type { Answers } from "./mcp/answers.js";
-import type { ServerConfig } from "./mcp/config.js";
+import { type ServerConfig, variables } from "./mcp/config.js";
 import { SEARCH } from "./mcp/search.js";
 import { KILL_MS } from "./mcp/server.js";
 import type { Servers } from "./mcp/servers.js";
@@ -601,13 +601,18 @@ export function approvalQuestion(reached: Reached[]): string {
 // The question for a project's MCP server at the launch (release 8c plan, choice 23; "Lines this plan adds"): its command
 // and arguments, or its address, as .mcp.json writes them, ${VAR} unfilled, so a key filled in never reaches the screen,
 // and the answer covers just what was shown (choice 48); a local one's then names the variables its entry sets, names
-// only, as a value may hold a key (choice 49). A command, argument or name that is empty or holds a space or a quote is
-// shown in quotes, a quote in it as \", so where each one ends can be seen; all of it escaped.
+// only, as a value may hold a key (choice 49), and a remote one's the variables its address and headers read, each once
+// (choice 64). A command, argument or name that is empty or holds a space or a quote is shown in quotes, a quote in it as
+// \", so where each one ends can be seen; all of it escaped.
 export function serverQuestion(c: ServerConfig): string {
   const name = visible(c.name);
   const w = c.asWritten;
-  if (!("command" in w)) return `Connect to the MCP server "${name}" from this project's .mcp.json at ${visible(w.url)}? [y/n]`;
   const shown = (word: string) => (word === "" || /[\s"]/.test(word) ? `"${word.replaceAll('"', '\\"')}"` : word);
+  if (!("command" in w)) {
+    const read = [...new Set([w.url, ...Object.values(w.headers)].flatMap(variables))];
+    const sends = read.length ? ` (sends ${read.map(shown).join(", ")})` : "";
+    return `Connect to the MCP server "${name}" from this project's .mcp.json at ${visible(w.url + sends)}? [y/n]`;
+  }
   const vars = c.entry.kind === "stdio" ? Object.keys(c.entry.env) : [];
   const sets = vars.length ? ` (sets ${vars.map(shown).join(", ")})` : "";
   return `Start the MCP server "${name}" from this project's .mcp.json: ${visible([w.command, ...w.args].map(shown).join(" ") + sets)}? [y/n]`;

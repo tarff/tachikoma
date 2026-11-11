@@ -10470,7 +10470,7 @@ describe("App's MCP", () => {
     const url = fake.url;
     const config: ServerConfig = {
       name: "om", safe: "om", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "",
-      entry: { kind: "http", url, headers: {} }, asWritten: { url },
+      entry: { kind: "http", url, headers: {} }, asWritten: { url, headers: {} },
     };
     const data = path.join(m.dir, "data", "tachi");
     const auth = new AuthStore(data);
@@ -10997,7 +10997,7 @@ describe("App's MCP", () => {
     const first = await httpFake(dir, { resources });
     const entry = { kind: "http" as const, url: first.url, headers: {} };
     const lead = new FakeProvider("a", [reply("one"), reply("two")]);
-    const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", {}, { entry, asWritten: { url: first.url } })]) });
+    const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", {}, { entry, asWritten: { url: first.url, headers: {} } })]) });
     const s = mcp!.servers;
     await soon(() => expect(states(s)).toEqual(["fake ready"]));
     await first.stop();

@@ -376,7 +376,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const remote: ServerConfig = {
       ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
       entry: { kind: "http", url: first.url, headers: {} },
-      asWritten: { url: first.url },
+      asWritten: { url: first.url, headers: {} },
     };
     const servers = make([remote]);
     servers.startAll();
@@ -416,7 +416,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const remote: ServerConfig = {
       ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
       entry: { kind: "http", url: fake.url, headers: {} },
-      asWritten: { url: fake.url },
+      asWritten: { url: fake.url, headers: {} },
     };
     const servers = make([remote, await config("gone"), await config("bad", { exit: 3 })]);
     servers.startAll();
@@ -443,7 +443,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const remote: ServerConfig = {
       ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: ["plain"], alwaysLoad: false, written: "" },
       entry: { kind: "http", url: fake.url, headers: {} },
-      asWritten: { url: fake.url },
+      asWritten: { url: fake.url, headers: {} },
     };
     const servers = make([remote]);
     servers.startAll();
@@ -479,7 +479,7 @@ describe("Servers: starting, waiting and stopping", () => {
     const remote: ServerConfig = {
       ...{ name: "r", safe: "r", where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "" },
       entry: { kind: "http", url: first.url, headers: {} },
-      asWritten: { url: first.url },
+      asWritten: { url: first.url, headers: {} },
     };
     const servers = make([remote]);
     servers.startAll();
@@ -582,6 +582,30 @@ describe("Servers: starting, waiting and stopping", () => {
     const cPid = Number(readFileSync(pid, "utf8"));
     await vi.waitFor(() => expect(alive(cPid)).toBe(false), WAIT);
     expect(new Set(every(servers).map((o) => o.server))).toEqual(new Set(["a", "b", "d"]));
+  });
+
+  // The whole-release review: a live edit's new server starts only once the old one has stopped, as a Reconnect's does,
+  // so two never hold one lock file or port. Each fake takes the lock, refusing to start while the process that holds it
+  // still runs, and the old one takes 200 ms to exit once its input closes, inside the stop's 300 ms.
+  it("starts a live edit's new server only after the old one has stopped", async () => {
+    const { dir, config, make, errors } = await setup();
+    const lock = JSON.stringify(path.join(dir, "server.lock"));
+    const start = `const fs = require("node:fs");
+      let held = 0; try { held = Number(fs.readFileSync(${lock}, "utf8")); } catch {}
+      let alive = false; if (held) try { process.kill(held, 0); alive = true; } catch (e) { alive = e.code === "EPERM"; }
+      if (alive) throw new Error("the old server still holds the lock");
+      fs.writeFileSync(${lock}, String(process.pid));
+      const pause = new Int32Array(new SharedArrayBuffer(4));
+      process.on("exit", () => Atomics.wait(pause, 0, 0, 200));`;
+    const s = await config("s", { start });
+    const servers = make([s]);
+    servers.startAll();
+    await servers.ready();
+    expect(servers.list()[0]!.state.is).toBe("ready");
+    const entry = s.entry as Extract<ServerConfig["entry"], { kind: "stdio" }>;
+    expect(servers.set([{ ...s, entry: { ...entry, args: [...entry.args, "again"] } }]).restarted).toEqual(["s"]);
+    await vi.waitFor(() => expect(servers.list()[0]!.state.is).toBe("ready"), WAIT);
+    expect(errors).toEqual([]);
   });
 
   // Release 8c plan, Task 10's quality review: a new connection closes one still open, so two Reconnects close together

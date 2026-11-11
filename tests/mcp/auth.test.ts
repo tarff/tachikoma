@@ -24,7 +24,7 @@ const WAIT = { timeout: 5_000 };
 
 const remote = (name: string, url: string, oauth?: OAuthEntry, headers: Record<string, string> = {}): ServerConfig => ({
   name, safe: name, where: "user", trusted: null, trustedTools: [], alwaysLoad: false, written: "",
-  entry: { kind: "http", url, headers, ...(oauth && { oauth }) }, asWritten: { url },
+  entry: { kind: "http", url, headers, ...(oauth && { oauth }) }, asWritten: { url, headers },
 });
 
 // The test's own folder, the data folder two levels inside it, the fake, and Servers that use that data folder's

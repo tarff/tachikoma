@@ -99,7 +99,7 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
   // An entry as the settings give it, filled in, with `asWritten` the file's own words: the entry's when not given.
   const server = (name: string, entry: ServerConfig["entry"], where: ServerConfig["where"] = "project", asWritten?: ServerConfig["asWritten"]) => ({
     name, safe: name.replace(/[^A-Za-z0-9_-]/g, "_"), entry, where, trusted: null, trustedTools: [], alwaysLoad: false, written: `as written: ${name}`,
-    asWritten: asWritten ?? (entry.kind === "stdio" ? { command: entry.command, args: entry.args } : { url: entry.url }),
+    asWritten: asWritten ?? (entry.kind === "stdio" ? { command: entry.command, args: entry.args } : { url: entry.url, headers: entry.headers }),
   }) satisfies ServerConfig;
   const local = (name: string, args: string[] = [], where: ServerConfig["where"] = "project", env: Record<string, string> = {}) =>
     server(name, { kind: "stdio", command: "npx", args, env }, where);
@@ -125,13 +125,15 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
     const tv = server("tv", filled, "project", { command: "npx", args: ["--key=${TOKEN}"] });
     expect(serverQuestion(tv)).toBe('Start the MCP server "tv" from this project\'s .mcp.json: npx --key=${TOKEN}? [y/n]');
     const url = { kind: "http" as const, url: "https://mcp.example.com/mcp?key=sk-secret-123", headers: {} };
-    const sanity = server("sanity", url, "project", { url: "https://mcp.example.com/mcp?key=${TOKEN}" });
-    expect(serverQuestion(sanity)).toBe('Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.example.com/mcp?key=${TOKEN}? [y/n]');
+    const sanity = server("sanity", url, "project", { url: "https://mcp.example.com/mcp?key=${TOKEN}", headers: {} });
+    expect(serverQuestion(sanity)).toBe(
+      'Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.example.com/mcp?key=${TOKEN} (sends TOKEN)? [y/n]',
+    );
     for (const c of [tv, sanity]) expect(serverQuestion(c)).not.toContain("sk-secret-123");
   });
 
   // Choice 49: the variables a local entry sets, names only, in the file's order, escaped and quoted as the command is; a
-  // remote server's headers go only to the address shown, so they are not named.
+  // remote server's headers are not named, only the variables they read (choice 64, below).
   it("names the variables a local server's entry sets, never their values, and no headers", () => {
     const env = { NODE_OPTIONS: "--require ./steal.js", "MY KEY\u001b": "sk-secret-123" };
     expect(serverQuestion(local("tv", ["server.js"], "project", env))).toBe(
@@ -141,6 +143,23 @@ describe("MCP servers at the launch", { timeout: 15_000 }, () => {
     expect(serverQuestion(server("sanity", headers))).toBe(
       'Connect to the MCP server "sanity" from this project\'s .mcp.json at https://mcp.example.com/mcp? [y/n]',
     );
+  });
+
+  // Choice 64: the variables a remote entry's address and headers read, as written, names only, in the file's order, each
+  // once, escaped and quoted as a local one's are; one that reads none names nothing.
+  it("names the variables a remote server's address and headers read, never their values", () => {
+    const filled = { kind: "http" as const, url: "https://tools.example.dev/mcp", headers: { Authorization: "Bearer sk-secret-123" } };
+    const one = server("tools", filled, "project", { url: "https://tools.example.dev/mcp", headers: { Authorization: "Bearer ${TICKETS_TOKEN}" } });
+    expect(serverQuestion(one)).toBe('Connect to the MCP server "tools" from this project\'s .mcp.json at https://tools.example.dev/mcp (sends TICKETS_TOKEN)? [y/n]');
+    const headers = { Authorization: "Bearer ${TICKETS_TOKEN}", "X-Team": "${TEAM}", "X-Key": "${MY KEY\u001b:-none}" };
+    const several = server("tools", filled, "project", { url: "https://${HOST:-tools.example.dev}/mcp?team=${TEAM}", headers });
+    expect(serverQuestion(several)).toBe(
+      'Connect to the MCP server "tools" from this project\'s .mcp.json at https://${HOST:-tools.example.dev}/mcp?team=${TEAM} ' +
+        '(sends HOST, TEAM, TICKETS_TOKEN, "MY KEY\\u001b")? [y/n]',
+    );
+    const none = server("tools", filled, "project", { url: "https://tools.example.dev/mcp", headers: { "X-Team": "core" } });
+    expect(serverQuestion(none)).toBe('Connect to the MCP server "tools" from this project\'s .mcp.json at https://tools.example.dev/mcp? [y/n]');
+    for (const c of [one, several, none]) expect(serverQuestion(c)).not.toContain("sk-secret-123");
   });
 
   it("asks about each project server not yet answered for its entry, in order, and keeps a yes and a no for the next launch", async () => {

@@ -1283,7 +1283,13 @@ Start the MCP server "build-tools" from this project's .mcp.json: node tools/mcp
   from your environment never reaches the screen. When the entry sets variables, the question
   names them, never their values, as a variable such as `NODE_OPTIONS` can make a known program
   run the project's own code: `node tools/mcp-server.js (sets NODE_OPTIONS)? [y/n]`. A remote one
-  asks `Connect to the MCP server "<name>" from this project's .mcp.json at <url>? [y/n]`.
+  asks `Connect to the MCP server "<name>" from this project's .mcp.json at <url>? [y/n]`, and
+  names the variables its address and headers read, so you see what it would send:
+  `at https://tools.example.dev/mcp (sends TICKETS_TOKEN)? [y/n]`.
+- **A project's servers never get your provider keys:** an entry in `.mcp.json` whose `url`,
+  `headers`, `args` or `env` reads `${ANTHROPIC_API_KEY}`, or another API key Tachikoma uses, is
+  left out, with a line: `.mcp.json: "tools" reads ${ANTHROPIC_API_KEY}, a provider key, which a
+  project's servers are never given; it was left out`. Your own entries can still read them.
 - **Your answer, yes or no, is kept** for that project, in Tachikoma's data folder, until you reset
   it in [`/mcp`](#mcp), or until the entry changes: a pulled change to its command, arguments,
   variables or address is asked about again (Claude Code asks once per name). A new value of a
@@ -2358,7 +2364,7 @@ it says so.
   library's.
 - **A yes covers the entry, not the files it runs,** as in Claude Code: a pulled change to the
   project's `server.js`, or an `npx` package named without a version, runs without a new question.
-  A question's `(sets ...)` names the variables, never their values.
+  A question's `(sets ...)` and `(sends ...)` name the variables, never their values.
 - **`.mcp.json` is read at the launch only,** has no size limit, and, saved as UTF-16, gives a
   garbled could-not-be-read line, as `settings.json` does.
 - **The refused-address line shows the address as written,** so a key written into it directly,
@@ -2403,14 +2409,15 @@ it says so.
 - **Sign-in:** Sign out does not ask the service to cancel the tokens. Two windows renewing one
   token at once, where the service hands out a new one each time, may lose that sign-in. Esc after
   the browser sent the code back may still save the sign-in, which counts from the next launch.
-  Tokens are kept by the address as written, so a changed slash, letter case or `:443` means
-  signing in again. Another program on this computer could open the printed start address first,
-  as with `/login chatgpt`. Services that need a client secret are not supported. A wider scope a
-  server asks for later (a 403 `insufficient_scope`) is not asked for, as a sign-in never starts in
-  the background. For an entry that can sign in, its own `Accept` header gives way to the
-  library's, and a redirect to another path, or from http to https, carries none of its headers.
-  Sign-in details gone between the launch and Sign in give `Sign-in to <name> failed: ` with no
-  reason. The MCP library's own `[mcp-sdk]` warnings are kept off the screen for the whole run.
+  Tokens are kept by the address with its `${VAR}` filled in, so a new value of a variable in it,
+  or a changed slash, letter case or `:443`, means signing in again. Another program on this
+  computer could open the printed start address first, as with `/login chatgpt`. Services that need
+  a client secret are not supported. A wider scope a server asks for later (a 403
+  `insufficient_scope`) is not asked for, as a sign-in never starts in the background. For an entry
+  that can sign in, its own `Accept` header gives way to the library's, and a redirect to another
+  path, or from http to https, carries none of its headers. Sign-in details gone between the launch
+  and Sign in give `Sign-in to <name> failed: ` with no reason. The MCP library's own `[mcp-sdk]`
+  warnings are kept off the screen for the whole run.
 - **Forms:** a text field types only at its end, with no cursor to move. A text field's
   `minLength`, `maxLength` and `format`, and a pick-several's `minItems` and `maxItems`, are not
   checked by Tachikoma. A remote call's limit, 60 s by default, keeps counting while you fill in a
@@ -2434,10 +2441,15 @@ it says so.
   first prompt's wait for servers refuses a prompt that names a starting server's resource or
   prompt (`not ready (starting)`), where any other prompt is sent without the late servers. A
   reconnect shared by a tool call and a read can say `was connected again.` twice.
+- **`-p` and Ctrl-C:** in a `-p` run, Ctrl-C also stops every local server, as they share
+  Tachikoma's console. Their stop lines say to reconnect from `/mcp`, which `-p` has no use for,
+  and SessionEnd `mcp_tool` hooks then find them not running.
+- **A restart's gap:** a call that lands while a server restarts, a gap of up to 300 ms, gets the
+  MCP library's `Not connected`.
 - **`ws` servers and client secrets are not supported,** and `headersHelper` waits for release
-  8c-2: Claude Code's `ws` kind
-  is left out with its line, as MCP itself has no WebSocket transport, nor has its library. Claude
-  in Chrome cannot be used: it is part of Claude Code, not a server Tachikoma can start.
+  8c-2: Claude Code's `ws` kind is left out with its line, as MCP itself has no WebSocket
+  transport, nor has its library. Claude in Chrome cannot be used: it is part of Claude Code, not a
+  server Tachikoma can start.
 
 ## What comes next
 

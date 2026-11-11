@@ -159,6 +159,26 @@ describe("tool_search: what a request carries", () => {
     expect(model.names(0)).toEqual(["own"]);
   });
 
+  // The whole-release review: servers off, waiting for a yes or said no offer nothing a search could find, nor are they
+  // starting, failed or needing sign-in, so the request carries no tool_search, as with no server at all.
+  it("has no tool_search when every server is off, or every one waits for a yes or was said no to", async () => {
+    const t = await setup();
+    const answers = () => ({ get: (name: string) => (name === "no" ? false : undefined), set: () => {}, reset: () => {} });
+    const project = { where: "project" as const, written: "w" };
+    const configs = [await t.local("a"), await t.local("wait", {}, project), await t.local("no", {}, project)];
+    for (const [network, which] of [["off", configs], ["none", configs.slice(1)]] as const) {
+      const servers = new Servers(which, { root: t.dir, env: process.env, bus: t.bus, answers, network, lead: () => "fake:a" });
+      servers.startAll();
+      expect(await servers.ready()).toBe(true);
+      expect(servers.list().map((s) => s.state.is)).toEqual(
+        network === "off" ? ["off", "off", "off"] : ["waiting for your yes", "you said no"],
+      );
+      const { session, model } = t.session(servers, [reply("ok")]);
+      await session.send("go");
+      expect(model.names(0)).toEqual(["own"]);
+    }
+  });
+
   // Choice 42: a server's alwaysLoad, or a tool's own _meta, loads it upfront, with the upfront cut.
   it("defines upfront the tools of a server with alwaysLoad, and one whose _meta asks for it, with the 4,096 cut", async () => {
     const t = await setup();

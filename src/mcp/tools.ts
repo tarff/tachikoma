@@ -99,10 +99,12 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
 
   return {
     loaded,
-    // One offer for both, so tool_search names exactly the tools this request does not define.
+    // One offer for both, so tool_search names exactly the tools this request does not define. With no tools at all and
+    // no server starting, failed or needing sign-in, as when every one is off, waits for a yes or was said no to, a search
+    // could find nothing, so none is offered (the whole-release review).
     offer() {
       const o = servers.offer({ loaded, ...opts });
-      if (!servers.list().length) return { defined: o.defined };
+      if (!o.defined.length && !o.named.length && !o.notReady.length) return { defined: o.defined };
       return { defined: o.defined, search: { spec: searchSpec(o), run: (input, ctx) => search.run(input, ctx), parallel: true } };
     },
     tool: (offered) => ({

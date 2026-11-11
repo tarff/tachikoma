@@ -23,7 +23,7 @@ const local = (args: string[], over: Partial<Extract<ServerEntry, { kind: "stdio
   entry: { kind: "stdio", command: process.execPath, args, env: {}, ...over },
   asWritten: { command: process.execPath, args },
 });
-const remote = (url: string, headers: Record<string, string> = {}): ServerConfig => ({ ...base, entry: { kind: "http", url, headers }, asWritten: { url } });
+const remote = (url: string, headers: Record<string, string> = {}): ServerConfig => ({ ...base, entry: { kind: "http", url, headers }, asWritten: { url, headers } });
 
 // The test's own folder, the project's root, and its servers, each stopped before the folder is removed: on Windows a
 // running server holds the folder it works in.

@@ -37,7 +37,7 @@ describe("readServers", () => {
       {
         name: "sanity", safe: "sanity", where: "user", trusted: null, trustedTools: [], alwaysLoad: false,
         entry: { kind: "http", url: "https://mcp.example.com/mcp", headers: {} }, written: writtenOf(remote()),
-        asWritten: { url: "https://mcp.example.com/mcp" },
+        asWritten: { url: "https://mcp.example.com/mcp", headers: {} },
       },
     ]);
   });
@@ -50,7 +50,7 @@ describe("readServers", () => {
     expect(kept).toEqual<ServerConfig[]>([{
       name: "s", safe: "s", where: "user", trusted: "read-only", trustedTools: [], alwaysLoad: true,
       entry: { kind: "sse", url: "https://mcp.example.com/mcp", headers: { "X-Team": "a" }, timeout: 120000, oauth }, written: writtenOf(raw),
-      asWritten: { url: "https://mcp.example.com/mcp" },
+      asWritten: { url: "https://mcp.example.com/mcp", headers: { "X-Team": "a" } },
     }]);
     const tools = read(local({ type: "stdio", env: { A: "1" }, timeout: 5000, trustedTools: ["quote_get", "chart_get_state"], alwaysLoad: false }));
     expect(tools.warnings).toEqual([]);
@@ -253,13 +253,42 @@ describe("readServers", () => {
   });
 
   // Release 8c plan, choice 48: the project's question shows the entry as written, so a key filled in never reaches it.
-  it("keeps the command, arguments and address as written, ${VAR} unfilled, beside the filled entry", () => {
+  it("keeps the command, arguments, address and headers as written, ${VAR} unfilled, beside the filled entry", () => {
     const [stdio] = read(local({ command: "${HOST}-node", args: ["--key=${TOKEN}"] })).kept;
     expect(stdio!.entry).toMatchObject({ command: "example.com-node", args: ["--key=sk-secret-123"] });
     expect(stdio!.asWritten).toEqual({ command: "${HOST}-node", args: ["--key=${TOKEN}"] });
-    const [http] = read(remote({ url: "https://mcp.example.com/mcp?key=${TOKEN}" })).kept;
-    expect(http!.entry).toMatchObject({ url: "https://mcp.example.com/mcp?key=sk-secret-123" });
-    expect(http!.asWritten).toEqual({ url: "https://mcp.example.com/mcp?key=${TOKEN}" });
+    const [http] = read(remote({ url: "https://mcp.example.com/mcp?key=${TOKEN}", headers: { Authorization: "Bearer ${TOKEN}" } })).kept;
+    expect(http!.entry).toMatchObject({ url: "https://mcp.example.com/mcp?key=sk-secret-123", headers: { Authorization: "Bearer sk-secret-123" } });
+    expect(http!.asWritten).toEqual({ url: "https://mcp.example.com/mcp?key=${TOKEN}", headers: { Authorization: "Bearer ${TOKEN}" } });
+  });
+
+  // Release 8c plan, choice 64: Tachikoma's provider keys never reach a project's server, through any field that fills
+  // ${VAR}; the line names the variable as written, never its value, whether it is set or not, and the letter case of its
+  // name is ignored, as Windows ignores it. The user's own entries may read them.
+  it("leaves out a project's server whose url, headers, args or env read a provider key, and keeps the user's", () => {
+    const env = { ...ENV, ANTHROPIC_API_KEY: "sk-ant-fake-1", OPENAI_API_KEY: "sk-fake-2" };
+    const line = (name: string) => [`.mcp.json: "tools" reads \${${name}}, a provider key, which a project's servers are never given; it was left out`];
+    const project = (raw: unknown, from: NodeJS.ProcessEnv = env) => {
+      const warnings: string[] = [];
+      return { kept: readServers(".mcp.json", { tools: raw }, from, warnings), warnings };
+    };
+    const cases: [unknown, string][] = [
+      [remote({ headers: { Authorization: "Bearer ${ANTHROPIC_API_KEY}" } }), "ANTHROPIC_API_KEY"],
+      [local({ env: { KEY: "${ANTHROPIC_API_KEY}" } }), "ANTHROPIC_API_KEY"],
+      [local({ args: ["--key=${OPENAI_API_KEY:-none}"] }), "OPENAI_API_KEY"],
+      [remote({ url: "https://mcp.example.com/mcp?key=${MOONSHOT_API_KEY}" }), "MOONSHOT_API_KEY"],
+      [remote({ headers: { "X-Key": "${openrouter_api_key}" } }), "openrouter_api_key"],
+    ];
+    for (const [raw, name] of cases) {
+      const got = project(raw);
+      expect(got).toEqual({ kept: [], warnings: line(name) });
+      expect(got.warnings.join("")).not.toContain("fake");
+      expect(project(raw, ENV)).toEqual({ kept: [], warnings: line(name) }); // not set: the same line
+    }
+    const user = read(remote({ headers: { Authorization: "Bearer ${ANTHROPIC_API_KEY}" } }), env);
+    expect(user.warnings).toEqual([]);
+    expect(user.kept[0]!.entry).toMatchObject({ headers: { Authorization: "Bearer sk-ant-fake-1" } });
+    expect(read(local({ env: { KEY: "${ANTHROPIC_API_KEY}" } }), env).kept[0]!.entry).toMatchObject({ env: { KEY: "sk-ant-fake-1" } });
   });
 
   it("leaves out a server needing a variable that is not set, naming it, in each field", () => {
@@ -389,7 +418,7 @@ describe("mergeServers", () => {
     expect(mergeServers(user, project)[0]).toEqual({
       name: "sanity", safe: "sanity", where: "user", trusted: "read-only", trustedTools: [], alwaysLoad: false,
       entry: { kind: "http", url: "https://mcp.example.com/mcp", headers: {} }, written: writtenOf(remote({ trusted: "read-only" })),
-      asWritten: { url: "https://mcp.example.com/mcp" },
+      asWritten: { url: "https://mcp.example.com/mcp", headers: {} },
     });
     expect(mergeServers([], project)).toEqual(project);
   });
