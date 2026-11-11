@@ -1,21 +1,22 @@
 # Tachikoma
 
-> **Work in progress.** Release 8b of 15 is done (the second of release 8's five parts); the rest is
-> being built. Expect missing features and changes that break things, and don't rely on it for real
-> work yet.
+> **Work in progress.** Release 8c of 15 is done (the third of release 8's five parts); its second
+> half, 8c-2, servers inside the sandbox and allowed sites, comes next, and the rest is being built.
+> Expect missing features and changes that break things, and don't rely on it for real work yet.
 
 Tachikoma is a coding-agent harness written from scratch in TypeScript. Any of several model
 providers can lead a session. Later releases add handing work to other models and to the `claude`,
 `codex` and `kimi` command-line tools, long-term memory, search of the codebase by meaning, and
 lessons learned from its own error log.
 
-This is release 8b of 15: the core; signing in with ChatGPT; Claude Code's keys and screen;
+This is release 8c of 15: the core; signing in with ChatGPT; Claude Code's keys and screen;
 subagents that read, with a to-do list and your instruction files; a full screen with its own
 scrolling and mouse selection; a settings file, keys you can move, and Claude Code's external
 editor, stash, pictures and vim mode; a Docker sandbox, auto mode (a second model judging
 actions) and a check on dangerous commands; saved sessions you can reopen, with a conversation
-too long for the model shortened into a summary; and hooks, your own commands run at set moments
-of a session, in Claude Code's format. The command is `tachi`. So far it has been tested
+too long for the model shortened into a summary; hooks, your own commands run at set moments
+of a session, in Claude Code's format; and MCP servers, whose tools the model can use, set up as
+in Claude Code. The command is `tachi`. So far it has been tested
 on Windows 11 only; release 14 adds testing on Linux and macOS.
 
 ## What it does
@@ -51,10 +52,14 @@ on Windows 11 only; release 14 adds testing on Linux and macOS.
 - **Long conversations are shortened** (release 8a): one that will not fit the model's window is
   summarised, instead of ending with an error; `/compact` does it now, and `/autocompact` at a size
   you choose. See [Shortening long conversations](#shortening-long-conversations).
-- **Hooks** (release 8b): your own commands, in Claude Code's format, run at 11 moments of a
+- **Hooks** (release 8b): your own commands, in Claude Code's format, run at 13 moments of a
   session, such as before and after each tool call, as you send a prompt and as a turn ends. A hook
   can refuse or rewrite a tool call, hand the model text, or keep a turn going. They are read from
   your settings file only, never from a project's files. See [Hooks](#hooks).
+- **MCP servers** (release 8c): the tools, files, prompts and forms of the MCP servers you list,
+  in Claude Code's format, in your settings file or, once you say yes, a project's `.mcp.json`.
+  Each call asks, unless you trust the tool as read-only, and the model looks tools up as it needs
+  them. See [MCP servers](#mcp-servers).
 - **Search tools:** `find_files` lists files by a pattern such as `src/**/*.ts`, and `search_files`
   searches their contents with a regular expression. Both skip `.git` and what the project's
   `.gitignore` files list, follow no links, and run no program.
@@ -185,9 +190,9 @@ models to pick from, `/login chatgpt` and `/logout chatgpt` sign in and out, `/c
 `/branch` and `/rename` start, switch, copy and name [saved sessions](#saved-sessions), `/export`
 writes the conversation out, `/compact` and `/autocompact`
 [shorten it](#shortening-long-conversations), `/tasks` lists the subagents, `/hooks` lists the
-[hooks](#hooks) in force, `/errors` summarises the error log, `/screen` switches between full
-screen and classic, `/settings` and `/keybindings` open the settings and keys files in your
-editor, `/vim` switches vim mode, and `/exit` quits;
+[hooks](#hooks) in force, `/mcp` lists the [MCP servers](#mcp-servers), `/errors` summarises the
+error log, `/screen` switches between full screen and classic, `/settings` and `/keybindings`
+open the settings and keys files in your editor, `/vim` switches vim mode, and `/exit` quits;
 commands ignore case. `/lead`, `/model`, `/screen`, `/vim` and `/autocompact` change only the
 window you type them in. Esc or Ctrl-C stops the current turn and the subagents it waits for;
 background subagents go on until `/tasks stop` or you quit.
@@ -518,7 +523,8 @@ failed command's result gets one more line: `(The box's network is off, so nothi
 the internet. To allow it, launch with --network on.)` On, the box has Docker's ordinary network.
 Tachikoma's own requests to the model go from your machine either way. Without the sandbox,
 `--network` does nothing and says so: `--network acts only with the sandbox on; it was ignored`. A
-list of allowed sites is planned for release 8c.
+list of allowed sites is planned for release 8c-2. With the network off, MCP servers are off too
+(see [MCP servers](#with-the-sandbox)).
 
 ### The box's limits
 
@@ -842,6 +848,7 @@ Every entry is optional; one left out keeps its default.
 | `autoCompactWindow` | the `/autocompact` size, a whole number of tokens from 1: see [Shortening long conversations](#shortening-long-conversations) | off | at once, as `/autocompact`, with `autoCompactWindow is now 200,000 (from settings.json)`; taken out, off |
 | `hooks` | your own commands, run at moments of a session: see [Hooks](#hooks) | none | from the next event, with `Hooks changed: <n> hooks at <m> events.` |
 | `disableAllHooks` | `true` turns every hook off; they are still read, so `/hooks` can say so | `false` | as `hooks` |
+| `mcpServers` | your MCP servers: see [MCP servers](#mcp-servers) | none | at once, only the servers whose entries changed restarting, with `MCP servers changed: <name> restarted.` |
 
 - **Which wins:** a flag, then its variable where it has one (`TACHI_LEAD`, `TACHI_WORKER`,
   `TACHI_CLASSIC`, `TACHI_SCROLL_SPEED`; an empty one counts as unset), then the file, then the
@@ -879,7 +886,7 @@ Every entry is optional; one left out keeps its default.
 
 ## Hooks
 
-Hooks are your own commands, run at 11 moments of a session, such as before and after each tool
+Hooks are your own commands, run at 13 moments of a session, such as before and after each tool
 call, as you send a prompt, and as a turn ends. They are written in Claude Code's format, with its
 event names and fields, so a hook script made for Claude Code works unchanged. They are read from
 the `"hooks"` entry of the [settings file](#settings) only: a project's own files never add one, so
@@ -917,7 +924,8 @@ a hook it runs names the folder as `$HOME`.
 
   `"disableAllHooks": true` turns every hook off. These are left out, each with a warning at the
   launch, as an unknown setting gets, and the rest applies: an event Tachikoma does not run hooks
-  at, with all its hooks; a hook of a kind other than `"command"`; and a hook with `if` (Claude
+  at, with all its hooks; a hook of a kind other than `"command"` or `"mcp_tool"`
+  ([MCP servers](#mcp-calls-in-hooks)); and a hook with `if` (Claude
   Code's condition in its permission-rule syntax, which Tachikoma does not have). A key in an entry
   other than `matcher` and `hooks`, and a field that is not a hook field, are left out alone, with
   a warning: the entry's hooks, and the hook, still run. `asyncRewake` gets a warning and runs as
@@ -946,6 +954,8 @@ a hook it runs names the folder as `$HOME`.
 | SubagentStop | when a subagent finishes normally | `Explore` |
 | PreCompact | before each [shortening](#shortening-long-conversations): `manual` for `/compact`, `auto` for every other | `manual` or `auto` |
 | PostCompact | once the summary is made, before it is saved | `manual` or `auto` |
+| Elicitation | when an [MCP server](#forms) asks for a form, before it is shown | the server's name |
+| ElicitationResult | once the form is answered, before the answer goes back | the server's name |
 
 PostToolUse and PostToolUseFailure do not run for a call that was refused, declined or cancelled,
 for an unknown tool, or for an input the tool refused, as in Claude Code.
@@ -973,6 +983,8 @@ event gets `session_id`; `transcript_path`, Tachikoma's own session file; `cwd`,
 | SubagentStop | `agent_id`, `agent_type`, `agent_transcript_path`, `last_assistant_message`, `stop_hook_active` |
 | PreCompact | `trigger`, `custom_instructions` (the `/compact` words, or null) |
 | PostCompact | `trigger`, `compact_summary` |
+| Elicitation | `mcp_server_name`, `message`, `mode` (`form` or `url`), then `requested_schema`, or `url` and `elicitation_id` |
+| ElicitationResult | the same, then `action` and `content` |
 
 ### Tools under Claude Code's names
 
@@ -990,6 +1002,8 @@ every line still names the tool as Tachikoma does (`shell`, not `Bash`).
 | `search_files` | `Grep` | `pattern`, `path`, `glob` | the text the model reads |
 | `delegate` | `Agent` | `description`, `prompt`, `run_in_background`, and `subagent_type`, always `"Explore"` | `{status: "completed", agentId, content: [{type: "text", text}]}`; for one started in the background, the text the model reads |
 | `todo` | `TodoWrite` | `todos: [{content, status}]`, `done` sent as `completed` | the text the model reads |
+| `tool_search` | `ToolSearch` | `query`, `max_results` | the text the model reads |
+| an [MCP tool](#mcp-calls-in-hooks) | its own name, `mcp__<server>__<tool>` | its arguments | the text the model reads |
 
 A failed command's `error`, at PostToolUseFailure, starts `Exit code <n>`, then its error output,
 then its output. Paths are given whole: on your machine and in live link, the real project's, with
@@ -1186,8 +1200,6 @@ Event by event:
 
 ### Not yet
 
-- **Planned for release 8c,** with the MCP client: the `mcp_tool` hook kind, the Elicitation and
-  ElicitationResult events, and `mcp__...` tool names in matchers.
 - **Planned for release 8e:** PermissionRequest, PermissionDenied, StopFailure, Notification,
   PreModelSwitch and PostModelSwitch, PostToolBatch, InstructionsLoaded, ConfigChange, FileChanged
   and CwdChanged.
@@ -1197,6 +1209,349 @@ Event by event:
   `CLAUDE_ENV_FILE`; TaskCreated, TaskCompleted, TeammateIdle, WorktreeCreate, WorktreeRemove and
   MessageDisplay, which belong to Claude Code features Tachikoma has not got; and hooks from a
   project's files.
+
+## MCP servers
+
+MCP servers are programs that give the model more tools, such as a chart, a database or a design
+file; some also offer files, ready-made prompts and forms. You list them in Claude Code's format,
+so an entry copied from Claude Code works unchanged, and Tachikoma starts them with each session.
+Every server runs on your machine, or is reached from it; servers inside the sandbox are planned
+for release 8c-2.
+
+```json
+{
+  "mcpServers": {
+    "notes": { "command": "node", "args": ["C:/tools/notes/server.js"], "trusted": "read-only" },
+    "tickets": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${TICKETS_TOKEN}" },
+      "trustedTools": ["search_tickets"]
+    },
+    "calendar": { "type": "http", "url": "https://calendar.example.com/mcp" }
+  }
+}
+```
+
+- **The entry:** `"mcpServers"` in the [settings file](#settings) names each server. Its fields are
+  Claude Code's:
+  - `type`: `"stdio"`, a program on your machine (the default), or `"http"` (also spelled
+    `"streamable-http"`) or `"sse"`, a server at an address;
+  - for a local server, `command`, `args` and `env`: the program, its arguments, and variables
+    added to its environment;
+  - for a remote one, `url` and `headers`: its address, and headers sent with each request, such
+    as a key;
+  - `timeout`, a whole number of milliseconds: a call's limit ([below](#answers));
+  - `oauth`, for [signing in](#signing-in): `clientId`, `callbackPort`, `scopes` (one text, the
+    scopes split by spaces) and `authServerMetadataUrl` (an `https://` address);
+  - `alwaysLoad`, `true` or `false`: see [tool search](#tool-search).
+
+  Two are Tachikoma's own, `trusted` and `trustedTools` ([below](#trust-and-approval)).
+- **`${VAR}` and `${VAR:-default}`** in `command`, `args`, `env`, `url` and `headers` are filled
+  in from your environment, as in Claude Code. Claude Code sends an unset one on as its own text;
+  Tachikoma leaves that server out instead, so a key header never goes out as `${TICKETS_TOKEN}`:
+  `settings.json: "mcpServers": "tickets" needs ${TICKETS_TOKEN}, which is not set; it was left
+  out`.
+- **Addresses** start with `https://`. `http://` is only for your own machine (`localhost`,
+  `127.0.0.1` or `::1`), so a key or token never crosses the network unencrypted.
+- **A local server** is started by its program's full path, found on PATH, so a program of the same
+  name in the project folder is never started in its place. On Windows npm's `.cmd` wrappers, such
+  as `npx`, are found too. The server starts in the project folder, with the environment shell
+  commands get, so without the API keys, plus `CLAUDE_PROJECT_DIR` (the project folder, under
+  Claude Code's name) and the entry's `env`.
+- **Mistakes:** a server with a mistake in its entry is left out, with a line at the launch, and the
+  rest start: `settings.json: "mcpServers": "notes" has no "command"; a local server needs one, such
+  as {"command": "node", "args": ["server.js"]}; it was left out`. A field Tachikoma does not know
+  is ignored, with its own line. `"mcpServers"` itself of the wrong type stops the launch, as every
+  entry's does.
+- **Edits apply while Tachikoma runs:** only the servers whose entries changed restart, with a grey
+  line such as `MCP servers changed: notes restarted, calendar added.` A change of trust or
+  `alwaysLoad` applies from the next call and restarts nothing. An edit that breaks the file keeps
+  the servers in force.
+
+### A project's servers
+
+A project can list servers too, in a `.mcp.json` at its root, in the same shape. A repository you
+clone could start a program this way, so Tachikoma asks first, at the launch, before the window
+opens, once for each server:
+
+```
+Start the MCP server "build-tools" from this project's .mcp.json: node tools/mcp-server.js? [y/n]
+```
+
+- **The question shows the entry as the file writes it,** `${VAR}` unfilled, so a key filled in
+  from your environment never reaches the screen. When the entry sets variables, the question
+  names them, never their values, as a variable such as `NODE_OPTIONS` can make a known program
+  run the project's own code: `node tools/mcp-server.js (sets NODE_OPTIONS)? [y/n]`. A remote one
+  asks `Connect to the MCP server "<name>" from this project's .mcp.json at <url>? [y/n]`.
+- **Your answer, yes or no, is kept** for that project, in Tachikoma's data folder, until you reset
+  it in [`/mcp`](#mcp), or until the entry changes: a pulled change to its command, arguments,
+  variables or address is asked about again (Claude Code asks once per name). A new value of a
+  `${VAR}` asks nothing.
+- **Trust in `.mcp.json` never counts:** `trusted` and `trustedTools` there are ignored, with a
+  line.
+- **The same name in both files:** your own entry wins whole, so a repository cannot replace a
+  server you trust with its own program. Claude Code ranks the project's entry higher.
+- **`.mcp.json` is read at the launch only,** and it is a [protected path](#protected-paths), so
+  the model's file tools never write it without a check.
+- **In `-p`,** only the project's servers you said yes to in the window start
+  ([below](#mcp-in--p-runs)). Claude Code starts them all without asking.
+
+### Starting and stopping
+
+- **At the launch** every server starts at once, in the background. Each has 30 s to connect and
+  list its tools; one that fails says why, in red: `MCP server notes failed to start: node was not
+  found on PATH`.
+- **The first prompt waits** for the servers still starting, the working line saying `Waiting for
+  MCP servers: notes, tickets...`. Esc sends it without them; their tools join once they are
+  ready, with `MCP server tickets is ready: 12 tools.`
+- **A server that stops** gets one red line, such as `MCP server notes stopped: it exited with code
+  1: Error: NOTES_DIR is not set; reconnect it from /mcp.`, and the model is told it stopped.
+  Nothing restarts it on its own. A remote server whose connection drops is connected again once,
+  at its next call, with `MCP server tickets was connected again.`; it stops only if that fails.
+- **At exit,** and at a restart, a local server's input is closed, and if it is still running
+  300 ms later it is killed, on Windows with everything it started.
+
+### Trust and approval
+
+An MCP call is a new kind of action for the [permission modes](#permission-modes):
+
+| Mode | An MCP call |
+|---|---|
+| `ask`, `project` | asks |
+| `auto` | the judge decides, and is shown the tool's description |
+| `never` (copy mode) | asks: the server runs on your machine, outside the box |
+| `-p` | refused, as nobody can answer; in `auto` the judge decides |
+
+The question names the server, the tool and its input, with the tool's own description in grey:
+
+```
+Allow notes: search_notes {"query":"release plan"}? [y/n]
+```
+
+- **Trust** is your word that a tool only reads: `"trusted": "read-only"` for a whole server, or
+  `"trustedTools": [...]` for single tools, by the tool's own name. A trusted tool runs without a
+  question in every mode, `-p` included. Tachikoma cannot see what a tool does, so trust only tools
+  you know only read. Trust counts only in your settings file.
+- **A PreToolUse hook's allow** skips the question, as for any tool. In `never`, a hook's ask on an
+  MCP call becomes your question. Neither trust nor a hook starts a server that
+  [the sandbox's rule](#with-the-sandbox) keeps off.
+- **Subagents only read,** so they get only the tools you trust, under the same names, each with
+  its own tool search. A subagent's call to a tool no longer trusted is refused.
+- **A call runs only on the tool the model was shown.** If the server restarted, or the tool
+  changed or went away while the call waited for its question or its hooks, the call is not run,
+  and the model is told to look again. A yes never runs another version of the tool.
+
+### Names
+
+- **A tool's name** is `mcp__<server>__<tool>`, every character but letters, digits, `_` and `-`
+  made `_`, as in Claude Code: `mcp__notes__search_notes`.
+- **At most 64 characters, for every provider,** as OpenAI's take no more (Claude Code's limit,
+  128, is Anthropic's). `/lead` can switch providers in the middle of a session, so every name must
+  fit them all from the start. A longer one is left out with a grey line, and the server's other
+  tools stay: `MCP server notes: "<tool>" was left out: its name <full name> is 70 characters, over
+  the 64 every provider takes`.
+- **Every name is unique,** or the later tool is left out with a line naming the one that holds it,
+  as two names can become one once made safe (`foo.bar` and `foo_bar`). A server whose name holds
+  `__` once made safe is left out, as its tools' names would read two ways.
+- **An input schema the providers would refuse** leaves its tool out, with its line. One that
+  starts with `anyOf`, `oneOf` or `allOf` is merged into one set of parameters, and the model is
+  told which go together, following Claude Code's MCP page.
+
+### Tool search
+
+MCP tool lists are big: sent whole, one measured setup's 180 tools added about 58,000 tokens to
+every request, 29% of a 200,000-token window. So, as Claude Code does, a request names the MCP
+tools without defining them, in the description of Tachikoma's own `tool_search` tool, and the
+model loads the ones it needs:
+
+- **A search by words** finds tools whose name or description holds them, the best 5 unless the
+  model asks for another number. `select:<name>,<name>` loads tools by their full names. The answer
+  gives each tool's description and input, and the model can call them from its next step on.
+- **Loaded tools stay loaded** for the conversation, across a resume, `/branch` and a shortening;
+  `/clear` starts with none.
+- **`"alwaysLoad": true`** on a server's entry, or a server's own mark on one of its tools
+  (`_meta["anthropic/alwaysLoad"]`), defines those tools in every request, with no search.
+- **Descriptions** are cut at 4,096 characters for a tool defined upfront, and at 16,384 for one
+  loaded by a search.
+- **`tool_search` needs no approval,** as it reads only Tachikoma's own list. With no server in
+  force, there is none.
+
+### Answers
+
+- **Text** is cut at 30,000 characters, with `[cut: <n> more characters]`, as a command's output
+  is.
+- **Pictures** go to the model as pasted ones do, numbered after yours, and show under the call as
+  `⎿ [Image #4]`.
+- **An answer of structured data alone** is sent as its JSON text.
+- **An error the tool reports** reaches the model as a failed call, so PostToolUseFailure hooks
+  run.
+- **Other kinds of content,** such as audio, are named for the model in one line, not passed on.
+- **A call's limit:** none for a local server unless the entry sets `timeout`, as in Claude Code
+  (whose own default is about 28 hours); for a remote one, 60 s for each request, or the entry's
+  `timeout` when it is longer. A server's progress reports never stretch it. Esc stops a call and
+  tells the server.
+- **A tool list that changes** while its server runs is read again, and the next request carries
+  the new one.
+
+### Signing in
+
+A remote server that asks for sign-in (OAuth) shows `needs sign-in` in `/mcp`, and the launch does
+not wait for it. To sign in:
+
+1. Type `/mcp`, pick the server, then Sign in.
+2. Answer `Open your browser to sign in to calendar at calendar.example.com? [y/n]`. The browser
+   opens the server's own sign-in page; if it does not, the line `Waiting for the sign-in in your
+   browser. If it did not open, go to: <url>` gives the address to open.
+3. Approve there. Tachikoma says `Signed in to calendar.` and connects. Esc stops the wait.
+
+- **The sign-in comes back** to `http://localhost:<port>/callback`, on a free port or the entry's
+  `oauth.callbackPort`, Claude Code's own form, so an entry copied from Claude Code signs in
+  unchanged. A service that does not let apps register themselves needs a client id from it, in
+  `"oauth": {"clientId": ...}`.
+- **The tokens are kept** in Tachikoma's data folder, in `mcp-auth.json`, private to you, as the
+  ChatGPT sign-in is, and renewed on their own. They are kept by server name and address, so they
+  are never sent to a new address under an old name. Sign out, in `/mcp`, removes them.
+- **An entry's `headers` go only to the server's own address,** never to the sign-in service, so a
+  key in them never reaches another host. An entry with its own `Authorization` header is never
+  signed in: a 401 from its server fails it, `<address> answered 401`, which points at its key.
+- **`-p` cannot sign in,** as in Claude Code, and says so: `MCP server calendar needs sign-in, which
+  -p cannot do; sign in from /mcp in the window.` A server signed in from the window works in `-p`
+  too.
+
+### Figma
+
+Figma's remote server, at `mcp.figma.com`, lets only apps on its own approved list register, so
+signing in there ends with `Sign-in to figma failed: the sign-in service refused to register
+Tachikoma (403), as it takes only apps it approved; a client id it gives you goes in "oauth":
+{"clientId": ...} in the server's entry`. Tachikoma never signs in under another app's name. Use
+the Figma desktop app's own server instead, which needs no sign-in:
+
+1. In the Figma desktop app, turn on its MCP server in Dev Mode. It needs a Dev or Full seat.
+2. Add it to your settings file, and keep the app running while you use it:
+
+   ```json
+   "figma": { "type": "http", "url": "http://127.0.0.1:3845/mcp" }
+   ```
+
+### Forms
+
+A server can ask you to fill in a form (MCP's "elicitation"). Its message shows first, as `notes
+asks: <message>`; then each field is asked in the prompt's place, one at a time: text, a number,
+yes or no, or a pick from a list, filled in with the field's default when it has one, such as
+`Due date (optional): `. A wrong answer says what is wrong and asks again, such as `That is not a
+number; type one, or Esc to decline the form.` Esc declines the whole form.
+
+- **A request to open an address** asks first: `notes asks you to open <url> in your browser:
+  <message>. Open it? [y/n]`. Only `http://` and `https://` addresses are opened; any other is
+  declined, with a red line.
+- **Elicitation and ElicitationResult hooks** run around the form ([below](#mcp-calls-in-hooks)).
+- **In `-p`** every form is declined, with a note.
+- **Everything a server writes is escaped,** so it cannot pass for one of Tachikoma's lines.
+
+### Resources and prompts
+
+- **Resources,** a server's files or records, are listed by `@` after the project's files, as
+  `@<server>:<uri>`, such as `@notes:note://today`. The prompt keeps what you picked as it is; when
+  you send it, the resource's text, cut at 30,000 characters, and its pictures go to the model after
+  your words. One that cannot be read stops the send: `Could not read @notes:note://today:
+  <reason>. Your words are back in the prompt box.`
+- **Prompts,** a server's ready-made messages, are commands `/<server>:<prompt>`, listed in the `/`
+  menu with their descriptions. The words after the command fill the prompt's arguments in order,
+  the last taking the rest, as in Claude Code: `/notes:brief 2026-11 the release plan`. A missing
+  one gives the command's usage: `/notes:brief needs topic: /notes:brief month topic`.
+- **What a server supplies is marked as the server's.** Auto mode's judge, UserPromptSubmit hooks,
+  the Up history, the conversation on screen and `/export` see only the words you typed, so a
+  resource's text cannot pass for yours.
+
+### MCP calls in hooks
+
+- **Every hook event** sees an MCP call under its full `mcp__...` name, with its arguments as
+  `tool_input` and the text the model reads as `tool_response`. A matcher such as `mcp__notes__.*`
+  picks one server's tools; as in Claude Code, a bare `mcp__notes` matches none, so the `.*` is
+  needed. `tool_search` is `ToolSearch`, with `query` and `max_results`.
+- **A PreToolUse rewrite** (`updatedInput`, an object) becomes the call's arguments, and the
+  question shows it. **PostToolUse's `updatedMCPToolOutput`**, or `updatedToolOutput`, given as
+  text, replaces what the model reads, and the answer's pictures are dropped with it.
+- **The `mcp_tool` hook kind** calls a server's tool in place of a command:
+
+  ```json
+  {
+    "type": "mcp_tool",
+    "server": "notes",
+    "tool": "log_call",
+    "input": { "file": "${tool_input.file_path}" }
+  }
+  ```
+
+  `${...}` in `input` is filled in from the hook's own input, a path that is not there as empty
+  text. Its limit is 600 s, 30 s at UserPromptSubmit, unless it sets `timeout`. Its text answer is
+  read as a command hook's printed output is; an error answer is a failure, which blocks nothing.
+  It calls the server directly, so no tool hook sees its call, and nothing is asked. Only a running
+  server can be called; one still starting is waited for at the events that can block, within the
+  hook's limit, and at the launch's SessionStart these hooks are skipped, as in Claude Code.
+  `/hooks` and Ctrl+O name it by its server and tool: `notes log_call`.
+- **Elicitation** runs before a form is shown, and **ElicitationResult** after it is answered,
+  both matched on the server's name ([the events](#the-events)). A hook's
+  `hookSpecificOutput.action`, `"accept"` (with `content`), `"decline"` or `"cancel"`, answers in
+  your place; exit code 2 declines. A decline wins over a cancel, and a cancel over an accept. No
+  ElicitationResult hook runs after an Elicitation hook answered.
+
+### With the sandbox
+
+Servers run on your machine, never in the box, until release 8c-2. So with the sandbox on:
+
+- **With the box's network off,** the default, no local server starts, as it would run outside the
+  box with the web open, and no remote one is reached: `MCP servers are off: the sandbox's network
+  is off, and servers run outside the box until a later release. Start with --network on to use
+  them.`
+- **With `--network on`,** servers work as they do without the sandbox, under the table above. A
+  server works in your real project folder, in copy mode too, so what it changes there is outside
+  the copy and its review.
+
+### `/mcp`
+
+`/mcp` lists the servers, a row each, saying only what is worth saying:
+
+```
+MCP servers, from ~/.tachikoma/settings.json and .mcp.json:
+notes · 12 tools · trusted
+tickets · 31 tools · 2 trusted tools
+calendar · needs sign-in
+build-tools (project) · you said no
+weather · failed: it did not answer within 30 s
+```
+
+(The counts are made up; on Windows the file is named `~\.tachikoma\settings.json`.) A row's state
+is its tool count, `starting`, `needs sign-in`, `waiting for your yes`, `you said no`, `failed:
+<reason>`, `stopped: <reason>` or `off: the sandbox's network is off`. Enter on a server lists what
+applies to it: Reconnect, Sign in, Sign out, Show tools (its tools' full names, then any left out
+and why) and, for a project's server you answered, Reset my answer. Esc goes back, then closes.
+With no server: `No MCP servers. They go in "mcpServers" in ~/.tachikoma/settings.json, or in a
+project's .mcp.json.`
+
+### MCP in `-p` runs
+
+- **Your own servers start,** and the project's you said yes to in the window; each other project
+  server is skipped, with `MCP server build-tools from .mcp.json was skipped: -p starts only the
+  project's servers you said yes to in the window.`
+- **A call that would ask is refused,** as nobody can answer; a trusted tool runs, and in `auto`
+  the judge decides.
+- **Failures go to stderr** as `mcp: <line>`, and notes as `note: <line>`; with `--json`, each note
+  is an `mcp-note` line. A server's failure never fails the run.
+- **`@<server>:<uri>` and `/<server>:<prompt>`** are sent as plain words, and `-p` cannot sign in or
+  fill in a form.
+
+### Not yet, for MCP
+
+- **Planned for release 8c-2:** servers inside the sandbox, the sandbox's list of allowed sites, and
+  `headersHelper`, a program that prints a server's headers (until then an entry with one is left
+  out, with a line).
+- **Planned for release 14,** with `tachi setup`: importing the servers you set up for Claude Code.
+- **Not planned:** `ws` servers (MCP itself has no WebSocket transport), servers that need a client
+  secret, and sampling, where a server asks Tachikoma's model to write for it, spending your
+  provider credit. Claude in Chrome cannot be used: it is part of Claude Code, not a server
+  Tachikoma can start.
 
 ## Keys
 
@@ -1442,8 +1797,9 @@ subagent runs in the foreground, since there is no later turn to read its answer
   direction marks of right-to-left text stay as they are. When the answer goes to a pipe or a file
   and something was escaped, a note on stderr says so. `--raw` prints the answer exactly as the model
   wrote it, with a warning.
-- **`--json`** prints one line per event: `message`, `usage`, `error`, `lead` and `hook-note`, each
-  hook's grey line (see [Hooks](#hooks)). A request that Anthropic's fallback rescued gives one
+- **`--json`** prints one line per event: `message`, `usage`, `error`, `lead`, `hook-note`, each
+  hook's grey line (see [Hooks](#hooks)), and `mcp-note`, each MCP server's grey line (see
+  [MCP servers](#mcp-in--p-runs)). A request that Anthropic's fallback rescued gives one
   `usage` line for each model that declined (marked `priceKnown`), then one for the reply.
 - **Modes and the sandbox:** in `auto` the judge still decides, and its no is final; a dangerous
   command is refused. With the sandbox, the launch lines go to stderr, the image must already be
@@ -1594,9 +1950,9 @@ Each is fixed in a later release, unless it says otherwise.
   Linux as mapping your user to root (user 0) in containers, so there the box may be unable to
   write the project or the copy.
 
-Release 7's, release 8a's and release 8b's limits follow, grouped by part. These are the rarer
-cases, left as limits rather than more code; none has a release set to change it, unless it says
-so.
+Release 7's, release 8a's, release 8b's and release 8c's limits follow, grouped by part. These are
+the rarer cases, left as limits rather than more code; none has a release set to change it, unless
+it says so.
 
 ### The dangerous-command check's limits
 
@@ -1987,6 +2343,102 @@ so.
 - **Two hooks with no `statusMessage` that run the same program,** such as two `jq` filters, have
   the same name on Ctrl+O; a `statusMessage` tells them apart.
 
+### MCP servers' limits
+
+- **Servers run with your full permissions,** on your machine, outside the sandbox, until release
+  8c-2. In copy mode too they work in your real folder, so what one changes is outside the copy
+  and its review.
+- **Trust is your word.** Tachikoma cannot see what a tool does, so a tool trusted as read-only
+  that writes runs without a question.
+- **The numbers are Claude Code's,** from its documentation, and none was measured for Tachikoma:
+  a server's 30 s to start, a remote request's 60 s, the 300 ms before a server is killed, the
+  4,096 and 16,384-character description cuts, the 5 search results, and an `mcp_tool` hook's
+  600 s and 30 s. The 64-character name limit is OpenAI's; the 30,000-character cut is Tachikoma's
+  own, as for a command's output; the 60 s wait for a resource or prompt list is the MCP
+  library's.
+- **A yes covers the entry, not the files it runs,** as in Claude Code: a pulled change to the
+  project's `server.js`, or an `npx` package named without a version, runs without a new question.
+  A question's `(sets ...)` names the variables, never their values.
+- **`.mcp.json` is read at the launch only,** has no size limit, and, saved as UTF-16, gives a
+  garbled could-not-be-read line, as `settings.json` does.
+- **The refused-address line shows the address as written,** so a key written into it directly,
+  not through `${VAR}`, is shown.
+- **Programs on PATH, on Windows:** with both `Path` and `PATH` set to different values, the lookup
+  reads the last one, while Node's start keeps `PATH`; and a broken link with the program's name in
+  an earlier PATH folder is taken, and fails at the start with its line. Reading the project's
+  answers starts PowerShell twice at the launch, as the prompt history does.
+- **Off Windows, only the server itself is killed** at exit, not the programs it started, and a
+  server's child that keeps its output open makes the close wait about 4 s.
+- **A remote server cut off mid-answer, while it streams one,** is not seen as gone: that call
+  waits out its limit, 60 s by default, and the next call finds the drop.
+- **Input schemas:** the MCP library refuses a server's whole tool list if one tool's schema is not
+  an object at its root, so that server fails to start with the library's words. A root `anyOf` or
+  `oneOf` whose branches hold their own `anyOf`, `oneOf`, `allOf` or a `$ref` names no parameters
+  for them, and a root `$ref` is passed on as written. A schema marked draft-04 is left out with
+  the checker's words. Schemas are compiled, not checked against JSON Schema's own rules, so one a
+  provider refuses for another reason can still fail a request. A `pattern` that plain JavaScript
+  takes but strict Unicode mode does not, such as `^[\w-.]+$`, leaves its tool out with the
+  could-not-be-read line, as the library reads patterns that way. The model is not told which tools
+  were left out, as Claude Code tells it.
+- **Tool search:** a newly loaded tool, and a server's tools ready late, change the request's tool
+  list, so the conversation is written to the provider's cache once more at that request. A
+  server's instructions go into `tool_search`'s description as written, so a line break in them can
+  look like another server's entry. Loads are not saved if the round fails after the search, so a
+  resume loses them. A first tool over 30,000 characters on its own hides the lines after it in the
+  answer. A subagent's `Not ready:` lines name every server not ready, trusted tools or not.
+- **Thinking across a change of tools:** once the request's tools change, the model goes without
+  its thinking from before the change, as Anthropic refuses thinking made under another tool set.
+  Through OpenRouter to a Claude 5.x model, the reasoning OpenRouter returns is sent back as it
+  came, as other models there need theirs, so an upstream account that enforces the rule may refuse
+  that step.
+- **Hooks:** an `mcp_tool` hook's answer of structured content alone reaches it as its JSON text,
+  which is read as the hook's JSON answer, as a command's printed `{...}` is, so it is never plain
+  text for the model, and a field such as `"continue": false` in it acts. When an earlier hook gives
+  an `updatedMCPToolOutput` that is not text and a later one gives text, the first in the file is
+  kept, the text is lost, and Ctrl+O does not say so.
+- **Live edits:** the `MCP servers changed` line says `restarted` for a changed entry that then does
+  not start (the sandbox's network is off, or your entry was removed, uncovering a project's one
+  that waits for a yes). With the sandbox's network off, `/mcp` may read a project's answers for the
+  first time, so their notes, or the could-not-be-read line, can come then or at a later edit.
+- **Sign-in:** Sign out does not ask the service to cancel the tokens. Two windows renewing one
+  token at once, where the service hands out a new one each time, may lose that sign-in. Esc after
+  the browser sent the code back may still save the sign-in, which counts from the next launch.
+  Tokens are kept by the address as written, so a changed slash, letter case or `:443` means
+  signing in again. Another program on this computer could open the printed start address first,
+  as with `/login chatgpt`. Services that need a client secret are not supported. A wider scope a
+  server asks for later (a 403 `insufficient_scope`) is not asked for, as a sign-in never starts in
+  the background. For an entry that can sign in, its own `Accept` header gives way to the
+  library's, and a redirect to another path, or from http to https, carries none of its headers.
+  Sign-in details gone between the launch and Sign in give `Sign-in to <name> failed: ` with no
+  reason. The MCP library's own `[mcp-sdk]` warnings are kept off the screen for the whole run.
+- **Forms:** a text field types only at its end, with no cursor to move. A text field's
+  `minLength`, `maxLength` and `format`, and a pick-several's `minItems` and `maxItems`, are not
+  checked by Tachikoma. A remote call's limit, 60 s by default, keeps counting while you fill in a
+  form, so a slow answer can outlast its call. A visit counts as done once the browser opens,
+  without waiting for the server to say so. Ctrl-C in a field declines the form but does not stop
+  the turn. A visit question stays on screen after the server cancels it, and opens nothing when
+  answered. A form that comes while the model list, `/resume` or `/mcp` is open starts that list
+  again from its top. Keys typed past a form's last field go to what is underneath, such as a
+  waiting question. A visit asked with no turn running, after a turn Esc stopped, is declined at
+  once, with no line. Elicitation hooks always run as the lead's, so a subagent's form sends no
+  `agent_id`.
+- **Resources and prompts:** `-p` sends `@<server>:<uri>` and `/<server>:<prompt>` as plain words.
+  Resource templates are not listed. Only the text and pictures (png, jpeg, gif, webp) of a
+  resource or a prompt are taken; the rest, such as a PDF, an embedded resource or audio, is left
+  out without a line. A prompt's text is not cut. Words after a prompt that takes no arguments are
+  not sent to the server. A server whose resource or prompt list never answers holds a send that
+  picks from it for up to 60 s, the library's request limit, or until Esc. A server whose name
+  holds `:` or `/` offers no resources or prompts, nor do two servers whose names differ only in
+  letter case, for the ones they share. A prompt command's missing argument is found after
+  UserPromptSubmit, so that hook sees, and may log, a prompt that is then not sent. Esc during the
+  first prompt's wait for servers refuses a prompt that names a starting server's resource or
+  prompt (`not ready (starting)`), where any other prompt is sent without the late servers. A
+  reconnect shared by a tool call and a read can say `was connected again.` twice.
+- **`ws` servers and client secrets are not supported,** and `headersHelper` waits for release
+  8c-2: Claude Code's `ws` kind
+  is left out with its line, as MCP itself has no WebSocket transport, nor has its library. Claude
+  in Chrome cannot be used: it is part of Claude Code, not a server Tachikoma can start.
+
 ## What comes next
 
 1. Core (done): the agent loop, local file and shell tools, Anthropic and OpenAI-format providers
@@ -2010,8 +2462,10 @@ so.
    - 8a: sessions saved to disk and reopened (`tachi -c`, `tachi -r`, `/resume`, `/clear`), names
      and copies, `/export`, and shortening the history (by itself, `/compact` and `/autocompact`)
      (done);
-   - 8b: hooks, in Claude Code's format, from your settings file only (this release);
-   - 8c: MCP tools, and the sandbox's list of allowed sites;
+   - 8b: hooks, in Claude Code's format, from your settings file only (done);
+   - 8c: MCP servers, in Claude Code's format, from your settings file and, after asking, a
+     project's `.mcp.json` (this release); then 8c-2: servers inside the sandbox, the sandbox's
+     list of allowed sites, and `headersHelper`;
    - 8d: long-term memory (MemPalace), with a save before each shortening; lessons learned from the
      error log, recalled when the same error comes back;
    - 8e: more of Claude Code's hook events, the ones that have a place in Tachikoma already, such as

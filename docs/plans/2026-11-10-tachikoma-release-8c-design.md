@@ -327,3 +327,109 @@ option chosen: "As the main design says").
 | MemPalace as Tachikoma's own server | 8d |
 | `headersHelper`, `ws`, client secrets, sampling | Not planned: the user's servers do not use them |
 | Claude in Chrome | Not planned: it is built into Claude Code |
+
+## As built
+
+Where the build differs from the design above, or settles what it left open. The plan
+(`2026-11-10-tachikoma-release-8c.md`) lists its 62 choices, each marked in its task, with every
+line the build added in its table "Lines this plan adds"; every number here is from the plan's
+table "Numbers in this plan" or from the code's comments, as cited there. "The user's choice"
+marks the user's answers, given on 2026-11-10 and 2026-11-11 from options offered. The README's
+known limits gather every rarer case the build left as a limit.
+
+- **The two "To confirm" points** stand as proposed: a server has 30 s to start, Claude Code's
+  `MCP_TIMEOUT`, and a description sent upfront is cut at 4,096 characters (choice 1, approved
+  with the plan).
+- **The settings entry (Task 2).** As Claude Code's MCP page says: `timeout` is a whole number of
+  ms, one below 1,000 is ignored as unset, and one above 2,147,483,647, Node's longest timer, is
+  refused; `scopes` is one string split by spaces, not a list; `authServerMetadataUrl` must be
+  `https://`. A wrong value is named by its type, not shown, as it may hold a key; only the short
+  fields that carry none (`type`, `timeout`, `trusted`, `trustedTools`, `alwaysLoad`,
+  `callbackPort`) show their value. A header with a line break, and an `env` value or argument with
+  NUL, leave the server out by the field's name, as Node's own error would quote the value. `ws`
+  is left out with its line, as MCP itself has no WebSocket transport (the user's choice).
+- **A project's servers (Tasks 3 and 9; choices 23, 24, 48-50).** An answer holds the entry as
+  written, by its SHA-256 before `${VAR}` is filled, so a pulled change to the entry asks again and
+  a variable's new value does not (the user's choice; the design said once per name, as Claude
+  Code). The question shows the entry as written, `${VAR}` unfilled, and for a local server the
+  names of the variables it sets, never their values, as `NODE_OPTIONS` can make a known program
+  run the project's code (the user's choices). An answer that cannot be saved holds for the launch,
+  with one red line; before, it crashed every launch in that project. With the sandbox's network
+  off, no question is asked, as no server could start.
+- **Finding programs (Task 3; choice 4).** On Windows each PATH folder is tried with PATHEXT's
+  endings in its order, so `npx` finds `npx.cmd`; a name that already ends in one is taken as
+  written. The lookup is MCP's own (`mcpProgram`); hooks keep `.exe` only.
+- **Connections (Task 4; choices 3, 5, 13, 33).** A call's limit is hard: progress never extends
+  it (the user's choice). A failed server's reason is its last error line, with Node's own closing
+  lines (its version, the error's fields block, stack lines) passed over (the user's choice). A
+  dropped remote server gets one new connection per drop, not one in all (the user's choice, "Once
+  per drop"): at the start of the next call, before its question, so a yes is for the version that
+  runs (plan review, finding 3); and when a call never reached the server, it is sent again once
+  without a new question, as the approved call never ran (the user's choice, "Reconnect, then
+  retry"). Its stopped line is said only when that new connection fails. Off Windows the library
+  starts a server outside a process group, so only the server itself is killed at exit.
+- **Names and schemas (Task 5; choice 36).** The design's names rules are built as written. Added
+  from the plan review: a root-level `anyOf`, `oneOf` or `allOf` is merged into one object schema,
+  with a sentence for the model, and a tool whose schema is still not an object, has a property
+  name providers refuse, or cannot be compiled is left out with its line. Task 1's measurement of
+  the user's servers (180 tools, about 58,000 tokens) found no name over 64 characters.
+- **Tool search (Task 6b; choices 37-46).** The design left it to the measurement; at 29% of a
+  200,000-token window the user chose it always on, through Tachikoma's own `tool_search` tool for
+  every provider. A request names every MCP tool in that tool's description and defines only the
+  ones loaded; a search returns 5 by default, Claude Code's, and loads at most what fits its
+  30,000-character answer. A tool loaded by search is cut at 16,384 characters, Claude Code's
+  figure, and one with `alwaysLoad` at 4,096. The loaded set is saved in the transcript, kept by a
+  resume, `/branch` and a shortening, and emptied by `/clear`. Because Anthropic's 5.x models
+  refuse thinking made under another tool set, the replies before the latest change of tools go
+  without their thinking (the user's choice, "Drop older thinking"; the user's live test,
+  2026-11-11, saw the refusal and the fix).
+- **Answers (Task 6; choices 10-12, 34).** A tool's pictures are numbered on from the
+  conversation's highest picture, and named in a line at the end of its text; other kinds of
+  content get one line each; structured data alone goes as its JSON text. A resource's text and
+  pictures, a prompt's messages and a tool's pictures are marked as the server's, so the judge,
+  UserPromptSubmit, the Up history and a resumed window see only what the user typed (plan review,
+  finding 2).
+- **Approval (Task 7; choices 14-17, 32, 47).** `never` asks, as the design says, which needed
+  the gate's `never` branch itself changed (plan review, finding 1). The question's grey note is
+  the tool's own description, cut to one screen row; the input is shown whole, escaped, as a shell
+  command is. In `-p` with `auto` the judge decides an MCP call, as for any action; the design's
+  table said refused. In `never`, a PreToolUse hook's ask on an MCP call becomes the user's
+  question (the user's choices).
+- **Hooks (Task 8; choices 18-22, 35).** An `mcp_tool` hook's answer is read as a command hook's
+  printed output; one whose server is still starting is waited for at the events that can block,
+  and fails with "is not running" at the others. At Elicitation and ElicitationResult a decline
+  wins over a cancel, and a cancel over an accept; exit 2 declines (plan review, finding 4). A
+  string `updatedMCPToolOutput` drops the answer's pictures with the text it replaces.
+- **The launch (Task 9; choices 25, 26).** The first prompt waits for the servers through the
+  SessionStart wait, so one Esc stops both. MCP's lines are a new bus event, `mcp-note`, and a new
+  error kind, `mcp`, which never fails a `-p` run. Servers start once the window's first frame is
+  drawn, so their lines are heard; SessionEnd runs before they stop, so its `mcp_tool` hooks can
+  still call them. A resume compares only Tachikoma's own tools with the saved set, so MCP tools
+  do not strip a resumed session's thinking.
+- **`/mcp` (Task 10; choices 27, 51, 52).** Hint rows name the keys, as `/resume`'s do (the user's
+  choice). A row's count is the tools offered; the left-out ones are under Show tools. Reconnect
+  is offered for a ready, failed or stopped server and keeps the list open, which redraws as states
+  change. A reset that cannot be written keeps the answer, with one red line (the user's choice).
+- **Sign-in (Task 11; choices 28, 53-60).** The return address is Claude Code's,
+  `http://localhost:<port>/callback`, on both `127.0.0.1` and `::1`, so a fixed `callbackPort`
+  copied from Claude Code signs in unchanged. An entry's headers go only to its server's own
+  address, never to the sign-in service. An entry with its own `Authorization` header is never
+  signed in: its 401 stays a failure that points at its key; other headers do not stop a sign-in.
+  `authServerMetadataUrl` replaces discovery, as in Claude Code. A damaged `mcp-auth.json` counts
+  as empty, with one red line that never quotes it (all the user's choices). Figma's remote server
+  registers only apps on its own list and answered 403, so the reason says so; Tachikoma never
+  registers under another app's name, and Figma is reached through its desktop app's server,
+  `http://127.0.0.1:3845/mcp`, which needs no sign-in (the user's choices, 2026-11-11).
+- **Forms (Task 12; choices 29, 61).** A whole number, a minimum and a maximum each have their own
+  wrong-answer line, and a pick has a hint row (the user's choices). A visit to an address that is
+  not `http` or `https` is declined unasked, with a red line, as Windows' opener starts a program
+  from a `file://` address and the library lets it through.
+- **Resources and prompts (Task 13; choices 30, 31, 62).** A missing argument's line ends with the
+  command's usage. The screen and `/export` show only what was typed, and a resource's picture is
+  a grey `⎿ [Image #N]` row. A resource or prompt of a server that is not ready stops the send with
+  `<name> is not ready (<state>)`, and is fetched after the first-prompt wait and UserPromptSubmit
+  (the user's choices).
+- **Not built, as the design says:** servers in the sandbox and the allowed sites (8c-2); `ws`,
+  client secrets and sampling. `headersHelper` is left out with its line, which says "(planned)";
+  where the table above says not planned, the user put it in 8c-2 (2026-11-11: "If it's planned
+  then say planned").

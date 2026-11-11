@@ -624,6 +624,11 @@ search, always on", "Own lookup tool, every provider")
     the red line's reason `<name> is not ready (<state>)`, the state as `/mcp` shows it (Task 13's
     quality review), and the server part is fetched after the first-prompt wait and
     UserPromptSubmit.
+63. **`headersHelper` goes into 8c-2** (Task 14, 2026-11-11, the user's choice: "If it's planned
+    then say planned. If not add it to the plan"). Its on-screen line already says "(planned)"
+    where the design's table said not planned; 8c-2 (servers inside the sandbox, allowed sites)
+    now also runs an entry's `headersHelper`. The README says so, and the banner names 8c-2 as
+    next.
 
 ## Lines this plan adds
 
