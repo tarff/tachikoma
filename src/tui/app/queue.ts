@@ -245,16 +245,25 @@ export const queue = (ui: UI, fns: Fns) => {
   // as reading changes nothing. A configured server that is still not ready stops the send, saying so in /mcp's words
   // for its state (the user's words, the fix round). A ready one whose list lacks what was typed leaves it plain words.
   // The red line instead, for the first that cannot be got, the reason escaped; `said`: whether the grey line saying the
-  // words are back is said after it, as the missing argument's line does not say so.
+  // words are back is said after it, as the missing argument's line does not say so. Whatever else goes wrong meanwhile,
+  // as a server a live edit removed, gives the red line of the read or prompt being got, so the words always come back.
+  // The servers named are readied first, then the offers built once, as building them reads every server's lists.
   const supply = async (text: string, signal: AbortSignal): Promise<Part[] | Refused> => {
     const servers = ui.mcp!.servers;
     const why = (err: unknown) => visible(errorText(err), { tabs: true });
     const back = "Your words are back in the prompt box.";
-    const listed = (name: string) => servers.list().find((s) => s.name === name)!;
-    const notReady = (name: string) => `${visible(name)} is not ready (${visible(stateText(listed(name).state), { tabs: true })})`;
-    // The configured server `typed` names, ready if it can be made so.
+    // A server gone from the settings has no state to say, so it is said as Server says one it has no connection to.
+    const notReady = (name: string) => {
+      const s = servers.list().find((x) => x.name === name);
+      if (!s) throw new Error("Not connected");
+      return `${visible(name)} is not ready (${visible(stateText(s.state), { tabs: true })})`;
+    };
+    // The configured server `typed` names, ready if it can be made so; each name once.
+    const ready = new Map<string, string | undefined>();
     const readied = async (typed: string): Promise<string | undefined> => {
+      if (ready.has(typed)) return ready.get(typed);
       const s = named(servers.list(), typed, (x) => x.name);
+      ready.set(typed, s?.name);
       if (!s) return undefined;
       if (s.state.is === "stopped" && s.state.retry) await reconnect(s.name, signal);
       const server = servers.server(s.name);
@@ -280,60 +289,62 @@ export const queue = (ui: UI, fns: Fns) => {
       const mediaType = typeOf(data);
       return mediaType ? [{ mediaType, data }] : [];
     };
+    const [first = ""] = text.split(/\s+/);
+    // The red line for what is being got now, given its reason, set at each step.
+    let fail = (reason: string): Refused => ({ line: `Could not get the prompt ${visible(first)}: ${reason}. ${back}`, said: false });
     try {
-      const [first = ""] = text.split(/\s+/);
       const command = /^\/([^\s/:]+):\S/.exec(first);
+      const typedKeys = [...new Set([...text.matchAll(/(?:^|\s)@(\S+)/g)].map((m) => m[1]!))];
       const server = command && (await readied(command[1]!));
+      const picks: { typed: string; server: string }[] = [];
+      for (const typed of typedKeys) {
+        const colon = typed.indexOf(":");
+        fail = (reason) => ({ line: `Could not read @${visible(typed)}: ${reason}. ${back}`, said: false });
+        const owner = colon > 0 ? await readied(typed.slice(0, colon)) : undefined;
+        if (owner) picks.push({ typed, server: owner });
+      }
+      const o = offers(servers);
       if (server) {
-        const p = named(offers(servers).prompts, first, (x) => x.command);
-        if (!p && servers.server(server)?.state.is !== "ready") return { line: `Could not get the prompt ${visible(first)}: ${notReady(server)}. ${back}`, said: false };
+        fail = (reason) => ({ line: `Could not get the prompt ${visible(first)}: ${reason}. ${back}`, said: false });
+        const p = named(o.prompts, first, (x) => x.command);
+        if (!p && servers.server(server)?.state.is !== "ready") return fail(notReady(server));
         if (p) {
           const filled = argumentsOf(p.prompt, text.slice(first.length));
           if ("missing" in filled) {
             const usage = [p.command, ...(p.prompt.arguments ?? []).map((a) => a.name)].map((w) => visible(w)).join(" ");
             return { line: `${visible(p.command)} needs ${visible(filled.missing)}: ${usage}`, said: true };
           }
-          try {
-            const got = await ask(p.server, (s) => s.getPrompt(p.prompt.name, filled.args, { signal }));
-            for (const m of got.messages) {
-              const head = m.role === "assistant" ? "(assistant)" : undefined;
-              const c = m.content;
-              if (c.type === "text") pending.push({ type: "text", text: head ? `${head}\n${c.text}` : c.text, from: "server" });
-              else if (c.type === "image") {
-                const picture = pictured(c.data);
-                if (head && picture.length) pending.push({ type: "text", text: head, from: "server" });
-                pending.push(...picture);
-              }
+          fail = (reason) => ({ line: `Could not get the prompt ${visible(p.command)}: ${reason}. ${back}`, said: false });
+          const got = await ask(p.server, (s) => s.getPrompt(p.prompt.name, filled.args, { signal }));
+          for (const m of got.messages) {
+            const head = m.role === "assistant" ? "(assistant)" : undefined;
+            const c = m.content;
+            if (c.type === "text") pending.push({ type: "text", text: head ? `${head}\n${c.text}` : c.text, from: "server" });
+            else if (c.type === "image") {
+              const picture = pictured(c.data);
+              if (head && picture.length) pending.push({ type: "text", text: head, from: "server" });
+              pending.push(...picture);
             }
-          } catch (err) {
-            if (signal.aborted) throw err;
-            return { line: `Could not get the prompt ${visible(p.command)}: ${why(err)}. ${back}`, said: false };
           }
         }
       }
       const done = new Set<string>();
-      for (const typed of new Set([...text.matchAll(/(?:^|\s)@(\S+)/g)].map((m) => m[1]!))) {
-        const colon = typed.indexOf(":");
-        const server = colon > 0 ? await readied(typed.slice(0, colon)) : undefined;
-        if (!server) continue;
-        const r = named(offers(servers).resources, typed, (x) => x.key);
-        if (!r && servers.server(server)?.state.is !== "ready") return { line: `Could not read @${visible(typed)}: ${notReady(server)}. ${back}`, said: false };
+      for (const { typed, server } of picks) {
+        fail = (reason) => ({ line: `Could not read @${visible(typed)}: ${reason}. ${back}`, said: false });
+        const r = named(o.resources, typed, (x) => x.key);
+        if (!r && servers.server(server)?.state.is !== "ready") return fail(notReady(server));
         if (!r || done.has(r.key)) continue;
         done.add(r.key);
-        try {
-          const got = await ask(r.server, (s) => s.readResource(r.uri, { signal }));
-          const texts = got.contents.flatMap((c) => ("text" in c ? [c.text] : []));
-          const head = `Resource @${r.key}:`;
-          pending.push({ type: "text", text: texts.length ? `${head}\n${truncate(texts.join("\n\n"))}` : head, from: "server" });
-          for (const c of got.contents) if ("blob" in c) pending.push(...pictured(c.blob));
-        } catch (err) {
-          if (signal.aborted) throw err;
-          return { line: `Could not read @${visible(r.key)}: ${why(err)}. ${back}`, said: false };
-        }
+        fail = (reason) => ({ line: `Could not read @${visible(r.key)}: ${reason}. ${back}`, said: false });
+        const got = await ask(r.server, (s) => s.readResource(r.uri, { signal }));
+        const texts = got.contents.flatMap((c) => ("text" in c ? [c.text] : []));
+        const head = `Resource @${r.key}:`;
+        pending.push({ type: "text", text: texts.length ? `${head}\n${truncate(texts.join("\n\n"))}` : head, from: "server" });
+        for (const c of got.contents) if ("blob" in c) pending.push(...pictured(c.blob));
       }
     } catch (err) {
       if (signal.aborted) return { line: "", said: false }; // the caller says nothing for a stop
-      throw err;
+      return fail(why(err));
     }
     return pending.map((p): Part => {
       if ("type" in p) return p;

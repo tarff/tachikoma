@@ -68,19 +68,29 @@ export function offers(servers: Pick<Servers, "list" | "server"> | undefined): O
     for (const r of server?.resources ?? []) if (plain(`${name}:${r.uri}`)) o.resources.push({ server: name, uri: r.uri, key: `${name}:${r.uri}` });
     for (const p of server?.prompts ?? []) if (plain(`/${name}:${p.name}`)) o.prompts.push({ server: name, prompt: p, command: `/${name}:${p.name}` });
   }
-  const once = <T extends { server: string }>(items: T[], key: (t: T) => string) =>
-    items.filter((t) => !items.some((u) => u.server !== t.server && key(u).toLowerCase() === key(t).toLowerCase()));
+  // Each key in lower case with the one server that has it, or null once a second has it too: one pass, as a server can
+  // list thousands (measured: 150 ms a redraw at 3,000 resources across two servers, comparing each with each).
+  const once = <T extends { server: string }>(items: T[], key: (t: T) => string) => {
+    const owner = new Map<string, string | null>();
+    for (const t of items) {
+      const k = key(t).toLowerCase();
+      const was = owner.get(k);
+      owner.set(k, was === undefined || was === t.server ? t.server : null);
+    }
+    return items.filter((t) => owner.get(key(t).toLowerCase()) !== null);
+  };
   return { resources: once(o.resources, (r) => r.key), prompts: once(o.prompts, (p) => p.command) };
 }
 
 // A slash at the start of the prompt and the word after it, with the cursor at the end: commands
 // count only there, so "/tmp is full" is a message. The MCP servers' prompts follow Tachikoma's commands, each with the
-// first line of its description, escaped, as the label is (Menu.tsx).
-export function commandMenu(text: string, cursor: number, prompts: Offers["prompts"] = []): Menu | null {
+// first line of its description, escaped, as the label is (Menu.tsx); `prompts` is called only when the text opens the
+// menu, as building the offers reads every server's lists.
+export function commandMenu(text: string, cursor: number, prompts: () => Offers["prompts"] = () => []): Menu | null {
   if (cursor !== text.length || !/^\/\S*$/.test(text)) return null;
   const typed = text.toLowerCase();
   const entries: Entry[] = COMMANDS.filter((c) => c.run.startsWith(typed)).map((c) => ({ label: c.label, note: c.note, fill: `${c.run.split(" ")[0]} `, run: c.run }));
-  for (const p of prompts) {
+  for (const p of prompts()) {
     if (!p.command.toLowerCase().startsWith(typed)) continue;
     const note = p.prompt.description?.split(/\r?\n/)[0];
     entries.push({ label: p.command, ...(note && { note: visible(note) }), fill: `${p.command} `, run: p.command });
@@ -95,8 +105,8 @@ export type Listing = { entries: { name: string; folder: boolean }[] } | { error
 // its "/", so the next Tab lists it; a file is completed with a space after it. The MCP servers' resources follow the
 // files, as `@<name>:<uri>`, those whose `<name>:<uri>` starts with what is typed, in any case (release 8c plan, Task
 // 13), completed as a file is. A uri's slashes make the folder typed so far one that cannot be listed, so the listing's
-// error is left out while a resource matches.
-export function pathMenu(text: string, cursor: number, list: (folder: string) => Listing, resources: Offers["resources"] = []): Menu | null {
+// error is left out while a resource matches. `resources`, as commandMenu's `prompts`, is called only for a menu.
+export function pathMenu(text: string, cursor: number, list: (folder: string) => Listing, resources: () => Offers["resources"] = () => []): Menu | null {
   const m = /(?:^|\s)@(\S*)$/.exec(text.slice(0, cursor));
   if (!m || /\S/.test(text[cursor] ?? "")) return null;
   const typed = m[1]!;
@@ -105,7 +115,7 @@ export function pathMenu(text: string, cursor: number, list: (folder: string) =>
   const part = typed.slice(cut).toLowerCase();
   const from = cursor - typed.length - 1;
   const listing = list(folder);
-  const served = resources.filter((r) => r.key.toLowerCase().startsWith(typed.toLowerCase())).map((r) => ({ label: `@${r.key}`, fill: `@${r.key} ` }));
+  const served = resources().filter((r) => r.key.toLowerCase().startsWith(typed.toLowerCase())).map((r) => ({ label: `@${r.key}`, fill: `@${r.key} ` }));
   if ("error" in listing && !served.length) return { kind: "path", from, entries: [{ label: `Cannot list ${folder || "the project folder"}: ${listing.error}`, fill: "", error: true }] };
   const files = "error" in listing ? [] : listing.entries
     .filter((e) => e.name.toLowerCase().startsWith(part))

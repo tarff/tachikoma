@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { commandMenu, listFolder, pathMenu } from "../../src/tui/menus.js";
+import { commandMenu, listFolder, offers, pathMenu } from "../../src/tui/menus.js";
 import { tempContext } from "../helpers.js";
 
 afterEach(() => {
@@ -140,5 +140,22 @@ describe("listFolder", () => {
   it("gives the reason a folder cannot be listed", async () => {
     const { root } = await tempContext();
     expect(listFolder(root, "nope/")).toEqual({ error: expect.stringContaining("ENOENT") });
+  });
+});
+
+// Release 8c plan, Task 13's re-check: the offers of servers with thousands of resources, the keys two servers share in
+// any letter case left out, in one pass; only the result is checked, never the time.
+describe("offers", () => {
+  it("leaves out the keys two servers share among thousands, keeping every other in order", () => {
+    const notes = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => ({ uri: `note://${from + i}`, name: "n" }));
+    const lists: Record<string, { resources: { uri: string; name: string }[]; prompts: { name: string }[] }> = {
+      docs: { resources: notes(0, 1_500), prompts: [{ name: "sum" }] },
+      Docs: { resources: notes(1_000, 2_500), prompts: [{ name: "SUM" }, { name: "other" }] },
+    };
+    const servers = { list: () => Object.keys(lists).map((name) => ({ name })), server: (name: string) => lists[name] };
+    const o = offers(servers as unknown as Parameters<typeof offers>[0]);
+    const keys = [...notes(0, 1_000).map((r) => `docs:${r.uri}`), ...notes(1_500, 2_500).map((r) => `Docs:${r.uri}`)];
+    expect(o.resources.map((r) => r.key)).toEqual(keys);
+    expect(o.prompts.map((p) => p.command)).toEqual(["/Docs:other"]);
   });
 });

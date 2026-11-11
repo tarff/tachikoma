@@ -5,7 +5,7 @@ import { apply, type Editor, load, move, replace } from "../editor.js";
 import { matches } from "../history.js";
 import { type Command, commands, isScroll, keyList } from "../keys.js";
 import { vertical } from "../layout.js";
-import { commandMenu, listFolder, type Menu as MenuData, offers, pathMenu } from "../menus.js";
+import { commandMenu, listFolder, type Menu as MenuData, type Offers, offers, pathMenu } from "../menus.js";
 import type { Now } from "../phase.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
 import { promptWidth } from "../Prompt.js";
@@ -176,8 +176,10 @@ export const promptKeys = (ui: UI, fns: Fns) => {
   const menuFor = (e: Editor): MenuData | null => {
     if (ui.closed.current !== e.text) ui.closed.current = null;
     if (ui.search.current || ui.closed.current !== null) return null;
-    const served = offers(ui.mcp?.servers);
-    return commandMenu(e.text, e.cursor, served.prompts) ?? pathMenu(e.text, e.cursor, fns.list, served.resources);
+    // Built only when the text opens a menu, and once for both (Task 13's re-check).
+    let served: Offers | undefined;
+    const got = () => (served ??= offers(ui.mcp?.servers));
+    return commandMenu(e.text, e.cursor, () => got().prompts) ?? pathMenu(e.text, e.cursor, fns.list, () => got().resources);
   };
   const list = (folder: string) => {
     if (ui.listed.current?.folder !== folder) ui.listed.current = { folder, listing: listFolder(ui.root, folder) };

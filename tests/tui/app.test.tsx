@@ -11094,4 +11094,19 @@ describe("App's MCP", () => {
     await shows(app, "  @other:x://y\n");
     expect(app.lastFrame()).not.toMatch(/@docs:|@Docs:|@a:b:/);
   });
+
+  // Task 13's re-check: a server a live edit removes while its lists are awaited has no state to say, so the read's line
+  // gives Server's own words for one it has no connection to, and the words come back.
+  it("gives the words back with the read's line when a live edit removes the server meanwhile", async () => {
+    const { config, servers } = await mcpSetup();
+    const lead = new FakeProvider("a", [reply("never")]);
+    const { app, mcp } = await mount([], { lead, mcp: servers([await config("fake", { resources: [NOTE], lists: "never" })]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["fake ready"]));
+    await type(app, "read @fake:note://a now");
+    await until(app, "Working · ");
+    mcp!.servers.set([]);
+    await soon(() => expect(plain(app)).toContain(`Could not read @fake:note://a: Not connected. ${BACK}`));
+    expect(app.lastFrame()).toContain("› read @fake:note://a now");
+    expect(lead.seen).toEqual([]);
+  });
 });
