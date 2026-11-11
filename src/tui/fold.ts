@@ -80,7 +80,10 @@ function commandKind(words: string[], shell: Shell): Listed | null {
 // write no file (the user's choice, 2026-11-12).
 const END = String.raw`(?=$|[\s;|&)])`;
 const QUIET = { bash: new RegExp(String.raw`2>\s*/dev/null${END}|2>&1${END}`, "g"), powershell: new RegExp(String.raw`2>\s*\$null${END}|2>&1${END}`, "g") };
-const ASSIGNS = { bash: /(?:^|[;&|(){}\n])\s*[A-Za-z_][A-Za-z0-9_]*\+?=/, powershell: /\$[\w:.]+\s*[-+*/%]?=/ };
+// bash takes one wherever a command starts: after a separator, `!`, `{` or a keyword (time with or without -p), an
+// array's element too (the quality review's re-check).
+const STARTS = String.raw`(?:^|[;&|(){}\n!]|(?<![\w-])(?:if|then|else|elif|do|while|until|time(?:\s+-p)?)(?=\s))`;
+const ASSIGNS = { bash: new RegExp(String.raw`${STARTS}\s*[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=`), powershell: /\$[\w:.]+\s*[-+*/%]?=/ };
 function writesOrRuns(line: string, shell: Shell): boolean {
   const text = line.replace(QUIET[shell], "");
   if (text.includes(">") || ASSIGNS[shell].test(text)) return true;
@@ -192,9 +195,11 @@ export class OpenRun {
       this.#rowed.add(c.id);
       return [...this.end(), callRow(c)];
     }
+    // A new run starting says the failed rows waiting from a run said before it, as their calls ran first.
+    const waiting = this.#run.length ? [] : this.#failed.splice(0);
     const kinds = kindOf(c, this.options.asked, false, this.options.shell);
     this.#run.push({ call: c, kinds });
-    return [];
+    return waiting;
   }
 
   // A run's call's result, kept with it for opening; one that fails, or whose call asked, turns its call its own row, said

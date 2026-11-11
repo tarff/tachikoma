@@ -115,7 +115,17 @@ describe("folded tool rows", () => {
     const bash = ["LD_PRELOAD=./x.so cat a", "GIT_EXTERNAL_DIFF=./x git diff", "BASH_ENV=./x echo hi", "PATH=.; cat a", "PATH=."];
     bash.push("cat a && X=1 ls", "X+=1; ls");
     for (const line of bash) expect([line, shellKinds(line, "bash")]).toEqual([line, null]);
+    // Wherever a command can start: after a separator, after !, after a keyword (the re-check), and as an array's element.
+    const starts = [
+      "! PATH=. cat a", "cat a 2>/dev/null &&! LD_PRELOAD=x cat b", "if true; then LD_PRELOAD=./x.so cat a; fi",
+      "until true; do LD_PRELOAD=x cat a; done", "if false; then :; else PATH=. cat a; fi", "PATH[0]=.; cat a", "PATH[0]=. cat a",
+      "if PATH=. cat a; then :; fi", "while PATH=. cat a; do :; done", "time PATH=. cat a", "time -p PATH=. cat a",
+      "if false; then :; elif PATH=. cat a; then :; fi", "{ PATH=. cat a; }",
+    ];
+    for (const line of starts) expect([line, shellKinds(line, "bash")]).toEqual([line, null]);
     expect(shellKinds("cat a=b", "bash")).toEqual(["read"]); // a word holding "=" is no assignment
+    expect(shellKinds("grep x=y f", "bash")).toEqual(["search"]);
+    expect(shellKinds("cat undo PATH=x", "bash")).toEqual(["read"]); // "do" inside a word is no keyword
     const ps = ["$x = 1; gc a", "$env:PATH = 'x'; gc a", "$x=1", "$x += 1; gc a", "Set-Item env:X 1; gc a", "${env:X}=1; gc a", "$a.b = 1; gc a"];
     for (const line of ps) expect([line, shellKinds(line, "powershell")]).toEqual([line, null]);
     expect(shellKinds("Select-String $x a.txt", "powershell")).toEqual(["search"]); // a variable read is no assignment
@@ -208,6 +218,21 @@ describe("the open run", () => {
       ...lines(reply(text("Done.")), undefined, run),
     ];
     expect(plain(said)).toEqual(["Read 1 file", "● shell rm x", "  ⎿ ok", "● read_file missing.txt", "  ⎿ ENOENT: no such file", "Done."]);
+  });
+
+  // The re-check's item 3: those rows come before a new run's, as their call ran first.
+  it("says a said run's failed call before the next run's row", () => {
+    const run = new OpenRun(opts());
+    const plain = (ls: Line[]) => ls.map(({ fold, ...l }) => l.text);
+    const said = [
+      ...lines(reply(read("r", "missing.txt"), sh("x", "rm x")), undefined, run),
+      ...lines(results(failed("r", "ENOENT: no such file"), ok("x")), undefined, run),
+      ...lines(reply(read("r2", "b.txt")), undefined, run),
+      ...lines(results(ok("r2")), undefined, run),
+      ...lines(reply(text("Done.")), undefined, run),
+    ];
+    const failedRows = ["● read_file missing.txt", "  ⎿ ENOENT: no such file"];
+    expect(plain(said)).toEqual(["Read 1 file", "● shell rm x", "  ⎿ ok", ...failedRows, "Read 1 file", "Done."]);
   });
 
   // A question ends the run before its call: the run's row, then the asked call's own row, its answer under it; the calls

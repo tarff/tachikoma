@@ -32,7 +32,7 @@ import { characters } from "../../src/core/fit.js";
 import { listSessions, openSession } from "../../src/core/sessions.js";
 import { INSTRUCTIONS } from "../../src/core/shorten.js";
 import { Stats } from "../../src/core/stats.js";
-import { sessionPaths, Transcript } from "../../src/core/transcript.js";
+import { readTranscript, sessionPaths, Transcript } from "../../src/core/transcript.js";
 import type { CompletionRequest, Message, Provider, Turn } from "../../src/core/types.js";
 import type { TodoItem } from "../../src/tools/todo.js";
 import { Tasks } from "../../src/core/tasks.js";
@@ -2261,6 +2261,25 @@ describe("App's folded tool rows", () => {
     held.bus.emit("mcp-note", "MCP server sv is ready: 1 tool.");
     await until(held.app, "sv is ready");
     expect(from(held.app, false, "> look").slice(3, 5)).toEqual(["Read 1 file", "MCP server sv is ready: 1 tool."]);
+  });
+
+  // The re-check's item 2: a provider may use an id again, and the later call is not the asked one, so live it folds as it
+  // does once resumed. Resumed, the earlier asked call folds with it, as the mark went with the later call (a known limit).
+  it("folds a later call that has an asked call's id, live as after a resume", async () => {
+    const { executor } = noShell();
+    const turns = [callTool("c1", "shell", { command: "git status" }), callTool("c1", "read_file", { path: "a.txt" }), reply("done")];
+    const { app, ctx, session, sessions } = await mount(turns, { executor, save: true });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    await type(app, "look");
+    await until(app, "Allow run: git status?");
+    await press(app, "y");
+    await until(app, "done");
+    expect(from(app, false, "> look").slice(0, 6)).toEqual(["> look", "● shell git status", "  ⎿ You allowed this.", "  ⎿ ok", "Read 1 file", "done"]);
+    const { file, pictures } = sessionPaths(sessions, session.id);
+    const saved = readTranscript(file, pictures);
+    if ("problem" in saved) throw new Error(saved.problem);
+    const resumed = conversationLines(saved.messages, { asked: new Set(saved.asked), shell: "powershell", server: (safe) => safe });
+    expect(resumed.map((l) => l.text)).toEqual(["> look", "Read 1 file, ran 1 shell command", "done"]);
   });
 
   // The quality review's finding 7: the click that opens a row starts the press count again, so a quick second click is a

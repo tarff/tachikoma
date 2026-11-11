@@ -691,20 +691,24 @@ search, always on", "Own lookup tool, every provider")
       - A shell line of mixed read, list and search commands counts each command (`ls | wc -l` is
         a directory and a file).
       - A run's call that fails once its run was said (a later call of the reply with its own row
-        ended it) is said where the next run ends, after the result rows said meanwhile, so each
-        result stays under its own call.
+        ended it) is said when the next run starts or ends, after the result rows said meanwhile
+        and before the next run's row, so each result stays under its own call.
       - Any line the window says of its own (a provider's failure, a hook's or a server's note, a
         background subagent's ending, a shortening) ends the run first.
       - The shell lists: PowerShell's `cd`, `pwd` and `echo` count as `ran`, as do `git`'s reads
         in either shell (the user's choices A and B); errors sent to `/dev/null`, `$null` or the
         output (`2>/dev/null`, `2>$null`, `2>&1`) fold, every other redirection keeps its row
         (choice C); a line that sets a variable keeps its row, as `split` leaves out bash's
-        `NAME=value` words, which can change what a command runs (`LD_PRELOAD`, `PATH`); so do
-        `date -s` and `printf -v`.
+        `NAME=value` words, which can change what a command runs (`LD_PRELOAD`, `PATH`), wherever
+        a command starts (after `;`, `&&`, `!`, `{`, `if`, `then`, `else`, `elif`, `do`, `while`,
+        `until` or `time`), an array's element (`PATH[0]=`) too; so do `date -s` and `printf -v`.
       - A call's asked mark is written only for a question shown, never one dropped after a stop,
-        and goes with a later call of the same id, live and when resumed.
+        and goes with a later call of the same id before that reply reaches the window, so the
+        later call folds, live and when resumed.
       - Known limits: a resumed conversation's asked call ends the run where it arrives, not at
-        its question; a call already counted in a said row that later asks gets its own row too;
+        its question; once resumed, an asked call whose id a later call used again folds too, as
+        its mark went with the later call; a call already counted in a said row that later asks
+        gets its own row too;
         opening or closing a row wraps every line of the conversation again, a cost that grows
         with its length.
     - **Where:** the live conversation and a resumed one (`conversationLines`) both fold; `/export`

@@ -638,6 +638,9 @@ export class Session {
       // under this request's system prompt and tools, which this request's offer still gives (Task 6b's quality review).
       const answer: Message = { role: "assistant", parts: turn.parts, native: turn.native, lead: turn.servedBy ?? answeredBy.id };
       this.#under.set(answer, madeUnder(this.system, this.#specs()));
+      // A call with an asked call's id is another call, as a provider may use an id again (release 8c plan, Task 15): let go
+      // before the reply reaches the window, which folds it by this set.
+      for (const p of turn.parts) if (p.type === "tool_call") this.asked.delete(p.id);
       this.#push(answer);
 
       const calls = turn.parts.filter((p) => p.type === "tool_call");
@@ -679,8 +682,6 @@ export class Session {
       // rewrite replaces its call's entry before the call runs (#execute).
       const entries = calls.map((c) => ({ name: c.name, input: c.input }));
       this.calls.push(...entries);
-      // A call with an asked call's id is another call, as a provider may use an id again (release 8c plan, Task 15).
-      for (const c of calls) this.asked.delete(c.id);
 
       // The reply's calls run under a signal of its own, joined to the turn's, so a hook's continue: false stops them as a
       // user's stop does, a running delegate ending as a stopped one (release 8b plan, Task 7; design, review finding 1).
