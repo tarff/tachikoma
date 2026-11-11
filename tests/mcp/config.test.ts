@@ -265,7 +265,7 @@ describe("readServers", () => {
   // Release 8c plan, choice 64: Tachikoma's provider keys never reach a project's server, through any field that fills
   // ${VAR}; the line names the variable as written, never its value, whether it is set or not, and the letter case of its
   // name is ignored, as Windows ignores it. The user's own entries may read them.
-  it("leaves out a project's server whose url, headers, args or env read a provider key, and keeps the user's", () => {
+  it("leaves out a project's server whose url, headers, command, args or env read a provider key, and keeps the user's", () => {
     const env = { ...ENV, ANTHROPIC_API_KEY: "sk-ant-fake-1", OPENAI_API_KEY: "sk-fake-2" };
     const line = (name: string) => [`.mcp.json: "tools" reads \${${name}}, a provider key, which a project's servers are never given; it was left out`];
     const project = (raw: unknown, from: NodeJS.ProcessEnv = env) => {
@@ -276,6 +276,7 @@ describe("readServers", () => {
       [remote({ headers: { Authorization: "Bearer ${ANTHROPIC_API_KEY}" } }), "ANTHROPIC_API_KEY"],
       [local({ env: { KEY: "${ANTHROPIC_API_KEY}" } }), "ANTHROPIC_API_KEY"],
       [local({ args: ["--key=${OPENAI_API_KEY:-none}"] }), "OPENAI_API_KEY"],
+      [local({ command: "${ANTHROPIC_API_KEY}" }), "ANTHROPIC_API_KEY"],
       [remote({ url: "https://mcp.example.com/mcp?key=${MOONSHOT_API_KEY}" }), "MOONSHOT_API_KEY"],
       [remote({ headers: { "X-Key": "${openrouter_api_key}" } }), "openrouter_api_key"],
     ];

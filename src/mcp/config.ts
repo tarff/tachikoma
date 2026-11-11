@@ -179,7 +179,7 @@ function serverOf(name: string, raw: unknown, where: ServerConfig["where"], env:
     if (typeof raw.command !== "string") throw bad("command", TEXT, raw.command);
     if (raw.args !== undefined && !texts(raw.args)) throw bad("args", LIST, raw.args);
     const vars = textMap("env", raw.env, '{"KEY": "value"}');
-    if (where === "project") noProviderKey([...(raw.args ?? []), ...Object.values(vars)]);
+    if (where === "project") noProviderKey([raw.command, ...(raw.args ?? []), ...Object.values(vars)]);
     const args = (raw.args ?? []).map(fill);
     const filledEnv = mapValues(vars, fill);
     if (args.some((a) => a.includes(NUL))) throw bad("args", NO_NUL, "");
@@ -288,8 +288,8 @@ const filler = (env: NodeJS.ProcessEnv) => (text: string) =>
 export const variables = (text: string) => [...text.matchAll(/\$\{([^}]+)\}/g)].map((m) => m[1]!.split(":-")[0]!);
 
 // Tachikoma's provider keys never reach a project's server (release 8c plan, choice 64), set or not: a remote one's
-// headers or address would carry one off the machine, and a local one's env or arguments hand it over, though commands
-// never get them (exec/env.ts). Letter case is ignored, as Windows ignores it in a variable's name.
+// headers or address would carry one off the machine, and a local one's command, env or arguments hand it over, though
+// commands never get them (exec/env.ts). Letter case is ignored, as Windows ignores it in a variable's name.
 function noProviderKey(texts: string[]): void {
   for (const name of texts.flatMap(variables)) {
     if (API_KEYS.includes(name.toUpperCase())) throw new Left(` reads \${${visible(name)}}, a provider key, which a project's servers are never given`);

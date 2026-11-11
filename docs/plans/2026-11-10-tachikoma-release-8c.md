@@ -629,6 +629,13 @@ search, always on", "Own lookup tool, every provider")
     where the design's table said not planned; 8c-2 (servers inside the sandbox, allowed sites)
     now also runs an entry's `headersHelper`. The README says so, and the banner names 8c-2 as
     next.
+64. **A project's servers and the provider keys** (the whole-release review, 2026-11-11, the user's
+    choice, "Name + refuse keys"): a project's remote server could send any environment variable
+    to an address the project picks, as choice 49's reason ("they go only to the address shown")
+    does not hold when the project picks the address. Its question names the variables its address
+    and headers read, ` (sends <NAME>)`, as `(sets ...)` does; and a project's entry whose url,
+    headers, command, args or env reads one of `API_KEYS` (exec/env.ts) is left out with its line,
+    set or not, any letter case. The user's own entries are unchanged.
 
 ## Lines this plan adds
 
@@ -704,6 +711,8 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | **Prompts**: a missing argument (red) | `/<name>:<prompt> needs <argument>: /<name>:<prompt> <argument> ...`, the last part every argument's name in order (choice 62) |
 | A prompt that cannot be fetched (red) | `Could not get the prompt /<name>:<prompt>: <reason>. Your words are back in the prompt box.` |
 | The reason, for a server not ready (choice 62) | `<name> is not ready (<state>)`, the state as `/mcp` shows it |
+| A remote project server's question (choice 64) | ` (sends <NAME>, <NAME>)` before `?` when its address or headers read variables, names only |
+| A project's entry reading a provider key (choice 64) | `<file>: "<name>" reads ${<VAR>}, a provider key, which a project's servers are never given; it was left out` |
 
 ## Task 1: The library, and measuring the user's servers
 

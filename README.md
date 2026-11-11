@@ -1287,9 +1287,9 @@ Start the MCP server "build-tools" from this project's .mcp.json: node tools/mcp
   names the variables its address and headers read, so you see what it would send:
   `at https://tools.example.dev/mcp (sends TICKETS_TOKEN)? [y/n]`.
 - **A project's servers never get your provider keys:** an entry in `.mcp.json` whose `url`,
-  `headers`, `args` or `env` reads `${ANTHROPIC_API_KEY}`, or another API key Tachikoma uses, is
-  left out, with a line: `.mcp.json: "tools" reads ${ANTHROPIC_API_KEY}, a provider key, which a
-  project's servers are never given; it was left out`. Your own entries can still read them.
+  `headers`, `command`, `args` or `env` reads `${ANTHROPIC_API_KEY}`, or another API key Tachikoma
+  uses, is left out, with a line: `.mcp.json: "tools" reads ${ANTHROPIC_API_KEY}, a provider key,
+  which a project's servers are never given; it was left out`. Your own entries can still read them.
 - **Your answer, yes or no, is kept** for that project, in Tachikoma's data folder, until you reset
   it in [`/mcp`](#mcp), or until the entry changes: a pulled change to its command, arguments,
   variables or address is asked about again (Claude Code asks once per name). A new value of a
