@@ -615,6 +615,15 @@ search, always on", "Own lookup tool, every provider")
     https is declined without asking, with a red line: on Windows the system's opener (rundll32
     url.dll) starts a program from a `file://` address, and the library lets `file:` addresses
     through. A pick field has a hint row, in the style of `/mcp`'s (choice 51).
+62. **Resources and prompts on screen** (Task 13's build, 2026-11-11, the user's choices): a
+    missing argument's line ends with the command and every argument's name in order, as a usage
+    line (`/fake:report needs when: /fake:report who when`). The conversation on screen and
+    `/export` show only what was typed; the `@<server>:<uri>` in it names the resource, and a
+    resource's picture is a grey `⎿ [Image #N]` row, as a tool's is. A resource or prompt of a
+    configured server that is not ready (after a dropped one is reconnected) stops the send with
+    the red line's reason `<name> is not ready (<state>)`, the state as `/mcp` shows it (Task 13's
+    quality review), and the server part is fetched after the first-prompt wait and
+    UserPromptSubmit.
 
 ## Lines this plan adds
 
@@ -687,8 +696,9 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | A visit that is not a web address (red; choice 61) | `MCP server <name> asked to open <url>, which is not an http or https address, so it was declined.` |
 | A declined form (grey) | `You declined <name>'s form.`; by a hook, `An Elicitation hook declined <name>'s form.`; by an ElicitationResult hook (choice 61), `An ElicitationResult hook declined <name>'s form.`; in `-p` (note), `MCP server <name> asked for a form; -p declines every form.` |
 | **Resources**: one that cannot be read (red) | `Could not read @<name>:<uri>: <reason>. Your words are back in the prompt box.` |
-| **Prompts**: a missing argument (red) | `/<name>:<prompt> needs <argument>: /<name>:<prompt> <argument> ...` |
+| **Prompts**: a missing argument (red) | `/<name>:<prompt> needs <argument>: /<name>:<prompt> <argument> ...`, the last part every argument's name in order (choice 62) |
 | A prompt that cannot be fetched (red) | `Could not get the prompt /<name>:<prompt>: <reason>. Your words are back in the prompt box.` |
+| The reason, for a server not ready (choice 62) | `<name> is not ready (<state>)`, the state as `/mcp` shows it |
 
 ## Task 1: The library, and measuring the user's servers
 
@@ -1377,7 +1387,15 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   when answered; a form that comes while the model list, `/resume` or `/mcp` is open starts that
   list again from its top; keys typed past a form's last field go to what is underneath, such as
   a waiting question; a visit asked with no turn running, after an Esc-stopped turn, is declined
-  at once, with no line);
+  at once, with no line; and Task 13's build and reviews: `-p` sends `@<server>:<uri>` and
+  `/<server>:<prompt>` as plain words; resource templates are not listed; only a resource's or a
+  prompt's text and pictures (png, jpeg, gif, webp) are taken, the rest, such as a PDF, an
+  embedded resource or audio, left out without a line; a prompt's text is not cut; words after a
+  prompt that takes no arguments are not sent to the server; a server whose resource or prompt
+  list never answers holds a send that picks from it until the library's request limit, 60 s
+  (`DEFAULT_REQUEST_TIMEOUT_MSEC`), or Esc; a server whose name holds `:` or `/` offers no
+  resources or prompts, nor do two servers whose names differ only in letter case for the ones
+  they share);
   the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
