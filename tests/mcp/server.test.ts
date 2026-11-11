@@ -262,6 +262,52 @@ describe("a local server", () => {
     expect(server.connection).toBe(1);
   });
 
+  // Task 13: the resources `@` lists and the prompts the `/` menu lists, read at the start and when the server says they
+  // changed; a read, and a prompt with its arguments.
+  const NOTE = { uri: "note://a", name: "a note", text: "the note's text" };
+  const GREET = {
+    name: "greet",
+    description: "Greets someone",
+    arguments: [{ name: "name", required: true }],
+    messages: [{ role: "user", content: { type: "text", text: "Say hello to {name}." } }],
+  };
+
+  it("lists its resources and prompts at the start, reads a resource, and gets a prompt with its arguments", async () => {
+    const { make, log, script } = await setup();
+    const server = make(local([await script({ resources: [NOTE], prompts: [GREET] })]));
+    expect([server.resources, server.prompts]).toEqual([[], []]); // nothing until it is ready
+    await server.start();
+    expect(server.resources).toEqual([{ uri: "note://a", name: "a note" }]);
+    expect(server.prompts).toEqual([{ name: "greet", description: "Greets someone", arguments: [{ name: "name", required: true }] }]);
+    expect((await server.readResource("note://a", {})).contents).toEqual([{ uri: "note://a", text: "the note's text" }]);
+    expect((await server.getPrompt("greet", { name: "Ann" }, {})).messages).toEqual([{ role: "user", content: { type: "text", text: "Say hello to Ann." } }]);
+    expect(readLog(log).find((m) => m.method === "prompts/get")!.params.arguments).toEqual({ name: "Ann" });
+  });
+
+  it("reads a server without resources or prompts as having none, asking it for neither", async () => {
+    const { make, log, script } = await setup();
+    const server = make(local([await script()]));
+    await server.start();
+    expect([server.resources, server.prompts]).toEqual([[], []]);
+    expect(readLog(log).map((m) => m.method).filter((m) => /^(resources|prompts)\//.test(m ?? ""))).toEqual([]);
+  });
+
+  it("fails a read the server answers with an error, with its words", async () => {
+    const { make, script } = await setup();
+    const server = make(local([await script({ resources: [{ ...NOTE, fails: "it is gone" }] })]));
+    await server.start();
+    await expect(server.readResource("note://a", {})).rejects.toThrow("it is gone");
+  });
+
+  it("takes a changed list of resources, and calls onChange", async () => {
+    const { make, onChange, script } = await setup();
+    const server = make(local([await script({ resources: [NOTE] })]));
+    await server.start();
+    await server.callTool("add-resource", { resource: { uri: "note://b", name: "b" } }, {});
+    await vi.waitFor(() => expect(server.resources.map((r) => r.uri)).toEqual(["note://a", "note://b"]), WAIT);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
   it("stop kills a server that ignores its closed input, and on Windows its child too", async () => {
     const { dir, make, onChange, script } = await setup();
     const pidFile = path.join(dir, "pid");

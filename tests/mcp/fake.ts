@@ -30,6 +30,12 @@ export interface FakeOptions {
   added?: object[]; // what change adds, before the others, in place of "added"
   results?: Record<string, object>; // a call to a tool named here is answered with this result (Task 6's answers)
   instructions?: string; // what its initialize answer says of it (Task 6b's tool search)
+  // Its resources (Task 13): each listed by uri, name and mimeType, and read as its `text`, or as its `blob` (base64)
+  // with its mimeType, or answered an error with `fails` as its message.
+  resources?: { uri: string; name: string; text?: string; blob?: string; mimeType?: string; fails?: string }[];
+  // Its prompts (Task 13): each listed without its messages, which prompts/get sends with each {argument} in a text
+  // filled in, or answered an error with `fails` as its message.
+  prompts?: { name: string; description?: string; arguments?: object[]; messages?: object[]; fails?: string }[];
 }
 
 // Its tools: echo says `text` back; error answers isError; picture answers a 1x1 PNG; structured answers structured
@@ -37,8 +43,9 @@ export interface FakeOptions {
 // variables; ask sends the client a request (`method`, `params`) and answers with the client's answer, or with `cancel`
 // cancels that request at once and answers "cancelled" (Task 12: a server that gives up on its form); change adds a
 // tool and says the list changed; exit prints `stderr` and exits with `code`. The tools are called by name whatever the
-// list says, so a fake with its own `tools` still answers change and exit. Over HTTP, which answers in JSON only,
-// nothing reaches the client between answers, so progress, ask and change's notice need stdio.
+// list says, so a fake with its own `tools` still answers change and exit, and the unlisted add-resource, which adds its
+// `resource` to the resources and says their list changed (Task 13). Over HTTP, which answers in JSON only, nothing
+// reaches the client between answers, so progress, ask and the changes' notices need stdio.
 const SCRIPT = String.raw`
 const fs = require("node:fs");
 const log = (entry) => { if (O.log) fs.appendFileSync(O.log, JSON.stringify(entry) + "\n"); };
@@ -54,16 +61,33 @@ let tools = O.tools || [
   { ...tool("echo", O.description || "Says it back"), inputSchema: { type: "object", properties: { text: { type: "string" } } } },
   ...["error", "picture", "structured", "slow", "progress", "whoami", "ask", "change", "exit"].map((name) => tool(name)),
 ];
+let resources = O.resources || [];
 let notify = () => {};
 let request = () => {};
 
 function answer(m, reply) {
   if (m.method === "initialize") {
     const capabilities = { tools: { listChanged: true } };
+    if (O.resources) capabilities.resources = { listChanged: true };
+    if (O.prompts) capabilities.prompts = { listChanged: true };
     const info = { protocolVersion: m.params.protocolVersion, capabilities, serverInfo: { name: "fake", version: "1.0.0" } };
     return reply({ result: O.instructions === undefined ? info : { ...info, instructions: O.instructions } });
   }
   if (m.method === "tools/list") return reply({ result: { tools } });
+  if (m.method === "resources/list") return reply({ result: { resources: resources.map((r) => ({ uri: r.uri, name: r.name, mimeType: r.mimeType })) } });
+  if (m.method === "resources/read") {
+    const r = resources.find((x) => x.uri === m.params.uri);
+    if (!r || r.fails) return reply({ error: { code: -32002, message: r ? r.fails : "no such resource" } });
+    return reply({ result: { contents: [r.blob === undefined ? { uri: r.uri, text: r.text } : { uri: r.uri, mimeType: r.mimeType, blob: r.blob }] } });
+  }
+  if (m.method === "prompts/list") return reply({ result: { prompts: (O.prompts || []).map(({ messages, fails, ...p }) => p) } });
+  if (m.method === "prompts/get") {
+    const p = (O.prompts || []).find((x) => x.name === m.params.name);
+    if (!p || p.fails) return reply({ error: { code: -32602, message: p ? p.fails : "no such prompt" } });
+    const given = m.params.arguments || {};
+    const fill = (c) => (c.type === "text" ? { ...c, text: c.text.replace(/\{(\w+)\}/g, (_, k) => given[k] ?? "") } : c);
+    return reply({ result: { messages: p.messages.map((msg) => ({ ...msg, content: fill(msg.content) })) } });
+  }
   if (m.method !== "tools/call") return reply({ error: { code: -32601, message: "no such method" } });
   const args = m.params.arguments || {};
   const text = (t) => reply({ result: { content: [{ type: "text", text: t }] } });
@@ -94,6 +118,10 @@ function answer(m, reply) {
       tools = O.added ? [...O.added, ...tools] : [...tools, tool("added")];
       text("changed");
       return notify({ method: "notifications/tools/list_changed" });
+    case "add-resource":
+      resources = [...resources, args.resource];
+      text("added");
+      return notify({ method: "notifications/resources/list_changed" });
     case "exit": return process.stderr.write(args.stderr || "", () => process.exit(args.code));
   }
   reply({ error: { code: -32602, message: "no such tool" } });

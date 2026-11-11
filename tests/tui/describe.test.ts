@@ -34,6 +34,23 @@ describe("describe", () => {
       { text: "  ⎿ [Image #4] [Image #5]", color: "gray", oneLine: true },
     ]);
   });
+
+  // Release 8c plan, Task 13 and choice 34: what a server supplied after the typed line is for the model, so the prompt
+  // shows as typed, and a resource's picture as a tool's does.
+  it("draws a prompt as typed, leaving out the text a server supplied after it", () => {
+    const prompt: Message = {
+      role: "user",
+      parts: [
+        { type: "text", text: "/fake:greet Ann" },
+        { type: "text", text: "Say hello to Ann.", from: "server" },
+        { type: "image", id: 2, mediaType: "image/png", data: Buffer.from("png"), from: "server" },
+      ],
+    };
+    expect(lines(prompt)).toEqual([
+      { text: "> /fake:greet Ann", color: "cyan" },
+      { text: "  ⎿ [Image #2]", color: "gray", oneLine: true },
+    ]);
+  });
 });
 
 describe("lastTurn", () => {

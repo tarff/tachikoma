@@ -101,12 +101,14 @@ export const characters = (text: string) => {
 };
 
 // What submit takes as a command: a command's name first, or a slash and a bare word ("/tmp is full"
-// is a message).
+// is a message), or the shape of an MCP server's prompt, `/<name>:<prompt>`, first, which goes in a turn of its own, not
+// joined to the prompts queued beside it, as its words fill the prompt's arguments (release 8c plan, Task 13).
 export const NAMES = [
   "/exit", "/errors", "/lead", "/model", "/login", "/logout", "/tasks", "/hooks", "/mcp", "/screen", "/settings", "/keybindings", "/vim",
   "/clear", "/resume", "/branch", "/rename", "/export", "/compact", "/autocompact",
 ];
-export const isCommand = (text: string) => NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text);
+export const isCommand = (text: string) =>
+  NAMES.includes(text.split(/\s+/)[0]!.toLowerCase()) || /^\/[a-z]+$/i.test(text) || /^\/[^\s/:]+:\S/.test(text);
 
 // The settings file's entries a live edit applies here, in the design's table's order ("When a live change applies").
 // vimInsertModeRemaps is read at each key (vimTakes), and the editor at each Ctrl+G, /settings and /keybindings; both

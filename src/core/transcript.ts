@@ -195,7 +195,8 @@ function cutOff(reply: SavedMessage, next: SavedMessage | undefined): boolean {
 }
 
 // A part of a user message as the user typed it: its text, or a picture's marker; never a result, waiting text or what a
-// server supplied, such as a tool answer's picture (release 8c plan, choice 34).
+// server supplied, such as a tool answer's picture, a resource's text or a prompt command's messages (release 8c plan,
+// choice 34).
 const own = (p: SavedMessage["parts"][number]) =>
   p.type === "image" && p.from === undefined ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : [];
 

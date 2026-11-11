@@ -6,8 +6,9 @@ import type { Cache } from "../providers/pictures.js";
 export type Part =
   // `from: "tasks"`: text the session added for the lead, such as a background subagent's answer, not
   // something the user typed. `from: "hooks"`: text a hook handed the model, headed `<Event> hook:` (release 8b plan,
-  // choice 6).
-  | { type: "text"; text: string; from?: "tasks" | "hooks" }
+  // choice 6). `from: "server"`: text an MCP server supplied, a picked resource's or a prompt command's, sent after the
+  // typed words and never part of them (release 8c plan, choice 34).
+  | { type: "text"; text: string; from?: "tasks" | "hooks" | "server" }
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; callId: string; output: string; isError: boolean }
   // A picture the user added, the original as read, kept in memory for the session (release 6 plan, choice 9); `id` is

@@ -478,8 +478,8 @@ export class Session {
       return;
     }
     if (this.#serversFirst && !(await this.#serversReady(signal))) return;
-    // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept. One
-    // a server supplied is not the user's (release 8c plan, choice 34).
+    // A picture is its marker in its place, so the prompt is the words as typed, and none of the picture's data is kept. A
+    // part a server supplied, a picture or a resource's or prompt's text, is not the user's (release 8c plan, choice 34).
     const words = typed
       .flatMap((p) => (p.type === "image" && p.from === undefined ? [marker(p.id)] : p.type === "text" && p.from === undefined ? [p.text] : []))
       .join("");

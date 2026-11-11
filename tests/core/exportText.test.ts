@@ -50,6 +50,22 @@ describe("exportText", () => {
     expect(exportText(messages, "fake:a")).toBe(["Tachikoma (fake:a):", "● mcp__s__shot {}", "  ⎿ two", line, ""].join("\n"));
   });
 
+  // Release 8c plan, Task 13 and choice 34: a picked resource's text and picture follow the typed line, the server's, so
+  // "You:" holds only what was typed, as the scrollback shows it.
+  it("leaves a picked resource's text and picture out, so You: holds only what was typed", () => {
+    const messages: Message[] = [
+      {
+        role: "user",
+        parts: [
+          { type: "text", text: "read @fake:note://a" },
+          { type: "text", text: "Resource @fake:note://a:\nthe note", from: "server" },
+          { ...png, id: 1, from: "server" },
+        ],
+      },
+    ];
+    expect(exportText(messages, "fake:a")).toBe(["You:", "read @fake:note://a", ""].join("\n"));
+  });
+
   // User, 2026-11-06: "Include, headed Subagents:". The session's notes for the lead, as the lead got them, where they
   // arrived: after a prompt, after the results they came with, or alone.
   it("puts the session's notes for the lead where they arrived, under Subagents:, and a call not finished says so", () => {

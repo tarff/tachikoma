@@ -1,16 +1,17 @@
 import { lstat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Prompt } from "@modelcontextprotocol/client";
 import { withLock } from "../../auth/lock.js";
 import { leadGone, type Opened } from "../../clilib.js";
 import type { ErrorEvent } from "../../core/bus.js";
 import { summarize } from "../../core/errorlog.js";
 import { exportText } from "../../core/exportText.js";
 import { type Protection, visible } from "../../core/permissions.js";
-import { cannot } from "../../core/session.js";
+import { cannot, truncate } from "../../core/session.js";
 import { listSessions } from "../../core/sessions.js";
 import { CANCELLED } from "../../core/shorten.js";
 import type { Task } from "../../core/tasks.js";
-import { errorText, type Provider } from "../../core/types.js";
+import { errorText, type Part, type Provider } from "../../core/types.js";
 import { hookName } from "../../hooks/answer.js";
 import { limitOf } from "../../hooks/hooks.js";
 import { KEYBINDINGS } from "../../keybindings.js";
@@ -18,8 +19,9 @@ import { dropIfNothing } from "../../sandbox/copies.js";
 import { copyLock } from "../../sandbox/snapshot.js";
 import { SETTINGS, shownFile } from "../../settings.js";
 import type { Fns } from "../App.js";
-import { unquoted } from "../clipboard.js";
+import { typeOf, unquoted } from "../clipboard.js";
 import { callLines, conversationLines, type Line } from "../describe.js";
+import { type Offers, offers } from "../menus.js";
 import { type Draft, joined, trimmed } from "../pictures.js";
 import type { Action } from "../McpList.js";
 import { kept, type ReviewEnd } from "../Review.js";
@@ -157,6 +159,16 @@ export const queue = (ui: UI, fns: Fns) => {
           ui.working.current = false;
         }
       }
+      // An MCP server's prompt, `/<name>:<prompt> <words>`, as the `/` menu lists it (release 8c plan, Task 13; choice 31):
+      // its words fill the prompt's arguments, and a needed one not given says so, nothing sent. Any other `/<name>:...`
+      // is a message.
+      const served = offers(ui.mcp?.servers);
+      const prompt = served.prompts.find((p) => p.command === first);
+      const filled = prompt && argumentsOf(prompt.prompt, text.slice(first.length));
+      if (prompt && "missing" in filled!) {
+        const usage = [prompt.command, ...(prompt.prompt.arguments ?? []).map((a) => a.name)].map((w) => visible(w)).join(" ");
+        return fns.say({ text: `${visible(prompt.command)} needs ${visible(filled.missing)}: ${usage}`, color: "red" });
+      }
       const account = command === "/login" ? "login" : command === "/logout" ? "logout" : undefined;
       // A mistyped command must not become a paid turn.
       // A slash and a bare word on its own is a command; "/tmp is full" is a message, "/exit now" is not.
@@ -198,7 +210,18 @@ export const queue = (ui: UI, fns: Fns) => {
           // The message's pictures sent before it, which a blocked prompt's words do not take back (promptKeys.ts, giveBack).
           const before = new Set(message.spans.flatMap((s) => (ui.pictures.sent(s.id) ? [s.id] : [])));
           const read = await fns.readsEnded(message, signal);
-          const ended = await ui.session.send(read.parts, signal);
+          // What the MCP servers supply goes after the typed words, marked the server's (choice 34); one that cannot be got
+          // stops the send, its line said and the words back in the prompt box (choices 30, 31), or nothing said when the
+          // turn was stopped meanwhile, as a stop says nothing.
+          const supplied = await supply(served, prompt && filled && "args" in filled ? { prompt, args: filled.args } : undefined, read.draft.text, signal);
+          if (typeof supplied === "string") {
+            if (!signal.aborted) {
+              fns.say({ text: supplied, color: "red" });
+              fns.giveBack(read.draft, before, false);
+            }
+            return;
+          }
+          const ended = await ui.session.send([...read.parts, ...supplied], signal);
           // A prompt a UserPromptSubmit hook blocked or stopped was not sent (approved by the user, 2026-11-09).
           if (ended && ("blocked" in ended || ended.unsent)) fns.giveBack(read.draft, before);
         }
@@ -212,6 +235,63 @@ export const queue = (ui: UI, fns: Fns) => {
     } catch (err) {
       fns.say({ text: errorText(err), color: "red" });
     }
+  };
+
+  // The MCP servers' parts for a prompt being sent (release 8c plan, Task 13), each marked the server's (choice 34): a
+  // prompt command's messages, each text and picture, an assistant's headed `(assistant)` (choice 31); then each resource
+  // picked in the words, `@<name>:<uri>` as `@` completes it, once, in the order picked: its text headed `Resource
+  // @<name>:<uri>:` and cut as a tool's answer is (choice 30; "Numbers in this plan"), then its pictures, numbered as
+  // pasted ones are. A picture's type is read from its first bytes, as a tool answer's is; any other content is left out.
+  // The red line instead, for the first that cannot be got, the reason escaped.
+  const supply = async (o: Offers, asked: { prompt: Offers["prompts"][number]; args: Record<string, string> } | undefined, text: string, signal: AbortSignal) => {
+    const on = (name: string) => {
+      const server = ui.mcp?.servers.server(name);
+      if (!server) throw new Error("Not connected"); // left the settings since the prompt was typed, as Server says of one not ready
+      return server;
+    };
+    const pictured = (base64: string): Part[] => {
+      const data = Buffer.from(base64, "base64");
+      const mediaType = typeOf(data);
+      if (!mediaType) return [];
+      const id = ui.pictures.next();
+      ui.pictures.set(id, { mediaType, data });
+      ui.pictures.markSent(id);
+      return [{ type: "image", id, mediaType, data, from: "server" }];
+    };
+    const why = (err: unknown) => visible(errorText(err), { tabs: true });
+    const parts: Part[] = [];
+    if (asked) {
+      try {
+        const got = await on(asked.prompt.server).getPrompt(asked.prompt.prompt.name, asked.args, { signal });
+        for (const m of got.messages) {
+          const head = m.role === "assistant" ? "(assistant)" : undefined;
+          const c = m.content;
+          if (c.type === "text") parts.push({ type: "text", text: head ? `${head}\n${c.text}` : c.text, from: "server" });
+          else if (c.type === "image") {
+            const picture = pictured(c.data);
+            if (head && picture.length) parts.push({ type: "text", text: head, from: "server" });
+            parts.push(...picture);
+          }
+        }
+      } catch (err) {
+        return `Could not get the prompt ${visible(asked.prompt.command)}: ${why(err)}. Your words are back in the prompt box.`;
+      }
+    }
+    const picked = new Set([...text.matchAll(/(?:^|\s)@(\S+)/g)].map((m) => m[1]!));
+    for (const key of picked) {
+      const r = o.resources.find((x) => x.key === key);
+      if (!r) continue;
+      try {
+        const got = await on(r.server).readResource(r.uri, { signal });
+        const texts = got.contents.flatMap((c) => ("text" in c ? [c.text] : []));
+        const head = `Resource @${r.key}:`;
+        parts.push({ type: "text", text: texts.length ? `${head}\n${truncate(texts.join("\n\n"))}` : head, from: "server" });
+        for (const c of got.contents) if ("blob" in c) parts.push(...pictured(c.blob));
+      } catch (err) {
+        return `Could not read @${visible(r.key)}: ${why(err)}. Your words are back in the prompt box.`;
+      }
+    }
+    return parts;
   };
 
   // `/tasks` lists the session's subagents, `/tasks t3` prints one's tool calls and answer in full,
@@ -641,3 +721,19 @@ export const queue = (ui: UI, fns: Fns) => {
     pickSession, closeSessions, branch, rename, exportTo, mcpAction, closeMcp,
   };
 };
+
+// A prompt command's words as its arguments (release 8c plan, choice 31): split at blanks, each word the next argument's,
+// the last argument taking the rest as typed, line breaks and all; or the first needed one that is not given.
+function argumentsOf(prompt: Prompt, words: string): { args: Record<string, string> } | { missing: string } {
+  const list = prompt.arguments ?? [];
+  const args: Record<string, string> = {};
+  let rest = words.trim();
+  for (const [i, a] of list.entries()) {
+    if (!rest) break;
+    const word = i === list.length - 1 ? rest : /^\S+/.exec(rest)![0];
+    args[a.name] = word;
+    rest = rest.slice(word.length).trimStart();
+  }
+  const missing = list.find((a) => a.required && !Object.hasOwn(args, a.name));
+  return missing ? { missing: missing.name } : { args };
+}
