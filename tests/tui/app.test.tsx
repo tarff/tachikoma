@@ -10712,6 +10712,38 @@ describe("App's MCP", () => {
     expect(JSON.parse((r.content[0] as { text: string }).text)).toEqual({ action: "cancel" });
   });
 
+  // A subagent's visit question is the subagent's: Ctrl-C stops it, not the lead's turn, and its stop takes the question
+  // away; the question reads as the form's heading does, its id first (Task 12's re-check).
+  it("stops the subagent, not the lead's turn, on Ctrl-C at its visit question, and takes the question away when it stops", async () => {
+    const { config, servers } = await mcpSetup();
+    const lead = new Held();
+    const { app, mcp } = await mount([], { lead, mcp: servers([await config("s")]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    await type(app, "go");
+    await waitFor(() => lead.asked.length === 1);
+    const visit = { mode: "url", message: "Sign there", elicitationId: "e1", url: "https://example.com/x" };
+    const subagent = () => {
+      const stop = new AbortController();
+      const owner: Owner = { name: "t1 (look around)", signal: stop.signal, stop: () => stop.abort() };
+      const asked = mcp!.servers.server("s")!.callTool("ask", { method: "elicitation/create", params: visit }, { owner });
+      return { stop, answer: async () => JSON.parse(((await asked).content[0] as { text: string }).text) };
+    };
+    const question = "t1: s asks you to open https://example.com/x in your browser: Sign there. Open it? [y/n]";
+    const first = subagent();
+    await soon(() => expect(flat(app)).toContain(question));
+    await press(app, "\u0003");
+    expect(first.stop.signal.aborted).toBe(true);
+    expect(await first.answer()).toEqual({ action: "cancel" });
+    await until(app, "Working · "); // the lead's turn goes on
+    const second = subagent();
+    await soon(() => expect(flat(app)).toContain(question));
+    second.stop.abort();
+    await soon(() => expect(flat(app)).not.toContain(question));
+    expect(await second.answer()).toEqual({ action: "cancel" });
+    lead.answer("done");
+    await until(app, "done");
+  });
+
   it("asks before opening the browser for a server's visit request, and opens it on yes", async () => {
     const { config, servers } = await mcpSetup();
     const opened: string[] = [];

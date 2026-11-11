@@ -275,11 +275,16 @@ describe("a server's form", LIMIT, () => {
     t.servers.forms.bind(w.ui);
     t.useHooks([t.hook("after", "ElicitationResult", "")]);
     expect(await t.call(form(), true)).toBe("cancelled");
-    // The cancel can reach the window before or after its first field is asked; either way the form ends there.
-    await until(() => w.asked.length === 0 || t.notes.length === 1);
-    w.answer("Ada"); // a late answer to a field taken away goes nowhere
+    // Forms are asked one at a time, so the next form is asked only once the cancelled one has ended, whenever the cancel
+    // reached it.
+    const one = { type: "object", properties: { name: { type: "string" } } };
+    const next = t.ask(form(one, "Next"));
+    await until(() => t.notes.includes("fake asks: Next") && w.asked.at(-1) === "name (optional): ");
+    w.answer("Bob");
+    expect(await next).toEqual({ action: "accept", content: { name: "Bob" } });
     expect(t.notes.filter((l) => l.startsWith("You declined"))).toEqual([]);
-    expect(t.inputs("after")).toEqual([]);
+    // The ElicitationResult hook ran for the next form only.
+    expect(t.inputs("after")).toMatchObject([{ message: "Next", action: "accept", content: { name: "Bob" } }]);
   });
 
   it("asks two forms one after the other, never their fields mixed", async () => {

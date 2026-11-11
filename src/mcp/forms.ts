@@ -23,11 +23,11 @@ export type Field = { name: string; question: string; note?: string; required: b
 
 // The window's questions (App.tsx): `field` gives what was typed, or the values picked, or null for Esc or a stop of
 // `signal`; `given`, what the field was last answered with, when it is asked again after a wrong answer. `visit` is the
-// window's own yes or no, asked with no owner, so a subagent's reads as its heading does, its id first (Task 12's quality
-// review).
+// window's own yes or no, a subagent's with its `owner`, so its stop takes the question away and Ctrl-C there stops it;
+// the question already starts with the subagent's id, as its heading does (Task 12's quality review and re-check).
 export interface FormUI {
   field(field: Field, given: string | string[] | undefined, signal: AbortSignal): Promise<string | string[] | null>;
-  visit(question: string): Promise<boolean>;
+  visit(question: string, owner: Owner | undefined): Promise<boolean>;
 }
 
 // "Lines this plan adds", Forms.
@@ -155,7 +155,7 @@ export class Forms {
       if (first.action === "decline") say(`An Elicitation hook declined ${visible(name)}'s form.`);
       return answerOf(first);
     }
-    const run = this.#line.then(() => this.#ask(name, form, tag, say, signal));
+    const run = this.#line.then(() => this.#ask(name, form, opts.owner, tag, say, signal));
     this.#line = run.catch(() => {});
     const got = await run;
     if (signal.aborted) return { action: "cancel" };
@@ -173,7 +173,7 @@ export class Forms {
   // The user's answer: -p's decline ("-p"), or one where the window has gone; a visit asks its question, its id first for a
   // subagent's, only for a web address, and opens the address as parsed; a form says its heading, then asks each field
   // until it takes the answer, saying each answer taken under its question. `say` puts the tag first.
-  async #ask(name: string, form: Form, tag: string, say: (line: string) => void, signal: AbortSignal): Promise<Answer | "-p"> {
+  async #ask(name: string, form: Form, owner: Owner | undefined, tag: string, say: (line: string) => void, signal: AbortSignal): Promise<Answer | "-p"> {
     const ui = this.#ui;
     const who = visible(name);
     if (!ui) return this.#headless ? "-p" : { action: "decline" };
@@ -186,7 +186,7 @@ export class Forms {
         this.#bus.emit("error", { kind: "mcp", attempted: `MCP server ${who}`, message, lead: this.#lead() });
         return { action: "decline" };
       }
-      const yes = await ui.visit(`${tag}${who} asks you to open ${shown(form.url)} in your browser: ${shown(form.message)}. Open it`);
+      const yes = await ui.visit(`${tag}${who} asks you to open ${shown(form.url)} in your browser: ${shown(form.message)}. Open it`, owner);
       if (signal.aborted) return { action: "cancel" };
       if (yes) this.#openBrowser(parsed.href);
       return { action: yes ? "accept" : "decline" };

@@ -224,11 +224,14 @@ export function App(props: AppProps) {
         // The lead's own question comes from its call running now, the last to start: delegate's calls, which ask only
         // through their subagents, start before the rest (session.ts; release 7 plan, choice 66).
         const asking = owner || plain ? undefined : ui.calls.current.at(-1);
+        // A subagent's plain question, only an MCP server's visit request (release 8c plan, Task 12's re-check), names the
+        // subagent itself, its id first, so it is not named again here; its owner still stops and cancels it.
+        const named = owner && !plain;
         const q: Question = {
-          text: owner ? `${visible(owner.name)} to ${text}` : text,
+          text: named ? `${visible(owner.name)} to ${text}` : text,
           // A subagent's name is its id, then its description in brackets (tasks.ts); a summary starts with its action:
           // "run: …", "write …", "read …".
-          label: `${owner ? `${visible(owner.name.split(" ", 1)[0]!)} to ` : ""}${text.split(/[\s:]/, 1)[0]}`,
+          label: `${named ? `${visible(owner.name.split(" ", 1)[0]!)} to ` : ""}${text.split(/[\s:]/, 1)[0]}`,
           ...(owner ? { owner } : {}),
           ...(range ? { detail: range } : {}),
           ...(plain ? { plain } : {}),
@@ -392,7 +395,7 @@ export function App(props: AppProps) {
           ui.setForm({ id, field, ...(given !== undefined && { given }), done });
           void latest.current.comeBack();
         }),
-      visit: (question) => ui.asking.current?.(question, undefined, undefined, true) ?? Promise.resolve(false),
+      visit: (question, owner) => ui.asking.current?.(question, undefined, owner, true) ?? Promise.resolve(false),
     });
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
