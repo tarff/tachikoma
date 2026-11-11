@@ -92,8 +92,49 @@ describe("folded tool rows", () => {
       "echo $(Remove-Item a)", "& { Get-Content a }", "Remove-Item a",
     ];
     for (const line of ownPs) expect([line, shellKinds(line, "powershell")]).toEqual([line, null]);
-    // A copy of one output into another is no file.
+  });
+
+  // The user's choice, 2026-11-12 (decision C): errors thrown away or joined to the output write no file, so they fold;
+  // every other redirection keeps its row, near misses among them.
+  it("folds a line whose errors go to null or to the output, and keeps a row for every other redirection", () => {
+    expect(shellKinds("cat a 2>/dev/null", "bash")).toEqual(["read"]);
+    expect(shellKinds("grep x a 2> /dev/null", "bash")).toEqual(["search"]);
     expect(shellKinds("grep x a 2>&1", "bash")).toEqual(["search"]);
+    expect(shellKinds("Get-Content a 2>$null", "powershell")).toEqual(["read"]);
+    expect(shellKinds("gc a 2>&1", "powershell")).toEqual(["read"]);
+    const bash = ["cat a 2>/dev/nullx", "cat a 2>/dev/null.txt", "cat a 2>/dev/null2", "cat a 1>&2", "cat a >&2", "cat a 2>&-", "cat a 2>&1x"];
+    bash.push("cat a 2>/dev/null > b");
+    for (const line of bash) expect([line, shellKinds(line, "bash")]).toEqual([line, null]);
+    const ps = ["gc a 2>$nullx", "gc a 2>$null.txt", "gc a 2>null", "gc a *>&1", "gc a 2>$null > b", "gc a 2>/dev/null"];
+    for (const line of ps) expect([line, shellKinds(line, "powershell")]).toEqual([line, null]);
+  });
+
+  // The quality review's finding 1: split leaves out a line's NAME=value words, which change what the command runs or reads
+  // (LD_PRELOAD, GIT_EXTERNAL_DIFF, BASH_ENV, PATH), so a line that sets a variable keeps its row; so does PowerShell's.
+  it("keeps a row for a line that sets a variable, bash and PowerShell", () => {
+    const bash = ["LD_PRELOAD=./x.so cat a", "GIT_EXTERNAL_DIFF=./x git diff", "BASH_ENV=./x echo hi", "PATH=.; cat a", "PATH=."];
+    bash.push("cat a && X=1 ls", "X+=1; ls");
+    for (const line of bash) expect([line, shellKinds(line, "bash")]).toEqual([line, null]);
+    expect(shellKinds("cat a=b", "bash")).toEqual(["read"]); // a word holding "=" is no assignment
+    const ps = ["$x = 1; gc a", "$env:PATH = 'x'; gc a", "$x=1", "$x += 1; gc a", "Set-Item env:X 1; gc a", "${env:X}=1; gc a", "$a.b = 1; gc a"];
+    for (const line of ps) expect([line, shellKinds(line, "powershell")]).toEqual([line, null]);
+    expect(shellKinds("Select-String $x a.txt", "powershell")).toEqual(["search"]); // a variable read is no assignment
+  });
+
+  // The quality review's finding 6: `date -s` sets the clock and `printf -v` sets a variable.
+  it("keeps a row for date setting the clock and printf setting a variable", () => {
+    for (const line of ["date -s 2020-01-01", "date --set 2020-01-01", "date --set=2020-01-01", "date -us 2020-01-01", "printf -v PATH x", "printf -vPATH x"]) {
+      expect([line, shellKinds(line, "bash")]).toEqual([line, null]);
+    }
+    for (const line of ["date", "date -u", "date +%s", "printf x"]) expect(shellKinds(line, "bash")).toEqual(["ran"]);
+  });
+
+  // The user's choice, 2026-11-12 (decision A): PowerShell's cd, pwd and echo are Set-Location's, Get-Location's and
+  // Write-Output's names, so they are on its "ran" list too, as measured on Claude Code; git's reads stay on it (decision B).
+  it("counts PowerShell's cd, pwd and echo as ran, beside git's reads", () => {
+    for (const line of ["cd src; git log", "pwd", "echo hi", "CD src", "cd src; git status"]) {
+      expect([line, shellKinds(line, "powershell")]).toEqual([line, ["ran"]]);
+    }
   });
 
   it("gives a call its kind, and own to one that asked a question or failed, whatever its tool", () => {
@@ -135,7 +176,8 @@ describe("the open run", () => {
   });
 
   // A failed read keeps its row: its red first line stays seen. Failing while its run is open, it leaves the run, and its
-  // row is said where the run ends; failing once its run was said, at once, still counted in it (a known limit).
+  // row is said where the run ends; failing once its run was said, where the next run ends, still counted in the row said
+  // (a known limit).
   it("says a call that fails as its own red row, out of the run's count while the run is open", () => {
     const run = new OpenRun(opts());
     lines(reply(read("r1"), read("r2", "gone.txt")), undefined, run);
@@ -145,13 +187,27 @@ describe("the open run", () => {
       { text: "● read_file gone.txt", color: "yellow", oneLine: true },
       { text: "  ⎿ ENOENT: no such file", color: "red", oneLine: true },
     ]);
-    // One said already: its row at once.
+    // One said already: where the run after it ends.
     lines(reply(read("r3"), read("r4", "late.txt")), undefined, run);
     expect(run.question(undefined).lines.map(({ fold, ...l }) => l)).toEqual([gray("Read 2 files")]);
-    expect(lines(results(ok("r3"), failed("r4", "late")), undefined, run)).toEqual([
+    expect(lines(results(ok("r3"), failed("r4", "late")), undefined, run)).toEqual([]);
+    expect(run.end()).toEqual([
       { text: "● read_file late.txt", color: "yellow", oneLine: true },
       { text: "  ⎿ late", color: "red", oneLine: true },
     ]);
+  });
+
+  // The quality review's finding 2: a call of its own row ends the run, and the run's call that then fails waits, so the
+  // own call's result row stays under its own call.
+  it("keeps a call's result under it when a call of the run said before it fails", () => {
+    const run = new OpenRun(opts());
+    const plain = (ls: Line[]) => ls.map(({ fold, ...l }) => l.text);
+    const said = [
+      ...lines(reply(read("r", "missing.txt"), sh("x", "rm x")), undefined, run),
+      ...lines(results(failed("r", "ENOENT: no such file"), ok("x")), undefined, run),
+      ...lines(reply(text("Done.")), undefined, run),
+    ];
+    expect(plain(said)).toEqual(["Read 1 file", "● shell rm x", "  ⎿ ok", "● read_file missing.txt", "  ⎿ ENOENT: no such file", "Done."]);
   });
 
   // A question ends the run before its call: the run's row, then the asked call's own row, its answer under it; the calls

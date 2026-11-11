@@ -682,6 +682,31 @@ search, always on", "Own lookup tool, every provider")
       run's row comes first, then the asked call's row with its answer under it. A call of an
       already-said run that fails after it (one still running when a question ended the run) is
       said as its own red row then, and stays counted in the run (a known limit).
+    - **As built** (Task 15, its reviews and the user's answers, 2026-11-12):
+      - A question splits the run at its call: the calls before it are said, the asked call's
+        row follows, and the calls after it, which have not run yet, stay in the run. Its answer
+        goes under its row only while no other call of the reply has a row of its own, whose
+        result would come between (choice 67 of release 7).
+      - An MCP tool's pictures end the run, as text does, so its row comes before them.
+      - A shell line of mixed read, list and search commands counts each command (`ls | wc -l` is
+        a directory and a file).
+      - A run's call that fails once its run was said (a later call of the reply with its own row
+        ended it) is said where the next run ends, after the result rows said meanwhile, so each
+        result stays under its own call.
+      - Any line the window says of its own (a provider's failure, a hook's or a server's note, a
+        background subagent's ending, a shortening) ends the run first.
+      - The shell lists: PowerShell's `cd`, `pwd` and `echo` count as `ran`, as do `git`'s reads
+        in either shell (the user's choices A and B); errors sent to `/dev/null`, `$null` or the
+        output (`2>/dev/null`, `2>$null`, `2>&1`) fold, every other redirection keeps its row
+        (choice C); a line that sets a variable keeps its row, as `split` leaves out bash's
+        `NAME=value` words, which can change what a command runs (`LD_PRELOAD`, `PATH`); so do
+        `date -s` and `printf -v`.
+      - A call's asked mark is written only for a question shown, never one dropped after a stop,
+        and goes with a later call of the same id, live and when resumed.
+      - Known limits: a resumed conversation's asked call ends the run where it arrives, not at
+        its question; a call already counted in a said row that later asks gets its own row too;
+        opening or closing a row wraps every line of the conversation again, a cost that grows
+        with its length.
     - **Where:** the live conversation and a resumed one (`conversationLines`) both fold; `/export`
       and `-p` are unchanged. A click opens a row only in full screen (`--classic` has no mouse);
       Ctrl+O works in both.
@@ -1537,9 +1562,13 @@ each.
   - ran: `cd`, `pwd`, `echo`, `printf`, `which`, `where`, `whoami`, `date`, `true`, and `git`
     with `log`, `status`, `diff`, `show`, `rev-parse`, `branch` (no other word after it),
     `remote` (alone or `-v`) or `ls-files`; PowerShell `Set-Location`, `Get-Location`,
-    `Write-Output`, `Get-Command`, `Test-Path`, `Get-Item`;
+    `Write-Output`, `Get-Command`, `Test-Path`, `Get-Item`, and `cd`, `pwd`, `echo` and `git`'s
+    reads as above (the user's choices, 2026-11-12);
   - **`own` whatever the list** (finding 3): a redirection to a file (`>`, `>>`, `>|`, `&>`, a
-    file number's `2>`; PowerShell's `>` and `>>`); PowerShell `Out-File`, `Set-Content`,
+    file number's `2>`, `1>&2`; PowerShell's `>` and `>>`), but not `2>/dev/null`, PowerShell's
+    `2>$null` or `2>&1` (the user's choice, 2026-11-12); a variable set anywhere in the line
+    (bash `NAME=value`, alone or before a command; PowerShell `$x = ...`, `$env:X = ...`);
+    `date` with `-s` or `--set`; `printf -v`; PowerShell `Out-File`, `Set-Content`,
     `Add-Content`, `Tee-Object` and bash `tee` anywhere in the line; `git` with `-c`, `-C`
     or `--git-dir`/`--work-tree` before its subcommand, or any word starting `--output` or
     `--ext-diff`; `find` with `-delete`, `-exec`, `-execdir`, `-ok`, `-okdir`, `-fprint`,

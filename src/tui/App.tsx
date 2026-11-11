@@ -306,7 +306,10 @@ export function App(props: AppProps) {
       const rows = m.parts.filter((p) => p.type === "tool_call" && ui.run.own(p));
       if (last?.type === "tool_call" && rows.length === 1 && rows[0] === last) ui.toolLine.current = last.id;
     };
+    // Each line said here, outside describe, ends the open run of quiet calls first, so the calls before it are said above
+    // it (release 8c plan, Task 15's quality review); a failed call's error event says nothing, its result row coming next.
     const onError = (e: ErrorEvent) => {
+      if (e.kind !== "tool") latest.current.endRun();
       if (e.kind === "tool") ui.rerender((n) => n + 1);
       else if (e.kind === "fallback") latest.current.say({ text: `↪ ${e.message}`, color: "magenta" });
       // Its line names what failed, so it goes without a label (release 8a plan, Task 5; user, 2026-11-06), as a
@@ -323,6 +326,7 @@ export function App(props: AppProps) {
       latest.current.lookUpWindow(false);
     };
     const onLead = (id: string) => {
+      latest.current.endRun();
       if (ui.leadFromFile.current) latest.current.note(gray(`lead is now ${id}${FROM}`));
       else latest.current.say({ text: `lead is now ${id}`, color: "magenta" });
       latest.current.lookUpWindow();
@@ -341,6 +345,7 @@ export function App(props: AppProps) {
       for (const t of ui.tasks.all) {
         if (!t.background || t.state === "running" || t.state === "waiting" || ui.announced.current.has(t.id)) continue;
         ui.announced.current.add(t.id);
+        latest.current.endRun();
         latest.current.say({ text: `${t.id} ${t.state === "done" ? "finished" : t.state}`, color: "gray" });
       }
       ui.rerender((n) => n + 1);
@@ -350,12 +355,21 @@ export function App(props: AppProps) {
       ui.todos.current = { items, hidden: false };
       ui.rerender((n) => n + 1);
     };
-    const onNote = (text: string) => latest.current.say(gray(text));
+    const onNote = (text: string) => {
+      latest.current.endRun();
+      latest.current.say(gray(text));
+    };
     // A hook's grey line (release 8b plan, choice 23), escaped whole: it carries the hook's own words, raw, and its command,
     // so a line break in them cannot pass for a line of the window's own (Task 6's review).
-    const onHookNote = (line: string) => latest.current.say(gray(visible(line, { tabs: true })));
+    const onHookNote = (line: string) => {
+      latest.current.endRun();
+      latest.current.say(gray(visible(line, { tabs: true })));
+    };
     // An MCP grey line (release 8c plan, choice 26), escaped whole as a hook's is: it carries a server's names and words.
-    const onMcpNote = (line: string) => latest.current.say(gray(visible(line, { tabs: true })));
+    const onMcpNote = (line: string) => {
+      latest.current.endRun();
+      latest.current.say(gray(visible(line, { tabs: true })));
+    };
     // The waiting line's label while a hook with a statusMessage runs (release 8b design, "What the user sees").
     const onHookStatus = (message: string, running: boolean) => {
       const s = ui.hookStatus.current;
@@ -368,6 +382,7 @@ export function App(props: AppProps) {
     const onShortened = (summary: string) => {
       ui.summary.current = summary;
       ui.stats.context = 0;
+      latest.current.endRun();
       latest.current.say(gray(SHORTEN_WORDS.shortened));
     };
     ui.bus.on("message", onMessage);

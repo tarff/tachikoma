@@ -39,7 +39,8 @@ const LISTS: Record<Shell, Record<Listed, readonly string[]>> = {
     read: ["get-content", "gc", "type", "cat", "measure-object"],
     list: ["get-childitem", "gci", "ls", "dir"],
     search: ["select-string", "sls"],
-    ran: ["set-location", "get-location", "write-output", "get-command", "test-path", "get-item"],
+    // cd, pwd and echo: Set-Location's, Get-Location's and Write-Output's names (the user's choice, 2026-11-12).
+    ran: ["set-location", "get-location", "write-output", "get-command", "test-path", "get-item", "cd", "pwd", "echo"],
   },
 };
 const GIT_READS = ["log", "status", "diff", "show", "rev-parse", "branch", "remote", "ls-files"];
@@ -64,17 +65,25 @@ function commandKind(words: string[], shell: Shell): Listed | null {
   const fdExec = (w: string) => FD_EXEC.some((o) => w === o || w.startsWith(`${o}=`)) || /^-[A-Za-z]*[xX][A-Za-z]*$/.test(w);
   if (shell === "bash" && name === "fd" && rest.some(fdExec)) return null;
   if (shell === "bash" && name === "rg" && rest.some((w) => w.startsWith("--pre"))) return null;
+  // date -s (alone or among short options) or --set sets the clock; printf -v sets a variable (the quality review).
+  if (shell === "bash" && name === "date" && rest.some((w) => /^-[A-Za-z]*s/.test(w) || /^--set(=|$)/.test(w))) return null;
+  if (shell === "bash" && name === "printf" && rest.some((w) => w.startsWith("-v"))) return null;
   const lists = LISTS[shell];
   return (["read", "list", "search", "ran"] as const).find((k) => lists[k].includes(name)) ?? null;
 }
 
-// A redirection to a file, or a command substitution, process substitution or script block, anywhere in the line, which
-// makes it its own row whatever its commands (Task 15). split reads these without saying so in its commands, so the
-// line's text is looked at: a quoted ">" or "$(" counts too, which only keeps a row that could have folded. A copy of one
-// output into another (2>&1, *>&1) or a closed one (>&-) writes no file.
+// A redirection to a file, a command substitution, process substitution or script block, or a variable set, anywhere in
+// the line, which makes it its own row whatever its commands (Task 15). split reads these without saying so in its
+// commands, and leaves out a bash NAME=value word, which can change what a command runs (LD_PRELOAD, GIT_EXTERNAL_DIFF,
+// BASH_ENV, PATH; the quality review), so the line's text is looked at: a quoted ">" or "$(" counts too, which only keeps
+// a row that could have folded. Errors thrown away (2>/dev/null, PowerShell's 2>$null) or joined to the output (2>&1)
+// write no file (the user's choice, 2026-11-12).
+const END = String.raw`(?=$|[\s;|&)])`;
+const QUIET = { bash: new RegExp(String.raw`2>\s*/dev/null${END}|2>&1${END}`, "g"), powershell: new RegExp(String.raw`2>\s*\$null${END}|2>&1${END}`, "g") };
+const ASSIGNS = { bash: /(?:^|[;&|(){}\n])\s*[A-Za-z_][A-Za-z0-9_]*\+?=/, powershell: /\$[\w:.]+\s*[-+*/%]?=/ };
 function writesOrRuns(line: string, shell: Shell): boolean {
-  const text = line.replace(/[0-9*]?>&(?:[0-9]+|-)(?=$|[\s;|&)])/g, "");
-  if (text.includes(">")) return true;
+  const text = line.replace(QUIET[shell], "");
+  if (text.includes(">") || ASSIGNS[shell].test(text)) return true;
   return shell === "bash" ? /\$\(|`|<\(/.test(text) : /\$\(|@\(|\{/.test(text);
 }
 
@@ -133,11 +142,12 @@ export function rowText(calls: readonly { call: ToolCall; kinds: Kind[] }[], ser
   return text[0]!.toUpperCase() + text.slice(1);
 }
 
-// A said folded row: its words, its calls with their results as they arrive, for opening, and whether it is open.
+// A said folded row: its words, its calls with their result rows as they arrive, for opening, and whether it is open. The
+// rows, not the results, so a fold holds no read's whole text once a shortening has let the messages go.
 export interface Fold {
   text: string;
   calls: { call: ToolCall; kinds: Kind[] }[];
-  results: Map<string, ToolResult>;
+  results: Map<string, Line>;
   open: boolean;
 }
 
@@ -147,7 +157,7 @@ export const openRows = (fold: Fold): Line[] =>
   fold.calls.flatMap(({ call, kinds }) => {
     if (kinds[0] === "hidden") return [];
     const r = fold.results.get(call.id);
-    return [callRow(call), ...(r ? [resultRow(r)] : [])].map((l) => ({ ...l, fold }));
+    return [callRow(call), ...(r ? [r] : [])].map((l) => ({ ...l, fold }));
   });
 
 // The folded row's own line, which a closed fold goes back to.
@@ -158,9 +168,9 @@ export const foldRow = (fold: Fold): Line => ({ text: fold.text, color: "gray", 
 // lines to say, in order; none says anything itself.
 export class OpenRun {
   #run: { call: ToolCall; kinds: Kind[] }[] = [];
-  #results = new Map<string, ToolResult>();
-  #failed: Line[] = []; // the rows of the run's calls that failed while it was open, said after its row
-  #said = new Map<string, Fold>();
+  #results = new Map<string, Line>();
+  #failed: Line[] = []; // the rows of calls that failed, said where the open run ends
+  #said = new Map<string, Fold>(); // the said runs' calls still waiting for their results
   // The calls of the latest reply with rows of their own, until its results come (question, `under`).
   #rowed = new Set<string>();
   #resulted = false;
@@ -187,25 +197,23 @@ export class OpenRun {
     return [];
   }
 
-  // A run's call's result, kept with it for opening; one that fails, or whose call asked, turns its call its own row:
-  // out of the run while it is open, its row said where the run ends; at once once the run was said, still counted in its
-  // row (choice 65, a known limit). Null for a call of its own row, whose result row describe says as before.
+  // A run's call's result, kept with it for opening; one that fails, or whose call asked, turns its call its own row, said
+  // where the open run ends: out of the run while it is open; still counted in its row once the run was said (choice 65,
+  // a known limit), and after the result rows said meanwhile, so a later call's result stays under that call (the quality
+  // review). Null for a call of its own row, whose result row describe says as before.
   result(r: ToolResult): Line[] | null {
     this.#resulted = true;
     const i = this.#run.findIndex((c) => c.call.id === r.callId);
     const fold = this.#said.get(r.callId);
     const call = i >= 0 ? this.#run[i]!.call : fold?.calls.find((c) => c.call.id === r.callId)?.call;
     if (!call) return null;
-    if (kindOf(call, this.options.asked, r.isError, this.options.shell)[0] !== "own") {
-      (fold?.results ?? this.#results).set(r.callId, r);
-      return [];
+    this.#said.delete(r.callId);
+    (fold?.results ?? this.#results).set(r.callId, resultRow(r));
+    if (kindOf(call, this.options.asked, r.isError, this.options.shell)[0] !== "own") return [];
+    if (i >= 0) {
+      this.#run.splice(i, 1);
+      this.#results.delete(r.callId);
     }
-    if (fold) {
-      this.#said.delete(r.callId);
-      fold.results.set(r.callId, r);
-      return [callRow(call), resultRow(r)];
-    }
-    this.#run.splice(i, 1);
     this.#failed.push(callRow(call), resultRow(r));
     return [];
   }
@@ -245,7 +253,7 @@ export class OpenRun {
     const fold: Fold = { text: "", calls: this.#run, results: this.#results, open: false };
     this.#run = [];
     this.#results = new Map();
-    for (const c of fold.calls) this.#said.set(c.call.id, fold);
+    for (const c of fold.calls) if (!fold.results.has(c.call.id)) this.#said.set(c.call.id, fold);
     const text = rowText(fold.calls, this.options.server);
     if (text !== null) fold.text = text;
     return [...(text === null ? [] : [foldRow(fold)]), ...this.#failed.splice(0)];

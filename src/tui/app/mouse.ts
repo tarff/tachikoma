@@ -218,6 +218,8 @@ export const mouse = (ui: UI, fns: Fns) => {
     const inside = at !== null && at.line >= from && at.line < to;
     if (at) ui.view.current = { ...ui.view.current, at: inside ? { line: from, offset: 0 } : { line: moved(at.line), offset: at.offset } };
     for (const q of ui.questions.current) if (q.detail) q.detail = [moved(q.detail[0]), moved(q.detail[1])];
+    // The rows under the pointer have moved, so a quick next press is a click of its own, never a double-click on them.
+    ui.lastPress.current = null;
     ui.rerender((n) => n + 1);
   };
   // A drag while selecting grows the selection to the pointer's cell. Below the conversation the view first scrolls a row

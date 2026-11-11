@@ -2235,6 +2235,49 @@ describe("App's folded tool rows", () => {
     expect(from(app, false, "> look")[1]).toBe("Read 1 file");
   });
 
+  // The quality review's finding 3: a line the window says of its own (a provider's failure, a hook's or a server's note)
+  // ends the run too, so the calls before it are said above it.
+  it("says the open run before a provider's failure and before a hook's note", async () => {
+    const reads = both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "a.txt" }));
+    const { app, ctx } = await mount([reads, new Error("overloaded")]);
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    await type(app, "look");
+    await until(app, "overloaded");
+    const r = from(app, false, "> look");
+    expect(r[1]).toBe("Read 2 files");
+    expect(r[2]).toContain("overloaded");
+    const lead = new Held();
+    const held = await mount([], { lead });
+    writeFileSync(path.join(held.ctx.root, "a.txt"), "a\n");
+    await type(held.app, "look");
+    await waitFor(() => lead.asked.length === 1);
+    lead.answer(callTool("c1", "read_file", { path: "a.txt" }));
+    await waitFor(() => lead.asked.length === 2);
+    held.bus.emit("hook-note", "A PostToolUse hook said: noted.");
+    await until(held.app, "noted.");
+    expect(from(held.app, false, "> look").slice(1, 3)).toEqual(["Read 1 file", "A PostToolUse hook said: noted."]);
+    lead.answer(callTool("c2", "read_file", { path: "a.txt" }));
+    await waitFor(() => lead.asked.length === 3);
+    held.bus.emit("mcp-note", "MCP server sv is ready: 1 tool.");
+    await until(held.app, "sv is ready");
+    expect(from(held.app, false, "> look").slice(3, 5)).toEqual(["Read 1 file", "MCP server sv is ready: 1 tool."]);
+  });
+
+  // The quality review's finding 7: the click that opens a row starts the press count again, so a quick second click is a
+  // click of its own, which closes it, not a double-click selecting a word on the rows that just moved.
+  it("takes a quick second click on a row just opened as a click, closing it", async () => {
+    const reads = both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "b.txt" }));
+    const { app, ctx, mouse } = await mount([reads, reply("Both read.")], { full: true });
+    writeFileSync(path.join(ctx.root, "a.txt"), "a\n");
+    writeFileSync(path.join(ctx.root, "b.txt"), "b\n");
+    await type(app, "read both");
+    await until(app, "Both read.");
+    const row = shown(app).indexOf("Read 2 files");
+    await pointer(mouse, ...click(3, row), ...click(3, row));
+    expect(shown(app).slice(row, row + 2)).toEqual(["Read 2 files", "Both read."]);
+    expect(app.lastFrame()).not.toContain("Copied");
+  });
+
   it("opens a folded row in place on a click, as its calls' rows, and closes it on another", async () => {
     const reads = both(callTool("c1", "read_file", { path: "a.txt" }), callTool("c2", "read_file", { path: "b.txt" }));
     const { app, ctx, mouse } = await mount([reads, reply("Both read.")], { full: true });

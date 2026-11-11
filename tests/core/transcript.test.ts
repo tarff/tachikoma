@@ -291,6 +291,20 @@ describe("transcript", { timeout: 15_000 }, () => {
     expect([r.asked, r.damaged]).toEqual([["c1", "c2"], 1]);
   });
 
+  // The quality review's finding 5: a later call with an asked call's id is another call, asked only by a mark after it.
+  it("lets an asked mark go when a later message has a call of its id", async () => {
+    const p = place();
+    const t = new Transcript(p.file, p.pictures);
+    t.write(start);
+    t.write({ t: "message", message: asks("c1", { path: "a" }) });
+    t.write({ t: "asked", id: "c1" });
+    t.write({ t: "message", message: answers("c1", "A") });
+    t.write({ t: "message", message: asks("c1", { path: "b" }) });
+    expect(read(p).asked).toEqual([]);
+    t.write({ t: "asked", id: "c1" });
+    expect(read(p).asked).toEqual(["c1"]);
+  });
+
   describe("an interrupted shortening", () => {
     function shortenedOnce() {
       const p = place();

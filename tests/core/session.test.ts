@@ -740,6 +740,39 @@ describe("Session, saved and loaded", { timeout: 15_000 }, () => {
       expect([...again.asked]).toEqual([]);
     });
 
+    // The quality review's finding 5: a provider may use an id again (App.tsx), and the later call is not the asked one.
+    it("lets a call's mark go when a later call has its id, and a load reads it so", async () => {
+      const p = place();
+      const transcript = new Transcript(p.file, p.pictures);
+      transcript.write(start(p.id));
+      const turns = [callTool("c2", "run", { command: "git log" }), callTool("c2", "echo", { text: "quiet" }), reply("done")];
+      const ctx = { ...(await tempContext()), gate: new PermissionGate("ask", async () => true) };
+      const session = new Session({ lead: new FakeProvider("a", turns), tools: [echo, run], system: "t", ctx, bus: new Bus(), transcript });
+      await session.send("go");
+      expect(marks(p.file)).toEqual(["c2"]);
+      expect([...session.asked]).toEqual([]);
+      expect(read(p).asked).toEqual([]);
+    });
+
+    // The quality review's finding 8: a question the window drops, as the turn was stopped, was never shown.
+    it("writes no mark for a question asked after the turn was stopped", async () => {
+      const p = place();
+      const transcript = new Transcript(p.file, p.pictures);
+      transcript.write(start(p.id));
+      const stop = new AbortController();
+      const late = defineTool("late", "Asks after the stop", z.object({}), async (_input, ctx) => {
+        stop.abort();
+        await ctx.gate.require({ kind: "shell", outside: false, summary: "run: git log", command: "git log" });
+        return "ran";
+      });
+      const ctx = { ...(await tempContext()), gate: new PermissionGate("ask", async () => false) };
+      const lead = new FakeProvider("a", [callTool("c1", "late", {}), reply("done")]);
+      const session = new Session({ lead, tools: [late], system: "t", ctx, bus: new Bus(), transcript });
+      await session.send("go", stop.signal);
+      expect(marks(p.file)).toEqual([]);
+      expect([...session.asked]).toEqual([]);
+    });
+
     it("writes none for the judge's answer in auto, nor in -p", async () => {
       const judge: Judge = async () => ({ allow: true, reason: "fine" });
       const auto = await sent(new PermissionGate("auto", async () => true, undefined, { judge }));

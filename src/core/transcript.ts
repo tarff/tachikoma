@@ -216,7 +216,8 @@ export function readTranscript(file: string, pictures: string): Read | { problem
     let box = start.box === true;
     let name: string | undefined;
     let loaded: string[] = [];
-    const asked: string[] = [];
+    // A call's mark goes with a later message's call of its id, as a provider may use an id again (release 8c plan, Task 15).
+    const asked = new Set<string>();
     let history: { m: SavedMessage; tools: ToolSpec[]; system: string }[] = [];
     const prompts: string[] = [];
     const calls: { name: string; input: unknown }[] = [];
@@ -255,7 +256,8 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       if (l.t === "lead") lead = l.lead;
       if (l.t === "name") name = l.name;
       if (l.t === "loaded") loaded = l.names;
-      if (l.t === "asked") asked.push(l.id);
+      if (l.t === "asked") asked.add(l.id);
+      if (l.t === "message") for (const p of l.message.parts) if (p.type === "tool_call") asked.delete(p.id);
       if (l.t === "subagent") subagents.push(l);
       if ("message" in l) for (const p of l.message.parts) if (p.type === "image") used.push(p.id);
     }
@@ -290,7 +292,7 @@ export function readTranscript(file: string, pictures: string): Read | { problem
       print,
       box,
       loaded,
-      asked,
+      asked: [...asked],
       withTools,
     };
   } catch (err) {
