@@ -10499,17 +10499,19 @@ describe("App's MCP", () => {
   });
 
   // Show tools prints the server's tools into the conversation, as /hooks prints its list, the ones left out after them in
-  // the name lines' words (choice 27).
-  it("prints a server's tools on Show tools, and the ones left out", async () => {
+  // the name lines' words (choice 27). Each row is the tool's own name as the server gives it, escaped, without the
+  // mcp__<server>__ its full name starts with (choice 66): "foo.bar", not mcp__s__foo_bar.
+  it("prints a server's tools on Show tools by their own names, and the ones left out", async () => {
     const { config, servers } = await mcpSetup();
-    const { app, mcp } = await mount([], { mcp: servers([await config("s", { tools: [tool("foo.bar"), tool("foo_bar"), tool("plain")] })]) });
+    const tools = [tool("foo.bar"), tool("foo_bar"), tool("plain"), tool("odd\u0007")];
+    const { app, mcp } = await mount([], { mcp: servers([await config("s", { tools })]) });
     await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
     await type(app, "/mcp");
-    await shows(app, `${HEADING}\ns · 2 tools`);
+    await shows(app, `${HEADING}\ns · 3 tools`);
     await press(app, "\r", DOWN, "\r");
     await gone(app, HEADING);
     expect(app.lastFrame()).toContain(
-      ["s's tools:", "  mcp__s__foo_bar", "  mcp__s__plain", "Left out:", '  "foo_bar" was left out: its name mcp__s__foo_bar is already s\'s "foo.bar"'].join("\n"),
+      ["s's tools:", "  foo.bar", "  plain", "  odd\\u0007", "Left out:", '  "foo_bar" was left out: its name mcp__s__foo_bar is already s\'s "foo.bar"'].join("\n"),
     );
   });
 

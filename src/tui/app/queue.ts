@@ -432,8 +432,8 @@ export const queue = (ui: UI, fns: Fns) => {
     if (action === "Sign in" || action === "Sign out") return void account(name, action);
     const shown = visible(name);
     if (action === "Show tools") {
-      const { names: full, leftOut } = servers.tools(name);
-      fns.say(...[`${shown}'s tools:`, ...full.map((n) => `  ${visible(n)}`), ...(leftOut.length ? ["Left out:", ...leftOut.map((w) => `  ${visible(w)}`)] : [])].map(gray));
+      const { names, leftOut } = servers.tools(name); // each tool's own name (release 8c plan, Task 16; choice 66)
+      fns.say(...[`${shown}'s tools:`, ...names.map((n) => `  ${visible(n)}`), ...(leftOut.length ? ["Left out:", ...leftOut.map((w) => `  ${visible(w)}`)] : [])].map(gray));
     } else {
       try {
         servers.reset(name);

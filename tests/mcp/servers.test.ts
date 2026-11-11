@@ -637,7 +637,7 @@ describe("Servers: starting, waiting and stopping", () => {
     expect(notes).toEqual(['MCP server a_b: "t" was left out: its name mcp__a_b__t is already a.b\'s "t"']);
     servers.set([under]);
     expect(servers.list().map((s) => s.tools)).toEqual([1]);
-    expect(servers.tools("a_b")).toEqual({ names: ["mcp__a_b__t"], leftOut: [] });
+    expect(servers.tools("a_b")).toEqual({ names: ["t"], leftOut: [] }); // the tool's own name (choice 66)
     expect(notes).toHaveLength(1);
   });
 });

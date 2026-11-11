@@ -1531,8 +1531,9 @@ weather · failed: it did not answer within 30 s
 (The counts are made up; on Windows the file is named `~\.tachikoma\settings.json`.) A row's state
 is its tool count, `starting`, `needs sign-in`, `waiting for your yes`, `you said no`, `failed:
 <reason>`, `stopped: <reason>` or `off: the sandbox's network is off`. Enter on a server lists what
-applies to it: Reconnect, Sign in, Sign out, Show tools (its tools' full names, then any left out
-and why) and, for a project's server you answered, Reset my answer. Esc goes back, then closes.
+applies to it: Reconnect, Sign in, Sign out, Show tools (each tool's own name, as the server gives
+it, then any left out and why; hooks match the full `mcp__<server>__<tool>` name) and, for a
+project's server you answered, Reset my answer. Esc goes back, then closes.
 With no server: `No MCP servers. They go in "mcpServers" in ~/.tachikoma/settings.json, or in a
 project's .mcp.json.`
 

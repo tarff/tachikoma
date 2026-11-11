@@ -312,14 +312,15 @@ export class Servers {
     });
   }
 
-  // /mcp's Show tools (Task 10; choice 27): the server's tools the table offers now, by their full names, in its order,
-  // and its left-out lines, each without its "MCP server <name>: " place, as /hooks's left-out rows leave out theirs.
+  // /mcp's Show tools (Task 10; choice 27): the server's tools the table offers now, by their own names as the server
+  // gives them, not their full mcp__ names (release 8c plan, Task 16; choice 66), in its order, and its left-out lines,
+  // each without its "MCP server <name>: " place, as /hooks's left-out rows leave out theirs.
   tools(name: string): { names: string[]; leftOut: string[] } {
     const rows = this.#table();
     const place = `MCP server ${visible(name)}: `; // every left-out line starts so (#build)
     const said = [...(this.#slots.find((s) => s.config.name === name)?.said ?? [])];
     return {
-      names: rows.filter((r) => r.offered.server === name).map((r) => r.offered.spec.name),
+      names: rows.filter((r) => r.offered.server === name).map((r) => r.offered.tool),
       leftOut: said.map((line) => line.slice(place.length)),
     };
   }
