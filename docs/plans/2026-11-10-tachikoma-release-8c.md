@@ -636,6 +636,60 @@ search, always on", "Own lookup tool, every provider")
     and headers read, ` (sends <NAME>)`, as `(sets ...)` does; and a project's entry whose url,
     headers, command, args or env reads one of `API_KEYS` (exec/env.ts) is left out with its line,
     set or not, any letter case. The user's own entries are unchanged.
+65. **Folded tool rows, as Claude Code's** (the terminal checklist, 2026-11-12, the user's
+    choices "Fold like Claude Code", "Sort like Claude Code", "Click + Ctrl+O", "Both before the
+    PR"; Task 15). Measured on Claude Code 2.1.322 in the user's terminal, 2026-11-12, and from its
+    docs (interactive-mode page: MCP calls "shown as a single `Called slack 3 times` line"):
+    - **A run of quiet calls is one row.** Calls with no text between them fold into one row of
+      counts, kinds in a fixed order, joined by `, `, the first word capitalised, in the past
+      tense: `Searched for N pattern(s)`, `read N file(s)`, `listed N director(y/ies)`, `called
+      <server>` (`called <server> N times` from 2), `ran N shell command(s)`. Measured rows:
+      `Searched for 2 patterns, read 2 files, called plugin:mempalace:mempalace, ran 1 shell
+      command`; `Read 1 file, listed 1 directory, ran 1 shell command`. Tachikoma names a server
+      as its settings do.
+    - **Quiet calls:** `read_file` (read); `find_files` and `search_files` (searched); an MCP call
+      that ran with no question (called); a shell command (below). `tool_search` is in no count
+      and never has a row (measured: Claude Code shows none).
+    - **Shell commands are sorted by what they do** (measured, one command each): `cat`, `head`,
+      `wc -l` and `cat a && cat b` = `Read 1 file` (one per command, not per file); `ls` =
+      `Listed 1 directory`; `grep` and `find` = `Searched for 1 pattern`; `cd ... && git log` =
+      `Ran 1 shell command`. Claude Code seems to tell a changing command by the files that
+      changed while it ran (its `rm` row said so); Tachikoma has no such watch, so it goes by
+      Task 15's lists instead: a line `split` (safety/split.ts) reads whose every command is on
+      the read, list or search list counts by its kind (mixed kinds: each command its own);
+      one whose commands are all on those lists or the "ran" list (read-only commands of other
+      kinds, such as `cd`, `echo`, `git log`) counts as `ran`. **Not quiet, so its own row as
+      today:** any other line, among them every one that writes to a file (`>`, `>>`, `tee`), one
+      with a command on no list (measured: `rm` kept its row), and one `split` cannot read.
+      PowerShell's names (`Get-Content`, `gc`,
+      `Get-ChildItem`, `dir`, `Select-String`, ...) map to the same kinds; Claude Code's own
+      PowerShell rule was **not measured** (its shell here is Git Bash).
+    - **Not quiet, own rows as today:** `write_file` and `edit_file` (measured: Claude Code keeps
+      `Write(...)` and `Update(...)` rows for a project's files; its folded `Made 1 scratchpad edit
+      +2` was its own temp folder, which Tachikoma has none of), `delegate`, `todo`, a call that
+      asked a question (its question's answer line sits under its row; choices 66 and 67 of
+      release 7), and a call that failed (its red first line stays seen). These two are
+      Tachikoma's own rule; Claude Code was **not measured** for them (auto mode asked nothing).
+    - **Opening:** a click on a folded row opens it in place, as the rows it holds look today (`●
+      <name> <detail>` then `⎿ ok`); a click closes it. Ctrl+O's full record is unchanged. No hint
+      text on the row (measured: Claude Code's has none).
+    - **When it is said** (the user's plan review, 2026-11-12, finding 2, and `--classic`, whose
+      rows are in the terminal's own scrollback and cannot be changed once printed): a run's row
+      is said once, when the run ends: at the model's next text, at a call that has its own row,
+      at a question, at the turn's end, or at Esc. Until then the line under the status line
+      shows the running call and the counts, as now. No row is ever changed after it is said, so
+      full screen and `--classic` fold alike. A question ends the run before its call, so the
+      run's row comes first, then the asked call's row with its answer under it. A call of an
+      already-said run that fails after it (one still running when a question ended the run) is
+      said as its own red row then, and stays counted in the run (a known limit).
+    - **Where:** the live conversation and a resumed one (`conversationLines`) both fold; `/export`
+      and `-p` are unchanged. A click opens a row only in full screen (`--classic` has no mouse);
+      Ctrl+O works in both.
+66. **Show tools names a tool without its server's prefix** (the terminal checklist, 2026-11-12:
+    84 rows each began `mcp__tradingview__`; Task 16): under `<name>'s tools:` each row is the
+    tool's own name (`quote_get`), as the server gives it, escaped. Choice 27's "by their full
+    names" is replaced; hooks' matchers still use the full `mcp__<server>__<tool>` name, which the
+    README says.
 
 ## Lines this plan adds
 
@@ -713,6 +767,8 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | The reason, for a server not ready (choice 62) | `<name> is not ready (<state>)`, the state as `/mcp` shows it |
 | A remote project server's question (choice 64) | ` (sends <NAME>, <NAME>)` before `?` when its address or headers read variables, names only |
 | A project's entry reading a provider key (choice 64) | `<file>: "<name>" reads ${<VAR>}, a provider key, which a project's servers are never given; it was left out` |
+| A folded tool row (grey; choice 65) | `Searched for <n> pattern(s), read <n> file(s), listed <n> director(y/ies), called <name>` (` <n> times` from 2), `ran <n> shell command(s)`: only the kinds present, in this order, the first word capitalised |
+| Show tools (choice 66) | `<name>'s tools:` then one row per tool, `  <tool>` |
 
 ## Task 1: The library, and measuring the user's servers
 
@@ -1438,3 +1494,89 @@ The checklist's entries are copied by the user into `~/.tachikoma/settings.json`
 builder never writes the user's settings file.
 
 Commit: `docs: release 8c in the README, and the design as built`.
+
+## Task 15: Folded tool rows (choice 65)
+
+Added after the terminal checklist (2026-11-12), before the PR.
+
+**Files:** `src/tui/fold.ts` (new: a call's kind, the shell lists, the row's words, and the
+open run), `src/tui/describe.ts` (a message's calls go to the run instead of their own rows),
+`src/tui/App.tsx` (`onMessage`, the question's answer and the turn's end feed and end the run),
+`src/tui/app/output.ts` and `src/tui/app/state.ts` (the run held in UI state; a folded row's
+calls kept with its line), `src/tui/Conversation.tsx` and `src/tui/app/mouse.ts` (a click opens
+or closes it), `src/core/session.ts` and `src/core/transcript.ts` (the asked mark), tests beside
+each.
+
+**What changes:**
+- **A call's kind** (`kindOf(call, asked, failed)`): `read`, `search`, `list`, `called`
+  (an MCP call, with its server's name), `ran`, `hidden` (`tool_search`), or `own` (its own
+  row). A call that asked a question (any answer) or failed is `own`, whatever its tool.
+- **The asked mark, saved** (the user's plan review, finding 1): when the gate shows the user a
+  question for a call (a permission, a danger, an MCP call; not the judge's answer in auto),
+  the session writes a transcript line `{"t":"asked","id":"<call id>"}`; resume reads them into
+  the set `kindOf` takes, so a resumed conversation folds as the live one did. A transcript from
+  before this line has none, so its asked calls fold when resumed (a known limit). The live
+  window uses the same set, filled when a question opens (not only on a decline, as `answered`
+  is).
+- **The open run** (finding 2): UI state holds the calls of the run not yet said, with their
+  results as they arrive. `onMessage` adds a message's quiet calls to it and says its `own`
+  calls' rows as today; the run is said (one row, choice 65's words) and emptied, before
+  anything else is said, when text arrives, an `own` call arrives, a question opens, the turn
+  ends, or Esc stops it. A result that fails turns its call `own`: if its run is still open,
+  the call leaves the run and its row (`● <name> <detail>` then the red line) is said where the
+  run ends; if the run was already said, its row is said at once. Each said folded row has an id
+  of its own (`ui.nextId`), and its calls' rows are kept with that line, for opening.
+- **The shell lists**, read by `split` in the shell the command ran in (`shellOf`); the first
+  word of each command, any letter case for PowerShell's. Every command `split` returns,
+  nested ones included, must pass; a command substitution, process substitution or script
+  block makes the line `own`.
+  - read: `cat`, `head`, `tail`, `wc`; PowerShell `Get-Content`, `gc`, `type`, `cat`,
+    `Measure-Object`;
+  - list: `ls`, `dir`; PowerShell `Get-ChildItem`, `gci`, `ls`, `dir`;
+  - search: `grep`, `rg`, `find`, `fd`; PowerShell `Select-String`, `sls`;
+  - ran: `cd`, `pwd`, `echo`, `printf`, `which`, `where`, `whoami`, `date`, `true`, and `git`
+    with `log`, `status`, `diff`, `show`, `rev-parse`, `branch` (no other word after it),
+    `remote` (alone or `-v`) or `ls-files`; PowerShell `Set-Location`, `Get-Location`,
+    `Write-Output`, `Get-Command`, `Test-Path`, `Get-Item`;
+  - **`own` whatever the list** (finding 3): a redirection to a file (`>`, `>>`, `>|`, `&>`, a
+    file number's `2>`; PowerShell's `>` and `>>`); PowerShell `Out-File`, `Set-Content`,
+    `Add-Content`, `Tee-Object` and bash `tee` anywhere in the line; `git` with `-c`, `-C`
+    or `--git-dir`/`--work-tree` before its subcommand, or any word starting `--output` or
+    `--ext-diff`; `find` with `-delete`, `-exec`, `-execdir`, `-ok`, `-okdir`, `-fprint`,
+    `-fprint0`, `-fprintf` or `-fls`; `fd` with `-x`, `--exec`, `-X` or `--exec-batch`; `rg`
+    with `--pre`; `sed`, `less`, `more` and `tree` (dropped from the lists: their options
+    write files or wait for keys).
+  These lists are Tachikoma's (Claude Code's own were not readable); the user approves them with
+  this plan.
+- **The row:** choice 65's words, counted in the order the kinds are listed there; a run with
+  only `hidden` calls has no row.
+- **Opening** (full screen only): a click on a folded row opens it in place into its calls' rows,
+  as today's; a second click closes it. Each keeps its own open state until the conversation is
+  cleared.
+- **Tests:** each measured row (choice 65) word for word; each list's commands, PowerShell and
+  bash; `cat a > b`, `git log --output=history.txt`, `git -c core.pager=x log`, `find .
+  -fprint files.txt`, `find . -delete`, `fd -x rm`, `rg --pre x y`, `echo $(rm a)` are `own`;
+  a failed read and an asked MCP call keep their rows; App tests, with the real `onMessage`
+  path: quiet calls then text (one row, said before the text); quiet calls then a question (the
+  run's row, then the asked call's row and its answer, then completion); a quiet call that
+  fails while its run is open (its own red row, the run's count without it); a turn ended by
+  Esc mid-run (the run said); `--classic` folds alike; an approved MCP call keeps its own row
+  live and again after resume (the asked line), and a pre-line transcript folds it; a click
+  opens and closes a row.
+
+Commit: `feat: tool rows fold as Claude Code's: a run of quiet calls is one row of counts`.
+
+## Task 16: Show tools without the prefix (choice 66)
+
+**Files:** `src/tui/app/queue.ts` (Show tools), `src/mcp/servers.ts` (what it hands over), tests.
+
+**What changes:** each row under `<name>'s tools:` is the tool's own name as the server gives it,
+escaped; `Left out:` is unchanged. The README's `/mcp` paragraph says the rows are the tools' own
+names and that hooks match the full `mcp__<server>__<tool>` name.
+
+Commit: `feat: /mcp Show tools lists each tool by its own name`.
+
+**After Tasks 15 and 16:** a spec and quality review each, the touched files' tests, the full
+suite once, `dist` rebuilt, and a short terminal re-check with the user: a folded row (reads, a
+search, an MCP call, a shell `cat`), a click opens and closes it, an asked call keeps its row, and
+Show tools' short names. Then the PR, on the user's say-so.
