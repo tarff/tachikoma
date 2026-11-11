@@ -11,6 +11,7 @@ import {
   type OAuthClientProvider,
   type OAuthDiscoveryState,
   OAuthError,
+  RegistrationRejectedError,
   type StoredOAuthClientInformation,
   type StoredOAuthTokens,
   UnauthorizedError,
@@ -122,6 +123,9 @@ export interface SignInIO {
 const NOT_SIGNING_IN = "http://localhost/callback";
 // Choice 59's reason for a service that registers no clients when the entry gives no id.
 const NEEDS_CLIENT_ID = 'the sign-in service needs a client id; set "oauth": {"clientId": ...} in the server\'s entry';
+// Choice 60's, for a service that registers only apps it approved (Figma's answers 403); Tachikoma registers under its
+// own name only.
+const REFUSED = 'the sign-in service refused to register Tachikoma (403), as it takes only apps it approved; a client id it gives you goes in "oauth": {"clientId": ...} in the server\'s entry';
 
 // The library's warnings ("[mcp-sdk] ..."), on a refresh refused or failed, go to console.warn, which would draw over the
 // window; they are dropped, as the server's state and the sign-in's lines say what happened (Task 11's review). The
@@ -305,7 +309,10 @@ export class McpAuth implements OAuthClientProvider {
     const client = new McpAuth(this.#store, this.#config, attempt);
     const scope = this.#oauth?.scopes ? { scope: this.#oauth.scopes } : {};
     try {
-      if ((await stoppable(auth(client, { serverUrl: this.#url, ...scope }), io.signal)) === "AUTHORIZED") return true;
+      const first = stoppable(auth(client, { serverUrl: this.#url, ...scope }), io.signal).catch((err: unknown) => {
+        throw err instanceof RegistrationRejectedError && err.status === 403 ? new Error(REFUSED) : err;
+      });
+      if ((await first) === "AUTHORIZED") return true;
       const to = attempt.to!;
       if (!(await io.ask(`Open your browser to sign in to ${visible(this.#name)} at ${visible(to.host)}`))) return false;
       listener.begin(to.href);

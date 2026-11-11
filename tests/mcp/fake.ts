@@ -209,10 +209,11 @@ export async function httpFake(dir: string, opts: FakeOptions = {}): Promise<{ u
 // otherwise 401 with the address of its discovery document; it offers one tool, echo. `browser` stands for the user's
 // browser: it follows the address it is given, redirects and all. `expire` makes every access token given so far stale,
 // so the next request needs a refresh. `seen.requests` holds each request's path and headers. Its options: `refresh:
-// false` gives no refresh tokens; `registration: false` publishes no registration; `metadata` "none" publishes no
+// false` gives no refresh tokens; `registration: false` publishes no registration, and "refused" publishes one that
+// answers 403, as Figma's does for an app it has not approved (choice 60); `metadata` "none" publishes no
 // sign-in details at all, and "elsewhere" publishes the service's metadata only at /elsewhere/metadata, for an entry's
 // authServerMetadataUrl.
-export async function signInFake(opts: { refresh?: false; registration?: false; metadata?: "none" | "elsewhere" } = {}) {
+export async function signInFake(opts: { refresh?: false; registration?: false | "refused"; metadata?: "none" | "elsewhere" } = {}) {
   const clients = new Map<string, { redirect_uris: string[] }>();
   const codes = new Map<string, { client: string; challenge: string; redirect: string }>();
   const live = new Set<string>();
@@ -244,6 +245,7 @@ export async function signInFake(opts: { refresh?: false; registration?: false; 
       }
       if (url.pathname === "/.well-known/oauth-authorization-server" && opts.metadata === undefined) return json(200, metadata);
       if (url.pathname === "/register" && req.method === "POST" && opts.registration !== false) {
+        if (opts.registration === "refused") return res.writeHead(403, { connection: "close" }).end("Forbidden");
         const metadata = JSON.parse(body);
         const id = `client-${++seen.registered}`;
         clients.set(id, metadata);

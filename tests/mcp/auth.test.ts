@@ -369,6 +369,19 @@ describe("signing in to a remote MCP server", () => {
     await expect(none.signIn("om", u.io())).rejects.toThrow(new Error(needsId));
   });
 
+  // Choice 60: a service that registers only apps it approved (Figma's answers 403) says what to do, before asking anything.
+  it("says a refused registration needs a client id from the service", async () => {
+    const t = await setup({ registration: "refused" });
+    const servers = t.make([remote("om", t.fake.url)]);
+    await servers.ready();
+    const refused = 'the sign-in service refused to register Tachikoma (403), as it takes only apps it approved; a client id it gives you goes in "oauth": {"clientId": ...} in the server\'s entry';
+    await expect(servers.signIn("om", t.io())).rejects.toThrow(new Error(refused));
+    const asked = t.fake.seen.requests.filter((r) => r.path === "/register");
+    expect(asked).toHaveLength(1);
+    expect(t.asked).toEqual([]);
+    expect(t.opened).toEqual([]);
+  });
+
   // A refresh the service refuses: the tokens go, and the library's warning never reaches the screen (Task 11's review).
   it("drops a refused refresh's tokens and needs sign-in, writing none of the library's warnings", async () => {
     const t = await setup();
