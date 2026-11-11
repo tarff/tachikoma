@@ -1366,7 +1366,18 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   (a 403 `insufficient_scope`) is not widened, as a sign-in never starts in the background; for
   an entry that can sign in, its own `Accept` header gives way to the library's, and a redirect to
   another path or from http to https carries none of its headers; sign-in details gone between
-  the launch and Sign in give `Sign-in to <name> failed: ` with no reason);
+  the launch and Sign in give `Sign-in to <name> failed: ` with no reason; and Task 12's build and
+  review: Elicitation hooks always run as the lead's, so a subagent's form sends no `agent_id`; a
+  text field types only at its end, with no cursor to move; a text field's `minLength`,
+  `maxLength` and `format`, and a pick-several's `minItems` and `maxItems`, are not checked on
+  Tachikoma's side; a remote call's limit, 60 s by default, keeps counting while a form is filled
+  in, so a slow answer can outlive its call; a visit counts as done once the browser opens, with
+  no wait for the server's completion notice; Ctrl-C in a field declines the form but does not
+  stop the turn; a visit question stays on screen after the server cancels it or its subagent
+  stops, and opens nothing when answered; a form that comes while the model list, `/resume` or `/mcp` is open starts that
+  list again from its top; keys typed past a form's last field go to what is underneath, such as
+  a waiting question; a visit asked with no turn running, after an Esc-stopped turn, is cancelled
+  at once);
   the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
