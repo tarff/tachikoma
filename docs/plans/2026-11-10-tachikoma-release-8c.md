@@ -600,6 +600,14 @@ search, always on", "Own lookup tool, every provider")
     - The entry's `clientId` wins over a stored client with another id; a 401 from a server that
       publishes no sign-in details stays `failed: <address> answered 401`; nothing is registered
       at launch, even when the sign-in service's issuer changed.
+60. **Services that register only apps they approved** (the user's measuring run, 2026-11-11:
+    Figma's registration answered 403 Forbidden; Figma checks the registering app's name against
+    its MCP Catalog list, as Mistral's, Docker's and IBM's clients found): a 403 to registration
+    gives the reason `the sign-in service refused to register Tachikoma (403), as it takes only
+    apps it approved; a client id it gives you goes in "oauth": {"clientId": ...} in the server's
+    entry` (the user's choice, "Replace"). Tachikoma never registers under another app's name.
+    Figma is reached through its desktop app's own server, `http://127.0.0.1:3845/mcp`, which
+    needs no sign-in (the user's choice, "Desktop app server"); the README says how (Task 14).
 
 ## Lines this plan adds
 
@@ -659,6 +667,7 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | A Sign out that cannot be written (red; choice 56) | `Sign-out of <name> failed: <reason>` |
 | A sign-in lost mid-session (to the model; choice 59) | `The MCP server <name> needs sign-in, which the user does from /mcp.` |
 | Sign-in failure reasons (choice 59) | `the sign-in page sent back no code`; `port <n>, the entry's callbackPort, is in use`; `the sign-in service needs a client id; set "oauth": {"clientId": ...} in the server's entry` |
+| Registration refused (choice 60) | `the sign-in service refused to register Tachikoma (403), as it takes only apps it approved; a client id it gives you goes in "oauth": {"clientId": ...} in the server's entry` |
 | A damaged `mcp-auth.json` (red, once; choice 57) | `MCP sign-ins in <file> could not be read, so they were left out; signing in again replaces them.` |
 | `-p`, a server that needs sign-in (note) | `MCP server <name> needs sign-in, which -p cannot do; sign in from /mcp in the window.` |
 | **Forms**: the heading | `<name> asks: <message>` |
