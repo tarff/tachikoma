@@ -7,6 +7,7 @@ import type { Answers } from "./answers.js";
 import type { AuthStore, SignInIO } from "./auth.js";
 import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
+import { Forms } from "./forms.js";
 import { Server, type State } from "./server.js";
 
 // The MCP servers together, and one table of tool names over them all (release 8c plan, Task 5; design, "Tools for the
@@ -93,6 +94,8 @@ export class Servers {
   #prepared = new WeakMap<Tool, Prepared>();
   #ids = new WeakMap<Server, Map<number, number>>();
   #lastId = 0;
+  // The servers' forms (Task 12): the hooks they fire, which cli.tsx gives, and the window's questions, which the App binds.
+  readonly forms: Forms;
 
   // `answers` makes the project's answers (answersFor), read only when a project's server needs one, since it throws on a
   // file it cannot read; that is caught here, and `unread` answers in its place: the ones the window's launch asked for
@@ -119,6 +122,7 @@ export class Servers {
     this.#auth = opts.auth;
     this.#openBrowser = opts.openBrowser ?? openBrowser;
     this.#headless = opts.headless ?? false;
+    this.forms = new Forms({ bus: this.#bus, headless: this.#headless, openBrowser: this.#openBrowser, lead: this.#lead });
     this.#slots = configs.map((c) => this.#slot(c));
   }
 
@@ -413,6 +417,7 @@ export class Servers {
     }
     const server = new Server(config, {
       root: this.#root, env: this.#env, auth: this.#auth, startMs: this.#startMs, onChange: () => this.#changed(slot, server),
+      onForm: (form, ctx) => this.forms.answer(slot.config.name, form, ctx),
     });
     slot.server = server;
     return slot;

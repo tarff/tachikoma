@@ -222,6 +222,7 @@ async function mount(
   const windowSessions = new WindowSessions(sessions, start, { box: false, full: "t" }, opened);
   const mcp = opts.mcp && { project: [], ...opts.mcp(bus) };
   if (mcp) onTestFinished(() => mcp.servers.stopAll());
+  if (mcp && hooks) mcp.servers.forms.useHooks(hooks); // as cli.tsx gives the servers' forms the hooks (release 8c plan, Task 12)
   const session = new Session({
     lead,
     tools,
@@ -10561,5 +10562,119 @@ describe("App's MCP", () => {
     } finally {
       rmSync(t.lock, { recursive: true }); // the empty folder the test made
     }
+  });
+
+  // Release 8c plan, Task 12: a server's forms in the window. The fake's `ask` tool sends the form and answers with the
+  // client's answer as its text, which the model reads as the tool's result. The server is trusted, so the call asks
+  // nothing, and loaded upfront, so the model can call it at once.
+  const FORM = {
+    type: "object",
+    properties: {
+      name: { type: "string", title: "Name" },
+      age: { type: "integer", title: "Age", description: "In years" },
+      size: { type: "string", title: "Size", enum: ["s", "m"], enumNames: ["Small", "Medium"] },
+      tea: { type: "boolean", title: "Tea" },
+    },
+    required: ["name", "age", "size"],
+  };
+  const asking = (params: object) => [callTool("c1", "mcp__s__ask", { method: "elicitation/create", params }), reply("answered")];
+  const formOf = (requestedSchema: object = FORM, message = "About you") => ({ mode: "form", message, requestedSchema });
+  const trusted = { trusted: "read-only" as const, alwaysLoad: true };
+  const answerOf = (session: Session) => {
+    const result = session.messages.flatMap((m) => m.parts).find((p) => p.type === "tool_result");
+    return result && JSON.parse(result.output);
+  };
+
+  it("asks a server's form field by field in the prompt's place, says a wrong number and a missing field, and the server gets the values", async () => {
+    const { config, servers } = await mcpSetup();
+    const { app, session, mcp } = await mount(asking(formOf()), { mcp: servers([await config("s", {}, trusted)]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    await type(app, "go");
+    await shows(app, "s asks: About you");
+    await shows(app, "Name:"); // a line's trailing spaces are not in the frame
+    await press(app, "\r");
+    await shows(app, "This field is needed; type an answer, or Esc to decline the form.");
+    await type(app, "Ada");
+    await shows(app, "Name: Ada");
+    // The field's description is the server's grey note above its question.
+    await shows(app, "In years\nAge (a number):");
+    expect(app.lastFrame()).not.toContain("Enter answers");
+    await type(app, "x");
+    await shows(app, "That is not a number; type one, or Esc to decline the form.");
+    expect(app.lastFrame()).toContain("Age (a number): x");
+    await press(app, "\u007f", "3", "6", "\r");
+    await shows(app, "Age (a number): 36");
+    // A pick is a menu of the server's labels under its question.
+    await shows(app, "Size:\n  Small\n  Medium");
+    // A pick of one has its hint row, as /mcp's lists end (choice 51), without Space's part; a typed field has none.
+    await shows(app, "  Medium\n↑↓ move · Enter answers · Esc declines the form\n");
+    await press(app, DOWN, "\r");
+    await shows(app, "Size: Medium");
+    await press(app, "\r"); // an empty optional field is left out
+    await shows(app, "answered");
+    expect(app.lastFrame()).toContain("Tea (yes or no) (optional):");
+    expect(answerOf(session)).toEqual({ action: "accept", content: { name: "Ada", age: 36, size: "m" } });
+    expect(app.lastFrame()).toContain("›");
+  });
+
+  it("declines a server's form on Esc, with its line, and shows what the server wrote escaped", async () => {
+    const { config, servers } = await mcpSetup();
+    const schema = { type: "object", properties: { name: { type: "string", title: "N\u0007" } } };
+    const { app, session, mcp } = await mount(asking(formOf(schema, "Hi\u001b[2J")), { mcp: servers([await config("s", {}, trusted)]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    await type(app, "go");
+    await shows(app, "s asks: Hi\\u001b[2J");
+    await shows(app, "N\\u0007 (optional):");
+    await press(app, "\u001b");
+    await shows(app, "You declined s's form.");
+    await shows(app, "answered");
+    expect(answerOf(session)).toEqual({ action: "decline" });
+  });
+
+  it("draws a form's pick in full screen above the status line, the picks of several marked with Space", async () => {
+    const { config, servers } = await mcpSetup();
+    const items = { anyOf: [{ const: "c", title: "Cheese" }, { const: "h", title: "Ham" }] };
+    const schema = { type: "object", properties: { tops: { type: "array", title: "Tops", items } } };
+    const { app, session, mcp } = await mount(asking(formOf(schema)), { full: true, mcp: servers([await config("s", {}, trusted)]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    await type(app, "go");
+    // A pick of several names Space too, in its hint row under the menu.
+    await shows(app, "Tops (optional):\n  Cheese\n  Ham\n↑↓ move · Space marks · Enter answers · Esc declines the form\n");
+    expect(app.lastFrame()).toMatch(/Esc declines the form\n.*lead fake:a/);
+    await press(app, " ", DOWN, " ");
+    await shows(app, "Tops (optional): Cheese, Ham");
+    await press(app, "\r");
+    await shows(app, "answered");
+    expect(answerOf(session)).toEqual({ action: "accept", content: { tops: ["c", "h"] } });
+  });
+
+  it("takes an Elicitation hook's answer and shows no form", async () => {
+    const { dir, config, servers } = await mcpSetup();
+    const script = path.join(dir, "hook.cjs");
+    const accept = { hookSpecificOutput: { hookEventName: "Elicitation", action: "accept", content: { name: "Hook" } } };
+    writeFileSync(script, `process.stdin.resume().on("end", () => process.stdout.write(${JSON.stringify(JSON.stringify(accept))}));`);
+    const hooks: Hook[] = [{ event: "Elicitation", matcher: { names: ["s"] }, command: process.execPath, args: [script], async: false, where: "" }];
+    const { app, session, mcp } = await mount(asking(formOf()), { hooks, mcp: servers([await config("s", {}, trusted)]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    await type(app, "go");
+    await shows(app, "answered");
+    expect(answerOf(session)).toEqual({ action: "accept", content: { name: "Hook" } });
+    expect(flat(app)).not.toContain("asks:");
+  });
+
+  it("asks before opening the browser for a server's visit request, and opens it on yes", async () => {
+    const { config, servers } = await mcpSetup();
+    const opened: string[] = [];
+    const visit = { mode: "url", message: "Sign there", elicitationId: "e1", url: "https://example.com/x" };
+    const s = servers([await config("s", {}, trusted)], { openBrowser: (u) => void opened.push(u) });
+    const { app, session, mcp } = await mount(asking(visit), { mcp: s });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    await type(app, "go");
+    await soon(() => expect(flat(app)).toContain("s asks you to open https://example.com/x in your browser: Sign there. Open it? [y/n]"));
+    expect(opened).toEqual([]);
+    await press(app, "y");
+    await shows(app, "answered");
+    expect(opened).toEqual(["https://example.com/x"]);
+    expect(answerOf(session)).toEqual({ action: "accept" });
   });
 });

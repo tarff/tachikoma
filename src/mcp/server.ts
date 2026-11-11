@@ -18,7 +18,7 @@ import {
   UnauthorizedError,
 } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { visible } from "../core/permissions.js";
+import { type Owner, visible } from "../core/permissions.js";
 import { connectReason, errorText } from "../core/types.js";
 import { commandEnv, mcpProgram } from "../exec/env.js";
 import { MAX_TOOL_OUTPUT } from "../exec/executor.js";
@@ -27,6 +27,7 @@ import { MAX_TIMER_MS } from "../hooks/config.js";
 import { type AuthStore, McpAuth, NoSignIn, type SignInIO } from "./auth.js";
 import { Checker } from "./checker.js";
 import type { ServerConfig } from "./config.js";
+import type { FormHandler } from "./forms.js";
 
 // One MCP server's connection, local or remote, through the library's own transports (release 8c plan, Task 4; choice 2).
 // `Tool` is the library's tool, as tools/list sends it, each description whole: the views cut their own copies.
@@ -108,16 +109,22 @@ export class Server {
   #reconnecting: Promise<boolean> | undefined;
   #instructions: string | undefined;
   readonly #auth: McpAuth | undefined;
+  readonly #onForm: FormHandler | undefined;
+  readonly #calls = new Set<{ owner?: Owner }>(); // the calls running, each with the subagent that made it, if one did
 
   // `startMs` is the start's limit, 30 s unless a test gives a short one. `auth` keeps sign-ins: with it a remote server
   // has its own OAuth client (Task 11), unless its entry has an Authorization header of its own, in any letter case, which
   // is never signed in, so its 401 says to look at its key (choice 55); without it, as in most tests, a 401 is an answer
-  // like any other.
-  constructor(config: ServerConfig, opts: { root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; startMs?: number }) {
+  // like any other. `onForm` answers the server's forms (Task 12); without it, as in most tests, each is declined.
+  constructor(
+    config: ServerConfig,
+    opts: { root: string; env: NodeJS.ProcessEnv; auth?: AuthStore; onChange(): void; onForm?: FormHandler; startMs?: number },
+  ) {
     this.config = config;
     this.#root = opts.root;
     this.#env = opts.env;
     this.#onChange = opts.onChange;
+    this.#onForm = opts.onForm;
     this.#startMs = opts.startMs ?? START_MS;
     const keyed = config.entry.kind !== "stdio" && Object.keys(config.entry.headers).some((k) => k.toLowerCase() === "authorization");
     const signs = opts.auth && config.entry.kind !== "stdio" && !keyed;
@@ -161,12 +168,15 @@ export class Server {
   // The signal stops the call, and the library tells the server. A remote call that never reached the server throws
   // NotReached; one that may have (a connection cut mid-answer) fails with the library's error. Either way the server is
   // stopped with retry by then (onerror), and the call is not sent again here. `timeout`, in ms, is a caller's own limit in
-  // place of these: an mcp_tool hook's, whose own time limit ends its call (hooks/run.ts).
-  async callTool(name: string, args: object, opts: { signal?: AbortSignal; timeout?: number }): Promise<CallToolResult> {
+  // place of these: an mcp_tool hook's, whose own time limit ends its call (hooks/run.ts). `owner`: the subagent making the
+  // call, if one is, so a form the server asks for meanwhile is headed with its id (choice 29).
+  async callTool(name: string, args: object, opts: { signal?: AbortSignal; timeout?: number; owner?: Owner }): Promise<CallToolResult> {
     const conn = this.#conn;
     if (!conn?.ready || conn.closed || this.#state.is !== "ready") throw new Error("Not connected"); // stopped: not closed yet
     const entry = this.config.entry;
     const timeout = opts.timeout ?? (entry.kind === "stdio" ? (entry.timeout ?? MAX_TIMER_MS) : Math.max(entry.timeout ?? 0, REMOTE_MS));
+    const call = opts.owner ? { owner: opts.owner } : {};
+    this.#calls.add(call);
     try {
       return await conn.client.callTool({ name, arguments: args as Record<string, unknown> }, { signal: opts.signal, timeout });
     } catch (err) {
@@ -177,6 +187,8 @@ export class Server {
         throw new Error(needsSignIn(this.config.name), { cause: err });
       }
       throw err;
+    } finally {
+      this.#calls.delete(call);
     }
   }
 
@@ -294,7 +306,14 @@ export class Server {
       },
     );
     client.setRequestHandler("roots/list", () => ({ roots: [{ uri: pathToFileURL(this.#root).href }] }));
-    client.setRequestHandler("elicitation/create", () => ({ action: "decline" as const })); // until Task 12's forms
+    // A form (Task 12). MCP's request names no call it belongs to, so it is a subagent's when every call running on this
+    // server is that one subagent's, and otherwise the lead's (choice 29). The server's cancel of its request stops it.
+    client.setRequestHandler("elicitation/create", (request, ctx) => {
+      if (!this.#onForm) return { action: "decline" as const };
+      const owners = new Set([...this.#calls].map((c) => c.owner));
+      const [owner] = owners.size === 1 ? owners : [];
+      return this.#onForm(request.params, { ...(owner && { owner }), signal: ctx.mcpReq.signal });
+    });
     // A local server's end is its process's; a remote one's is a request that finds it gone (isDrop). Any other error
     // the library reports along the way is not fatal, and is passed over.
     client.onclose = () => {

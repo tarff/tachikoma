@@ -72,8 +72,8 @@ describe("a local server", () => {
     const init = readLog(log).find((m) => m.method === "initialize")!;
     expect(init.params.clientInfo).toEqual({ name: "tachikoma", version: VERSION });
     expect(init.params.capabilities).toEqual({ roots: {}, elicitation: { form: {}, url: {} } });
-    // The roots are the project's folder (design, "The folder a server is told it works in"); a form is declined until
-    // Task 12.
+    // The roots are the project's folder (design, "The folder a server is told it works in"); a Server given no form
+    // handler declines a form (Task 12's forms are tests/mcp/forms.test.ts's).
     const roots = await server.callTool("ask", { method: "roots/list" }, {});
     expect(JSON.parse(textOf(roots))).toEqual({ roots: [{ uri: pathToFileURL(dir).href }] });
     const form = { mode: "form", message: "Your name?", requestedSchema: { type: "object", properties: { name: { type: "string" } } } };

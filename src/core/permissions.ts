@@ -157,6 +157,9 @@ export class PermissionGate {
   #version = 0;
   // Set on a gate made for one call a PreToolUse hook allowed, or whose question the user said yes to (withHook).
   #hook: { allow: true } | { asked: true } | undefined;
+  // A subagent's gate's owner (for), which an MCP call passes on, so a form its server asks for meanwhile is headed with
+  // the subagent's id (release 8c plan, choice 29).
+  #owner: Owner | undefined;
   // Where the check reads a command (release 7 plan, Task 8): the project's root (cli.tsx gives its own, the folder it
   // started in), the home folder, and the shell the executor really runs, PowerShell on Windows and /bin/sh elsewhere
   // (exec/local.ts, shellFor; split.ts, shellOf); in live link the box's /work, /tmp and bash (GateOptions, Task 16).
@@ -205,8 +208,13 @@ export class PermissionGate {
     const ask: Ask = (summary, detail, _owner, plain, warnings, note, oneRow) => this.ask(summary, detail, owner, plain, warnings, note, oneRow);
     const gate = new PermissionGate(this.#mode, ask, this.refusal, this.options);
     gate.#parent = this;
+    gate.#owner = owner;
     if (own) gate.#own = own;
     return gate;
+  }
+
+  get owner(): Owner | undefined {
+    return this.#owner;
   }
 
   // A gate for one call a PreToolUse hook allowed, or whose question the user said yes to (release 8b plan, Task 6 and
@@ -217,6 +225,7 @@ export class PermissionGate {
     const gate = new PermissionGate(this.#mode, this.ask, this.refusal, this.options);
     gate.#parent = this.#parent ?? this;
     if (this.#own) gate.#own = this.#own;
+    gate.#owner = this.#owner;
     gate.#hook = h;
     return gate;
   }

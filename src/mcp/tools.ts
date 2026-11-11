@@ -86,10 +86,11 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
   const notRunning = (o: Offered) => (servers.server(o.server)?.state.is === "needs sign-in" ? needsSignIn(o.server) : stopped(o));
 
   // The call itself, ending as a restart says when its server restarted while it ran; a stop's error is left for the
-  // session, which tells a stop by its signal.
-  async function call(o: Offered, input: Record<string, unknown>, signal?: AbortSignal): Promise<CallToolResult> {
+  // session, which tells a stop by its signal. A subagent's call names it, for a form its server asks for (choice 29).
+  async function call(o: Offered, input: Record<string, unknown>, ctx: ToolContext): Promise<CallToolResult> {
+    const { signal, gate } = ctx;
     try {
-      return await servers.server(o.server)!.callTool(o.tool, input, { signal });
+      return await servers.server(o.server)!.callTool(o.tool, input, { signal, ...(gate.owner && { owner: gate.owner }) });
     } catch (err) {
       if (!signal?.aborted && !(err instanceof NotReached) && servers.current(o) === "restarted") throw new Error(restarted(o));
       throw err;
@@ -124,7 +125,7 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
         if (now === "stopped") throw new Error(notRunning(o));
         let result: CallToolResult;
         try {
-          result = await call(o, input, ctx.signal);
+          result = await call(o, input, ctx);
         } catch (err) {
           // A request that never reached the server: the approved call never ran, so it goes once more on the new
           // connection, without a new question (choice 13: "Reconnect, then retry"), but only to the server it was approved
@@ -132,7 +133,7 @@ export function mcpTools(servers: Servers, bus: Bus, approve: Approve, opts: { t
           // next call connects again first.
           if (!(err instanceof NotReached) || ctx.signal?.aborted) throw err;
           o = await again(o, ctx.signal);
-          result = await call(o, input, ctx.signal);
+          result = await call(o, input, ctx);
         }
         return answer(result);
       },

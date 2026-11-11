@@ -13,6 +13,7 @@ import type { Clipboard } from "../clipboard.js";
 import type { Line } from "../describe.js";
 import type { Detail } from "../DetailView.js";
 import { type Editor, empty } from "../editor.js";
+import type { Asked } from "../Field.js";
 import type { History } from "../history.js";
 import { named } from "../keys.js";
 import type { Listing } from "../menus.js";
@@ -217,6 +218,9 @@ export function useAppState({
   const [sessions, setSessions] = useState<{ rows: Row[]; now: number } | null>(null);
   // /mcp's list of the MCP servers, open or not: the picker phase too, with Select's keys (release 8c plan, Task 10).
   const [mcpList, setMcpList] = useState(false);
+  // The field of a server's form being asked, in the prompt's place: the picker phase too, as it takes Select's keys and
+  // typed text, drawn over the lists (release 8c plan, Task 12; choice 29).
+  const [form, setForm] = useState<Asked | null>(null);
   const listOpen = useRef(false); // the picker or the sessions' list, for keys and answers read before the screen is drawn again
   const announced = useRef(new Set<string>()); // background subagents whose ending has been shown
   const [, rerender] = useState(0);
@@ -308,7 +312,7 @@ export function useAppState({
     abort, nextId, printUpTo, lookups, shownSegments, setSegments, speed, setSpeed, fileNow, warned, effortNow, waiting,
     leadFromFile, rules, keysWarned, keysRead, launchKeys, launched, asked, notes, newEdit, history, running, phaseRefs,
     happening, late, toolLine, answered, copy, leaving, leavingLine, reviewing, setReviewing, saved, sessions, setSessions,
-    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList,
+    editingBack, leftLines, hooks, hookStatus, mcp, mcpList, setMcpList, form, setForm,
   } as const;
 }
 

@@ -669,8 +669,10 @@ const hooks = new Hooks(
   },
   bus,
 );
-// mcp_tool hooks reach the servers only through this, the subagents' Hooks too (release 8c plan, Task 8).
+// mcp_tool hooks reach the servers only through this, the subagents' Hooks too (release 8c plan, Task 8); a server's forms
+// fire the Elicitation hooks (Task 12).
 hooks.useServers(servers);
+servers.forms.useHooks(hooks);
 const paths = pathsFor(root, box ? { mode: sandbox === "copy" ? "copy" : "live" } : null);
 // ctx.root and the workspace's root are one place: /work in the box (Task 14's review).
 const { executor, workspace } = where;

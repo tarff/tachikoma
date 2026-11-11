@@ -33,6 +33,7 @@ import { type Clipboard, imagePaths } from "./clipboard.js";
 import { Conversation } from "./Conversation.js";
 import { brief, describe, type Line } from "./describe.js";
 import { DetailView, keyRow, searchFor } from "./DetailView.js";
+import { Field } from "./Field.js";
 import { History } from "./history.js";
 import type { Mouse } from "./input.js";
 import { both, named } from "./keys.js";
@@ -368,6 +369,31 @@ export function App(props: AppProps) {
     ui.bus.on("hook-note", onHookNote);
     ui.bus.on("hook-status", onHookStatus);
     ui.bus.on("mcp-note", onMcpNote);
+    // A server's forms (release 8c plan, Task 12; choice 29): each field asked in the prompt's place, as the detail view
+    // closes and a printed-out view comes back for a question; a stop of the form's signal takes it away. A visit request
+    // is the window's own yes or no.
+    let fieldId = 0;
+    const unbindForms = ui.mcp?.servers.forms.bind({
+      field: (field, given, signal) =>
+        new Promise((resolve) => {
+          if (signal.aborted) return resolve(null);
+          const id = ++fieldId;
+          let open = true;
+          const done = (answer: string | string[] | null) => {
+            if (!open) return;
+            open = false;
+            signal.removeEventListener("abort", stop);
+            ui.setForm((f) => (f?.id === id ? null : f));
+            resolve(answer);
+          };
+          const stop = () => done(null);
+          signal.addEventListener("abort", stop, { once: true });
+          latest.current.closeDetail();
+          ui.setForm({ id, field, ...(given !== undefined && { given }), done });
+          void latest.current.comeBack();
+        }),
+      visit: (question, owner) => ui.asking.current?.(question, undefined, owner, true) ?? Promise.resolve(false),
+    });
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
     // stderr is seen, and they are not said twice. So does the line naming the kinds of the dangerous-command check that
@@ -430,6 +456,7 @@ export function App(props: AppProps) {
       ui.bus.off("hook-note", onHookNote);
       ui.bus.off("hook-status", onHookStatus);
       ui.bus.off("mcp-note", onMcpNote);
+      unbindForms?.();
       // However the screen closes, /exit or Ctrl-C or Ctrl-D twice, no subagent goes on spending; nor does a turn, which
       // Ink ending on a drawing error would leave with nothing on screen.
       ui.tasks.stop();
@@ -471,7 +498,8 @@ export function App(props: AppProps) {
       else fns.run({ type: "paste", text: text.replace(/\r\n?/g, "\n") });
       ui.rerender((n) => n + 1);
     },
-    { isActive: !ui.picker && !ui.sessions && !ui.mcpList }, // the sessions' list and /mcp's drop a paste themselves (SessionList.tsx, McpList.tsx)
+    // The sessions' list and /mcp's drop a paste themselves (SessionList.tsx, McpList.tsx); a form's field takes it (Field.tsx).
+    { isActive: !ui.picker && !ui.sessions && !ui.mcpList && !ui.form },
   );
 
   // What the listeners set up once, at mount (the bus's, bindAsk's and the mouse's), call: the latest drawing's
@@ -502,9 +530,9 @@ export function App(props: AppProps) {
   const prompt = ui.search.current ? fns.shown() : ui.editor.current;
   fns.staleVim(); // while drawing too, for a change no key made (a picture's read ending), safe as `copied` below says
   const highlight = ui.search.current ? undefined : visualSelection(ui.vim.current, prompt);
-  // The model list, /resume's list of sessions or /mcp's of the MCP servers, drawn in the prompt's place: the picker phase
-  // (phase.ts).
-  const picking = ui.picker !== null || ui.sessions !== null || ui.mcpList;
+  // The model list, /resume's list of sessions or /mcp's of the MCP servers, drawn in the prompt's place, or a server's
+  // form's field over them: the picker phase (phase.ts).
+  const picking = ui.picker !== null || ui.sessions !== null || ui.mcpList || ui.form !== null;
   const menu = picking || ui.question || d ? null : fns.menuFor(prompt);
   if (menu?.kind !== "path") ui.listed.current = null;
 
@@ -617,14 +645,17 @@ export function App(props: AppProps) {
     todoRows: (rows) => (!ui.todos.current.hidden && unfinished(ui.todos.current.items) ? todoRows(ui.todos.current.items, rows) : []),
     queued: ui.queue.current.length,
     // The sessions' list: its heading and a row each; /mcp's, its heading and a row for each server, or for each action
-    // when a server's are shown, whichever is more, so the frame stays put between the two.
-    pickerNeeded: ui.picker
-      ? offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1)
-      : ui.sessions
-        ? ui.sessions.rows.length + 1
-        : ui.mcpList
-          ? Math.max(ui.mcp?.servers.list().length ?? 0, ACTIONS.length) + 1
-          : null,
+    // when a server's are shown, whichever is more, so the frame stays put between the two. A form's field: its note, its
+    // question, and a pick's options and hint row, the frame adding the question's row as it adds a list's hint (Field.tsx).
+    pickerNeeded: ui.form
+      ? (ui.form.field.note === undefined ? 0 : 1) + (ui.form.field.kind === "pick" ? ui.form.field.options.length + 1 : 0)
+      : ui.picker
+        ? offered.length + (offered.some((r) => r.kind === "model") ? 0 : 1)
+        : ui.sessions
+          ? ui.sessions.rows.length + 1
+          : ui.mcpList
+            ? Math.max(ui.mcp?.servers.list().length ?? 0, ACTIONS.length) + 1
+            : null,
     question: ui.question !== null,
     askedText: ui.full && ui.question && !picking ? allow(ui.question.short ?? ui.question.text, ui.question.plain) : null,
     askedShort: movable ? allow(shortOf(ui.question), ui.question.plain) : null,
@@ -755,7 +786,16 @@ export function App(props: AppProps) {
           )}
         </Static>
       )}
-      {ui.picker ? (
+      {ui.form ? (
+        // A server's form's field (release 8c plan, Task 12), in the lists' rows, over any of them that is open.
+        ui.full ? (
+          <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
+            <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={pickerRows + 1} full />
+          </Box>
+        ) : (
+          <Field key={ui.form.id} asked={ui.form} bindings={ui.table} keys={ui.pickerKey} rows={ui.height - 3} full={false} />
+        )
+      ) : ui.picker ? (
         ui.full ? (
           <Box flexDirection="column" height={pickerRows + 1} justifyContent="flex-end">
             <ModelPicker

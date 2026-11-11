@@ -89,9 +89,9 @@ export const keyRouting = (ui: UI, fns: Fns) => {
     ui.clearCopied();
     ui.notes.current = []; // a live edit's lines leave the hint row at the next key (note, output.ts)
     // /resume's list is the picker phase too, but has no field, so its letters are Select's, as in tachi -r's (PR #10's review);
-    // so is /mcp's (release 8c plan, Task 10).
-    const field =
-      h.phase.kind === "search" || (h.phase.kind === "picker" && ui.sessions === null && !ui.mcpList) || (h.phase.kind === "detail" && h.phase.searching);
+    // so is /mcp's (release 8c plan, Task 10). A server's form, drawn over them, is a field (Task 12).
+    const picking = h.phase.kind === "picker" && (ui.form !== null || (ui.sessions === null && !ui.mcpList));
+    const field = h.phase.kind === "search" || picking || (h.phase.kind === "detail" && h.phase.searching);
     fns.onKey(h, fns.route(h.phase.kind, field, ch, key), ch, key);
   };
   // What a key does in each phase. `ch` and `key` are for a key no binding takes (`got` null), which the prompt's
