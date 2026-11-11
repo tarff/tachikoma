@@ -23,10 +23,11 @@ export type Field = { name: string; question: string; note?: string; required: b
 
 // The window's questions (App.tsx): `field` gives what was typed, or the values picked, or null for Esc or a stop of
 // `signal`; `given`, what the field was last answered with, when it is asked again after a wrong answer. `visit` is the
-// window's own yes or no.
+// window's own yes or no, asked with no owner, so a subagent's reads as its heading does, its id first (Task 12's quality
+// review).
 export interface FormUI {
   field(field: Field, given: string | string[] | undefined, signal: AbortSignal): Promise<string | string[] | null>;
-  visit(question: string, owner: Owner | undefined): Promise<boolean>;
+  visit(question: string): Promise<boolean>;
 }
 
 // "Lines this plan adds", Forms.
@@ -136,9 +137,13 @@ export class Forms {
   // Claude Code's input for both events (its hooks reference), matched on the server's name. An Elicitation hook's answer
   // is the form's, and no ElicitationResult hook runs then; otherwise the user's, which an ElicitationResult hook's answer
   // replaces, its content kept from the user's when an accept gives none (choice 35). A subagent's stop, or the server's
-  // own cancel of its request, stops the hooks and the questions.
+  // own cancel of its request, stops the hooks and the questions, and a stop mid-form is a cancel, with no hook after it.
+  // A subagent's form's every line starts with its id, as its other lines do (choice 29). -p's note is said once the
+  // ElicitationResult hooks have left its decline as the answer (Task 12's quality review).
   async answer(name: string, form: Form, opts: { owner?: Owner; signal: AbortSignal }): Promise<Answer> {
     const signal = opts.owner ? AbortSignal.any([opts.signal, opts.owner.signal]) : opts.signal;
+    const tag = opts.owner ? `${visible(opts.owner.name.split(" ", 1)[0]!)}: ` : "";
+    const say = (line: string) => this.#bus.emit("mcp-note", `${tag}${line}`);
     const fields = {
       mcp_server_name: name,
       message: form.message,
@@ -147,43 +152,46 @@ export class Forms {
     };
     const first = (await this.#hooks?.fire("Elicitation", fields, { match: name, signal }))?.elicitation;
     if (first) {
-      if (first.action === "decline") this.#say(`An Elicitation hook declined ${visible(name)}'s form.`);
+      if (first.action === "decline") say(`An Elicitation hook declined ${visible(name)}'s form.`);
       return answerOf(first);
     }
-    const run = this.#line.then(() => this.#ask(name, form, opts.owner, signal));
+    const run = this.#line.then(() => this.#ask(name, form, tag, say, signal));
     this.#line = run.catch(() => {});
-    const user = await run;
+    const got = await run;
+    if (signal.aborted) return { action: "cancel" };
+    const user: Answer = got === "-p" ? { action: "decline" } : got;
     const after = { ...fields, action: user.action, ...(user.content && { content: user.content }) };
     const then = (await this.#hooks?.fire("ElicitationResult", after, { match: name, signal }))?.elicitation;
-    if (!then) return user;
-    if (then.action === "decline") this.#say(`An ElicitationResult hook declined ${visible(name)}'s form.`);
+    if (!then) {
+      if (got === "-p") say(`MCP server ${visible(name)} asked for a form; -p declines every form.`);
+      return user;
+    }
+    if (then.action === "decline") say(`An ElicitationResult hook declined ${visible(name)}'s form.`);
     return answerOf(then.action === "accept" && !then.content && user.content ? { ...then, content: user.content } : then);
   }
 
-  // The user's answer: -p and a window that has gone decline; a visit asks its question, only for a web address; a form
-  // says its heading, a subagent's with its id first, as its other lines are (choice 29), then asks each field until it
-  // takes the answer, saying each answer taken under its question.
-  async #ask(name: string, form: Form, owner: Owner | undefined, signal: AbortSignal): Promise<Answer> {
+  // The user's answer: -p's decline ("-p"), or one where the window has gone; a visit asks its question, its id first for a
+  // subagent's, only for a web address, and opens the address as parsed; a form says its heading, then asks each field
+  // until it takes the answer, saying each answer taken under its question. `say` puts the tag first.
+  async #ask(name: string, form: Form, tag: string, say: (line: string) => void, signal: AbortSignal): Promise<Answer | "-p"> {
     const ui = this.#ui;
     const who = visible(name);
-    if (!ui) {
-      if (this.#headless) this.#say(`MCP server ${who} asked for a form; -p declines every form.`);
-      return { action: "decline" };
-    }
+    if (!ui) return this.#headless ? "-p" : { action: "decline" };
     if (signal.aborted) return { action: "cancel" };
     if (form.mode === "url") {
       // The system's opener runs what it is given: on Windows url.dll's FileProtocolHandler starts a file:// program.
-      if (!/^https?:$/i.test(URL.parse(form.url)?.protocol ?? "")) {
-        const message = `MCP server ${who} asked to open ${shown(form.url)}, which is not an http or https address, so it was declined.`;
+      const parsed = URL.parse(form.url);
+      if (!parsed || !/^https?:$/i.test(parsed.protocol)) {
+        const message = `${tag}MCP server ${who} asked to open ${shown(form.url)}, which is not an http or https address, so it was declined.`;
         this.#bus.emit("error", { kind: "mcp", attempted: `MCP server ${who}`, message, lead: this.#lead() });
         return { action: "decline" };
       }
-      const yes = await ui.visit(`${who} asks you to open ${shown(form.url)} in your browser: ${shown(form.message)}. Open it`, owner);
+      const yes = await ui.visit(`${tag}${who} asks you to open ${shown(form.url)} in your browser: ${shown(form.message)}. Open it`);
       if (signal.aborted) return { action: "cancel" };
-      if (yes) this.#openBrowser(form.url);
+      if (yes) this.#openBrowser(parsed.href);
       return { action: yes ? "accept" : "decline" };
     }
-    this.#say(`${owner ? `${visible(owner.name.split(" ", 1)[0]!)}: ` : ""}${who} asks: ${shown(form.message)}`);
+    say(`${who} asks: ${shown(form.message)}`);
     const content: Record<string, Value> = {};
     for (const field of fieldsOf(form.requestedSchema)) {
       let given: string | string[] | undefined;
@@ -191,16 +199,16 @@ export class Forms {
         const typed = await ui.field(field, given, signal);
         if (typed === null) {
           if (signal.aborted) return { action: "cancel" };
-          this.#say(`You declined ${who}'s form.`);
+          say(`You declined ${who}'s form.`);
           return { action: "decline" };
         }
         const checked = check(field, typed);
         if ("wrong" in checked) {
-          this.#say(checked.wrong);
+          say(checked.wrong);
           given = typed;
           continue;
         }
-        this.#say(`${field.question}${checked.shown}`);
+        say(`${field.question}${checked.shown}`);
         if (checked.value !== undefined) content[field.name] = checked.value;
         break;
       }
@@ -208,9 +216,6 @@ export class Forms {
     return { action: "accept", content };
   }
 
-  #say(line: string): void {
-    this.#bus.emit("mcp-note", line);
-  }
 }
 
 // A hook's answer as the server is sent it: content only with an accept. The library checks its values' types.

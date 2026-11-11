@@ -34,7 +34,8 @@ export interface FakeOptions {
 
 // Its tools: echo says `text` back; error answers isError; picture answers a 1x1 PNG; structured answers structured
 // content only; slow never answers; progress sends progress and never answers; whoami tells its arguments, folder and
-// variables; ask sends the client a request (`method`, `params`) and answers with the client's answer; change adds a
+// variables; ask sends the client a request (`method`, `params`) and answers with the client's answer, or with `cancel`
+// cancels that request at once and answers "cancelled" (Task 12: a server that gives up on its form); change adds a
 // tool and says the list changed; exit prints `stderr` and exits with `code`. The tools are called by name whatever the
 // list says, so a fake with its own `tools` still answers change and exit. Over HTTP, which answers in JSON only,
 // nothing reaches the client between answers, so progress, ask and change's notice need stdio.
@@ -83,7 +84,12 @@ function answer(m, reply) {
     case "whoami":
       return text(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), project: process.env.CLAUDE_PROJECT_DIR ?? null,
         mine: process.env.MINE ?? null, key: process.env.ANTHROPIC_API_KEY ?? null }));
-    case "ask": return request(args.method, args.params, (r) => text(JSON.stringify(r.result ?? r.error)));
+    case "ask": {
+      const id = request(args.method, args.params, args.cancel ? () => {} : (r) => text(JSON.stringify(r.result ?? r.error)));
+      if (!args.cancel) return;
+      notify({ method: "notifications/cancelled", params: { requestId: id, reason: "no longer needed" } });
+      return text("cancelled");
+    }
     case "change":
       tools = O.added ? [...O.added, ...tools] : [...tools, tool("added")];
       text("changed");
@@ -115,6 +121,7 @@ function serveStdio() {
     const id = "fake-" + ++asked;
     waiting.set(id, then);
     send({ id, method, params });
+    return id;
   };
   const rl = require("node:readline").createInterface({ input: process.stdin });
   rl.on("line", (line) => {

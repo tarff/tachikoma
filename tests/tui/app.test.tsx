@@ -10662,6 +10662,56 @@ describe("App's MCP", () => {
     expect(flat(app)).not.toContain("asks:");
   });
 
+  // An optional pick of one with no default starts with nothing marked, so it can be left out: Space marks one, at most
+  // one, and its hint names Space as a pick of several's does (Task 12's quality review).
+  it("lets an optional pick of one be left out, Space marking at most one", async () => {
+    const { config, servers } = await mcpSetup();
+    const pick = (title: string) => ({ type: "string", title, enum: ["s", "m"], enumNames: ["Small", "Medium"] });
+    const schema = { type: "object", properties: { a: pick("A"), b: pick("B") } };
+    const { app, session, mcp } = await mount(asking(formOf(schema)), { mcp: servers([await config("s", {}, trusted)]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    await type(app, "go");
+    await shows(app, "A (optional):\n  Small\n  Medium\n↑↓ move · Space marks · Enter answers · Esc declines the form\n");
+    await press(app, " ", DOWN, " ");
+    await shows(app, "A (optional): Medium\n");
+    await press(app, "\r");
+    await shows(app, "B (optional):\n");
+    await press(app, "\r");
+    await shows(app, "answered");
+    expect(answerOf(session)).toEqual({ action: "accept", content: { a: "m" } });
+  });
+
+  // Typed text and Enter in one read of the terminal, as a fast typist or a paste of a line sends them (ModelPicker.tsx).
+  it("takes text and Enter in one read as the field's answer", async () => {
+    const { config, servers } = await mcpSetup();
+    const schema = { type: "object", properties: { name: { type: "string", title: "Name" } } };
+    const { app, session, mcp } = await mount(asking(formOf(schema)), { mcp: servers([await config("s", {}, trusted)]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    await type(app, "go");
+    await shows(app, "Name (optional):");
+    await press(app, "Bob\r");
+    await shows(app, "answered");
+    expect(answerOf(session)).toEqual({ action: "accept", content: { name: "Bob" } });
+  });
+
+  // A subagent's stop ends its form: the field goes, and the prompt is back.
+  it("takes a subagent's form's field away when the subagent stops, and the prompt comes back", async () => {
+    const { config, servers } = await mcpSetup();
+    const { app, mcp } = await mount([], { mcp: servers([await config("s")]) });
+    await soon(() => expect(states(mcp!.servers)).toEqual(["s ready"]));
+    const stop = new AbortController();
+    const owner: Owner = { name: "t1 (look around)", signal: stop.signal, stop: () => stop.abort() };
+    const asking = mcp!.servers.server("s")!.callTool("ask", { method: "elicitation/create", params: formOf() }, { owner });
+    await shows(app, "t1: s asks: About you");
+    await shows(app, "Name:");
+    expect(app.lastFrame()).not.toContain("›");
+    stop.abort();
+    await shows(app, "›");
+    expect(app.lastFrame()).not.toContain("Name:");
+    const r = await asking;
+    expect(JSON.parse((r.content[0] as { text: string }).text)).toEqual({ action: "cancel" });
+  });
+
   it("asks before opening the browser for a server's visit request, and opens it on yes", async () => {
     const { config, servers } = await mcpSetup();
     const opened: string[] = [];

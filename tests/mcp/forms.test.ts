@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { type Owner, PermissionGate } from "../../src/core/permissions.js";
 import { LocalExecutor, LocalWorkspace } from "../../src/exec/local.js";
 import type { Hook } from "../../src/hooks/config.js";
@@ -78,11 +78,13 @@ async function setup(opts: { headless?: boolean } = {}) {
     const where = { sessionId: () => "s1", transcript: () => undefined, root: dir, mode: () => "ask" as const, effort: () => undefined, lead: () => "fake:a" };
     servers.forms.useHooks(new Hooks({ hooks, off: false, leftOut: [] }, where, bus));
   };
-  // The fake's `ask` sends the client `elicitation/create` and answers with the client's answer, as JSON text.
-  const ask = async (params: object) => {
-    const r = await servers.server("fake")!.callTool("ask", { method: "elicitation/create", params }, {});
-    return JSON.parse((r.content as { text: string }[])[0]!.text);
+  // The fake's `ask` sends the client `elicitation/create` and answers with the client's answer, as JSON text; with
+  // `cancel` it cancels the request at once and answers "cancelled".
+  const call = async (params: object, cancel = false) => {
+    const r = await servers.server("fake")!.callTool("ask", { method: "elicitation/create", params, cancel }, {});
+    return (r.content as { text: string }[])[0]!.text;
   };
+  const ask = async (params: object) => JSON.parse(await call(params));
   // The same through the session's tool for it, called by the subagent `owner` through its own gate, as tasks.ts gives one.
   const askAs = async (owner: Owner, params: object) => {
     const [offered] = servers.offer({ loaded: new Set(["mcp__fake__ask"]) }).defined.filter((o) => o.tool === "ask");
@@ -90,8 +92,26 @@ async function setup(opts: { headless?: boolean } = {}) {
     const ctx = { root: dir, executor: new LocalExecutor(), workspace: new LocalWorkspace(dir), gate };
     return mcpTools(servers, bus, async () => {}).tool(offered!).run({ method: "elicitation/create", params }, ctx);
   };
-  return { servers, notes, errors, opened, ask, askAs, hook, inputs, useHooks };
+  return { servers, notes, errors, opened, call, ask, askAs, hook, inputs, useHooks };
 }
+
+// The window's questions as the App asks them: each field waits until `answer` is called, or until its form's signal stops
+// it, which takes the field away (null), as App.tsx's does.
+function waiting() {
+  const asked: string[] = [];
+  let answer: (a: string | string[] | null) => void = () => {};
+  const ui: FormUI = {
+    field: (f, _given, signal) =>
+      new Promise((resolve) => {
+        asked.push(f.question);
+        answer = resolve;
+        signal.addEventListener("abort", () => resolve(null), { once: true });
+      }),
+    visit: async () => false,
+  };
+  return { ui, asked, answer: (a: string | string[] | null) => answer(a) };
+}
+const until = (check: () => boolean) => vi.waitFor(() => expect(check()).toBe(true), { timeout: 5_000 }); // another process: a busy machine
 
 // The window's questions, answered from `given` in turn; each field asked is kept with what it was given back.
 function standIn(given: (string | string[] | null)[], visits: boolean[] = []) {
@@ -216,6 +236,65 @@ describe("a server's form", LIMIT, () => {
     expect(t.notes.filter((l) => l.includes("asks:"))).toEqual(["fake asks: Hi\\u001b[2J⏎there", "t1: fake asks: Again"]);
   });
 
+  // Choice 29: a subagent's form's every line carries its id, as its other lines do (Task 12's quality review).
+  it("puts a subagent's id before every line of its form: answers, a wrong answer and the decline", async () => {
+    const t = await setup();
+    const { ui } = standIn(["Ada", "x", "3", null]);
+    t.servers.forms.bind(ui);
+    const schema = { type: "object", properties: { name: { type: "string" }, n: { type: "number" }, more: { type: "string" } } };
+    const owner: Owner = { name: "t1 (look around)", signal: new AbortController().signal, stop: () => {} };
+    expect(JSON.parse(String(await t.askAs(owner, form(schema, "Go"))))).toEqual({ action: "decline" });
+    expect(t.notes).toEqual([
+      "t1: fake asks: Go",
+      "t1: name (optional): Ada",
+      "t1: That is not a number; type one, or Esc to decline the form.",
+      "t1: n (a number) (optional): 3",
+      "t1: You declined fake's form.",
+    ]);
+  });
+
+  // A stop mid-form gives the server a cancel, never an error, and no ElicitationResult hook runs for it (Task 12's quality
+  // review): the subagent's own stop, and the server's cancel of its request.
+  it("is cancelled when its subagent stops mid-form, the field taken away and no ElicitationResult hook run", async () => {
+    const t = await setup();
+    const w = waiting();
+    t.servers.forms.bind(w.ui);
+    t.useHooks([t.hook("after", "ElicitationResult", "")]);
+    const stop = new AbortController();
+    const owner: Owner = { name: "t1 (look around)", signal: stop.signal, stop: () => stop.abort() };
+    const asking = t.askAs(owner, form());
+    await until(() => w.asked.length === 1);
+    stop.abort();
+    expect(JSON.parse(String(await asking))).toEqual({ action: "cancel" });
+    expect([t.notes, t.inputs("after")]).toEqual([["t1: fake asks: Tell me about you"], []]);
+  });
+
+  it("is taken away when the server cancels its request, with no decline line and no ElicitationResult hook", async () => {
+    const t = await setup();
+    const w = waiting();
+    t.servers.forms.bind(w.ui);
+    t.useHooks([t.hook("after", "ElicitationResult", "")]);
+    expect(await t.call(form(), true)).toBe("cancelled");
+    // The cancel can reach the window before or after its first field is asked; either way the form ends there.
+    await until(() => w.asked.length === 0 || t.notes.length === 1);
+    w.answer("Ada"); // a late answer to a field taken away goes nowhere
+    expect(t.notes.filter((l) => l.startsWith("You declined"))).toEqual([]);
+    expect(t.inputs("after")).toEqual([]);
+  });
+
+  it("asks two forms one after the other, never their fields mixed", async () => {
+    const t = await setup();
+    const { ui, asked } = standIn(["a1", "a2", "b1", "b2"]);
+    t.servers.forms.bind(ui);
+    const two = { type: "object", properties: { first: { type: "string" }, second: { type: "string" } } };
+    const [a, b] = await Promise.all([t.ask(form(two, "A")), t.ask(form(two, "B"))]);
+    expect([a, b]).toEqual([{ action: "accept", content: { first: "a1", second: "a2" } }, { action: "accept", content: { first: "b1", second: "b2" } }]);
+    expect(asked).toHaveLength(4);
+    expect(t.notes).toEqual([
+      "fake asks: A", "first (optional): a1", "second (optional): a2", "fake asks: B", "first (optional): b1", "second (optional): b2",
+    ]);
+  });
+
   it("is answered by an Elicitation hook with no form shown, the hook sent Claude Code's input, and no ElicitationResult hook runs", async () => {
     const t = await setup();
     const { ui, asked } = standIn([]);
@@ -273,6 +352,17 @@ describe("a server's form", LIMIT, () => {
     expect(t.notes).toHaveLength(2);
   });
 
+  // The note is said only when -p's decline is still the answer once the ElicitationResult hooks have run (Task 12's
+  // quality review).
+  it("says -p's note only when no ElicitationResult hook replaced its decline", async () => {
+    const t = await setup({ headless: true });
+    const accept = { hookSpecificOutput: { hookEventName: "ElicitationResult", action: "accept", content: { name: "Hook" } } };
+    t.useHooks([t.hook("after", "ElicitationResult", accept)]);
+    expect(await t.ask(form())).toEqual({ action: "accept", content: { name: "Hook" } });
+    expect(t.inputs("after")).toMatchObject([{ action: "decline" }]);
+    expect(t.notes).toEqual([]);
+  });
+
   it("is declined with no question once the window has gone", async () => {
     const t = await setup();
     const { ui, asked } = standIn(["Ada"]);
@@ -290,15 +380,15 @@ describe("a visit request", LIMIT, () => {
     const { ui, visited } = standIn([], [true, false]);
     t.servers.forms.bind(ui);
     t.useHooks([t.hook("first", "Elicitation", "")]);
-    expect(await t.ask(visit("https://example.com/x?\u0007"))).toEqual({ action: "accept" });
-    expect(t.opened).toEqual(["https://example.com/x?\u0007"]);
+    expect(await t.ask(visit("https://example.com/x?\u0007y"))).toEqual({ action: "accept" });
+    expect(t.opened).toEqual(["https://example.com/x?%07y"]); // the address as parsed, its control character encoded
     expect(await t.ask(visit("https://example.com/y", "Go\u001b[2J"))).toEqual({ action: "decline" });
     expect(t.opened).toHaveLength(1);
     expect(visited).toEqual([
-      "fake asks you to open https://example.com/x?\\u0007 in your browser: Sign the form there. Open it",
+      "fake asks you to open https://example.com/x?\\u0007y in your browser: Sign the form there. Open it",
       "fake asks you to open https://example.com/y in your browser: Go\\u001b[2J. Open it",
     ]);
-    expect(t.inputs("first")[0]).toMatchObject({ mode: "url", url: "https://example.com/x?\u0007", elicitation_id: "e1", message: "Sign the form there" });
+    expect(t.inputs("first")[0]).toMatchObject({ mode: "url", url: "https://example.com/x?\u0007y", elicitation_id: "e1", message: "Sign the form there" });
   });
 
   // The system's opener runs what it is given (on Windows, url.dll's FileProtocolHandler starts a file:// program), so
@@ -315,5 +405,18 @@ describe("a visit request", LIMIT, () => {
     // Escaped, as everything a server sends is.
     expect(await t.ask(visit("file:///x\u0007"))).toEqual({ action: "decline" });
     expect(t.errors.at(-1)!.message).toContain("file:///x\\u0007,");
+  });
+
+  // A subagent's visit is asked in its heading's form, its id first, not as "<id> (<description>) to ..." (Task 12's quality
+  // review); its refused address's line carries the id too.
+  it("puts a subagent's id before its visit's question and its refused address's line", async () => {
+    const t = await setup();
+    const { ui, visited } = standIn([], [false]);
+    t.servers.forms.bind(ui);
+    const owner: Owner = { name: "t1 (look around)", signal: new AbortController().signal, stop: () => {} };
+    expect(JSON.parse(String(await t.askAs(owner, visit("https://example.com/"))))).toEqual({ action: "decline" });
+    expect(visited).toEqual(["t1: fake asks you to open https://example.com/ in your browser: Sign the form there. Open it"]);
+    await t.askAs(owner, visit("file:///x"));
+    expect(t.errors.at(-1)!.message).toBe("t1: MCP server fake asked to open file:///x, which is not an http or https address, so it was declined.");
   });
 });

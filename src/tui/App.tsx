@@ -392,7 +392,7 @@ export function App(props: AppProps) {
           ui.setForm({ id, field, ...(given !== undefined && { given }), done });
           void latest.current.comeBack();
         }),
-      visit: (question, owner) => ui.asking.current?.(question, undefined, owner, true) ?? Promise.resolve(false),
+      visit: (question) => ui.asking.current?.(question, undefined, undefined, true) ?? Promise.resolve(false),
     });
     // The launch printed the settings file's warnings to stderr, which full screen hides until the user quits, so
     // they show here too (release 6 plan, Task 9, "The launch's warnings show in the session too"); in classic mode
