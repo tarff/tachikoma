@@ -608,6 +608,13 @@ search, always on", "Own lookup tool, every provider")
     entry` (the user's choice, "Replace"). Tachikoma never registers under another app's name.
     Figma is reached through its desktop app's own server, `http://127.0.0.1:3845/mcp`, which
     needs no sign-in (the user's choice, "Desktop app server"); the README says how (Task 14).
+61. **Forms' lines, and visits only to web addresses** (Task 12's build, 2026-11-11, all the
+    user's choices): the wrong-number lines for a whole number, a minimum and a maximum, and the
+    yes-or-no line, as in the lines table; an ElicitationResult hook's exit 2 gives `An
+    ElicitationResult hook declined <name>'s form.` A visit to an address that is not http or
+    https is declined without asking, with a red line: on Windows the system's opener (rundll32
+    url.dll) starts a program from a `file://` address, and the library lets `file:` addresses
+    through. A pick field has a hint row, in the style of `/mcp`'s (choice 51).
 
 ## Lines this plan adds
 
@@ -673,8 +680,12 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | **Forms**: the heading | `<name> asks: <message>` |
 | A field's question | `<title, or the field's name>` then ` (a number)`, ` (yes or no)`, ` (optional)` where they apply, then `: ` |
 | A wrong answer (grey) | `That is not a number; type one, or Esc to decline the form.`, the same for `yes or no` (`y` or `n`), and `This field is needed; type an answer, or Esc to decline the form.` |
+| A wrong number (grey; choice 61) | `That is not a whole number; type one, or Esc to decline the form.`; `That is under <minimum>; type <minimum> or more, or Esc to decline the form.`; `That is over <maximum>; type <maximum> or less, or Esc to decline the form.` |
+| The yes-or-no line (grey; choice 61) | `That is not yes or no; type y or n, or Esc to decline the form.` |
+| A pick's hints (choice 61) | pick several: `↑↓ move · Space marks · Enter answers · Esc declines the form`; pick one: `↑↓ move · Enter answers · Esc declines the form` |
 | A visit request | `<name> asks you to open <url> in your browser: <message>. Open it?` |
-| A declined form (grey) | `You declined <name>'s form.`; by a hook, `An Elicitation hook declined <name>'s form.`; in `-p` (note), `MCP server <name> asked for a form; -p declines every form.` |
+| A visit that is not a web address (red; choice 61) | `MCP server <name> asked to open <url>, which is not an http or https address, so it was declined.` |
+| A declined form (grey) | `You declined <name>'s form.`; by a hook, `An Elicitation hook declined <name>'s form.`; by an ElicitationResult hook (choice 61), `An ElicitationResult hook declined <name>'s form.`; in `-p` (note), `MCP server <name> asked for a form; -p declines every form.` |
 | **Resources**: one that cannot be read (red) | `Could not read @<name>:<uri>: <reason>. Your words are back in the prompt box.` |
 | **Prompts**: a missing argument (red) | `/<name>:<prompt> needs <argument>: /<name>:<prompt> <argument> ...` |
 | A prompt that cannot be fetched (red) | `Could not get the prompt /<name>:<prompt>: <reason>. Your words are back in the prompt box.` |
