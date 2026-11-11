@@ -1395,7 +1395,11 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   list never answers holds a send that picks from it until the library's request limit, 60 s
   (`DEFAULT_REQUEST_TIMEOUT_MSEC`), or Esc; a server whose name holds `:` or `/` offers no
   resources or prompts, nor do two servers whose names differ only in letter case for the ones
-  they share);
+  they share; a prompt command's missing argument is found after UserPromptSubmit, so that hook
+  sees, and may log, a prompt that is then not sent; Esc during the first prompt's wait for
+  servers refuses a prompt that names a starting server's resource or prompt (`not ready
+  (starting)`), where choice 25 sends the prompt without them; a reconnect shared by a tool call
+  and a read can say `was connected again.` twice);
   the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
