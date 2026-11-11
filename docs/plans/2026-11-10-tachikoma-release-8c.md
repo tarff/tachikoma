@@ -682,7 +682,7 @@ are notes; red ones are failures. `<name>` is a server's name as the settings gi
 | A wrong answer (grey) | `That is not a number; type one, or Esc to decline the form.`, the same for `yes or no` (`y` or `n`), and `This field is needed; type an answer, or Esc to decline the form.` |
 | A wrong number (grey; choice 61) | `That is not a whole number; type one, or Esc to decline the form.`; `That is under <minimum>; type <minimum> or more, or Esc to decline the form.`; `That is over <maximum>; type <maximum> or less, or Esc to decline the form.` |
 | The yes-or-no line (grey; choice 61) | `That is not yes or no; type y or n, or Esc to decline the form.` |
-| A pick's hints (choice 61) | pick several: `↑↓ move · Space marks · Enter answers · Esc declines the form`; pick one: `↑↓ move · Enter answers · Esc declines the form` |
+| A pick's hints (choice 61) | pick several, or an optional pick one with no default (Task 12's review): `↑↓ move · Space marks · Enter answers · Esc declines the form`; any other pick one: `↑↓ move · Enter answers · Esc declines the form` |
 | A visit request | `<name> asks you to open <url> in your browser: <message>. Open it?` |
 | A visit that is not a web address (red; choice 61) | `MCP server <name> asked to open <url>, which is not an http or https address, so it was declined.` |
 | A declined form (grey) | `You declined <name>'s form.`; by a hook, `An Elicitation hook declined <name>'s form.`; by an ElicitationResult hook (choice 61), `An ElicitationResult hook declined <name>'s form.`; in `-p` (note), `MCP server <name> asked for a form; -p declines every form.` |
@@ -1373,11 +1373,11 @@ the program's name in an earlier PATH folder is taken, and fails at start with i
   Tachikoma's side; a remote call's limit, 60 s by default, keeps counting while a form is filled
   in, so a slow answer can outlive its call; a visit counts as done once the browser opens, with
   no wait for the server's completion notice; Ctrl-C in a field declines the form but does not
-  stop the turn; a visit question stays on screen after the server cancels it or its subagent
-  stops, and opens nothing when answered; a form that comes while the model list, `/resume` or `/mcp` is open starts that
+  stop the turn; a visit question stays on screen after the server cancels it, and opens nothing
+  when answered; a form that comes while the model list, `/resume` or `/mcp` is open starts that
   list again from its top; keys typed past a form's last field go to what is underneath, such as
-  a waiting question; a visit asked with no turn running, after an Esc-stopped turn, is cancelled
-  at once);
+  a waiting question; a visit asked with no turn running, after an Esc-stopped turn, is declined
+  at once, with no line);
   the numbers marked as Claude Code's, not measured for Tachikoma; `/mcp` in the commands
   list; `--json`'s `mcp-note`; and the release list's line for 8c.
 - **The design** gets an "As built" section.
